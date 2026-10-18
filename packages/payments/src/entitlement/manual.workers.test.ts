@@ -11,6 +11,7 @@ import type { PaymentsSubject } from "../data/subject";
 import { paymentsDatabase } from "../data/tables";
 import { PaymentsEntitlementNotInCatalogError } from "../error/errors";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
+import { payments_0002_allowances } from "../migrations/0002_allowances";
 import type { ProviderEventInput } from "../projection/event";
 import { resolveEntitlements } from "../projection/resolve";
 import { projectPurchase } from "../projection/writer";
@@ -43,6 +44,7 @@ const ACME: PaymentsSubject = { subjectType: "organization", subjectId: "acme" }
 
 const CONFIG = PaymentsConfig.parse({
   billingSubject: "user",
+  entitlements: { pro: { name: "pro" } },
   rails: { apple: true },
   products: {
     pro_monthly: {
@@ -56,12 +58,12 @@ const CONFIG = PaymentsConfig.parse({
 
 /**
  * The same catalog, with a key the adopter comps but does not sell. `beta_access` is granted nowhere in
- * `products`, so it exists only because `manualEntitlements` declares it — which is the escape hatch, and the
- * thing that has to keep working now that the check sits at the write.
+ * `products`, so it exists only because `entitlements` declares it — a declared key no product sells is
+ * comp-only, and that has to keep working now that the check sits at the write.
  */
 const COMPED = PaymentsConfig.parse({
   ...CONFIG,
-  manualEntitlements: ["beta_access", "founder"],
+  entitlements: { ...CONFIG.entitlements, beta_access: { name: "Beta" }, founder: { name: "Founder" } },
 });
 
 const TABLES = [
@@ -71,11 +73,16 @@ const TABLES = [
   "pithy_payments_webhook_events",
   "pithy_payments_reconcile_runs",
   "pithy_payments_sync_cursors",
+  "pithy_payments_overrides",
+  "pithy_payments_meter_counters",
+  "pithy_payments_usage_reports",
+  "pithy_payments_usage_runs",
 ];
 
 beforeEach(async () => {
   for (const table of TABLES) await env.DB.exec(`DROP TABLE IF EXISTS ${table}`);
   await payments_0001_purchases.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
+  await payments_0002_allowances.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
 });
 
 const db = () => paymentsDatabase(env.DB);
@@ -197,7 +204,7 @@ describe("the catalog check on a grant", () => {
     expect(granted.active).toBe(true);
   });
 
-  test("grants a key the adopter declared in `manualEntitlements` and no product sells", async () => {
+  test("grants a key the adopter declared and no product sells — a comp-only key", async () => {
     // The escape hatch travels with the check. If it did not, comping `founder` would have become impossible
     // at the moment the check moved — and comping a key nothing sells is the case comps exist for.
     const granted = await grantEntitlement(env.DB, COMPED, { ...ADA, entitlement: "founder" }, { now: NOW });

@@ -143,6 +143,17 @@ describe("a paused subscription says when it resumes", () => {
     );
   });
 
+  test("the state row states the line's quantity, and a money row the transaction's (#561)", () => {
+    const seated = {
+      ...PADDLE_PAUSED_WITH_RESUME_DATE,
+      items: [{ price: { id: "pri_seat" }, status: "active", quantity: 7 }],
+    };
+    expect(subscriptionEvent(PaddleSubscription.parse(seated), OCCURRED, "sandbox").quantity).toBe(7);
+    expect(
+      subscriptionEvent(PaddleSubscription.parse(PADDLE_PAUSED_WITH_RESUME_DATE), OCCURRED, "sandbox").quantity,
+    ).toBeNull();
+  });
+
   test("so the projected event carries Paddle's own instant", () => {
     const event = subscriptionEvent(PaddleSubscription.parse(PADDLE_PAUSED_WITH_RESUME_DATE), OCCURRED, "sandbox");
     expect(event.status).toBe("paused");

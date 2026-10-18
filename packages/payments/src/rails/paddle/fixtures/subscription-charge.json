@@ -1,0 +1,19 @@
+{
+  "data": {
+    "id": "sub_01hv8wptq8987qeep44cyrewp9",
+    "status": "active",
+    "customer_id": "ctm_01hv8wptq8987qeep44cyrewp9",
+    "currency_code": "USD",
+    "next_billed_at": "2026-11-05T09:00:00.000000Z",
+    "items": [
+      {
+        "status": "active",
+        "quantity": 1,
+        "recurring": true,
+        "price": { "id": "pri_01kzvyz9e21z9vbhd7xqq3csyh" }
+      }
+    ],
+    "scheduled_change": null
+  },
+  "meta": { "request_id": "8f2c7a1e-5d4b-4c3a-9b2e-1f0a9d8c7b6a" }
+}

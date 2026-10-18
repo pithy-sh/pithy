@@ -12,6 +12,7 @@ import {
   CHECKOUT_SESSION_PARAM,
   createCheckout,
   createPortal,
+  getAllowances,
   getEntitlements,
   isEntitlementView,
   isPurchaseView,
@@ -160,6 +161,29 @@ describe("the guards", () => {
     expect(isEntitlementView("pro")).toBe(false);
     expect(isPurchaseView({ ...PURCHASE, rail: "amazon" })).toBe(false);
     expect(isPurchaseView({ ...PURCHASE, status: "cancelled" })).toBe(false);
+  });
+});
+
+describe("getAllowances", () => {
+  test("reads the caller's resolved quotas and features off the entitlements read", async () => {
+    const fetcher = stubFetch(200, { ...ENTITLEMENTS, quotas: { seats: 10, emails: null }, features: { sso: true } });
+    expect(await getAllowances({ fetch: fetcher })).toEqual({
+      ok: true,
+      value: { quotas: { seats: 10, emails: null }, features: { sso: true } },
+    });
+    expect(fetcher.calls[0]?.url).toBe("/payments/entitlements");
+  });
+
+  test("a Worker that resolves no allowances is a failure, never an empty map that reads as zero of everything", async () => {
+    const result = await getAllowances({ fetch: stubFetch(200, ENTITLEMENTS) });
+    expect(result.ok).toBe(false);
+  });
+
+  test("a malformed quota is refused rather than shown", async () => {
+    const result = await getAllowances({
+      fetch: stubFetch(200, { ...ENTITLEMENTS, quotas: { seats: -1 }, features: {} }),
+    });
+    expect(result.ok).toBe(false);
   });
 });
 

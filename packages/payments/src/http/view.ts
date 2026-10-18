@@ -2,15 +2,21 @@
 // SPDX-License-Identifier: MIT
 
 import type { PaymentsPurchaseRecord } from "../admin/read";
-import type { PaymentsConfig } from "../config/config";
+import { compOnlyEntitlements, type PaymentsConfig } from "../config/config";
 import type { PaymentsEntitlement } from "../data/entitlement";
+import type { PaymentsOverride } from "../data/override";
 import type { PaymentsReconcileRun } from "../data/reconcileRun";
+import type { PaymentsUsageRun } from "../data/usageRun";
+import type { ResolvedAllowances } from "../entitlement/allowance";
 import type { PurchaseProjection } from "../projection/writer";
 import type {
+  PaymentsAdminAllowancesView,
   PaymentsAdminCatalogResponse,
   PaymentsAdminEntitlementView,
+  PaymentsAdminOverrideView,
   PaymentsAdminPurchaseView,
   PaymentsAdminReconcileRunView,
+  PaymentsAdminUsageRunView,
   PaymentsEntitlementView,
   PaymentsPurchaseView,
 } from "./responses";
@@ -109,16 +115,43 @@ export function adminCatalogView(config: PaymentsConfig): PaymentsAdminCatalogRe
     name: product.name,
     entitlements: [...product.entitlements],
   }));
-  const manualEntitlements = [...config.manualEntitlements];
-  if (products.length === 0 && manualEntitlements.length === 0) return { enabled: false };
+  const compOnly = compOnlyEntitlements(config);
+  const sold = new Set(products.flatMap((product) => product.entitlements));
+  const entitlements = Object.entries(config.entitlements).map(([key, declaration]) => ({
+    key,
+    name: declaration.name,
+    quotas: { ...declaration.quotas },
+    features: { ...declaration.features },
+    overrideMax: { ...(declaration.overrideMax ?? {}) },
+    sold: sold.has(key),
+  }));
+  if (products.length === 0 && entitlements.length === 0) return { enabled: false };
   // Catalog order, not sorted: the order an adopter wrote their products in is the order a list should
-  // show them, exactly as the client projection argues.
-  return { enabled: true, products, manualEntitlements };
+  // show them, exactly as the client projection argues. Declarations keep the order they were written in
+  // for the same reason.
+  return {
+    enabled: true,
+    products,
+    manualEntitlements: compOnly,
+    entitlements,
+    defaults:
+      config.defaults === undefined
+        ? null
+        : { quotas: { ...config.defaults.quotas }, features: { ...config.defaults.features } },
+  };
 }
 
 /** Project one purchase for a management client. The record's columns, verbatim, with dates as strings. */
-export function adminPurchaseView(purchase: PaymentsPurchaseRecord): PaymentsAdminPurchaseView {
+export function adminPurchaseView(
+  purchase: PaymentsPurchaseRecord,
+  reported?: { quantity: number; reportedAt: Date } | null,
+): PaymentsAdminPurchaseView {
   return {
+    quantity: purchase.quantity ?? null,
+    // Only a subscription read has asked; the purchase log leaves both absent rather than claiming none.
+    ...(reported === undefined
+      ? {}
+      : { reportedQuantity: reported?.quantity ?? null, reportedAt: reported?.reportedAt.toISOString() ?? null }),
     id: purchase.id,
     subjectType: purchase.subjectType,
     subjectId: purchase.subjectId,
@@ -147,7 +180,11 @@ export function adminPurchaseView(purchase: PaymentsPurchaseRecord): PaymentsAdm
  * and the gate the adopter's own app calls applies the timestamp on every request. A dashboard that
  * rendered the flag would disagree with that gate, and the customer would believe the dashboard.
  */
-export function adminEntitlementView(row: PaymentsEntitlement, now: Date): PaymentsAdminEntitlementView {
+export function adminEntitlementView(
+  row: PaymentsEntitlement,
+  now: Date,
+  unrestricted = false,
+): PaymentsAdminEntitlementView {
   const lapsed = row.expiresAt !== null && row.expiresAt.getTime() <= now.getTime();
   return {
     subjectType: row.subjectType,
@@ -157,6 +194,73 @@ export function adminEntitlementView(row: PaymentsEntitlement, now: Date): Payme
     expiresAt: row.expiresAt?.toISOString() ?? null,
     manual: row.manual,
     source: row.sourcePurchaseId,
+    unrestricted,
+  };
+}
+
+/** Project one usage run for a management client. The row's columns, dates as ISO strings. */
+export function adminUsageRunView(run: PaymentsUsageRun): PaymentsAdminUsageRunView {
+  return {
+    id: run.id,
+    startedAt: run.startedAt.toISOString(),
+    finishedAt: run.finishedAt.toISOString(),
+    scanned: run.scanned,
+    reported: run.reported,
+    sampled: run.sampled,
+    alreadyReported: run.alreadyReported,
+    skipped: run.skipped,
+    invalid: run.invalid,
+    failed: run.failed,
+    findings: run.findings.map((finding) => ({ ...finding })),
+  };
+}
+
+/** Project one subject's override for a management client, or null when it has none. */
+export function adminOverrideView(row: PaymentsOverride | undefined): PaymentsAdminOverrideView | null {
+  return row === undefined ? null : overrideView(row);
+}
+
+/** Project one override row for a management client. */
+export function overrideView(row: PaymentsOverride): PaymentsAdminOverrideView {
+  return {
+    version: row.version,
+    unrestricted: row.unrestricted,
+    quotas: { ...row.quotas },
+    features: { ...row.features },
+    reason: row.reason,
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+/**
+ * Project every declared allowance for one subject: effective, provenance and inherited per name, plus the
+ * ceiling an override of each quota is bounded by for this subject. What an override editor draws its rows
+ * from.
+ */
+export function adminAllowancesView(
+  resolved: ResolvedAllowances,
+  ceiling: (name: string) => number | undefined,
+): PaymentsAdminAllowancesView {
+  return {
+    quotas: resolved.quotas.map((quota) => ({
+      name: quota.name,
+      effective: quota.effective.value,
+      source: quota.effective.source,
+      key: quota.effective.key,
+      inherited: quota.inherited.value,
+      inheritedSource: quota.inherited.source,
+      inheritedKey: quota.inherited.key,
+      overrideMax: ceiling(quota.name) ?? null,
+    })),
+    features: resolved.features.map((feature) => ({
+      name: feature.name,
+      effective: feature.effective.value,
+      source: feature.effective.source,
+      key: feature.effective.key,
+      inherited: feature.inherited.value,
+      inheritedSource: feature.inherited.source,
+      inheritedKey: feature.inherited.key,
+    })),
   };
 }
 

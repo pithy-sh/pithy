@@ -117,6 +117,15 @@ export const PaymentsPurchase = z
       .string()
       .nullable()
       .describe("The ISO currency the amount is in, or null when the rail did not report one."),
+    quantity: z
+      .number()
+      .int()
+      .positive()
+      .nullable()
+      .optional()
+      .describe(
+        "How many were bought, as the store states it — a seat count, a line quantity. Null or absent where the store does not say, including every row written before the column existed. Converges like every other field: the newest event's statement wins, whichever path delivered it.",
+      ),
     providerEventAt: SQLiteDate.describe(
       "The provider's own timestamp for the event that produced this row. The monotonic write rule compares against it, so out-of-order delivery cannot revoke a live subscription.",
     ),

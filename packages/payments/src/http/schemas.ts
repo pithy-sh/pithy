@@ -5,6 +5,7 @@ import { JsonDate } from "@pithy-sh/core/src/data/codecs";
 import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { EntitlementKey } from "@pithy-sh/core/src/entitlement/entitlement";
 import { z } from "zod";
+import { AllowanceName, QuotaValue } from "../config/allowances";
 import { DiscountCode, DiscountTerms } from "../data/discount";
 import { isPaddleTransactionId } from "../data/paddleIds";
 import { PurchaseEnvironment } from "../data/purchase";
@@ -402,7 +403,7 @@ export const EntitlementGrantRequest = z
       "The subject to grant. Support acts on somebody else's holding, so this is one of the two routes where the subject is a request field rather than the server's own answer.",
     ),
     entitlement: EntitlementKey.describe(
-      "The entitlement key to grant, as gating code names it. Not a store SKU. It must be one this project defines — a key some product grants, or one the adopter declared in `manualEntitlements` — and anything else is a 400 naming the key. Comping a key nothing sells is still the durable case; declaring it is how a project says so.",
+      "The entitlement key to grant, as gating code names it. Not a store SKU. It must be one the `entitlements` map declares, and anything else is a 400 naming the key. Comping a key nothing sells is still the durable case; declaring it with no product behind it is how a project says so.",
     ),
     expiresAt: JsonDate.optional().describe(
       "When the grant lapses, as an ISO 8601 timestamp. Omit for a comp that never ends. A past timestamp writes a row that grants nothing, which is a slower way of revoking.",
@@ -430,6 +431,120 @@ export const EntitlementRevokeRequest = z
   })
   .describe("A control-plane request to revoke one entitlement from one subject, effective immediately.");
 export type EntitlementRevokeRequest = z.output<typeof EntitlementRevokeRequest>;
+
+/**
+ * ## The override writes
+ *
+ * Three routes, three scopes, and the split is the security core of them. **Set** pins numbers and switches;
+ * **unrestricted** hands a subject the whole product; **clear** removes pins. A credential that may raise one
+ * customer's email cap must not, by that fact, be able to hand anybody everything — so `unrestricted` is not a
+ * field on the set, and every one of these is a `strictObject`: a set body carrying `unrestricted: true` is a
+ * 400, never a field quietly dropped while the caller believes it took.
+ *
+ * **Both halves of the subject, a version, and on a set a reason.** The version is the one the caller read;
+ * a write behind the row is refused as stale. The reason is required because an override is a sentence about a
+ * commercial decision, and the audit event records it verbatim.
+ *
+ * Whether a name is declared, and whether a number is under its ceiling, are config-backed questions and stay
+ * in the handler: a schema constrains a value, it never replaces a lookup. What the schema does refuse is the
+ * shape — a float, a negative, a string where a quota belongs — as `validation/invalid_input`.
+ */
+
+/** The longest reason a write may carry. A sentence, a ticket number, a contract reference — not a document. */
+const MAX_OVERRIDE_REASON_LENGTH = 500;
+
+/** The most names one write may carry. Far past any real catalog; bounded because a verified client can still loop. */
+const MAX_OVERRIDE_NAMES = 100;
+
+const OverrideSubjectType = PaymentsSubject.shape.subjectType.describe(
+  "Which kind of holder the override is for. Named, never assumed — and refused when it is not the kind this project bills.",
+);
+const OverrideSubjectId = PaymentsSubject.shape.subjectId.describe("The subject whose allowances this shades.");
+const OverrideVersion = z
+  .number()
+  .int()
+  .min(0)
+  .describe(
+    "The override version the caller read — `0` when the subject had none. A write naming a version behind the row is refused with `payments/override_stale` and changes nothing.",
+  );
+const OverrideReason = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MAX_OVERRIDE_REASON_LENGTH)
+  .describe("Why — a contract, a goodwill credit, a migration. Required, and recorded verbatim on the audit event.");
+
+export const OverrideSetRequest = z
+  .strictObject({
+    subjectType: OverrideSubjectType,
+    subjectId: OverrideSubjectId,
+    version: OverrideVersion,
+    reason: OverrideReason,
+    quotas: z
+      .record(AllowanceName, QuotaValue)
+      .optional()
+      .describe(
+        "Quotas to pin, by name — a whole number from 0, or null for unlimited. Merged: a name absent here keeps whatever it had.",
+      ),
+    features: z
+      .record(AllowanceName, z.boolean().describe("Whether the switch is on."))
+      .optional()
+      .describe("Features to pin, by name. Merged: a name absent here keeps whatever it had."),
+  })
+  .refine((body) => Object.keys(body.quotas ?? {}).length + Object.keys(body.features ?? {}).length > 0, {
+    message: "Name at least one quota or feature to pin.",
+  })
+  .refine(
+    (body) => Object.keys(body.quotas ?? {}).length + Object.keys(body.features ?? {}).length <= MAX_OVERRIDE_NAMES,
+    {
+      message: `Pin at most ${MAX_OVERRIDE_NAMES} names in one write.`,
+    },
+  )
+  .describe(
+    "A control-plane request to pin quotas and features for one subject. A merge by name, version-checked, with a reason.",
+  );
+export type OverrideSetRequest = z.output<typeof OverrideSetRequest>;
+
+export const OverrideUnrestrictedRequest = z
+  .strictObject({
+    subjectType: OverrideSubjectType,
+    subjectId: OverrideSubjectId,
+    version: OverrideVersion,
+    reason: OverrideReason,
+    unrestricted: z
+      .boolean()
+      .describe(
+        "True grants every quota unlimited and every feature on, for every name declared now and later, except the names the override pins. False takes it back and leaves the pins.",
+      ),
+  })
+  .describe(
+    "A control-plane request to turn `unrestricted` on or off for one subject. Its own route, behind its own scope.",
+  );
+export type OverrideUnrestrictedRequest = z.output<typeof OverrideUnrestrictedRequest>;
+
+export const OverrideClearRequest = z
+  .strictObject({
+    subjectType: OverrideSubjectType,
+    subjectId: OverrideSubjectId,
+    version: OverrideVersion.optional().describe(
+      "The override version the caller read. Optional: sent, a clear behind the row is refused as stale; omitted, the clear is not checked, which is safe because a clear can only move a subject back toward its plan.",
+    ),
+    reason: OverrideReason.optional().describe("Why, when the caller says. Recorded on the audit event."),
+    quotas: z
+      .array(AllowanceName)
+      .max(MAX_OVERRIDE_NAMES)
+      .optional()
+      .describe("Quota pins to remove. Each resolves from the plan again."),
+    features: z
+      .array(AllowanceName)
+      .max(MAX_OVERRIDE_NAMES)
+      .optional()
+      .describe("Feature pins to remove. Each resolves from the plan again."),
+  })
+  .describe(
+    "A control-plane request to unpin names, or — naming neither list — to clear the subject's override entirely. Idempotent: clearing nothing answers 200.",
+  );
+export type OverrideClearRequest = z.output<typeof OverrideClearRequest>;
 
 /**
  * ## The management read queries
@@ -539,6 +654,20 @@ export const AdminEntitlementsQuery = z
   .describe("The entitlement query: what to narrow it to, and where to resume.");
 export type AdminEntitlementsQuery = z.output<typeof AdminEntitlementsQuery>;
 
+export const AdminOverridesQuery = z
+  .object({
+    ...SUBJECT_FILTER,
+    unrestricted: z
+      .enum(["true", "false"])
+      .optional()
+      .describe("`true` lists only the subjects that are `unrestricted` — the largest grant the kit has."),
+    cursor: Cursor,
+    limit: Limit,
+  })
+  .refine(subjectFilterIsWhole, SUBJECT_FILTER_RULE)
+  .describe("The override listing query: a holder, whether unrestricted, and where to resume.");
+export type AdminOverridesQuery = z.output<typeof AdminOverridesQuery>;
+
 export const AdminReconcileRunsQuery = z
   .object({
     rail: PaymentsRail.optional().describe(
@@ -552,6 +681,11 @@ export const AdminReconcileRunsQuery = z
   })
   .describe("The reconciliation-run query: what to narrow it to, and where to resume.");
 export type AdminReconcileRunsQuery = z.output<typeof AdminReconcileRunsQuery>;
+
+export const AdminUsageRunsQuery = z
+  .object({ cursor: Cursor, limit: Limit })
+  .describe("The usage-run query: where to resume, and how many.");
+export type AdminUsageRunsQuery = z.output<typeof AdminUsageRunsQuery>;
 
 /**
  * The two path segments on the per-subject management read: `…/entitlements/:subjectType/:subjectId`.

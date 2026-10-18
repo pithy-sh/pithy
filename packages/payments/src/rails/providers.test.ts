@@ -43,6 +43,7 @@ const CREDENTIALS = PaymentsProviderCredentials.parse({
 const config = (rails: Record<string, boolean>) =>
   PaymentsConfig.parse({
     billingSubject: "user",
+    entitlements: { pro: { name: "pro" } },
     rails,
     ...(rails.stripe
       ? {
@@ -225,6 +226,7 @@ describe("the lemonSqueezy factory hands the rail what only config knows", () =>
     // have failed at redemption, in front of the customer.
     const config = PaymentsConfig.parse({
       billingSubject: "user",
+      entitlements: { pro: { name: "pro" } },
       rails: { lemonSqueezy: true },
       lemonSqueezy: { successUrl: "https://acme.test/thanks", storeCurrency: "usd" },
       products: { pro: { type: "subscription", name: "Pro", entitlements: ["pro"], lemonSqueezy: { variantId: "1" } } },

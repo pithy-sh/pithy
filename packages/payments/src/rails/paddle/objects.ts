@@ -8,6 +8,7 @@ import type { PurchaseStatus } from "../../data/status";
 import { decodeSubjectReference } from "../../data/subject";
 import { PaymentsVerificationFailedError } from "../../error/errors";
 import type { UnboundProviderEvent } from "../contract";
+import { statedQuantity } from "../quantity";
 
 /**
  * Paddle's objects, and the mapping from what its events say to what this package stores.
@@ -136,6 +137,7 @@ const PaddleTransactionItem = z
       .optional()
       .describe("The price object, which is where a transaction carries its SKU."),
     price_id: z.string().optional().describe("The price id, on the shapes that carry it flat."),
+    quantity: z.number().int().optional().describe("How many of the price this line sold."),
   })
   .loose()
   .describe("One line of a transaction. Single-product checkouts have exactly one.");
@@ -289,6 +291,7 @@ export const PaddleSubscription = z
               .optional()
               .describe("The price this item is billed at."),
             status: z.string().optional().describe("The item's own status, which can differ from the subscription's."),
+            quantity: z.number().int().optional().describe("How many of the price the subscription bills."),
           })
           .loose()
           .describe("One priced item on the subscription."),
@@ -641,6 +644,7 @@ export function transactionEvent(
     revokedAt: null,
     amountMinor: minorAmount(transaction.details?.totals?.grand_total),
     currency: currencyOf(transaction.details?.totals?.currency_code ?? transaction.currency_code),
+    quantity: statedQuantity(transaction.items?.[0]?.quantity),
     providerEventAt: occurredAt,
     payload: { ...transaction },
   };
@@ -745,6 +749,8 @@ export function subscriptionEvent(
     resumesAt: pauseResumesAt({ rail: "paddle", status, reported: subscriptionResumesAt(subscription) }),
     amountMinor: null,
     currency: null,
+    // The line's own quantity, the one a plan change carries back unchanged (`subscription.ts`).
+    quantity: statedQuantity(subscription.items?.[0]?.quantity),
     providerEventAt: occurredAt,
     payload: { ...subscription },
   };

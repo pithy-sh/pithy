@@ -7,6 +7,7 @@ import type { PurchaseEnvironment } from "../../data/purchase";
 import { ACCESS_GRANTING_STATUSES, type PurchaseStatus } from "../../data/status";
 import { PaymentsVerificationFailedError } from "../../error/errors";
 import type { NotificationNote, UnboundProviderEvent } from "../contract";
+import { statedQuantity } from "../quantity";
 
 /**
  * Stripe's objects, and the mapping from what Stripe calls a thing to what the projection stores.
@@ -386,6 +387,8 @@ export function mapStripeSubscription(subscription: StripeSubscription, eventAt:
       originalTransactionId: subscription.id,
       amountMinor: minorUnits(item.price.unit_amount ?? null, currency),
       currency,
+      // The seat count Stripe states on the item. A metered price carries none, and null says so.
+      quantity: statedQuantity(item.quantity),
       providerEventAt: eventAt,
       payload: subscription as Record<string, unknown>,
     },
@@ -465,6 +468,7 @@ export function mapStripeSession(session: StripeCheckoutSession, options: Stripe
       originalTransactionId: null,
       amountMinor: minorUnits(session.amount_total ?? null, currency),
       currency,
+      quantity: statedQuantity(session.line_items?.data[0]?.quantity),
       providerEventAt: options.eventAt ?? retrievedAt(session, charge, status, options.now),
       payload: session as Record<string, unknown>,
     },

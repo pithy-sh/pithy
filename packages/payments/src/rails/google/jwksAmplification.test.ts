@@ -57,6 +57,7 @@ const NOW = new Date("2026-01-15T00:00:00.000Z");
 
 const CATALOG: PaymentsConfigInput = {
   billingSubject: "user",
+  entitlements: { pro: { name: "pro" } },
   rails: { google: true },
   products: {
     pro_monthly: {

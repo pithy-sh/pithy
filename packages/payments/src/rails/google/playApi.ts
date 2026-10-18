@@ -12,6 +12,7 @@ import {
 } from "../../error/errors";
 import type { PaymentsGoogleCredentials } from "../../secret/registry";
 import type { UnboundProviderEvent } from "../contract";
+import { statedQuantity } from "../quantity";
 import { type GoogleHttpFetch, googleHttpFetch, googleJson } from "./http";
 import { base64UrlEncode, pemPrivateKey } from "./jwt";
 import type { GoogleNotificationPointer } from "./rtdn";
@@ -508,6 +509,7 @@ export function playProductEvent(
     originalTransactionId: null,
     amountMinor: null,
     currency: null,
+    quantity: statedQuantity(purchase.quantity),
     providerEventAt: context.eventAt,
     payload: purchase as Record<string, unknown>,
   };

@@ -91,8 +91,22 @@ export type PaymentsPurchaseResponse = z.output<typeof PaymentsPurchaseResponse>
 
 /** `GET {base}/entitlements` — always the caller's own. */
 export const PaymentsEntitlementsResponse = z
-  .object({ entitlements: z.array(PaymentsEntitlementView).describe("The caller's entitlements, resolved now.") })
-  .describe("Every entitlement the caller holds.");
+  .object({
+    entitlements: z.array(PaymentsEntitlementView).describe("The caller's entitlements, resolved now."),
+    quotas: z
+      .record(z.string(), z.number().int().nonnegative().nullable().describe("A whole number, or null for unlimited."))
+      .optional()
+      .describe(
+        "Every declared quota, resolved for the caller's holder now — what `quota(c, name)` answers on the server, for a paywall screen to show. A UX affordance, never a security boundary: the server enforces. Absent from a Worker that predates declarations.",
+      ),
+    features: z
+      .record(z.string(), z.boolean().describe("Whether it is on."))
+      .optional()
+      .describe(
+        "Every declared feature, resolved for the caller's holder now. A UX affordance, never a security boundary. Absent from a Worker that predates declarations.",
+      ),
+  })
+  .describe("Every entitlement the caller holds, and the allowances they resolve to.");
 export type PaymentsEntitlementsResponse = z.output<typeof PaymentsEntitlementsResponse>;
 
 /** `POST {base}/restore`. */
@@ -602,6 +616,22 @@ export const PaymentsSubscriptionView = z
     nextEvent: PaymentsSubscriptionNextEvent.describe(
       "What happens next and when, already resolved — the scheduled change ahead of the billing date. The sentence a screen prints.",
     ),
+    reportedQuantity: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullable()
+      .optional()
+      .describe(
+        "For a quantity-billed product, the last count reported to the store — null when nothing has been reported yet. Absent from a Worker that predates reported billing.",
+      ),
+    reportedAt: z.iso
+      .datetime()
+      .nullable()
+      .optional()
+      .describe(
+        "When that count was reported, ISO-8601, or null when nothing has been. Absent from a Worker that predates reported billing.",
+      ),
   })
   .describe("One subscription as the person paying for it reads it: which plan, where it stands, and what is next.");
 export type PaymentsSubscriptionView = z.output<typeof PaymentsSubscriptionView>;
@@ -878,6 +908,52 @@ export const PaymentsAdminCatalogProduct = z
   .describe("One catalog product as a management client sees it: what it is, and what it grants.");
 export type PaymentsAdminCatalogProduct = z.output<typeof PaymentsAdminCatalogProduct>;
 
+/** A quota's value on the wire: a whole number from 0, or null for unlimited. */
+const WireQuota = z.number().int().nonnegative().nullable().describe("A whole number from 0, or null for unlimited.");
+
+/**
+ * One declared entitlement key, as a management client sees it: what it is called, and what it buys.
+ *
+ * **What an override editor is built from.** An override names a quota or a feature, and without this a pane
+ * could not say which names exist, which are numbers and which are switches, what the plan's value is, or
+ * what ceiling an operator may type up to. `quotas` holds numbers and `features` holds booleans, so the map a
+ * name sits in *is* its kind.
+ */
+export const PaymentsAdminCatalogEntitlement = z
+  .object({
+    key: z.string().describe("The entitlement key — what gating code names, and what a comp grants."),
+    name: z.string().describe("The tier's display name, as the adopter wrote it — `Growth`."),
+    quotas: z
+      .record(z.string(), WireQuota)
+      .describe("What this key allows, by quota name. A whole number, or null for unlimited."),
+    features: z
+      .record(z.string(), z.boolean().describe("Whether the switch is on."))
+      .describe("Its switches, by name."),
+    overrideMax: z
+      .record(z.string(), z.number().int().nonnegative().describe("The ceiling."))
+      .describe(
+        "Per quota, the largest number an override may set. A quota absent here accepts any whole number. `unrestricted` is never bounded by it.",
+      ),
+    sold: z
+      .boolean()
+      .describe(
+        "Whether a product in this catalog grants the key. False is comp-only: grantable by hand, sold by nothing.",
+      ),
+  })
+  .describe("One declared entitlement key: its name, its quotas, its features, and the ceilings on overriding them.");
+export type PaymentsAdminCatalogEntitlement = z.output<typeof PaymentsAdminCatalogEntitlement>;
+
+/** The free floor, as a management client sees it. */
+export const PaymentsAdminCatalogDefaults = z
+  .object({
+    quotas: z.record(z.string(), WireQuota).describe("What a subject holding no key gets, by quota name."),
+    features: z
+      .record(z.string(), z.boolean().describe("Whether the switch is on."))
+      .describe("The switches a subject holding no key gets."),
+  })
+  .describe("What a caller holding no key gets — the free floor.");
+export type PaymentsAdminCatalogDefaults = z.output<typeof PaymentsAdminCatalogDefaults>;
+
 /**
  * `GET {base}/admin/catalog` — what this project sells.
  *
@@ -898,7 +974,7 @@ export const PaymentsAdminCatalogResponse = z
         enabled: z
           .literal(false)
           .describe(
-            "This project defines nothing — no product is configured and no key was declared grantable, so there is no entitlement a comp control could offer and no grant that would succeed.",
+            "This project defines nothing — no product is configured and no key is declared, so there is no entitlement a comp control could offer and no grant that would succeed.",
           ),
       })
       .describe("A project composing payments with an empty catalog. The same answer as not composing it at all."),
@@ -911,8 +987,17 @@ export const PaymentsAdminCatalogResponse = z
         manualEntitlements: z
           .array(z.string())
           .describe(
-            "Entitlement keys the adopter declared grantable with no product behind them. Offered beside the products because a comp control that omitted them would refuse the grants it then submitted.",
+            "The comp-only keys — declared, and sold by no product. Offered beside the products because a comp control that omitted them would refuse the grants it then submitted. Kept under its first name so a client reading an older Worker and a newer one reads one field.",
           ),
+        entitlements: z
+          .array(PaymentsAdminCatalogEntitlement)
+          .optional()
+          .describe(
+            "Every declared key and what it buys, in the order the adopter wrote them. Absent from a Worker that predates declarations. What an override editor is built from: every editable name, and whether it is a number or a switch.",
+          ),
+        defaults: PaymentsAdminCatalogDefaults.nullable()
+          .optional()
+          .describe("The free floor, or null when none is declared. Absent from a Worker that predates declarations."),
       })
       .describe("The catalog, as a management client reads it."),
   ])
@@ -940,6 +1025,31 @@ const NextCursor = z
  */
 export const PaymentsAdminPurchaseView = z
   .object({
+    quantity: z
+      .number()
+      .int()
+      .positive()
+      .nullable()
+      .optional()
+      .describe(
+        "How many were bought, as the store stated it, or null where it did not. Absent from a Worker that predates the column.",
+      ),
+    reportedQuantity: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullable()
+      .optional()
+      .describe(
+        "For a quantity-billed subscription, the last count reported to the store, or null when none has been. Absent from a Worker that predates reported billing.",
+      ),
+    reportedAt: z.iso
+      .datetime()
+      .nullable()
+      .optional()
+      .describe(
+        "When that count was reported, ISO-8601, or null. Absent from a Worker that predates reported billing.",
+      ),
     id: z.string().describe("The purchase's UUID — its stable identifier on this Worker."),
     subjectType: PaymentsSubject.shape.subjectType.describe(
       "Whether `subjectId` names a user or an organization. Half the owner: read the two together or a row is attributed to whoever else holds that id.",
@@ -1029,9 +1139,133 @@ export const PaymentsAdminEntitlementView = z
       .describe(
         "The purchase currently granting this entitlement, or null when nothing does — a comp, or a grant whose purchase has lapsed.",
       ),
+    unrestricted: z
+      .boolean()
+      .optional()
+      .describe(
+        "Whether this row's subject is `unrestricted` — every quota unlimited and every feature on, whatever it holds. On every row, because a privilege this large must not be inferable only from a row nobody opens. Absent from a Worker that predates overrides.",
+      ),
   })
   .describe("One entitlement as a management client sees it: whose it is, whether it grants, and why.");
 export type PaymentsAdminEntitlementView = z.output<typeof PaymentsAdminEntitlementView>;
+
+/** Where an allowance's value came from. */
+export const PaymentsAllowanceSource = z
+  .enum(["unrestricted", "override", "plan", "default", "none"])
+  .describe(
+    "Where the value came from: the subject's `unrestricted` override, a pin on its override, a key it holds (`key` names it), the free floor, or `none` — nothing declared spoke to it, so it is 0 or false.",
+  );
+export type PaymentsAllowanceSource = z.output<typeof PaymentsAllowanceSource>;
+
+/**
+ * One quota for one subject: what applies now, where it came from, and what it would be with the override
+ * removed. **Three facts, because a pane that lets an operator pin one field needs all three** — projecting only
+ * the effective value loses the plan's number the instant an override exists, and the pane can no longer draw
+ * the row it is editing or offer to revert it.
+ */
+export const PaymentsAdminQuotaView = z
+  .object({
+    name: z.string().describe("The quota name."),
+    effective: WireQuota.describe("What applies now. A whole number, or null for unlimited."),
+    source: PaymentsAllowanceSource,
+    key: z.string().nullable().describe("The entitlement key that supplied `effective`, when `source` is `plan`."),
+    inherited: WireQuota.describe(
+      "What it would be with the override removed — the plan's own number, to show beside a pin and to revert to.",
+    ),
+    inheritedSource: PaymentsAllowanceSource.describe("Where `inherited` came from."),
+    inheritedKey: z.string().nullable().describe("The key that supplied `inherited`, when it is a plan's."),
+    overrideMax: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullable()
+      .describe("The largest number an override may set here for this subject, or null for no ceiling."),
+  })
+  .describe("One quota for one subject: effective, provenance, and inherited.");
+export type PaymentsAdminQuotaView = z.output<typeof PaymentsAdminQuotaView>;
+
+/** One feature for one subject, the same three facts. */
+export const PaymentsAdminFeatureView = z
+  .object({
+    name: z.string().describe("The feature name."),
+    effective: z.boolean().describe("Whether it is on now."),
+    source: PaymentsAllowanceSource,
+    key: z.string().nullable().describe("The entitlement key that supplied `effective`, when `source` is `plan`."),
+    inherited: z.boolean().describe("Whether it would be on with the override removed."),
+    inheritedSource: PaymentsAllowanceSource.describe("Where `inherited` came from."),
+    inheritedKey: z.string().nullable().describe("The key that supplied `inherited`, when it is a plan's."),
+  })
+  .describe("One feature for one subject: effective, provenance, and inherited.");
+export type PaymentsAdminFeatureView = z.output<typeof PaymentsAdminFeatureView>;
+
+/** Every declared allowance for one subject. */
+export const PaymentsAdminAllowancesView = z
+  .object({
+    quotas: z.array(PaymentsAdminQuotaView).describe("Every declared quota, by name."),
+    features: z.array(PaymentsAdminFeatureView).describe("Every declared feature, by name."),
+  })
+  .describe("Every declared allowance for one subject, resolved now.");
+export type PaymentsAdminAllowancesView = z.output<typeof PaymentsAdminAllowancesView>;
+
+/** One subject's override row, as a management client sees it. */
+export const PaymentsAdminOverrideView = z
+  .object({
+    version: z
+      .number()
+      .int()
+      .positive()
+      .describe("The version a set must send back. A set naming an older one is refused as stale."),
+    unrestricted: z
+      .boolean()
+      .describe(
+        "Whether every quota is unlimited and every feature on, except the pins, for every name present and future.",
+      ),
+    quotas: z.record(z.string(), WireQuota).describe("The pinned quotas."),
+    features: z.record(z.string(), z.boolean().describe("Whether the switch is on.")).describe("The pinned features."),
+    reason: z.string().describe("The reason the last write gave."),
+    updatedAt: z.iso.datetime().describe("When it last changed, ISO-8601."),
+  })
+  .describe("One subject's override: its version, its mode, its pins, and why.");
+export type PaymentsAdminOverrideView = z.output<typeof PaymentsAdminOverrideView>;
+
+/** One subject's override in the listing: whose it is, and the override. */
+export const PaymentsAdminOverrideListItem = z
+  .object({
+    subjectType: PaymentsSubject.shape.subjectType.describe("Whether `subjectId` names a user or an organization."),
+    subjectId: PaymentsSubject.shape.subjectId.describe("The subject the override shades."),
+    override: PaymentsAdminOverrideView,
+  })
+  .describe("One subject's override, as the listing pages it.");
+export type PaymentsAdminOverrideListItem = z.output<typeof PaymentsAdminOverrideListItem>;
+
+/** `GET {base}/admin/overrides`. */
+export const PaymentsAdminOverridesResponse = z
+  .object({
+    overrides: z.array(PaymentsAdminOverrideListItem).describe("The page, most recently changed first."),
+    nextCursor: z
+      .string()
+      .nullable()
+      .describe("Where the next page resumes. Null at the end of the list. Opaque — pass it back verbatim."),
+  })
+  .describe("A page of every subject's override — the negotiated numbers, and who is unrestricted.");
+export type PaymentsAdminOverridesResponse = z.output<typeof PaymentsAdminOverridesResponse>;
+
+/** What every override write answers: the subject, and its override as it now stands. */
+export const PaymentsOverrideResponse = z
+  .object({
+    subjectType: PaymentsSubject.shape.subjectType.describe("Which kind of holder, echoed."),
+    subjectId: PaymentsSubject.shape.subjectId.describe("The subject, echoed."),
+    override: PaymentsAdminOverrideView.nullable().describe(
+      "The override after the write, or null when the subject now has none — a whole clear, or a clear of nothing.",
+    ),
+    version: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe("The version the next write must name. 0 when the subject has no override."),
+  })
+  .describe("An override write's result: the subject, its override now, and the version to write against next.");
+export type PaymentsOverrideResponse = z.output<typeof PaymentsOverrideResponse>;
 
 /**
  * One reconciliation pass, as a management client sees it.
@@ -1119,6 +1353,53 @@ export const PaymentsAdminReconcileRunStarted = z
   .describe("What a press on the reconciliation trigger produced: whether a pass began, and which one.");
 export type PaymentsAdminReconcileRunStarted = z.output<typeof PaymentsAdminReconcileRunStarted>;
 
+/** One subject a usage run did not report, and why. */
+export const PaymentsAdminUsageFindingView = z
+  .object({
+    subjectType: PaymentsSubject.shape.subjectType.describe("Whether `subjectId` names a user or an organization."),
+    subjectId: PaymentsSubject.shape.subjectId.describe("The subject."),
+    productId: z.string().describe("The product whose count was not reported."),
+    reason: z
+      .enum(["unanswered", "not_integer", "negative", "below_min", "above_max", "resolver_failed", "report_failed"])
+      .describe(
+        "Why: the resolver answered nothing, a non-integer, a negative, a count outside min or max, or threw — or the store refused the report.",
+      ),
+  })
+  .describe("One subject a usage run did not report.");
+export type PaymentsAdminUsageFindingView = z.output<typeof PaymentsAdminUsageFindingView>;
+
+/** One usage-reporting pass, as a management client sees it. */
+export const PaymentsAdminUsageRunView = z
+  .object({
+    id: z.string().describe("The run's id."),
+    startedAt: z.iso.datetime().describe("When the pass began, ISO-8601."),
+    finishedAt: z.iso.datetime().describe("When it finished, ISO-8601."),
+    scanned: z.number().int().describe("Subscriptions examined."),
+    reported: z.number().int().describe("Periods a store accepted."),
+    sampled: z.number().int().describe("Daily-peak samples taken for a day still open."),
+    alreadyReported: z.number().int().describe("Periods already reported, so nothing was sent."),
+    skipped: z.number().int().describe("Subjects whose resolver answered nothing. Never reported as zero."),
+    invalid: z
+      .number()
+      .int()
+      .describe("Subjects whose resolver answered a number that may not be billed. Never clamped."),
+    failed: z.number().int().describe("Subjects whose resolver threw, or whose report a store refused."),
+    findings: z
+      .array(PaymentsAdminUsageFindingView)
+      .describe("The subjects not reported and why, up to a hundred. The counts are whole either way."),
+  })
+  .describe("One usage-reporting pass: when it ran, its tally, and who it did not report.");
+export type PaymentsAdminUsageRunView = z.output<typeof PaymentsAdminUsageRunView>;
+
+/** `GET {base}/admin/usage-runs`. */
+export const PaymentsAdminUsageRunsResponse = z
+  .object({
+    runs: z.array(PaymentsAdminUsageRunView).describe("The page, most recently started first."),
+    nextCursor: NextCursor,
+  })
+  .describe("A page of the usage-reporting run log.");
+export type PaymentsAdminUsageRunsResponse = z.output<typeof PaymentsAdminUsageRunsResponse>;
+
 /** `GET {base}/admin/purchases`. */
 export const PaymentsAdminPurchasesResponse = z
   .object({
@@ -1169,6 +1450,24 @@ export const PaymentsAdminSubjectEntitlementsResponse = z
     entitlements: z
       .array(PaymentsAdminEntitlementView)
       .describe("Every entitlement this subject holds, by key. Empty when it holds none."),
+    unrestricted: z
+      .boolean()
+      .optional()
+      .describe("Whether the subject is `unrestricted`. Absent from a Worker that predates overrides."),
+    overrideVersion: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe(
+        "The version an override write for this subject must name — 0 when it has none. Absent from a Worker that predates overrides.",
+      ),
+    override: PaymentsAdminOverrideView.nullable()
+      .optional()
+      .describe("The subject's override, or null when it has none. Absent from a Worker that predates overrides."),
+    allowances: PaymentsAdminAllowancesView.optional().describe(
+      "Every declared quota and feature, resolved for this subject now — effective, provenance, inherited. Absent from a Worker that predates declarations.",
+    ),
   })
   .describe("One subject's entitlements, resolved now.");
 export type PaymentsAdminSubjectEntitlementsResponse = z.output<typeof PaymentsAdminSubjectEntitlementsResponse>;

@@ -7,10 +7,14 @@ import { PaymentsProviderAccount } from "./providerAccount";
 import { PaymentsPurchase } from "./purchase";
 import {
   PAYMENTS_ENTITLEMENTS_TABLE,
+  PAYMENTS_METER_COUNTERS_TABLE,
+  PAYMENTS_OVERRIDES_TABLE,
   PAYMENTS_PROVIDER_ACCOUNTS_TABLE,
   PAYMENTS_PURCHASES_TABLE,
   PAYMENTS_RECONCILE_RUNS_TABLE,
   PAYMENTS_SYNC_CURSORS_TABLE,
+  PAYMENTS_USAGE_REPORTS_TABLE,
+  PAYMENTS_USAGE_RUNS_TABLE,
   PAYMENTS_WEBHOOK_EVENTS_TABLE,
   paymentsTables,
 } from "./tables";
@@ -26,7 +30,7 @@ describe("table prefixing (CLAUDE.md §Data layer)", () => {
     }
   });
 
-  it("names the six tables the migration creates", () => {
+  it("names the ten tables the migrations create", () => {
     expect(Object.keys(paymentsTables()).sort()).toEqual(
       [
         PAYMENTS_PURCHASES_TABLE,
@@ -35,6 +39,10 @@ describe("table prefixing (CLAUDE.md §Data layer)", () => {
         PAYMENTS_WEBHOOK_EVENTS_TABLE,
         PAYMENTS_RECONCILE_RUNS_TABLE,
         PAYMENTS_SYNC_CURSORS_TABLE,
+        PAYMENTS_OVERRIDES_TABLE,
+        PAYMENTS_METER_COUNTERS_TABLE,
+        PAYMENTS_USAGE_REPORTS_TABLE,
+        PAYMENTS_USAGE_RUNS_TABLE,
       ].sort(),
     );
   });

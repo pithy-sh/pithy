@@ -91,7 +91,9 @@ export async function createStripeCheckoutSession(
 
   const form: StripeFormObject = {
     mode: input.subscription ? "subscription" : "payment",
-    line_items: [{ price: input.providerProductId, quantity: 1 }],
+    // One of a flat price. A reported product's price is metered, and Stripe refuses a quantity on a metered
+    // line: the count is reported per period instead (`usage/pass.ts`).
+    line_items: [{ price: input.providerProductId, quantity: input.reported ? undefined : 1 }],
     success_url: input.successUrl,
     cancel_url: input.cancelUrl,
     // The resolved subject, both halves. Never a value from a request body — see the module doc.

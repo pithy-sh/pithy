@@ -112,6 +112,12 @@ describe("createStripeCheckoutSession", () => {
     expect(sent).toContain("line_items[0][quantity]=1");
   });
 
+  test("a product billed by reported quantity sends its metered line with no quantity — Stripe refuses one", async () => {
+    const { sent } = await create({ reported: true });
+    expect(sent).toContain("line_items[0][price]=price_1Abc");
+    expect(sent).not.toContain("line_items[0][quantity]");
+  });
+
   test("a one-time product buys in payment mode, and stamps the payment intent instead", async () => {
     const { sent } = await create({ subscription: false, providerProductId: "price_1Coins" });
     expect(sent).toContain("mode=payment");

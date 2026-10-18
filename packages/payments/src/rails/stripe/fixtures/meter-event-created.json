@@ -1,0 +1,12 @@
+{
+  "object": "billing.meter_event",
+  "created": 1792022399,
+  "event_name": "academy_students",
+  "identifier": "usage_8c1f2a4e-6b3d-4f5a-9e7c-2d1b0a9f8e7d",
+  "livemode": false,
+  "payload": {
+    "stripe_customer_id": "cus_PithyAcme",
+    "value": "25"
+  },
+  "timestamp": 1792022399
+}

@@ -9,6 +9,7 @@ import { PaymentsConfig } from "../config/config";
 import { PaymentsPurchase, type PaymentsPurchaseRow } from "../data/purchase";
 import { grantEntitlement } from "../entitlement/manual";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
+import { payments_0002_allowances } from "../migrations/0002_allowances";
 import type { ProviderEventInput } from "./event";
 import { projectPurchase, upsertPurchaseStatement } from "./writer";
 
@@ -29,6 +30,7 @@ const CONFIG = PaymentsConfig.parse({
   // the *route* resolves as the holder, and by the time an event reaches this function that question is
   // answered and on the event. Every test below drives both kinds through the same configured writer.
   billingSubject: "user",
+  entitlements: { ads_removed: { name: "ads_removed" }, pro: { name: "pro" } },
   rails: { apple: true, google: true, stripe: true },
   stripe: {
     successUrl: "https://acme.example/thanks",
@@ -83,7 +85,12 @@ function wideCatalog(count: number): PaymentsConfig {
       apple: { productId: `com.acme.pro.${i}` },
     };
   }
-  return PaymentsConfig.parse({ billingSubject: "user", rails: { apple: true }, products });
+  return PaymentsConfig.parse({
+    billingSubject: "user",
+    entitlements: { pro: { name: "Pro" } },
+    rails: { apple: true },
+    products,
+  });
 }
 
 function event(overrides: Partial<ProviderEventInput> = {}): ProviderEventInput {
@@ -146,10 +153,15 @@ beforeEach(async () => {
     "pithy_payments_webhook_events",
     "pithy_payments_reconcile_runs",
     "pithy_payments_sync_cursors",
+    "pithy_payments_overrides",
+    "pithy_payments_meter_counters",
+    "pithy_payments_usage_reports",
+    "pithy_payments_usage_runs",
   ]) {
     await env.DB.exec(`DROP TABLE IF EXISTS ${table}`);
   }
   await payments_0001_purchases.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
+  await payments_0002_allowances.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
 });
 
 describe("projectPurchase — the first write", () => {
@@ -747,11 +759,41 @@ describe("projectPurchase — the derived read model", () => {
   });
 });
 
+describe("projectPurchase — the quantity (#561)", () => {
+  async function quantities(): Promise<(number | null)[]> {
+    const { results } = await env.DB.prepare("SELECT quantity FROM pithy_payments_purchases ORDER BY id").all<{
+      quantity: number | null;
+    }>();
+    return results.map((row) => row.quantity);
+  }
+
+  test("a client submission, its webhook and a reconciliation pass converge on one row and one quantity", async () => {
+    // Three paths, one normalized event: the submission, the webhook redelivering it, the pass reading it back.
+    await project(event({ quantity: 5 }));
+    await project(event({ quantity: 5 }));
+    await project(event({ quantity: 5 }), { now: new Date(T0 + 2 * SECOND) });
+    expect(await quantities()).toEqual([5]);
+  });
+
+  test("the newest statement wins under the monotonic rule, and a staler one changes nothing", async () => {
+    await project(event({ quantity: 5 }));
+    await project(event({ quantity: 9, providerEventAt: new Date(T0 + SECOND) }));
+    await project(event({ quantity: 2, providerEventAt: new Date(T0 - SECOND) }));
+    expect(await quantities()).toEqual([9]);
+  });
+
+  test("a rail that states no quantity writes null, never an invented 1", async () => {
+    await project(event());
+    expect(await quantities()).toEqual([null]);
+  });
+});
+
 describe("projectPurchase — a catalog edit that stops granting a key", () => {
   /** One product, granting whatever the edit says it grants. The catalog is config, so this is a deploy. */
   const adsCatalog = (entitlements: string[]) =>
     PaymentsConfig.parse({
       billingSubject: "user",
+      entitlements: { ads_removed: { name: "ads_removed" }, beta: { name: "beta" }, pro: { name: "pro" } },
       rails: { apple: true },
       products: {
         remove_ads: {
@@ -801,6 +843,7 @@ describe("projectPurchase — a catalog edit that stops granting a key", () => {
     await project(ads(), { config: adsCatalog(["ads_removed", "beta"]) });
     const wider = PaymentsConfig.parse({
       billingSubject: "user",
+      entitlements: { ads_removed: { name: "ads_removed" }, beta: { name: "beta" }, pro: { name: "pro" } },
       rails: { apple: true },
       products: {
         remove_ads: {
@@ -856,8 +899,11 @@ describe("projectPurchase — a catalog edit that stops granting a key", () => {
     // projection's to clear. The repair above must not become a way to erase every manual grant.
     //
     // `founder` is grantable because the adopter declared it, which is the only way a key nothing sells can
-    // be comped since the catalog check moved to the write (#305).
-    const comping = PaymentsConfig.parse({ ...CONFIG, manualEntitlements: ["founder"] });
+    // be comped since the catalog check moved to the write (#305) — a declared key no product sells (#561).
+    const comping = PaymentsConfig.parse({
+      ...CONFIG,
+      entitlements: { ...CONFIG.entitlements, founder: { name: "Founder" } },
+    });
     await grantEntitlement(
       env.DB,
       comping,

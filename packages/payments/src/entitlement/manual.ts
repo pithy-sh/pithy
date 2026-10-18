@@ -42,9 +42,9 @@ import { PaymentsEntitlementNotInCatalogError } from "../error/errors";
  * exported, and the exported grant takes a {@link PaymentsConfig} it cannot be called without. A caller
  * cannot reach the unchecked half from outside this module, and the type says why.
  *
- * Comping a key nothing sells is therefore **declared** rather than achieved by nobody checking:
- * `manualEntitlements` in `pithy.config.ts` is where an adopter names the keys they comp but do not sell,
- * and those keys are grantable and are published on the catalog read beside the products. The check reads
+ * Comping a key nothing sells is therefore **declared** rather than achieved by nobody checking: a key the
+ * `entitlements` map in `pithy.config.ts` declares and no product sells is comp-only, grantable, and
+ * published on the catalog read beside the products. The check reads
  * `grantableEntitlements`, so that escape travels with it. Only grants are constrained. A revoke is not, or
  * dropping a product from the catalog would be irreversible for every account still holding its key — which
  * is why {@link revokeEntitlement} takes no config, and must never grow one.
@@ -96,8 +96,8 @@ export interface ManualEntitlementOptions {
  * Grant an entitlement by hand, and hold it against the projection. Idempotent; overwrites whatever the
  * projection last derived for this key, and survives every later purchase event for it.
  *
- * Refuses a key this project does not define — no product grants it and `manualEntitlements` does not
- * declare it — before any row is written. The config is a parameter rather than a closure because a grant
+ * Refuses a key this project does not define — the `entitlements` map does not declare it — before any row
+ * is written. The config is a parameter rather than a closure because a grant
  * without one is the defect: see the module doc.
  */
 export async function grantEntitlement(
@@ -113,7 +113,7 @@ export async function grantEntitlement(
       // The set goes in `detail`, which the HTTP codec strips. An operator reading the customer's logs gets
       // the near miss spelled out; the caller learns only which key it sent, because what this project sells
       // is a separate disclosure behind `payments:catalog:read`.
-      detail: `No product grants "${input.entitlement}" and \`manualEntitlements\` does not declare it. Defined: ${[...grantable].sort().join(", ") || "nothing"}.`,
+      detail: `\`entitlements\` declares no "${input.entitlement}". Declared: ${[...grantable].sort().join(", ") || "nothing"}.`,
     });
   }
   return writeEntitlement(d1, input, true, options);

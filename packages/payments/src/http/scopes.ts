@@ -144,6 +144,35 @@ export const PAYMENTS_RECONCILE_READ_SCOPE: ControlPlaneScope = "payments:reconc
 export const PAYMENTS_RECONCILE_RUN_SCOPE: ControlPlaneScope = "payments:reconcile:run";
 
 /**
+ * Pin a number or a switch for one subject — a negotiated email allowance, a goodwill seat. A merge by name,
+ * version-checked, with a reason on the record and bounded by any `overrideMax` the catalog declares.
+ *
+ * **It does not confer `unrestricted`.** A credential that may raise one customer's email cap must not, by
+ * that fact, be able to hand anybody the entire product.
+ */
+export const PAYMENTS_OVERRIDE_SET_SCOPE: ControlPlaneScope = "payments:overrides:set";
+
+/**
+ * Turn `unrestricted` on or off for one subject: every quota unlimited and every feature on, for every name
+ * declared now and every name declared later. **The largest grant the kit has**, and the only one whose reach
+ * grows by itself, which is why it is its own scope and its own route — never a field on the set.
+ */
+export const PAYMENTS_OVERRIDE_UNRESTRICTED_SCOPE: ControlPlaneScope = "payments:overrides:unrestricted";
+
+/**
+ * Remove pins from one subject's override, or the whole override. Separate from setting, the way revoke is
+ * separate from grant: a tool that tidies up after a contract ends needs to clear and has no business
+ * pinning.
+ */
+export const PAYMENTS_OVERRIDE_CLEAR_SCOPE: ControlPlaneScope = "payments:overrides:clear";
+
+/**
+ * Read the usage-reporting run log — when each pass ran, what it reported, and which subjects it skipped and
+ * why. Its own scope, separate from the reconciliation log's: its findings name subjects.
+ */
+export const PAYMENTS_USAGE_READ_SCOPE: ControlPlaneScope = "payments:usage:read";
+
+/**
  * Every control-plane scope payments defines — what `pithy dashboard connect` offers for this capability, and
  * the list a manifest or a doc quotes rather than re-typing. Core's `SEAM_SCOPES` is the same idea for the
  * seam's own routes.
@@ -158,8 +187,12 @@ export const PAYMENTS_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
   PAYMENTS_DISCOUNT_READ_SCOPE,
   PAYMENTS_RECONCILE_READ_SCOPE,
+  PAYMENTS_USAGE_READ_SCOPE,
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
+  PAYMENTS_OVERRIDE_SET_SCOPE,
+  PAYMENTS_OVERRIDE_CLEAR_SCOPE,
+  PAYMENTS_OVERRIDE_UNRESTRICTED_SCOPE,
   PAYMENTS_DISCOUNT_CREATE_SCOPE,
   PAYMENTS_RECONCILE_RUN_SCOPE,
 ];
@@ -255,6 +288,41 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       path: `${basePath}/entitlements/revoke`,
       scope: PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
       summary: "Take an entitlement back, effective immediately.",
+    },
+    {
+      method: "GET",
+      path: `${basePath}/admin/usage-runs`,
+      scope: PAYMENTS_USAGE_READ_SCOPE,
+      summary:
+        "The usage-reporting passes this deployment has run — what each reported, and which subjects it skipped and why. The answer to why a quantity-billed customer was not billed.",
+    },
+    {
+      method: "GET",
+      path: `${basePath}/admin/overrides`,
+      scope: PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+      summary:
+        "Page every subject's override — the numbers negotiated per customer, and which subjects are unrestricted.",
+    },
+    {
+      method: "POST",
+      path: `${basePath}/entitlements/overrides`,
+      scope: PAYMENTS_OVERRIDE_SET_SCOPE,
+      summary:
+        "Pin a negotiated number or switch for one subject, with a reason on the record. Merges by name; every other allowance keeps tracking the plan.",
+    },
+    {
+      method: "POST",
+      path: `${basePath}/entitlements/overrides/unrestricted`,
+      scope: PAYMENTS_OVERRIDE_UNRESTRICTED_SCOPE,
+      summary:
+        "Grant one subject the whole product — every quota unlimited and every feature on, including names declared later — or take it back.",
+    },
+    {
+      method: "POST",
+      path: `${basePath}/entitlements/overrides/clear`,
+      scope: PAYMENTS_OVERRIDE_CLEAR_SCOPE,
+      summary:
+        "Unpin allowances for one subject, or clear its override entirely. Unpinned names follow the plan again.",
     },
   ];
 }

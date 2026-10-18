@@ -4,8 +4,15 @@
 import { EntitlementKey } from "@pithy-sh/core/src/entitlement/entitlement";
 import { SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS } from "@pithy-sh/core/src/http/webhookWindow";
 import { z } from "zod";
-import { PAYMENTS_RAILS, type PaymentsRail } from "../data/rail";
+import { PAYMENTS_RAILS, PaymentsRail } from "../data/rail";
 import { PaymentsSubjectType } from "../data/subject";
+import {
+  type DeclarationProblem,
+  declarationProblems,
+  declaredQuotaNames,
+  PaymentsAllowanceDefaults,
+  PaymentsEntitlementDeclaration,
+} from "./allowances";
 
 /**
  * The payments capability's config — the catalog, and the thin surface an adopter owns in
@@ -250,6 +257,92 @@ export const PaymentsGrants = z
   .describe("What a purchase fulfills beyond its entitlements. Absent for the products that only unlock a feature.");
 export type PaymentsGrants = z.infer<typeof PaymentsGrants>;
 
+/**
+ * The rails a reported quantity can be billed on. Stripe takes a meter event; Paddle takes a one-time charge
+ * against the subscription. **Apple and Google cannot**: in-app purchase has no concept of a seat, so a
+ * quantity-billed product is web-rails-only and says so at boot.
+ *
+ * **Lemon Squeezy is deferred, with the reason recorded on pithy-sh/pithy#561.** Its usage records are
+ * written against a subscription *item*, which the projection does not store, so the same call shape does
+ * not fit without a new column and a refresh of every Lemon Squeezy subscription. Named here so the refusal
+ * can say so, rather than reading as an oversight.
+ */
+export const REPORTED_BILLING_RAILS = ["stripe", "paddle"] as const satisfies readonly PaymentsRail[];
+
+/** How often a reported quantity goes to the store. */
+export const PaymentsReportCadence = z
+  .enum(["period-end", "daily-peak"])
+  .describe(
+    "How often the count is reported. `period-end` sends one count per subscription per billing period — simplest, and what a store's metering expects to be fed. `daily-peak` reports each day's high-water mark once the day is over, which is the number a customer disputing an invoice can audit and the fair one when seats churn mid-period.",
+  );
+export type PaymentsReportCadence = z.infer<typeof PaymentsReportCadence>;
+
+export const PaymentsReportedBilling = z
+  .strictObject({
+    kind: z
+      .literal("reported")
+      .describe(
+        "The quantity is reported by payments, from a count the adopter's `resolveQuantity` computes. The only kind there is.",
+      ),
+    unit: z
+      .string()
+      .min(1)
+      .max(MAX_NAME_LENGTH)
+      .describe("What one unit is — `student`, `coach`, `seat`. For people reading the catalog and the run log."),
+    cadence: PaymentsReportCadence.default("period-end").describe(
+      "How often the count is reported. Defaults to `period-end`. Per product, because a project can sell two things metered differently.",
+    ),
+    min: z
+      .number()
+      .int()
+      .min(0)
+      .default(0)
+      .describe(
+        "The smallest count that may be reported. A resolver answering below it is skipped and logged — never clamped, because a clamped value is a wrong number billed silently.",
+      ),
+    max: z
+      .number()
+      .int()
+      .positive()
+      .describe(
+        "The largest count that may be reported. A resolver answering above it is skipped and logged — never clamped. A value that becomes money is bounded by somebody who meant it.",
+      ),
+    rails: z
+      .array(PaymentsRail)
+      .min(1)
+      .describe(
+        "Which rails report this product's count. Stripe and Paddle only — in-app purchase has no seats, and Lemon Squeezy is deferred.",
+      ),
+    stripe: z
+      .strictObject({
+        meterEventName: z
+          .string()
+          .min(1)
+          .max(100)
+          .describe(
+            "The `event_name` of the Stripe Billing Meter this product's metered price reads — what each report is sent as.",
+          ),
+      })
+      .optional()
+      .describe("How Stripe hears the count: the meter it is reported to. Required when `rails` lists stripe."),
+    paddle: z
+      .strictObject({
+        priceId: z
+          .string()
+          .min(1)
+          .max(MAX_SKU_LENGTH)
+          .describe(
+            "The one-time Paddle price charged per unit — `pri_01…`. Each report is a one-time charge of this price, at the reported quantity, on the subscription's next bill.",
+          ),
+      })
+      .optional()
+      .describe("How Paddle hears the count: the one-time price it is charged at. Required when `rails` lists paddle."),
+  })
+  .describe(
+    "Bill by a count the adopter's code owns. Payments asks `resolveQuantity` and reports the answer to the store; it never counts anybody's members itself, and never reports a number a kit meter counted.",
+  );
+export type PaymentsReportedBilling = z.output<typeof PaymentsReportedBilling>;
+
 export const PaymentsProduct = z
   .object({
     type: PaymentsProductType.describe("What kind of product this is. Decides how a renewal and a restore behave."),
@@ -264,7 +357,7 @@ export const PaymentsProduct = z
       .array(EntitlementKey)
       .default([])
       .describe(
-        "The entitlement keys this product grants. Many products across many rails may grant one key, which is the whole point — gating code names the key, never this product. Empty for a product that only credits a balance.",
+        "The entitlement keys this product grants — mentioned here, declared in the top-level `entitlements` map. Many products across many rails may grant one key, which is the whole point — gating code names the key, never this product. Every key must be declared. Empty for a product that only credits a balance.",
       ),
     apple: PaymentsAppleProduct.optional().describe("The Apple listing, if this product ships on the App Store."),
     google: PaymentsGoogleProduct.optional().describe("The Google listing, if this product ships on Google Play."),
@@ -276,6 +369,9 @@ export const PaymentsProduct = z
     grants: PaymentsGrants.optional().describe(
       "What this purchase fulfills beyond its entitlements. Opt-in per product; a subscription's grant fires once per billing period, since each renewal is a distinct provider transaction.",
     ),
+    billing: PaymentsReportedBilling.optional().describe(
+      "Bill this subscription by a reported quantity — students, coaches, seats — rather than a flat price. Requires `resolveQuantity` on `payments(...)`. Omit for a flat-priced product.",
+    ),
     clawback: z
       .boolean()
       .default(false)
@@ -285,6 +381,40 @@ export const PaymentsProduct = z
   })
   .describe("One logical catalog product — what it is, what it grants, and how each store lists it.");
 export type PaymentsProduct = z.infer<typeof PaymentsProduct>;
+
+/**
+ * The meters the kit counts itself, because the kit writes the rows they count. Everything the kit cannot
+ * see — seats, students, projects — is the adopter's count, read through `quota()`. Payments never counts
+ * members. Forever.
+ */
+export const KIT_METERS = ["emails", "storageBytes", "mediaItems"] as const;
+export type KitMeter = (typeof KIT_METERS)[number];
+
+const MeterPolicy = z
+  .strictObject({
+    enforce: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Whether the quota of the same name binds. Off by default: declaring a quota makes it readable, and turning this on makes it refuse. Two steps, because the first is a pricing decision and the second is a production one.",
+      ),
+  })
+  .describe("Whether one kit meter is enforced.");
+
+export const PaymentsMeters = z
+  .strictObject({
+    emails: MeterPolicy.optional().describe(
+      "Emails enqueued through `@pithy-sh/email` for a subject, per billing period. Enforced at enqueue: past the quota the enqueue throws `payments/quota_exceeded` and writes no job.",
+    ),
+    storageBytes: MeterPolicy.optional().describe(
+      "Bytes an owner holds in `@pithy-sh/storage`. Enforced, the quota replaces the configured `bytesPerOwner` as the per-owner ceiling.",
+    ),
+    mediaItems: MeterPolicy.optional().describe("Media items an owner holds in `@pithy-sh/media`. Enforced at create."),
+  })
+  .describe(
+    "Which kit meters enforce their quota. Every meter is advisory until named here with `enforce: true`, because a cap that arrives by surprise breaks an adopter already over it. A meter refuses at its limit and never bills.",
+  );
+export type PaymentsMeters = z.output<typeof PaymentsMeters>;
 
 export const PaymentsConfig = z
   .object({
@@ -304,11 +434,26 @@ export const PaymentsConfig = z
       .describe(
         "The catalog, keyed by logical product id — the id that lands in every purchase row. Keys are yours and outlive any store's SKU, so renaming a SKU in a console never rewrites history.",
       ),
-    manualEntitlements: z
-      .array(EntitlementKey)
-      .default([])
+    entitlements: z
+      .record(EntitlementKey, PaymentsEntitlementDeclaration)
+      .default({})
       .describe(
-        "Entitlement keys the control plane may grant that no product sells — a beta flag, an internal tier, a key that exists only to be comped. Declared, because the alternative to declaring is not checking: with this empty, a grant of any key outside the catalog is refused, which is what turns `pr` for `pro` into a 400 instead of a row nobody notices. Only grants are constrained; a revoke of a key the catalog has since dropped stays legal, or a catalog edit would be irreversible for everyone still holding it.",
+        "What each entitlement key means — its display name, its numbered `quotas`, its `features` — declared once, however many products sell it. A key a product mentions must be declared here. A key declared here and sold by no product is comp-only: the control plane may grant it and no checkout sells it.",
+      ),
+    defaults: PaymentsAllowanceDefaults.optional().describe(
+      "The free floor: the quotas and features a caller holding no key gets. Optional. Without it an unentitled caller gets 0 of every quota and no feature, which is fail-closed and correct.",
+    ),
+    meters: PaymentsMeters.default({}).describe(
+      "Which kit meters — `emails`, `storageBytes`, `mediaItems` — enforce the quota of the same name. All advisory until named.",
+    ),
+    manualEntitlements: z
+      .never({
+        error:
+          "`manualEntitlements` is gone. Declare each comp-only key in the top-level `entitlements` map instead — a key declared there and sold by no product is grantable by hand.",
+      })
+      .optional()
+      .describe(
+        "Removed. Declare each comp-only key in `entitlements` instead: a declared key no product sells is what this field used to mean. Refused rather than ignored, because ignoring it would drop a comp-only key and nobody would see it.",
       ),
     stripe: PaymentsStripeSettings.optional().describe(
       "Where Stripe's hosted Checkout and Billing Portal return the browser. Required when the Stripe rail is on — the two routes cannot create a session without them.",
@@ -399,6 +544,43 @@ export const PaymentsConfig = z
         path: ["paddle"],
         message: "`paddle` declares settings, but `rails.paddle` is off. Enable the rail, or drop the block.",
       });
+    }
+
+    // A key is declared once and mentioned by products. A mention with no declaration is a key whose
+    // quotas, features and name exist nowhere, and a comp of it would be refused while a checkout sold it.
+    for (const [id, product] of entries) {
+      for (const key of product.entitlements) {
+        if (key in config.entitlements) continue;
+        ctx.issues.push({
+          code: "custom",
+          input: ctx.value,
+          path: ["products", id, "entitlements"],
+          message: `Product "${id}" grants "${key}", which \`entitlements\` does not declare. Declare it — \`entitlements: { ${key}: { name: "…" } }\` — or correct the product.`,
+        });
+      }
+    }
+
+    for (const problem of declarationProblems(config)) {
+      ctx.issues.push({ code: "custom", input: ctx.value, path: problem.path, message: problem.message });
+    }
+
+    // An enforced meter with no quota of its name would resolve every subject to the hard floor of zero and
+    // refuse every send. That is fail-closed and it is also an outage, caught here rather than in production.
+    const quotaNames = new Set(declaredQuotaNames(config));
+    for (const meter of KIT_METERS) {
+      if (config.meters[meter]?.enforce !== true || quotaNames.has(meter)) continue;
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value,
+        path: ["meters", meter],
+        message: `The ${meter} meter is enforced, and no quota named "${meter}" is declared. Declare one on an entitlement or in \`defaults\`, or leave the meter advisory — enforced with nothing declared, it would refuse everyone.`,
+      });
+    }
+
+    for (const [id, product] of entries) {
+      for (const problem of reportedBillingProblems(id, product, config)) {
+        ctx.issues.push({ code: "custom", input: ctx.value, path: problem.path, message: problem.message });
+      }
     }
 
     for (const [id, product] of entries) {
@@ -521,6 +703,81 @@ export function providerProductId(product: PaymentsProduct, rail: PaymentsRail):
   }
 }
 
+/**
+ * What is wrong with one product's reported billing, as sentences naming the product — empty for a product
+ * that has none, or one that is sound.
+ *
+ * Every refusal here is at boot, because a reported product that cannot be reported is a subscription that
+ * bills nothing for a quantity the customer is using — invisible until somebody reads an invoice.
+ */
+export function reportedBillingProblems(
+  id: string,
+  product: PaymentsProduct,
+  config: Pick<PaymentsConfig, "rails">,
+): DeclarationProblem[] {
+  const billing = product.billing;
+  if (billing === undefined) return [];
+  const problems: DeclarationProblem[] = [];
+  const at = (...rest: (string | number)[]) => ["products", id, "billing", ...rest];
+
+  if (product.type !== "subscription") {
+    problems.push({
+      path: at(),
+      message: `Product "${id}" reports a quantity and is a ${product.type}. A reported quantity is billed per period, so only a subscription can carry one.`,
+    });
+  }
+  if (billing.min > billing.max) {
+    problems.push({
+      path: at("min"),
+      message: `Product "${id}" reports between ${billing.min} and ${billing.max}. The minimum must not exceed the maximum.`,
+    });
+  }
+  for (const rail of billing.rails) {
+    if (rail === "apple" || rail === "google") {
+      problems.push({
+        path: at("rails"),
+        message: `Product "${id}" reports its quantity on ${rail}. In-app purchase has no concept of a seat, so a quantity-billed product sells on the web rails only. Remove ${rail} from \`billing.rails\`.`,
+      });
+      continue;
+    }
+    if (rail === "lemonSqueezy") {
+      problems.push({
+        path: at("rails"),
+        message: `Product "${id}" reports its quantity on lemonSqueezy, which payments does not report to yet: its usage records are written against a subscription item the projection does not store. Report on stripe or paddle.`,
+      });
+      continue;
+    }
+    if (!config.rails[rail] || product[rail] === undefined) {
+      problems.push({
+        path: at("rails"),
+        message: `Product "${id}" reports its quantity on ${rail}, and is not sold there. Enable \`rails.${rail}\` and give the product a \`${rail}\` block, or remove ${rail} from \`billing.rails\`.`,
+      });
+    }
+  }
+  if (billing.rails.includes("stripe") && billing.stripe === undefined) {
+    problems.push({
+      path: at("stripe"),
+      message: `Product "${id}" reports its quantity on stripe and names no meter. Set \`billing.stripe.meterEventName\` to the event name of the meter its price reads.`,
+    });
+  }
+  if (billing.rails.includes("paddle") && billing.paddle === undefined) {
+    problems.push({
+      path: at("paddle"),
+      message: `Product "${id}" reports its quantity on paddle and names no price to charge it at. Set \`billing.paddle.priceId\` to a one-time price.`,
+    });
+  }
+  return problems;
+}
+
+/** Every product billed by a reported quantity, with its id. */
+export function reportedProducts(
+  config: PaymentsConfig,
+): (PaymentsCatalogEntry & { billing: PaymentsReportedBilling })[] {
+  return Object.entries(config.products).flatMap(([id, product]) =>
+    product.billing === undefined ? [] : [{ id, product, billing: product.billing }],
+  );
+}
+
 /** The product with this logical id, or undefined. Ids come from config, so an unknown one is a 404. */
 export function resolveProduct(config: PaymentsConfig, id: string): PaymentsCatalogEntry | undefined {
   const product = config.products[id];
@@ -545,20 +802,29 @@ export function productForProviderSku(
 }
 
 /**
- * Every entitlement key this project defines — what the catalog's products grant, plus what the adopter
- * declared grantable with no sale behind it.
+ * Every entitlement key this project defines — the keys `entitlements` declares. Every key a product
+ * mentions is among them, because the config refuses a mention with no declaration.
  *
- * The set a manual grant is checked against, and the set the control-plane catalog read publishes the first
- * half of. Computed once per composition: the catalog is config, so it cannot change under a running Worker.
+ * The set a manual grant is checked against, and the set the control-plane catalog read publishes.
+ * Computed once per composition: the catalog is config, so it cannot change under a running Worker.
  *
- * **Empty is a real answer.** A project composing payments with nothing to sell and nothing declared defines
- * no keys, and every grant against it is refused — which is correct, because there is no vocabulary to grant
- * in. It is the same statement `clientProjection` makes as `{ enabled: false }`.
+ * **Empty is a real answer.** A project composing payments with nothing declared defines no keys, and every
+ * grant against it is refused — which is correct, because there is no vocabulary to grant in. It is the same
+ * statement `clientProjection` makes as `{ enabled: false }`.
  */
 export function grantableEntitlements(config: PaymentsConfig): ReadonlySet<string> {
-  const keys = new Set<string>(config.manualEntitlements);
-  for (const product of Object.values(config.products)) for (const key of product.entitlements) keys.add(key);
-  return keys;
+  return new Set<string>(Object.keys(config.entitlements));
+}
+
+/**
+ * The declared keys no product sells — comp-only. Granted by hand through the control plane, sold by no
+ * checkout. What `manualEntitlements` used to list, said by the shape of the config rather than by a
+ * second list that could disagree with the first.
+ */
+export function compOnlyEntitlements(config: PaymentsConfig): string[] {
+  const sold = new Set<string>();
+  for (const product of Object.values(config.products)) for (const key of product.entitlements) sold.add(key);
+  return Object.keys(config.entitlements).filter((key) => !sold.has(key));
 }
 
 /** The entitlement keys a product grants, or an empty list for an unknown product or one that grants none. */

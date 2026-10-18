@@ -6,6 +6,7 @@ import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { safeEmit } from "@pithy-sh/core/src/controlPlane/audit/actions";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
+import { grantedEntitlementKeys } from "@pithy-sh/core/src/entitlement/entitlement";
 import { InternalError, NotFoundError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { memoryJwksCache } from "@pithy-sh/core/src/http/oidcWebhook";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
@@ -14,7 +15,17 @@ import { resolveWorkflowBinding } from "@pithy-sh/core/src/workflow/dispatch";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import type { Context, Hono } from "hono";
-import { listEntitlements, listPurchases, listReconcileRuns, listSubscriptions, readEntitlements } from "../admin/read";
+import {
+  lastReports,
+  listEntitlements,
+  listOverrides,
+  listPurchases,
+  listReconcileRuns,
+  listSubscriptions,
+  listUsageRuns,
+  readEntitlements,
+  unrestrictedSubjects,
+} from "../admin/read";
 import { type PaymentsAuditAction, PaymentsAuditActions } from "../audit/actions";
 import {
   type PaymentsCatalogEntry,
@@ -44,7 +55,19 @@ import {
 } from "../data/subscription";
 import { PAYMENTS_PURCHASES_TABLE, paymentsDatabase } from "../data/tables";
 import { WEBHOOK_EVENT_ORPHANED } from "../data/webhookEvent";
+import { resolveAllowances } from "../entitlement/allowance";
 import { grantEntitlement, revokeEntitlement } from "../entitlement/manual";
+import { allowanceInputFor } from "../entitlement/meter";
+import {
+  allowanceOverride,
+  clearOverride,
+  type OverrideChange,
+  overrideCeiling,
+  overrideVersion,
+  readOverride,
+  setOverride,
+  setUnrestricted,
+} from "../entitlement/override";
 import { type PaymentsSubjectSeam, requirePaymentsSubject, resolvePaymentsSubject } from "../entitlement/subjectSeam";
 import {
   PaymentsEntitlementNotInCatalogError,
@@ -80,15 +103,18 @@ import {
   PaymentsAdminCatalogResponse,
   PaymentsAdminDiscountsResponse,
   PaymentsAdminEntitlementsResponse,
+  PaymentsAdminOverridesResponse,
   PaymentsAdminPurchasesResponse,
   PaymentsAdminReconcileRunStarted,
   PaymentsAdminReconcileRunsResponse,
   PaymentsAdminSubjectEntitlementsResponse,
   PaymentsAdminSubscriptionsResponse,
+  PaymentsAdminUsageRunsResponse,
   PaymentsCheckoutHandoffResponse,
   PaymentsDiscountResponse,
   PaymentsEntitlementResponse,
   PaymentsEntitlementsResponse,
+  PaymentsOverrideResponse,
   PaymentsPortalHandoffResponse,
   PaymentsPricingEnvelope,
   type PaymentsPricingResponse,
@@ -107,10 +133,12 @@ import {
 import {
   AdminDiscountsQuery,
   AdminEntitlementsQuery,
+  AdminOverridesQuery,
   AdminPurchasesQuery,
   AdminReconcileRunsQuery,
   AdminSubjectParam,
   AdminSubscriptionsQuery,
+  AdminUsageRunsQuery,
   AppleWebhookNotification,
   CheckoutRequest,
   DiscountCreateRequest,
@@ -118,6 +146,9 @@ import {
   EntitlementRevokeRequest,
   GoogleWebhookNotification,
   LemonSqueezyWebhookNotification,
+  OverrideClearRequest,
+  OverrideSetRequest,
+  OverrideUnrestrictedRequest,
   PaddleResumeQuery,
   PaddleWebhookNotification,
   PurchaseSubmission,
@@ -134,17 +165,25 @@ import {
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+  PAYMENTS_OVERRIDE_CLEAR_SCOPE,
+  PAYMENTS_OVERRIDE_SET_SCOPE,
+  PAYMENTS_OVERRIDE_UNRESTRICTED_SCOPE,
   PAYMENTS_PURCHASES_READ_SCOPE,
   PAYMENTS_RECONCILE_READ_SCOPE,
   PAYMENTS_RECONCILE_RUN_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
+  PAYMENTS_USAGE_READ_SCOPE,
 } from "./scopes";
 import {
+  adminAllowancesView,
   adminCatalogView,
   adminEntitlementView,
+  adminOverrideView,
   adminPurchaseView,
   adminReconcileRunView,
+  adminUsageRunView,
   entitlementView,
+  overrideView,
   purchaseView,
 } from "./view";
 import { completeWebhook, requireSignedWebhook, verifiedWebhook } from "./webhookGuard";
@@ -1395,7 +1434,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         );
         return c.json(
           {
-            purchases: page.items.map(adminPurchaseView),
+            purchases: page.items.map((row) => adminPurchaseView(row)),
             nextCursor: page.nextCursor,
           } satisfies PaymentsAdminPurchasesResponse,
           200,
@@ -1426,6 +1465,14 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         const query = c.req.valid("query");
         const subject = subjectFilter(query);
         const page = await listSubscriptions(database(c), { ...query, subject });
+        const reported = await lastReports(
+          database(c),
+          page.items.flatMap((row) =>
+            row.originalTransactionId === null
+              ? []
+              : [{ rail: row.rail, providerSubscriptionId: row.originalTransactionId }],
+          ),
+        );
         await recordRead(
           c,
           PaymentsAuditActions.subscriptionsRead,
@@ -1442,7 +1489,9 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         );
         return c.json(
           {
-            subscriptions: page.items.map(adminPurchaseView),
+            subscriptions: page.items.map((row) =>
+              adminPurchaseView(row, reported.get(`${row.rail}:${row.originalTransactionId}`) ?? null),
+            ),
             nextCursor: page.nextCursor,
           } satisfies PaymentsAdminSubscriptionsResponse,
           200,
@@ -1472,6 +1521,9 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         const now = clock();
         const subject = subjectFilter(query);
         const page = await listEntitlements(database(c), { ...query, subject });
+        // Which of the page's subjects are unrestricted, in one read — marked on every row, because the
+        // largest grant the kit has must be visible wherever its holder is.
+        const unrestricted = await unrestrictedSubjects(database(c), page.items);
         await recordRead(
           c,
           PaymentsAuditActions.entitlementsRead,
@@ -1488,9 +1540,67 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         );
         return c.json(
           {
-            entitlements: page.items.map((row) => adminEntitlementView(row, now)),
+            entitlements: page.items.map((row) =>
+              adminEntitlementView(row, now, unrestricted.has(encodeSubjectReference(row))),
+            ),
             nextCursor: page.nextCursor,
           } satisfies PaymentsAdminEntitlementsResponse,
+          200,
+        );
+      },
+    );
+
+    /**
+     * CONTROL PLANE. Every subject's override, most recently changed first.
+     *
+     * The read the override writes are paired with, on the entitlement read's scope: what a subject may have
+     * is one question with its entitlements, and an operator who can see one can see the other. Filterable to
+     * `unrestricted=true`, because "who holds the whole product" must be a question anyone holding this scope
+     * can answer in one request.
+     */
+    app.get(
+      `${base}/admin/overrides`,
+      describeRoute({
+        summary: "Read every subject's override, page by page.",
+        verification: "control-plane",
+        scopes: [PAYMENTS_ENTITLEMENTS_READ_SCOPE],
+        responses: { 200: PaymentsAdminOverridesResponse },
+      }),
+      requireControlPlane(PAYMENTS_ENTITLEMENTS_READ_SCOPE),
+      validate("query", AdminOverridesQuery),
+      async (c) => {
+        const query = c.req.valid("query");
+        const subject = subjectFilter(query);
+        const unrestricted = query.unrestricted === undefined ? undefined : query.unrestricted === "true";
+        const page = await listOverrides(database(c), {
+          ...(subject ? { subject } : {}),
+          ...(unrestricted === undefined ? {} : { unrestricted }),
+          ...(query.cursor ? { cursor: query.cursor } : {}),
+          ...(query.limit ? { limit: query.limit } : {}),
+        });
+        await recordRead(
+          c,
+          PaymentsAuditActions.entitlementsRead,
+          subject === undefined ? null : encodeSubjectReference(subject),
+          {
+            returned: page.items.length,
+            resumed: query.cursor !== undefined,
+            filters: {
+              subjectType: subject?.subjectType ?? null,
+              subjectId: subject?.subjectId ?? null,
+              unrestricted: unrestricted ?? null,
+            },
+          },
+        );
+        return c.json(
+          {
+            overrides: page.items.map((row) => ({
+              subjectType: row.subjectType,
+              subjectId: row.subjectId,
+              override: overrideView(row),
+            })),
+            nextCursor: page.nextCursor,
+          } satisfies PaymentsAdminOverridesResponse,
           200,
         );
       },
@@ -1524,16 +1634,30 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       async (c) => {
         const subject = c.req.valid("param");
         const now = clock();
-        const rows = await readEntitlements(database(c), subject);
+        const d1 = database(c);
+        const rows = await readEntitlements(d1, subject);
+        const override = await readOverride(paymentsDatabase(d1), subject);
+        // The held keys from the rows already read, resolved against `now` exactly as the gate resolves them.
+        const held = grantedEntitlementKeys(
+          rows.map((row) => ({ key: row.entitlement, active: row.active, expiresAt: row.expiresAt, source: null })),
+          now,
+        );
+        const resolved = resolveAllowances({ declarations: config, held, override: allowanceOverride(override) });
+        const unrestricted = override?.unrestricted === true;
         await recordRead(c, PaymentsAuditActions.entitlementsRead, encodeSubjectReference(subject), {
           subjectType: subject.subjectType,
           subjectId: subject.subjectId,
           returned: rows.length,
+          unrestricted,
         });
         return c.json(
           {
             ...subject,
-            entitlements: rows.map((row) => adminEntitlementView(row, now)),
+            entitlements: rows.map((row) => adminEntitlementView(row, now, unrestricted)),
+            unrestricted,
+            overrideVersion: overrideVersion(override),
+            override: adminOverrideView(override),
+            allowances: adminAllowancesView(resolved, (name) => overrideCeiling(config, held, name)),
           } satisfies PaymentsAdminSubjectEntitlementsResponse,
           200,
         );
@@ -1573,6 +1697,40 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
             runs: page.items.map(adminReconcileRunView),
             nextCursor: page.nextCursor,
           } satisfies PaymentsAdminReconcileRunsResponse,
+          200,
+        );
+      },
+    );
+
+    /**
+     * CONTROL PLANE. What usage reporting has done — the passes this Worker has run, newest first.
+     *
+     * Its own scope, separate from the reconciliation log's: a run's findings name the subjects it did not
+     * report and why, which is what an operator answering "why was this customer not billed" needs and what a
+     * health monitor does not.
+     */
+    app.get(
+      `${base}/admin/usage-runs`,
+      describeRoute({
+        summary: "Read the usage-reporting passes this deployment has run.",
+        verification: "control-plane",
+        scopes: [PAYMENTS_USAGE_READ_SCOPE],
+        responses: { 200: PaymentsAdminUsageRunsResponse },
+      }),
+      requireControlPlane(PAYMENTS_USAGE_READ_SCOPE),
+      validate("query", AdminUsageRunsQuery),
+      async (c) => {
+        const query = c.req.valid("query");
+        const page = await listUsageRuns(database(c), query);
+        await recordRead(c, PaymentsAuditActions.usageRunsRead, null, {
+          returned: page.items.length,
+          resumed: query.cursor !== undefined,
+        });
+        return c.json(
+          {
+            runs: page.items.map(adminUsageRunView),
+            nextCursor: page.nextCursor,
+          } satisfies PaymentsAdminUsageRunsResponse,
           200,
         );
       },
@@ -1745,11 +1903,24 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       requireAuth(),
       async (c) => {
         const subject = await resolvePaymentsSubject(c, seam);
-        if (subject === undefined) {
-          return c.json({ entitlements: [] } satisfies PaymentsEntitlementsResponse, 200);
+        const now = clock();
+        // The allowances ride beside the keys, resolved exactly as `quota(c, name)` resolves them — the floor
+        // for a caller acting for nobody, never an error and never unlimited.
+        const db = subject === undefined ? undefined : paymentsDatabase(database(c));
+        const input = await allowanceInputFor(db, config, subject, now);
+        const resolved = resolveAllowances(input);
+        const allowances = {
+          quotas: Object.fromEntries(resolved.quotas.map((entry) => [entry.name, entry.effective.value])),
+          features: Object.fromEntries(resolved.features.map((entry) => [entry.name, entry.effective.value])),
+        };
+        if (subject === undefined || db === undefined) {
+          return c.json({ entitlements: [], ...allowances } satisfies PaymentsEntitlementsResponse, 200);
         }
-        const entitlements = await resolveEntitlements(paymentsDatabase(database(c)), subject, clock());
-        return c.json({ entitlements: entitlements.map(entitlementView) } satisfies PaymentsEntitlementsResponse, 200);
+        const entitlements = await resolveEntitlements(db, subject, now);
+        return c.json(
+          { entitlements: entitlements.map(entitlementView), ...allowances } satisfies PaymentsEntitlementsResponse,
+          200,
+        );
       },
     );
 
@@ -1950,6 +2121,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
           {
             providerProductId: sku,
             subscription: entry.product.type === "subscription",
+            reported: entry.product.billing?.kind === "reported",
             // The pair, so the rail stamps `encodeSubjectReference(subject)` into the checkout it creates and
             // the webhook that follows already names a holder this server chose.
             subject,
@@ -2290,9 +2462,22 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         // `payments/provider_unavailable` instead, so a screen distinguishes the two.
         if (standing === undefined) return c.json({ subscription: null } satisfies PaymentsSubscriptionResponse, 200);
 
+        // The last count reported for a quantity-billed product, from the subscription's own report rows. A
+        // flat-priced product has none, which reads as null rather than absent: this Worker can say.
+        const subscriptionId = target.purchase.originalTransactionId;
+        const last =
+          subscriptionId === null
+            ? undefined
+            : (
+                await lastReports(database(c), [{ rail: target.purchase.rail, providerSubscriptionId: subscriptionId }])
+              ).get(`${target.purchase.rail}:${subscriptionId}`);
         return c.json(
           {
-            subscription: subscriptionView(target.purchase.productId, standing),
+            subscription: {
+              ...subscriptionView(target.purchase.productId, standing),
+              reportedQuantity: last?.quantity ?? null,
+              reportedAt: last?.reportedAt.toISOString() ?? null,
+            },
           } satisfies PaymentsSubscriptionResponse,
           200,
         );
@@ -2970,6 +3155,175 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
           } satisfies PaymentsEntitlementResponse,
           200,
         );
+      },
+    );
+
+    /**
+     * The billing-kind check every override write shares, refused exactly as a grant refuses it. An override
+     * keyed on a kind no read path resolves would shade nobody's numbers and answer 200.
+     */
+    function requireBilledKind(subjectType: PaymentsSubjectType): void {
+      if (subjectType === config.billingSubject) return;
+      throw new ValidationError({
+        message: `This project bills ${config.billingSubject}s, not ${subjectType}s.`,
+        action: "Send `subjectType` as the kind this project bills, or change `billingSubject` in pithy.config.ts.",
+        detail: `An override for a ${subjectType} here writes a row keyed on a kind no read path resolves, so it would shade nobody's allowances and the table would say otherwise.`,
+      });
+    }
+
+    /** What every override write answers. */
+    function overrideResponse(subject: PaymentsSubject, change: OverrideChange): PaymentsOverrideResponse {
+      return {
+        ...subject,
+        override: adminOverrideView(change.after),
+        version: overrideVersion(change.after),
+      };
+    }
+
+    /**
+     * The audit event every override write emits — the subject, the mode, the before and the after, and the
+     * reason verbatim. Severity `warning`, as a comp is: nothing else here changes what a customer may have
+     * with no money moving.
+     */
+    async function emitOverride(
+      c: Context<PithyHonoEnv>,
+      action: PaymentsAuditAction,
+      subject: PaymentsSubject,
+      mode: "patch" | "unrestricted" | "clear",
+      reason: string | null,
+      change: OverrideChange,
+    ): Promise<void> {
+      const caller = controlPlaneCaller(c);
+      await c.var.emit({
+        action,
+        outcome: "success",
+        severity: "warning",
+        actorType: "control-plane",
+        actorId: caller.subject,
+        resourceType: "entitlement_override",
+        resourceId: encodeSubjectReference(subject),
+        metadata: {
+          connectionId: caller.connectionId,
+          subjectType: subject.subjectType,
+          subjectId: subject.subjectId,
+          mode,
+          reason,
+          before: adminOverrideView(change.before),
+          after: adminOverrideView(change.after),
+        },
+      });
+    }
+
+    /**
+     * CONTROL PLANE. Pin a negotiated number or switch for one subject.
+     *
+     * **A merge by name, never a replace.** Only the names sent change; every other pin stands and every name
+     * never pinned keeps tracking the plan, so an upgrade still reaches a customer whose email allowance was
+     * negotiated. **Version-checked**: the body names the version it read, and a set behind the row is
+     * `payments/override_stale` with nothing written. **Bounded**: a number past a declared `overrideMax` is a
+     * 400 naming the limit. **Explained**: `reason` is required and the audit event carries it.
+     *
+     * It does not set `unrestricted`, and a body that tries is a 400 rather than a field quietly dropped:
+     * that is the other route, behind its own scope.
+     */
+    app.post(
+      `${base}/entitlements/overrides`,
+      describeRoute({
+        summary: "Pin quotas and features for one subject.",
+        verification: "control-plane",
+        scopes: [PAYMENTS_OVERRIDE_SET_SCOPE],
+        responses: { 200: PaymentsOverrideResponse },
+      }),
+      requireControlPlane(PAYMENTS_OVERRIDE_SET_SCOPE),
+      validate("json", OverrideSetRequest),
+      async (c) => {
+        const input = c.req.valid("json");
+        requireBilledKind(input.subjectType);
+        const subject: PaymentsSubject = { subjectType: input.subjectType, subjectId: input.subjectId };
+        const change = await setOverride(
+          database(c),
+          config,
+          {
+            subject,
+            version: input.version,
+            reason: input.reason,
+            ...(input.quotas ? { quotas: input.quotas } : {}),
+            ...(input.features ? { features: input.features } : {}),
+          },
+          { now: clock() },
+        );
+        await emitOverride(c, PaymentsAuditActions.overrideSet, subject, "patch", input.reason, change);
+        return c.json(overrideResponse(subject, change) satisfies PaymentsOverrideResponse, 200);
+      },
+    );
+
+    /**
+     * CONTROL PLANE. Grant one subject the whole product, or take it back.
+     *
+     * **Its own route and its own scope**, because it is the largest grant the kit has and the only one whose
+     * reach grows by itself as names are declared: a credential that may raise one email cap must not be able
+     * to do this. Never bounded by `overrideMax` — being unbounded is the point. It grants no entitlement key:
+     * a subject holding nothing is still refused at every gate.
+     */
+    app.post(
+      `${base}/entitlements/overrides/unrestricted`,
+      describeRoute({
+        summary: "Turn unrestricted on or off for one subject.",
+        verification: "control-plane",
+        scopes: [PAYMENTS_OVERRIDE_UNRESTRICTED_SCOPE],
+        responses: { 200: PaymentsOverrideResponse },
+      }),
+      requireControlPlane(PAYMENTS_OVERRIDE_UNRESTRICTED_SCOPE),
+      validate("json", OverrideUnrestrictedRequest),
+      async (c) => {
+        const input = c.req.valid("json");
+        requireBilledKind(input.subjectType);
+        const subject: PaymentsSubject = { subjectType: input.subjectType, subjectId: input.subjectId };
+        const change = await setUnrestricted(
+          database(c),
+          { subject, version: input.version, reason: input.reason, unrestricted: input.unrestricted },
+          { now: clock() },
+        );
+        await emitOverride(c, PaymentsAuditActions.overrideSet, subject, "unrestricted", input.reason, change);
+        return c.json(overrideResponse(subject, change) satisfies PaymentsOverrideResponse, 200);
+      },
+    );
+
+    /**
+     * CONTROL PLANE. Unpin names for one subject, or clear its override.
+     *
+     * **Idempotent**: a subject with no override answers 200 with nothing changed — the state the caller asked
+     * for — and writes no audit row, because nothing moved. A name unpinned resolves from the plan again.
+     */
+    app.post(
+      `${base}/entitlements/overrides/clear`,
+      describeRoute({
+        summary: "Unpin allowances for one subject, or clear its override.",
+        verification: "control-plane",
+        scopes: [PAYMENTS_OVERRIDE_CLEAR_SCOPE],
+        responses: { 200: PaymentsOverrideResponse },
+      }),
+      requireControlPlane(PAYMENTS_OVERRIDE_CLEAR_SCOPE),
+      validate("json", OverrideClearRequest),
+      async (c) => {
+        const input = c.req.valid("json");
+        requireBilledKind(input.subjectType);
+        const subject: PaymentsSubject = { subjectType: input.subjectType, subjectId: input.subjectId };
+        const change = await clearOverride(
+          database(c),
+          {
+            subject,
+            ...(input.version !== undefined ? { version: input.version } : {}),
+            ...(input.quotas ? { quotas: input.quotas } : {}),
+            ...(input.features ? { features: input.features } : {}),
+            ...(input.reason ? { reason: input.reason } : {}),
+          },
+          { now: clock() },
+        );
+        if (change.before !== undefined) {
+          await emitOverride(c, PaymentsAuditActions.overrideCleared, subject, "clear", input.reason ?? null, change);
+        }
+        return c.json(overrideResponse(subject, change) satisfies PaymentsOverrideResponse, 200);
       },
     );
   };

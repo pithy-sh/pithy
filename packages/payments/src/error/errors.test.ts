@@ -12,8 +12,10 @@ import {
   PaymentsEntitlementRequiredError,
   PaymentsEnvironmentMismatchError,
   PaymentsInvalidReceiptError,
+  PaymentsOverrideStaleError,
   PaymentsProductNotFoundError,
   PaymentsProviderUnavailableError,
+  PaymentsQuotaExceededError,
   PaymentsRailNotConfiguredError,
   PaymentsReceiptAlreadyOwnedError,
   PaymentsReconcileNotProvisionedError,
@@ -54,6 +56,9 @@ const FAMILY = [
     code: "payments/subscription_change_refused",
     status: 409,
   },
+  { error: () => new PaymentsOverrideStaleError(), code: "payments/override_stale", status: 409 },
+  // 402 and the only one: the plan does not allow more, and the remedy is a purchase.
+  { error: () => new PaymentsQuotaExceededError(), code: "payments/quota_exceeded", status: 402 },
 ] as const;
 
 describe("payments error family", () => {

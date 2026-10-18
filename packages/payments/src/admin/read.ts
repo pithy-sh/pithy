@@ -5,17 +5,23 @@ import type { D1Database } from "@cloudflare/workers-types";
 import { decodeCursor, type PageCursor, pageLimit, toPage } from "@pithy-sh/core/src/data/cursor";
 import type { z } from "zod";
 import { PaymentsEntitlement } from "../data/entitlement";
+import { PaymentsOverride } from "../data/override";
 import { PaymentsPurchase, type PurchaseEnvironment } from "../data/purchase";
 import type { PaymentsRail } from "../data/rail";
 import { PaymentsReconcileRun } from "../data/reconcileRun";
 import type { PurchaseStatus } from "../data/status";
-import type { PaymentsSubject } from "../data/subject";
+import { encodeSubjectReference, type PaymentsSubject } from "../data/subject";
 import {
   PAYMENTS_ENTITLEMENTS_TABLE,
+  PAYMENTS_OVERRIDES_TABLE,
   PAYMENTS_PURCHASES_TABLE,
   PAYMENTS_RECONCILE_RUNS_TABLE,
+  PAYMENTS_USAGE_REPORTS_TABLE,
+  PAYMENTS_USAGE_RUNS_TABLE,
   paymentsDatabase,
 } from "../data/tables";
+import { PaymentsUsageReport } from "../data/usageReport";
+import { PaymentsUsageRun } from "../data/usageRun";
 
 /**
  * The management read model — the queries behind the control-plane reads, and nothing else.
@@ -94,6 +100,7 @@ export const PaymentsPurchaseRecord = PaymentsPurchase.pick({
   environment: true,
   amountMinor: true,
   currency: true,
+  quantity: true,
   purchasedAt: true,
   expiresAt: true,
   revokedAt: true,
@@ -304,6 +311,145 @@ export async function readEntitlements(d1: D1Database, subject: PaymentsSubject)
     .orderBy("entitlement", "asc")
     .execute();
   return rows.map((row) => PaymentsEntitlement.parse(row));
+}
+
+/**
+ * Which of `subjects` are `unrestricted` — what the entitlement listing marks on each row. One query for the
+ * page rather than one per row, on the override index that leads on `unrestricted`.
+ */
+export async function unrestrictedSubjects(d1: D1Database, subjects: readonly PaymentsSubject[]): Promise<Set<string>> {
+  if (subjects.length === 0) return new Set();
+  const ids = [...new Set(subjects.map((subject) => subject.subjectId))];
+  const rows = await paymentsDatabase(d1)
+    .selectFrom(PAYMENTS_OVERRIDES_TABLE)
+    .select(["subjectType", "subjectId"])
+    // biome-ignore lint/suspicious/noExplicitAny: the encoded 0/1 the codec writes.
+    .where("unrestricted", "=", 1 as any)
+    .where("subjectId", "in", ids)
+    .execute();
+  return new Set(rows.map((row) => encodeSubjectReference(row as PaymentsSubject)));
+}
+
+/** What {@link listOverrides} accepts. */
+export interface OverridesQuery {
+  /** Narrow to one subject. */
+  subject?: PaymentsSubject;
+  /** Narrow to the subjects that are `unrestricted`. */
+  unrestricted?: boolean;
+  /** Where to resume. */
+  cursor?: string;
+  /** How many rows to return, clamped by `pageLimit`. */
+  limit?: number;
+}
+
+/** Every subject's override, most recently changed first. */
+export async function listOverrides(
+  d1: D1Database,
+  query: OverridesQuery = {},
+): Promise<PaymentsPage<PaymentsOverride>> {
+  const limit = pageLimit(query.limit);
+  const after = resume(query.cursor);
+  let selection = paymentsDatabase(d1)
+    .selectFrom(PAYMENTS_OVERRIDES_TABLE)
+    .selectAll()
+    .orderBy("updatedAt", "desc")
+    .orderBy("id", "desc")
+    .limit(limit + 1);
+  if (query.subject !== undefined) {
+    selection = selection
+      .where("subjectType", "=", query.subject.subjectType)
+      .where("subjectId", "=", query.subject.subjectId);
+  }
+  if (query.unrestricted !== undefined) {
+    const flag = query.unrestricted ? 1 : 0;
+    // biome-ignore lint/suspicious/noExplicitAny: the encoded 0/1 the codec writes.
+    selection = selection.where("unrestricted", "=", flag as any);
+  }
+  if (after) {
+    selection = selection.where((eb) =>
+      eb.or([eb("updatedAt", "<", after.sort), eb.and([eb("updatedAt", "=", after.sort), eb("id", "<", after.id)])]),
+    );
+  }
+  const rows = await selection.execute();
+  return toPage(
+    rows.map((row) => PaymentsOverride.parse(row)),
+    limit,
+    (override) => ({ sort: override.updatedAt.getTime(), id: override.id }),
+  );
+}
+
+/** Every `unrestricted` subject this deployment holds — what `pithy doctor` names. */
+export async function listUnrestrictedSubjects(d1: D1Database): Promise<PaymentsSubject[]> {
+  const rows = await paymentsDatabase(d1)
+    .selectFrom(PAYMENTS_OVERRIDES_TABLE)
+    .select(["subjectType", "subjectId"])
+    // biome-ignore lint/suspicious/noExplicitAny: the encoded 0/1 the codec writes.
+    .where("unrestricted", "=", 1 as any)
+    .orderBy("subjectType")
+    .orderBy("subjectId")
+    .execute();
+  return rows.map((row) => ({ subjectType: row.subjectType, subjectId: row.subjectId }) as PaymentsSubject);
+}
+
+/** What {@link listUsageRuns} accepts. */
+export interface UsageRunsQuery {
+  /** Where to resume, from a previous page's `nextCursor`. A malformed one is a first page. */
+  cursor?: string;
+  /** How many rows to return, clamped by `pageLimit`. */
+  limit?: number;
+}
+
+/** The usage-reporting passes this deployment has run, newest first — the same keyset the reconcile log uses. */
+export async function listUsageRuns(
+  d1: D1Database,
+  query: UsageRunsQuery = {},
+): Promise<PaymentsPage<PaymentsUsageRun>> {
+  const limit = pageLimit(query.limit);
+  const after = resume(query.cursor);
+  let selection = paymentsDatabase(d1)
+    .selectFrom(PAYMENTS_USAGE_RUNS_TABLE)
+    .selectAll()
+    .orderBy("startedAt", "desc")
+    .orderBy("id", "desc")
+    .limit(limit + 1);
+  if (after) {
+    selection = selection.where((eb) =>
+      eb.or([eb("startedAt", "<", after.sort), eb.and([eb("startedAt", "=", after.sort), eb("id", "<", after.id)])]),
+    );
+  }
+  const rows = await selection.execute();
+  return toPage(
+    rows.map((row) => PaymentsUsageRun.parse(row)),
+    limit,
+    (run) => ({ sort: run.startedAt.getTime(), id: run.id }),
+  );
+}
+
+/**
+ * The newest accepted report of each subscription, by its store id — what the subscription reads show as the
+ * last reported count. Keyed on the subscription rather than on one period's purchase row, because the report
+ * for a period lands at that period's end and the current row has none until then.
+ */
+export async function lastReports(
+  d1: D1Database,
+  subscriptions: readonly { rail: PaymentsRail; providerSubscriptionId: string }[],
+): Promise<Map<string, { quantity: number; reportedAt: Date }>> {
+  const latest = new Map<string, { quantity: number; reportedAt: Date }>();
+  if (subscriptions.length === 0) return latest;
+  const rows = await paymentsDatabase(d1)
+    .selectFrom(PAYMENTS_USAGE_REPORTS_TABLE)
+    .selectAll()
+    .where("providerSubscriptionId", "in", [...new Set(subscriptions.map((entry) => entry.providerSubscriptionId))])
+    .where("status", "=", "reported")
+    .orderBy("reportedAt", "desc")
+    .execute();
+  for (const row of rows) {
+    const report = PaymentsUsageReport.parse(row);
+    const key = `${report.rail}:${report.providerSubscriptionId}`;
+    if (report.reportedAt === null || latest.has(key)) continue;
+    latest.set(key, { quantity: report.quantity, reportedAt: report.reportedAt });
+  }
+  return latest;
 }
 
 /** What {@link listReconcileRuns} accepts. */

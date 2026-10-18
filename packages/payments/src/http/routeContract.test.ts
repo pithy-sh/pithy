@@ -24,10 +24,14 @@ import {
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+  PAYMENTS_OVERRIDE_CLEAR_SCOPE,
+  PAYMENTS_OVERRIDE_SET_SCOPE,
+  PAYMENTS_OVERRIDE_UNRESTRICTED_SCOPE,
   PAYMENTS_PURCHASES_READ_SCOPE,
   PAYMENTS_RECONCILE_READ_SCOPE,
   PAYMENTS_RECONCILE_RUN_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
+  PAYMENTS_USAGE_READ_SCOPE,
 } from "./scopes";
 
 /**
@@ -54,6 +58,7 @@ function makeApp() {
       // Required, and every fixture in this file states it: `PaymentsConfig` refuses to parse without it,
       // because who a purchase belongs to is not a thing a project may leave to a default.
       billingSubject: "user",
+      entitlements: { pro: { name: "pro" } },
       rails: { apple: true, google: true, stripe: true },
       stripe: {
         successUrl: "https://acme.example/thanks?session={CHECKOUT_SESSION_ID}",
@@ -131,9 +136,11 @@ describe("payments route contract", () => {
       "GET /payments/admin/discounts",
       "GET /payments/admin/entitlements",
       "GET /payments/admin/entitlements/:subjectType/:subjectId",
+      "GET /payments/admin/overrides",
       "GET /payments/admin/purchases",
       "GET /payments/admin/reconcile-runs",
       "GET /payments/admin/subscriptions",
+      "GET /payments/admin/usage-runs",
       // The one unauthenticated route payments mounts. `#680`: Paddle appends `?_ptxn=` to a seller's
       // Default payment link, and the buyer following one from a dunning mail is frequently signed out —
       // which is the population it serves, so `requireAuth()` would break it for exactly them.
@@ -145,6 +152,10 @@ describe("payments route contract", () => {
       "POST /payments/admin/reconcile-runs",
       "POST /payments/checkout",
       "POST /payments/entitlements/grant",
+      // The override writes (#561): three routes because three scopes — a merge, the whole product, a clear.
+      "POST /payments/entitlements/overrides",
+      "POST /payments/entitlements/overrides/clear",
+      "POST /payments/entitlements/overrides/unrestricted",
       "POST /payments/entitlements/revoke",
       "POST /payments/portal",
       "POST /payments/purchases",
@@ -332,6 +343,7 @@ describe("the admin surface payments advertises", () => {
    */
   const CATALOG = {
     billingSubject: "user" as const,
+    entitlements: { pro: { name: "pro" } },
     rails: { apple: true },
     products: {
       pro_monthly: {
@@ -356,7 +368,7 @@ describe("the admin surface payments advertises", () => {
     // each needs. A declaration that drifted from `routes.ts` would have the client calling a path
     // nothing serves — and blaming the adopter's Worker for it.
     const { capability, app } = composed();
-    expect(capability.adminRoutes).toHaveLength(11);
+    expect(capability.adminRoutes).toHaveLength(16);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
     // And the other direction. Since #468 the CORS surface derives from `adminRoutes`, so a guarded
     // route nobody declared gets no preflight and no browser can reach it — while this suite stays green.
@@ -379,6 +391,11 @@ describe("the admin surface payments advertises", () => {
       "/billing/admin/reconcile-runs",
       "/billing/entitlements/grant",
       "/billing/entitlements/revoke",
+      "/billing/admin/usage-runs",
+      "/billing/admin/overrides",
+      "/billing/entitlements/overrides",
+      "/billing/entitlements/overrides/unrestricted",
+      "/billing/entitlements/overrides/clear",
     ]);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
   });
@@ -399,6 +416,11 @@ describe("the admin surface payments advertises", () => {
       PAYMENTS_RECONCILE_RUN_SCOPE,
       PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
       PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
+      PAYMENTS_USAGE_READ_SCOPE,
+      PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+      PAYMENTS_OVERRIDE_SET_SCOPE,
+      PAYMENTS_OVERRIDE_UNRESTRICTED_SCOPE,
+      PAYMENTS_OVERRIDE_CLEAR_SCOPE,
     ]);
     expect(new Set(capability.adminRoutes?.map((route) => route.scope))).toEqual(
       new Set(PAYMENTS_CONTROL_PLANE_SCOPES),
@@ -424,7 +446,7 @@ describe("the admin surface payments advertises", () => {
     // are asserted together because either alone permits the mistake.
     const { capability } = composed();
     const reads = capability.adminRoutes?.filter((route) => route.method === "GET") ?? [];
-    expect(reads).toHaveLength(7);
+    expect(reads).toHaveLength(9);
     expect(reads.every((route) => route.path.startsWith("/payments/admin/"))).toBe(true);
   });
 });
@@ -473,6 +495,18 @@ describe("no player-facing surface names a subject", () => {
     "PaymentsAdminSubscriptionsResponse",
     "PaymentsAdminEntitlementsResponse",
     "PaymentsAdminSubjectEntitlementsResponse",
+    // The override surface (#561): three writes naming the subject they shade, the listing's filter, and the
+    // views that say whose override each is — plus the usage run log, whose findings name who was not billed.
+    "OverrideSetRequest",
+    "OverrideUnrestrictedRequest",
+    "OverrideClearRequest",
+    "AdminOverridesQuery",
+    "PaymentsOverrideResponse",
+    "PaymentsAdminOverrideListItem",
+    "PaymentsAdminOverridesResponse",
+    "PaymentsAdminUsageFindingView",
+    "PaymentsAdminUsageRunView",
+    "PaymentsAdminUsageRunsResponse",
   ];
 
   /**

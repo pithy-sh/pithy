@@ -33,6 +33,7 @@ const CATALOG = {
   // Required, and with no default — see `data/subject.ts`. Every fixture in this file states it, because
   // `PaymentsConfig.parse({})` no longer parses: what a project bills is a decision, not a fallback.
   billingSubject: "user" as const,
+  entitlements: { ads_removed: { name: "ads_removed" }, pro: { name: "pro" } },
   rails: { apple: true, stripe: true },
   stripe: {
     successUrl: "https://acme.example/thanks?session={CHECKOUT_SESSION_ID}",
@@ -163,13 +164,20 @@ describe("payments()", () => {
       // `data/subject.ts` — so a management client naming only an id would be naming a row this capability
       // cannot find, or worse, one that belongs to somebody else with the same id under the other kind.
       "/billing/admin/entitlements/:subjectType/:subjectId",
+      "/billing/admin/overrides",
       "/billing/admin/purchases",
       "/billing/admin/reconcile-runs",
       "/billing/admin/subscriptions",
+      "/billing/admin/usage-runs",
       "/billing/checkout",
       "/billing/checkout/resume",
       "/billing/entitlements",
       "/billing/entitlements/grant",
+      // The override writes (#561): a merge by name, the whole product, and the way back. Three routes
+      // because they are three scopes.
+      "/billing/entitlements/overrides",
+      "/billing/entitlements/overrides/clear",
+      "/billing/entitlements/overrides/unrestricted",
       "/billing/entitlements/revoke",
       "/billing/portal",
       "/billing/pricing",
@@ -195,10 +203,14 @@ describe("payments()", () => {
     const tables = Object.keys(payments(CATALOG).databases?.app?.tables ?? {});
     expect(tables.sort()).toEqual([
       "pithyPaymentsEntitlements",
+      "pithyPaymentsMeterCounters",
+      "pithyPaymentsOverrides",
       "pithyPaymentsProviderAccounts",
       "pithyPaymentsPurchases",
       "pithyPaymentsReconcileRuns",
       "pithyPaymentsSyncCursors",
+      "pithyPaymentsUsageReports",
+      "pithyPaymentsUsageRuns",
       "pithyPaymentsWebhookEvents",
     ]);
     // CamelCasePlugin snake-cases each to `pithy_payments_*`; the prefix is what keeps them out of an
@@ -208,7 +220,8 @@ describe("payments()", () => {
 
   test("ships its migrations under stable local keys, at its allocated order", () => {
     const spec = payments(CATALOG).databases?.app;
-    expect(Object.keys(spec?.migrations ?? {})).toEqual(["0001_purchases"]);
+    // Append-only since 0.1.0: `0001` is history, and what #561 added is a migration of its own.
+    expect(Object.keys(spec?.migrations ?? {})).toEqual(["0001_purchases", "0002_allowances"]);
     expect(spec?.migrationOrder).toBe(PAYMENTS_MIGRATION_ORDER);
     expect(PAYMENTS_MIGRATION_ORDER).toBe(1000);
   });
@@ -226,6 +239,7 @@ describe("payments()", () => {
     ]);
     expect(Object.keys(await (registry.app?.getMigrations() ?? Promise.resolve({})))).toEqual([
       "1000_payments_0001_purchases",
+      "1000_payments_0002_allowances",
     ]);
   });
 
@@ -274,6 +288,7 @@ describe("payments()", () => {
     expect(() =>
       payments({
         billingSubject: "user",
+        entitlements: { ads_removed: { name: "ads_removed" }, pro: { name: "pro" } },
         rails: { apple: true },
         products: {
           pack: {
@@ -448,6 +463,19 @@ describe("pithy.manifest.json — declared secrets", () => {
  */
 const CLIENT_CATALOG = {
   billingSubject: "user" as const,
+  // What each tier buys crosses — the name, the numbers, the switches — so a paywall can compare tiers. The
+  // operator's ceiling does not: `overrideMax` bounds a support tool and tells a buyer nothing, so its value
+  // is a sentinel the sweep below must never find.
+  entitlements: {
+    ads_removed: { name: "Ads removed" },
+    pro: {
+      name: "Pro tier",
+      quotas: { seats: 10, emails: null },
+      features: { sso: true },
+      overrideMax: { seats: 7777 },
+    },
+  },
+  defaults: { quotas: { seats: 1 }, features: { sso: false } },
   rails: { apple: true, google: true, stripe: true },
   stripe: {
     successUrl: "https://acme.example/thanks?session={CHECKOUT_SESSION_ID}",
@@ -496,6 +524,15 @@ const CLIENT_CATALOG = {
  * the sentence saying why it is short.
  */
 const PUBLISHED_CLIENT_KEYS = [
+  // The declarations: the map, keyed by entitlement key, and each one's three facts — plus the free floor.
+  "defaults",
+  "quotas",
+  "features",
+  "pro",
+  "ads_removed",
+  "seats",
+  "emails",
+  "sso",
   "enabled",
   "environment",
   "rails",
@@ -518,15 +555,21 @@ const PUBLISHED_CLIENT_KEYS = [
 describe("payments().client — virtual:pithy/payments", () => {
   const projection = resolveClientProjection(payments(CLIENT_CATALOG), { environment: "prod" });
 
-  test("projects exactly six keys, and per product exactly five more", () => {
+  test("projects exactly eight keys, and per product exactly five more", () => {
     expect(Object.keys(projection).sort()).toEqual([
       "basePath",
+      "defaults",
       "enabled",
+      "entitlements",
       "environment",
       "paddle",
       "products",
       "rails",
     ]);
+    // A declaration is three facts, and the ceiling an operator is bounded by is not one of them.
+    for (const declaration of Object.values(projection.entitlements as Record<string, Record<string, unknown>>)) {
+      expect(Object.keys(declaration).sort()).toEqual(["features", "name", "quotas"]);
+    }
     for (const product of projection.products as Record<string, unknown>[]) {
       expect(Object.keys(product).sort()).toEqual(["entitlements", "id", "name", "skus", "type"]);
     }
@@ -553,6 +596,11 @@ describe("payments().client — virtual:pithy/payments", () => {
       null,
       "prod",
       "/payments",
+      // What each tier buys: its name and its numbers.
+      "Ads removed",
+      "Pro tier",
+      10,
+      1,
     ];
     for (const [id, product] of Object.entries(CLIENT_CATALOG.products)) {
       published.push(id, product.type, product.name);
@@ -583,6 +631,8 @@ describe("payments().client — virtual:pithy/payments", () => {
       // A boolean the catalog carries and the bundle must not. The leaf half is blind to this whole JSON
       // type by construction, so the catalog holds one and the key half has something to be measured by.
       '"clawback":true',
+      // The operator's ceiling on overriding a quota. A numeric sentinel nothing else here holds.
+      "7777",
     ]) {
       expect(serialized, withheld).toContain(withheld);
     }
@@ -598,6 +648,9 @@ describe("payments().client — virtual:pithy/payments", () => {
     expect(serialized).toContain("/payments");
     // The product a browser must still be able to show, whose economics it must not learn.
     expect(serialized).toContain("Coin pack");
+    // What a tier buys, for a paywall that lays tiers side by side.
+    expect(serialized).toContain("Pro tier");
+    expect(serialized).toContain('"seats":10');
   });
 
   test("null, never undefined — the projection is inlined with JSON.stringify", () => {
@@ -612,6 +665,7 @@ describe("payments().client — virtual:pithy/payments", () => {
     const mobileOnly = resolveClientProjection(
       payments({
         billingSubject: "user",
+        entitlements: { ads_removed: { name: "ads_removed" }, pro: { name: "pro" } },
         rails: { apple: true },
         products: { remove_ads: CLIENT_CATALOG.products.remove_ads },
       }),
@@ -655,6 +709,7 @@ describe("payments().client — virtual:pithy/payments", () => {
  */
 const GRANTING_CATALOG = {
   billingSubject: "user" as const,
+  entitlements: { ads_removed: { name: "ads_removed" }, pro: { name: "pro" } },
   rails: { apple: true },
   products: {
     coins_100: {
@@ -753,6 +808,7 @@ describe("payments().compose", () => {
     // An operator fixing one typo per deploy is a bad afternoon.
     const capability = payments({
       billingSubject: "user",
+      entitlements: { ads_removed: { name: "ads_removed" }, pro: { name: "pro" } },
       rails: { apple: true },
       products: {
         coins_100: {
@@ -772,5 +828,80 @@ describe("payments().compose", () => {
     const detail = composeDetail(capability, [ledger({ currencies: [{ code: "gems", name: "Gems" }] })]);
     expect(detail).toContain("coins_100");
     expect(detail).toContain("gems_10");
+  });
+});
+
+/**
+ * Reported billing at the one place its two halves meet — `billing` in config, `resolveQuantity` on the
+ * options — and the refusals that keep a quantity-billed product from billing nothing.
+ */
+describe("payments() — reported usage", () => {
+  const REPORTED = {
+    billingSubject: "organization" as const,
+    resolveSubject: async () => ({ subjectType: "organization" as const, subjectId: "acme" }),
+    rails: { stripe: true },
+    stripe: {
+      successUrl: "https://academy.example/thanks",
+      cancelUrl: "https://academy.example/pricing",
+      portalReturnUrl: "https://academy.example/account",
+    },
+    entitlements: { pro: { name: "Pro" } },
+    products: {
+      academy_seats: {
+        type: "subscription" as const,
+        name: "Academy",
+        entitlements: ["pro"],
+        stripe: { priceId: "price_seats" },
+        billing: {
+          kind: "reported" as const,
+          unit: "student",
+          max: 500,
+          rails: ["stripe" as const],
+          stripe: { meterEventName: "academy_students" },
+        },
+      },
+    },
+  };
+  const resolveQuantity = async () => 25;
+
+  test("a reported product with no resolveQuantity is refused at boot, naming the product", () => {
+    let thrown: PithyError | undefined;
+    try {
+      payments(REPORTED);
+    } catch (cause) {
+      thrown = cause instanceof PithyError ? cause : undefined;
+    }
+    expect(thrown?.payload.message).toContain('"academy_seats"');
+    expect(thrown?.payload.action).toContain("resolveQuantity");
+  });
+
+  test("resolveQuantity is split off before parsing and never reaches the config or the client projection", () => {
+    const capability = payments({ ...REPORTED, resolveQuantity });
+    expect(Object.keys(capability.paymentsConfig)).not.toContain("resolveQuantity");
+    expect(capability.paymentsUsage?.resolveQuantity).toBe(resolveQuantity);
+    const projection = resolveClientProjection(capability, { environment: "prod" });
+    // A function in a projection would be dropped by JSON.stringify, silently; none is there to drop.
+    const functions: string[] = [];
+    const walk = (value: unknown, at: string): void => {
+      if (typeof value === "function") functions.push(at);
+      else if (value !== null && typeof value === "object") {
+        for (const [key, inner] of Object.entries(value)) walk(inner, `${at}.${key}`);
+      }
+    };
+    walk(projection, "projection");
+    walk(capability.paymentsConfig, "config");
+    expect(functions).toEqual([]);
+  });
+
+  test("the usage Workflow is contributed only where something is billed by a reported quantity", () => {
+    expect(Object.keys(payments({ ...REPORTED, resolveQuantity }).workflows ?? {}).sort()).toEqual([
+      "reconcile",
+      "usage",
+    ]);
+    expect(Object.keys(payments(CATALOG).workflows ?? {})).toEqual(["reconcile"]);
+  });
+
+  test("a catalog with no reported product needs no resolver and gains no behavior", () => {
+    expect(payments(CATALOG).paymentsUsage).toBeUndefined();
   });
 });

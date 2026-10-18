@@ -30,8 +30,20 @@ export {
   payments,
 } from "./capability";
 export {
+  AllowanceName,
+  declaredFeatureNames,
+  declaredQuotaNames,
+  PaymentsAllowanceDefaults,
+  PaymentsEntitlementDeclaration,
+  type PaymentsEntitlementDeclarationInput,
+  QuotaValue,
+} from "./config/allowances";
+export {
+  compOnlyEntitlements,
   entitlementsForProduct,
   grantableEntitlements,
+  KIT_METERS,
+  type KitMeter,
   PaymentsAppleProduct,
   type PaymentsCatalogEntry,
   PaymentsConfig,
@@ -41,6 +53,7 @@ export {
   PaymentsLedgerGrant,
   PaymentsLemonSqueezyProduct,
   PaymentsLemonSqueezySettings,
+  PaymentsMeters,
   PaymentsPaddleProduct,
   PaymentsPaddleSettings,
   type PaymentsPaddleSettingsInput,
@@ -49,12 +62,17 @@ export {
   PaymentsProductType,
   PaymentsRailToggles,
   type PaymentsRailTogglesInput,
+  PaymentsReportCadence,
+  PaymentsReportedBilling,
   PaymentsStripeProduct,
   PaymentsStripeSettings,
   type PaymentsStripeSettingsInput,
   productForProviderSku,
   providerProductId,
+  REPORTED_BILLING_RAILS,
   railEnabled,
+  reportedBillingProblems,
+  reportedProducts,
   resolveProduct,
 } from "./config/config";
 export { PaymentsEntitlement } from "./data/entitlement";

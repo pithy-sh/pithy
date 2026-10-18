@@ -256,7 +256,7 @@ export class PaymentsEntitlementNotInCatalogError extends PithyError {
         message: args.message ?? "That entitlement is not one this project defines.",
         action:
           args.action ??
-          "Grant a key one of the catalog's products lists, or declare it in `manualEntitlements` in pithy.config.ts.",
+          "Grant a key the `entitlements` map in pithy.config.ts declares, or declare it there — a declared key no product sells is grantable by hand.",
         detail: args.detail,
         params: args.params,
       },
@@ -412,6 +412,49 @@ export class PaymentsSubscriptionChangeRefusedError extends PithyError {
         action:
           args.action ??
           "Re-read the subscription's current state — its status, what it holds, and any scheduled change — then ask for a move that state allows.",
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}
+
+/**
+ * An override set named a version behind the row it would change. Two operators share one customer: both
+ * opened `emails`, and the second would silently win while the first believes they succeeded. So the set is
+ * refused and nothing is written, and the caller re-reads before it tries again.
+ */
+export class PaymentsOverrideStaleError extends PithyError {
+  constructor(args: PaymentsErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "payments/override_stale",
+        status: 409,
+        message: args.message ?? "That override changed since it was read.",
+        action: args.action ?? "Read the subject's entitlements again, then set the override against the new version.",
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}
+
+/**
+ * An enforced meter refused: the subject's effective quota for this period does not allow more. 402, because
+ * the caller's plan does not allow it and the remedy is a purchase — a bigger tier, or a pinned number.
+ */
+export class PaymentsQuotaExceededError extends PithyError {
+  constructor(args: PaymentsErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "payments/quota_exceeded",
+        status: 402,
+        message: args.message ?? "This plan's allowance is used up for this period.",
+        action:
+          args.action ??
+          "Upgrade the plan, or pin a larger allowance for this subject from the control plane. The meter resets when the period does.",
         detail: args.detail,
         params: args.params,
       },

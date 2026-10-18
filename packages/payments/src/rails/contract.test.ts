@@ -84,6 +84,7 @@ describe("UnboundProviderEvent", () => {
       originalTransactionId: "2000000617339002",
       amountMinor: 499,
       currency: "USD",
+      quantity: 3,
       // Every rail but Lemon Squeezy leaves this out, and the schema decides it is a charge rather than
       // each rail restating it. Named here because a round-trip must hand back exactly what went in.
       role: "charge" as const,

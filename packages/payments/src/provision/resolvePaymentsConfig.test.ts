@@ -38,6 +38,7 @@ function template(): WorkflowHostTemplate {
 
 const CATALOG = PaymentsConfig.parse({
   billingSubject: "organization",
+  entitlements: { pro: { name: "pro" } },
   rails: { apple: true },
   products: {
     pro_monthly: {
