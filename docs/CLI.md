@@ -741,7 +741,7 @@ The other kinds name something you stand up yourself, once, at the account: `hyp
 
 Deleting the declaration is how you decline one of your own bindings. `declinedBindings` is about what a capability declares.
 
-**A wrangler key Pithy does not model is yours to write by hand.** Put it in `wrangler.jsonc` at the top level and repeat it in every `env.<name>` stanza — wrangler inherits none of them, and `pithy doctor` reports a stanza that does not repeat one. A stanza Pithy creates starts from the top level by the value's shape: an object or a flat map comes down whole, a list starts empty. So a feature gets an object-shaped key and loses a list-shaped one; repeat a list under `env.feature` if your features need it.
+**A wrangler key Pithy does not model is yours to write by hand.** Put it in `wrangler.jsonc` at the top level. Most such keys, like `placement` or `limits`, are inherited by every environment, so once is enough: no stanza needs a copy, Pithy writes none, and `pithy doctor` asks for none. The rest are keys wrangler does not inherit, such as `tail_consumers`, `containers` or `vpc_services`. Repeat each of those in every `env.<name>` stanza; `pithy doctor` reports a stanza that does not. A stanza Pithy creates copies them from the top level by the value's shape. A flat value comes down whole. A list starts empty, and so does every list one level inside an object, so `"unsafe": {"bindings": [ … ]}` arrives as `{"bindings": []}`. A feature loses those lists; repeat them under `env.feature` if your features need them.
 
 #### Declining an optional binding
 

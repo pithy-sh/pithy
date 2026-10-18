@@ -287,6 +287,49 @@ describe("stanzaFor", () => {
   });
 
   /**
+   * **A key Pithy does not model follows wrangler's inheritance, not a blanket rule (#662 review).** `docs/CLI.md`
+   * states what these pin: an inherited key is written once and neither copied nor reported, a non-inherited one is
+   * reported where a stanza leaves it out, and a new stanza empties every list in it — nested one level in an
+   * object as well as bare — while a flat value comes down whole.
+   */
+  describe("a key Pithy does not model", () => {
+    const unmodeled = () => ({
+      placement: { mode: "smart" },
+      limits: { cpu_ms: 50 },
+      tail_consumers: [{ service: "acme-tail" }],
+      unsafe: { bindings: [{ name: "RAW", type: "x" }], metadata: { tier: "a" } },
+      define: { BUILD: '"1"' },
+      env: {} as Record<string, Record<string, unknown> | undefined>,
+    });
+
+    test("an inherited one is written once: no stanza copies it and doctor reports none", () => {
+      const config = unmodeled();
+      const stanza = stanzaFor(config, "feature");
+      expect(stanza).not.toHaveProperty("placement");
+      expect(stanza).not.toHaveProperty("limits");
+      config.env.prod = {};
+      expect(unrepeatedKeys(config).map((finding) => finding.key)).not.toEqual(
+        expect.arrayContaining(["placement", "limits"]),
+      );
+    });
+
+    test("a non-inherited one is reported in a stanza that does not repeat it", () => {
+      const config = unmodeled();
+      config.env.prod = {};
+      expect(unrepeatedKeys(config).map((finding) => finding.key)).toEqual(
+        expect.arrayContaining(["tail_consumers", "unsafe", "define"]),
+      );
+    });
+
+    test("a new stanza empties its lists, nested in an object or bare, and copies a flat value whole", () => {
+      const stanza = stanzaFor(unmodeled(), "feature");
+      expect(stanza.tail_consumers).toEqual([]);
+      expect(stanza.unsafe).toEqual({ bindings: [], metadata: { tier: "a" } });
+      expect(stanza.define).toEqual({ BUILD: '"1"' });
+    });
+  });
+
+  /**
    * **A rate limiter is the same in every environment, so a new stanza carries it (#643).** Its `namespace_id`
    * is derived from the binding name alone and its policy is the adopter's, so nothing in it is an environment's
    * own resource. Emptied, a feature's generated stanza bound no `AUTH_RATE_LIMITER` and auth refused every
