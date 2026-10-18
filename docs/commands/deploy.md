@@ -28,6 +28,8 @@ There is no `--worker`. Deploy ships the whole set.
 
 **No selector means both halves.** `--apps` and `--kit` each narrow it, and naming both is the same as naming neither — `pithy deploy --apps --kit` is `pithy deploy`, down to the line it prints when there is no environment for the kit half. They are two named steps rather than one list, which is the shape CI wants: separate exit codes, separate logs, and a failure that says which half broke.
 
+**A binding's target ships first.** An upload that binds a script which does not exist yet is refused, so the adopter's Workers go in the order their service bindings allow, each after every Worker it binds. When one of them binds a kit Worker, the kit half runs before the adopter's instead of after it. A project with no bindings keeps discovery order.
+
 **There is no `--if-changed`, in any spelling.** Gating is behavior, not a mode. Nobody wants to re-upload an identical prebuilt bundle, so a flag for it could only ever be passed — and a flag that can only ever be true is one somebody eventually leaves off believing it does something, which is the exact bug this closes. `--force` is the escape hatch for a recovery run.
 
 ## What it does
@@ -124,7 +126,7 @@ One line on stdout, after every Worker has been attempted — or, under `--event
 | `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `env` | string \| null | The environment deployed, or `null` for a bare deploy of each Worker's top-level stanza. |
 | `pendingMigrations` | number \| null | Unapplied migrations for the target environment. `null` with no `--env`, and `null` when the count could not be taken — deploy never fails over it. Under `--dry-run`, the number of migrations `plan.notes` names. |
-| `workers` | object[] | One entry per Worker, in discovery order. Every Worker is attempted. |
+| `workers` | object[] | One entry per Worker, in deploy order: discovery order, with each service binding's target before the Worker that binds it. Every Worker is attempted. |
 | `workers[].name` | string | The Worker's name. |
 | `workers[].ok` | boolean | Whether `wrangler deploy` succeeded for this Worker. Under `--dry-run`, whether `wrangler deploy --dry-run` accepted its bundle; such a row carries no `versionId`, `url` or `verification`, because nothing shipped. |
 | `workers[].versionId` | string, optional | The deployed version id, when wrangler's output carried one. |
