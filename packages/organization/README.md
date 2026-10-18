@@ -203,7 +203,7 @@ Two scopes rather than one, because these are two blast radii: the account list 
 
 ## What this deliberately does not do
 
-**Permission scopes.** A power is what a *role* holds. A scope granted to one person, or to one credential, is a different seam and a separate issue — and deliberately not an array smuggled onto the membership row.
+**Permission scopes.** A power is what a *role* holds, and nothing grants one to a single person. `AuthContext.scopes` is a different seam: an attestation about the caller — *this write came from your trusted backend* — filled by `@pithy-sh/auth`'s `resolveScopes`, never a permission on a user and deliberately not an array smuggled onto the membership row. `packages/auth/docs/server-authoritative.md` covers it.
 
 **Teams, or organizations inside organizations.** Neither the dashboard nor the academy has them, and a nesting nobody needs is a second tenancy boundary that every query then has to remember.
 
