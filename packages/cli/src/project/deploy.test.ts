@@ -194,6 +194,51 @@ describe("deployProject", () => {
   });
 
   /**
+   * **A binding's target ships before the Worker that binds it (#617).** Cloudflare refuses an upload whose
+   * service binding names a script that does not exist yet, so on a first deploy the order is the difference
+   * between a project that ships and one that fails on its first Worker.
+   */
+  test("deploys a service binding's target before the Worker that binds it", async () => {
+    await writeWorker("api", "pithy-api");
+    await writeWorker("web", "pithy-web");
+    await writeFile(
+      join(dir, "apps", "api", "pithy.config.ts"),
+      'const app = { name: "api", requiredBindings: [{ type: "service", name: "WEB", service: "web" }] };\nexport default { capabilities: [], app };\n',
+    );
+    const order: string[] = [];
+    await deployProject({
+      account: null,
+      projectDir: dir,
+      env: "prod",
+      runDeploy: async (target) => {
+        order.push(target.name);
+        return wranglerOutput(target.name, "v1");
+      },
+    });
+    expect(order).toEqual(["pithy-web", "pithy-api"]);
+  });
+
+  test("a target named by its deploy name ships first too", async () => {
+    await writeWorker("api", "pithy-api");
+    await writeWorker("web", "pithy-web");
+    await writeFile(
+      join(dir, "apps", "api", "pithy.config.ts"),
+      'const app = { name: "api", requiredBindings: [{ type: "service", name: "WEB", service: "pithy-web" }] };\nexport default { capabilities: [], app };\n',
+    );
+    const order: string[] = [];
+    await deployProject({
+      account: null,
+      projectDir: dir,
+      env: "prod",
+      runDeploy: async (target) => {
+        order.push(target.name);
+        return wranglerOutput(target.name, "v1");
+      },
+    });
+    expect(order).toEqual(["pithy-web", "pithy-api"]);
+  });
+
+  /**
    * **`pithy deploy` printed nothing at all until it had finished. For minutes (#578).**
    *
    * The wrangler spawn under each of these is captured on purpose — its output is summarized, not

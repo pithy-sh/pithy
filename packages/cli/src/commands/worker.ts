@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { commandName } from "@pithy-sh/core/src/cli/command";
-import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { basename } from "node:path";
+import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
+import { InputRequiredError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
@@ -17,8 +18,12 @@ import { loadProject, loadWorkerDomains, projectCloudflareAccount, requireProjec
 import { renderDomainsBlock } from "../project/domainPrompt";
 import { optionalEnvArg, requireEnvironment } from "../project/environment";
 import { unpublishedKitNotice } from "../project/scaffold";
+import { reconcileServiceStanzas, type ServiceWorkerNames, serviceScripts } from "../project/serviceStanzas";
+import { bindableFrom, bindWorker, readServiceProject, unbindWorker } from "../project/workerBind";
 import { addWorker, listWorkers, removeWorker, renameWorker } from "../project/workerCommand";
 import { WorkerIdentity, workerIdentity } from "../project/workerIdentity";
+import { discoverWorkers } from "../project/workers";
+import { canceled } from "../terminal/exitClass";
 import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
@@ -101,9 +106,39 @@ const WorkerRenamePayload = z
     orphaned: z.array(z.string().describe("A script name.")).describe("Scripts still deployed under the old name."),
     accountChecked: z.boolean().describe("Whether the account was reached to look for a live script."),
     reconciled: Reconciled,
+    rebound: z
+      .array(z.string().describe("An `apps/` Worker, by its directory name."))
+      .describe("The other Workers whose service bindings now name the new name. Their binding names stay."),
     plan: PlanKey,
   })
   .describe("What `pithy worker rename` moved, or under `--dry-run` would.");
+
+/** The five keys `pithy worker bind --json` and `pithy worker unbind --json` share. */
+const WorkerBindingShape = {
+  from: z.string().describe("The `apps/` Worker that holds the binding, by its directory name."),
+  to: z
+    .string()
+    .nullable()
+    .describe(
+      "The Worker it calls: an `apps/` Worker by its directory name, or a kit Worker by its capability. `null` only for an `unbind --binding` that found nothing.",
+    ),
+  binding: z.string().describe("The binding name in `from`'s env."),
+  kind: z
+    .enum(["app", "kit"])
+    .nullable()
+    .describe("`app` for an `apps/` Worker, `kit` for a kit Worker. `null` exactly when `to` is."),
+  changed: z.boolean().describe("Whether this run wrote anything. `false` on a run that found it already so."),
+};
+
+/** `pithy worker bind --json`. */
+const WorkerBindPayload = z
+  .object({ command: z.literal("worker.bind").describe('`"worker.bind"`.'), ...WorkerBindingShape })
+  .describe("The service binding `pithy worker bind` settled.");
+
+/** `pithy worker unbind --json`: the same keys as `bind`, under its own `command`. */
+const WorkerUnbindPayload = z
+  .object({ command: z.literal("worker.unbind").describe('`"worker.unbind"`.'), ...WorkerBindingShape })
+  .describe("The service binding `pithy worker unbind` settled.");
 
 /** `pithy worker sync --json`. */
 const WorkerSyncPayload = z
@@ -144,6 +179,26 @@ const WorkerSyncPayload = z
           .describe("One environment's Workflows and crons."),
       )
       .describe("What the `app` declaration wrote, per environment."),
+    serviceRuns: z
+      .array(
+        z
+          .object({
+            env: z.string().describe("The environment reconciled — `dev` for the top-level stanza."),
+            services: z
+              .array(
+                z
+                  .object({
+                    binding: z.string().describe("The binding name in the Worker's env."),
+                    service: z.string().describe("The script it calls in this environment."),
+                  })
+                  .describe("One `services` entry."),
+              )
+              .describe("The service bindings the app declares, resolved for this environment."),
+            changed: z.boolean().describe("Whether this environment's stanza changed."),
+          })
+          .describe("One environment's service bindings."),
+      )
+      .describe("What the app's service bindings wrote, per environment."),
   })
   .describe("What `pithy worker sync` wrote.");
 
@@ -294,18 +349,180 @@ const remove = withContract(
 );
 
 /**
- * `pithy worker rename <old> <new>` — move `apps/<old>` and reconcile the names that must move with it.
+ * The value of a flag a run was not given: asked at a terminal, refused with the flag named anywhere else.
+ *
+ * A binding has a direction, so a Worker is never named by position here, and a question is asked only where a
+ * person can answer it. An agent under `--json` is told which flag to pass and every value it takes.
+ */
+export async function askFlag(options: {
+  flag: string;
+  question: string;
+  choices: readonly string[];
+  interactive: boolean;
+  missing: string;
+}): Promise<string> {
+  if (options.interactive && options.choices.length > 0) {
+    const { isCancel, select } = await import("@clack/prompts");
+    const answer = await select({
+      message: options.question,
+      options: options.choices.map((choice) => ({ value: choice, label: choice })),
+    });
+    if (isCancel(answer)) canceled();
+    return answer as string;
+  }
+  throw new InputRequiredError({
+    message: options.missing,
+    action: `Pass ${options.flag} <worker>. Known: ${options.choices.join(", ") || "none"}.`,
+    flag: options.flag,
+    choices: [...options.choices],
+  });
+}
+
+/** `--from`, or the question that answers it: which `apps/` Worker holds the binding. */
+async function askFrom(projectDir: string, from: string | undefined, interactive: boolean): Promise<string> {
+  if (from !== undefined) return from;
+  const project = await readServiceProject({ projectDir });
+  return askFlag({
+    flag: "--from",
+    question: "Which Worker holds the binding?",
+    choices: project.workers.map((worker) => worker.app),
+    interactive,
+    missing: "Pass --from: the apps/ Worker that holds the binding.",
+  });
+}
+
+/** `pithy worker bind` — declare a service binding from one of the project's Workers to another. */
+const bind = withContract(
+  defineCommand({
+    meta: { name: "bind", description: "Bind an apps/ Worker to another Worker of this project, kit Workers included" },
+    args: {
+      from: { type: "string", description: "The apps/ Worker that holds the binding" },
+      to: { type: "string", description: "The Worker it calls: an apps/ Worker, or a kit Worker by its capability" },
+      binding: { type: "string", description: "The binding name in env (default: --to in upper snake case)" },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const projectDir = process.cwd();
+        const interactive = mayPrompt(args.json);
+        const from = await askFrom(projectDir, args.from, interactive);
+        const to =
+          args.to ??
+          (await askFlag({
+            flag: "--to",
+            question: `Which Worker does ${from} call?`,
+            choices: bindableFrom(await readServiceProject({ projectDir }), from),
+            interactive,
+            missing: "Pass --to: the Worker the binding calls.",
+          }));
+        const report = await bindWorker({
+          projectDir,
+          from,
+          to,
+          ...(args.binding === undefined ? {} : { binding: args.binding }),
+        });
+        if (args.json) {
+          process.stdout.write(
+            `${formatJsonLine({ command: "worker.bind", from: report.from, to: report.to, binding: report.binding, kind: report.kind, changed: report.changed })}\n`,
+          );
+          return;
+        }
+        process.stdout.write(
+          report.changed
+            ? `Bound ${report.from} to ${report.to} as ${report.binding}.\n`
+            : `${report.from} already binds ${report.to} as ${report.binding}.\n`,
+        );
+        process.stdout.write(`${formatDone()}\n`);
+      }),
+  }),
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: WorkerBindPayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: false,
+  },
+);
+
+/** `pithy worker unbind` — take a service binding out, chosen by the Worker it calls or by its name. */
+const unbind = withContract(
+  defineCommand({
+    meta: { name: "unbind", description: "Remove a service binding from an apps/ Worker" },
+    args: {
+      from: { type: "string", description: "The apps/ Worker that holds the binding" },
+      to: { type: "string", description: "The Worker the binding calls" },
+      binding: { type: "string", description: "The binding name, instead of --to" },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        // First, before anything is read: the call says which entry, by exactly one of the two.
+        if ((args.to === undefined) === (args.binding === undefined)) {
+          throw new ValidationError({
+            message:
+              args.to === undefined
+                ? "Pass --to or --binding: which binding to remove."
+                : "Pass --to or --binding, not both.",
+            action: "--to names the Worker it calls. --binding names the binding.",
+          });
+        }
+        const projectDir = process.cwd();
+        const from = await askFrom(projectDir, args.from, mayPrompt(args.json));
+        const report = await unbindWorker({
+          projectDir,
+          from,
+          ...(args.to === undefined ? {} : { to: args.to }),
+          ...(args.binding === undefined ? {} : { binding: args.binding }),
+        });
+        if (args.json) {
+          process.stdout.write(
+            `${formatJsonLine({ command: "worker.unbind", from: report.from, to: report.to, binding: report.binding, kind: report.kind, changed: report.changed })}\n`,
+          );
+          return;
+        }
+        if (report.changed) process.stdout.write(`Unbound ${report.binding} from ${report.from}.\n`);
+        else if (args.binding !== undefined) process.stdout.write(`${report.from} binds no ${args.binding}.\n`);
+        else process.stdout.write(`${report.from} does not bind ${report.to}.\n`);
+        process.stdout.write(`${formatDone()}\n`);
+      }),
+  }),
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: WorkerUnbindPayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: false,
+    flagGroups: [
+      {
+        kind: "exactlyOne",
+        flags: ["--to", "--binding"],
+        rule: "Pass either --to or --binding: exactly one says which binding to remove.",
+      },
+    ],
+  },
+);
+
+/**
+ * `pithy worker rename --from <old> --to <new>` — move `apps/<old>` and reconcile the names that must move with it.
  *
  * A worker's name is stamped in three places that have to agree — the directory, the deployed script
- * name, and `vars.WORKER`. This is the command that moves all three at once; `pithy doctor` is what
- * catches a rename done by hand.
+ * name, and `vars.WORKER`. This is the command that moves all three at once, and points every other Worker's
+ * service binding at the new name; `pithy doctor` is what catches a rename done by hand.
+ *
+ * **`--from` and `--to`, so the `worker` group reads one way (#617).** `bind` and `unbind` name every Worker by
+ * flag, because a binding has a direction. The positional `rename <old> <new>` is still accepted, and says once
+ * which flags it stands for.
  */
 const rename = withContract(
   defineCommand({
     meta: { name: "rename", description: "Rename a worker: move apps/<old> and reconcile its name everywhere" },
     args: {
-      from: { type: "positional", required: true, description: "The worker to rename (an apps/<name> directory)" },
-      to: { type: "positional", required: true, description: "The new name, kebab-case, e.g. web or admin-api" },
+      from: { type: "string", description: "The worker to rename (an apps/<name> directory)" },
+      to: { type: "string", description: "The new name, kebab-case, e.g. web or admin-api" },
+      old: { type: "positional", required: false, description: "The worker to rename, positionally (use --from)" },
+      new: { type: "positional", required: false, description: "The new name, positionally (use --to)" },
       force: {
         type: "boolean",
         default: false,
@@ -316,14 +533,25 @@ const rename = withContract(
     },
     run: ({ args }) =>
       withErrorReporting(args.json, async () => {
+        const positional = args.old !== undefined || args.new !== undefined;
+        if (positional && (args.from !== undefined || args.to !== undefined)) {
+          throw new ValidationError({
+            message: "Name the worker by --from and --to, or by position, not both.",
+            action: "Pass --from <worker> --to <name>.",
+          });
+        }
+        const projectDir = process.cwd();
+        const interactive = mayPrompt(args.json);
+        const from = args.from ?? args.old ?? (await askFrom(projectDir, undefined, interactive));
+        const to = args.to ?? args.new ?? (await askNewName(from, interactive));
+        if (positional) {
+          // Stderr, so a `--json` caller's one line on stdout is still the only one there.
+          process.stderr.write(
+            `${dim(`The flag form is ${pithyCommand("worker rename", { flags: { "--from": from, "--to": to } })}.`)}\n`,
+          );
+        }
         const dryRun = args["dry-run"];
-        const report = await renameWorker({
-          projectDir: process.cwd(),
-          from: args.from,
-          to: args.to,
-          force: args.force,
-          dryRun,
-        });
+        const report = await renameWorker({ projectDir, from, to, force: args.force, dryRun });
         if (args.json) {
           process.stdout.write(`${formatJsonLine({ command: "worker.rename", dryRun, ...report })}\n`);
           return;
@@ -340,6 +568,9 @@ const rename = withContract(
         process.stdout.write(`Renamed ${report.from} to ${report.to}.\n`);
         if (report.script) {
           process.stdout.write(`Deploys as ${report.script.to}, not ${report.script.from}.\n`);
+        }
+        if (report.rebound.length > 0) {
+          process.stdout.write(`Pointed ${report.rebound.join(", ")} at ${report.to}.\n`);
         }
         if (report.orphaned.length > 0) {
           // Under --force only: the old script is still live, still serving, and still billing.
@@ -363,6 +594,30 @@ const rename = withContract(
     needsNetwork: true,
   },
 );
+
+/** `--to` for a rename, asked at a terminal: a name is open, so it is typed rather than chosen. */
+export async function askNewName(from: string, interactive: boolean): Promise<string> {
+  if (interactive) {
+    const { isCancel, text } = await import("@clack/prompts");
+    const answer = await text({ message: `Rename ${from} to?` });
+    if (isCancel(answer)) canceled();
+    return String(answer);
+  }
+  throw new InputRequiredError({
+    message: "Pass --to: the new name.",
+    action: `Pass --to <name>, kebab-case, e.g. ${from}-api.`,
+    flag: "--to",
+  });
+}
+
+/** Every `apps/` Worker by both of its names, for resolving a service binding's script per environment. */
+async function serviceWorkerNames(projectDir: string): Promise<ServiceWorkerNames[]> {
+  return (await discoverWorkers(projectDir)).map((worker) => ({
+    app: basename(worker.dir),
+    dir: worker.dir,
+    deployedAs: worker.name,
+  }));
+}
 
 /**
  * The declaration narrowed to what `--env` asked for.
@@ -438,31 +693,54 @@ const sync = withContract(
           });
         }
 
-        const runs = app
-          ? await reconcileAppWorkflows({
-              workerDir: target.dir,
-              // `requireProjectName`, never `resolveProjectName`: a Workflow name is account-scoped and
-              // stable forever once deployed, so a guessed project would name a Workflow another owns.
-              project: await loadProject(projectDir).then(requireProjectName),
-              app,
-              ...(env === undefined ? {} : { env }),
-            })
-          : [];
+        // `requireProjectName`, never `resolveProjectName`: a Workflow name is account-scoped and stable forever
+        // once deployed, so a guessed project would name a Workflow another owns. A script name is the same.
+        const project = app ? await loadProject(projectDir).then(requireProjectName) : undefined;
+        const runs =
+          app && project
+            ? await reconcileAppWorkflows({
+                workerDir: target.dir,
+                project,
+                app,
+                ...(env === undefined ? {} : { env }),
+              })
+            : [];
+        // The app's service bindings, each at the script its target deploys as per environment (#617).
+        const declared = (app?.requiredBindings ?? []).flatMap((binding) =>
+          binding.type === "service" && binding.service !== undefined
+            ? [{ binding: binding.name, target: binding.service }]
+            : [],
+        );
+        const serviceRuns =
+          project && declared.length > 0
+            ? await reconcileServiceStanzas({
+                workerDir: target.dir,
+                services: declared,
+                scripts: await serviceScripts(project, await serviceWorkerNames(projectDir)),
+                ...(env === undefined ? {} : { env }),
+              })
+            : [];
 
         if (args.json) {
           process.stdout.write(
-            `${formatJsonLine({ command: "worker.sync", ...workerIdentity(target), routes, runs })}\n`,
+            `${formatJsonLine({ command: "worker.sync", ...workerIdentity(target), routes, runs, serviceRuns })}\n`,
           );
           return;
         }
         // One sentence for a run that changed nothing, whichever half had nothing to do. A reconcile
         // command is run on a hunch, often, and it has to be obvious when it did nothing.
-        if (routes.every((route) => !route.changed) && runs.every((run) => !run.changed)) {
+        if (
+          routes.every((route) => !route.changed) &&
+          runs.every((run) => !run.changed) &&
+          serviceRuns.every((run) => !run.changed)
+        ) {
           // "Nothing to sync" is about what was *declared*, not about how many environments were walked.
           // An app capability declaring no Workflows is still reconciled — that is what takes a dropped
           // job's binding out — so a run per environment saying nothing is exactly the empty case.
           const nothing =
-            routes.length === 0 && runs.every((run) => run.workflows.length === 0 && run.crons.length === 0);
+            routes.length === 0 &&
+            serviceRuns.length === 0 &&
+            runs.every((run) => run.workflows.length === 0 && run.crons.length === 0);
           process.stdout.write(
             nothing ? `${target.name} declares nothing to sync.\n` : `${target.name} is already in sync.\n`,
           );
@@ -480,6 +758,11 @@ const sync = withContract(
           // out, and a line reading ": . no cron." says that as badly as it can be said.
           const bound = run.workflows.length === 0 ? "nothing" : run.workflows.map((entry) => entry.binding).join(", ");
           process.stdout.write(`${run.env}: ${bound} bound. ${crons}.\n`);
+        }
+        for (const run of serviceRuns) {
+          if (!run.changed) continue;
+          const bound = run.services.map((entry) => `${entry.binding} to ${entry.service}`).join(", ");
+          process.stdout.write(`${run.env}: ${bound}.\n`);
         }
         // Cloudflare resolves class_name in the script the binding names, and that script is this one.
         const classes = [...new Set(runs.flatMap((run) => run.workflows.map((entry) => entry.class_name)))];
@@ -503,5 +786,5 @@ const sync = withContract(
 
 export default defineCommand({
   meta: { name: "worker", description: "Manage the project's Workers under apps/ (the dev/deploy registry)" },
-  subCommands: { add, list, remove, rename, sync },
+  subCommands: { add, list, remove, rename, sync, bind, unbind },
 });

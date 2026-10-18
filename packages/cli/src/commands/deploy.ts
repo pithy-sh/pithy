@@ -35,6 +35,7 @@ import {
 import { type DeployPlanInput, deployPlan, deployPlanExit, readPendingForPlan } from "../project/deployPlan";
 import { assertOriginsDeclared } from "../project/domains";
 import { optionalEnvArg, requireEnvironment, requireManagedEnvironment } from "../project/environment";
+import { bindsKitWorker } from "../project/workerBind";
 import { assertWorkflowsBound } from "../project/workflows";
 import { assertEnvironmentProvisioned } from "../provision/unprovisioned";
 import { EXIT } from "../terminal/exitClass";
@@ -365,7 +366,29 @@ export default withContract(
           const warning = env && !args.json ? pendingWarning(pending, env) : undefined;
           if (warning) process.stdout.write(`${warning}\n`);
 
-          // **Step one: the adopter's Workers, ungated.** Their code is the thing that changed.
+          // **The kit's Workers, gated.** Separately from the adopter's, so CI reads two exit-worthy facts rather
+          // than one. `dev` is not a target here at all — see {@link KIT_IS_LOCAL_IN_DEV}.
+          const runKit = selection.kit && env !== undefined && env !== LOCAL_ENVIRONMENT;
+          const deployKit = async (): Promise<KitDeployReport | null> =>
+            runKit
+              ? await deployKitWorkers({
+                  projectDir,
+                  project: requireProjectName(await loadProject(projectDir)),
+                  env: env as string,
+                  productionEnvironments: (await loadProject(projectDir)).seed?.productionEnvironments ?? [],
+                  account,
+                  force: args.force,
+                  // A feature's kit Workers are named for the feature, and the branch is which feature (#643). A
+                  // checkout that is not on one is the pass's own problem to state, not a throw that loses the report.
+                  ...(await featureOf(projectDir, env as string)),
+                })
+              : null;
+          // **First when an app binds one (#617).** A service binding to a kit Worker names its host's script, and an
+          // upload binding a script that does not exist yet is refused — so the host goes up before the binder.
+          const kitFirst = runKit && selection.apps && (await bindsKitWorker({ projectDir }));
+          const kitEarly = kitFirst ? await deployKit() : null;
+
+          // **The adopter's Workers, ungated.** Their code is the thing that changed.
           const deploys = selection.apps ? await deployProject({ projectDir, account, env, audit }) : [];
           // A deploy that shipped but is not the thing answering at the declared address is a failure too,
           // and it fails the pipeline rather than printing a line nobody reads. Two shapes count: a
@@ -374,22 +397,7 @@ export default withContract(
           // ignore the check.
           const appsFailed = deploys.some((deploy) => !deploy.ok) || deployVerificationFailed(deploys);
 
-          // **Step two: the kit's, gated.** Separately, so CI reads two exit-worthy facts rather than one.
-          // `dev` is not a target here at all — see {@link KIT_IS_LOCAL_IN_DEV}.
-          const runKit = selection.kit && env !== undefined && env !== LOCAL_ENVIRONMENT;
-          const kit: KitDeployReport | null = runKit
-            ? await deployKitWorkers({
-                projectDir,
-                project: requireProjectName(await loadProject(projectDir)),
-                env: env as string,
-                productionEnvironments: (await loadProject(projectDir)).seed?.productionEnvironments ?? [],
-                account,
-                force: args.force,
-                // A feature's kit Workers are named for the feature, and the branch is which feature (#643). A
-                // checkout that is not on one is the pass's own problem to state, not a throw that loses the report.
-                ...(await featureOf(projectDir, env as string)),
-              })
-            : null;
+          const kit: KitDeployReport | null = kitFirst ? kitEarly : await deployKit();
           const kitFailed = kit !== null && kitDeployFailed(kit);
           const failed = appsFailed || kitFailed;
           // The dashboard, offered to a named environment that has none (#757). An offer, not a `next`: connecting

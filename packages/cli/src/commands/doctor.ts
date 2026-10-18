@@ -97,6 +97,13 @@ import { ScopeGateFinding, ScopeGateHealth } from "../doctor/scopeGates";
 import { checkSecretBindings, describeSecretBindings, type SecretBindingsCheck } from "../doctor/secretBindings";
 import { checkSelfBinding, describeSelfBinding, type SelfBindingCheck } from "../doctor/selfBinding";
 import {
+  checkServiceBindings,
+  describeServiceBinding,
+  type ServiceBindingsCheck,
+  serviceBindingDetail,
+  serviceBindingFix,
+} from "../doctor/serviceBindings";
+import {
   describeSettingsAccount,
   describeSettingsFinding,
   type SettingsCheck,
@@ -316,6 +323,11 @@ export interface DoctorReport {
    * the check above: with no root config there is no declaration to hold a stanza to.
    */
   selfBinding: SelfBindingCheck | null;
+  /**
+   * Whether every service binding an app declares reaches a Worker that will be there (#617): no loop, no target
+   * that is no Worker, no kit Worker nothing composes. `null` outside a readable project. **It fails the exit.**
+   */
+  serviceBindings: ServiceBindingsCheck | null;
   /**
    * Whether any Worker declares a rate-limit namespace in the range reserved for features (#643). `null` outside a
    * readable project. **It fails the exit**: `provision` and `deploy` refuse the same stanza.
@@ -781,6 +793,8 @@ export interface DoctorReportOptions {
   checkWorkerNames?: (projectDir: string) => Promise<WorkerNameCheck>;
   /** Self-binding seam; defaults to {@link checkSelfBinding}. Reads files only — no account call. */
   checkSelfBinding?: (projectDir: string) => Promise<SelfBindingCheck>;
+  /** Service-binding seam; defaults to {@link checkServiceBindings}. Reads files only — no account call. */
+  checkServiceBindings?: (projectDir: string) => Promise<ServiceBindingsCheck>;
   /** Feature rate-limit range seam; defaults to {@link checkFeatureRatelimitIds}. Reads files only. */
   checkFeatureRatelimitIds?: (projectDir: string) => Promise<FeatureRatelimitIdsCheck>;
   /**
@@ -973,6 +987,8 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeProjectName = options.checkProjectName ?? checkProjectName;
   const probeWorkerNames = options.checkWorkerNames ?? checkWorkerNames;
   const probeSelfBinding = options.checkSelfBinding ?? checkSelfBinding;
+  const probeServiceBindings =
+    options.checkServiceBindings ?? ((projectDir: string) => checkServiceBindings({ projectDir }));
   const probeFeatureRatelimitIds = options.checkFeatureRatelimitIds ?? checkFeatureRatelimitIds;
   const probeDocsMcp = options.checkDocsMcp ?? checkDocsMcp;
   const probeEnvironments = options.checkEnvironments ?? checkEnvironments;
@@ -1304,6 +1320,13 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
         missing: [],
       })
     : null;
+  // Every app's service bindings, held to the Workers that will be there to answer them (#617). Files only.
+  const serviceBindings = inProject
+    ? await probed<ServiceBindingsCheck>(() => probeServiceBindings(options.projectDir), {
+        state: "could-not-check",
+        faults: [],
+      })
+    : null;
   // Every Worker's rate limiters, held to the range features draw from (#643). Files only.
   const featureRatelimitIds = inProject
     ? await probed<FeatureRatelimitIdsCheck>(() => probeFeatureRatelimitIds(options.projectDir), {
@@ -1493,6 +1516,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     projectName,
     workerNames,
     selfBinding,
+    serviceBindings,
     featureRatelimitIds,
     docsMcp,
     environments,
@@ -2772,6 +2796,26 @@ function secretBindingsBlock(check: SecretBindingsCheck): string {
 }
 
 /**
+ * Every service binding that cannot land — a loop, a target that is no Worker, a kit Worker nothing composes —
+ * one line each, then what rights it. The block is the finding: a project whose bindings all land prints nothing.
+ */
+function serviceBindingsBlock(check: ServiceBindingsCheck): string {
+  const lines = ["Service bindings:"];
+  for (const fault of check.faults) {
+    lines.push(healthLine(fault.worker, describeServiceBinding(fault)));
+    const fix = serviceBindingFix(fault);
+    if (fix) lines.push(`${HEALTH_CONT}Run ${fix}.`);
+    else if (fault.kind === "loop")
+      lines.push(`${HEALTH_CONT}Run ${commandName("worker unbind")} for one binding in that path.`);
+    else
+      lines.push(
+        `${HEALTH_CONT}Add ${fault.target} back, or unbind ${fault.binding} with ${commandName("worker unbind")}.`,
+      );
+  }
+  return lines.join("\n");
+}
+
+/**
  * The stanzas a self-administering project has left unbound — one line each, then the one command that
  * writes them. The block is the finding: a project that declares nothing, or has them all, prints nothing.
  */
@@ -2897,6 +2941,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // request that hangs until Cloudflare calls it a 522, so a terse report here would be the toolchain
   // agreeing that nothing is wrong. `could-not-check` keeps its silence, like the block above.
   const selfBindingOk = !report.selfBinding || report.selfBinding.missing.length === 0;
+  const serviceBindingsOk = !report.serviceBindings || report.serviceBindings.faults.length === 0;
   const featureRatelimitIdsOk = report.featureRatelimitIds?.state !== "reserved";
   // Same silence for `could-not-check` and the same reason: an unreadable config is the `Project:` block's
   // line, and a second block repeating it is how a report starts contradicting itself.
@@ -2972,6 +3017,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     projectNameOk &&
     workerNamesOk &&
     selfBindingOk &&
+    serviceBindingsOk &&
     featureRatelimitIdsOk &&
     environmentsOk &&
     environmentInheritanceOk &&
@@ -3145,6 +3191,11 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // called. The block is the finding — see {@link selfBindingBlock}.
   if (report.selfBinding && report.selfBinding.missing.length > 0) {
     blocks.push(selfBindingBlock(report.selfBinding, report.productionEnvironments));
+  }
+
+  // The other half of what a stanza binds: another Worker of the project (#617). The block is the finding.
+  if (report.serviceBindings && report.serviceBindings.faults.length > 0) {
+    blocks.push(serviceBindingsBlock(report.serviceBindings));
   }
 
   // A rate-limit namespace in the feature range (#643). The block is the finding.
@@ -3395,6 +3446,16 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
             ...entry,
             detail: describeSelfBinding(entry),
             fix: provisionFixCommand(entry.env, report.productionEnvironments),
+          })),
+        }
+      : null,
+    serviceBindings: report.serviceBindings
+      ? {
+          state: report.serviceBindings.state,
+          faults: report.serviceBindings.faults.map((fault) => ({
+            ...fault,
+            detail: serviceBindingDetail(fault),
+            fix: serviceBindingFix(fault),
           })),
         }
       : null,
@@ -3842,6 +3903,15 @@ const DoctorPayload = z
       declared: z.boolean().describe("Whether the root config says `administersItself` at all."),
       missing: Fixed("stanza binding no `SELF`"),
     }),
+    serviceBindings: Check(
+      "Every app's service bindings, held to the Workers they call, or `null` outside a project.",
+      {
+        state: State("`ok`, `faulty`, `could-not-check`"),
+        faults: Fixed(
+          "service binding that cannot land — a loop, a target that is no Worker, a kit Worker nothing composes",
+        ),
+      },
+    ),
     environments: Check("The declared environments against each Worker's stanzas, or `null` outside a project.", {
       state: State("`ok`, `drifted`, `could-not-check`"),
       declared: z.array(z.string().describe("An environment.")).describe("The environments the root config names."),
@@ -3991,7 +4061,8 @@ export default withContract(
   {
     output: "document",
     // 2: a generated value's `type` is any `BindingType`, which grew seven kinds (#662).
-    schemaVersion: 2,
+    // 3: `failures[].check` takes `serviceBindings`, the block that holds every app's service bindings (#617).
+    schemaVersion: 3,
     payload: DoctorPayload,
     // The default run, as every contract's `mutates` is (`commandContract.ts`). It writes nothing of the
     // project's, the account's or a database's: the update-notifier cache it refreshes is the CLI's own

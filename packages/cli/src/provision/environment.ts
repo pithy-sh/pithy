@@ -9,7 +9,9 @@ import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyEr
 import { GLOBAL_SCOPE } from "@pithy-sh/core/src/naming/environment";
 import type { FeatureResourceKind } from "@pithy-sh/core/src/naming/feature";
 import type { BindingNaming, ProvisionScope, ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
+import { workflowHostName } from "@pithy-sh/core/src/workflow/naming";
 import type { CliAuditEmit } from "../audit/cliAudit";
+import { hostWorkerFor } from "../capabilities/hostRegistry";
 import { composedManifests, type ManifestFault } from "../capabilities/manifests";
 import type { MintedSecret } from "../capabilities/mintSecrets";
 import { type BindingDecline, type BindingDeclines, honoredNames, workerDeclines } from "../capabilities/reconcile";
@@ -621,9 +623,15 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
       detail: `scopedName was asked for "${worker}", which is not one of this run's resolved Workers: ${[...scopedNames.keys()].join(", ")}.`,
     });
   };
+  // A service target is an `apps/` Worker, at this scope's copy of it, or a kit Worker, at the host this scope
+  // deploys (#617). An app Worker cannot take a host's name (`assertWorkerName`), so the two never collide.
+  const serviceScript = (target: string): string =>
+    hostWorkerFor(target)
+      ? workflowHostName({ ...scope.workflowHost, capability: target })
+      : scopedName(resolveServiceTarget(workers, target));
   const services = serviceBindings(options.capabilities).map((service) => ({
     binding: service.binding,
-    service: scopedName(resolveServiceTarget(workers, service.target)),
+    service: serviceScript(service.target),
   }));
 
   const recorded: ProvisionRecorded = options.record ? await options.record.load() : { resources: [], scripts: [] };
@@ -754,7 +762,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
       // Likewise: only the service bindings this Worker declares, retargeted at this environment's copy.
       services: serviceBindings(worker.capabilities).map((service) => ({
         binding: service.binding,
-        service: scopedName(resolveServiceTarget(workers, service.target)),
+        service: serviceScript(service.target),
       })),
     });
     // The path the writer wrote, taken from the writer — never recomputed here. A report that names one

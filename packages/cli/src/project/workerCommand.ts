@@ -21,10 +21,13 @@ import { syncFeatureDevConfig } from "../feature/sync";
 import { defaultGit, type GitRunner, mainRepoRoot, currentBranch as sharedCurrentBranch } from "../feature/worktree";
 import { unifiedDiff } from "../plan/lineDiff";
 import { emptyPlan, type Plan, type PlanFile } from "../plan/plan";
+import { writeFileAtomic } from "./atomic";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "./config";
+import { retargetServiceBindings } from "./configBindingSource";
 import { formatJsonc } from "./jsonc";
 import { detectPackageManager, runPackageManager } from "./packageManager";
 import { assertWorkerName, ensureScaffoldPath, pathExists, removeScaffoldPath } from "./scaffold";
+import { bindersOf, boundRefusal, readServiceProject } from "./workerBind";
 import { type WorkerIdentity, workerIdentity } from "./workerIdentity";
 import { scaffoldWorker } from "./workerScaffold";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "./workers";
@@ -405,6 +408,14 @@ export async function removeWorker(options: RemoveWorkerOptions): Promise<Remove
     });
   }
 
+  // **Not while another Worker binds it (#617).** Its service binding would name a script nothing deploys, and
+  // the binder would provision clean and fail its first call. Asked before anything is deleted.
+  const binders = bindersOf(
+    await readServiceProject({ projectDir: options.projectDir, discoverWorkers }),
+    basename(target.dir),
+  );
+  if (binders.length > 0) throw boundRefusal(basename(target.dir), binders);
+
   // Gated, and the gate is stricter than the one a write gets (#158). `target.dir` is `apps/<name>`,
   // composed from a name and handed to a recursive delete: a symlink at `apps` carried that delete onto a
   // canary tree outside the project, reproduced with the real CLI, and the command said "Done."
@@ -531,6 +542,11 @@ export interface RenameWorkerReport extends WorkerIdentity {
   accountChecked: boolean;
   /** Whether the feature's `.dev.config.json` was reconciled (only inside a worktree). */
   reconciled: boolean;
+  /**
+   * The other `apps/` Workers whose service bindings named the renamed one, now pointed at its new name (#617).
+   * Their binding names are unchanged, because their code reads them.
+   */
+  rebound: string[];
   /** What a dry run would write. Only under `dryRun`, where nothing was moved and `reconciled` is `false`. */
   plan?: Plan;
 }
@@ -646,18 +662,29 @@ export async function renameWorker(options: RenameWorkerOptions): Promise<Rename
   }
 
   const from = basename(target.dir);
+  // Every script it deploys as now, before the config is renamed in memory: a sibling's `services` entry names
+  // one of these, and takes the one its stanza deploys as afterwards.
+  const oldScripts = deployedScriptNames(config);
   // Read before the config is renamed in memory: a dry run diffs against these bytes.
   const wranglerBefore = options.dryRun ? await readFile(join(target.dir, "wrangler.jsonc"), "utf8") : "";
   const script = renameConfig(config, from, options.to);
+  // Old script to new, stanza by stanza: the same walk over the renamed config lines the two lists up.
+  const newScripts = deployedScriptNames(config);
+  const movedScripts = new Map(oldScripts.map((old, index) => [old, newScripts[index] ?? old]));
+  const rebinds = await planRebinds(
+    workers.filter((worker) => worker.dir !== target.dir && dirname(worker.dir) === appsDir),
+    { from, deployedAs: target.name, to: options.to, scripts: movedScripts },
+  );
 
   if (options.dryRun)
-    return planRename(options, { target: target.dir, to, from, config, script, wranglerBefore, deployed });
+    return planRename(options, { target: target.dir, to, from, config, script, wranglerBefore, deployed, rebinds });
 
   // A plain filesystem move, not `git mv`: a project need not be a git repo at all (`pithy worker add`
   // scaffolds into one that is not), and git reads a rename off the content anyway on the next `git add`.
   await rename(target.dir, to);
   await writeWranglerConfig(to, config);
   await renamePackage(to, from, options.to);
+  for (const rebind of rebinds) for (const edit of rebind.edits) await writeFileAtomic(edit.path, edit.after);
 
   const { mainRoot, inWorktree } = await resolveRoots(options);
   const report: RenameWorkerReport = {
@@ -671,6 +698,7 @@ export async function renameWorker(options: RenameWorkerOptions): Promise<Rename
     orphaned: deployed.live,
     accountChecked: deployed.checked,
     reconciled: false,
+    rebound: rebinds.map((rebind) => rebind.worker),
   };
   if (!inWorktree) return report;
 
@@ -739,6 +767,66 @@ function renameConfig(config: RenamableWrangler, from: string, to: string): { fr
   return script;
 }
 
+/** One file a rename rewrites outside the renamed Worker: its path, and its bytes before and after. */
+interface RebindEdit {
+  path: string;
+  before: string;
+  after: string;
+}
+
+/** A sibling Worker whose service bindings named the renamed one, and the edits that point them at the new name. */
+interface Rebind {
+  /** The sibling, by its `apps/` directory name. */
+  worker: string;
+  edits: RebindEdit[];
+}
+
+/**
+ * **Every other Worker's service binding to the renamed one, pointed at its new name (#617).**
+ *
+ * Two places name it. The app's declaration in `pithy.config.ts` names the Worker by its directory, `from`, or by
+ * the name it deployed as, `deployedAs`, and either becomes `to`; the binding name stays, because the app's code reads it. Each stanza of the sibling's
+ * `wrangler.jsonc` names a *script* the renamed Worker deploys as, and takes the script that stanza deploys as
+ * after the rename — and a `services` entry naming some other script is left exactly as it is.
+ */
+async function planRebinds(
+  siblings: readonly WorkerTarget[],
+  rename: { from: string; deployedAs: string; to: string; scripts: ReadonlyMap<string, string> },
+): Promise<Rebind[]> {
+  const rebinds: Rebind[] = [];
+  for (const sibling of siblings) {
+    const edits: RebindEdit[] = [];
+    const configPath = join(sibling.dir, "pithy.config.ts");
+    const source = await readFile(configPath, "utf8").catch(() => null);
+    const retargeted =
+      source === null ? null : retargetServiceBindings(source, [rename.from, rename.deployedAs], rename.to);
+    if (source !== null && retargeted !== null) edits.push({ path: configPath, before: source, after: retargeted });
+
+    const wranglerPath = join(sibling.dir, "wrangler.jsonc");
+    const raw = await readFile(wranglerPath, "utf8").catch(() => null);
+    if (raw !== null) {
+      let wrangler: RenamableWrangler | null;
+      try {
+        wrangler = (await readWranglerConfig(sibling.dir)) as RenamableWrangler;
+      } catch {
+        wrangler = null;
+      }
+      let moved = false;
+      for (const stanza of wrangler ? [wrangler, ...Object.values(wrangler.env ?? {})] : []) {
+        for (const entry of stanza?.services ?? []) {
+          const next = entry.service === undefined ? undefined : rename.scripts.get(entry.service);
+          if (next === undefined || next === entry.service) continue;
+          entry.service = next;
+          moved = true;
+        }
+      }
+      if (wrangler && moved) edits.push({ path: wranglerPath, before: raw, after: formatJsonc(wrangler, raw) });
+    }
+    if (edits.length > 0) rebinds.push({ worker: basename(sibling.dir), edits });
+  }
+  return rebinds;
+}
+
 /** What {@link planRename} needs from the run it stands in for: everything decided before the first write. */
 interface RenameDecided {
   target: string;
@@ -748,6 +836,7 @@ interface RenameDecided {
   script: { from: string; to: string } | null;
   wranglerBefore: string;
   deployed: { live: string[]; checked: boolean };
+  rebinds: readonly Rebind[];
 }
 
 /**
@@ -772,6 +861,11 @@ async function planRename(options: RenameWorkerOptions, decided: RenameDecided):
       diff: unifiedDiff(pkg.before, pkg.after),
     });
   }
+  for (const rebind of decided.rebinds) {
+    for (const edit of rebind.edits) {
+      files.push({ path: rel(edit.path), action: "edit", changes: [], diff: unifiedDiff(edit.before, edit.after) });
+    }
+  }
   const { inWorktree } = await resolveRoots(options);
   if (inWorktree) {
     files.push({
@@ -789,6 +883,7 @@ async function planRename(options: RenameWorkerOptions, decided: RenameDecided):
     orphaned: decided.deployed.live,
     accountChecked: decided.deployed.checked,
     reconciled: false,
+    rebound: decided.rebinds.map((rebind) => rebind.worker),
     plan: { ...emptyPlan(), files },
   };
 }

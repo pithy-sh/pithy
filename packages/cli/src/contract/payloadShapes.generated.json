@@ -584,7 +584,7 @@
       }
     },
     "doctor": {
-      "schemaVersion": 2,
+      "schemaVersion": 3,
       "payload": {
         "$": "object",
         "$.cli": "object",
@@ -800,6 +800,13 @@
         "$.selfBinding.missing[].fix": "null | string",
         "$.selfBinding.missing[]{}": "unknown",
         "$.selfBinding{}": "unknown",
+        "$.serviceBindings": "null | object",
+        "$.serviceBindings.state": "string",
+        "$.serviceBindings.faults": "array",
+        "$.serviceBindings.faults[]": "object",
+        "$.serviceBindings.faults[].fix": "null | string",
+        "$.serviceBindings.faults[]{}": "unknown",
+        "$.serviceBindings{}": "unknown",
         "$.environments": "null | object",
         "$.environments.state": "string",
         "$.environments.declared": "array",
@@ -937,7 +944,7 @@
         "$.node": "string",
         "$.failures": "array",
         "$.failures[]": "object",
-        "$.failures[].check": "\"cloudflare\" | \"devPreferences\" | \"environmentConfigs\" | \"environments\" | \"featureRatelimitIds\" | \"origins\" | \"project\" | \"projectName\" | \"selfBinding\" | \"settings\" | \"supportSearchTriggers\" | \"workerNames\" | \"workflows\"",
+        "$.failures[].check": "\"cloudflare\" | \"devPreferences\" | \"environmentConfigs\" | \"environments\" | \"featureRatelimitIds\" | \"origins\" | \"project\" | \"projectName\" | \"selfBinding\" | \"serviceBindings\" | \"settings\" | \"supportSearchTriggers\" | \"workerNames\" | \"workflows\"",
         "$.failures[].detail": "string",
         "$.failures[].fix": "null | string"
       }
@@ -2743,6 +2750,18 @@
         "$.domains.prod.zone": "string"
       }
     },
+    "worker bind": {
+      "schemaVersion": 1,
+      "payload": {
+        "$": "object",
+        "$.command": "\"worker.bind\"",
+        "$.from": "string",
+        "$.to": "null | string",
+        "$.binding": "string",
+        "$.kind": "\"app\" | \"kit\" | null",
+        "$.changed": "boolean"
+      }
+    },
     "worker list": {
       "schemaVersion": 1,
       "payload": {
@@ -2796,6 +2815,8 @@
         "$.orphaned[]": "string",
         "$.accountChecked": "boolean",
         "$.reconciled": "boolean",
+        "$.rebound": "array",
+        "$.rebound[]": "string",
         "$.plan": "object?",
         "$.plan.files": "array",
         "$.plan.files[]": "object",
@@ -2862,7 +2883,27 @@
         "$.runs[].workflows[].class_name": "string",
         "$.runs[].crons": "array",
         "$.runs[].crons[]": "string",
-        "$.runs[].changed": "boolean"
+        "$.runs[].changed": "boolean",
+        "$.serviceRuns": "array",
+        "$.serviceRuns[]": "object",
+        "$.serviceRuns[].env": "string",
+        "$.serviceRuns[].services": "array",
+        "$.serviceRuns[].services[]": "object",
+        "$.serviceRuns[].services[].binding": "string",
+        "$.serviceRuns[].services[].service": "string",
+        "$.serviceRuns[].changed": "boolean"
+      }
+    },
+    "worker unbind": {
+      "schemaVersion": 1,
+      "payload": {
+        "$": "object",
+        "$.command": "\"worker.unbind\"",
+        "$.from": "string",
+        "$.to": "null | string",
+        "$.binding": "string",
+        "$.kind": "\"app\" | \"kit\" | null",
+        "$.changed": "boolean"
       }
     }
   }

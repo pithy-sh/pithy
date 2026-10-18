@@ -2061,6 +2061,52 @@ describe("startDev — capability hosts", () => {
     expect(api?.opts.env.EMAIL_ORIGIN).toBe("http://localhost:8789");
   });
 
+  /**
+   * **A service binding reaches the target's pinned port, started here or not (#617).** `--app api` starts only
+   * `api`; `web` may be running in another session, and its address is the one its feature pinned either way.
+   */
+  test("an app Worker's service binding is published at its target's pinned origin, under --app too", async () => {
+    const h = hosted({
+      apps: ["api"],
+      serviceBindingsFor: async (dir) =>
+        dir === "/proj/apps/api"
+          ? [
+              { binding: "WEB", target: "web" },
+              { binding: "MAIL", target: "email" },
+            ]
+          : [],
+    });
+    await startDev(h.options);
+    const api = h.spawned.find((s) => s.opts.cwd === "/proj/apps/api");
+    expect(api?.args).toContain('PITHY_SERVICE_ORIGINS:{"WEB":"http://localhost:8788","MAIL":"http://localhost:8789"}');
+    expect(h.spawned.some((s) => s.opts.cwd === "/proj/apps/web")).toBe(false);
+  });
+
+  test("a custom dev.command Worker gets the same map in its process env, where @pithy-sh/vite reads it", async () => {
+    const h = hosted({
+      serviceBindingsFor: async (dir) => (dir === "/proj/apps/web" ? [{ binding: "API", target: "api" }] : []),
+    });
+    await startDev(h.options);
+    const web = h.spawned.find((s) => s.opts.cwd === "/proj/apps/web");
+    expect(web?.opts.env.PITHY_SERVICE_ORIGINS).toBe('{"API":"http://localhost:8787"}');
+    const api = h.spawned.find((s) => s.opts.cwd === "/proj/apps/api");
+    expect(api?.opts.env.PITHY_SERVICE_ORIGINS).toBeUndefined();
+  });
+
+  test("a target named by its deploy name reaches the same pinned origin", async () => {
+    const renamed = workers.map((worker) => (worker.name === "web" ? { ...worker, name: "acme-web" } : worker));
+    const { web, ...rest } = withHost.workers;
+    const h = hosted({
+      apps: ["api"],
+      discoverWorkers: async () => renamed,
+      loadDevConfig: async () => ({ ...withHost, workers: { ...rest, "acme-web": web as never } }),
+      serviceBindingsFor: async (dir) => (dir === "/proj/apps/api" ? [{ binding: "WEB", target: "acme-web" }] : []),
+    });
+    await startDev(h.options);
+    const api = h.spawned.find((s) => s.opts.cwd === "/proj/apps/api");
+    expect(api?.args).toContain('PITHY_SERVICE_ORIGINS:{"WEB":"http://localhost:8788"}');
+  });
+
   test("the host is never handed its own address", async () => {
     const h = hosted();
     await startDev(h.options);

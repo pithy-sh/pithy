@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { WORKER_ORIGIN_VAR } from "@pithy-sh/core/src/worker/identity";
+import { SERVICE_ORIGINS_VAR } from "@pithy-sh/core/src/worker/serviceLoopback";
 import { describe, expect, test } from "vitest";
 import { devWorkerConfig } from "./devOrigin";
 
@@ -80,6 +81,39 @@ describe("devWorkerConfig", () => {
   test("a Worker with no vars at all still gets one", () => {
     expect(devWorkerConfig({ [WORKER_ORIGIN_VAR]: "http://localhost:8827" })({})).toEqual({
       vars: { BASE_URL: "http://localhost:8827" },
+    });
+  });
+
+  describe("service bindings (#617)", () => {
+    const services = '{"API":"http://localhost:8787"}';
+
+    test("hands the Worker where each of its service bindings answers, beside its origin", () => {
+      const customize = devWorkerConfig({
+        [WORKER_ORIGIN_VAR]: "http://localhost:8788",
+        [SERVICE_ORIGINS_VAR]: services,
+      });
+      expect(customize({ vars: { ENVIRONMENT: "dev" } })).toEqual({
+        vars: { ENVIRONMENT: "dev", BASE_URL: "http://localhost:8788", [SERVICE_ORIGINS_VAR]: services },
+      });
+    });
+
+    test("a Worker that binds nothing gets no var at all", () => {
+      const out = devWorkerConfig({ [WORKER_ORIGIN_VAR]: "http://localhost:8788" })({});
+      expect(out.vars).not.toHaveProperty(SERVICE_ORIGINS_VAR);
+    });
+
+    test("never over a config that says it is not dev", () => {
+      const customize = devWorkerConfig({
+        [WORKER_ORIGIN_VAR]: "http://localhost:8788",
+        [SERVICE_ORIGINS_VAR]: services,
+      });
+      expect(customize({ vars: { ENVIRONMENT: "prod" } })).toEqual({});
+    });
+
+    test("forwarded even with no origin allocated, since the two are separate facts", () => {
+      expect(devWorkerConfig({ [SERVICE_ORIGINS_VAR]: services })({})).toEqual({
+        vars: { [SERVICE_ORIGINS_VAR]: services },
+      });
     });
   });
 });

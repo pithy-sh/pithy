@@ -4,6 +4,7 @@
 import { CI_ENV, isContinuousIntegration } from "@pithy-sh/core/src/env/ci";
 import { envStem } from "@pithy-sh/core/src/env/stem";
 import { WORKER_ORIGIN_VAR } from "@pithy-sh/core/src/worker/identity";
+import { SERVICE_ORIGINS_VAR } from "@pithy-sh/core/src/worker/serviceLoopback";
 import type { DevConfig } from "../feature/devConfig";
 import { DEV_PORT_TOKEN } from "../project/workerManifest";
 import type { WorkerTarget } from "../project/workers";
@@ -43,15 +44,29 @@ export function ownOriginFor(workerName: string, origin: string, hostNames: Read
 }
 
 /**
- * One child's environment: everything {@link buildWorkerEnv} publishes, plus that child's own origin.
+ * One child's environment: everything {@link buildWorkerEnv} publishes, plus that child's own origin and,
+ * when it declares any, where each of its service bindings answers.
  *
  * Per child, and that is the point. `buildWorkerEnv` is built once and shared, because `<STEM>_ORIGIN`
- * is the same table of *other people's* addresses for everybody. "Where do I answer" is the one fact
- * that differs per child, so it cannot live in the shared object.
+ * is the same table of *other people's* addresses for everybody. "Where do I answer" and "where do my
+ * bindings answer" are the facts that differ per child, so they cannot live in the shared object.
+ *
+ * The services map rides here for a custom `dev.command` (#617): a Vite dev server has no argv to append a
+ * `--var` to, so `@pithy-sh/vite`'s `devWorkerConfig` reads {@link SERVICE_ORIGINS_VAR} from this env and
+ * hands it to the Worker as a var, the same one {@link serviceVarArgs} writes for `wrangler dev`.
  */
-export function childEnvFor(shared: Record<string, string>, ownOrigin: string | null): Record<string, string> {
-  if (ownOrigin === null) return shared;
-  return { ...shared, [WORKER_ORIGIN_VAR]: ownOrigin };
+export function childEnvFor(
+  shared: Record<string, string>,
+  ownOrigin: string | null,
+  services: Readonly<Record<string, string>> = {},
+): Record<string, string> {
+  const hasServices = Object.keys(services).length > 0;
+  if (ownOrigin === null && !hasServices) return shared;
+  return {
+    ...shared,
+    ...(ownOrigin === null ? {} : { [WORKER_ORIGIN_VAR]: ownOrigin }),
+    ...(hasServices ? { [SERVICE_ORIGINS_VAR]: JSON.stringify(services) } : {}),
+  };
 }
 
 /** Turn `["dev", "--port", "8787"]` into a spawnable `{ command, args }` via the project's package manager. */
@@ -90,13 +105,15 @@ export function startCommand(
   persistTo: string,
   baseEnv: NodeJS.ProcessEnv = process.env,
   hostPorts: Readonly<Record<string, number>> = {},
+  services: Readonly<Record<string, string>> = {},
 ): StartCommand {
   const custom = worker.dev?.command;
   if (custom && custom.length > 0) {
     // A custom command is run verbatim: it is not necessarily wrangler, so no flag is appended. The only
     // edit is `{port}` → the pinned port, in every element that carries it. It also gets no `--var`: the
-    // process already inherits the real environment through `buildWorkerEnv`, which is exactly what the
-    // forwarding below exists to work around for workerd.
+    // process already inherits the real environment through `buildWorkerEnv` and `childEnvFor` — its own
+    // origin and its service origins included — which is exactly what the forwarding below exists to work
+    // around for workerd.
     const resolved = custom.map((part) => part.replaceAll(DEV_PORT_TOKEN, String(port)));
     return { command: resolved[0] as string, args: resolved.slice(1) };
   }
@@ -116,7 +133,44 @@ export function startCommand(
     ...ownOriginVarArgs(origin),
     ...ciVarArgs(baseEnv),
     ...hostVarArgs(worker.name, hostPorts),
+    ...serviceVarArgs(services),
   ]);
+}
+
+/**
+ * **Where each of this Worker's service bindings answers locally, as one var (#617).**
+ *
+ * Core's stand-in (`withLocalServices`, `@pithy-sh/core/src/worker/serviceLoopback`) reads it under `dev` and
+ * sends `env.<BINDING>.fetch()` there, so a call reaches the target on its pinned port rather than wrangler's
+ * cross-process registry. One JSON map keyed by binding name, because a binding is named by the binder, not by
+ * the target: `APP_B` and `BEE` can both call `app-b`. Nothing is written for a Worker that binds nothing.
+ */
+function serviceVarArgs(services: Readonly<Record<string, string>>): string[] {
+  if (Object.keys(services).length === 0) return [];
+  // wrangler splits a `--var` at its first colon, so the value — colons and all — survives intact.
+  return ["--var", `${SERVICE_ORIGINS_VAR}:${JSON.stringify(services)}`];
+}
+
+/**
+ * Each declared service binding's local origin: an `apps/` target's pinned origin, a kit target's host port.
+ *
+ * **Pinned, not running.** A target this run did not start still has its address — `pithy dev --app app-a`
+ * with `app-b` running in another session reaches it there — and one nobody is running refuses the connection,
+ * which core turns into a failure naming the binding at once. A target with no address at all (no such Worker)
+ * is left out, so the binding stays what wrangler hands the Worker and `pithy doctor` names it.
+ */
+export function serviceOrigins(
+  services: readonly { binding: string; target: string }[],
+  addresses: { appOrigins: Readonly<Record<string, string>>; hostPorts: Readonly<Record<string, number>> },
+): Record<string, string> {
+  const origins: Record<string, string> = {};
+  for (const service of services) {
+    const app = addresses.appOrigins[service.target];
+    const port = addresses.hostPorts[service.target];
+    if (app !== undefined) origins[service.binding] = app;
+    else if (port !== undefined) origins[service.binding] = `http://localhost:${port}`;
+  }
+  return origins;
 }
 
 /**

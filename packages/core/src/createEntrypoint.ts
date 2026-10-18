@@ -4,6 +4,7 @@
 import type { ExecutionContext, ForwardableEmailMessage } from "@cloudflare/workers-types";
 import type { Capability, CapabilityEmailHandler } from "./capability/capability";
 import { type CreateBackendOptions, createBackend } from "./createBackend";
+import { withLocalServices } from "./worker/serviceLoopback";
 import { triggerWorkflow } from "./workflow/dispatch";
 import { composeWorkflows, scheduledWorkflows } from "./workflow/register";
 
@@ -88,7 +89,11 @@ export function createEntrypoint<
   const registry = composeWorkflows(all);
   const scheduled = scheduledWorkflows(registry);
 
-  const entrypoint: PithyEntrypoint = { fetch: (request, env, ctx) => app.fetch(request, env, ctx) };
+  // Under `pithy dev`, a service binding's local stand-in goes into the env before anything reads it — the
+  // binding check included (#617). Anywhere else this hands back the env it was given.
+  const entrypoint: PithyEntrypoint = {
+    fetch: (request, env, ctx) => app.fetch(request, withLocalServices(env), ctx),
+  };
 
   // Cron-carrying jobs get the Worker's one `scheduled` entry. Each is started independently so one
   // job whose binding is missing cannot stop the rest of the schedule from running; the failure is
@@ -102,7 +107,7 @@ export function createEntrypoint<
         // can never receive on a schedule therefore fails loudly here, which is the author's bug and
         // is exactly what should surface.
         try {
-          await triggerWorkflow(env, registry, entry.key, {});
+          await triggerWorkflow(withLocalServices(env), registry, entry.key, {});
         } catch (error) {
           failures.push(error);
         }
@@ -114,7 +119,8 @@ export function createEntrypoint<
   // Only expose an `email` handler when something actually handles inbound mail — an inert one would
   // silently drop any message Email Routing delivered to this Worker.
   if (handlers.length > 0) {
-    entrypoint.email = async (message, env, ctx) => {
+    entrypoint.email = async (message, given, ctx) => {
+      const env = withLocalServices(given);
       if (handlers.length === 1) {
         await handlers[0]?.(message, env, ctx);
         return;

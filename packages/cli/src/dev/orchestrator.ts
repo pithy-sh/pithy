@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { basename } from "node:path";
 import { commandAlternatives, commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { isContinuousIntegration } from "@pithy-sh/core/src/env/ci";
 import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -42,6 +43,7 @@ import { defaultKillFor, type KillProcess } from "../platform/killTree";
 import { composeFor } from "../project/composeFor";
 import { allCapabilities } from "../project/config";
 import { detectPackageManager, execArgs } from "../project/packageManager";
+import { declaredServices } from "../project/workerBind";
 import { workerDirName } from "../project/workerIdentity";
 import { defaultWorkerDev } from "../project/workerManifest";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "../project/workers";
@@ -73,7 +75,7 @@ import { devLogDir } from "./devLogPath";
 import type { DevLogRecord } from "./devLogRecord";
 import { createDevLogSinks, type OpenDevLog } from "./devLogSink";
 import { type DevMemberKind, type DevSetMember, resolveDevSet, selectDevMembers } from "./devSet";
-import { buildWorkerEnv, childEnvFor, ownOriginFor, startCommand, type WranglerLauncher } from "./env";
+import { buildWorkerEnv, childEnvFor, ownOriginFor, serviceOrigins, startCommand, type WranglerLauncher } from "./env";
 import type { DevEvent, DevEvents } from "./events";
 import {
   type HostMaterialization,
@@ -161,6 +163,8 @@ export interface StartDevOptions {
     projectDir: string;
     workers: readonly WorkerTarget[];
   }) => Promise<HostWorkerDiscovery>;
+  /** Seam: the service bindings one app Worker declares. Defaults to its `pithy.config.ts`, composed for `dev`. */
+  serviceBindingsFor?: (workerDir: string) => Promise<{ binding: string; target: string }[]>;
   /** Seam: resolve and write each host's local `wrangler.jsonc`. */
   materializeHostConfigs?: (options: MaterializeHostConfigsOptions) => Promise<HostMaterialization>;
   /** Seam: the project name every host's derived names lead with. `null` skips the hosts, loudly. */
@@ -828,6 +832,23 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   for (const host of hosts) {
     const pinned = config.workers[host.worker.name];
     if (pinned) hostPorts[host.worker.name] = pinned.port;
+  }
+  // **Each app Worker's service bindings, at their targets' pinned addresses (#617).** Every target's, started
+  // or not, for the reason `hostPorts` covers every host: `--app app-a` with `app-b` running in another session
+  // reaches it on the port its feature pinned, and one nobody is running fails at once naming the binding.
+  // Resolved against `hostPorts` at each spawn, so a host dropped below takes its address with it.
+  const appOrigins: Record<string, string> = {};
+  const declaredServicesOf = new Map<string, { binding: string; target: string }[]>();
+  for (const member of set.members) {
+    if (member.kind !== "app") continue;
+    const pinned = config.workers[member.worker.name];
+    // By both names, as `pithy provision` resolves a target: a declaration may name the Worker either way.
+    if (pinned) {
+      appOrigins[basename(member.worker.dir)] = pinned.origin;
+      appOrigins[member.worker.name] = pinned.origin;
+    }
+    const declared = await (options.serviceBindingsFor ?? declaredServices)(member.worker.dir);
+    if (declared.length > 0) declaredServicesOf.set(member.worker.name, declared);
   }
   // The delivery verdict, said **once** — in the ready banner, which is where a developer looks, and
   // pre-spawn only under `--json`, where there is no banner and the reader is a script. Saying it in
@@ -1650,13 +1671,24 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     // A host is handed no origin of its own: `materializeHostConfigs` already wrote the app's into its
     // generated config, which is the address its callback links must carry. See `ownOriginFor`.
     const ownOrigin = ownOriginFor(worker.name, origin, hostNames);
-    const { command, args } = startCommand(worker, port, ownOrigin, launchWrangler, persistTo, baseEnv, hostPorts);
+    const services = serviceOrigins(declaredServicesOf.get(worker.name) ?? [], { appOrigins, hostPorts });
+    const { command, args } = startCommand(
+      worker,
+      port,
+      ownOrigin,
+      launchWrangler,
+      persistTo,
+      baseEnv,
+      hostPorts,
+      services,
+    );
     // Both carriers, from the one value above. The argv `--var` reaches a `wrangler dev`; the
     // environment reaches a custom `dev.command`, where there is no argv to append to and
     // `@pithy-sh/vite` turns it into the same binding.
     const env = childEnvFor(
       spawnsUnderSession ? withCurrentSessionToken(childEnv, { cwd: projectDir }) : childEnv,
       ownOrigin,
+      services,
     );
     const child = spawn(command, args, { cwd: worker.dir, env, detached: hasSetsid });
     // Replaced in place on a restart, so `shutdown` signals the child that is actually running and the

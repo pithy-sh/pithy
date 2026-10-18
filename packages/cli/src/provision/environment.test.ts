@@ -1204,6 +1204,72 @@ describe("a Durable Object script_name, resolved", () => {
     ).rejects.toThrow(/deploy as "acme-same"/);
   });
 
+  /**
+   * **An app's service binding to another app or a kit Worker, in a feature (#617).** The top level carries dev's
+   * entry — `pithy worker sync` wrote it — and the feature has to name its own deployment of each target: the
+   * sibling's feature copy, and the kit host the feature deploys. Neither is dropped as a stranger's script.
+   */
+  test("a feature binds its own deployment of an apps/ target and of a kit Worker", async () => {
+    const appB = await worker("app-b", "acme-app-b");
+    const appA = await worker("app-a", "acme-app-a", {
+      services: [
+        { binding: "APP_B", service: "acme-app-b" },
+        { binding: "EMAIL", service: "acme-dev-email" },
+      ],
+    });
+    const app = defineCapability({
+      name: "appa",
+      requiredBindings: [
+        { type: "service", name: "APP_B", service: "app-b" },
+        { type: "service", name: "EMAIL", service: "email" },
+      ] satisfies BindingSpecInput[],
+    });
+    const report = await provisionEnvironment({
+      projectDir: dir,
+      scope: featureScope(identity),
+      capabilities: [app],
+      provisioners: fakeProvisioners().provisioners,
+      seedData: false,
+      administersItself: false,
+      resolveWorkers: async () => [
+        { name: "acme-app-a", dir: appA, capabilities: [app] },
+        { name: "acme-app-b", dir: appB, capabilities: [] },
+      ],
+      migrate: async () => {},
+      seed: async () => {},
+    });
+    const stanza = (
+      parse(await readFile(featureConfigPath(appA), "utf8")) as unknown as {
+        env: Record<string, { services?: { binding: string; service: string }[] }>;
+      }
+    ).env.feature;
+    expect(stanza?.services).toEqual([
+      { binding: "APP_B", service: "acme-f650-probe--app-b" },
+      { binding: "EMAIL", service: "acme-f650-probe--email" },
+    ]);
+    expect(report.bindingsDropped).toBeUndefined();
+  });
+
+  test("a declared environment binds a kit Worker at its host's script there", async () => {
+    const appA = await worker("app-a", "acme-app-a");
+    const app = defineCapability({
+      name: "appa",
+      requiredBindings: [{ type: "service", name: "EMAIL", service: "email" }] satisfies BindingSpecInput[],
+    });
+    const report = await provisionEnvironment({
+      projectDir: dir,
+      scope: environmentScope("acme", "staging"),
+      capabilities: [app],
+      provisioners: fakeProvisioners().provisioners,
+      seedData: false,
+      administersItself: false,
+      resolveWorkers: async () => [{ name: "acme-app-a", dir: appA, capabilities: [app] }],
+      migrate: async () => {},
+      seed: async () => {},
+    });
+    expect(report.services).toEqual([{ binding: "EMAIL", service: "acme-staging-email" }]);
+  });
+
   test("a service target is still resolved by its apps/<name> directory, which is what a capability writes", async () => {
     const realtime = await worker("realtime", "acme-realtime");
     const board = await worker("board", "acme-board");
