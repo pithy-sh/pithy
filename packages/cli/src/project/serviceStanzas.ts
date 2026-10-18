@@ -21,8 +21,9 @@ import { stanzaFor } from "./wranglerInheritance";
  * does not, exactly as `pithy provision` resolves a capability's service binding. A feature's stanza is
  * `pithy provision --feature`'s to write, into the generated config, and is never touched here.
  *
- * Upserted by binding name and never pruned: a `services` entry the adopter wrote by hand is theirs. The one
- * removal is the one asked for, `pithy worker unbind`'s, by name.
+ * Upserted by binding name and never pruned: a `services` entry the adopter wrote by hand is theirs, and
+ * `pithy worker bind` refuses a name one already uses rather than retarget it. The one removal is the one asked
+ * for, `pithy worker unbind`'s, by name.
  */
 
 /** One Worker of the project, by both of its names, and where it lives. */
@@ -110,17 +111,38 @@ function environmentsOf(config: { env?: Record<string, unknown> }, env: string |
   return [LOCAL_ENVIRONMENT, ...Object.keys(config.env ?? {}).filter((name) => name !== FEATURE_ENVIRONMENT)];
 }
 
+/** A stanza's `services` entries, as the file carries them. */
+type ServiceStanza = { services?: ServiceEntry[] };
+
+/** The `services` entry `binding` names in any stanza this reconciles, or `undefined`. */
+export async function serviceEntryNamed(workerDir: string, binding: string): Promise<ServiceEntry | undefined> {
+  const config = (await readWranglerConfig(workerDir)) as { env?: Record<string, unknown> };
+  for (const env of environmentsOf(config, undefined)) {
+    const entry = (stanzaFor(config, env) as ServiceStanza).services?.find((found) => found.binding === binding);
+    if (entry) return entry;
+  }
+  return undefined;
+}
+
+/** A reconcile worked out in memory: what each stanza ends up with, and the one write that lands it. */
+export interface ServiceStanzaPlan {
+  runs: ServiceStanzaRun[];
+  /** Write the file, when it changed. Nothing left to resolve, so nothing here refuses. */
+  write: () => Promise<void>;
+}
+
 /**
- * Upsert every declared service binding into each stanza, at the script its target deploys as there, and take
- * out the ones named in `remove`. Comment-preserving, idempotent, and the file is written only when it changed.
+ * Work out {@link reconcileServiceStanzas} without writing: every target resolved, every stanza decided. A
+ * caller with another file to edit plans first, so a target that will not resolve refuses before either file
+ * is touched.
  */
-export async function reconcileServiceStanzas(options: ReconcileServiceStanzasOptions): Promise<ServiceStanzaRun[]> {
+export async function planServiceStanzas(options: ReconcileServiceStanzasOptions): Promise<ServiceStanzaPlan> {
   const config = (await readWranglerConfig(options.workerDir)) as { env?: Record<string, unknown> };
   const before = stringify(config);
   const removed = new Set(options.remove ?? []);
   const runs: ServiceStanzaRun[] = [];
   for (const env of environmentsOf(config, options.env)) {
-    const stanza = stanzaFor(config, env) as { services?: ServiceEntry[] };
+    const stanza = stanzaFor(config, env) as ServiceStanza;
     const stanzaBefore = stringify(stanza);
     const entries = options.services.map((declaration) => ({
       binding: declaration.binding,
@@ -140,6 +162,21 @@ export async function reconcileServiceStanzas(options: ReconcileServiceStanzasOp
     }
     runs.push({ env, services: entries, changed: stringify(stanza) !== stanzaBefore });
   }
-  if (stringify(config) !== before) await writeWranglerConfig(options.workerDir, config);
-  return runs;
+  const changed = stringify(config) !== before;
+  return {
+    runs,
+    write: async () => {
+      if (changed) await writeWranglerConfig(options.workerDir, config);
+    },
+  };
+}
+
+/**
+ * Upsert every declared service binding into each stanza, at the script its target deploys as there, and take
+ * out the ones named in `remove`. Comment-preserving, idempotent, and the file is written only when it changed.
+ */
+export async function reconcileServiceStanzas(options: ReconcileServiceStanzasOptions): Promise<ServiceStanzaRun[]> {
+  const plan = await planServiceStanzas(options);
+  await plan.write();
+  return plan.runs;
 }

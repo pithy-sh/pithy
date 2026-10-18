@@ -224,9 +224,11 @@ export function removeServiceBinding(source: string, selector: ServiceSelector):
 
 /**
  * Point every service binding naming `from` at `to`, for `pithy worker rename`, or `null` when none names it.
- * The binding names stay: the app's code reads them.
+ * `from` is every name the Worker went by — its directory and its deploy name, since a declaration may carry
+ * either. The binding names stay: the app's code reads them.
  */
-export function retargetServiceBindings(source: string, from: string, to: string): string | null {
+export function retargetServiceBindings(source: string, from: string | readonly string[], to: string): string | null {
+  const names = new Set(typeof from === "string" ? [from] : from);
   const span = appBindingsArray(source);
   if (!span) return null;
   let result = source;
@@ -234,7 +236,8 @@ export function retargetServiceBindings(source: string, from: string, to: string
   // Last to first, so a splice never moves an element still to be visited.
   for (const element of [...elementsOf(source, span)].reverse()) {
     const text = result.slice(element.start, element.end);
-    if (keyValue(text, "type") !== "service" || keyValue(text, "service") !== from) continue;
+    const target = keyValue(text, "service");
+    if (keyValue(text, "type") !== "service" || target === undefined || !names.has(target)) continue;
     const rewritten = text.replace(
       /(\bservice\s*:\s*)(["'])[^"'\\]*\2/,
       (_whole, key: string, quote: string) => `${key}${quote}${to}${quote}`,

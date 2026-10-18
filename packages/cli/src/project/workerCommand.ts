@@ -673,7 +673,7 @@ export async function renameWorker(options: RenameWorkerOptions): Promise<Rename
   const movedScripts = new Map(oldScripts.map((old, index) => [old, newScripts[index] ?? old]));
   const rebinds = await planRebinds(
     workers.filter((worker) => worker.dir !== target.dir && dirname(worker.dir) === appsDir),
-    { from, to: options.to, scripts: movedScripts },
+    { from, deployedAs: target.name, to: options.to, scripts: movedScripts },
   );
 
   if (options.dryRun)
@@ -784,21 +784,22 @@ interface Rebind {
 /**
  * **Every other Worker's service binding to the renamed one, pointed at its new name (#617).**
  *
- * Two places name it. The app's declaration in `pithy.config.ts` names the Worker by its directory, `from`, and
- * becomes `to`; the binding name stays, because the app's code reads it. Each stanza of the sibling's
+ * Two places name it. The app's declaration in `pithy.config.ts` names the Worker by its directory, `from`, or by
+ * the name it deployed as, `deployedAs`, and either becomes `to`; the binding name stays, because the app's code reads it. Each stanza of the sibling's
  * `wrangler.jsonc` names a *script* the renamed Worker deploys as, and takes the script that stanza deploys as
  * after the rename — and a `services` entry naming some other script is left exactly as it is.
  */
 async function planRebinds(
   siblings: readonly WorkerTarget[],
-  rename: { from: string; to: string; scripts: ReadonlyMap<string, string> },
+  rename: { from: string; deployedAs: string; to: string; scripts: ReadonlyMap<string, string> },
 ): Promise<Rebind[]> {
   const rebinds: Rebind[] = [];
   for (const sibling of siblings) {
     const edits: RebindEdit[] = [];
     const configPath = join(sibling.dir, "pithy.config.ts");
     const source = await readFile(configPath, "utf8").catch(() => null);
-    const retargeted = source === null ? null : retargetServiceBindings(source, rename.from, rename.to);
+    const retargeted =
+      source === null ? null : retargetServiceBindings(source, [rename.from, rename.deployedAs], rename.to);
     if (source !== null && retargeted !== null) edits.push({ path: configPath, before: source, after: retargeted });
 
     const wranglerPath = join(sibling.dir, "wrangler.jsonc");

@@ -151,6 +151,16 @@ describe("retargetServiceBindings", () => {
     );
   });
 
+  test("takes every old name of the Worker, its deploy name included", () => {
+    const source = SCAFFOLDED.replace(
+      "  requiredBindings: [],\n",
+      '  requiredBindings: [\n    { type: "service", name: "BEE", service: "acme-app-b" },\n    { type: "service", name: "OTHER", service: "app-c" },\n  ],\n',
+    );
+    expect(retargetServiceBindings(source, ["app-b", "acme-app-b"], "app-x")).toBe(
+      source.replace('service: "acme-app-b" }', 'service: "app-x" }'),
+    );
+  });
+
   test("a config with nothing to retarget is null", () => {
     expect(retargetServiceBindings(SCAFFOLDED, "app-b", "app-x")).toBeNull();
   });

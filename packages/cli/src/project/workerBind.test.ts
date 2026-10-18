@@ -183,6 +183,47 @@ describe("bindWorker", () => {
     expect(action).toBe("Remove one binding in that path first.");
   });
 
+  /**
+   * **A refusal found while resolving the stanzas leaves both files as they were (#617).** Every other target
+   * the app declares is resolved before `pithy.config.ts` is touched, so a stale one stops the run before it
+   * edits anything, and a re-run after the fix is not short-circuited by a half-written binding.
+   */
+  test("a declared target that no longer resolves is refused before either file is written", async () => {
+    await writeApp("app-a", configSource("app-a", [SERVICE("GONE", "app-gone")]));
+    const config = await configOf("app-a");
+    const wrangler = await readFile(join(projectDir, "apps", "app-a", "wrangler.jsonc"), "utf8");
+    const { message } = await refusal(bindWorker({ projectDir, from: "app-a", to: "app-b" }));
+    expect(message).toBe('A service binding targets "app-gone", which is not one of this project\'s Workers.');
+    expect(await configOf("app-a")).toBe(config);
+    expect(await readFile(join(projectDir, "apps", "app-a", "wrangler.jsonc"), "utf8")).toBe(wrangler);
+  });
+
+  test("a project with no name is refused before either file is written", async () => {
+    await writeFile(join(projectDir, "pithy.config.ts"), "export default {};\n");
+    const config = await configOf("app-a");
+    await refusal(bindWorker({ projectDir, from: "app-a", to: "app-b" }));
+    expect(await configOf("app-a")).toBe(config);
+  });
+
+  /**
+   * **A `services` entry written by hand is the adopter's (#617).** Its name is taken in that Worker, so a bind
+   * under the same name is refused, naming the script it calls, and the entry is left exactly as it was.
+   */
+  test("a name a hand-written services entry already uses is refused, and the entry is left alone", async () => {
+    const path = join(projectDir, "apps", "app-a", "wrangler.jsonc");
+    await writeFile(
+      path,
+      `{\n  "name": "acme-app-a",\n  "env": {\n    "staging": { "name": "acme-staging-app-a" },\n    "prod": { "name": "acme-prod-app-a", "services": [{ "binding": "APP_B", "service": "legacy-billing" }] }\n  }\n}\n`,
+    );
+    const wrangler = await readFile(path, "utf8");
+    const config = await configOf("app-a");
+    const { message, action } = await refusal(bindWorker({ projectDir, from: "app-a", to: "app-b" }));
+    expect(message).toBe("app-a already binds APP_B, to legacy-billing in wrangler.jsonc.");
+    expect(action).toBe("Pass a different --binding.");
+    expect(await readFile(path, "utf8")).toBe(wrangler);
+    expect(await configOf("app-a")).toBe(config);
+  });
+
   test("a Worker binding itself is refused, pointing at the self binding", async () => {
     const { message, action } = await refusal(bindWorker({ projectDir, from: "app-a", to: "app-a" }));
     expect(message).toBe("A Worker does not bind itself here.");
@@ -212,6 +253,17 @@ describe("unbindWorker", () => {
     expect(await configOf("app-a")).toBe(before);
     const again = await unbindWorker({ projectDir, from: "app-a", binding: "APP_B" });
     expect(again).toEqual({ from: "app-a", to: null, binding: "APP_B", kind: null, changed: false });
+  });
+});
+
+describe("unbindWorker, when another declared target no longer resolves", () => {
+  test("is refused before either file is written", async () => {
+    await writeApp("app-a", configSource("app-a", [SERVICE("APP_B", "app-b"), SERVICE("GONE", "app-gone")]));
+    const config = await configOf("app-a");
+    const wrangler = await readFile(join(projectDir, "apps", "app-a", "wrangler.jsonc"), "utf8");
+    await refusal(unbindWorker({ projectDir, from: "app-a", to: "app-b" }));
+    expect(await configOf("app-a")).toBe(config);
+    expect(await readFile(join(projectDir, "apps", "app-a", "wrangler.jsonc"), "utf8")).toBe(wrangler);
   });
 });
 

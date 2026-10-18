@@ -37,7 +37,13 @@ import {
   renderPath,
   type ServiceEdge,
 } from "./serviceGraph";
-import { reconcileServiceStanzas, type ServiceWorkerNames, serviceScripts } from "./serviceStanzas";
+import {
+  planServiceStanzas,
+  type ServiceStanzaPlan,
+  type ServiceWorkerNames,
+  serviceEntryNamed,
+  serviceScripts,
+} from "./serviceStanzas";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "./workers";
 
 /**
@@ -285,16 +291,20 @@ async function editConfig(
   await writeFileAtomic(path, edited);
 }
 
-/** Write the binder's declared services into each stanza of its `wrangler.jsonc`, taking out `remove`. */
-async function syncStanzas(
+/**
+ * The binder's declared services, worked out for each stanza of its `wrangler.jsonc`, taking out `remove`.
+ * Planned before `pithy.config.ts` is edited: every target is resolved here, so one that no longer resolves, or
+ * a project with no name, refuses before either file is written.
+ */
+async function planStanzas(
   options: ServiceProjectOptions,
   project: ServiceProject,
   worker: ServiceWorker,
   services: readonly ServiceDeclaration[],
   remove: readonly string[] = [],
-): Promise<void> {
+): Promise<ServiceStanzaPlan> {
   const name = requireProjectName(await loadProject(options.projectDir));
-  await reconcileServiceStanzas({
+  return planServiceStanzas({
     workerDir: worker.dir,
     services,
     scripts: await serviceScripts(name, project.workers),
@@ -307,8 +317,8 @@ async function syncStanzas(
  *
  * Refused, in this order: a `--from` that is not an `apps/` Worker; a binding to itself; a target that is not a
  * Worker of the project, or a kit Worker nothing composes; a binding name that is not one; a second binding to a
- * target already bound under another name; a name the Worker already binds to something else; a binding that
- * would close a loop. A run that finds the binding already there changes nothing and says so.
+ * target already bound under another name; a name the Worker already binds to something else, a `services`
+ * entry written by hand in its `wrangler.jsonc` included; a binding that would close a loop. A run that finds the binding already there changes nothing and says so.
  */
 export async function bindWorker(options: BindWorkerOptions): Promise<ServiceBindReport> {
   const project = await readServiceProject(options);
@@ -347,6 +357,14 @@ export async function bindWorker(options: BindWorkerOptions): Promise<ServiceBin
       action: "Pass a different --binding.",
     });
   }
+  // Not declared, so written by hand: the adopter's, and never retargeted under them.
+  const handWritten = await serviceEntryNamed(from.dir, binding);
+  if (handWritten) {
+    throw new ConflictError({
+      message: `${from.app} already binds ${binding}, to ${handWritten.service} in wrangler.jsonc.`,
+      action: "Pass a different --binding.",
+    });
+  }
   const loop = closesLoop(project.edges, from.app, target.name);
   if (loop) {
     throw new ConflictError({
@@ -357,12 +375,13 @@ export async function bindWorker(options: BindWorkerOptions): Promise<ServiceBin
   }
 
   const declaration = { binding, target: target.name };
+  const stanzas = await planStanzas(options, project, from, [...from.services, declaration]);
   await editConfig(
     from,
     (source) => addServiceBinding(source, declaration),
     `Add ${renderServiceBinding(declaration)} to the app's requiredBindings by hand.`,
   );
-  await syncStanzas(options, project, from, [...from.services, declaration]);
+  await stanzas.write();
   return { ...report, binding, changed: true };
 }
 
@@ -396,13 +415,14 @@ export async function unbindWorker(options: UnbindWorkerOptions): Promise<Servic
       changed: false,
     };
   }
+  const rest = from.services.filter((service) => service.binding !== found.binding);
+  const stanzas = await planStanzas(options, project, from, rest, [found.binding]);
   await editConfig(
     from,
     (source) => removeServiceBinding(source, { binding: found.binding }),
     `${from.app} declares ${found.binding} somewhere this cannot edit. Take it out of pithy.config.ts by hand.`,
   );
-  const rest = from.services.filter((service) => service.binding !== found.binding);
-  await syncStanzas(options, project, from, rest, [found.binding]);
+  await stanzas.write();
   return {
     from: from.app,
     to: found.target,

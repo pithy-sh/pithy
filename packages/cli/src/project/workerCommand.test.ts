@@ -769,6 +769,32 @@ describe("renameWorker", () => {
     expect(wrangler.env?.prod?.services).toEqual([{ binding: "APP_B", service: "acme-app-x-prod" }]);
   });
 
+  test("a declaration naming the renamed Worker by its deploy name follows it too", async () => {
+    await scaffold("app-b");
+    await scaffold("app-a");
+    const declaration = `const app = {\n  name: "appa",\n  requiredBindings: [\n    { type: "service", name: "BEE", service: "acme-app-b" },\n  ],\n};\n\nexport default { capabilities: [], app };\n`;
+    await writeFile(join(dir, "apps", "app-a", "pithy.config.ts"), declaration);
+    await writeFile(
+      join(dir, "apps", "app-a", "wrangler.jsonc"),
+      `{\n  "name": "acme-app-a",\n  "services": [{ "binding": "BEE", "service": "acme-app-b" }]\n}\n`,
+    );
+
+    const report = await renameWorker({
+      projectDir: dir,
+      from: "app-b",
+      to: "app-x",
+      mainRoot: dir,
+      discoverWorkers: discoverDeployed(dir, ["app-a", "app-b"]),
+      probeDeployed: account(),
+    });
+
+    expect(report.rebound).toEqual(["app-a"]);
+    expect(await readFile(join(dir, "apps", "app-a", "pithy.config.ts"), "utf8")).toBe(
+      declaration.replace('service: "acme-app-b"', 'service: "app-x"'),
+    );
+    expect((await wranglerOf("app-a")).services).toEqual([{ binding: "BEE", service: "acme-app-x" }]);
+  });
+
   /**
    * **A rename moves every name it invalidates, and the self binding names a script (#616).**
    *
