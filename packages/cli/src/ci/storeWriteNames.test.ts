@@ -111,8 +111,8 @@ const DECLARED: readonly Declared[] = [
     via: "`masterKeySecretName(this.#project, env, this.#feature)` three lines above — `resourceNames(project).env(env).secretEntry(…)`, or the feature scope's",
   },
   {
-    site: "packages/cli/src/capabilities/secretsProvisioner.ts putSecret(managerCfApiTokenSecretName(target.project), encodeVersionedValue(initialVersionedValue(apiToken)))",
-    via: "`managerCfApiTokenSecretName` — `resourceNames(project).global.secretEntry(…)`, composed in the argument",
+    site: "packages/cli/src/capabilities/secretsProvisioner.ts putSecret(runtimeTokenSecretName(target.project, target.env), encodeVersionedValue(initialVersionedValue(apiToken)))",
+    via: "`runtimeTokenSecretName` — `resourceNames(project).env(env).secretEntry(…)`, composed in the argument",
   },
   {
     site: "packages/cli/src/capabilities/secretsProvisioner.ts deleteSecret(name)",
@@ -120,7 +120,7 @@ const DECLARED: readonly Declared[] = [
   },
   {
     site: "packages/cli/src/capabilities/secretsProvisioner.ts deleteSecret(entry)",
-    via: "`managerCfApiTokenSecretName(this.#project)` three lines above — the same recomputation for the manager's token entry",
+    via: "`runtimeTokenSecretName(this.#project, env)` two lines above — the same recomputation for the environment's runtime token entry",
   },
   {
     site: "packages/cli/src/capabilities/storeSecretWrites.ts remove(entry)",

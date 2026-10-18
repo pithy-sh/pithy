@@ -42,7 +42,9 @@ function fakeCf() {
     { id: "thumb", neverRequireSignedURLs: true },
   ]);
   const createStreamKey = vi.fn(async () => ({ id: "kid-1", jwk: "eyJr" }));
+  const secretExists = vi.fn(async () => true);
   const cf = {
+    secrets: () => ({ exists: secretExists }),
     r2Provisioner: () => ({ findBucketByName, createBucket, deleteBucket }),
     r2: () => ({ emptyBucket }),
     workers: () => ({ getWorker, deleteWorker, accountSubdomain }),
@@ -63,6 +65,7 @@ function fakeCf() {
     getWorker,
     deleteWorker,
     accountSubdomain,
+    secretExists,
   };
 }
 
@@ -75,7 +78,6 @@ function provisioner(cf: CloudflareClients, config: MediaConfig, events: CliAudi
     account: { accountId: "acct-1", confirmation: "pinned" },
     apiToken: "tok",
     storeId: "store-1",
-    mediaApiToken: "media-tok",
     r2Credentials: { accessKeyId: "ak", secretAccessKey: "sk" },
     mediaConfig: config,
     dispatcher: { dispatch: async () => {} },
@@ -142,7 +144,6 @@ describe("CloudflareMediaProvisioner", () => {
       account: { accountId: "acct-1", confirmation: "pinned" },
       apiToken: "tok",
       storeId: "store-1",
-      mediaApiToken: "media-tok",
       r2Credentials: { accessKeyId: "ak", secretAccessKey: "sk" },
       mediaConfig: config,
       dispatcher: {
@@ -198,6 +199,41 @@ describe("CloudflareMediaProvisioner", () => {
     expect(allR2.events).toEqual([]);
   });
 
+  test("writes media's account and nothing else — no Images or Stream token is asked for or stored (#728)", async () => {
+    const { media, writes } = signing(MediaConfig.parse({}));
+    await media.writeCredentials("staging", { bucketName: STAGING_BUCKET });
+    expect(writes.find((write) => write.name === "media-storage-credentials")?.value).toEqual({ accountId: "acct-1" });
+  });
+
+  test("deployWorker refuses before deploying while the environment holds no runtime token (#728)", async () => {
+    // The enrichment worker binds the runtime token's store entry. A project upgraded from the manager's
+    // own token has none until it mints one, and wrangler would refuse the binding with no word of why.
+    const { cf, secretExists } = fakeCf();
+    secretExists.mockResolvedValue(false);
+    const resolveEnv = vi.fn();
+    const media = new CloudflareMediaProvisioner({
+      projectDir: KIT_ROOT,
+      project: PROJECT,
+      cf,
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      apiToken: "tok",
+      storeId: "store-1",
+      r2Credentials: { accessKeyId: "ak", secretAccessKey: "sk" },
+      mediaConfig: MediaConfig.parse({}),
+      dispatcher: { dispatch: async () => {} },
+      environments: DEFAULT_ENVIRONMENTS,
+      resolveEnv,
+    });
+    await expect(media.deployWorker("staging", { bucketName: STAGING_BUCKET })).rejects.toMatchObject({
+      payload: {
+        message: expect.stringContaining("acme-staging-runtime-cf-api-token"),
+        action: expect.stringContaining("pithy token mint runtime --env staging"),
+      },
+    });
+    expect(secretExists).toHaveBeenCalledWith("acme-staging-runtime-cf-api-token");
+    expect(resolveEnv).not.toHaveBeenCalled();
+  });
+
   test("writeCredentials upserts both secrets — create first, update on the re-run that create rejects", async () => {
     const { cf } = fakeCf();
     const events: CliAuditEvent[] = [];
@@ -209,7 +245,6 @@ describe("CloudflareMediaProvisioner", () => {
       account: { accountId: "acct-1", confirmation: "pinned" },
       apiToken: "tok",
       storeId: "store-1",
-      mediaApiToken: "media-tok",
       r2Credentials: { accessKeyId: "ak", secretAccessKey: "sk" },
       mediaConfig: MediaConfig.parse({}),
       dispatcher: {
@@ -226,8 +261,8 @@ describe("CloudflareMediaProvisioner", () => {
     });
 
     await media.writeCredentials("staging", { bucketName: STAGING_BUCKET });
-    // Both secrets, each upserted: the R2 bundle the ObjectStore reads, then media's own Images +
-    // Stream token. One audit event covers the pair — nothing can write one and not the other.
+    // Both secrets, each upserted: the R2 bundle the ObjectStore reads, then media's own account. One
+    // audit event covers the pair — nothing can write one and not the other.
     expect(writes).toEqual([
       "create:media-r2-credentials",
       "update:media-r2-credentials",
@@ -246,7 +281,6 @@ describe("CloudflareMediaProvisioner", () => {
       account: { accountId: "acct-1", confirmation: "pinned" },
       apiToken: "tok",
       storeId: "store-1",
-      mediaApiToken: "media-tok",
       r2Credentials: { accessKeyId: "ak", secretAccessKey: "sk" },
       mediaConfig: MediaConfig.parse({}),
       dispatcher: {

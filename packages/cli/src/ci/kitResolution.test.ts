@@ -184,6 +184,7 @@ const STATIC_RESIDUE: Record<string, readonly string[]> = {
   "seed/prepare.ts": ["@pithy-sh/secrets"],
   "seed/run.ts": ["@pithy-sh/secrets"],
   "setup/mint.ts": ["@pithy-sh/secrets"],
+  "tokens/superseded.ts": ["@pithy-sh/secrets"],
   "ui/react.ts": ["@pithy-sh/ui-react"],
 };
 

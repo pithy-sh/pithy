@@ -5,11 +5,13 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { R2Credentials } from "@pithy-sh/cloudflare/src/r2/r2Credentials";
-import { commandName } from "@pithy-sh/core/src/cli/command";
+import { RUNTIME_PROFILE } from "@pithy-sh/cloudflare/src/tokens/runtime";
+import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { dispatchSecretWrite, type SecretDispatcher, type SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
+import { runtimeTokenSecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { CliAuditEmit } from "../audit/cliAudit";
@@ -129,18 +131,13 @@ export interface CloudflareMediaProvisionerOptions {
   /** The CF Secrets Store id holding the per-env master keys (the media worker decrypts its credentials). */
   storeId: string;
   /**
-   * The API token written into the media secret — what the Worker mints Images and Stream direct-upload
-   * URLs with. Supplied, not minted: the permission catalog carries no Images or Stream keys yet.
-   */
-  mediaApiToken: string;
-  /**
    * The R2 S3 access-key pair the Worker presigns R2 uploads and downloads with. Supplied, not minted:
    * Cloudflare exposes no API for creating one.
    */
   r2Credentials: { accessKeyId: string; secretAccessKey: string };
   /**
-   * The API token carried alongside the R2 key pair so the object store can prove bucket access — a
-   * different scope from `mediaApiToken`, which is Images and Stream. Defaults to the bootstrap token,
+   * The API token carried alongside the R2 key pair so the object store can prove bucket access — the
+   * token the pair derives from, outside the one-token rule like the pair itself. Defaults to the bootstrap token,
    * matching what `pithy storage provision` does; supply an R2-scoped one for production.
    */
   r2ApiToken?: string;
@@ -170,7 +167,6 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
   readonly #project: string;
   readonly #apiToken: string;
   readonly #storeId: string;
-  readonly #mediaApiToken: string;
   readonly #r2Credentials: { accessKeyId: string; secretAccessKey: string };
   readonly #r2ApiToken: string;
   readonly #mediaConfig: MediaConfig;
@@ -191,7 +187,6 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
     this.#project = options.project;
     this.#apiToken = options.apiToken;
     this.#storeId = options.storeId;
-    this.#mediaApiToken = options.mediaApiToken;
     this.#r2Credentials = options.r2Credentials;
     this.#r2ApiToken = options.r2ApiToken ?? options.apiToken;
     this.#mediaConfig = options.mediaConfig;
@@ -308,7 +303,8 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
   /**
    * Write the environment's two secrets. Upserts, so a re-run heals rather than fails.
    *
-   * `media-storage-credentials` is media's own — the Images + Stream token and the account id.
+   * `media-storage-credentials` is media's own — the account id, and nothing else since #728: media mints
+   * Images and Stream uploads with the application's `runtime` token, so no token is asked for here.
    * `media-r2-credentials` is `@pithy-sh/storage`'s R2 bundle, which media declares and never reads; it
    * is validated against the schema the registry entry itself carries, so the value written here and the
    * value the `ObjectStore` re-validates on read come from one declaration and cannot drift.
@@ -319,10 +315,9 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
     );
     // Validate before dispatching: a malformed secret is only discovered at the Worker's first read
     // otherwise, long after the operator has walked away from the terminal.
-    const storage = MediaStorageCredentials.parse({
-      apiToken: this.#mediaApiToken,
-      accountId: this.#account.accountId,
-    });
+    // Rewritten whole on every run, which is how a bundle written before #728 loses the token an operator
+    // supplied: the upgrade path is mint `runtime`, re-run this, then revoke the old token.
+    const storage = MediaStorageCredentials.parse({ accountId: this.#account.accountId });
     const r2 = mediaR2Registry[MEDIA_R2_SECRET].schema.parse({
       accountId: this.#account.accountId,
       apiToken: this.#r2ApiToken,
@@ -331,7 +326,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
       bucket: resources.bucketName,
     });
     // The R2 secret goes first. It names the bucket, so a half-finished run leaves the object plane
-    // wired and the enrichment token missing — the failure an operator can read off the error.
+    // wired and the account missing — the failure an operator can read off the error.
     await this.#upsertSecret(env, MEDIA_R2_SECRET, r2);
     await this.#upsertSecret(env, MEDIA_STORAGE_SECRET, storage);
     // One event for one provisioning step. Both names ride in the metadata rather than becoming two
@@ -372,8 +367,24 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
     }
   }
 
+  /**
+   * Refuse, before anything deploys, an environment whose Secrets Store holds no runtime token (#728). The
+   * enrichment worker binds that entry, and a project upgraded from the secrets manager's own token has
+   * none until it mints one — which wrangler would answer with a refused binding and no word of why.
+   */
+  async #requireRuntimeToken(env: ManagedEnvironment): Promise<void> {
+    const entry = runtimeTokenSecretName(this.#project, env);
+    if (await this.#cf.secrets(this.#storeId).exists(entry)) return;
+    throw new ValidationError({
+      message: `${env} has no runtime token in the Secrets Store (${entry}), and the media worker reads one.`,
+      action: `Run ${pithyCommand("token mint", { args: [RUNTIME_PROFILE], flags: { "--env": env } })}, then re-run.`,
+      detail: `media provision ${env}: secrets store ${this.#storeId} has no entry ${entry}`,
+    });
+  }
+
   /** Resolve the env's wrangler config from the committed template + provisioned ids, then `wrangler deploy`. */
   async deployWorker(env: ManagedEnvironment, resources: MediaResources): Promise<void> {
+    await this.#requireRuntimeToken(env);
     const { mediaWorkerName, resolveMediaConfig } = await loadMedia(this.#projectDir);
     const { appDatabaseId, secretsDatabaseId } = await this.#resolveEnv(env);
     const dir = await mediaWorkerDir(this.#projectDir);

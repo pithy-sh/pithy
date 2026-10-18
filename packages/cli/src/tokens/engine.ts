@@ -8,7 +8,11 @@ import type {
   MintedAccountToken,
   TokenPermission,
 } from "@pithy-sh/cloudflare/src/tokens/accountTokensManager";
-import { PERMISSION_GROUPS, type PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
+import {
+  PERMISSION_GROUPS,
+  type PermissionKey,
+  resolvePermissionKeys,
+} from "@pithy-sh/cloudflare/src/tokens/permissions";
 import {
   CI_SYSTEM_PROFILE,
   type ProfileOverride,
@@ -26,6 +30,7 @@ import type { StatePathOptions } from "../notifier/state";
 import { forgetMintedToken, holdsMintedToken, mintedTokensPath } from "./mintedTokens";
 import { type ResolvedRouteZone, routeZoneIds } from "./routeZones";
 import { type SinkTarget, writeTokenToSink } from "./sinks";
+import { type SupersededToken, supersededAccountTokens } from "./superseded";
 
 /** The account-token control plane the engine drives — the subset of `CloudflareAccountTokensManager` it needs. */
 export interface AccountTokenControl {
@@ -102,6 +107,13 @@ export interface TokenEngine {
    * hold cannot be scoped, and a token minted without it passes every local check and fails in CI.
    */
   routeZones?: () => Promise<ResolvedRouteZone[]>;
+  /**
+   * The token a composed capability stored that `runtime` superseded, in this environment — media's supplied
+   * Images and Stream token, still in `media-storage-credentials` — or `null` when there is none (#728). It
+   * asks the environment's manager, so it may throw; a throw costs the listing that one line and no more.
+   * Absent, nothing is asked.
+   */
+  storedSuperseded?: () => Promise<SupersededToken | null>;
 }
 
 /** Per-call overrides (CLI flags) that win over the profile default and the config override. */
@@ -144,12 +156,11 @@ export function tokenPrefix(project: string, env: string): string {
  * would let one project's mint overwrite another's live credential, whereas `.dev.vars` is a file in
  * this checkout and renaming its keys would break every CI pipeline reading `CF_TOKEN_CI_SYSTEM`.
  *
- * A `global` profile puts the literal `global` in the environment slot, so every environment resolves
- * the one entry provisioning wrote instead of minting a per-environment entry nothing binds.
+ * One entry per environment: the `runtime` token is minted per environment (#728), so revoking
+ * staging's leaves production reading — and `pithy secrets provision` writes the same entry.
  */
 export function tokenStoreEntryName(project: string, env: string, profile: TokenProfile): string {
-  const names = resourceNames(project);
-  return (profile.secretScope === "global" ? names.global : names.env(env)).secretEntry(profile.secret);
+  return resourceNames(project).env(env).secretEntry(profile.secret);
 }
 
 /** The outcome of a mint/rotate. `value` is for the caller's in-process use — never surface it in output. */
@@ -239,8 +250,8 @@ function resolveDestination(engine: TokenEngine, profile: TokenProfile): TokenSt
  * alone — the zone-scoped route policy the project's declared domains require (#651).
  *
  * The zones resolve **before** any Cloudflare write, so an unresolvable one fails the mint rather than
- * producing a credential that deploys green and cannot attach a route. Every other profile is a
- * worker-consumer credential that never deploys, so its resolver is never called at all.
+ * producing a credential that deploys green and cannot attach a route. The other profile, `runtime`, is
+ * a credential that never deploys, so its resolver is never called at all.
  */
 async function tokenPolicies(
   engine: TokenEngine,
@@ -355,6 +366,25 @@ export type RouteScope =
   /** The token's policies did not come back, so nothing can be claimed either way. */
   | "unknown";
 
+/**
+ * Whether a live token carries every account permission group its profile names (#728).
+ *
+ * **A mint cannot fix a token that answers `missing`.** A mint rolls the value and leaves the policy set
+ * exactly as it was, so a token that existed before its profile grew — a shared `analytics` token minted
+ * before media claimed it, an override that has since been widened — hands back a fresh secret that
+ * still cannot do the job. Rotate mints a replacement with the profile's current policies and deletes
+ * the old one, which is the remedy the listing names.
+ */
+export type GrantScope =
+  /** Every group the profile names is granted by an allow policy, and denied by none. */
+  | "current"
+  /** A group the profile names is absent, or explicitly denied. Rotate, never mint. */
+  | "missing"
+  /** The token is disabled or expired, so Cloudflare refuses it whatever it carries. */
+  | "inactive"
+  /** The token's policies, or the account's group ids, did not come back — nothing can be claimed. */
+  | "unknown";
+
 /** One row of `pithy token list`: a minted token's identity, never its value. */
 export interface TokenListItem {
   profile: string;
@@ -364,6 +394,8 @@ export interface TokenListItem {
   status?: string;
   /** Whether this token can attach the routes this environment's declared domains need. */
   routeScope: RouteScope;
+  /** Whether this token carries every account permission its profile names. */
+  grants: GrantScope;
 }
 
 /**
@@ -482,6 +514,56 @@ async function routeRequirement(engine: TokenEngine): Promise<RouteRequirement |
   }
 }
 
+/**
+ * The account permission-group ids each listed profile's token must carry, or `null` when the group ids
+ * could not be read. The permissions are the ones a rotate would mint — a standing override's, where one
+ * is set — so `missing` always means a rotate would fix it.
+ *
+ * **Never throws**, for {@link routeRequirement}'s reason: this is the reporting path, and a lookup that
+ * fails must cost this column and nothing else.
+ */
+async function grantRequirements(
+  engine: TokenEngine,
+  profiles: readonly string[],
+): Promise<Map<string, string[]> | null> {
+  try {
+    const names = new Map<string, string[]>();
+    for (const name of profiles) {
+      const profile = resolveProfile(engine.profiles, name, engine.override?.(name));
+      names.set(name, resolvePermissionKeys(profile.permissions));
+    }
+    const all = [...new Set([...names.values()].flat())];
+    if (all.length === 0) return new Map();
+    const ids = await engine.tokens.resolvePermissionGroups(all);
+    const idOf = new Map(all.map((group, index) => [group, ids[index]?.id]));
+    const required = new Map<string, string[]>();
+    for (const [name, groups] of names) {
+      const resolved = groups.map((group) => idOf.get(group));
+      if (resolved.some((id) => id === undefined)) return null;
+      required.set(name, resolved as string[]);
+    }
+    return required;
+  } catch {
+    return null;
+  }
+}
+
+/** Read one live token's account grants against what its profile names. Explicit denies first, as Cloudflare does. */
+function grantScopeOf(token: AccountTokenSummary, required: readonly string[] | undefined): GrantScope {
+  if (token.status !== undefined && token.status !== "active") return "inactive";
+  if (required === undefined || token.policies === undefined) return "unknown";
+  const policies = token.policies;
+  const names = (policy: AccountTokenPolicy, id: string) => (policy.permission_groups ?? []).some((g) => g.id === id);
+  for (const id of required) {
+    if (policies.some((policy) => policy.effect === "deny" && names(policy, id))) return "missing";
+    if (policies.some((policy) => policy.effect !== "deny" && names(policy, id))) continue;
+    // Something did not say what it grants; that alone is unknowable.
+    if (policies.some((policy) => policy.permission_groups === undefined)) return "unknown";
+    return "missing";
+  }
+  return "current";
+}
+
 /** The resource-key prefix a zone-scoped policy is written under. */
 const ZONE_RESOURCE_PREFIX = "com.cloudflare.api.account.zone.";
 
@@ -514,6 +596,11 @@ export async function listProfileTokens(engine: TokenEngine, env: string): Promi
   // Read once for the listing: a standing `tokens.overrides["ci-system"].permissions` is why a grant is
   // absent, and is the thing to change rather than the mint command.
   const overridden = engine.override?.(CI_SYSTEM_PROFILE)?.permissions !== undefined;
+  // Only the profiles that have a token here, and only once for the listing.
+  const listed = [
+    ...new Set(all.filter((token) => token.name.startsWith(prefix)).flatMap((token) => byName.get(token.name) ?? [])),
+  ];
+  const required = listed.length > 0 ? await grantRequirements(engine, listed) : new Map<string, string[]>();
   return all.flatMap((token) => {
     if (!token.name.startsWith(prefix)) return [];
     const profile = byName.get(token.name);
@@ -524,8 +611,30 @@ export async function listProfileTokens(engine: TokenEngine, env: string): Promi
     // A standing override strips the route policy from every mint, so a missing grant is that override's
     // doing and re-minting would reproduce it exactly. Said as its own word, because the remedy differs.
     const routeScope: RouteScope = scope === "stale" && overridden ? "overridden" : scope;
-    return [{ profile, env, name: token.name, tokenId: token.id, status: token.status, routeScope }];
+    const grants = grantScopeOf(token, required?.get(profile));
+    return [{ profile, env, name: token.name, tokenId: token.id, status: token.status, routeScope, grants }];
   });
+}
+
+/**
+ * The credentials `runtime` superseded that are still there for this environment (#728): the secrets manager's
+ * own tokens, out of the account's token list, and a supplied media token still stored, asked of the manager.
+ *
+ * **Never throws on the stored half.** The manager may be absent, old, or unreachable; that is one line the
+ * listing cannot say, reported as `unasked`, and never a listing that refuses.
+ */
+export async function listSupersededTokens(
+  engine: TokenEngine,
+  env: string,
+): Promise<{ found: SupersededToken[]; unasked: string | null }> {
+  const found = supersededAccountTokens(await engine.tokens.listTokens(), engine.project, env);
+  if (!engine.storedSuperseded) return { found, unasked: null };
+  try {
+    const stored = await engine.storedSuperseded();
+    return { found: stored === null ? found : [...found, stored], unasked: null };
+  } catch (error) {
+    return { found, unasked: error instanceof PithyError ? error.payload.message : String(error) };
+  }
 }
 
 /** Options for `pithy token rotate`. */

@@ -14,6 +14,7 @@ import type { SecretWriteRequest } from "@pithy-sh/secrets/src/cli/dispatch";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { managerRegistry } from "@pithy-sh/secrets/src/manager/managerRegistry";
 import { isMintableSecret, type SecretRegistry } from "@pithy-sh/secrets/src/registry";
+import { runtimeTokenRegistry } from "@pithy-sh/secrets/src/tokens/runtimeTokenRegistry";
 import { storageSecretsRegistry } from "@pithy-sh/storage/src/secret/registry";
 import { turnstileSecretsRegistry } from "@pithy-sh/turnstile/src/secret/registry";
 import { describe, expect, test } from "vitest";
@@ -42,7 +43,8 @@ import { secretsStoreBindings } from "./secretBindings";
  *
  * ## And the list of registries is held to the repository, not to memory
  *
- * The paragraph above used to say *"it reads the four the kit actually ships"* while eight shipped:
+ * The paragraph above used to say *"it reads the four the kit actually ships"* while eight shipped (nine
+ * since #728's runtime token registry):
  * media, payments, storage and turnstile each define one and none of them was here. A hand-written list
  * that claims to be exhaustive is the same defect as a hand-written rule that claims to be complete —
  * this gate was itself written during a wave that closed a can't-fail gate, which is how easy it is.
@@ -69,6 +71,7 @@ const REGISTRY_SITES = [
   "payments/src/secret/registry.ts",
   "secrets/src/capability.ts",
   "secrets/src/manager/managerRegistry.ts",
+  "secrets/src/tokens/runtimeTokenRegistry.ts",
   "storage/src/secret/registry.ts",
   "turnstile/src/secret/registry.ts",
 ];
@@ -108,6 +111,10 @@ const SHIPPED_REGISTRIES: Record<string, { site: string; registry: SecretRegistr
   payments: { site: "payments/src/secret/registry.ts", registry: paymentsSecretsRegistry },
   secrets: { site: "secrets/src/capability.ts", registry: { [MASTER_KEY_BINDING]: masterKeyRegistryEntry } },
   "secrets manager": { site: "secrets/src/manager/managerRegistry.ts", registry: managerRegistry },
+  "runtime token": {
+    site: "secrets/src/tokens/runtimeTokenRegistry.ts",
+    registry: runtimeTokenRegistry(["secrets:read", "secrets:write"]),
+  },
   storage: { site: "storage/src/secret/registry.ts", registry: storageSecretsRegistry },
   turnstile: { site: "turnstile/src/secret/registry.ts", registry: turnstileSecretsRegistry },
 };
@@ -193,7 +200,7 @@ describe("the registries this file claims to read are the ones the kit ships", (
 
   test("which of them declare an arbitrary secret is pinned, so a per-registry sweep cannot go quiet", () => {
     // The per-registry `test.each` below is `[] === []` for a registry that declares nothing arbitrary,
-    // and four of these eight declare nothing arbitrary — legitimately, since a Stripe key and an R2
+    // and most of these declare nothing arbitrary — legitimately, since a Stripe key and an R2
     // credential are obtained rather than minted. That is fine as long as it is *stated*: a registry
     // whose arbitrary secret silently disappeared would turn its case from a real check into an empty
     // one, and nothing else here would notice.
@@ -204,6 +211,8 @@ describe("the registries this file claims to read are the ones the kit ships", (
       payments: [],
       secrets: [],
       "secrets manager": [],
+      // A Cloudflare token is minted by `pithy token mint` against the account, never from random bytes.
+      "runtime token": [],
       storage: [],
       turnstile: [],
     });
@@ -266,5 +275,35 @@ describe("what pithy provision declares and cannot create", () => {
    */
   test("the kit as shipped gives provision something to warn about", () => {
     expect(managerMintedSecrets(everyShippedSecret()).length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * **A deployed application holds one Cloudflare API token, and no more (#728).** The owner's rule, held as a
+ * property of every registry the kit ships rather than of one capability: the only Cloudflare token a Worker
+ * reads is `runtime`'s. A capability that wants another has to declare a secret for it, and this is where that
+ * declaration fails. R2's bundles carry the token their S3 key pair derives from, and stay outside the rule: the
+ * pair is the object store's credential, minted by no API, and scoped to the bucket it presigns.
+ */
+describe("one Cloudflare API token per deployed application (#728)", () => {
+  const entries = Object.entries(everyShippedSecret());
+
+  test("the only Cloudflare token the kit composes from permission groups is the runtime token", () => {
+    const helped = entries
+      .filter(([, entry]) => entry.origin?.kind === "helped" && entry.origin.issuer === "cloudflare")
+      .map(([name]) => name);
+    expect(helped).toEqual(["RUNTIME_CF_API_TOKEN"]);
+  });
+
+  test("no bundle carries a Cloudflare API token beside its other fields, but an R2 pair's own", () => {
+    const carrying = entries
+      .filter(([, entry]) => {
+        const shape =
+          entry.valueType === "json" ? (entry.schema as { shape?: Record<string, unknown> }).shape : undefined;
+        return shape !== undefined && "apiToken" in shape;
+      })
+      .map(([name]) => name)
+      .sort();
+    expect(carrying).toEqual(["media-r2-credentials", "storage-r2-credentials"]);
   });
 });

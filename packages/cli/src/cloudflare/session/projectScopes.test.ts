@@ -5,7 +5,9 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SESSION_BASE_SCOPES } from "@pithy-sh/cloudflare/src/oauth/scopes";
-import type { TokenProfile } from "@pithy-sh/cloudflare/src/tokens/profiles";
+import { resolveTokenProfiles, type TokenProfile } from "@pithy-sh/cloudflare/src/tokens/profiles";
+import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { media } from "@pithy-sh/media/src/capability";
 import { describe, expect, test } from "vitest";
 import { deriveSessionScopes, projectSessionScopes } from "./projectScopes";
 
@@ -51,6 +53,44 @@ describe("deriveSessionScopes", () => {
       override: (name) => (name === "ci-system" ? { permissions: ["workers:write", "kv:write"] } : undefined),
     });
     expect(scopes).toContain("workers-kv-storage.write");
+  });
+});
+
+describe("the runtime token's scopes (#728)", () => {
+  const scopesFor = (capabilities: Parameters<typeof resolveTokenProfiles>[0]) =>
+    deriveSessionScopes({
+      environments: ["dev", "prod"],
+      profilesFor: () => resolveTokenProfiles(capabilities),
+      declaresDomain: () => false,
+      override: () => undefined,
+    });
+  const RUNTIME_SCOPES = ["images.write", "stream.write", "account-analytics.read"];
+
+  test("pithy cloudflare connect asks for every runtime scope media's config needs", () => {
+    const scopes = scopesFor([media({})]);
+    for (const scope of RUNTIME_SCOPES) expect(scopes, scope).toContain(scope);
+  });
+
+  test("and no other: a type stored in R2 asks for nothing about its product", () => {
+    const scopes = scopesFor([media({ video: { store: "r2" } })]);
+    expect(scopes).toContain("images.write");
+    expect(scopes).toContain("account-analytics.read");
+    expect(scopes).not.toContain("stream.write");
+  });
+
+  test("a composition calling Cloudflare for none of them asks for none of them", () => {
+    for (const capabilities of [
+      [],
+      [defineCapability({ name: "widgets", requiredBindings: [] })],
+      [media({ images: { store: "r2" }, video: { store: "r2" } })],
+    ]) {
+      const scopes = scopesFor(capabilities);
+      for (const scope of RUNTIME_SCOPES) expect(scopes, scope).not.toContain(scope);
+    }
+  });
+
+  test("never the zone-level Analytics Read, which reaches none of the datasets", () => {
+    expect(scopesFor([media({})])).not.toContain("analytics.read");
   });
 });
 

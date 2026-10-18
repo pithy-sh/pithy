@@ -5,9 +5,9 @@ import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients"
 import { decodeVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import { secretsRotateWorkflowName, secretsWriteWorkflowName } from "@pithy-sh/secrets/src/manager/dispatcher";
 import {
-  managerCfApiTokenName,
-  managerCfApiTokenSecretName,
   masterKeySecretName,
+  runtimeTokenName,
+  runtimeTokenSecretName,
 } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
@@ -17,8 +17,8 @@ import {
   CloudflareSecretsDeprovisioner,
   CloudflareSecretsProvisioner,
   type CloudflareSecretsProvisionerOptions,
-  managerTokenPermissions,
-  writeManagerCfApiToken,
+  runtimeTokenPermissions,
+  writeRuntimeToken,
 } from "./secretsProvisioner";
 
 /**
@@ -163,7 +163,7 @@ describe("CloudflareSecretsProvisioner", () => {
     const provisioner = new CloudflareSecretsProvisioner({ ...provisionerOptions(cf), feature });
 
     await provisioner.ensureMasterKey("feature");
-    await expect(provisioner.ensureManagerToken()).rejects.toThrow(/holds no Cloudflare API token/);
+    await expect(provisioner.ensureRuntimeToken("staging")).rejects.toThrow(/holds no Cloudflare API token/);
 
     expect(createSecretIfAbsent).toHaveBeenCalledWith(
       `${PROJECT}-f643-feature-address--secrets-encryption-keys`,
@@ -182,32 +182,59 @@ describe("CloudflareSecretsProvisioner", () => {
     expect(deploy).toHaveBeenCalledWith("staging", { databaseId: "d1", storeId: "store-1" });
   });
 
-  test("ensureManagerToken mints a scoped token and writes it when the store entry is absent", async () => {
+  test("ensureRuntimeToken mints a scoped token and writes it when the store entry is absent", async () => {
     const { cf, exists, rollToken, putSecret } = fakeCf();
     exists.mockResolvedValue(false);
     rollToken.mockResolvedValue({ id: "tk-1", value: "minted-token" });
     const provisioner = new CloudflareSecretsProvisioner(provisionerOptions(cf));
 
-    await provisioner.ensureManagerToken();
+    await provisioner.ensureRuntimeToken("staging");
 
-    expect(rollToken).toHaveBeenCalledWith(managerCfApiTokenName(PROJECT), await managerTokenPermissions("acct-1"));
+    expect(rollToken).toHaveBeenCalledWith(
+      runtimeTokenName(PROJECT, "staging"),
+      await runtimeTokenPermissions("acct-1", ["secrets:read", "secrets:write"]),
+    );
     const [name, value] = putSecret.mock.calls[0] ?? [];
-    expect(name).toBe(managerCfApiTokenSecretName(PROJECT));
+    expect(name).toBe(runtimeTokenSecretName(PROJECT, "staging"));
     expect(JSON.parse(value)).toEqual({ currentVersion: "1", versions: { "1": "minted-token" } });
   });
 
-  test("ensureManagerToken reuses the stored token (no mint) when the entry already exists", async () => {
+  test("ensureRuntimeToken mints the runtime profile's union, as the project composes it there (#728)", async () => {
+    // Secrets is one claimant of the token among several: a project composing media mints one token
+    // carrying both, never a manager token beside a media one.
+    const { cf, exists, rollToken } = fakeCf();
+    exists.mockResolvedValue(false);
+    rollToken.mockResolvedValue({ id: "tk-1", value: "minted-token" });
+    const asked: string[] = [];
+    const provisioner = new CloudflareSecretsProvisioner({
+      ...provisionerOptions(cf),
+      runtimePermissions: async (env) => {
+        asked.push(env);
+        return ["secrets:read", "secrets:write", "images:write", "analytics:read"];
+      },
+    });
+
+    await provisioner.ensureRuntimeToken("prod");
+
+    expect(asked).toEqual(["prod"]);
+    expect(rollToken).toHaveBeenCalledWith(
+      "acme-prod-runtime",
+      await runtimeTokenPermissions("acct-1", ["secrets:read", "secrets:write", "images:write", "analytics:read"]),
+    );
+  });
+
+  test("ensureRuntimeToken reuses the stored token (no mint) when the entry already exists", async () => {
     const { cf, exists, rollToken, putSecret } = fakeCf();
     exists.mockResolvedValue(true);
     const provisioner = new CloudflareSecretsProvisioner(provisionerOptions(cf));
 
-    await provisioner.ensureManagerToken();
+    await provisioner.ensureRuntimeToken("staging");
 
     expect(rollToken).not.toHaveBeenCalled();
     expect(putSecret).not.toHaveBeenCalled();
   });
 
-  test("ensureManagerToken audits secrets/set without the token value when it mints one", async () => {
+  test("ensureRuntimeToken audits secrets/set without the token value when it mints one", async () => {
     const { cf, exists, rollToken } = fakeCf();
     exists.mockResolvedValue(false);
     rollToken.mockResolvedValue({ id: "tk-1", value: "minted-token" });
@@ -217,7 +244,7 @@ describe("CloudflareSecretsProvisioner", () => {
       audit: async (event) => void events.push(event),
     });
 
-    await provisioner.ensureManagerToken();
+    await provisioner.ensureRuntimeToken("staging");
 
     expect(events).toEqual([
       expect.objectContaining({
@@ -225,13 +252,13 @@ describe("CloudflareSecretsProvisioner", () => {
         outcome: "success",
         severity: "warning",
         resourceType: "secret",
-        metadata: { name: managerCfApiTokenSecretName(PROJECT), kind: "manager_token" },
+        metadata: { name: runtimeTokenSecretName(PROJECT, "staging"), kind: "runtime_token" },
       }),
     ]);
     expect(JSON.stringify(events)).not.toContain("minted-token");
   });
 
-  test("ensureManagerToken records nothing when the token is reused", async () => {
+  test("ensureRuntimeToken records nothing when the token is reused", async () => {
     const { cf, exists } = fakeCf();
     exists.mockResolvedValue(true);
     const events: CliAuditEvent[] = [];
@@ -240,7 +267,7 @@ describe("CloudflareSecretsProvisioner", () => {
       audit: async (event) => void events.push(event),
     });
 
-    await provisioner.ensureManagerToken();
+    await provisioner.ensureRuntimeToken("staging");
     expect(events).toEqual([]);
   });
 
@@ -393,7 +420,7 @@ describe("two projects sharing one Cloudflare account", () => {
     for (const project of ["acme", "globex"]) {
       const provisioner = new CloudflareSecretsProvisioner(provisionerOptions(cf, async () => {}, project));
       await provisioner.ensureMasterKey("prod");
-      await provisioner.ensureManagerToken();
+      await provisioner.ensureRuntimeToken("prod");
     }
     const globexKey = store.get(masterKeySecretName("globex", "prod"));
 
@@ -404,20 +431,20 @@ describe("two projects sharing one Cloudflare account", () => {
       storeId: "store-1",
     });
     await teardown.deleteMasterKey("prod");
-    await teardown.deleteManagerToken();
+    await teardown.deleteRuntimeToken("prod");
 
     expect(store.has(masterKeySecretName("acme", "prod"))).toBe(false);
     expect(store.get(masterKeySecretName("globex", "prod"))).toBe(globexKey);
-    expect(store.has(managerCfApiTokenSecretName("globex"))).toBe(true);
+    expect(store.has(runtimeTokenSecretName("globex", "prod"))).toBe(true);
     // `deleteTokensByName` sweeps every account token of a name; only acme's name was ever swept.
-    expect(deletedTokenNames).toEqual([managerCfApiTokenName("acme")]);
-    expect(deletedTokenNames).not.toContain(managerCfApiTokenName("globex"));
+    expect(deletedTokenNames).toEqual([runtimeTokenName("acme", "prod")]);
+    expect(deletedTokenNames).not.toContain(runtimeTokenName("globex", "prod"));
   });
 });
 
-describe("managerTokenPermissions", () => {
-  test("scopes a Secrets Store Read + Write token to the account", async () => {
-    expect(await managerTokenPermissions("acct-9")).toEqual([
+describe("runtimeTokenPermissions", () => {
+  test("scopes the runtime profile's keys to the account, as one policy", async () => {
+    expect(await runtimeTokenPermissions("acct-9", ["secrets:read", "secrets:write"])).toEqual([
       {
         permissionGroupNames: ["Secrets Store Read", "Secrets Store Write"],
         resources: { "com.cloudflare.api.account.acct-9": "*" },
@@ -426,15 +453,15 @@ describe("managerTokenPermissions", () => {
   });
 });
 
-describe("writeManagerCfApiToken", () => {
-  test("writes the global token entry as a one-entry uniform envelope", async () => {
+describe("writeRuntimeToken", () => {
+  test("writes the environment's runtime token entry as a one-entry uniform envelope", async () => {
     const { cf, putSecret } = fakeCf();
 
-    await writeManagerCfApiToken(cf, { storeId: "store-1", project: PROJECT }, "scoped-cf-token");
+    await writeRuntimeToken(cf, { storeId: "store-1", project: PROJECT, env: "staging" }, "scoped-cf-token");
 
     expect(putSecret).toHaveBeenCalledTimes(1);
     const [name, value] = putSecret.mock.calls[0] ?? [];
-    expect(name).toBe(managerCfApiTokenSecretName(PROJECT));
+    expect(name).toBe(runtimeTokenSecretName(PROJECT, "staging"));
     // The stored value is the uniform envelope, not the bare token.
     expect(JSON.parse(value)).toEqual({ currentVersion: "1", versions: { "1": "scoped-cf-token" } });
   });
@@ -555,7 +582,7 @@ describe("CloudflareSecretsDeprovisioner", () => {
     expect(deleteDatabase).not.toHaveBeenCalled();
   });
 
-  test("deleteManagerToken deletes the minted CF token and the store entry when present", async () => {
+  test("deleteRuntimeToken deletes the minted CF token and the store entry when present", async () => {
     const { cf, exists, deleteSecret, deleteTokensByName } = fakeCf();
     exists.mockResolvedValue(true);
     const deprovisioner = new CloudflareSecretsDeprovisioner({
@@ -565,12 +592,28 @@ describe("CloudflareSecretsDeprovisioner", () => {
       storeId: "store-1",
     });
 
-    await deprovisioner.deleteManagerToken();
-    expect(deleteTokensByName).toHaveBeenCalledWith(managerCfApiTokenName(PROJECT));
-    expect(deleteSecret).toHaveBeenCalledWith(managerCfApiTokenSecretName(PROJECT));
+    await deprovisioner.deleteRuntimeToken("staging");
+    expect(deleteTokensByName).toHaveBeenCalledWith(runtimeTokenName(PROJECT, "staging"));
+    expect(deleteSecret).toHaveBeenCalledWith(runtimeTokenSecretName(PROJECT, "staging"));
   });
 
-  test("deleteManagerToken still sweeps the CF token but skips the entry when absent (idempotent)", async () => {
+  test("deleteRuntimeToken answers whether anything was there to remove", async () => {
+    const { cf, exists, deleteTokensByName } = fakeCf();
+    const deprovisioner = new CloudflareSecretsDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: PROJECT,
+      storeId: "store-1",
+    });
+    exists.mockResolvedValue(false);
+    deleteTokensByName.mockResolvedValue(0);
+    expect(await deprovisioner.deleteRuntimeToken("prod")).toBe(false);
+    deleteTokensByName.mockResolvedValue(1);
+    expect(await deprovisioner.deleteRuntimeToken("prod")).toBe(true);
+    expect(deleteTokensByName).toHaveBeenCalledWith("acme-prod-runtime");
+  });
+
+  test("deleteRuntimeToken still sweeps the CF token but skips the entry when absent (idempotent)", async () => {
     const { cf, exists, deleteSecret, deleteTokensByName } = fakeCf();
     exists.mockResolvedValue(false);
     const deprovisioner = new CloudflareSecretsDeprovisioner({
@@ -580,12 +623,12 @@ describe("CloudflareSecretsDeprovisioner", () => {
       storeId: "store-1",
     });
 
-    await deprovisioner.deleteManagerToken();
-    expect(deleteTokensByName).toHaveBeenCalledWith(managerCfApiTokenName(PROJECT));
+    await deprovisioner.deleteRuntimeToken("staging");
+    expect(deleteTokensByName).toHaveBeenCalledWith(runtimeTokenName(PROJECT, "staging"));
     expect(deleteSecret).not.toHaveBeenCalled();
   });
 
-  test("deleteManagerToken audits secrets/removed only when the store entry existed", async () => {
+  test("deleteRuntimeToken audits secrets/removed only when the store entry existed", async () => {
     const { cf, exists } = fakeCf();
     exists.mockResolvedValue(true);
     const events: CliAuditEvent[] = [];
@@ -597,17 +640,17 @@ describe("CloudflareSecretsDeprovisioner", () => {
       audit: async (event) => void events.push(event),
     });
 
-    await deprovisioner.deleteManagerToken();
+    await deprovisioner.deleteRuntimeToken("staging");
     expect(events).toEqual([
       expect.objectContaining({
         action: "secrets/removed",
-        metadata: { name: managerCfApiTokenSecretName(PROJECT), kind: "manager_token" },
+        metadata: { name: runtimeTokenSecretName(PROJECT, "staging"), kind: "runtime_token" },
       }),
     ]);
 
     events.length = 0;
     exists.mockResolvedValue(false);
-    await deprovisioner.deleteManagerToken();
+    await deprovisioner.deleteRuntimeToken("staging");
     expect(events).toEqual([]);
   });
 });
@@ -664,7 +707,7 @@ describe("teardown refuses an unconfirmed account", () => {
  * the write that landed last won, so the store could keep a value Cloudflare had already revoked, and a re-run,
  * seeing the entry, never repaired it. Now a run finishes only once the value it stored is still honored.
  */
-describe("ensureManagerToken under a race", () => {
+describe("ensureRuntimeToken under a race", () => {
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
   /** Cloudflare as `rollToken` sees it: find by name, mint when absent, roll the value in place when present. */
@@ -704,9 +747,9 @@ describe("ensureManagerToken under a race", () => {
   test("two concurrent runs leave the store holding the value Cloudflare honors", async () => {
     const account = racingAccount();
     const make = () => new CloudflareSecretsProvisioner({ ...provisionerOptions(account.cf), honors: account.honors });
-    await Promise.all([make().ensureManagerToken(), make().ensureManagerToken()]);
+    await Promise.all([make().ensureRuntimeToken("staging"), make().ensureRuntimeToken("staging")]);
 
-    const stored = decodeVersionedValue(account.entries.get(managerCfApiTokenSecretName(PROJECT)) as string);
+    const stored = decodeVersionedValue(account.entries.get(runtimeTokenSecretName(PROJECT, "staging")) as string);
     expect(account.tokens).toHaveLength(1);
     expect(stored).toEqual({ currentVersion: "1", versions: { "1": account.tokens[0]?.value } });
   });
@@ -717,6 +760,6 @@ describe("ensureManagerToken under a race", () => {
       ...provisionerOptions(account.cf),
       honors: async () => false,
     });
-    await expect(provisioner.ensureManagerToken()).rejects.toThrow(/kept being rolled by another run/);
+    await expect(provisioner.ensureRuntimeToken("staging")).rejects.toThrow(/kept being rolled by another run/);
   });
 });

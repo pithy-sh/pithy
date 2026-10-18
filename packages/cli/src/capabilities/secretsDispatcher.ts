@@ -4,6 +4,7 @@
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import type {
   PreflightSecretDispatcher,
+  SecretFieldProbe,
   SecretProbe,
   SecretRotationRecorder,
   SecretStoreVerifier,
@@ -39,6 +40,6 @@ export async function buildSecretDispatcher(
   project: string,
   /** A feature's own manager, when the writes are a feature's (#643) — see `WorkflowSecretDispatcher`. */
   feature?: FeatureIdentity,
-): Promise<PreflightSecretDispatcher & SecretProbe & SecretRotationRecorder & SecretStoreVerifier> {
+): Promise<PreflightSecretDispatcher & SecretProbe & SecretFieldProbe & SecretRotationRecorder & SecretStoreVerifier> {
   return new WorkflowSecretDispatcher(await cloudflareWorkflows({ accountId, apiToken }), project, feature);
 }

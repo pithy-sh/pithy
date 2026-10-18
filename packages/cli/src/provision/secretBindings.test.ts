@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provisionScope";
+import { media } from "@pithy-sh/media/src/capability";
 import { secrets } from "@pithy-sh/secrets/src/capability";
 import type { SecretRegistry, SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { describe, expect, test } from "vitest";
@@ -198,6 +200,35 @@ describe("secretsStoreBindings", () => {
       "CONNECTION_KEY_ENCRYPTION_KEY",
       "SECRETS_ENCRYPTION_KEYS",
     ]);
+  });
+
+  /**
+   * **A media composition storing both types in R2 adds no runtime token of its own (#728).**
+   *
+   * Media calls Cloudflare only for what Images and Stream hold, so such a project declares no
+   * `runtimePermissions` and no token to read. Beside a `secrets()` that does not read the token either —
+   * the manager does, from its own Worker — this Worker binds none. One store on a Cloudflare product
+   * asks for it, and its remedy is a mint of the one `runtime` profile.
+   */
+  test("a media composition storing both types in R2 declares no runtime token to bind or report", async () => {
+    const run = async (capability: Capability) =>
+      secretsStoreBindings({
+        registry: workerSecretRegistry([secrets({ registry: {} }), capability]) as SecretRegistry,
+        scope: environmentScope("replay", "staging"),
+        storeId: "store-1",
+        exists: async () => false,
+      });
+    const names = (result: Awaited<ReturnType<typeof run>>) => [
+      ...result.bound.map((entry) => entry.binding),
+      ...result.missing.map((entry) => entry.secret),
+    ];
+
+    expect(names(await run(media({ images: { store: "r2" }, video: { store: "r2" } })))).not.toContain(
+      RUNTIME_TOKEN_SECRET,
+    );
+    expect((await run(media({ images: { store: "r2" } }))).missing.map((entry) => entry.secret)).toContain(
+      RUNTIME_TOKEN_SECRET,
+    );
   });
 
   /**

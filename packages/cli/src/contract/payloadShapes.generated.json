@@ -1661,13 +1661,13 @@
       }
     },
     "secrets deprovision": {
-      "schemaVersion": 1,
+      "schemaVersion": 2,
       "payload": {
         "$": "object",
         "$.command": "\"secrets deprovision\"",
         "$.env": "string",
         "$.keysDeleted": "boolean",
-        "$.managerTokenDeleted": "boolean"
+        "$.runtimeTokenDeleted": "boolean"
       }
     },
     "secrets edit": {
@@ -2384,7 +2384,18 @@
         "$.tokens[].name": "string",
         "$.tokens[].tokenId": "string",
         "$.tokens[].status": "string?",
-        "$.tokens[].routeScope": "\"inactive\" | \"not-required\" | \"overridden\" | \"scoped\" | \"stale\" | \"unknown\""
+        "$.tokens[].routeScope": "\"inactive\" | \"not-required\" | \"overridden\" | \"scoped\" | \"stale\" | \"unknown\"",
+        "$.tokens[].grants": "\"current\" | \"inactive\" | \"missing\" | \"unknown\"?",
+        "$.superseded": "array?",
+        "$.superseded[]": "object",
+        "$.superseded[].kind": "\"account-token\" | \"stored\"",
+        "$.superseded[].name": "string",
+        "$.superseded[].tokenId": "string?",
+        "$.superseded[].status": "string?",
+        "$.superseded[].env": "string?",
+        "$.superseded[].was": "string",
+        "$.superseded[].supersededBy": "\"runtime\"",
+        "$.supersededAsked": "boolean?"
       }
     },
     "token mint": {

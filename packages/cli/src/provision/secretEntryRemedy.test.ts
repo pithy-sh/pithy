@@ -387,6 +387,17 @@ describe("supplyStoreEntryCommand", () => {
     );
   });
 
+  test("the runtime token's entry is supplied by minting the runtime profile, never by pasting a value (#728)", () => {
+    expect(
+      supplyStoreEntryCommand({
+        secret: "RUNTIME_CF_API_TOKEN",
+        scope: "environment",
+        env: "staging",
+        provisionable: false,
+      }),
+    ).toBe("pithy token mint runtime --env staging");
+  });
+
   /** A global secret is one entry every environment binds, and the write rule refuses to narrow it. */
   test("a global secret carries no --env at all", () => {
     expect(supplyStoreEntryCommand({ secret: "FOO", scope: "global", env: "staging", provisionable: false })).toBe(

@@ -27,9 +27,6 @@ const state = vi.hoisted(() => {
     async hasWorker(env: string) {
       return running.has(env);
     }
-    async hasManager(env: string) {
-      return running.has(env);
-    }
     async countRetained() {
       return [];
     }
@@ -58,8 +55,9 @@ const state = vi.hoisted(() => {
     async deleteDatabase(env: string) {
       calls.push(`deleteDatabase:${env}`);
     }
-    async deleteManagerToken() {
-      calls.push("deleteManagerToken");
+    async deleteRuntimeToken(env: string) {
+      calls.push(`deleteRuntimeToken:${env}`);
+      return true;
     }
   }
   return { calls, running, Recorder, orchestrator: undefined as Orchestrator | undefined, invoked: 0 };
@@ -157,8 +155,8 @@ const RECKLESS: Record<string, Orchestrator> = {
   },
   secrets: async (d, target) => {
     const deprovisioner = d as Recorded;
-    await deprovisioner.deleteManagerToken();
     for (const env of declaredOf(target)) {
+      await deprovisioner.deleteRuntimeToken(env);
       await deprovisioner.deleteManager(env);
       await deprovisioner.deleteMasterKey(env);
       await deprovisioner.deleteDatabase(env);
@@ -237,14 +235,6 @@ describe("a shared part is refused before any orchestrator is called", () => {
     expect(state.invoked).toBe(0);
     expect(state.calls).toEqual([]);
   });
-
-  // The token is a credential, kept rather than refused: the run goes on without it.
-  test("secrets keeps the manager token while prod still runs a manager", async () => {
-    state.running.add("prod");
-    state.orchestrator = RECKLESS.secrets;
-    await deprovision("secrets", { env: "staging", keys: true });
-    expect(state.calls).not.toContain("deleteManagerToken");
-  });
 });
 
 describe("an orchestrator that reaches past the named environment is stopped", () => {
@@ -310,19 +300,19 @@ const RULES: [
   ["secrets", { keys: false }, "deleteMasterKey", "staging", "refused"],
   ["secrets", { keys: true }, "deleteMasterKey", "prod", "refused"],
   ["secrets", { keys: true }, "deleteMasterKey", "staging", "made"],
-  // The token is kept, not refused, while another environment runs a manager — and made once none does.
-  ["secrets", { keys: false }, "deleteManagerToken", undefined, "skipped"],
-  ["secrets", { keys: false }, "deleteManagerToken", undefined, "made"],
+  // The runtime token is per environment (#728): staging's goes with staging, and prod's never does.
+  ["secrets", { keys: false }, "deleteRuntimeToken", "prod", "refused"],
+  ["secrets", { keys: false }, "deleteRuntimeToken", "staging", "made"],
 ];
 
 describe("each teardown rule holds on its own", () => {
   test.each(RULES)("%s %j: %s(%s) is %s", async (name, flags, method, arg, outcome) => {
-    // A shared part may go only once no other environment runs; "skipped" is the token while prod still does.
+    // A shared part may go only once no other environment runs; "skipped" is a call made while one still does.
     if (outcome === "skipped") state.running.add("prod");
     state.orchestrator = async (d) => {
       const deprovisioner = d as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
       await deprovisioner[method]?.(...(arg === undefined ? [] : [arg]));
-      return { environment: "staging", managerTokenDeleted: outcome === "made" };
+      return { environment: "staging", runtimeTokenDeleted: outcome === "made" };
     };
     const error = await deprovision(name, { env: "staging", ...flags });
     const call = arg === undefined ? method : `${method}:${arg}`;
@@ -389,7 +379,7 @@ describe("the current orchestrators run unchanged through the confinement", () =
     await expectConforms("media deprovision", printed.out);
   });
 
-  test("secrets, last environment, keys and token", async () => {
+  test("secrets, keys and the environment's runtime token", async () => {
     const { deprovisionSecrets } = await vi.importActual<
       typeof import("@pithy-sh/secrets/src/provision/provisionSecrets")
     >("@pithy-sh/secrets/src/provision/provisionSecrets");
@@ -399,7 +389,7 @@ describe("the current orchestrators run unchanged through the confinement", () =
       "deleteManager:prod",
       "deleteMasterKey:prod",
       "deleteDatabase:prod",
-      "deleteManagerToken",
+      "deleteRuntimeToken:prod",
     ]);
     await expectConforms("secrets deprovision", printed.out);
   });

@@ -46,12 +46,12 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
  * prebuilt media worker that hosts the four enrichment Workflows. It refuses, before creating anything,
  * while an Images variant would serve a private image unsigned.
  *
- * Two secrets because two owners: the Images + Stream token is media's, and the R2 bundle belongs to
- * `@pithy-sh/storage`'s `ObjectStore`, which media presigns through and whose key pair media never sees.
+ * Two secrets because two owners: the account is media's, and the R2 bundle belongs to `@pithy-sh/storage`'s
+ * `ObjectStore`, which media presigns through and whose key pair media never sees.
  *
- * **Credentials are supplied, not minted.** Cloudflare exposes no API for creating an R2 S3 access-key
- * pair, and the permission catalog carries no Images or Stream keys, so the pair and the scoped API token
- * come from flags or `.dev.vars` and are written into the secret as given. Minting them is a follow-up.
+ * **No Cloudflare API token is asked for (#728).** Media mints Images and Stream uploads with the
+ * application's one `runtime` token, which `pithy secrets provision` mints. The R2 key pair is still supplied,
+ * from flags or `.dev.vars`: Cloudflare exposes no API for creating one.
  */
 
 /**
@@ -163,11 +163,6 @@ const provision = withContract(
         description:
           "The app worker whose wrangler.jsonc carries the per-environment DB binding (default: the project's only worker)",
       },
-      "api-token": {
-        type: "string",
-        description:
-          "Cloudflare API token the media Worker mints Images and Stream direct-upload URLs with. Defaults to CLOUDFLARE_API_TOKEN from .dev.vars — a broad token; supply a scoped Images + Stream token for production.",
-      },
       "r2-access-key-id": {
         type: "string",
         description:
@@ -234,7 +229,6 @@ const provision = withContract(
           account,
           apiToken,
           storeId,
-          mediaApiToken: args["api-token"] ?? apiToken,
           r2Credentials,
           r2ApiToken: args["r2-api-token"] ?? apiToken,
           mediaConfig,

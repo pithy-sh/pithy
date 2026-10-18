@@ -48,7 +48,11 @@ import { kebab } from "@pithy-sh/core/src/naming/resource";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { secretBindingName } from "@pithy-sh/secrets/src/env/bindingName";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
-import { managerCfApiTokenSecretName, masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
+import {
+  managerCfApiTokenSecretName,
+  masterKeySecretName,
+  runtimeTokenSecretName,
+} from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { boundSecretNames, secretStoreEntryName } from "../provision/secretBindings";
@@ -121,7 +125,9 @@ export interface StoreEntryCensus {
  *
  * Every one of them goes through the function provisioning itself calls —
  * {@link secretStoreEntryName} over an {@link environmentScope}, {@link masterKeySecretName},
- * {@link managerCfApiTokenSecretName} — rather than through a template written here. A second namer
+ * {@link runtimeTokenSecretName} — rather than through a template written here. The superseded manager
+ * token's entry ({@link managerCfApiTokenSecretName}) is accounted for too: an upgraded project still holds
+ * it until the operator revokes it (#728), and a sweep that deleted it would revoke on their behalf. A second namer
  * would drift, and the first symptom of drift is a live entry reported as debris.
  */
 export function storeEntryCensus(input: StoreEntryCensusInput): StoreEntryCensus {
@@ -139,7 +145,10 @@ export function storeEntryCensus(input: StoreEntryCensusInput): StoreEntryCensus
       accounted.add(secretStoreEntryName(environmentScope(input.project, env), secret, entry));
     }
   }
-  for (const env of input.environments) accounted.add(masterKeySecretName(input.project, env));
+  for (const env of input.environments) {
+    accounted.add(masterKeySecretName(input.project, env));
+    accounted.add(runtimeTokenSecretName(input.project, env));
+  }
   accounted.add(managerCfApiTokenSecretName(input.project));
   for (const entry of input.tokenEntries ?? []) accounted.add(entry);
 
@@ -222,13 +231,6 @@ export async function projectTokenStoreEntries(options: {
     if (workerScope.isUnknown(workers)) return null;
     const entries: string[] = [];
     for (const profile of Object.values(resolveTokenProfiles(workerScope.projectCapabilities(workers)))) {
-      // A `global` profile writes exactly one entry with the literal `global` in the environment slot.
-      // `tokenStoreEntryName` ignores the environment it is handed in that case; passing the scope keeps
-      // the call honest about which name is being asked for.
-      if (profile.secretScope === GLOBAL_SCOPE) {
-        entries.push(tokenStoreEntryName(options.project, GLOBAL_SCOPE, profile));
-        continue;
-      }
       for (const env of options.environments) entries.push(tokenStoreEntryName(options.project, env, profile));
     }
     return entries;

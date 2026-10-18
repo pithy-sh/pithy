@@ -485,8 +485,6 @@
       "path": "media provision",
       "flags": [
         "--worker",
-        "--api-token",
-        "--apiToken",
         "--r2-access-key-id",
         "--r2AccessKeyId",
         "--r2-secret-access-key",
@@ -1544,6 +1542,22 @@
       "exit": 3,
       "retryable": false,
       "remedy": "Run the `fix` command"
+    },
+    {
+      "code": "media/analytics_unavailable",
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
+    },
+    {
+      "code": "media/analytics_window",
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "media/enrichment_failed",

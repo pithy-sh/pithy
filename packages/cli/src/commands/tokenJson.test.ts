@@ -5,6 +5,7 @@ import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { expectConforms, runCaptured } from "../test-utils/payloadContract";
 import type { ForgetResult, RevokeResult, TokenListItem, TokenResult } from "../tokens/engine";
+import type { SupersededToken } from "../tokens/superseded";
 
 /**
  * **What `pithy token` writes under `--json`, held to the schema `pithy schema token` publishes (#697).**
@@ -18,6 +19,7 @@ import type { ForgetResult, RevokeResult, TokenListItem, TokenResult } from "../
 const engine = vi.hoisted(() => ({
   minted: undefined as unknown,
   listed: [] as unknown[],
+  superseded: { found: [] as unknown[], unasked: null as string | null },
   revoked: undefined as unknown,
   forgot: undefined as unknown,
   forgetEngine: undefined as unknown,
@@ -47,6 +49,7 @@ vi.mock("../tokens/engine", async (importOriginal) => ({
   mintProfileToken: async () => engine.minted,
   rotateProfileToken: async () => engine.minted,
   listProfileTokens: async () => engine.listed,
+  listSupersededTokens: async () => engine.superseded,
   revokeProfileToken: async () => engine.revoked,
   forgetProfileToken: async (forgetEngine: unknown) => {
     engine.forgetEngine = forgetEngine;
@@ -78,7 +81,23 @@ describe("pithy token --json conforms to its published payloads", () => {
 
   test("list", async () => {
     engine.listed = [
-      { profile: "ci-system", env: "prod", name: "acme-prod-ci-system", tokenId: "tok-1", routeScope: "scoped" },
+      {
+        profile: "ci-system",
+        env: "prod",
+        name: "acme-prod-ci-system",
+        tokenId: "tok-1",
+        routeScope: "scoped",
+        grants: "current",
+      },
+      {
+        profile: "runtime",
+        env: "prod",
+        name: "acme-prod-runtime",
+        tokenId: "tok-3",
+        status: "active",
+        routeScope: "not-required",
+        grants: "missing",
+      },
       {
         profile: "ci-system",
         env: "prod",
@@ -86,8 +105,29 @@ describe("pithy token --json conforms to its published payloads", () => {
         tokenId: "tok-2",
         status: "disabled",
         routeScope: "inactive",
+        grants: "inactive",
       },
     ] satisfies TokenListItem[];
+    engine.superseded = {
+      found: [
+        {
+          kind: "account-token",
+          name: "acme-global-secrets-manager",
+          tokenId: "tok-9",
+          status: "active",
+          was: "the secrets manager's own token",
+          supersededBy: "runtime",
+        },
+        {
+          kind: "stored",
+          name: "media-storage-credentials",
+          env: "prod",
+          was: "the Images and Stream token supplied to `pithy media provision`",
+          supersededBy: "runtime",
+        },
+      ] satisfies SupersededToken[],
+      unasked: null,
+    };
     await expectConforms("token list", await runCaptured("token list", ["--env", "prod", "--json"]));
   });
 

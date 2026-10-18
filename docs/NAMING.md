@@ -99,7 +99,6 @@ The list is **ordered, least-production first**. That is the order provisioning 
 Some things are shared across all of a project's environments on purpose. They put the literal `global` in the environment slot rather than omitting it, so the scheme has no exception to remember.
 
 - `<project>-global-email-suppressions` — the suppression list. "Do not email this person again" is not an environment-local fact; an address that hard-bounced in production must not be retried from staging, or the sending domain's reputation pays for the distinction.
-- `<project>-global-secrets-manager` and `<project>-global-secrets-manager-cf-api-token` — the secrets manager's own credential, one per project.
 - `<project>-global-support` — the bucket the support inbox's attachments and raw messages live in. A thread does not belong to an environment; the environments are separated by which bucket an operator binds.
 - `<project>-global-email-bounce`, `<project>-global-support-inbound` — the Email Routing rules. There is one rule per zone; environments are separated by which Worker it points at, not by the rule.
 
