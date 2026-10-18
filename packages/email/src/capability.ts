@@ -4,6 +4,7 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { pithyCommandOf } from "@pithy-sh/core/src/cli/command";
+import { composedUsageMeter, type MeterCharge, type UsageMeter } from "@pithy-sh/core/src/entitlement/meter";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
 import { z } from "zod";
@@ -194,6 +195,12 @@ export function email(config: EmailConfigInput): EmailCapability {
    * capability's own config, and this is the only thing that knows it.
    */
   let supportedLocales: readonly string[] = [];
+  /**
+   * The usage meter a composed provider exposes — `@pithy-sh/payments`, when it is composed — found in
+   * `compose` by core's structural predicate. Undefined with no provider, which is the email capability
+   * exactly as it always was: nothing is counted and nothing is refused.
+   */
+  let meter: UsageMeter | undefined;
   const capability = defineCapability({
     name: "email",
     // The package this capability ships in and the version it ships at, both stamped by
@@ -235,6 +242,7 @@ export function email(config: EmailConfigInput): EmailCapability {
      * project sends what it always sent.
      */
     compose: ({ capabilities }) => {
+      meter = composedUsageMeter(capabilities);
       for (const composed of capabilities) {
         if (composed.name !== "i18n") continue;
         const candidate = (composed as { layersFor?: unknown }).layersFor;
@@ -352,6 +360,12 @@ export function email(config: EmailConfigInput): EmailCapability {
     }
     return emailSuppressionDatabase(binding);
   };
+  /** The meter charge for one env, or undefined when no provider is composed. */
+  const chargeFor = (env: EmailEnqueueEnv): ((charge: MeterCharge) => Promise<void>) | undefined => {
+    const composed = meter;
+    if (composed === undefined) return undefined;
+    return (charge) => composed.charge(env as unknown as Record<string, unknown>, charge);
+  };
   const enqueue = (env: EmailEnqueueEnv, input: EnqueueInput): Promise<EnqueueResult> =>
     enqueueEmail(
       {
@@ -366,6 +380,8 @@ export function email(config: EmailConfigInput): EmailCapability {
         // Read straight off the env the consumer forwarded. This one line is what makes suppression
         // automatic: a consumer names nothing, and a hard-bounced address is never queued for a send.
         suppressionDb: env.EMAIL_SUPPRESSIONS ? emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS) : undefined,
+        // Read through the closure for the reason `layersFor` is: `compose` fills it after this is defined.
+        meter: chargeFor(env),
         now: new Date(),
         newId: () => crypto.randomUUID(),
       },
