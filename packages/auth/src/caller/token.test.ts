@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { createHmac } from "node:crypto";
 import { describe, expect, test } from "vitest";
 import {
   DEFAULT_CALLER_TOKEN_LIFETIME_SECONDS,
@@ -203,5 +204,47 @@ describe("the lifetime ceiling", () => {
 
   test("will not mint a token that outlives the ceiling", async () => {
     await expect(mint({ lifetimeSeconds: MAX_CALLER_TOKEN_LIFETIME_SECONDS + 1 })).rejects.toThrow(/lifetime/i);
+  });
+});
+
+/**
+ * **The wire format, as `docs/server-authoritative.md` states it for a backend that does not import the kit.**
+ *
+ * Built here with Node's own `crypto`, the way a signer in any language would build it from that page: HS256,
+ * `kid` in the header, `aud` one origin string, `iat` and `exp` in whole seconds, unpadded base64url. And the
+ * HMAC key is the UTF-8 bytes of the stored string — the base64 text `openssl rand -base64 32` printed, never
+ * the 32 bytes it decodes to. A signer that decodes it first is refused on the signature, and that is pinned
+ * too, because it is the mistake the page warns against.
+ */
+describe("the documented wire format", () => {
+  const STORED = "q3Jx0m3m9yv0b5mH1oQ5cX8w2c5u1zZ5m3o2Yx9r8Ek=";
+
+  function signLikeAnotherLanguage(key: Buffer | string): string {
+    const iat = Math.floor(NOW.getTime() / 1000);
+    const segment = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const input = `${segment({ alg: "HS256", typ: "JWT", kid: "1" })}.${segment({ aud: AUDIENCE, iat, exp: iat + 300 })}`;
+    return `${input}.${createHmac("sha256", key).update(input).digest("base64url")}`;
+  }
+
+  test("a token built from the page alone verifies, keyed with the stored string's UTF-8 bytes", async () => {
+    const token = signLikeAnotherLanguage(Buffer.from(STORED, "utf8"));
+    const verdict = await verifyCallerToken(token, {
+      keys: { versions: { "1": STORED } },
+      audience: AUDIENCE,
+      now: NOW,
+    });
+    expect(verdict.trusted).toBe(true);
+    // And it is the same token the kit mints, byte for byte.
+    expect(token).toBe(await mintCallerToken({ key: STORED, kid: "1", audience: AUDIENCE, now: NOW }));
+  });
+
+  test("a token keyed with the base64-decoded bytes is refused on the signature", async () => {
+    const token = signLikeAnotherLanguage(Buffer.from(STORED, "base64"));
+    const verdict = await verifyCallerToken(token, {
+      keys: { versions: { "1": STORED } },
+      audience: AUDIENCE,
+      now: NOW,
+    });
+    expect(verdict).toEqual({ trusted: false, reason: "signature" });
   });
 });

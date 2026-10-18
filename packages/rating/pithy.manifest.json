@@ -12,7 +12,7 @@
     "Bind a D1 database named DB in wrangler.jsonc — the same app database your other capabilities use.",
     "Run `pithy migrate` to create pithy_rating_ratings.",
     "Add `@pithy-sh/auth` if it is not already installed. A rating belongs to an authenticated player; without auth every route is denied.",
-    "Mint a token carrying the `rating:record` scope for your trusted server, and record outcomes with it. Never put that scope on a player's token.",
+    "Record outcomes from your trusted backend. Compose a `resolveScopes` on `@pithy-sh/auth` that answers `rating:record` for a request your backend proves it sent, over a service binding, mTLS or a caller token. Never resolve that scope from the player. packages/auth/docs/server-authoritative.md ranks the three proofs.",
     "Call `registerRatingAlgorithm(yourAlgorithm)` in your worker entry, before the capability assembles, if none of the three built-ins fit. An unknown algorithm id fails at assembly.",
     "Add `@pithy-sh/matchmaking` and point a game's `skillPool` at a pool declared here to bucket its open queue on skill.",
     "Read packages/rating/docs/algorithms.md before choosing. A stored rating means nothing under a different model, so the choice is immutable in practice."
@@ -36,7 +36,7 @@
     {
       "key": "recordScope",
       "default": "rating:record",
-      "describe": "The scope a caller must hold to record an outcome while `serverAuthoritative` is on. Mint it for your trusted server's token and never for a player's."
+      "describe": "The scope a caller must hold to record an outcome while `serverAuthoritative` is on. An attestation about the caller, not a permission granted to the user: resolve it for your own trusted backend through auth's `resolveScopes`, never for a player's device."
     }
   ]
 }

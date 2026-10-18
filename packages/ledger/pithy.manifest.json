@@ -11,7 +11,7 @@
     "Give each currency a `code` (a lowercase id like `chips`), a `name`, and optionally `decimals` (display scale — balances are always stored as integers in the minor unit).",
     "Bind a D1 database named DB in wrangler.jsonc — the same app database your other capabilities use.",
     "Run `pithy migrate` to create pithy_ledger_accounts, pithy_ledger_transactions, and pithy_ledger_holds.",
-    "Add `@pithy-sh/auth` if it is not already installed. Balance reads scope to the authenticated user; admin credit/debit routes need the `ledger:admin` scope, minted for your trusted server.",
+    "Add `@pithy-sh/auth` if it is not already installed. Balance reads scope to the authenticated user; admin credit/debit routes need the `ledger:admin` scope. Compose a `resolveScopes` on `@pithy-sh/auth` that answers it for a request your trusted backend proves it sent, never for a player. packages/auth/docs/server-authoritative.md ranks the three proofs.",
     "Move balances in-process from your own code with `openLedger(env.DB)` — credit, debit, transfer, hold, release, capture — passing a unique `ref` for each operation so retries are safe.",
     "Add `controlplane()` if you want a dashboard to read balances and entry logs. The ledger's management surface is read-only — `ledger:accounts:read` for balances, `ledger:transactions:read` for the history behind them — and grants nothing that can move money."
   ],
@@ -24,7 +24,7 @@
     {
       "key": "adminScope",
       "default": "ledger:admin",
-      "describe": "The scope a session must carry to credit or debit another player's balance over HTTP. Balance-moving writes are server-authoritative — mint it for your trusted server's token, never a player's."
+      "describe": "The scope a session must carry to credit or debit another player's balance over HTTP. Balance-moving writes are server-authoritative. An attestation about the caller, not a permission granted to the user: resolve it for your own trusted backend through auth's `resolveScopes`, never for a player's device."
     }
   ]
 }

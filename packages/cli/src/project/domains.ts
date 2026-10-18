@@ -139,6 +139,7 @@ export interface OriginsCheck {
 /** The `wrangler.jsonc` keys this reads: the address inputs, plus the `workers_dev` decision. */
 interface OriginStanza extends AddressStanza {
   workers_dev?: unknown;
+  preview_urls?: unknown;
 }
 interface OriginWrangler extends OriginStanza {
   env?: Record<string, OriginStanza | undefined>;
@@ -167,6 +168,22 @@ function isWorkersDevHost(hostname: string): boolean {
 function workersDevDecision(config: OriginWrangler, stanza: OriginStanza | undefined): boolean | undefined {
   const value = stanza?.workers_dev ?? config.workers_dev;
   return typeof value === "boolean" ? value : undefined;
+}
+
+/**
+ * **Has this environment closed every public address on purpose?** — a Worker reachable only over a service
+ * binding (#560).
+ *
+ * Three explicit decisions, all of them required: `workers_dev: false`, `preview_urls: false` (each the
+ * stanza's own, else the top level's, as wrangler inherits them) and no route. That is the shape
+ * `@pithy-sh/auth`'s `docs/server-authoritative.md` ranks first for a gated write, because the Worker itself is
+ * the boundary. Such a Worker has no origin to name, and every remedy `no-origin` offers would hand it one.
+ * Half the decision is not the decision: `workers_dev: false` alone is the state of a project that has not
+ * named its domain yet, and that is still refused. A Worker that names an origin is not asked this at all.
+ */
+function isBindingOnly(config: OriginWrangler, stanza: OriginStanza | undefined): boolean {
+  const previewUrls = stanza?.preview_urls ?? config.preview_urls;
+  return workersDevDecision(config, stanza) === false && previewUrls === false && routePatterns(stanza).length === 0;
 }
 
 /** Every route pattern an environment's stanza states, in either form wrangler accepts. */
@@ -273,7 +290,8 @@ export async function originDrift(projectDir: string, environments: readonly str
       if (!address) {
         // Only against a config that was actually read. "This declares no domain" is a negative claim,
         // and a `pithy.config.ts` nobody could import is exactly what might have declared one.
-        if (loaded) drift.push({ worker, env, fault: "no-origin", origin: null });
+        // And not against a Worker that closed every public address on purpose: it has no origin by design.
+        if (loaded && !isBindingOnly(config, stanza)) drift.push({ worker, env, fault: "no-origin", origin: null });
         continue;
       }
       const workersDev = workersDevDecision(config, stanza);

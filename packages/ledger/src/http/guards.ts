@@ -75,7 +75,7 @@ export function requireAdmin(scope: string): MiddlewareHandler<PithyHonoEnv> {
     if (!c.var.auth?.scopes.includes(scope)) {
       throw new ForbiddenError({
         message: "This session may not move balances.",
-        action: `Retry with a token carrying the ${scope} scope, minted for your trusted server.`,
+        action: `Send this from your trusted backend, with a proof auth's resolveScopes answers ${scope} for.`,
         detail: `Ledger writes require the ${scope} scope; this session carries [${c.var.auth?.scopes.join(", ") ?? ""}].`,
       });
     }

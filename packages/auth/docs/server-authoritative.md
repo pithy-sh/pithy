@@ -49,12 +49,27 @@ In order. Use the first one you can.
 
 If your trusted backend is a Worker, call over a service binding. There is no public network path, so there is nothing to steal, expire or rotate. **Where you can use this, the other two are unnecessary.**
 
-A request that arrives over a binding carries no mark of it, so the boundary is the Worker itself. Compose the gated capabilities into a Worker with no public address — `workers_dev: false`, `preview_urls: false` and no `routes` in its `wrangler.jsonc` — and share the database by declaring the same `DB` binding. Nothing but a binding can reach that Worker, so its resolver answers for every request it receives:
+A request that arrives over a binding carries no mark of it, so the boundary is the Worker itself. Compose the gated capabilities into a Worker with no public address, and share the database by declaring the same `DB` binding. In its `wrangler.jsonc`, for each environment:
+
+```jsonc
+// apps/internal/wrangler.jsonc
+"workers_dev": false,
+"preview_urls": false,
+// and no "routes", no "domains" in pithy.config.ts, no vars.BASE_URL
+```
+
+All three, set explicitly. `pithy deploy --env staging|prod` and `pithy doctor` read that shape as a Worker reachable only over a binding, and let it through with no origin. Leave one out and deploy refuses the Worker for having no origin, as it refuses any other.
+
+Nothing but a binding can reach that Worker, so its resolver answers for every request it receives:
 
 ```ts
 // apps/internal/pithy.config.ts — reachable only over a service binding
+const INTERNAL_ORIGIN = "https://internal.invalid";
+
 auth({ baseURL: INTERNAL_ORIGIN, resolveScopes: () => ["leaderboard:submit", "rating:record", "ledger:admin"] }),
 ```
+
+`INTERNAL_ORIGIN` is the URL the caller fetches over the binding. A binding routes by its name, never by hostname, so the host is yours to pick; `.invalid` is reserved and resolves nowhere, so nothing outside the binding can reach it by mistake. Use the same origin on both sides: `` env.INTERNAL.fetch(`${INTERNAL_ORIGIN}/leaderboard/weekly`, …) ``. The forwarded session travels on `Authorization`, so the CSRF origin check does not apply.
 
 The caller declares `{ type: "service", name: "INTERNAL", service: "internal" }`. Give it a route later and the resolver above trusts the internet, so the two decisions stay together.
 
@@ -101,8 +116,8 @@ secrets({ registry: { ...authSecretsRegistry, ...callerTokenRegistry } }),
 
 Two parties hold one value: this Worker, which verifies, and your backend, which signs. **You make it, not the kit.** Nothing in the kit hands a stored value back out, so a key the kit minted is one your backend could never learn. `pithy secrets provision` therefore does not create it.
 
-1. Generate 32 random bytes where your backend's secrets live: `openssl rand -base64 32`.
-2. Store it in your backend's own secret manager.
+1. Generate the value where your backend's secrets live: `openssl rand -base64 32`. That prints 44 characters of base64 text, and **the text is the key**.
+2. Store that text in your backend's own secret manager, as it was printed.
 3. Pipe the same value into each environment: `printf '%s' "$KEY" | pithy secrets create auth-caller-token-key --env prod`. In `dev`, write it into the dev secrets file with `pithy secrets edit`.
 
 **Rotation is a cutover, and it is yours.** `pithy secrets update` replaces the value, and every value it writes is version `1`, so the backend signs with `kid: "1"`. A token signed with the old key is refused from the moment the Worker holds the new one. Generate the new value and change the Worker's copy and the backend's back to back. Writes between the two are refused, so the backend retries a refused write once it holds the new key. `pithy secrets rotate` does not invent a value here; it names this page.
@@ -119,6 +134,35 @@ await fetch(`${API_ORIGIN}/leaderboard/weekly`, {
   body: JSON.stringify({ score }),
 });
 ```
+
+#### The token, for a backend that does not import the kit
+
+`mintCallerToken` is a convenience, not a requirement. Any language can build the token. It is a compact JWS:
+
+- **Three segments**, `header.claims.signature`, each **unpadded base64url**. Padding and the standard alphabet are refused.
+- **The header** is `{"alg":"HS256","typ":"JWT","kid":"1"}`. `alg` must be `HS256`. `kid` is required and names the key version. `typ` is optional.
+- **The claims** are `{"aud":"https://api.example.com","iat":1760788800,"exp":1760789100}`. `aud` is one string, the origin of the Worker the token is for, never an array and never a path. `iat` and `exp` are whole Unix seconds. `exp` is at most 900 seconds after `iat`, and `iat` at most 30 seconds in the future. `sub` is optional and grants nothing.
+- **The signature** is HMAC-SHA-256 over the ASCII bytes of `header.claims`, as they appear in the token.
+- **The HMAC key is the UTF-8 bytes of the stored string.** The 44 characters `openssl` printed, not the 32 bytes they decode to. A signer that base64-decodes the key first produces a token refused on its signature, every time.
+
+In Python, with nothing but the standard library:
+
+```python
+import base64, hashlib, hmac, json, time
+
+def seg(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+def caller_token(key: str, audience: str) -> str:
+    now = int(time.time())
+    header = seg(json.dumps({"alg": "HS256", "typ": "JWT", "kid": "1"}).encode())
+    claims = seg(json.dumps({"aud": audience, "iat": now, "exp": now + 300}).encode())
+    signing_input = f"{header}.{claims}"
+    signature = hmac.new(key.encode("utf-8"), signing_input.encode(), hashlib.sha256).digest()
+    return f"{signing_input}.{seg(signature)}"
+```
+
+#### Verifying
 
 Verify in the resolver with `verifyCallerRequest`, as in the first example. It refuses, each on its own:
 
