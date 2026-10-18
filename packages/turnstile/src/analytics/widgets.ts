@@ -8,10 +8,11 @@ import {
   resolveAnalyticsWindow,
   type WindowRefusal,
 } from "@pithy-sh/cloudflare/src/analytics/window";
+import { pithyCommandOf } from "@pithy-sh/core/src/cli/command";
 import type { TurnstileConfig, TurnstileMode } from "../config/config";
 import { TurnstileAnalyticsUnavailableError, TurnstileAnalyticsWindowError } from "../error/errors";
 import type { TurnstileTestKeyVerdict, TurnstileWidgetReport, TurnstileWidgetsResponse } from "../http/responses";
-import { resolveSitekey, testKeyVerdict } from "../provision/testKeys";
+import { isTestKeyEnvironment, resolveSitekey, TEST_KEY_ENVIRONMENTS, testKeyVerdict } from "../provision/testKeys";
 import { summarizeOutcomes } from "./outcomes";
 
 /**
@@ -22,8 +23,10 @@ import { summarizeOutcomes } from "./outcomes";
  * come from Cloudflare's Turnstile analytics, which are account-wide — the sitekey filter is what narrows
  * them to this environment's widget.
  *
- * A test key makes no query. Its outcome is fixed by Cloudflare, so the read says what the key does and
- * that it is deliberate, never zero challenges and never broken.
+ * A test key makes no query. Its outcome is fixed by Cloudflare, so the read says what the key does. In dev,
+ * staging and a feature build that is deliberate, never zero challenges and never broken. Anywhere else the
+ * gate refuses a test key's verdict as `turnstile/config`, so the read says it is misconfigured, the same
+ * fact the middleware states, and never calls a broken production gate deliberate.
  */
 
 /** The slice of {@link CloudflareAnalyticsManager} this read uses — what a test hands in instead. */
@@ -53,6 +56,16 @@ const MODES: readonly TurnstileMode[] = ["visible", "invisible"];
 /** A refused window, as turnstile's own code. */
 const refuseWindow = (refusal: WindowRefusal) => new TurnstileAnalyticsWindowError(refusal);
 
+/** The remedy for a test key where it is not accepted — the line the middleware names too. */
+const PROVISION = pithyCommandOf("turnstile provision", {}, { runtime: true });
+
+/** What each test key is, said once. */
+const TEST_KEY_NAMES: Readonly<Record<TurnstileTestKeyVerdict, string>> = {
+  passes: "always-pass",
+  blocks: "always-fail",
+  challenges: "forced-challenge",
+};
+
 /** What each test key does, said once. */
 const TEST_KEY_SENTENCES: Readonly<Record<TurnstileTestKeyVerdict, string>> = {
   passes:
@@ -61,6 +74,11 @@ const TEST_KEY_SENTENCES: Readonly<Record<TurnstileTestKeyVerdict, string>> = {
   challenges:
     "This is Cloudflare's forced-challenge test key, so every visitor here is challenged. That is deliberate.",
 };
+
+/** A test key where the gate refuses it, said the way the middleware's refusal says it. */
+function misconfiguredSentence(verdict: TurnstileTestKeyVerdict, environment: string): string {
+  return `This is Cloudflare's ${TEST_KEY_NAMES[verdict]} test key, and a test key is accepted only where ENVIRONMENT is ${TEST_KEY_ENVIRONMENTS.join(", ")}. Here it is "${environment}", so no challenge gets through. Run \`${PROVISION}\` so this environment renders its own widget.`;
+}
 
 /** A widget before any outcome is read: unconfigured, a test key, or a real sitekey still to count. */
 type Planned = TurnstileWidgetReport | { state: "real"; mode: TurnstileMode; sitekey: string };
@@ -81,6 +99,10 @@ function plan(mode: TurnstileMode, config: TurnstileConfig, environment: string 
   }
   const verdict = testKeyVerdict(sitekey);
   if (verdict !== null) {
+    if (!isTestKeyEnvironment(environment)) {
+      const message = misconfiguredSentence(verdict, environment);
+      return { state: "misconfigured", mode, sitekey, testKey: true, verdict, message };
+    }
     return { state: "test-key", mode, sitekey, testKey: true, verdict, message: TEST_KEY_SENTENCES[verdict] };
   }
   return { state: "real", mode, sitekey };

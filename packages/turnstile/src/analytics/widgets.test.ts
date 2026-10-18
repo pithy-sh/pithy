@@ -111,6 +111,48 @@ describe("readWidgets (#731)", () => {
     expect(d.source).not.toHaveBeenCalled();
   });
 
+  test("a test key in prod is misconfigured, never deliberate, whatever it does", async () => {
+    // The middleware refuses a test key's verdict outside dev, staging and feature as turnstile/config, so
+    // calling it deliberate would describe a broken production gate as one passing on purpose.
+    const keys = TURNSTILE_TEST_KEYS.sitekey;
+    const cases = [
+      [keys.visiblePass, "passes", "always-pass"],
+      [keys.visibleBlock, "blocks", "always-fail"],
+      [keys.forceChallenge, "challenges", "forced-challenge"],
+    ] as const;
+    for (const [sitekey, verdict, name] of cases) {
+      const d = deps("prod", source(), { widgets: { visible: { sitekeys: { ...sitekeys, prod: sitekey } } } });
+      const report = await readWidgets(d, {});
+      expect(TurnstileWidgetsResponse.parse(report)).toEqual(report);
+      expect(report.widgets).toEqual([
+        {
+          state: "misconfigured",
+          mode: "visible",
+          sitekey,
+          testKey: true,
+          verdict,
+          message: `This is Cloudflare's ${name} test key, and a test key is accepted only where ENVIRONMENT is dev, staging, feature. Here it is "prod", so no challenge gets through. Run \`pithy turnstile provision\` so this environment renders its own widget.`,
+        },
+      ]);
+      expect(d.source).not.toHaveBeenCalled();
+    }
+  });
+
+  test("a misconfigured test key beside a real widget still reads the real one", async () => {
+    const from = source();
+    const report = await readWidgets(
+      deps("prod", from, {
+        widgets: { visible: { sitekeys }, invisible: { sitekeys: { ...sitekeys, prod: pass } } },
+      }),
+      {},
+    );
+    expect(report.widgets.map((w) => [w.mode, w.state])).toEqual([
+      ["visible", "reported"],
+      ["invisible", "misconfigured"],
+    ]);
+    expect(from.turnstileEvents).toHaveBeenCalledWith(expect.objectContaining({ siteKeys: ["0x4AAAAreal"] }));
+  });
+
   test("an environment with no sitekey reports the widget unconfigured, and asks nothing", async () => {
     const d = deps("prod", source(), { widgets: { visible: { sitekeys: { ...sitekeys, prod: "" } } } });
     const report = await readWidgets(d, {});

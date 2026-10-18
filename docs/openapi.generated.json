@@ -4883,6 +4883,55 @@
                             "properties": {
                               "state": {
                                 "type": "string",
+                                "const": "misconfigured",
+                                "description": "A documented test key outside dev, staging and feature, where the gate refuses its verdict."
+                              },
+                              "mode": {
+                                "type": "string",
+                                "enum": [
+                                  "visible",
+                                  "invisible"
+                                ],
+                                "description": "The widget's mode: `visible` (a Cloudflare managed widget) or `invisible`."
+                              },
+                              "sitekey": {
+                                "type": "string",
+                                "description": "The test sitekey, in force in this environment."
+                              },
+                              "testKey": {
+                                "type": "boolean",
+                                "const": true,
+                                "description": "One of Cloudflare's documented test keys."
+                              },
+                              "verdict": {
+                                "type": "string",
+                                "enum": [
+                                  "passes",
+                                  "blocks",
+                                  "challenges"
+                                ],
+                                "description": "What the test key always does: `passes` every visitor, `blocks` every visitor, or `challenges` every visitor."
+                              },
+                              "message": {
+                                "type": "string",
+                                "description": "Why no challenge gets through here, and the command that fixes it."
+                              }
+                            },
+                            "required": [
+                              "state",
+                              "mode",
+                              "sitekey",
+                              "testKey",
+                              "verdict",
+                              "message"
+                            ],
+                            "description": "A test key where none is accepted, so the gate refuses every challenge here. Broken, never deliberate."
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "state": {
+                                "type": "string",
                                 "const": "unconfigured",
                                 "description": "No sitekey is in force here, so no widget renders."
                               },

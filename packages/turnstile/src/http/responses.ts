@@ -10,9 +10,10 @@ import { z } from "zod";
  * config module, never the middleware. The widget modes are written out here rather than imported from the
  * config for the same reason.
  *
- * Every widget is reported in exactly one of three states, and a client branches on `state`: counted from
- * Cloudflare's analytics, a documented test key whose outcome is fixed and so is never counted, or no
- * sitekey at all. A test key is never reported as zero challenges, and never as broken.
+ * Every widget is reported in exactly one of four states, and a client branches on `state`: counted from
+ * Cloudflare's analytics, a documented test key whose outcome is fixed and so is never counted, a test key
+ * where the gate refuses one, or no sitekey at all. A test key in dev, staging or a feature build is never
+ * reported as zero challenges, and never as broken. Anywhere else it is broken, and is reported as such.
  */
 
 /** The widget mode, as the config names it. */
@@ -92,6 +93,20 @@ export const TurnstileWidgetReport = z
         message: z.string().describe("What the key does, and that it is deliberate."),
       })
       .describe("A test key, deliberately. Never reported as broken, and never as zero challenges."),
+    z
+      .object({
+        state: z
+          .literal("misconfigured")
+          .describe("A documented test key outside dev, staging and feature, where the gate refuses its verdict."),
+        mode: WidgetMode,
+        sitekey: z.string().describe("The test sitekey, in force in this environment."),
+        testKey: z.literal(true).describe("One of Cloudflare's documented test keys."),
+        verdict: TurnstileTestKeyVerdict,
+        message: z.string().describe("Why no challenge gets through here, and the command that fixes it."),
+      })
+      .describe(
+        "A test key where none is accepted, so the gate refuses every challenge here. Broken, never deliberate.",
+      ),
     z
       .object({
         state: z.literal("unconfigured").describe("No sitekey is in force here, so no widget renders."),
