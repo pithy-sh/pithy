@@ -59,10 +59,11 @@ Declaration changed: customer
 Wrote apps/api/migrations/secrets/0002_customer_team_id.ts
 Review it, then run migrate again.
 
-Done.
+Secret-table migrations written. Nothing was applied.
+Review and commit what it wrote. Then run `pithy migrate --env dev` to apply it.
 ```
 
-**It writes and never applies in the same pass.** The file is yours to read before it runs, and running `pithy migrate` again applies it. A declaration that matches its chain writes nothing and migrates normally, so running twice writes one file, not two. The chain stays append-only: the next change is a new file, never an edit to one that has shipped. A generated file is an ordinary migration once written, and a hand-written one in the same directory — default-exporting its migration under the same `NNNN_slug.ts` naming — joins the index and counts toward the next number.
+**It writes and never applies in the same pass.** The file is yours to read before it runs, and running `pithy migrate` again applies it. **So the run ends `core/person_required`, exit 5, on every environment, and never with `Done.`**: nothing was applied, and `pithy migrate --env prod && pithy deploy --env prod` must not go on to deploy over a schema missing what the file adds. In CI that is the point — a file written in a CI checkout is in no deployed chain, so the job stops and a person commits it. Under `--json` the report is still the stdout line, with `generatedMigrations`, and the refusal is the stderr line. `--dry-run` writes nothing and exits 0. A declaration that matches its chain writes nothing and migrates normally, so running twice writes one file, not two. The chain stays append-only: the next change is a new file, never an edit to one that has shipped. A generated file is an ordinary migration once written, and a hand-written one in the same directory — default-exporting its migration under the same `NNNN_slug.ts` naming — joins the index and counts toward the next number.
 
 Three things are refused before anything is written, each naming what to change:
 

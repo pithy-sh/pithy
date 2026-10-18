@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { callerOf } from "@pithy-sh/core/src/cli/command";
+import { type Caller, callerOf, rerunRemedy } from "@pithy-sh/core/src/cli/command";
+import { PersonRequiredError } from "@pithy-sh/core/src/error/pithyError";
 import { generatedMigrationGroup } from "@pithy-sh/core/src/migrations/groups";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
@@ -186,9 +187,25 @@ export function formatMigrateGenerated(
       generatedMigrations: generated,
     })}\n`;
   }
-  return options.dryRun
-    ? formatGeneratedReport(generated, true)
-    : `${formatGeneratedReport(generated)}\n${formatDone()}\n`;
+  // No `Done.` either way: under `--dry-run` nothing was written, and otherwise nothing was applied — the run
+  // ends on `generatedNotApplied`.
+  return formatGeneratedReport(generated, options.dryRun);
+}
+
+/**
+ * The refusal a run that wrote declared-table migrations ends with (#524): it applied nothing, so it must not
+ * exit as though it had. `core/person_required`, because the next step is reading the file — an agent stops
+ * and asks rather than running `migrate` again over a migration nobody has read.
+ */
+export function generatedNotApplied(
+  caller: Caller<"migrate">,
+  productionEnvironments: readonly string[] | undefined,
+): PersonRequiredError {
+  const again = rerunRemedy(caller, productionEnvironments ? { productionEnvironments } : {});
+  return new PersonRequiredError({
+    message: "Secret-table migrations written. Nothing was applied.",
+    action: `Review and commit what it wrote. ${again.say((line) => `Then run ${line} to apply it.`)}`,
+  });
 }
 
 /**
@@ -353,7 +370,11 @@ export default withContract(
             const { generated } = await generateSecretTableMigrations({ projectDir, env, workers, write: !dryRun });
             if (generated.length > 0) {
               process.stdout.write(formatMigrateGenerated(generated, { ...render, dryRun }));
-              return;
+              if (dryRun) return;
+              // Written and not applied is not a success: `pithy migrate && pithy deploy` would deploy over a
+              // schema missing what the file adds, and a file written in a CI checkout is in no chain at all.
+              // Reading it is a person's step, so the run ends as one (exit 5) — on every environment.
+              throw generatedNotApplied(callerOf("migrate", args), config.seed?.productionEnvironments);
             }
           }
         }
