@@ -56,6 +56,10 @@ Pressing a provider button while signed out is not a claim on an address. It is 
 
 So: **do not "improve" this by matching more addresses, and do not make the refusal more helpful.** An address is not a credential — a provider hands over whatever primary happens to be set, chosen years ago for unrelated reasons — and every sentence that separates "you have no account here" from "you have one and this provider is not attached to it" is the oracle back. The remedy for a refused sign-in is the same either way: sign in with a magic link, then connect the provider from the account. Linking from inside the account is a different flow with both sides already proven, and it is deliberately unconstrained by the address.
 
+## Server-authoritative writes
+
+The leaderboard, rating and ledger gates open only for a caller your `resolveScopes` vouches for. A scope is an attestation about the caller, not a permission granted to the user. [`docs/server-authoritative.md`](docs/server-authoritative.md) ranks the three ways to prove it: a service binding, mTLS, and a short-lived token bound to this origin.
+
 ## License
 
 MIT — adopter-side app value. The root `LICENSE` covers it.
