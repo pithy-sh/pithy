@@ -139,7 +139,7 @@ async function createOwnerIndex(db: Kysely<unknown>, identifier: string, keys: r
  * new key column as `text not null default ''` — the empty string is what every existing row holds there, and
  * an empty key is left out of a row's bound context, so no stored ciphertext changes — rebuilds the owner
  * index over every key, indexes the new key, and rewrites the registration. Its `down` is the inverse, index
- * for index.
+ * for index, and it refuses while any row holds a value in a key it would drop.
  */
 export function secretTableMigration(step: SecretTableStep): SecretTableMigration {
   const to = checked(step.to);
@@ -198,6 +198,25 @@ export function secretTableMigration(step: SecretTableStep): SecretTableMigratio
         await db.schema.dropIndex(ownerIndex(identifier)).ifExists().execute();
         await db.schema.dropTable(identifier).execute();
         return;
+      }
+      // Refused before anything changes, while any row holds a value in a key this would drop. That row's
+      // ciphertext is bound to the value (`secretTableContext`), so the narrower table could never open it;
+      // and beside a legacy row for the same owner and name it would break the rebuilt unique owner index
+      // halfway through. Emptying those rows first is the adopter's call, made on purpose.
+      for (const key of added) {
+        const held = await db
+          .withTables<Record<string, Record<string, string>>>()
+          .selectFrom(identifier)
+          .select((eb) => eb.fn.countAll<number>().as("count"))
+          .where(key, "!=", "")
+          .executeTakeFirstOrThrow();
+        const count = Number(held.count);
+        if (count > 0) {
+          throw new InternalError({
+            message: `secret table migration: rolling back table "${to.table}" would drop key "${key}", and ${count} row${count === 1 ? " holds" : "s hold"} a value in it.`,
+            action: `Delete or move those rows before rolling back, or keep the key and write a forward migration instead.`,
+          });
+        }
       }
       const { keys, secrets, updatedAt } = registrationRow(from, new Date());
       await registry

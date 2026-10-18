@@ -152,6 +152,40 @@ describe("at-rest rotation over declared tables", () => {
     expect(await reencryptBatch(db(), promoted, 2)).toEqual({ rotated: 0, failed: 0 });
   });
 
+  test("rows that never decrypt in one table do not starve the tables after it", async () => {
+    await migrate("customer");
+    await migrate("connection");
+    // Two system rows and two customer rows that no key opens — each enough to fill a batch of two.
+    await env.SECRETS.prepare(
+      "insert into pithy_secrets_system_secrets (name, encrypted_value, iv, key_version, value_type, created_at, updated_at) values ('broken-a', 'Y29ycnVwdA==', 'aXZpdml2aXZpdml2', 1, 'text', 1, 1), ('broken-b', 'Y29ycnVwdA==', 'aXZpdml2aXZpdml2', 1, 'text', 1, 1)",
+    ).run();
+    await env.SECRETS.prepare(
+      "insert into pithy_secrets_customer_secrets (name, encrypted_value, iv, key_version, value_type, created_at, updated_at, user_id, organization_id) values ('STRIPE_KEY', 'Y29ycnVwdA==', 'aXZpdml2aXZpdml2', 1, 'text', 1, 1, 'u1', 'o1'), ('STRIPE_KEY', 'Y29ycnVwdA==', 'aXZpdml2aXZpdml2', 1, 'text', 1, 1, 'u2', 'o1')",
+    ).run();
+    const connections = (await secretsStore(envFor(config), registry)).table(ConnectionSecrets);
+    for (let install = 0; install < 3; install++) {
+      await connections.put({ installationId: `inst_${install}` }, "SIGNING_KEY", `signing-${install}`);
+    }
+
+    const store = new StubConfigStore({ bound: config });
+    const result = await runAtRestKeyRotation(
+      {
+        db: db(),
+        config,
+        configWriter: store.writer,
+        configReader: store.reader,
+        tracker: RotationTracker.fromD1(env.SECRETS),
+      },
+      syncStep,
+      { now: new Date("2026-02-01T00:00:00.000Z"), readBackDelayMs: 0, batchSize: 2 },
+    );
+
+    expect(result).toMatchObject({ rotated: 3, newCurrentVersion: 2 });
+    expect(await keyVersions("pithy_secrets_connection_secrets")).toEqual([2, 2, 2]);
+    const after = await secretsStore(envFor(store.boundConfig), registry);
+    expect(await after.table(ConnectionSecrets).get({ installationId: "inst_2" }, "SIGNING_KEY")).toBe("signing-2");
+  });
+
   test("a table registered after the manager was deployed rotates on the next run, with no re-provision", async () => {
     // The first pass runs before any table exists — the manager as deployed, knowing nothing of it.
     const first = await rotate(config, "2026-02-01T00:00:00.000Z");

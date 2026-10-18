@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { rollbackMigration, runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import type { Migration, MigrationProvider } from "kysely/migration";
@@ -179,6 +180,26 @@ describe("secretTableMigration — alter", () => {
       keys: '["userId","organizationId"]',
       secrets: '["STRIPE_KEY","WEBHOOK_SIG"]',
     });
+  });
+
+  test("down refuses, and changes nothing, while a row holds a value in a key it would drop", async () => {
+    const p = provider({ "0001_customer_init": CREATE, "0002_customer_team_id": ALTER });
+    await runMigrations(env.SECRETS, p);
+    // A legacy row and a team row for the same owner and name: dropping team_id would collide them, and the
+    // team row's ciphertext is bound to a teamId the narrower table could no longer supply.
+    await insert("u1", "o1", "STRIPE_KEY");
+    await env.SECRETS.prepare(
+      "insert into pithy_secrets_customer_secrets (name, encrypted_value, iv, key_version, value_type, created_at, updated_at, user_id, organization_id, team_id) values ('STRIPE_KEY', 'c', 'i', 1, 'text', 1, 1, 'u1', 'o1', 'team_1')",
+    ).run();
+
+    await expect(ALTER.down?.(createDatabase(env.SECRETS, {}))).rejects.toThrow(/teamId/);
+    expect(await columns()).toContain("team_id");
+    expect(await indexes()).toContain("pithy_secrets_customer_secrets_team_id_idx");
+    expect(await registration()).toEqual({
+      keys: '["userId","organizationId","teamId"]',
+      secrets: '["STRIPE_KEY","WEBHOOK_SIG","API"]',
+    });
+    expect(await sql("select id from pithy_secrets_customer_secrets")).toHaveLength(2);
   });
 
   test("refuses a plan that drops or reorders a key, rather than writing it", () => {

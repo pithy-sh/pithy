@@ -260,7 +260,7 @@ export interface ReencryptResult {
  * travel.
  *
  * **The batch spans every table that holds a sealed row**: `pithy_secrets_system_secrets` first, then each
- * declared table `pithy_secrets_tables` registers, out of one `batchSize` budget (`./tableRotation`). A table
+ * declared table `pithy_secrets_tables` registers (`./tableRotation`), each up to `batchSize` rows. A table
  * the cron never visited would be a set of rows that quietly cannot be opened after the next prune.
  */
 export async function reencryptBatch(
@@ -301,13 +301,14 @@ export async function reencryptBatch(
     }
   }
 
-  let budget = batchSize - rows.length;
-  for (const table of budget > 0 ? await registeredSecretTables(db) : []) {
-    if (budget <= 0) break;
-    const declared = await reencryptTableBatch(db, config, table, budget);
+  // Each table its own `batchSize`, never a share of one. A row that will not decrypt is never updated, so
+  // the next select returns it again; out of a shared budget, `batchSize` such rows in an earlier table
+  // would spend every batch before a later table was reached, the pass would see no progress and stop, and
+  // healthy rows elsewhere would never rotate. Stuck rows may stall their own table. Never another one.
+  for (const table of await registeredSecretTables(db)) {
+    const declared = await reencryptTableBatch(db, config, table, batchSize);
     result.rotated += declared.rotated;
     result.failed += declared.failed;
-    budget -= declared.rotated + declared.failed;
   }
   return result;
 }
