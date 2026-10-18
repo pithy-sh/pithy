@@ -151,7 +151,9 @@ payments({
 
 **Every meter is advisory until named here.** Declaring `quotas: { emails: 500 }` makes 500 readable; enforcing the `emails` meter makes it binding. Two steps, because the first is a pricing decision and the second is a production one. An enforced meter with no quota of its name is refused at parse — it would refuse everyone.
 
-**A refusal is `payments/quota_exceeded` (402)** — nothing is written — and an `unrestricted` subject is never refused by any meter. `storageBytes` keeps `@pithy-sh/storage`'s own `storage/quota_exceeded`: its ceiling is now the subject's quota where one is enforced, and `bytesPerOwner` where none is.
+**A refusal is `payments/quota_exceeded` (402)** — nothing is written — from all three meters. `@pithy-sh/storage` refuses in those words wherever `storageBytes` is enforced, at init and again at completion. Where it is advisory, the ceiling is `bytesPerOwner` and the refusal stays `storage/quota_exceeded` (413), as it always was.
+
+**`unrestricted` lifts only what is not pinned.** A meter never refuses an `unrestricted` subject on a name nothing pins. A number pinned beside `unrestricted` wins, as the resolution order above says, and an enforced meter holds the subject to it.
 
 **An organization's quota is the organization's.** Under `billingSubject: "organization"`, `storageBytes` sums every member's bytes stored for the organization and `mediaItems` counts every member's records, against one number. Counted per member, a paid quota would grow with every invitation. A write held for a different organization than the one billed, or for none, is refused as `core/internal` — it would sit outside the sum it was checked against, so the payments subject resolver and the organization in force must agree.
 

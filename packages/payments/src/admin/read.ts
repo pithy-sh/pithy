@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import { chunkByBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
 import { decodeCursor, type PageCursor, pageLimit, toPage } from "@pithy-sh/core/src/data/cursor";
 import type { z } from "zod";
 import { PaymentsEntitlement } from "../data/entitlement";
@@ -319,15 +320,20 @@ export async function readEntitlements(d1: D1Database, subject: PaymentsSubject)
  */
 export async function unrestrictedSubjects(d1: D1Database, subjects: readonly PaymentsSubject[]): Promise<Set<string>> {
   if (subjects.length === 0) return new Set();
-  const ids = [...new Set(subjects.map((subject) => subject.subjectId))];
-  const rows = await paymentsDatabase(d1)
-    .selectFrom(PAYMENTS_OVERRIDES_TABLE)
-    .select(["subjectType", "subjectId"])
-    // biome-ignore lint/suspicious/noExplicitAny: the encoded 0/1 the codec writes.
-    .where("unrestricted", "=", 1 as any)
-    .where("subjectId", "in", ids)
-    .execute();
-  return new Set(rows.map((row) => encodeSubjectReference(row as PaymentsSubject)));
+  const db = paymentsDatabase(d1);
+  const found = new Set<string>();
+  // One fixed parameter beside the list — `unrestricted` — so a full page of 100 ids is two statements.
+  for (const ids of chunkByBoundParameters([...new Set(subjects.map((subject) => subject.subjectId))], 1)) {
+    const rows = await db
+      .selectFrom(PAYMENTS_OVERRIDES_TABLE)
+      .select(["subjectType", "subjectId"])
+      // biome-ignore lint/suspicious/noExplicitAny: the encoded 0/1 the codec writes.
+      .where("unrestricted", "=", 1 as any)
+      .where("subjectId", "in", ids)
+      .execute();
+    for (const row of rows) found.add(encodeSubjectReference(row as PaymentsSubject));
+  }
+  return found;
 }
 
 /** What {@link listOverrides} accepts. */
@@ -450,18 +456,24 @@ export async function lastReports(
 ): Promise<Map<string, { quantity: number; reportedAt: Date }>> {
   const latest = new Map<string, { quantity: number; reportedAt: Date }>();
   if (subscriptions.length === 0) return latest;
-  const rows = await paymentsDatabase(d1)
-    .selectFrom(PAYMENTS_USAGE_REPORTS_TABLE)
-    .selectAll()
-    .where("providerSubscriptionId", "in", [...new Set(subscriptions.map((entry) => entry.providerSubscriptionId))])
-    .where("status", "=", "reported")
-    .orderBy("reportedAt", "desc")
-    .execute();
-  for (const row of rows) {
-    const report = PaymentsUsageReport.parse(row);
-    const key = `${report.rail}:${report.providerSubscriptionId}`;
-    if (report.reportedAt === null || latest.has(key)) continue;
-    latest.set(key, { quantity: report.quantity, reportedAt: report.reportedAt });
+  const db = paymentsDatabase(d1);
+  const ids = [...new Set(subscriptions.map((entry) => entry.providerSubscriptionId))];
+  // One fixed parameter beside the list — `status` — so a full page is two statements. A subscription's rows
+  // all fall in the chunk that carries its id, so newest-first within a chunk is newest-first for it.
+  for (const chunk of chunkByBoundParameters(ids, 1)) {
+    const rows = await db
+      .selectFrom(PAYMENTS_USAGE_REPORTS_TABLE)
+      .selectAll()
+      .where("providerSubscriptionId", "in", chunk)
+      .where("status", "=", "reported")
+      .orderBy("reportedAt", "desc")
+      .execute();
+    for (const row of rows) {
+      const report = PaymentsUsageReport.parse(row);
+      const key = `${report.rail}:${report.providerSubscriptionId}`;
+      if (report.reportedAt === null || latest.has(key)) continue;
+      latest.set(key, { quantity: report.quantity, reportedAt: report.reportedAt });
+    }
   }
   return latest;
 }

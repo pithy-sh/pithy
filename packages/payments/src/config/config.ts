@@ -407,9 +407,11 @@ export const PaymentsMeters = z
       "Emails enqueued through `@pithy-sh/email` for a subject, per billing period. Enforced at enqueue: past the quota the enqueue throws `payments/quota_exceeded` and writes no job.",
     ),
     storageBytes: MeterPolicy.optional().describe(
-      "Bytes an owner holds in `@pithy-sh/storage`. Enforced, the quota replaces the configured `bytesPerOwner` as the per-owner ceiling.",
+      "Bytes the billing subject holds in `@pithy-sh/storage`: a user's own, or under organization billing every member's bytes stored for the organization. Enforced, the quota replaces the configured `bytesPerOwner` as the ceiling, and a write past it throws `payments/quota_exceeded`.",
     ),
-    mediaItems: MeterPolicy.optional().describe("Media items an owner holds in `@pithy-sh/media`. Enforced at create."),
+    mediaItems: MeterPolicy.optional().describe(
+      "Media items the billing subject holds in `@pithy-sh/media`: a user's own, or under organization billing every member's records for the organization. Enforced at create: past the quota the create throws `payments/quota_exceeded`.",
+    ),
   })
   .describe(
     "Which kit meters enforce their quota. Every meter is advisory until named here with `enforce: true`, because a cap that arrives by surprise breaks an adopter already over it. A meter refuses at its limit and never bills.",
