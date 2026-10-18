@@ -794,6 +794,41 @@ describe("provisionFeature / deprovisionFeature", () => {
       expect(stores.d1.size).toBe(0);
     });
 
+    test("destroy deletes the id the account answers for the composed name, never the id the file states", async () => {
+      const { stores, provisioners } = fakeProvisioners();
+      // The feature's own composed name, matched to production's queue id. The name check passes, so only the
+      // account's answer for that name can keep teardown off production's queue (#662).
+      stores.queue.set("acme-prod-jobs", "prod-queue-id");
+      const name = featureResourceName(identity, "JOBS", "queue");
+      await writeCraftedManifest([{ kind: "queue", binding: "JOBS", name, id: "prod-queue-id" }]);
+
+      const absent = await deprovisionFeature({
+        ...noScripts,
+        projectDir: dir,
+        identity,
+        capabilities,
+        env: "feature",
+        provisioners,
+      });
+      expect(absent.deleted).toEqual([]);
+      expect(stores.queue.get("acme-prod-jobs")).toBe("prod-queue-id");
+
+      // With the feature's own queue standing too, only that one goes.
+      stores.queue.set(name, "our-queue-id");
+      await writeCraftedManifest([{ kind: "queue", binding: "JOBS", name, id: "prod-queue-id" }]);
+      const present = await deprovisionFeature({
+        ...noScripts,
+        projectDir: dir,
+        identity,
+        capabilities,
+        env: "feature",
+        provisioners,
+      });
+      expect(present.deleted).toEqual([{ kind: "queue", name, id: "our-queue-id" }]);
+      expect(stores.queue.get("acme-prod-jobs")).toBe("prod-queue-id");
+      expect(stores.queue.has(name)).toBe(false);
+    });
+
     test("a manifest whose header names another feature is refused outright, not silently ignored", async () => {
       const { provisioners } = fakeProvisioners();
       await writeCraftedManifest([], { project: "acme", issue: "999", slug: "someone-else" });

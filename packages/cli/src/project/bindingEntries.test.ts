@@ -5,6 +5,7 @@ import { BindingSpec, BindingType, isWrittenBinding } from "@pithy-sh/core/src/c
 import { describe, expect, test } from "vitest";
 import {
   appendBinding,
+  appendDurableObjectMigrations,
   generatedFieldDrift,
   rateLimitNamespaceId,
   stanzaHasBinding,
@@ -290,5 +291,45 @@ describe("the kinds an app declares and the kit writes but never provisions (#66
       };
       expect(stanzaHasBinding({}, spec as BindingSpec) !== null, type).toBe(isWrittenBinding(type));
     }
+  });
+});
+
+/**
+ * A class an adopter registered by hand is registered, whatever verb registered it (#662). An app's own
+ * Durable Object reaches this writer now, and an app's class is exactly the kind a human wrote a
+ * `new_classes` or `renamed_classes` tag for. Counting only `new_sqlite_classes` appended a second create
+ * for a class that already exists, which wrangler refuses, and a tag is never revisited.
+ */
+describe("appendDurableObjectMigrations — a class registered by any verb", () => {
+  const ROOM = BindingSpec.parse({
+    type: "durable_object",
+    name: "ROOMS",
+    className: "Room",
+    classModule: "board/src/room",
+  });
+
+  test("a class created with new_classes gets no second create", () => {
+    const config: WranglerStanza = { migrations: [{ tag: "v1", new_classes: ["Room"] }] };
+    appendDurableObjectMigrations(config, [ROOM]);
+    expect(config.migrations).toEqual([{ tag: "v1", new_classes: ["Room"] }]);
+  });
+
+  test("a class renamed into place gets no second create", () => {
+    const migrations = [
+      { tag: "v1", new_classes: ["Lobby"] },
+      { tag: "v2", renamed_classes: [{ from: "Lobby", to: "Room" }] },
+    ];
+    const config: WranglerStanza = { migrations: structuredClone(migrations) };
+    appendDurableObjectMigrations(config, [ROOM]);
+    expect(config.migrations).toEqual(migrations);
+  });
+
+  test("a class nothing registers still gets its own tag", () => {
+    const config: WranglerStanza = { migrations: [{ tag: "v1", new_classes: ["Lobby"] }] };
+    appendDurableObjectMigrations(config, [ROOM]);
+    expect(config.migrations).toEqual([
+      { tag: "v1", new_classes: ["Lobby"] },
+      { tag: "v2", new_sqlite_classes: ["Room"] },
+    ]);
   });
 });

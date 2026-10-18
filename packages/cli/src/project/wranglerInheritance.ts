@@ -236,9 +236,9 @@ export function describeUnrepeatedKey(found: UnrepeatedKey): string {
  *
  * The fallback, and only the fallback. A key a {@link BindingType} lives in takes its kind's {@link seedPolicy}
  * instead ({@link CARRIED_WHOLE}, {@link CARRIED_INTO_FEATURE}), because what an entry names is a fact about the
- * kind, not about the JSON shape wrangler gives it: `hyperdrive` is an array and names an account-level config
- * every environment shares, and was emptied by this rule until #662. For a key the kit does not model, a shape is
- * still the only thing there is to read.
+ * kind, not about the JSON shape wrangler gives it: `analytics_engine_datasets` is an array and names an
+ * account-level dataset every environment shares, and was emptied by this rule until #662. For a key the kit does
+ * not model, a shape is still the only thing there is to read.
  *
  * Repeating a key is not the same as duplicating its value, and the difference is the whole of this function.
  * `vars` and `version_metadata` say the same thing in every environment, so they come down verbatim. A
@@ -273,13 +273,14 @@ function keysWithPolicy(...policies: SeedPolicy[]): readonly string[] {
  *
  * Derived, never listed: the keys of every kind whose {@link seedPolicy} is `carry`, through {@link WRANGLER_KEYS}.
  * It held one hand-written name, `ratelimits`, added after auth refused every request in a feature (#650), and a
- * table of names is a table that misses the next kind — `hyperdrive`, `analytics_engine_datasets`,
- * `mtls_certificates`, `dispatch_namespaces` and `pipelines` all name account-level resources, were all emptied by
- * {@link seedValue}'s shape rule, and all failed silently, because no capability's `requiredBindings` named them.
+ * table of names is a table that misses the next kind — `analytics_engine_datasets`, `mtls_certificates` and
+ * `dispatch_namespaces` all name account-level resources, were all emptied by {@link seedValue}'s shape rule, and
+ * all failed silently, because no capability's `requiredBindings` named them.
  *
  * A rate limiter is the model. `pithy add` derives its `namespace_id` from its binding name alone, identical in
  * every environment, and its `simple` policy is the adopter's, stated once. Nothing in the entry names a resource
- * an environment owns. `send_email` is not here: its kind's policy is `branch` ({@link CARRIED_INTO_FEATURE}).
+ * an environment owns. `send_email`, `hyperdrive` and `pipelines` are not here: each kind's policy is `branch`
+ * ({@link CARRIED_INTO_FEATURE}), because the top level's entry is dev's mail routing, dev's Postgres or dev's sink.
  * `workflows` and `queues` are not here either: a Workflow entry names `dev`'s Workflow, and a producer names
  * `dev`'s queue, so each is `provision` and refilled by the writer that owns its scope.
  */
@@ -289,8 +290,9 @@ export const CARRIED_WHOLE: readonly string[] = keysWithPolicy("carry");
  * **What a feature's stanza carries whole: every `carry` key and every `branch` one (#662).**
  *
  * A feature is a branch of `dev`, so it takes dev's decisions the way it takes `vars` — where its mail goes
- * included. A declared environment is not, so a `branch` key starts empty there: seeding `env.prod` from the top
- * level once wrote the address on a developer's laptop into production's first stanza (#650 review).
+ * included, and the database and sink dev reads and writes. A declared environment is not, so a `branch` key starts
+ * empty there: seeding `env.prod` from the top level once wrote the address on a developer's laptop into
+ * production's first stanza (#650 review), and would have pointed production at dev's Postgres (#662).
  * `provision/wranglerEnv.ts` reads this too, to refill a tracked `env.feature` that predates an entry.
  */
 export const CARRIED_INTO_FEATURE: readonly string[] = keysWithPolicy("carry", "branch");

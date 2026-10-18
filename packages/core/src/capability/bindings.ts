@@ -49,15 +49,17 @@ export type BindingType = z.infer<typeof BindingType>;
  * binding lives in. What it starts with depends on whose resource the entry names, and that is a fact about the
  * kind, not about the JSON shape wrangler happens to give it:
  *
- * - **`carry`** — account-level and identical everywhere. A Hyperdrive config, a dataset, a certificate, a rate
- *   limiter's `namespace_id`: the top level's entries come down whole into every stanza, because nothing in them
- *   is an environment's own.
+ * - **`carry`** — account-level and identical everywhere. A dataset, a certificate, a rate limiter's
+ *   `namespace_id`: the top level's entries come down whole into every stanza, because nothing in them is an
+ *   environment's own.
  * - **`provision`** — the environment owns the resource. Seeded empty, refilled by the provisioner, because
  *   dev's database id in staging's stanza is staging writing to dev's database.
  * - **`branch`** — an account-level resource and a per-environment *decision*. Carried into a feature, which is a
- *   branch of `dev`; left empty in a declared environment, which is not. `email` is the one: a `send_email`
- *   entry names an address verified once at the account, and where this environment's mail goes is a choice
- *   production does not inherit from a laptop.
+ *   branch of `dev`; left empty in a declared environment, which is not. A `send_email` entry names an address
+ *   verified once at the account, and where this environment's mail goes is a choice production does not inherit
+ *   from a laptop. A Hyperdrive config is one origin database's connection, and a pipeline stream feeds one sink:
+ *   the account holds both, but the top level's are dev's, and a declared environment seeded with them would read
+ *   and write dev's Postgres and dev's sink with nothing failing.
  *
  * Three values, not a boolean. `send_email` was carried everywhere for a day and wrote a developer's address into
  * production's first stanza (#650 review); emptied everywhere, it left a feature with no `NOTIFY`.
@@ -73,11 +75,11 @@ const SEED_POLICY: Record<BindingType, SeedPolicy> = {
   ratelimit: "carry",
   browser: "carry",
   images: "carry",
-  hyperdrive: "carry",
+  hyperdrive: "branch",
   analytics_engine_datasets: "carry",
   mtls_certificates: "carry",
   dispatch_namespaces: "carry",
-  pipelines: "carry",
+  pipelines: "branch",
   d1: "provision",
   kv: "provision",
   r2: "provision",

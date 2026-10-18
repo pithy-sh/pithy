@@ -341,11 +341,9 @@ describe("stanzaFor", () => {
       ai: { binding: "AI" },
       browser: { binding: "BROWSER" },
       images: { binding: "IMAGES" },
-      hyperdrive: [{ binding: "HYPERDRIVE", id: "a76a99bc342644deb02c38d66082262a" }],
       analytics_engine_datasets: [{ binding: "EVENTS", dataset: "acme_events" }],
       mtls_certificates: [{ binding: "CERT", certificate_id: "efwu2n6s" }],
       dispatch_namespaces: [{ binding: "DISPATCHER", namespace: "customers" }],
-      pipelines: [{ binding: "CLICKS", stream: "clicks" }],
     };
     for (const env of ["prod", "feature"]) {
       const config = {
@@ -371,6 +369,28 @@ describe("stanzaFor", () => {
     expect(feature.send_email).toEqual(mail);
     const prod = stanzaFor({ ...starter(), send_email: structuredClone(mail) }, "prod");
     expect(prod.send_email).toEqual([]);
+  });
+
+  /**
+   * **A Hyperdrive config and a pipeline stream are one environment's, though the account holds them (#662).** A
+   * Hyperdrive config is one origin database's connection, and a stream feeds one sink. The top level is dev, so a
+   * declared environment seeded from it would read and write dev's Postgres and dev's sink, and nothing would fail.
+   */
+  test("carries a Hyperdrive config and a pipeline stream into a feature, never into a declared environment", () => {
+    const branched = {
+      hyperdrive: [{ binding: "HYPERDRIVE", id: "a76a99bc342644deb02c38d66082262a" }],
+      pipelines: [{ binding: "CLICKS", stream: "clicks" }],
+    };
+    const feature = stanzaFor({ ...starter(), ...structuredClone(branched) }, "feature");
+    expect(feature.hyperdrive).toEqual(branched.hyperdrive);
+    expect(feature.pipelines).toEqual(branched.pipelines);
+    expect(CARRIED_WHOLE).not.toContain("hyperdrive");
+    expect(CARRIED_WHOLE).not.toContain("pipelines");
+    for (const env of ["staging", "prod"]) {
+      const stanza = stanzaFor({ ...starter(), ...structuredClone(branched) }, env);
+      expect(stanza.hyperdrive, env).toEqual([]);
+      expect(stanza.pipelines, env).toEqual([]);
+    }
   });
 
   test("leaves a stanza that is already there exactly as it is", () => {

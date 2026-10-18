@@ -89,6 +89,8 @@ import { assertFeatureSlugFitsSources } from "./slugBudget";
  * So an entry is honored only when its recorded name is exactly the name `provision` would have generated
  * for that binding and kind under this identity. The check needs nothing from the file but the entry's own
  * `binding`/`kind`, so a legitimate record still validates even after its capability is removed from config.
+ * The name is all the file is trusted for: the id deleted is the one the account answers for that name, never
+ * the id the entry states, so a feature's own name paired with production's id reaches nothing (#662).
  */
 function isOwnedByFeature(identity: FeatureIdentity, resource: FeatureResource): boolean {
   return resource.name === featureResourceName(identity, resource.binding, resource.kind);
@@ -573,7 +575,7 @@ export interface DeprovisionFeatureOptions {
  * Each delete is forced, because a feature's Workers bind each other and Cloudflare refuses to delete a
  * callee its caller still binds: `web` calling `api` sorts the callee first, and teardown never finished.
  *
- * Resources: first the exact ids recorded in the manifest, then reconcile —
+ * Resources: first every name the manifest records, each deleted by the id the account answers for it, then reconcile —
  * for every binding the enabled capabilities declare, recompute the exact resource name (the same function
  * `provision` named it with) and delete it if it still exists. This catches a partial-failed `provision`
  * (a resource created in the tiny window before the manifest recorded it) without a prefix scan — an exact
@@ -668,7 +670,12 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
       // Only delete what this feature could have named. An entry pointing anywhere else is not ours to
       // remove — the reconcile pass below re-derives every real name from the identity anyway, so nothing
       // legitimate is lost by distrusting the file.
-      if (isOwnedByFeature(options.identity, resource)) await remove(resource.kind, resource.name, resource.id);
+      if (!isOwnedByFeature(options.identity, resource)) continue;
+      // **The id is the account's, never the file's.** The name check passes for a crafted entry that pairs
+      // the feature's own composed name with production's id, and every kind deletes by id. So the id deleted
+      // is the one the account answers for that name, and an entry whose name stands nowhere deletes nothing.
+      const found = await options.provisioners[resource.kind].find(resource.name);
+      if (found) await remove(resource.kind, resource.name, found.id);
     }
 
     // Reconcile by exact expected name — a resource `provision` may have created but not yet recorded.

@@ -306,6 +306,44 @@ describe("buildReconcilePlan — the Worker's own app (#662)", () => {
     expect(board?.missingBindings).toEqual([]);
   });
 
+  test("an app Durable Object the adopter registered with new_classes gets no second create", async () => {
+    // The app reaches the class-migration writer now, and an app's class is the kind a human registered by
+    // hand. A missing Hyperdrive dirties the file, so a wrong `new_sqlite_classes` tag would be written.
+    const withRoom = defineCapability({
+      name: "board",
+      requiredBindings: [
+        { type: "durable_object", name: "ROOMS", className: "Room", classModule: "board/src/room" },
+        { type: "hyperdrive", name: "HYPERDRIVE", target: "a76a99bc342644deb02c38d66082262a" },
+      ],
+    });
+    const path = join(workerDir, "wrangler.jsonc");
+    const seeded = parse(await readFile(path, "utf8")) as unknown as Record<string, unknown>;
+    seeded.migrations = [{ tag: "v1", new_classes: ["Room"] }];
+    await writeFile(path, JSON.stringify(seeded, null, 2));
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: [withRoom],
+      workerConfig: { capabilities: [], app: withRoom },
+    });
+    await applyReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      plan,
+      migrate: false,
+      env: "dev",
+      project: "acme",
+      capabilities: [withRoom],
+      app: withRoom,
+    });
+    const config = parse(await readFile(path, "utf8")) as unknown as { hyperdrive?: unknown; migrations?: unknown };
+    expect(config.hyperdrive).toEqual([{ binding: "HYPERDRIVE", id: "a76a99bc342644deb02c38d66082262a" }]);
+    expect(config.migrations).toEqual([{ tag: "v1", new_classes: ["Room"] }]);
+  });
+
   test("leaves the app's own Workflows to the writer that names them same-script", async () => {
     // A library's Workflow binding is cross-script, into its host. The app's class lives in its own `main`, and
     // `pithy worker sync` writes that entry from `app.workflows`, so this writer must not write a second one.

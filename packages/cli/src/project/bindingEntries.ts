@@ -75,10 +75,31 @@ interface SendEmailBinding {
   [field: string]: unknown;
 }
 
-/** A Durable Object class migration — a versioned tag registering (or dropping) DO classes. */
+/**
+ * A Durable Object class migration — a versioned tag registering (or dropping) DO classes. The kit writes
+ * only `new_sqlite_classes`; the other verbs are read, because an adopter writes them by hand.
+ */
 interface DurableObjectMigration {
   tag: string;
   new_sqlite_classes?: string[];
+  new_classes?: string[];
+  renamed_classes?: { from: string; to: string }[];
+  transferred_classes?: { from: string; from_script: string; to: string }[];
+  deleted_classes?: string[];
+}
+
+/**
+ * Every class a tag brings into the script, whichever verb brings it. A class an adopter created with
+ * `new_classes`, renamed into place or transferred in already exists, and a second create for it is one
+ * wrangler refuses (#662).
+ */
+function classesRegisteredBy(migration: DurableObjectMigration): string[] {
+  return [
+    ...(migration.new_sqlite_classes ?? []),
+    ...(migration.new_classes ?? []),
+    ...(migration.renamed_classes ?? []).map((rename) => rename.to),
+    ...(migration.transferred_classes ?? []).map((transfer) => transfer.to),
+  ];
 }
 
 /**
@@ -601,8 +622,9 @@ export function appendDurableObjectMigrations(config: WranglerStanza, bindings: 
   config.migrations ??= [];
   // A class any existing tag already names is registered, whether or not that tag has been deployed yet.
   // This is the whole of the idempotency: a second `pithy add` of the same capability finds nothing new
-  // and returns without touching the file.
-  const registered = new Set(config.migrations.flatMap((migration) => migration.new_sqlite_classes ?? []));
+  // and returns without touching the file. Any verb counts, not only the one the kit writes: an app's own
+  // class reaches this writer too, and an adopter registered it by hand (#662).
+  const registered = new Set(config.migrations.flatMap(classesRegisteredBy));
   const fresh = [...new Set(classes)].filter((className) => !registered.has(className));
   if (fresh.length === 0) return;
 
