@@ -232,6 +232,24 @@ describe("secretsStoreBindings", () => {
   });
 
   /**
+   * **A feature holds no Cloudflare API token (#643, #728)**, so its Worker neither binds the runtime token
+   * nor reports it missing. Reporting it named a mint of a `feature` runtime token: a second token the
+   * feature never binds, and a line no run could clear.
+   */
+  test("a feature neither binds nor reports the runtime token, even where media declares it", async () => {
+    const result = await secretsStoreBindings({
+      registry: workerSecretRegistry([secrets({ registry: {} }), media({})]) as SecretRegistry,
+      scope: featureScope({ project: "replay", issue: "728", slug: "media" }),
+      storeId: "store-1",
+      exists: async () => false,
+      mint: async () => "created" as const,
+    });
+    const names = [...result.bound.map((entry) => entry.binding), ...result.missing.map((entry) => entry.secret)];
+    expect(names).not.toContain(RUNTIME_TOKEN_SECRET);
+    expect(names).toContain("SECRETS_ENCRYPTION_KEYS");
+  });
+
+  /**
    * A Worker that declares a secret and composes no `secrets` has no store to read it from and no
    * `SECRETS` binding to reach one — so there is nothing to bind, and this stays the gate it was.
    */

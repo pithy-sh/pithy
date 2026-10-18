@@ -169,6 +169,27 @@ describe("resolveMediaConfig", () => {
     expect(JSON.stringify(resolved)).not.toContain("runtime-cf-api-token");
   });
 
+  test("a host storing both types in R2 binds no runtime token — it calls Cloudflare for nothing (#728)", () => {
+    const resolved = resolveMediaConfig(template(), {
+      ...BASE,
+      mediaConfig: MediaConfig.parse({ images: { store: "r2" }, video: { store: "r2" } }),
+      env: "staging",
+      resources: { bucketName: "acme-staging-media" },
+    });
+    expect(resolved.secrets_store_secrets?.map((entry) => entry.binding)).toEqual(["SECRETS_ENCRYPTION_KEYS"]);
+    expect(JSON.stringify(resolved)).not.toContain("runtime-cf-api-token");
+  });
+
+  test("a host with only video in Stream still binds the runtime token", () => {
+    const resolved = resolveMediaConfig(template(), {
+      ...BASE,
+      mediaConfig: MediaConfig.parse({ images: { store: "r2" } }),
+      env: "staging",
+      resources: { bucketName: "acme-staging-media" },
+    });
+    expect(resolved.secrets_store_secrets?.map((entry) => entry.binding)).toContain("RUNTIME_CF_API_TOKEN");
+  });
+
   test("the committed template binds the runtime token beside the master key", async () => {
     const source = await readFile(new URL("../workflows/wrangler.jsonc", import.meta.url), "utf8");
     expect(source).toContain('"binding": "RUNTIME_CF_API_TOKEN"');

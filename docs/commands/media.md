@@ -38,7 +38,7 @@ pithy media deprovision --env <environment> [--storage] [--r2-access-key-id <id>
 
 ## What it does
 
-**No Images or Stream token is asked for.** Media mints uploads, changes signing and reads what was served with the application's one `runtime` token, which `pithy secrets provision` mints per environment ([`TOKENS.md`](../TOKENS.md)). Each environment's deploy refuses, before anything ships, while its Secrets Store holds no runtime token, and names `pithy token mint runtime --env <env>`.
+**No Images or Stream token is asked for.** Media mints uploads, changes signing and reads what was served with the application's one `runtime` token, which `pithy secrets provision` mints per environment ([`TOKENS.md`](../TOKENS.md)). The run refuses before it writes anything, while any environment's Secrets Store holds no runtime token, and names `pithy token mint runtime --env <env>`: a bundle rewritten first would break a Worker still on the old kit. A project storing both types in R2 calls Cloudflare for nothing, so its media host binds no runtime token and the run asks for none.
 
 **The R2 pair is supplied, not minted.** Cloudflare exposes no API for creating an R2 S3 access-key pair. It comes from the flags or from `R2_CREDENTIALS` in the account config, and is written into the secret as given. It is the object store's credential, outside the one-token rule. No Cloudflare API token is stored beside it: the object store signs every call with the pair.
 

@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import type { CreateSecretOutcome } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
+import { RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { ProvisionScope, SecretNameScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { isSecretsCapability } from "@pithy-sh/secrets/src/capability";
 import { secretBindingName } from "@pithy-sh/secrets/src/env/bindingName";
@@ -148,6 +150,18 @@ export interface MissingSecretBinding {
 }
 
 /**
+ * **Whether a scope holds a secret at all — `false` for the runtime token in a feature (#643, #728).**
+ *
+ * A feature holds no Cloudflare API token, the way its manager and its capability hosts hold none: nothing
+ * mints a runtime token for a feature, so branch code never holds the application's credential. Declared by
+ * media or by the adopter, the token is still not the feature's to bind, and reporting it missing named a
+ * mint of a second token the feature never binds, on a line no run could clear.
+ */
+export function scopeHoldsSecret(scope: Pick<ProvisionScope, "stanza">, secret: string): boolean {
+  return !(scope.stanza === FEATURE_ENVIRONMENT && secret === RUNTIME_TOKEN_SECRET);
+}
+
+/**
  * Every `cf-secrets-store` secret a registry declares, as a complete binding named for `scope`.
  *
  * Which secrets those are is {@link boundSecretNames}' answer, shared with the reader that reports a
@@ -188,6 +202,7 @@ export async function secretsStoreBindings(options: {
   const missing: MissingSecretBinding[] = [];
   const minted: string[] = [];
   for (const secret of boundSecretNames(options.registry)) {
+    if (!scopeHoldsSecret(options.scope, secret)) continue;
     const entry = options.registry[secret] as SecretRegistry[string];
     const binding = secretBindingName(secret);
     const secretName = secretStoreEntryName(options.scope, secret, entry);

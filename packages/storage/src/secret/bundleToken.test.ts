@@ -41,9 +41,15 @@ describe("bundleTokenCheck — a Cloudflare API token still stored beside the R2
       }),
     ]);
     expect(findings?.[0]?.action).toContain(
-      "Run pithy storage provision --worker api to rewrite the bundle without it.",
+      "Then run pithy storage provision --worker api to rewrite the bundle without it.",
     );
     expect(findings?.[0]?.fix).toBe("pithy storage provision --worker api");
+    // The key pair derives from the R2 token, so revoking it breaks the pair the rewritten bundle signs with.
+    expect(findings?.[0]?.action).not.toMatch(/revoke that token if it was made for R2/i);
+    expect(findings?.[0]?.action).toContain(
+      "Keep that token. It is your bootstrap one, or the R2 token the key pair derives from, and revoking that breaks the pair.",
+    );
+    expect(findings?.[0]?.action).toMatch(/^Deploy your app Workers on this kit first\./);
   });
 
   test("says nothing where runtime is not minted yet, and never asks of dev", async () => {

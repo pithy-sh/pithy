@@ -56,7 +56,7 @@ describe("supersededStoredToken (#728)", () => {
       kind: "stored",
       name: "media-storage-credentials",
       env: "prod",
-      was: "the Images and Stream token supplied to `pithy media provision`",
+      was: "the Images and Stream token supplied to `pithy media provision` — your bootstrap token, unless you passed `--api-token`",
       supersededBy: "runtime",
     });
     expect(carries).toHaveBeenCalledWith({ env: "prod", name: "media-storage-credentials", field: "apiToken" });
@@ -97,7 +97,11 @@ describe("supersededNotice (#728)", () => {
     expect(notice).toContain(
       "media-storage-credentials in prod — the Images and Stream token supplied to `pithy media provision`",
     );
-    expect(notice).toMatch(/Mint runtime, redeploy, then revoke each\./);
+    expect(notice).not.toMatch(/then revoke each\./);
+    expect(notice).toContain("Mint runtime, redeploy, then revoke each account token.");
+    expect(notice).toContain(
+      "A stored token is your bootstrap one unless you passed another. Rewrite the bundle, and revoke it only if you made it for media.",
+    );
     expect(notice).toContain("pithy doctor");
   });
 

@@ -28,8 +28,8 @@ function fakeProvisioner(unsigned: string[] = []): { provisioner: MediaProvision
   return {
     calls,
     provisioner: {
-      async preflight() {
-        calls.push("preflight");
+      async preflight(environments) {
+        calls.push(`preflight:${environments.join(",")}`);
       },
       async unsignedVariants() {
         calls.push("variants");
@@ -58,7 +58,7 @@ describe("provisionMedia", () => {
     const result = await provisionMedia(provisioner, DEFAULT_ENVIRONMENTS);
 
     expect(calls).toEqual([
-      "preflight",
+      "preflight:staging,prod",
       "variants",
       "ensureBucket:staging",
       "ensureBucket:prod",
@@ -93,6 +93,16 @@ describe("provisionMedia", () => {
     expect(Math.max(...credentialIndexes)).toBeLessThan(firstDeploy);
   });
 
+  test("preflight is told every environment it will write, so a refusal lands before any bundle is rewritten (#728)", async () => {
+    const { provisioner, calls } = fakeProvisioner();
+    provisioner.preflight = async (environments) => {
+      calls.push(`preflight:${environments.join(",")}`);
+      throw new ValidationError({ message: "prod has no runtime token." });
+    };
+    await expect(provisionMedia(provisioner, DEFAULT_ENVIRONMENTS)).rejects.toThrow(/no runtime token/);
+    expect(calls).toEqual(["preflight:staging,prod"]);
+  });
+
   test("every environment's signing keys land before any worker that signs with them boots", async () => {
     const { provisioner, calls } = fakeProvisioner();
     await provisionMedia(provisioner, DEFAULT_ENVIRONMENTS);
@@ -107,7 +117,7 @@ describe("provisionMedia — a variant that serves unsigned", () => {
     await expect(provisionMedia(provisioner, DEFAULT_ENVIRONMENTS)).rejects.toThrow(
       /`thumb` serves every image unsigned/,
     );
-    expect(calls).toEqual(["preflight", "variants"]);
+    expect(calls).toEqual(["preflight:staging,prod", "variants"]);
   });
 
   test("names every one", async () => {

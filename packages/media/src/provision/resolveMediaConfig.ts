@@ -8,6 +8,7 @@ import { hostWorkflowsFor, resolveWorkflowHost, type WorkflowHostTemplate } from
 import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import type { MediaConfig } from "../config/config";
+import { mediaRuntimePermissions } from "../secret/registry";
 import { MEDIA_CAPABILITY, mediaWorkflowRegistry } from "../workflows/specs";
 import type { MediaResources } from "./provisionMedia";
 
@@ -59,6 +60,7 @@ export interface MediaConfigParams {
 export function resolveMediaConfig(template: WorkflowHostTemplate, params: MediaConfigParams): WorkflowHostTemplate {
   const feature = params.feature;
   const { project, env, appDatabaseId, secretsDatabaseId, storeId, resources, mediaConfig } = params;
+  const bindsToken = mediaHostBindsRuntimeToken(mediaConfig, feature);
 
   const resolved = resolveWorkflowHost(template, {
     project,
@@ -72,14 +74,14 @@ export function resolveMediaConfig(template: WorkflowHostTemplate, params: Media
     masterKeySecretName: masterKeySecretName(project, env, feature),
     // The application's one runtime token (#728), at the entry `pithy token mint runtime` and the secrets
     // manager's provisioning write — composed by the same scope call, so the two cannot name two entries.
-    // A feature binds none: see below.
-    ...(feature
-      ? {}
-      : {
+    // A feature binds none, and neither does a host that calls Cloudflare for nothing: see below.
+    ...(bindsToken
+      ? {
           secretNames: {
             [RUNTIME_TOKEN_SECRET]: environmentScope(project, env).secretEntry(RUNTIME_TOKEN_SECRET, "environment"),
           },
-        }),
+        }
+      : {}),
     vars: { MEDIA_CONFIG: JSON.stringify(mediaConfig) },
     // The four enrichment Workflows, derived from the specs rather than from the template's own block.
     // A Workflow name is account-scoped, so the template's `pithy-media-image-to-text` cannot be made
@@ -95,10 +97,25 @@ export function resolveMediaConfig(template: WorkflowHostTemplate, params: Media
   // nothing mints a runtime token for a feature, so branch code never holds the application's credential.
   // Cloudflare rejects a deploy whose Secrets Store entry does not exist, so the binding goes, not just its
   // value. Images and Stream are then out of a feature's reach; R2 needs no token.
-  if (feature && resolved.secrets_store_secrets) {
+  // **Nor does a host whose config stores both types in R2**: `mediaRuntimePermissions` is empty, the app
+  // Worker's registry already leaves the token out, and a host binding it would hold the application's
+  // credential for nothing.
+  if (!bindsToken && resolved.secrets_store_secrets) {
     resolved.secrets_store_secrets = resolved.secrets_store_secrets.filter(
       (entry) => entry.binding !== RUNTIME_TOKEN_SECRET,
     );
   }
   return resolved;
+}
+
+/**
+ * **Whether a media host binds the application's runtime token (#728).** Only outside a feature, and only
+ * while its config stores a type on Images or Stream — the same test the app Worker's registry applies, so
+ * the host and the app agree on whether this environment holds the token at all.
+ */
+export function mediaHostBindsRuntimeToken(
+  mediaConfig: Pick<MediaConfig, "images" | "video">,
+  feature?: FeatureIdentity,
+): boolean {
+  return feature === undefined && mediaRuntimePermissions(mediaConfig).length > 0;
 }

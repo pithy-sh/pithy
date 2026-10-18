@@ -108,8 +108,12 @@ export interface MediaProvisioner {
    * Verify account prerequisites before any resource is created — most importantly a registered
    * `workers.dev` subdomain, which Cloudflare requires to deploy the Workflow-hosting media worker.
    * Throws a clear, actionable error so provisioning fails fast and clean rather than mid-deploy.
+   *
+   * Told every environment the run will write, because a refusal that needs one — an environment with no
+   * runtime token while the host binds one (#728) — must land before {@link writeCredentials} rewrites any
+   * bundle. A still-deployed Worker on the old kit cannot read a bundle rewritten without its token.
    */
-  preflight(): Promise<void>;
+  preflight(environments: readonly ManagedEnvironment[]): Promise<void>;
   /** Create (or reuse) this environment's R2 bucket; returns its name. Idempotent. */
   ensureBucket(env: ManagedEnvironment): Promise<{ bucketName: string }>;
   /** The names of every Cloudflare Images variant set to `neverRequireSignedURLs`. */
@@ -182,7 +186,7 @@ export async function provisionMedia(
   environments: DeclaredEnvironments | readonly string[],
   options: MediaProvisionOptions = {},
 ): Promise<MediaProvisionResult> {
-  await provisioner.preflight();
+  await provisioner.preflight(managedEnvironments(environments));
   // Before anything is created: a variant that would serve a private image unsigned is a refusal, not a
   // warning to read later.
   await refuseUnsignedVariants(provisioner, options.config ?? MediaConfig.parse({}));

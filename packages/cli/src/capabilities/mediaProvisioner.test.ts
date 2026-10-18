@@ -42,7 +42,7 @@ function fakeCf() {
     { id: "thumb", neverRequireSignedURLs: true },
   ]);
   const createStreamKey = vi.fn(async () => ({ id: "kid-1", jwk: "eyJr" }));
-  const secretExists = vi.fn(async () => true);
+  const secretExists = vi.fn(async (_name: string) => true);
   const cf = {
     secrets: () => ({ exists: secretExists }),
     r2Provisioner: () => ({ findBucketByName, createBucket, deleteBucket }),
@@ -95,10 +95,10 @@ describe("CloudflareMediaProvisioner", () => {
     const media = provisioner(cf, MediaConfig.parse({}), []);
 
     accountSubdomain.mockResolvedValue(null);
-    await expect(media.preflight()).rejects.toThrow(/workers\.dev subdomain/);
+    await expect(media.preflight(["staging"])).rejects.toThrow(/workers\.dev subdomain/);
 
     accountSubdomain.mockResolvedValue("acme");
-    await expect(media.preflight()).resolves.toBeUndefined();
+    await expect(media.preflight(["staging"])).resolves.toBeUndefined();
   });
 
   test("ensureBucket audits a create, and records nothing when it reuses the bucket", async () => {
@@ -216,33 +216,30 @@ describe("CloudflareMediaProvisioner", () => {
     });
   });
 
-  test("deployWorker refuses before deploying while the environment holds no runtime token (#728)", async () => {
+  test("preflight refuses, before any bundle is rewritten, an environment that holds no runtime token (#728)", async () => {
     // The enrichment worker binds the runtime token's store entry. A project upgraded from the manager's
-    // own token has none until it mints one, and wrangler would refuse the binding with no word of why.
-    const { cf, secretExists } = fakeCf();
-    secretExists.mockResolvedValue(false);
-    const resolveEnv = vi.fn();
-    const media = new CloudflareMediaProvisioner({
-      projectDir: KIT_ROOT,
-      project: PROJECT,
-      cf,
-      account: { accountId: "acct-1", confirmation: "pinned" },
-      apiToken: "tok",
-      storeId: "store-1",
-      r2Credentials: { accessKeyId: "ak", secretAccessKey: "sk" },
-      mediaConfig: MediaConfig.parse({}),
-      dispatcher: { dispatch: async () => {} },
-      environments: DEFAULT_ENVIRONMENTS,
-      resolveEnv,
-    });
-    await expect(media.deployWorker("staging", { bucketName: STAGING_BUCKET })).rejects.toMatchObject({
+    // own token has none until it mints one. Refusing at the deploy was too late: by then every bundle had
+    // been rewritten without the token the still-running old kit requires.
+    const { cf, accountSubdomain, secretExists } = fakeCf();
+    accountSubdomain.mockResolvedValue("acme");
+    secretExists.mockImplementation(async (name: string) => name !== "acme-prod-runtime-cf-api-token");
+    const media = provisioner(cf, MediaConfig.parse({}), []);
+    await expect(media.preflight(["staging", "prod"])).rejects.toMatchObject({
       payload: {
-        message: expect.stringContaining("acme-staging-runtime-cf-api-token"),
-        action: expect.stringContaining("pithy token mint runtime --env staging"),
+        message: expect.stringContaining("acme-prod-runtime-cf-api-token"),
+        action: expect.stringContaining("pithy token mint runtime --env prod"),
       },
     });
     expect(secretExists).toHaveBeenCalledWith("acme-staging-runtime-cf-api-token");
-    expect(resolveEnv).not.toHaveBeenCalled();
+  });
+
+  test("preflight asks for no runtime token when both types are stored in R2 — the host binds none", async () => {
+    const { cf, accountSubdomain, secretExists } = fakeCf();
+    accountSubdomain.mockResolvedValue("acme");
+    secretExists.mockResolvedValue(false);
+    const media = provisioner(cf, MediaConfig.parse({ images: { store: "r2" }, video: { store: "r2" } }), []);
+    await expect(media.preflight(["staging", "prod"])).resolves.toBeUndefined();
+    expect(secretExists).not.toHaveBeenCalled();
   });
 
   test("writeCredentials upserts both secrets — create first, update on the re-run that create rejects", async () => {

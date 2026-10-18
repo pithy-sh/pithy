@@ -189,14 +189,23 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
     this.#audit = options.audit ?? (async () => {});
   }
 
-  /** Require a registered `workers.dev` subdomain — Cloudflare needs one to deploy the Workflow-hosting worker. */
-  async preflight(): Promise<void> {
+  /**
+   * Require a registered `workers.dev` subdomain — Cloudflare needs one to deploy the Workflow-hosting
+   * worker — and, where the host binds one, every environment's runtime token (#728).
+   *
+   * The token check is here and not at the deploy, because by the deploy every bundle has been rewritten
+   * without the token an old-kit Worker still requires. A refusal after that write is an outage.
+   */
+  async preflight(environments: readonly ManagedEnvironment[]): Promise<void> {
     if (!(await this.#cf.workers().accountSubdomain())) {
       throw new ValidationError({
         message: "This Cloudflare account has no workers.dev subdomain, which Workflows require.",
         action: "Open Workers & Pages in the dashboard once to create one, then re-run.",
       });
     }
+    const { mediaHostBindsRuntimeToken } = await loadMedia(this.#projectDir);
+    if (!mediaHostBindsRuntimeToken(this.#mediaConfig)) return;
+    for (const env of environments) await this.#requireRuntimeToken(env);
   }
 
   /**
@@ -359,9 +368,10 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
   }
 
   /**
-   * Refuse, before anything deploys, an environment whose Secrets Store holds no runtime token (#728). The
-   * enrichment worker binds that entry, and a project upgraded from the secrets manager's own token has
-   * none until it mints one — which wrangler would answer with a refused binding and no word of why.
+   * Refuse an environment whose Secrets Store holds no runtime token (#728). The enrichment worker binds
+   * that entry, and a project upgraded from the secrets manager's own token has none until it mints one —
+   * which wrangler would answer with a refused binding and no word of why. Asked from {@link preflight},
+   * before anything is written.
    */
   async #requireRuntimeToken(env: ManagedEnvironment): Promise<void> {
     const entry = runtimeTokenSecretName(this.#project, env);
@@ -375,7 +385,6 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
 
   /** Resolve the env's wrangler config from the committed template + provisioned ids, then `wrangler deploy`. */
   async deployWorker(env: ManagedEnvironment, resources: MediaResources): Promise<void> {
-    await this.#requireRuntimeToken(env);
     const { mediaWorkerName, resolveMediaConfig } = await loadMedia(this.#projectDir);
     const { appDatabaseId, secretsDatabaseId } = await this.#resolveEnv(env);
     const dir = await mediaWorkerDir(this.#projectDir);

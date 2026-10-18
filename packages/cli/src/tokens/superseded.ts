@@ -15,8 +15,9 @@ import { MANAGER_CF_API_TOKEN_SECRET, managerCfApiTokenName } from "@pithy-sh/se
  * A deployed application holds one Cloudflare API token now. Before, it held up to three: the secrets
  * manager's own, minted by `pithy secrets provision` (`<project>-global-secrets-manager`) or by `pithy token
  * mint secrets` (`<project>-<env>-secrets`), and the Images and Stream token an operator made by hand and
- * handed to `pithy media provision`, which stored it in `media-storage-credentials`. The upgrade is mint
- * `runtime`, deploy, then revoke the old ones — and **nothing revokes them for you**, so `pithy token list`
+ * handed to `pithy media provision`, which stored it in `media-storage-credentials` — the bootstrap token,
+ * unless `--api-token` named another. The upgrade is mint `runtime`, deploy, then revoke the manager's
+ * tokens and rewrite the media bundle — and **nothing revokes them for you**, so `pithy token list`
  * names each one still present, and `pithy doctor` names it again once `runtime` is minted.
  *
  * Every name is composed by the namer that minted it, so a listing names this project's credentials and
@@ -112,7 +113,8 @@ export async function supersededStoredToken(input: {
     kind: "stored",
     name: secret,
     env: input.env,
-    was: `the Images and Stream token supplied to \`${commandName("media provision")}\``,
+    // The supplied token defaulted to the bootstrap one, so the operator is told which it most likely is.
+    was: `the Images and Stream token supplied to \`${commandName("media provision")}\` — your bootstrap token, unless you passed \`--api-token\``,
     supersededBy: RUNTIME_PROFILE,
   };
 }
@@ -130,9 +132,15 @@ export function supersededNotice(found: readonly SupersededToken[], unasked: str
         token.kind === "account-token" ? `${token.name} · ${token.tokenId}` : `${token.name} in ${token.env}`;
       lines.push(`  ${where} — ${token.was}`);
     }
+    const revoke = found.some((token) => token.kind === "account-token") ? ", then revoke each account token" : "";
     lines.push(
-      `Mint ${RUNTIME_PROFILE}, redeploy, then revoke each. Nothing is revoked for you. ${commandName("doctor")} names the step for each one.`,
+      `Mint ${RUNTIME_PROFILE}, redeploy${revoke}. Nothing is revoked for you. ${commandName("doctor")} names the step for each one.`,
     );
+    if (found.some((token) => token.kind === "stored")) {
+      lines.push(
+        "A stored token is your bootstrap one unless you passed another. Rewrite the bundle, and revoke it only if you made it for media.",
+      );
+    }
   }
   if (unasked !== null) lines.push(`Whether a supplied media token is still stored could not be asked: ${unasked}`);
   return lines.length === 0 ? null : `${lines.join("\n")}\n`;

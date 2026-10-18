@@ -39,9 +39,17 @@ describe("suppliedTokenCheck — a media token the runtime token superseded (#72
           "media-storage-credentials still holds the Images and Stream token supplied to pithy media provision. The runtime token replaced it, and nothing reads it.",
       }),
     ]);
-    expect(findings?.[0]?.action).toContain("Run pithy media provision --worker api to rewrite the bundle without it.");
+    expect(findings?.[0]?.action).toContain(
+      "Then run pithy media provision --worker api to rewrite the bundle without it.",
+    );
     expect(findings?.[0]?.fix).toBe("pithy media provision --worker api");
-    expect(findings?.[0]?.action).toContain("Then revoke that token where it was made.");
+    // The token defaulted to the bootstrap one, so a bare "revoke it" would revoke the operator's own.
+    expect(findings?.[0]?.action).not.toContain("Then revoke that token where it was made.");
+    expect(findings?.[0]?.action).toContain(
+      "Revoke that token only if you made it for media. Unless you passed --api-token, it is your bootstrap CLOUDFLARE_API_TOKEN: keep it.",
+    );
+    // Rewriting the bundle before the app Worker runs this kit breaks an old reader, so the order is named.
+    expect(findings?.[0]?.action).toMatch(/^Deploy your app Workers on this kit first\./);
   });
 
   test("says nothing where runtime is not minted yet — the upgrade has not started there", async () => {

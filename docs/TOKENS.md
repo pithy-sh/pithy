@@ -158,17 +158,18 @@ Two things to know before you mint it:
 
 ### Upgrading to one token
 
-Before `runtime`, an application held up to three: the secrets manager's own token (`<project>-global-secrets-manager`, minted by `pithy secrets provision`, or `<project>-<env>-secrets`, by `pithy token mint secrets`), and the Images and Stream token you made by hand and passed to `pithy media provision`, which stored it in `media-storage-credentials`. Both are superseded. Move without a gap, in this order:
+Before `runtime`, an application held up to three: the secrets manager's own token (`<project>-global-secrets-manager`, minted by `pithy secrets provision`, or `<project>-<env>-secrets`, by `pithy token mint secrets`), and the Images and Stream token `pithy media provision` stored in `media-storage-credentials`. That was the token you passed as `--api-token`, and your bootstrap `CLOUDFLARE_API_TOKEN` when you passed none. Both are superseded. Move without a gap, in this order:
 
 1. **Mint `runtime`.** `pithy secrets provision` mints it for every environment, and redeploys each manager to read it.
-2. **Deploy.** `pithy media provision` redeploys the media host, and rewrites `media-storage-credentials` with the account id and nothing else. `pithy provision --env <env>` binds `runtime` into your app Workers; then `pithy deploy`.
-3. **Revoke the old tokens.** Nothing is revoked for you. `pithy token revoke secrets --env <env>` removes a per-environment manager token; the global one, and a media token you made by hand, are revoked where they were made — the Cloudflare dashboard, under Manage Account → Account API Tokens.
+2. **Deploy your app Workers on this kit.** `pithy provision --env <env>` binds `runtime` into them; then `pithy deploy`. This kit reads a bundle that still holds a token, and a Worker on the old kit cannot read one without it, so the app moves before any bundle is rewritten.
+3. **Rewrite the bundles.** `pithy media provision` redeploys the media host and rewrites `media-storage-credentials` with the account id and nothing else, and `media-r2-credentials` without a token. `pithy storage provision` rewrites `storage-r2-credentials` the same way.
+4. **Revoke the manager's tokens.** Nothing is revoked for you. `pithy token revoke secrets --env <env>` removes a per-environment manager token. The global one is revoked where it was made: the Cloudflare dashboard, under Manage Account → Account API Tokens. Revoke the media token there too, but only if you made it for media. If you passed no `--api-token`, it is your bootstrap token, which you keep.
 
 `pithy token list --env <env>` names each superseded token still present, beside the tokens it lists. `pithy doctor` names each one still present once `runtime` is minted.
 
 ### R2's key pair is outside the rule
 
-The rule is about Cloudflare API tokens a Worker calls the Cloudflare API with. R2's S3 access-key pair is not one: Cloudflare offers no API to mint it, it addresses one bucket over the S3 protocol, and a Worker reaches its bucket through a binding wherever it can. `pithy storage provision` and `pithy media provision` still take it. The bundle that stores it holds the account id, the pair and the bucket, and no Cloudflare API token: the object store signs every call with the pair. A bundle written before #728 also holds a token, the bootstrap one unless you passed another. Re-run the provision to rewrite the bundle without it, then revoke that token if you made it for R2. `pithy doctor` names each bundle still holding one once `runtime` is minted.
+The rule is about Cloudflare API tokens a Worker calls the Cloudflare API with. R2's S3 access-key pair is not one: Cloudflare offers no API to mint it, it addresses one bucket over the S3 protocol, and a Worker reaches its bucket through a binding wherever it can. `pithy storage provision` and `pithy media provision` still take it. The bundle that stores it holds the account id, the pair and the bucket, and no Cloudflare API token: the object store signs every call with the pair. A bundle written before #728 also holds a token: the bootstrap one unless you passed another, and the one you passed was the R2 token the key pair derives from. Once your app Workers run this kit, re-run the provision to rewrite the bundle without it. Keep the token. Revoking the pair's parent breaks the pair the bundle still signs with. `pithy doctor` names each bundle still holding one once `runtime` is minted.
 
 ## Where a token is written — the store
 
