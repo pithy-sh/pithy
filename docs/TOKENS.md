@@ -24,7 +24,7 @@ A profile bound to a directory wins over the file and the environment there, and
 
 ## Token names are project-scoped
 
-A minted token is named `<project>-<env>-<profile>` — `acme-prod-ci-system`, `acme-staging-runtime`. Cloudflare's token list is account-wide and flat, so the project segment is what keeps two Pithy projects in one account from listing, rotating, and revoking each other's credentials. `pithy token list` filters on the `<project>-<env>-` prefix and shows nothing outside it.
+A minted token is named `<project>-<env>-<profile>` — `acme-prod-ci-system`, `acme-staging-runtime`. Cloudflare's token list is account-wide and flat, so the project segment is what keeps two Pithy projects in one account from listing, rotating, and revoking each other's credentials. `pithy token list` filters its `tokens` on the `<project>-<env>-` prefix and shows no other token there. Its `superseded` list is the one exception: it also names this project's old secrets manager token, `<project>-global-secrets-manager`, by its exact name, so an upgraded project can find it and revoke it.
 
 The store entry a token's value is written to is scoped the same way. The **variable name is not** — `CF_TOKEN_CI_SYSTEM` and `RUNTIME_CF_API_TOKEN` stay as they are, because each is a variable key or a binding name, not a name in a shared namespace.
 
