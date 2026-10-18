@@ -91,6 +91,20 @@ export interface HandlerDeps {
   newToken: () => string;
   /** The current time. */
   now: () => Date;
+  /**
+   * The per-owner byte ceiling for this request's caller, or null for unlimited.
+   *
+   * Absent means the configured `quota.bytesPerOwner`, which is what a project composing no entitlement
+   * provider has always had. The default resolver fills it from the `storageBytes` meter when the provider
+   * enforces one, so a plan's quota — or a subject's pinned one, or `unrestricted` — becomes the ceiling, and
+   * an advisory meter leaves the configured number in force.
+   */
+  quotaLimit?: () => Promise<number | null>;
+}
+
+/** The ceiling a write is held to: the resolved one where the request has it, the configured one otherwise. */
+async function ownerLimit(deps: HandlerDeps): Promise<number | null> {
+  return deps.quotaLimit ? deps.quotaLimit() : deps.config.quota.bytesPerOwner;
 }
 
 /** The client-facing shape of a stored file. Deliberately without `key` and `uploadId`. */
@@ -253,7 +267,7 @@ export async function initUpload(deps: HandlerDeps, input: CreateUploadInput): P
   await assertWithinQuota({
     db: deps.db,
     ownerId: deps.caller.userId,
-    limitBytes: deps.config.quota.bytesPerOwner,
+    limitBytes: await ownerLimit(deps),
     additionalBytes: input.size,
   });
 
@@ -298,7 +312,7 @@ export async function initUpload(deps: HandlerDeps, input: CreateUploadInput): P
     await insertReservingQuota({
       db: deps.db,
       ownerId: deps.caller.userId,
-      limitBytes: deps.config.quota.bytesPerOwner,
+      limitBytes: await ownerLimit(deps),
       additionalBytes: input.size,
       record: StorageObject.encode(object),
     });
@@ -388,7 +402,7 @@ export async function completeUpload(
     await updateSettlingQuota({
       db: deps.db,
       ownerId: object.ownerId,
-      limitBytes: deps.config.quota.bytesPerOwner,
+      limitBytes: await ownerLimit(deps),
       additionalBytes: overshoot,
       record: StorageObject.encode(settled),
     });
@@ -644,7 +658,7 @@ export async function copyObject(deps: HandlerDeps, id: string, input: CopyObjec
   await assertWithinQuota({
     db: deps.db,
     ownerId: deps.caller.userId,
-    limitBytes: deps.config.quota.bytesPerOwner,
+    limitBytes: await ownerLimit(deps),
     additionalBytes: source.size ?? 0,
   });
 
@@ -681,7 +695,7 @@ export async function copyObject(deps: HandlerDeps, id: string, input: CopyObjec
     await insertReservingQuota({
       db: deps.db,
       ownerId: deps.caller.userId,
-      limitBytes: deps.config.quota.bytesPerOwner,
+      limitBytes: await ownerLimit(deps),
       additionalBytes: source.size ?? 0,
       record: StorageObject.encode(copy),
     });

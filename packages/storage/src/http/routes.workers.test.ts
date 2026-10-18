@@ -169,7 +169,11 @@ let clock = new Date("2026-01-01T00:00:00.000Z");
  * organization, with `x-powers` naming what their role there holds. That stands in for auth and tenancy,
  * which fill the same two seams.
  */
-function makeApp(configInput: StorageConfigInput = {}, permission?: PermissionHook) {
+function makeApp(
+  configInput: StorageConfigInput = {},
+  permission?: PermissionHook,
+  quotaLimit?: () => Promise<number | null>,
+) {
   idCounter = 0;
   tokenCounter = 0;
   clock = new Date("2026-01-01T00:00:00.000Z");
@@ -202,6 +206,7 @@ function makeApp(configInput: StorageConfigInput = {}, permission?: PermissionHo
       return `token-${tokenCounter}`;
     },
     now: () => clock,
+    ...(quotaLimit ? { quotaLimit } : {}),
   });
   registerStorageRoutes({ config, resolveDeps })(app);
   return app;
@@ -752,6 +757,15 @@ describe("resuming a multipart upload", () => {
 });
 
 describe("quota", () => {
+  test("a ceiling resolved from the storageBytes meter replaces the configured one, both ways", async () => {
+    // A plan's quota below `bytesPerOwner` refuses what the configured number would have allowed …
+    const tighter = makeApp({ quota: { bytesPerOwner: 1000 } }, undefined, async () => 50);
+    expect((await init(tighter, ADA, { path: "a.bin", contentType: "text/plain", size: 60 })).status).toBe(413);
+    // … and an unrestricted subject — `null` — is never refused, whatever was configured.
+    const unlimited = makeApp({ quota: { bytesPerOwner: 10 } }, undefined, async () => null);
+    expect((await init(unlimited, ADA, { path: "b.bin", contentType: "text/plain", size: 10_000 })).status).toBe(201);
+  });
+
   test("an upload that would exceed the owner's quota is refused at init, before a URL is minted", async () => {
     const app = makeApp({ quota: { bytesPerOwner: 100 } });
     const response = await init(app, ADA, { path: "a.bin", contentType: "application/octet-stream", size: 200 });
