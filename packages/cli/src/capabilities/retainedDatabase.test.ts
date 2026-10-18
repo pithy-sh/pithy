@@ -10,8 +10,10 @@ import { RetainedBudget } from "@pithy-sh/core/src/migrations/retained";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
+import { secretsMigrations } from "@pithy-sh/secrets/src/migrations/secretsMigrations";
 import { deprovisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
+import { secretTableMigration } from "@pithy-sh/secrets/src/tables/migration";
 import type { MigrationProvider } from "kysely/migration";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -20,7 +22,7 @@ import { readSource, sourcePaths } from "../ci/sourceFiles";
 import { KIT_ROOT } from "../test-utils/kitRoot";
 import { CloudflareEmailDeprovisioner, suppressionMigrationProvider } from "./emailProvisioner";
 import { deleteRetainedDatabase } from "./retainedDatabase";
-import { CloudflareSecretsDeprovisioner, secretsMigrationProvider } from "./secretsProvisioner";
+import { CloudflareSecretsDeprovisioner, secretsMigrationProvider, vaultMigrationProvider } from "./secretsProvisioner";
 
 /**
  * **#591: `pithy secrets deprovision` deleted production's vault.**
@@ -59,6 +61,31 @@ async function storeSecrets(db: D1Database, count: number): Promise<void> {
       .bind(`secret-${index}`)
       .run();
   }
+}
+
+/** The secrets kit's set and an app's declared table, composed into the vault as `pithy migrate` composes them. */
+function appTableProvider(): MigrationProvider {
+  const provider = createMigrationRegistry([
+    {
+      database: "secrets",
+      namespace: "secrets",
+      order: 100,
+      migrations: { ...secretsMigrations },
+    },
+    {
+      database: "secrets",
+      namespace: "app",
+      order: 1500,
+      migrations: {
+        "0001_customer_init": secretTableMigration({
+          from: null,
+          to: { table: "customer", keys: ["userId"], secrets: ["KEY"] },
+        }),
+      },
+    },
+  ]).secrets;
+  if (!provider) throw new Error("expected a secrets provider");
+  return provider;
 }
 
 /** One account holding one database called `name`, served by `db`, with a spy on the control-plane delete. */
@@ -119,6 +146,34 @@ describe("the secrets teardown counts the vault before it deletes it", () => {
     });
     await counted.deleteDatabase("prod");
     expect(deleteDatabase).toHaveBeenCalledWith("db-1");
+  });
+
+  test("a declared secret table's rows are counted too — the provider never sees its migrations (#524)", async () => {
+    const db = await migratedD1(secretsMigrationProvider());
+    await runMigrations(db, appTableProvider());
+    for (const user of ["u1", "u2"]) {
+      await db
+        .prepare(
+          "insert into pithy_secrets_customer_secrets (name, encrypted_value, iv, key_version, value_type, created_at, updated_at, user_id) values ('KEY', 'sealed', 'iv', 1, 'text', 1, 1, ?)",
+        )
+        .bind(user)
+        .run();
+    }
+    const { cf, deleteDatabase } = accountWith(managerWorkerName(PROJECT, "prod"), db);
+    const deprovisioner = new CloudflareSecretsDeprovisioner({ account: pinned, cf, project: PROJECT, storeId: "s" });
+
+    await expect(
+      deprovisionSecrets(deprovisioner, { environment: "prod", declared: ["staging", "prod"] }),
+    ).rejects.toThrow("pithy_secrets_customer_secrets on acme-prod-secrets (2 rows)");
+    expect(deleteDatabase).not.toHaveBeenCalled();
+  });
+
+  test("a re-provision migrates a vault whose ledger also holds an app's table migration (#524)", async () => {
+    const db = await migratedD1(secretsMigrationProvider());
+    await runMigrations(db, appTableProvider());
+    // The provisioner's own set alone is what Kysely would refuse; the vault provider carries the neighbor.
+    await expect(runMigrations(db, secretsMigrationProvider())).rejects.toThrow(/missing/);
+    await expect(runMigrations(db, await vaultMigrationProvider(db))).resolves.toEqual([]);
   });
 
   test("an empty vault deletes with the environment named and nothing else", async () => {

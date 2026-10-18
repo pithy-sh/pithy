@@ -95,6 +95,13 @@ import {
 import { checkProjectName, describeProjectName, type ProjectNameCheck } from "../doctor/projectName";
 import { ScopeGateFinding, ScopeGateHealth } from "../doctor/scopeGates";
 import { checkSecretBindings, describeSecretBindings, type SecretBindingsCheck } from "../doctor/secretBindings";
+import {
+  checkSecretTables,
+  describeSecretTables,
+  type SecretTablesCheck,
+  type SecretTablesOptions,
+  secretTablesFix,
+} from "../doctor/secretTables";
 import { checkSelfBinding, describeSelfBinding, type SelfBindingCheck } from "../doctor/selfBinding";
 import {
   checkServiceBindings,
@@ -378,6 +385,14 @@ export interface DoctorReport {
    * because a skip that printed nothing would be indistinguishable from a healthy project.
    */
   supportSearchTriggers: SupportSearchTriggersCheck | null;
+  /**
+   * The declared secret tables (`defineSecretTable`) and, per environment, whether every row is on the newest
+   * master key (#524). `null` outside a project, `not-applicable` on a project that declares none.
+   *
+   * **It reports and never fails the exit.** A row behind is a rotation that has not reached it yet, and the
+   * remedy is the next scheduled pass rather than a command; it keeps the report verbose instead.
+   */
+  secretTables: SecretTablesCheck | null;
   /**
    * Whether every declared environment's `pithy.config.ts` **loads** (#548) — the question the block above
    * does not ask, because comparing a stanza to a declaration never evaluates either config. `null`
@@ -819,6 +834,11 @@ export interface DoctorReportOptions {
    * deployed environment whose composition turns `search.fts` on, and none at all otherwise.
    */
   checkSupportSearchTriggers?: (options: SupportSearchTriggersOptions) => Promise<SupportSearchTriggersCheck>;
+  /**
+   * Declared-secret-table seam; defaults to {@link checkSecretTables}. Reads row counts and key versions out of
+   * each environment's vault — never a value — and nothing at all on a project that declares no table.
+   */
+  checkSecretTables?: (options: SecretTablesOptions) => Promise<SecretTablesCheck>;
   /** Origin-declaration seam; defaults to {@link checkOrigins}. Reads files only — no account call. */
   checkOrigins?: (projectDir: string) => Promise<OriginsCheck>;
   /** App-Workflow binding seam; defaults to {@link checkWorkflows}. Reads files only — no account call. */
@@ -995,6 +1015,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeEnvironmentInheritance = options.checkEnvironmentInheritance ?? checkEnvironmentInheritance;
   const probeTurnstileSitekeys = options.checkTurnstileSitekeys ?? checkTurnstileSitekeys;
   const probeSupportSearchTriggers = options.checkSupportSearchTriggers ?? checkSupportSearchTriggers;
+  const probeSecretTables = options.checkSecretTables ?? checkSecretTables;
   const probeOrigins = options.checkOrigins ?? checkOrigins;
   const probeWorkflows = options.checkWorkflows ?? checkWorkflows;
   const probeDevPreferences =
@@ -1404,6 +1425,31 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
           { state: "could-not-check", environments: [] },
         )
       : null;
+  // The declared secret tables, and whether a rotation reached every row (#524). `dev` and every declared
+  // environment, each read through its own composition — the same `remoteSkip` the migration lines take.
+  const secretTables =
+    inProject && workersResolved
+      ? await probed<SecretTablesCheck>(
+          () =>
+            probeSecretTables({
+              projectDir: options.projectDir,
+              environments: [LOCAL_ENVIRONMENT, ...declaredEnvironments],
+              workers: resolvedWorkers.map((worker) => ({ name: worker.name, dir: worker.dir })),
+              account,
+              remoteSkip,
+              composeWorker:
+                composeWorkerFor ??
+                (async (worker, environment) => {
+                  const found = await resolve(environment, { projectDir: options.projectDir, worker: worker.name });
+                  const match = found.find((candidate) => candidate.dir === worker.dir);
+                  if (match === undefined)
+                    throw new ValidationError({ message: `${worker.name} did not resolve for ${environment}.` });
+                  return { capabilities: match.capabilities };
+                }),
+            }),
+          { state: "could-not-check", declared: [], environments: [] },
+        )
+      : null;
   // The same declaration, asked the question the block above cannot: comparing a stanza to a declaration
   // never evaluates a config, and a `pithy.config.ts` is code that may load under one environment and
   // throw under another (#548). Files only once more — the composition is taken in this process, and
@@ -1523,6 +1569,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     environmentInheritance,
     turnstileSitekeys,
     supportSearchTriggers,
+    secretTables,
     environmentConfigs,
     origins,
     workflows,
@@ -2614,6 +2661,15 @@ function supportSearchTriggersBlock(check: SupportSearchTriggersCheck): string {
 }
 
 /**
+ * The `Secret tables:` lines — the declared tables, then each environment's key-version answer (#524). It
+ * prints in both forms of the report whenever a table is declared: which tables a project holds customers'
+ * credentials in is worth one line on a healthy project too.
+ */
+function secretTablesBlock(check: SecretTablesCheck): string {
+  return ["Secret tables:", ...describeSecretTables(check).map((line) => `  ${line}`)].join("\n");
+}
+
+/**
  * The `Environment configs:` lines — shown only when a declared environment's `pithy.config.ts` throws
  * when it is composed (#548). Silence is the healthy answer, as everywhere in this half of the report.
  *
@@ -2963,6 +3019,12 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     report.supportSearchTriggers === null ||
     report.supportSearchTriggers.state === "ok" ||
     report.supportSearchTriggers.state === "not-applicable";
+  // A row behind the newest key keeps the report verbose, and so does a read that did not happen; neither fails
+  // the exit (see {@link DoctorReport.secretTables}).
+  const secretTablesQuiet =
+    report.secretTables === null ||
+    report.secretTables.state === "ok" ||
+    report.secretTables.state === "not-applicable";
   // Its own answer, because it is its own question — see {@link DoctorReport.environmentConfigs}. A config
   // that does not load for a declared environment is never terse: it is the loudest finding this report has
   // about a file the adopter owns.
@@ -3023,6 +3085,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     environmentInheritanceOk &&
     turnstileSitekeysOk &&
     supportSearchTriggersQuiet &&
+    secretTablesQuiet &&
     environmentConfigsOk &&
     originsOk &&
     workflowsOk &&
@@ -3241,6 +3304,11 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // provisioned and still cannot do the thing it was provisioned for, with nothing failing to say so.
   if (report.supportSearchTriggers && !supportSearchTriggersQuiet) {
     blocks.push(supportSearchTriggersBlock(report.supportSearchTriggers));
+  }
+
+  // Both forms, whenever a table is declared — see {@link secretTablesBlock}.
+  if (report.secretTables && report.secretTables.state !== "not-applicable") {
+    blocks.push(secretTablesBlock(report.secretTables));
   }
 
   // Straight after it, because it is the same declaration asked whether it *works*: one of these
@@ -3498,6 +3566,14 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
             fix: supportSearchFix(answer),
           })),
           detail: describeSupportSearchTriggers(report.supportSearchTriggers),
+        }
+      : null,
+    // Per environment, with the command a table that is declared and not migrated there needs.
+    secretTables: report.secretTables
+      ? {
+          ...report.secretTables,
+          environments: report.secretTables.environments.map((answer) => ({ ...answer, fix: secretTablesFix(answer) })),
+          detail: describeSecretTables(report.secretTables),
         }
       : null,
     environmentInheritance: report.environmentInheritance
@@ -3926,6 +4002,14 @@ const DoctorPayload = z
     supportSearchTriggers: Check("Support search triggers per environment, or `null`.", {
       state: State("`ok`, `not-applicable`, `findings`, `could-not-check`"),
       environments: Fixed("deployed environment"),
+      detail: Lines,
+    }),
+    secretTables: Check("Declared secret tables and each environment's key-version answer, or `null`.", {
+      state: State("`ok`, `not-applicable`, `findings`, `could-not-check`"),
+      declared: z
+        .array(z.looseObject({}).describe("One declared table, with its Worker, its keys and its secret names."))
+        .describe("Every declared table."),
+      environments: Fixed("environment's answer"),
       detail: Lines,
     }),
     environmentInheritance: Check("Non-inherited keys a stanza does not repeat, or `null`.", {

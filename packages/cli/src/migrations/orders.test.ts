@@ -47,7 +47,7 @@ import { readSource, sourcePaths } from "../ci/sourceFiles";
  * prevent happened in a space that was 99% empty — the failure was uncoordinated allocation, not
  * capacity, which is why the procedure above routes every author through one file.
  */
-const NEXT_FREE_ORDER = 1500;
+const NEXT_FREE_ORDER = 1600;
 
 /** Every declared migration order, and the database it sorts within. */
 const DECLARED: ReadonlyArray<{ constant: string; database: string }> = [
@@ -75,6 +75,8 @@ const DECLARED: ReadonlyArray<{ constant: string; database: string }> = [
   { constant: "EMAIL_SUPPRESSIONS_MIGRATION_ORDER", database: "emailSuppressions" },
   // The secrets manager's own database, likewise separate.
   { constant: "SECRETS_MIGRATION_ORDER", database: "secrets" },
+  // An adopter's declared secret tables, in that same database — after the registry they register in.
+  { constant: "SECRET_TABLES_MIGRATION_ORDER", database: "secrets" },
 ];
 
 /** `packages/` — this file lives at `packages/cli/src/migrations/`. */

@@ -5,6 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { undeclaredLineFields } from "@pithy-sh/secrets/src/cli/promptPlan";
 import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
+import { defineSecretTable, isSecretTable } from "@pithy-sh/secrets/src/tables/defineSecretTable";
 import { describe, expect, it } from "vitest";
 import type { z } from "zod";
 import { isTestFile, sourceFiles } from "./sourceFiles";
@@ -64,37 +65,51 @@ function isEntry(value: unknown): value is SecretRegistryEntry {
 }
 
 /**
+ * The `json` secrets one module's exports declare: an exported registry, an exported bare entry, and an
+ * exported declared secret table (`defineSecretTable`), each of whose `json` secret names is a schema an
+ * application seals per owner (#524). Keyed into `found`, because one entry is reachable through more than
+ * one export: `media-r2-credentials` is both its own registry slice and a member of media's.
+ */
+function collect(found: Map<string, JsonSecret>, module: string, exported: Record<string, unknown>): void {
+  const take = (name: string, entry: { valueType: string; schema?: z.ZodType }): void => {
+    if (entry.valueType === "json" && entry.schema)
+      found.set(`${module}:${name}`, { module, name, schema: entry.schema });
+  };
+  for (const [exportName, value] of Object.entries(exported)) {
+    if (isEntry(value)) {
+      take(exportName, value);
+      continue;
+    }
+    if (isSecretTable(value)) {
+      for (const [name, secret] of Object.entries(value.secrets)) take(`${value.name}.${name}`, secret);
+      continue;
+    }
+    if (typeof value !== "object" || value === null) continue;
+    for (const [name, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (isEntry(entry)) take(name, entry);
+    }
+  }
+}
+
+/**
  * Every `json` secret this repository declares.
  *
- * Found by **importing** the modules that call `defineSecretRegistry`, never by reading their text: the
- * question is what a schema *is*, and a `.meta({})` two wrappers up or inherited from a shared schema in
- * another package is invisible to a grep. Both an exported registry and an exported bare entry count —
- * `masterKeyRegistryEntry` is the second shape, and it is the one secret every other secret is read
- * through.
+ * Found by **importing** the modules that call `defineSecretRegistry` or `defineSecretTable`, never by reading
+ * their text: the question is what a schema *is*, and a `.meta({})` two wrappers up or inherited from a shared
+ * schema in another package is invisible to a grep. Both an exported registry and an exported bare entry count —
+ * `masterKeyRegistryEntry` is the second shape, and it is the one secret every other secret is read through.
+ * A declared table counts too: its `json` secrets are the same schemas, held to the same rule.
  */
 async function jsonSecrets(): Promise<JsonSecret[]> {
   const declaring = sourceFiles(PACKAGES).filter(
-    (file) => !isTestFile(basename(file.path)) && file.text.includes("defineSecretRegistry("),
+    (file) =>
+      !isTestFile(basename(file.path)) &&
+      (file.text.includes("defineSecretRegistry(") || file.text.includes("defineSecretTable(")),
   );
-  // Keyed, because one entry is reachable through more than one export: `media-r2-credentials` is both
-  // its own registry slice and a member of media's. One secret, one report.
   const found = new Map<string, JsonSecret>();
   for (const file of declaring) {
     const module = file.path.slice(PACKAGES.length + 1);
-    const exported = (await import(pathToFileURL(file.path).href)) as Record<string, unknown>;
-    const take = (name: string, entry: SecretRegistryEntry): void => {
-      if (entry.valueType === "json") found.set(`${module}:${name}`, { module, name, schema: entry.schema });
-    };
-    for (const [exportName, value] of Object.entries(exported)) {
-      if (isEntry(value)) {
-        take(exportName, value);
-        continue;
-      }
-      if (typeof value !== "object" || value === null) continue;
-      for (const [name, entry] of Object.entries(value as Record<string, unknown>)) {
-        if (isEntry(entry)) take(name, entry);
-      }
-    }
+    collect(found, module, (await import(pathToFileURL(file.path).href)) as Record<string, unknown>);
   }
   return [...found.values()];
 }
@@ -126,6 +141,31 @@ describe("every json secret's string leaves say whether they fit on a line", () 
       undeclared.sort(),
       "add .meta({ multiline: false }) beside the field's .describe(), or .meta({ multiline: true }) if its value can span lines",
     ).toEqual([]);
+  });
+
+  it("covers a declared table's json schemas: an unmarked string leaf fails, a marked one passes", async () => {
+    // A table declared the way an adopter declares one, exported from a module the sweep would import.
+    const { z } = await import("zod");
+    const Webhook = (secret: z.ZodType) =>
+      z.strictObject({ secret: secret.describe("The signing secret.") }).describe("A webhook bundle.");
+    const table = (secret: z.ZodType) => ({
+      CustomerSecrets: defineSecretTable({
+        name: "customer",
+        keys: { userId: z.string().describe("The user.") },
+        secrets: {
+          STRIPE_KEY: { valueType: "text", rotatable: true },
+          WEBHOOK_SIG: { valueType: "json", schema: Webhook(secret), rotatable: false },
+        },
+      }),
+    });
+    const sweep = (exported: Record<string, unknown>) => {
+      const found = new Map<string, JsonSecret>();
+      collect(found, "app/secretTables.ts", exported);
+      return [...found.values()].flatMap((secret) => undeclaredLineFields(secret.schema, secret.name));
+    };
+    expect(sweep(table(z.string()))).toEqual(["customer.WEBHOOK_SIG.secret"]);
+    expect(sweep(table(z.string().meta({ multiline: false })))).toEqual([]);
+    expect(sweep(table(z.string().meta({ multiline: true })))).toEqual([]);
   });
 
   it("reports a leaf that says nothing, and is satisfied by either answer", async () => {

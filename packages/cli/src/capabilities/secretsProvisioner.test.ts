@@ -25,7 +25,11 @@ import {
  * A D1 with no tables — what a never-migrated database answers. The teardown counts retained rows before it
  * deletes (#591); these fakes are about names and audits, so there is nothing to count.
  */
-const EMPTY_D1 = { prepare: () => ({ bind: () => ({ first: async () => null }) }) };
+const EMPTY_D1 = {
+  prepare: () => ({
+    bind: () => ({ first: async () => null, all: async () => ({ results: [], meta: { changes: 0 } }) }),
+  }),
+};
 
 /** A fake CloudflareClients exposing only the methods the (de)provisioner touches, with spies. */
 function fakeCf() {

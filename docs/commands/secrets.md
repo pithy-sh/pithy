@@ -12,6 +12,7 @@ pithy secrets update <name> [--env <env>] [--json]
 pithy secrets rotate <name> [--env <env>] [--dry-run] [--json]
 pithy secrets rm <name> [--env <env>] [--json]
 pithy secrets ls [--all] [--json]
+pithy secrets tables [--env <env>] [--worker <name>] [--json]
 pithy secrets edit [--json]
 pithy secrets verify [--env <env>] [--no-sweep] [--json]
 pithy secrets provision [--json]
@@ -31,6 +32,8 @@ pithy secrets deprovision --env <env> [--keys] [--destroy-retained <n>] [--json]
 | `deprovision` | `--env <env>` | **Required.** The one environment to tear down. There is no default and no "all": with none, the command refuses and lists the environments it could act on. |
 | `deprovision` | `--keys` | Also delete the environment's master key. Irreversible: every stored secret becomes undecryptable. Default `false`. |
 | `deprovision` | `--destroy-retained <n>` | **Destructive.** Delete a vault that still holds rows. `<n>` must equal the count the refusal printed. |
+| `tables` | `--env <env>` | The environment whose vault to read: `dev`, `staging`, `prod`, or one declared in `pithy.config.ts`. Default `dev`. |
+| `tables` | `--worker <name>` | Read one Worker's declarations instead of every Worker's under `apps/`. |
 | `verify` | `--env <env>` | Verify one environment instead of every declared one. |
 | `verify` | `--no-sweep` | Skip the Secrets Store listing and verify the stores alone. Sweeping is the default. |
 | all | `--json` | Machine-readable output. Default `false`. |
@@ -46,7 +49,9 @@ Run it again without --env to set it in every environment.
 
 The re-run is the confirmation, so there is no prompt and no `--yes`. It could have printed that sentence and proceeded — but an operator who typed `--env staging` would then have had **prod** rewritten by a command they did not intend, with a notice printed after the fact as cover. One extra command is cheaper than that, every time. `rm` gets the same refusal, and it matters more there: removing a global secret from one environment is the same category error arriving from the destructive direction.
 
-There is no `--worker`. Every subcommand reads the **project's** registry: each Worker's, merged by secret name.
+`--env` on `tables` is the ordinary set, `dev` included, because a declared table's local rows are as real as a deployed environment's.
+
+There is no `--worker` on any other subcommand. Every one reads the **project's** registry: each Worker's, merged by secret name.
 
 ## What it does
 
@@ -259,6 +264,95 @@ A different number refuses too. The count is taken again at the delete itself, s
 
 Credentials for every subcommand above that reaches an account come from `<config>/cloudflare.json`, or `<config>/cloudflare.<accountName>.json` when the root `pithy.config.ts` names an account — account-scoped, not per project. A profile bound here by `pithy cloudflare connect` outranks the file. `provision` and `deprovision` additionally need `SECRETS_STORE_ID`, which `pithy add secrets` records. `PITHY_OFFLINE` refuses ambient credentials outright, so an offline run of a Cloudflare-touching subcommand fails rather than reaching an account nobody named.
 
+## Per-owner secrets: declared tables
+
+**A secret that belongs to somebody gets an owner Pithy can see.** A Stripe key per customer, a webhook signing secret per organization, a signing key per installation: each is a credential an application mints and stores on a request, for one owner, and has to find again by that owner — and remove, every row of it, the day the owner leaves.
+
+```ts
+import { defineSecretTable } from "@pithy-sh/secrets/src/index";
+import { z } from "zod";
+
+export const CustomerSecrets = defineSecretTable({
+  name: "customer",
+  keys: {
+    userId: z.string().describe("The user the secret belongs to."),
+    organizationId: z.string().describe("The organization the user belongs to."),
+  },
+  secrets: {
+    STRIPE_KEY: { valueType: "text", rotatable: true, rotateEveryDays: 90 },
+    WEBHOOK_SIG: { valueType: "text", rotatable: true },
+  },
+});
+```
+
+That declares `pithy_secrets_customer_secrets` in the secrets D1, beside the system table: the system table's row — `id`, `name`, `encryptedValue`, `iv`, `keyVersion`, `valueType`, `createdAt`, `updatedAt` — plus a column per key, unique on the keys and the name, with an index per key. **The value path is the system table's, unchanged**: the same master key, the same AES-256-GCM envelope, the same `{ currentVersion, versions }` value envelope, the same at-rest rotation. Each row's ciphertext is bound to its table, its owner and its secret name, so a value moved into another owner's row does not open. `rotatable` and `rotateEveryDays` are forward-looking metadata exactly as they are on a registry entry; at-rest key rotation is what actually runs.
+
+Compose it in the Worker that owns it, through the app capability's `SECRETS` database:
+
+```ts
+import { secretTablesDatabase } from "@pithy-sh/secrets/src/index";
+import { secretTableMigrations } from "./migrations/secrets";
+
+const app = defineCapability({
+  name: "app",
+  requiredBindings: [],
+  databases: {
+    secrets: secretTablesDatabase({ tables: [CustomerSecrets], migrations: secretTableMigrations }),
+  },
+});
+```
+
+Leave `migrations` out until the first `pithy migrate` has written `apps/<worker>/migrations/secrets/index.ts`. **The migration is generated, and so is every one after it.** `pithy migrate` diffs the declaration against the chain, writes the next migration, and stops before applying anything; running it again applies it. A key or a secret name added later writes an alter. A key removed or renamed is refused by name, never generated. See [`pithy migrate`](./migrate.md#declared-secret-tables-it-writes-the-migration-and-stops). The migration also registers the table in `pithy_secrets_tables`, which is how the at-rest rotation finds it: the manager reads that registry on every pass, so a table registered after the manager was deployed rotates on the next pass, with no re-provision. Every declared table is **retained**, like the system table: no `down` runs over its rows unless you count them, and `pithy secrets deprovision` counts them before it deletes a vault.
+
+Read and write it from the accessor the Worker already holds. The owner is an object, and `list` and `deleteWhere` take any subset of the keys:
+
+```ts
+const t = (await secretsStore(env, registry)).table(CustomerSecrets);
+
+await t.put({ userId, organizationId }, "STRIPE_KEY", value);   // create-only; { replace: true } discards
+await t.get({ userId, organizationId }, "STRIPE_KEY");
+await t.rotate({ userId, organizationId }, "STRIPE_KEY", next); // the prior version stays valid
+await t.list({ organizationId });                               // every secret this organization holds
+await t.deleteWhere({ organizationId });                        // tenant offboarding, one call, returns a count
+await t.deleteWhere({ userId });                                // user deletion
+```
+
+A key added by a later migration holds `""` on every row written before it, and the empty key is left out of what the ciphertext is bound to, so those rows still open: address them with that key empty, beside the keys they were written with. Only declared secret names and only declared key fields compile. `deleteWhere({})` and `list({})` are refused: no owner is not an owner. `list` returns owners, names, key versions and timestamps, never a value. `put`, `rotate`, `delete` and `deleteWhere` emit audit events — `secrets/table_secret_written`, `secrets/table_secret_rotated`, `secrets/table_secret_removed`, `secrets/table_owner_removed` — carrying the table, the secret name and the owner keys, and never a value, when the call passes `{ audit }`. A `cf-secrets-store` backend is refused when the table is declared: a Secrets Store binding is declared in `wrangler.jsonc` at build time, and a per-owner name does not exist then.
+
+### When a declared table beats a keyspace
+
+A **keyspace** (`keyed: true` on a registry entry) stores one member per opaque key, as `<keyspace>/<key>` in the system table. It is right when the key is the whole story — one signing key per connection id, with nothing else to ask. A **declared table** is right when the owner has a shape:
+
+- **The owner has more than one part.** A user inside an organization has no single key prefix a scan could match, so one of the two axes is unqueryable as a keyspace whichever way you order them. In a table each is a column, and each is indexed.
+- **You will ask what an owner holds.** `list({ organizationId })` is one indexed query; a keyspace can only fetch a key you already know.
+- **The owner will leave.** `deleteWhere({ organizationId })` removes every row and says how many. With a keyspace, offboarding is a sweep you write yourself against our table — the operation that most needs to be exactly right.
+
+Keyspaces stay, unchanged, for the case with no owner worth typing. Nothing migrates a keyspace's members into a table.
+
+### `tables` — what each environment holds
+
+```
+$ pithy secrets tables --env prod
+customer    userId, organizationId
+  STRIPE_KEY   1204 rows  key v4
+  WEBHOOK_SIG  1204 rows  key v4
+
+connection  installationId
+  SIGNING_KEY  87 rows  key v4
+
+Done.
+```
+
+Each declared table, its keys, its secret names, how many rows hold each, and which master-key version sealed them. **These are runtime data an application writes, so no command creates, reads or deletes a row** — a customer's plaintext does not belong on an operator's screen or in a shell history. Visibility exists for one reason: a rotation that stopped partway across a customer table should be visible to the operator who triggered it, and the key-version spread is what shows it:
+
+```
+  STRIPE_KEY   1204 rows  keys v3 12, v4 1192
+
+12 rows are not on key v4. The last at-rest rotation did not reach them.
+```
+
+The newest version is what the rows say: the CLI cannot read the master key, so a row below the newest version any row in the vault is sealed under is a row a pass did not reach. A table declared and not yet migrated in that environment says so and names `pithy migrate --env <env>`. It reads through the same driver `pithy migrate` uses — the local store for `dev`, the D1 REST API otherwise — and a project declaring no table reads nothing. `pithy doctor` reports the same read as its `Secret tables:` block.
+
 ## `verify`
 
 **Does every stored secret still open, and does anything sit in the account's Secrets Store that nothing accounts for.** Two detectors, one command, because a misaddressed write leaves both halves behind at once: the entry a binding reads no longer holds what it should, and the value that should have gone into it sits under a name nothing composes.
@@ -371,6 +465,22 @@ An `unrecorded` run also writes one `{ "error": … }` line to stderr with code 
 
 A `keyspace` marker is the one entry an operator must not try to set: its members are written per key, in-Worker, by the application that mints them — through `putKeyed` / `rotateKeyed` / `deleteKeyed` on the accessor it already holds. See `@pithy-sh/secrets`' README.
 
+### `secrets tables`
+
+| key | type | meaning |
+|---|---|---|
+| `command` | string | `"secrets tables"`. |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
+| `env` | string | The environment read. |
+| `newestKeyVersion` | number \| null | The newest master-key version any row in the vault is sealed under. `null` for an empty vault. |
+| `behind` | number | Rows in declared tables sealed below that version — rows a rotation did not reach. |
+| `tables` | object[] | Every declared table, then any the vault holds that no Worker declares. |
+| `tables[].table` | string | The table's name — `customer` for `pithy_secrets_customer_secrets`. |
+| `tables[].worker` | string \| null | The Worker that declares it, or `null` for one only the vault knows. |
+| `tables[].keys` | string[] | Its owner key columns. |
+| `tables[].state` | string | `migrated`, `not-migrated` (declared, and its migration has not run here) or `undeclared` (held, and declared by no Worker). |
+| `tables[].secrets` | object[] | Each secret name, with `name`, `rows`, and `keyVersions` — master-key version to the rows it sealed. |
+
 ### `secrets edit`
 
 | key | type | meaning |
@@ -463,6 +573,9 @@ pithy secrets rotate SESSION_SIGNING_KEY --env prod
 
 # Remove one.
 pithy secrets rm OLD_WEBHOOK_SECRET --env staging --json
+
+# See each declared secret table in prod, and whether every row is on the newest key.
+pithy secrets tables --env prod
 
 # Edit this machine's dev values in $EDITOR.
 pithy secrets edit

@@ -646,6 +646,15 @@
       ]
     },
     {
+      "path": "secrets tables",
+      "flags": [
+        "--env",
+        "--worker",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
       "path": "secrets update",
       "flags": [
         "--env",

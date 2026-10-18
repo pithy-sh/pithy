@@ -162,7 +162,7 @@ describe("the reproduction (#588)", () => {
     // Nothing moved, in any database: the refusal comes before the first write.
     await withLocal(h.projectDir, "SECRETS", async (db) => {
       expect(await rowsIn(db, "pithy_secrets_system_secrets")).toBe(5);
-      expect(await ledgerOf(db)).toEqual(["0100_secrets_0001_init"]);
+      expect(await ledgerOf(db)).toEqual(["0100_secrets_0001_init", "0100_secrets_0002_tables"]);
     });
     await withLocal(h.projectDir, "DB", async (db) => expect(await ledgerOf(db)).toEqual(["1000_app_0001_things"]));
 
@@ -233,7 +233,10 @@ describe("the reproduction (#588)", () => {
     );
 
     const runs = await migrateProject({ ...base(), workers, rollback: true, group: RELEASE, destroyRetained: 2 });
-    expect(runs[0]?.databases[0]?.results.map((r) => r.migrationName)).toEqual(["0100_secrets_0001_init"]);
+    expect(runs[0]?.databases[0]?.results.map((r) => r.migrationName)).toEqual([
+      "0100_secrets_0002_tables",
+      "0100_secrets_0001_init",
+    ]);
     await withLocal(h.projectDir, "SECRETS", async (db) =>
       expect(await rowsIn(db, "pithy_secrets_system_secrets")).toBeNull(),
     );
@@ -243,7 +246,7 @@ describe("the reproduction (#588)", () => {
     const workers = [h.api([vault()])];
     await migrateProject({ ...base(), workers, group: RELEASE });
     const runs = await migrateProject({ ...base(), workers, rollback: true, group: RELEASE });
-    expect(runs[0]?.databases[0]?.results.map((r) => r.direction)).toEqual(["Down"]);
+    expect(runs[0]?.databases[0]?.results.map((r) => r.direction)).toEqual(["Down", "Down"]);
   });
 
   test("seed --redo's reset refuses too, and so does remove --drop", async () => {
@@ -296,7 +299,11 @@ describe("the reproduction (#588)", () => {
     expect(error.payload.message).toContain("pithy_secrets_system_secrets on SECRETS (1 row)");
     await withLocal(h.projectDir, "SECRETS", async (db) => {
       expect(await rowsIn(db, "pithy_secrets_system_secrets")).toBe(1);
-      expect(await ledgerOf(db)).toEqual(["0100_secrets_0001_init", "0500_sharer_0001_rooms"]);
+      expect(await ledgerOf(db)).toEqual([
+        "0100_secrets_0001_init",
+        "0100_secrets_0002_tables",
+        "0500_sharer_0001_rooms",
+      ]);
     });
   });
 
@@ -338,7 +345,7 @@ describe("the reproduction (#588)", () => {
     await withLocal(h.projectDir, "SECRETS", async (db) => {
       expect(await rowsIn(db, "rooms")).toBeNull();
       expect(await rowsIn(db, "pithy_secrets_system_secrets")).toBe(2);
-      expect(await ledgerOf(db)).toEqual(["0100_secrets_0001_init"]);
+      expect(await ledgerOf(db)).toEqual(["0100_secrets_0001_init", "0100_secrets_0002_tables"]);
     });
   });
 
@@ -379,7 +386,7 @@ describe("the reproduction (#588)", () => {
       ["DB", ["1000_app_0001_things"]],
     ]);
     await withLocal(h.projectDir, "SECRETS", async (db) =>
-      expect(await ledgerOf(db)).toEqual(["0100_secrets_0001_init"]),
+      expect(await ledgerOf(db)).toEqual(["0100_secrets_0001_init", "0100_secrets_0002_tables"]),
     );
 
     const unknown = await refusal(
