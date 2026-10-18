@@ -1,12 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { defineCapability } from "./capability/capability";
 import { createBackend } from "./createBackend";
 import { createEntrypoint } from "./createEntrypoint";
 import { PithyError } from "./error/pithyError";
+import { SERVICE_ORIGINS_VAR } from "./worker/serviceLoopback";
 
 /** A minimal stand-in for a `ForwardableEmailMessage` — enough to exercise the fan-out + raw replay. */
 function fakeMessage(body: string): ForwardableEmailMessage {
@@ -32,6 +33,37 @@ describe("createEntrypoint", () => {
     // `version` is null with no `CF_VERSION_METADATA` binding — honest rather than misleading, and what
     // `pithy deploy` reads as "cannot tell" instead of as a failed check.
     expect(await res.json()).toEqual({ status: "ok", version: null });
+  });
+
+  /**
+   * **Under `pithy dev`, a service binding reaches its target's pinned port (#617).** The binding is required, so
+   * `validateBindings` has to see it — which it does, because the stand-in is in the env before the app runs.
+   */
+  test("under dev, a published service binding is in env and reaches the local target", async () => {
+    const calls: string[] = [];
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((async (input: RequestInfo | URL) => {
+      calls.push(input instanceof Request ? input.url : String(input));
+      return new Response("from app-b");
+    }) as typeof fetch);
+    try {
+      const app = defineCapability({
+        name: "appa",
+        requiredBindings: [{ type: "service", name: "APP_B", service: "app-b" }],
+        routes: (a) => {
+          a.get("/call", async (c) => {
+            const service = (c.env as { APP_B: { fetch: (input: string) => Promise<Response> } }).APP_B;
+            return c.text(await (await service.fetch("https://app-b/hello")).text());
+          });
+        },
+      });
+      const entry = createEntrypoint({ capabilities: [], app });
+      const env = { ENVIRONMENT: "dev", [SERVICE_ORIGINS_VAR]: JSON.stringify({ APP_B: "http://localhost:8790" }) };
+      const res = await entry.fetch(new Request("http://x/call"), env, ctx);
+      expect(await res.text()).toBe("from app-b");
+      expect(calls).toEqual(["http://localhost:8790/hello"]);
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   test("no email handler is exposed when no capability declares one (so mail isn't silently dropped)", () => {
