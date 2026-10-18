@@ -158,14 +158,15 @@ describe("resolveMediaConfig", () => {
     });
   });
 
-  test("a feature's host binds the feature's own entry, never an environment's", () => {
+  test("a feature's host binds no runtime token — nothing mints one for a feature, and a missing entry fails the deploy", () => {
     const resolved = resolveMediaConfig(template(), {
       ...BASE,
       env: "feature",
       feature: { project: "acme", issue: "728", slug: "media-analytics" },
       resources: { bucketName: "acme-f728-media-analytics--media" },
     });
-    expect(resolved.secrets_store_secrets?.[1]?.secret_name).toBe("acme-f728-media-analytics--runtime-cf-api-token");
+    expect(resolved.secrets_store_secrets?.map((entry) => entry.binding)).toEqual(["SECRETS_ENCRYPTION_KEYS"]);
+    expect(JSON.stringify(resolved)).not.toContain("runtime-cf-api-token");
   });
 
   test("the committed template binds the runtime token beside the master key", async () => {

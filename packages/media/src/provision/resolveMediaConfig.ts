@@ -3,7 +3,7 @@
 
 import { RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
-import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provisionScope";
+import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { hostWorkflowsFor, resolveWorkflowHost, type WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
@@ -60,7 +60,7 @@ export function resolveMediaConfig(template: WorkflowHostTemplate, params: Media
   const feature = params.feature;
   const { project, env, appDatabaseId, secretsDatabaseId, storeId, resources, mediaConfig } = params;
 
-  return resolveWorkflowHost(template, {
+  const resolved = resolveWorkflowHost(template, {
     project,
     capability: MEDIA_CAPABILITY,
     env,
@@ -72,12 +72,14 @@ export function resolveMediaConfig(template: WorkflowHostTemplate, params: Media
     masterKeySecretName: masterKeySecretName(project, env, feature),
     // The application's one runtime token (#728), at the entry `pithy token mint runtime` and the secrets
     // manager's provisioning write — composed by the same scope call, so the two cannot name two entries.
-    secretNames: {
-      [RUNTIME_TOKEN_SECRET]: (feature ? featureScope(feature) : environmentScope(project, env)).secretEntry(
-        RUNTIME_TOKEN_SECRET,
-        "environment",
-      ),
-    },
+    // A feature binds none: see below.
+    ...(feature
+      ? {}
+      : {
+          secretNames: {
+            [RUNTIME_TOKEN_SECRET]: environmentScope(project, env).secretEntry(RUNTIME_TOKEN_SECRET, "environment"),
+          },
+        }),
     vars: { MEDIA_CONFIG: JSON.stringify(mediaConfig) },
     // The four enrichment Workflows, derived from the specs rather than from the template's own block.
     // A Workflow name is account-scoped, so the template's `pithy-media-image-to-text` cannot be made
@@ -89,4 +91,14 @@ export function resolveMediaConfig(template: WorkflowHostTemplate, params: Media
       ...(feature ? { feature } : {}),
     }).workflows,
   });
+  // **A feature's host holds no Cloudflare API token (#643, #728)**, the way a feature's manager holds none:
+  // nothing mints a runtime token for a feature, so branch code never holds the application's credential.
+  // Cloudflare rejects a deploy whose Secrets Store entry does not exist, so the binding goes, not just its
+  // value. Images and Stream are then out of a feature's reach; R2 needs no token.
+  if (feature && resolved.secrets_store_secrets) {
+    resolved.secrets_store_secrets = resolved.secrets_store_secrets.filter(
+      (entry) => entry.binding !== RUNTIME_TOKEN_SECRET,
+    );
+  }
+  return resolved;
 }
