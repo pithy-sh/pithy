@@ -11,8 +11,10 @@ import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import type { SecretDispatcher, SecretWriteRequest } from "@pithy-sh/secrets/src/cli/dispatch";
 import { deprovisionTurnstile, provisionTurnstile } from "@pithy-sh/turnstile/src/provision/provisionTurnstile";
 import {
+  TURNSTILE_ACCOUNT_SECRET,
   TURNSTILE_SECRET_NAME,
   type TurnstileSecrets,
+  turnstileAccountRegistry,
   turnstileSecretsRegistry,
 } from "@pithy-sh/turnstile/src/secret/registry";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -646,7 +648,9 @@ describe("CloudflareTurnstileDeprovisioner", () => {
 
     expect(calls.map((c) => ({ env: c.env, mode: c.mode, name: c.name }))).toEqual([
       { env: "staging", mode: "delete", name: TURNSTILE_SECRET_NAME },
+      { env: "staging", mode: "delete", name: TURNSTILE_ACCOUNT_SECRET },
       { env: "prod", mode: "delete", name: TURNSTILE_SECRET_NAME },
+      { env: "prod", mode: "delete", name: TURNSTILE_ACCOUNT_SECRET },
     ]);
   });
 
@@ -700,9 +704,81 @@ describe("CloudflareTurnstileDeprovisioner", () => {
       environments: DEFAULT_ENVIRONMENTS,
     });
 
+    await p.writeAccount("dev");
     await d.clearDev(["visible"]);
 
     expect(await devSecrets(projectDir)).toEqual({});
+  });
+
+  test("writeAccount records the confirmed account for a deployed environment, and nothing else (#731)", async () => {
+    const { cf } = fakeCf();
+    const { dispatcher, calls } = fakeDispatcher();
+    const p = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: PROJECT,
+      ...(await project()),
+      dispatcher,
+      environments: DEFAULT_ENVIRONMENTS,
+    });
+
+    await p.writeAccount("prod");
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      env: "prod",
+      mode: "create",
+      name: TURNSTILE_ACCOUNT_SECRET,
+      backend: "d1",
+      rotatable: false,
+      valueType: "json",
+      value: '{"accountId":"acct-1"}',
+    });
+  });
+
+  test("writeAccount updates an account already recorded, so every run is safe to repeat", async () => {
+    const { cf } = fakeCf();
+    const { dispatcher, calls, dispatch } = fakeDispatcher();
+    dispatch.mockRejectedValueOnce(new Error("already exists"));
+    const p = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: PROJECT,
+      ...(await project()),
+      dispatcher,
+      environments: DEFAULT_ENVIRONMENTS,
+    });
+
+    await p.writeAccount("staging");
+
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(calls.at(-1)).toMatchObject({ env: "staging", mode: "update", name: TURNSTILE_ACCOUNT_SECRET });
+  });
+
+  test("writeAccount puts dev's account in the dev secrets file, in the shape the registry declares", async () => {
+    const { cf } = fakeCf();
+    const { dispatcher, calls } = fakeDispatcher();
+    const { projectDir, workerDir } = await project();
+    const p = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: PROJECT,
+      projectDir,
+      workerDir,
+      dispatcher,
+      environments: DEFAULT_ENVIRONMENTS,
+    });
+
+    await p.writeAccount("dev");
+
+    expect(calls).toEqual([]);
+    const envelope = (await devSecrets(projectDir))?.[TURNSTILE_ACCOUNT_SECRET] as {
+      versions: Record<string, unknown>;
+    };
+    expect(envelope.versions["1"]).toEqual({ accountId: "acct-1" });
+    expect(turnstileAccountRegistry[TURNSTILE_ACCOUNT_SECRET]?.schema.safeParse(envelope.versions["1"]).success).toBe(
+      true,
+    );
   });
 });
 

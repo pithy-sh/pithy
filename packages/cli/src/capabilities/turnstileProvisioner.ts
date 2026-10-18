@@ -11,6 +11,7 @@ import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
 import {
+  type AccountEnvironment,
   isStrandedSitekeyVar,
   type ManagedTurnstileEnv,
   type PlannedSitekeys,
@@ -21,8 +22,11 @@ import {
   type TurnstileProvisioner,
 } from "@pithy-sh/turnstile/src/provision/provisionTurnstile";
 import {
+  TURNSTILE_ACCOUNT_SECRET,
   TURNSTILE_SECRET_NAME,
+  TurnstileAccount,
   type TurnstileSecrets,
+  turnstileAccountRegistry,
   turnstileSecretsRegistry,
 } from "@pithy-sh/turnstile/src/secret/registry";
 import type { CliAuditEmit } from "../audit/cliAudit";
@@ -70,6 +74,46 @@ const SECRET_FACTS = {
   rotatable: true,
   valueType: "json",
 } as const;
+
+/**
+ * The routing facts `turnstile-account` carries (#731): the same `d1`, per-environment JSON value as the widget
+ * secret, and not rotatable, because an account id is not a credential and nothing rolls it.
+ */
+const ACCOUNT_FACTS = { ...SECRET_FACTS, rotatable: false } as const;
+
+/** Every secret turnstile writes into a managed store, with its routing facts — what teardown deletes. */
+const MANAGED_SECRETS = [
+  { name: TURNSTILE_SECRET_NAME, facts: SECRET_FACTS },
+  { name: TURNSTILE_ACCOUNT_SECRET, facts: ACCOUNT_FACTS },
+] as const;
+
+/**
+ * Upsert one value into a deployed environment's managed store: create on first provision, update on a
+ * re-run (create rejects an existing secret) — so the write is idempotent. If create fails for a real reason,
+ * the update almost always fails too; both causes surface (create as `cause`) so the true failure isn't
+ * masked by the fallback's error.
+ */
+async function upsertManaged(
+  dispatcher: SecretDispatcher,
+  environments: DeclaredEnvironments | readonly string[],
+  write: { name: string; value: string; requested: ManagedEnvironment } & (typeof MANAGED_SECRETS)[number]["facts"],
+): Promise<void> {
+  try {
+    await dispatchSecretWrite(dispatcher, { mode: "create", ...write }, environments);
+  } catch (createError) {
+    try {
+      await dispatchSecretWrite(dispatcher, { mode: "update", ...write }, environments);
+    } catch (updateError) {
+      throw new InternalError(
+        {
+          message: `Could not write ${write.name} to ${write.requested}.`,
+          detail: `create failed: ${errorMessage(createError)}; update failed: ${errorMessage(updateError)}`,
+        },
+        { cause: createError },
+      );
+    }
+  }
+}
 
 export interface CloudflareTurnstileProvisionerOptions {
   cf: CloudflareClients;
@@ -271,25 +315,41 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
     const value = entry
       ? validateSecretValue(entry, TURNSTILE_SECRET_NAME, JSON.stringify(secret))
       : JSON.stringify(secret);
-    // Upsert: create on first provision, update on a re-run (create rejects an existing secret) — so the
-    // write is idempotent. If create fails for a real reason, the update almost always fails too; surface
-    // BOTH causes (create as `cause`) so the true failure isn't masked by the fallback's error.
-    const write = { name: TURNSTILE_SECRET_NAME, ...SECRET_FACTS, value, requested: env as ManagedEnvironment };
-    try {
-      await dispatchSecretWrite(this.#dispatcher, { mode: "create", ...write }, this.#environments);
-    } catch (createError) {
-      try {
-        await dispatchSecretWrite(this.#dispatcher, { mode: "update", ...write }, this.#environments);
-      } catch (updateError) {
-        throw new InternalError(
-          {
-            message: `Could not write the turnstile secret to ${env}.`,
-            detail: `create failed: ${errorMessage(createError)}; update failed: ${errorMessage(updateError)}`,
-          },
-          { cause: createError },
-        );
-      }
+    await upsertManaged(this.#dispatcher, this.#environments, {
+      name: TURNSTILE_SECRET_NAME,
+      ...SECRET_FACTS,
+      value,
+      requested: env as ManagedEnvironment,
+    });
+  }
+
+  /**
+   * The account the widgets live in, as `turnstile-account`, for one environment (#731) — the account this run
+   * confirmed, never one a shell happened to export. dev's goes into the dev secrets file and a deployed
+   * environment's through the manager, each through the registry entry, so the value is validated before a
+   * byte is written. It is an id, not a credential.
+   */
+  async writeAccount(env: AccountEnvironment): Promise<void> {
+    const account = TurnstileAccount.parse({ accountId: this.#account.accountId });
+    const entry: SecretRegistryEntry | undefined = turnstileAccountRegistry[TURNSTILE_ACCOUNT_SECRET];
+    if (env === "dev") {
+      const path = await resolveDevSecretsFile(this.#projectDir);
+      await writeDevSecrets(
+        path,
+        { [TURNSTILE_ACCOUNT_SECRET]: initialDevSecret(entry ?? {}, account) },
+        { replace: true },
+      );
+      return;
     }
+    const value = entry
+      ? validateSecretValue(entry, TURNSTILE_ACCOUNT_SECRET, JSON.stringify(account))
+      : JSON.stringify(account);
+    await upsertManaged(this.#dispatcher, this.#environments, {
+      name: TURNSTILE_ACCOUNT_SECRET,
+      ...ACCOUNT_FACTS,
+      value,
+      requested: env,
+    });
   }
 
   /**
@@ -394,22 +454,21 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
     // The project's declaration, not a hardcoded pair: a project that deploys to `live` had its secret
     // written there and would have kept it forever, because teardown only ever looked at two names.
     for (const env of this.#environments) {
-      // Delete is idempotent in the manager (a missing name is a no-op), so this is safe to re-run.
-      await dispatchSecretWrite(
-        this.#dispatcher,
-        {
-          mode: "delete",
-          name: TURNSTILE_SECRET_NAME,
-          ...SECRET_FACTS,
-          requested: env,
-        },
-        this.#environments,
-      );
+      // Delete is idempotent in the manager (a missing name is a no-op), so this is safe to re-run. The
+      // widget secret and the account it lives in go together (#731).
+      for (const { name, facts } of MANAGED_SECRETS) {
+        await dispatchSecretWrite(
+          this.#dispatcher,
+          { mode: "delete", name, ...facts, requested: env },
+          this.#environments,
+        );
+      }
     }
   }
 
   /**
-   * What {@link CloudflareTurnstileProvisioner.writeDev} wrote — the secret in the dev secrets file. Leaving
+   * What {@link CloudflareTurnstileProvisioner.writeDev} and `writeAccount` wrote — the secret and the account
+   * in the dev secrets file. Leaving
    * the value there would have the next `pithy dev` seed a key for a widget that no longer exists.
    *
    * The secret's name is still passed to the bootstrap removal, and that is deliberate: a project provisioned
@@ -423,7 +482,10 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
   async clearDev(_modes: TurnstileMode[]): Promise<void> {
     await removeBootstrapVars(this.#projectDir, [TURNSTILE_SECRET_NAME]);
     await writeDevVars({ projectDir: this.#projectDir, values: {} });
-    await removeDevSecrets(await resolveDevSecretsFile(this.#projectDir), [TURNSTILE_SECRET_NAME]);
+    await removeDevSecrets(await resolveDevSecretsFile(this.#projectDir), [
+      TURNSTILE_SECRET_NAME,
+      TURNSTILE_ACCOUNT_SECRET,
+    ]);
   }
 
   /** Blank each mode's production sitekey in the target Worker's registration — the widget it named is gone. */

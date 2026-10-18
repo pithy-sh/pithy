@@ -16,7 +16,7 @@ import { managerRegistry } from "@pithy-sh/secrets/src/manager/managerRegistry";
 import { isMintableSecret, type SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { runtimeTokenRegistry } from "@pithy-sh/secrets/src/tokens/runtimeTokenRegistry";
 import { storageSecretsRegistry } from "@pithy-sh/storage/src/secret/registry";
-import { turnstileSecretsRegistry } from "@pithy-sh/turnstile/src/secret/registry";
+import { turnstileCapabilitySecretsRegistry } from "@pithy-sh/turnstile/src/secret/registry";
 import { describe, expect, test } from "vitest";
 import { managerMintedSecrets, mintDeclaredSecrets } from "../capabilities/mintSecrets";
 import { isShippedSource, readSource, sourcePaths } from "../ci/sourceFiles";
@@ -116,7 +116,7 @@ const SHIPPED_REGISTRIES: Record<string, { site: string; registry: SecretRegistr
     registry: runtimeTokenRegistry(["secrets:read", "secrets:write"]),
   },
   storage: { site: "storage/src/secret/registry.ts", registry: storageSecretsRegistry },
-  turnstile: { site: "turnstile/src/secret/registry.ts", registry: turnstileSecretsRegistry },
+  turnstile: { site: "turnstile/src/secret/registry.ts", registry: turnstileCapabilitySecretsRegistry },
 };
 
 /** The registries alone, in the shape the checks below iterate. */

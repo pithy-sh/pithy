@@ -8,6 +8,7 @@ import { SESSION_BASE_SCOPES } from "@pithy-sh/cloudflare/src/oauth/scopes";
 import { resolveTokenProfiles, type TokenProfile } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { media } from "@pithy-sh/media/src/capability";
+import { turnstile } from "@pithy-sh/turnstile/src/capability";
 import { describe, expect, test } from "vitest";
 import { deriveSessionScopes, projectSessionScopes } from "./projectScopes";
 
@@ -106,5 +107,28 @@ describe("projectSessionScopes", () => {
     const dir = mkdtempSync(join(tmpdir(), "pithy-scopes-"));
     writeFileSync(join(dir, "pithy.config.ts"), "export default {{ broken");
     await expect(projectSessionScopes(dir)).rejects.toThrow();
+  });
+});
+
+describe("turnstile joins the one runtime token (#731)", () => {
+  const scopesFor = (capabilities: Parameters<typeof resolveTokenProfiles>[0]) =>
+    deriveSessionScopes({
+      environments: ["dev", "prod"],
+      profilesFor: () => resolveTokenProfiles(capabilities),
+      declaresDomain: () => false,
+      override: () => undefined,
+    });
+
+  test("a project composing turnstile alone mints runtime carrying analytics:read, and nothing else", () => {
+    const profiles = resolveTokenProfiles([turnstile({})]);
+    expect(Object.keys(profiles).sort()).toEqual(["ci-system", "runtime"]);
+    expect(profiles.runtime?.permissions).toEqual(["analytics:read"]);
+    expect(scopesFor([turnstile({})])).toContain("account-analytics.read");
+  });
+
+  test("composed beside media it is still one token, the union, with analytics:read once", () => {
+    const profiles = resolveTokenProfiles([media({}), turnstile({})]);
+    expect(Object.keys(profiles).sort()).toEqual(["ci-system", "runtime"]);
+    expect(profiles.runtime?.permissions).toEqual(["images:write", "stream:write", "analytics:read"]);
   });
 });
