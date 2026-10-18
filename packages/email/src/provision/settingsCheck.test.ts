@@ -35,6 +35,8 @@ const reader = (overrides: Partial<SettingsAccountReader> = {}): SettingsAccount
   // Every entry this project's link-signing key binds is there, and the vault holds none of them (#596).
   storeEntry: async () => true,
   vaultSecret: async () => false,
+  vaultSecretField: async () => false,
+  accountToken: async () => false,
   appRows: async () => [],
   ...overrides,
 });

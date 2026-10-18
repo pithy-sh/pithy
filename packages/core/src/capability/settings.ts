@@ -116,8 +116,8 @@ export interface SettingsCheckContext {
  *
  * Closed for the reason `CapabilityHealth` is: handing a capability a raw Cloudflare client would make
  * every capability a place a network call can be invented, and would put `@pithy-sh/cloudflare` in the
- * dependency list of packages that need none of it. Four questions cover what the checks ask; a fifth
- * lands here, once, when a capability actually needs it.
+ * dependency list of packages that need none of it. A question lands here once a capability actually needs
+ * it, and not before: six cover what the checks ask.
  *
  * Every method may throw. A throw is the account failing to answer, and the runner reports that
  * capability's account tier as unchecked rather than as a pass.
@@ -153,6 +153,22 @@ export interface SettingsAccountReader {
    * capability's own rows and cannot become a query language.
    */
   appRows(request: AppRowsRequest): Promise<readonly string[]>;
+  /**
+   * Whether that environment's **D1 vault** holds a `json` secret that still carries a top-level `field` —
+   * asked of its manager Worker, which opens the value and answers a bit, never the value (#728). `false`
+   * for a secret that is not stored, since it carries nothing.
+   *
+   * Asked by media of `media-storage-credentials`, which held a supplied Cloudflare token until the runtime
+   * token replaced it: the upgrade is finished only once the bundle has been rewritten without it.
+   */
+  vaultSecretField(request: { name: string; environment: string; field: string }): Promise<boolean>;
+  /**
+   * Whether the account holds a Cloudflare API token of exactly this name (#728). The name is the token's,
+   * composed with the namer that minted it — never a pattern, so a check names one credential it can see.
+   *
+   * Asked by secrets of the manager token the runtime token superseded, which nothing revokes for you.
+   */
+  accountToken(name: string): Promise<boolean>;
 }
 
 /** What {@link SettingsAccountReader.appRows} is asked. */
@@ -237,6 +253,58 @@ export interface CapabilitySettings {
   local(context: SettingsCheckContext): SettingsFinding[] | Promise<SettingsFinding[]>;
   /** The half that costs a Cloudflare call. Omitted where a capability has nothing to ask the account. */
   account?(context: SettingsAccountContext): Promise<SettingsFinding[]>;
+}
+
+/**
+ * **Two or more checks on one capability, as the one `settings` it declares (#728).** Media names records a
+ * narrowed visibility no longer admits and a bundle still holding a superseded token: two questions, one
+ * capability, one seam.
+ *
+ * Each tier runs every check's, in declaration order. A check that could not answer for some environments
+ * costs those environments and nothing else: the others' findings are kept, and the run ends in one
+ * {@link SettingsAccountIncomplete} carrying every finding and every unanswered environment. A check that
+ * throws outright is unanswered for every environment the context declares.
+ */
+export function allSettings(...checks: readonly CapabilitySettings[]): CapabilitySettings {
+  const accounts = checks.flatMap((check) => (check.account ? [check.account.bind(check)] : []));
+  return {
+    async local(context) {
+      const findings: SettingsFinding[] = [];
+      for (const check of checks) findings.push(...(await check.local(context)));
+      return findings;
+    },
+    ...(accounts.length === 0
+      ? {}
+      : {
+          async account(context) {
+            const findings: SettingsFinding[] = [];
+            const unanswered: UnansweredEnvironment[] = [];
+            for (const account of accounts) {
+              try {
+                findings.push(...(await account(context)));
+              } catch (cause) {
+                findings.push(...settingsFindingsBefore(cause));
+                if (cause instanceof SettingsAccountIncomplete) {
+                  for (const environment of cause.unanswered) {
+                    if (!unanswered.some((entry) => entry.environment === environment)) {
+                      unanswered.push({ environment, cause: cause.cause ?? cause });
+                    }
+                  }
+                  continue;
+                }
+                // With no environment to name, there is nothing the throw could be reported against.
+                if (context.environments.length === 0) throw cause;
+                for (const { name } of context.environments) {
+                  if (!unanswered.some((entry) => entry.environment === name))
+                    unanswered.push({ environment: name, cause });
+                }
+              }
+            }
+            if (unanswered.length > 0) throw new SettingsAccountIncomplete(findings, unanswered);
+            return findings;
+          },
+        }),
+  };
 }
 
 /**

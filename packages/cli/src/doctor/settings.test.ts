@@ -31,6 +31,8 @@ const reader: SettingsAccountReader = {
   d1Databases: async () => ["acme-global-email-suppressions"],
   zone: async () => true,
   vaultSecret: async () => false,
+  vaultSecretField: async () => false,
+  accountToken: async () => false,
   storeEntry: async () => true,
   appRows: async () => [],
 };

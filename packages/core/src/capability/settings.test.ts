@@ -5,7 +5,14 @@ import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { checkHostEnv, defineHostEnv } from "../workflow/hostEnv";
 import { defineCapability } from "./capability";
-import { hostEnvFindings, SettingsFinding } from "./settings";
+import {
+  allSettings,
+  hostEnvFindings,
+  SettingsAccountIncomplete,
+  type SettingsAccountReader,
+  SettingsFinding,
+  settingsFindingsBefore,
+} from "./settings";
 
 const declaration = defineHostEnv({
   capability: "email",
@@ -90,5 +97,68 @@ describe("the declaration hangs off the capability", () => {
     ).toHaveLength(1);
     // Nothing declares an account tier by default — the tier that costs a call is opt-in.
     expect(capability.settings?.account).toBeUndefined();
+  });
+});
+
+describe("allSettings — two checks on one capability (#728)", () => {
+  const context = {
+    project: "acme",
+    worker: "acme-api",
+    workerDirectory: "api",
+    environments: [{ name: "prod", origin: null }],
+  };
+  const finding = (setting: string, environment: string | null = null): SettingsFinding => ({
+    setting,
+    environment,
+    problem: `${setting} is wrong.`,
+    action: `Fix ${setting}.`,
+  });
+  const account = {} as SettingsAccountReader;
+
+  test("runs every check's local tier and every account tier, findings in declaration order", async () => {
+    const both = allSettings(
+      { local: () => [finding("a")], account: async () => [finding("b")] },
+      { local: async () => [finding("c")], account: async () => [finding("d")] },
+    );
+    expect(await both.local(context)).toEqual([finding("a"), finding("c")]);
+    expect(await both.account?.({ ...context, account })).toEqual([finding("b"), finding("d")]);
+  });
+
+  test("a check with no account tier contributes none, and no tier at all is declared when none has one", async () => {
+    expect(allSettings({ local: () => [] }, { local: () => [] }).account).toBeUndefined();
+    const one = allSettings({ local: () => [] }, { local: () => [], account: async () => [finding("x")] });
+    expect(await one.account?.({ ...context, account })).toEqual([finding("x")]);
+  });
+
+  test("one check that cannot answer costs its environments, never the other check's findings", async () => {
+    const both = allSettings(
+      {
+        local: () => [],
+        account: async () => {
+          throw new SettingsAccountIncomplete([finding("half", "staging")], [{ environment: "prod", cause: "no db" }]);
+        },
+      },
+      { local: () => [], account: async () => [finding("other")] },
+    );
+    const run = both.account?.({ ...context, account });
+    await expect(run).rejects.toBeInstanceOf(SettingsAccountIncomplete);
+    const error = await run?.catch((caught: unknown) => caught);
+    expect(settingsFindingsBefore(error)).toEqual([finding("half", "staging"), finding("other")]);
+    expect((error as SettingsAccountIncomplete).unanswered).toEqual(["prod"]);
+  });
+
+  test("a check that throws outright still leaves the other's findings, and the throw is reported", async () => {
+    const both = allSettings(
+      { local: () => [], account: async () => [finding("kept")] },
+      {
+        local: () => [],
+        account: async () => {
+          throw new Error("account refused");
+        },
+      },
+    );
+    const error = await both.account?.({ ...context, account }).catch((caught: unknown) => caught);
+    expect(settingsFindingsBefore(error)).toEqual([finding("kept")]);
+    expect((error as SettingsAccountIncomplete).unanswered).toEqual(["prod"]);
   });
 });
