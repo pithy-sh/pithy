@@ -11,7 +11,7 @@ import {
   readablePredicate,
 } from "@pithy-sh/core/src/access/access";
 import { resolveVisibility } from "@pithy-sh/core/src/access/visibility";
-import { fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { fromZodError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { z } from "zod";
 import type { MediaConfig } from "../config/config";
 import type { StorageBackend } from "../data/enums";
@@ -95,6 +95,12 @@ export interface HandlerDeps {
   env: Record<string, unknown>;
   /** The delivery signer, resolved only when a signed URL is minted. */
   signer: () => Promise<DeliverySigner>;
+  /**
+   * How many media items the caller may hold — the `mediaItems` quota where the entitlement provider
+   * enforces that meter — `null` for unlimited, or undefined where nothing limits it. Absent is undefined:
+   * a project composing no provider, or leaving the meter advisory, uploads as it always did.
+   */
+  itemLimit?: () => Promise<number | null | undefined>;
 }
 
 /** The response to an upload-init: where to upload and the record's coordinates. */
@@ -208,6 +214,7 @@ export async function createMedia(deps: HandlerDeps, input: CreateMediaInput): P
     });
   }
   const signed = visibility !== "public";
+  const ownerLimit = await deps.itemLimit?.();
   const id = deps.newId();
   const target = await deps.storage.mintUpload({
     type: input.type,
@@ -247,7 +254,19 @@ export async function createMedia(deps: HandlerDeps, input: CreateMediaInput): P
     createdAt: now,
     updatedAt: now,
   } as MediaRecord);
-  await deps.store.create(record);
+  const created = await deps.store.create(record, typeof ownerLimit === "number" ? { ownerLimit } : undefined);
+  if (created === null) {
+    // The plan's allowance, refused in the provider's own words: the remedy is a bigger tier or a pinned
+    // number, and a 402 says so. The minted upload slot is left to expire unused — nothing points at it.
+    throw new PithyError({
+      code: "payments/quota_exceeded",
+      status: 402,
+      message: "This plan's allowance is used up for this period.",
+      action: "Upgrade the plan, or pin a larger mediaItems allowance for this subject from the control plane.",
+      params: { meter: "mediaItems", limit: ownerLimit ?? 0 },
+      detail: `${deps.caller.userId ?? "anonymous"} holds ${ownerLimit} media items, the mediaItems quota.`,
+    });
+  }
   return { id, uploadUrl: target.uploadUrl, storageBackend: target.storageBackend, storageKey: target.storageKey };
 }
 

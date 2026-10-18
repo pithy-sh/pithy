@@ -209,3 +209,42 @@ describe("searchDuplicates", () => {
     expect(row).toEqual({ owner_id: "alice", organization_id: "org-a" });
   });
 });
+
+describe("createMedia — the mediaItems meter (#561)", () => {
+  /** How many records the table holds — the authority a refusal must not have moved. */
+  async function count(): Promise<number> {
+    const row = await env.DB.prepare("select count(*) as n from pithy_media_assets").first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  test("an enforced ceiling refuses the create past it with payments/quota_exceeded at 402, and writes nothing", async () => {
+    const deps = makeDeps(env.DB, ALICE, { itemLimit: async () => 2 });
+    await createMedia(deps, imageBody);
+    await createMedia(deps, imageBody);
+    await expect(createMedia(deps, imageBody)).rejects.toMatchObject({
+      payload: { code: "payments/quota_exceeded", status: 402 },
+    });
+    expect(await count()).toBe(2);
+  });
+
+  test("concurrent creates cannot race past the ceiling", async () => {
+    const deps = makeDeps(env.DB, ALICE, { itemLimit: async () => 3 });
+    const results = await Promise.allSettled(Array.from({ length: 10 }, () => createMedia(deps, imageBody)));
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(3);
+    expect(await count()).toBe(3);
+  });
+
+  test("an unrestricted subject — a null ceiling — is never refused", async () => {
+    const deps = makeDeps(env.DB, ALICE, { itemLimit: async () => null });
+    for (let i = 0; i < 5; i++) await createMedia(deps, imageBody);
+    expect(await count()).toBe(5);
+  });
+
+  test("an advisory meter, or no provider, limits nothing — existing behavior is unchanged", async () => {
+    const advisory = makeDeps(env.DB, ALICE, { itemLimit: async () => undefined });
+    for (let i = 0; i < 3; i++) await createMedia(advisory, imageBody);
+    const none = makeDeps(env.DB, ALICE);
+    await createMedia(none, imageBody);
+    expect(await count()).toBe(4);
+  });
+});
