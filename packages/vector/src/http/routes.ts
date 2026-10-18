@@ -3,36 +3,48 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import { type AmbientEnv, compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { validate } from "@pithy-sh/core/src/http/validation";
 import type { VerificationStrategy } from "@pithy-sh/core/src/http/verification";
 import type { Context, Hono } from "hono";
+import { corpusFromContext } from "../admin/health";
+import { type IndexReadDeps, readIndexes } from "../admin/indexes";
 import type { VectorConfig, VectorIndexConfig } from "../config/config";
+import type { CorpusState } from "../data/corpusState";
 import { vectorDocuments } from "../data/documents";
 import { vectorDatabase } from "../data/tables";
 import type { VectorAi } from "../embed/embed";
 import { VectorIndexNotFoundError } from "../error/errors";
 import type { VectorStore } from "../index/index";
 import { type MetadataIndexDescriptor, metadataIndexes } from "../index/metadata";
-import { provisionVectors } from "../index/provisioned";
+import { provisionVectors, readProvisionRecord } from "../index/provisioned";
 import { requireAuth } from "./guard";
 import { deleteDocument, getDocument, type HandlerDeps, queryDocuments, upsertDocuments } from "./handlers";
-import { DeleteResponse, QueryResponse, UpsertResponse, VectorDocumentResponse } from "./responses";
+import {
+  DeleteResponse,
+  QueryResponse,
+  UpsertResponse,
+  VectorDocumentResponse,
+  VectorIndexesResponse,
+} from "./responses";
 import { QueryInput, UpsertDocumentsInput, VectorDocumentParams, VectorIndexParams } from "./schemas";
+import { DEFAULT_VECTOR_BASE_PATH, VECTOR_INDEXES_READ_SCOPE, vectorIndexesPath } from "./scopes";
 
 /**
- * The vector routes, what each accepts, and their declared verification strategies — every one of them
- * `bearer | session`:
+ * The vector routes, what each accepts, and their declared verification strategies — every document route
+ * `bearer | session`, and the index read `control-plane`:
  *
  *   POST   /vector/:index/documents      → write one or many  param: VectorIndexParams, json: UpsertDocumentsInput
  *   POST   /vector/:index/query          → search             param: VectorIndexParams, json: QueryInput
  *   GET    /vector/:index/documents/:id  → fetch one hydrated param: VectorDocumentParams
  *   DELETE /vector/:index/documents/:id  → delete from both   param: VectorDocumentParams
+ *   GET    /vector/indexes               → every index's state (control-plane: vector:indexes:read)
  *
- * Every route is gated by {@link requireAuth} — there is no public vector surface. A corpus is content the
- * adopter owns, and an unauthenticated search endpoint is an exfiltration endpoint. `requireAuth` is copied
+ * Every document route is gated by {@link requireAuth} — there is no public vector surface. A corpus is
+ * content the adopter owns, and an unauthenticated search endpoint is an exfiltration endpoint. `requireAuth` is copied
  * into this package rather than imported from `@pithy-sh/auth`, so a project with no auth capability
  * composed denies every route instead of serving them open.
  *
@@ -44,6 +56,11 @@ import { QueryInput, UpsertDocumentsInput, VectorDocumentParams, VectorIndexPara
  * is still resolved in the dep resolver, so which indexes exist stays unprobeable. Each index's metadata
  * schema is introspected **once**, here at registration, rather than per request: the descriptors are what
  * the filter compiler checks against, and they change only when the config does.
+ *
+ * **The index read is the control plane's, not a caller's (#730).** It is gated by `requireControlPlane`, not
+ * `requireAuth`, and it is declared on the capability's `adminRoutes`, which is what exempts it from
+ * `provisionGuard`: a drifted Worker refuses every search and still answers this. Two segments to the
+ * document routes' three, so it shares no path with `:index` — an index named `indexes` is still searchable.
  */
 
 /** The bindings the vector routes read off the request env. */
@@ -61,6 +78,10 @@ export interface VectorRoutesOptions {
   basePath?: string;
   /** Test seam: resolve handler deps for one index from the request context. Defaults to the env resolver. */
   resolveDeps?: (c: Context<PithyHonoEnv>, indexName: string) => HandlerDeps;
+  /** Test seam: resolve the index read's deps from the request context. Defaults to the env resolver. */
+  resolveIndexes?: (c: Context<PithyHonoEnv>) => IndexReadDeps;
+  /** Test seam: the corpus the default index-read resolver counts. Defaults to the request's `DB`. */
+  resolveCorpus?: (c: Context<PithyHonoEnv>) => CorpusState;
 }
 
 /**
@@ -96,7 +117,7 @@ const AUTHENTICATED: readonly VerificationStrategy[] = ["bearer", "session"];
 
 /** Register the vector sub-router. Returned as the capability's `routes` hook. */
 export function registerVectorRoutes(options: VectorRoutesOptions): (app: Hono<PithyHonoEnv>) => void {
-  const base = options.basePath ?? "/vector";
+  const base = options.basePath ?? DEFAULT_VECTOR_BASE_PATH;
   const { config } = options;
 
   // Introspect every index's metadata once. `metadataIndexes` throws on an unprovisionable schema, and doing
@@ -128,7 +149,40 @@ export function registerVectorRoutes(options: VectorRoutesOptions): (app: Hono<P
       };
     });
 
+  // The index read's deps, off the request env. A missing Vectorize binding is not thrown here, unlike on the
+  // document routes: the read reports it as that index being unreadable, and the rest still answer.
+  const resolveCorpus = options.resolveCorpus ?? corpusFromContext;
+  const resolveIndexes =
+    options.resolveIndexes ??
+    ((c: Context<PithyHonoEnv>): IndexReadDeps => {
+      const env = c.env as Record<string, unknown>;
+      return {
+        config,
+        record: readProvisionRecord(env),
+        environment: compositionEnvironment(env as AmbientEnv),
+        store: (index) => env[index.binding] as VectorStore | undefined,
+        corpus: resolveCorpus(c),
+      };
+    });
+
   return (app) => {
+    app.get(
+      vectorIndexesPath(base),
+      describeRoute({
+        summary: "Read every declared index's state.",
+        description:
+          "What config declares, what Vectorize reports over the binding, how the corpus splits by embedding model, how many namespaces it uses, and where each index stands against the provision record. Namespace names are never reported.",
+        verification: "control-plane",
+        scopes: [VECTOR_INDEXES_READ_SCOPE],
+        responses: { 200: VectorIndexesResponse },
+      }),
+      requireControlPlane(VECTOR_INDEXES_READ_SCOPE),
+      async (c) => {
+        const report = await readIndexes(resolveIndexes(c));
+        return c.json(report satisfies VectorIndexesResponse, 200);
+      },
+    );
+
     app.post(
       `${base}/:index/documents`,
       describeRoute({

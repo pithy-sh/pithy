@@ -7,10 +7,12 @@ import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
 import type { KvNamespaceSpecMap } from "@pithy-sh/core/src/kv/namespaces";
 import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
 import type { Migration } from "kysely/migration";
+import { vectorHealth } from "./admin/health";
 import { VectorConfig, type VectorConfigInput } from "./config/config";
 import { vectorTables } from "./data/tables";
 import { provisionGuard } from "./http/provisionGuard";
 import { registerVectorRoutes } from "./http/routes";
+import { DEFAULT_VECTOR_BASE_PATH, vectorAdminRoutes } from "./http/scopes";
 import { vector_0001_documents } from "./migrations/0001_documents";
 import { vectorExampleSeed } from "./seeds/example";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
@@ -60,6 +62,12 @@ export interface VectorCapability
  * quietly returning partial results. The boot check reads a var, never the network: an account API token has
  * no business on the request path of a search.
  *
+ * **Its index state is readable over the control plane (#730):** `GET {basePath}/indexes`, behind
+ * `vector:indexes:read`, reports each declared index from config, from Vectorize's `describe()` on the binding,
+ * from the corpus, and against the provision record, with two health counts beside it on the manifest. None of
+ * it is a Cloudflare API call, so vector declares no `runtimePermissions` and adds nothing to the one `runtime`
+ * token. The route is an admin route, so `provisionGuard` lets it answer a drifted Worker.
+ *
  * `dependsOn` is deliberately empty. Auth is a seam, not a peer: without `@pithy-sh/auth` the routes deny
  * rather than open, which is the right failure and needs no dependency edge.
  *
@@ -67,7 +75,7 @@ export interface VectorCapability
  * `wrangler dev` binds nothing and every search fails locally for a reason that looks like a code fault.
  */
 export function vector(options: VectorOptions = { indexes: {} }): VectorCapability {
-  const { basePath, ...configInput } = options;
+  const { basePath = DEFAULT_VECTOR_BASE_PATH, ...configInput } = options;
   // Parse the index set at assembly — an unindexable filterable field, an eleventh one, or a model/dimension
   // mismatch fails on deploy, not on the first search.
   const resolved = VectorConfig.parse(configInput);
@@ -113,7 +121,10 @@ export function vector(options: VectorOptions = { indexes: {} }): VectorCapabili
     // per request — there is no env at assembly for a `compose` hook to read. A readiness guard, so the
     // control-plane surface still answers a drifted Worker.
     readiness: [provisionGuard(resolved)],
-    routes: registerVectorRoutes({ config: resolved, ...(basePath !== undefined ? { basePath } : {}) }),
+    // Built from the same `basePath` the routes register under, so the manifest names the mounted path.
+    adminRoutes: vectorAdminRoutes(basePath),
+    health: vectorHealth(resolved),
+    routes: registerVectorRoutes({ config: resolved, basePath }),
   });
 
   return Object.assign(capability, { vectorConfig: resolved });

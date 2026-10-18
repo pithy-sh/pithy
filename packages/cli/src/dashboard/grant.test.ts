@@ -7,6 +7,7 @@ import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/admin
 import { type ControlPlaneScope, SEAM_SCOPES } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { turnstile } from "@pithy-sh/turnstile/src/capability";
+import { vector } from "@pithy-sh/vector/src/capability";
 import { describe, expect, test } from "vitest";
 import {
   decideGrant,
@@ -82,6 +83,13 @@ describe("defaultGrant", () => {
     const widgets = grantableScopes([turnstile({})]).find((entry) => entry.scope === "turnstile:widgets:read");
     expect(widgets?.read).toBe(true);
     expect(defaultGrant([turnstile({})])).toEqual([...SEAM_SCOPES, "turnstile:widgets:read"]);
+  });
+
+  test("offers vector:indexes:read as a read, off the real capability, with no change to the grant (#730)", () => {
+    const capability = vector({ indexes: { docs: { model: "m", dimensions: 3 } } });
+    const indexes = grantableScopes([capability]).find((entry) => entry.scope === "vector:indexes:read");
+    expect(indexes?.read).toBe(true);
+    expect(defaultGrant([capability])).toEqual([...SEAM_SCOPES, "vector:indexes:read"]);
   });
 
   test("adds every declared read, so a fresh connection opens to panes that read", () => {

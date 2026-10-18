@@ -54,6 +54,7 @@ import {
   TESTERS_ROSTER_WRITE_SCOPE,
 } from "@pithy-sh/testers/src/http/scopes";
 import { TURNSTILE_WIDGETS_READ_SCOPE } from "@pithy-sh/turnstile/src/http/scopes";
+import { VECTOR_INDEXES_READ_SCOPE } from "@pithy-sh/vector/src/http/scopes";
 
 /**
  * The adopter's browser program, in miniature.
@@ -123,4 +124,5 @@ export const EVERY_CONTROL_PLANE_SCOPE: readonly string[] = [
   TESTERS_ROSTER_WRITE_SCOPE,
   TESTERS_NUDGE_SEND_SCOPE,
   TURNSTILE_WIDGETS_READ_SCOPE,
+  VECTOR_INDEXES_READ_SCOPE,
 ];

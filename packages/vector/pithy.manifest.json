@@ -35,7 +35,8 @@
     "Run `pithy vector provision --env <env>` to create the index, its metadata indexes, and the prebuilt reprocess worker. It waits for each metadata index to become live: Vectorize applies them asynchronously, and a vector written before one exists is never covered by it. It then writes what it observed into wrangler.jsonc as the `VECTOR_PROVISIONED` var for that environment — commit it. The Worker checks its declared filterable fields against that record at boot and refuses to serve on a mismatch, so re-run provision whenever you change a metadata schema.",
     "Run `pithy migrate` to create pithy_vector_documents — the durable corpus results hydrate from and re-embeds read out of.",
     "Add `@pithy-sh/auth` if it is not already installed. Search routes scope to the authenticated caller; without auth every route is denied.",
-    "Changed a model, or added a filterable field after ingest? Run `pithy vector reprocess` — it re-embeds the rows whose model differs from config, and `--all` re-embeds the corpus. A late metadata index needs `pithy vector reset`, which rebuilds the index from that corpus."
+    "Changed a model, or added a filterable field after ingest? Run `pithy vector reprocess` — it re-embeds the rows whose model differs from config, and `--all` re-embeds the corpus. A late metadata index needs `pithy vector reset`, which rebuilds the index from that corpus.",
+    "`GET /vector/indexes` reports every declared index over the control plane, behind the `vector:indexes:read` scope: what config declares, what Vectorize holds, how many documents are on another model or none, how many namespaces (a count, never the names), and whether it is unprovisioned, provisioned or drifted. It reads the binding, D1 and the `VECTOR_PROVISIONED` var, so it adds nothing to the runtime token."
   ],
   "configOptions": [
     {

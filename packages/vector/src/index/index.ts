@@ -70,6 +70,11 @@ export interface VectorStore {
   query(vector: number[], options?: Record<string, unknown>): Promise<unknown>;
   /** Delete vectors by id. Optional here so a fake may omit it; guarded before use. */
   deleteByIds?: (ids: string[]) => Promise<unknown>;
+  /**
+   * What the index holds and how far it has processed. Optional for the same reason as `deleteByIds`, and
+   * guarded before use by {@link describeVectors}, which is the only caller.
+   */
+  describe?: () => Promise<unknown>;
 }
 
 const MutationAck = z
@@ -241,4 +246,85 @@ export async function deleteVectors(store: VectorStore, ids: string[]): Promise<
     });
   }
   return parsed.data.mutationId;
+}
+
+/**
+ * What `describe()` answers. Validated rather than trusted, like every other response here.
+ *
+ * The two watermarks are loose on purpose. `@cloudflare/workers-types` types both as numbers while its own
+ * comment calls one an ISO-8601 datetime and the other a UUID, and an index that has processed no mutation
+ * has neither. So each accepts a string, a number, or nothing, and {@link describeVectors} states them in
+ * the one form a client parses.
+ */
+const IndexInfo = z
+  .object({
+    vectorCount: z.number().int().nonnegative().describe("How many vectors the index holds."),
+    dimensions: z.number().int().positive().describe("How many components the index was created for."),
+    processedUpToDatetime: z
+      .union([z.string(), z.number()])
+      .nullish()
+      .describe("When the last mutation the index has applied was made."),
+    processedUpToMutation: z
+      .union([z.string(), z.number()])
+      .nullish()
+      .describe("The id of the last mutation the index has applied."),
+  })
+  .describe("The shape of a Vectorize describe response.");
+
+/**
+ * Why an index could not be described. A closed list, so a client renders each one and nothing of the
+ * underlying error travels: what a binding throws may name an account or an index.
+ *
+ * - `unbound`: the index's binding is not on the Worker's env.
+ * - `unsupported`: the binding carries no `describe`.
+ * - `failed`: `describe` threw, or answered a shape this package does not know.
+ */
+export type VectorIndexUnreadable = "unbound" | "unsupported" | "failed";
+
+/** What Vectorize reports about one index, or why it could not say. Never a zero standing in for silence. */
+export type VectorIndexReading =
+  | {
+      state: "read";
+      vectorCount: number;
+      dimensions: number;
+      processedUpToDatetime: string | null;
+      processedUpToMutation: string | null;
+    }
+  | { state: "unreadable"; reason: VectorIndexUnreadable };
+
+/** An epoch-millisecond or ISO watermark as ISO-8601, or null where there is none or it is not a date. */
+function watermarkDatetime(value: string | number | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const at = new Date(value);
+  return Number.isNaN(at.getTime()) ? null : at.toISOString();
+}
+
+/**
+ * Describe an index over its binding. No account token: this is the binding, on the request path, like every
+ * other Vectorize call in this module.
+ *
+ * **Total, and that is the contract.** A management client reads this to say what an index holds, and an index
+ * it cannot read is a different fact from an index that is empty. So an absent binding, a binding with no
+ * `describe`, a throw and an unknown shape are each reported as unreadable, and the caught error is dropped
+ * whole.
+ */
+export async function describeVectors(store: VectorStore | undefined): Promise<VectorIndexReading> {
+  if (!store) return { state: "unreadable", reason: "unbound" };
+  if (!store.describe) return { state: "unreadable", reason: "unsupported" };
+  let raw: unknown;
+  try {
+    raw = await store.describe();
+  } catch {
+    return { state: "unreadable", reason: "failed" };
+  }
+  const parsed = IndexInfo.safeParse(raw);
+  if (!parsed.success) return { state: "unreadable", reason: "failed" };
+  const mutation = parsed.data.processedUpToMutation;
+  return {
+    state: "read",
+    vectorCount: parsed.data.vectorCount,
+    dimensions: parsed.data.dimensions,
+    processedUpToDatetime: watermarkDatetime(parsed.data.processedUpToDatetime),
+    processedUpToMutation: mutation === null || mutation === undefined ? null : String(mutation),
+  };
 }

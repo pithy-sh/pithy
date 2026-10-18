@@ -120,7 +120,8 @@ const DECLARED_ONLY: Record<string, string> = {
  *
  * Measured 2026-08-22, last moved 2026-10-16 by migration state over the control plane (#729): `core`'s
  * `migrations/state.ts` and `controlPlane/migrationState/migrationState.ts`; and by `pithy setup` (#764):
- * `cli`'s `setup/dataHeld.ts`, which asks the local D1 whether `dev` holds rows. A file added or removed
+ * `cli`'s `setup/dataHeld.ts`, which asks the local D1 whether `dev` holds rows; and by index state over the
+ * control plane (#730): `vector`'s `admin/health.ts`, which reads the corpus off `DB`. A file added or removed
  * moves a count, which is the point: the number is a second reader of the same change.
  */
 const IMPORTERS: Record<string, number> = {
@@ -142,7 +143,7 @@ const IMPORTERS: Record<string, number> = {
   "packages/storage": 6,
   "packages/support": 8,
   "packages/testers": 7,
-  "packages/vector": 3,
+  "packages/vector": 4,
 };
 
 /**
