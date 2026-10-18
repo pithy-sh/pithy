@@ -12,7 +12,7 @@ import {
   type FeatureMap,
   type QuotaMap,
 } from "../config/allowances";
-import { PaymentsOverride } from "../data/override";
+import { isEmptyOverride, PaymentsOverride } from "../data/override";
 import { encodeSubjectReference, type PaymentsSubject } from "../data/subject";
 import { PAYMENTS_OVERRIDES_TABLE, type PaymentsDatabase, paymentsDatabase } from "../data/tables";
 import { PaymentsOverrideStaleError } from "../error/errors";
@@ -36,6 +36,11 @@ import type { AllowanceOverride } from "./allowance";
  * - **A write names the version it read.** A version behind the row is `payments/override_stale`, and nothing
  *   is written. The compare is inside the write's own `WHERE`, so two writers racing on one row cannot both
  *   pass a check made a statement earlier.
+ * - **A version never repeats.** A clear keeps the row, empty, at the next version rather than deleting it,
+ *   so a pane still holding a cleared row's version is behind, not current again.
+ * - **A clear only moves a subject back toward its plan.** Unpinning a name on an `unrestricted` subject
+ *   would lift it to unlimited, which is the unrestricted scope's grant, so a clear naming such a pin is
+ *   refused. A whole clear takes `unrestricted` with it, which narrows, and is allowed.
  * - **A reason is required on every set**, and the audit event carries it. Six months later, the question
  *   anybody asks about an override is why.
  */
@@ -54,13 +59,13 @@ export async function readOverride(
   return row === undefined ? undefined : PaymentsOverride.parse(row);
 }
 
-/** The resolver's view of a row: the three facts resolution reads, or null for no override. */
+/** The resolver's view of a row: the three facts resolution reads, or null for no override — a cleared row included. */
 export function allowanceOverride(row: PaymentsOverride | undefined): AllowanceOverride | null {
-  if (row === undefined) return null;
+  if (row === undefined || isEmptyOverride(row)) return null;
   return { unrestricted: row.unrestricted, quotas: row.quotas, features: row.features };
 }
 
-/** The version a write must name: the row's, or 0 when there is no row yet. */
+/** The version a write must name: the row's — a cleared row's included — or 0 when there has never been one. */
 export function overrideVersion(row: PaymentsOverride | undefined): number {
   return row?.version ?? 0;
 }
@@ -69,7 +74,10 @@ export function overrideVersion(row: PaymentsOverride | undefined): number {
 export interface OverrideChange {
   /** The row before the write, or undefined when there was none. */
   before: PaymentsOverride | undefined;
-  /** The row after the write, or undefined when the write removed it. */
+  /**
+   * The row after the write, or undefined when the subject has never had one. A clear leaves an empty row
+   * ({@link isEmptyOverride}), which carries the version the next write must name.
+   */
   after: PaymentsOverride | undefined;
 }
 
@@ -307,14 +315,40 @@ export interface OverrideClear {
   quotas?: readonly string[];
   /** Feature pins to remove. */
   features?: readonly string[];
-  /** Why, when the caller says. A partial clear keeps the last set's reason otherwise. */
+  /** Why, when the caller says. A clear keeps the last set's reason otherwise. */
   reason?: string;
 }
 
 /**
- * Remove pins, or the whole override. **Idempotent**: clearing an override that does not exist is the state
- * the caller asked for, and answers with nothing changed rather than a 404. A name unpinned resolves from the
- * plan again on the next read.
+ * Refuse a partial clear that would lift a pin on an `unrestricted` subject to unlimited.
+ *
+ * On an unrestricted row a pin is the one thing holding a name below unlimited, so removing it is not a move
+ * back toward the plan — it is the largest grant the kit has, made one name at a time, by a credential that
+ * holds only the clear scope. Turning `unrestricted` off first, behind its own scope, or clearing the whole
+ * override, are the two ways that narrow.
+ */
+function requireNarrowingClear(row: PaymentsOverride, input: OverrideClear): void {
+  if (!row.unrestricted) return;
+  const lifted = [
+    ...(input.quotas ?? []).filter((name) => name in row.quotas),
+    ...(input.features ?? []).filter((name) => name in row.features),
+  ];
+  if (lifted.length === 0) return;
+  throw new ValidationError({
+    message: `This subject is unrestricted, so unpinning ${lifted.map((name) => `"${name}"`).join(", ")} would make it unlimited.`,
+    action:
+      "Turn unrestricted off first through its own route, or clear the whole override — both move the subject back toward its plan.",
+    detail: `A clear only narrows. On an unrestricted override a pin is all that holds a name below unlimited, and lifting that is the unrestricted scope's grant.`,
+  });
+}
+
+/**
+ * Remove pins, or the whole override. **Idempotent**: clearing an override that does not exist — or that a
+ * clear already emptied — is the state the caller asked for, and answers with nothing changed rather than a
+ * 404. A name unpinned resolves from the plan again on the next read.
+ *
+ * **A whole clear keeps the row**, empty, at the next version — see {@link isEmptyOverride} for why a version
+ * must never repeat. Every read treats that row as no override.
  */
 export async function clearOverride(
   d1: D1Database,
@@ -323,32 +357,19 @@ export async function clearOverride(
 ): Promise<OverrideChange> {
   const db = paymentsDatabase(d1);
   const before = await readOverride(db, input.subject);
-  if (before === undefined) return { before: undefined, after: undefined };
+  if (before === undefined || isEmptyOverride(before)) return { before: undefined, after: before };
   if (input.version !== undefined && input.version !== before.version) {
     throw stale(input.subject, input.version, before.version);
   }
 
   const whole = input.quotas === undefined && input.features === undefined;
-  if (whole) {
-    const removed = await withD1Retry(() =>
-      db
-        .deleteFrom(PAYMENTS_OVERRIDES_TABLE)
-        .where("subjectType", "=", input.subject.subjectType)
-        .where("subjectId", "=", input.subject.subjectId)
-        .where("version", "=", before.version)
-        .returning("id")
-        .executeTakeFirst(),
-    );
-    if (removed === undefined) {
-      throw stale(input.subject, before.version, overrideVersion(await readOverride(db, input.subject)));
-    }
-    return { before, after: undefined };
-  }
-
+  if (!whole) requireNarrowingClear(before, input);
   return writeVersioned(
     d1,
+    // The version just read and checked, so the write's own `WHERE` refuses a row that moved since.
     { subject: input.subject, version: before.version, reason: input.reason ?? before.reason },
     (current) => {
+      if (whole) return { unrestricted: false, quotas: {}, features: {} };
       const quotas = { ...(current?.quotas ?? {}) };
       for (const name of input.quotas ?? []) delete quotas[name];
       const features = { ...(current?.features ?? {}) };

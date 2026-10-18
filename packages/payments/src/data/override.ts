@@ -30,6 +30,11 @@ import { PaymentsSubject } from "./subject";
  * **`version` is what makes a write safe for two operators.** The read carries it, a set must send it back,
  * and a set naming a version behind this row's is refused rather than applied, so one operator's stale pane
  * cannot silently overwrite another's pin.
+ *
+ * **So a version never repeats, and a cleared row is kept, empty.** Deleting it would put the subject back at
+ * version 0, the next set would write version 1 again, and a pane still holding the deleted row's 1 would pass
+ * the check and overwrite a newer pin. An empty row — not unrestricted, nothing pinned — is no override to
+ * every read ({@link isEmptyOverride}); it only remembers the version.
  */
 export const PaymentsOverride = z
   .object({
@@ -59,3 +64,11 @@ export const PaymentsOverride = z
   .describe("One subject's allowance override — the row in `pithy_payments_overrides`.");
 export type PaymentsOverride = z.output<typeof PaymentsOverride>;
 export type PaymentsOverrideRow = z.input<typeof PaymentsOverride>;
+
+/**
+ * Whether a row overrides nothing: not unrestricted, and no name pinned. What a clear leaves behind — the row
+ * is kept so its version never repeats — and what every read treats as no override at all.
+ */
+export function isEmptyOverride(row: PaymentsOverride): boolean {
+  return !row.unrestricted && Object.keys(row.quotas).length === 0 && Object.keys(row.features).length === 0;
+}

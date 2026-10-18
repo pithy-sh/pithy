@@ -161,8 +161,8 @@ export type PaymentsUsageParams = z.infer<typeof PaymentsUsageParams>;
  * composed capability, and the resolver on it, the way a Workflow that sends mail finds the composed email
  * capability.
  *
- * Hourly, so a `daily-peak` day is sampled through the day and a `period-end` report lands in its period's
- * last day whatever hour the period ends at. Contributed by `payments()` only when the catalog sells a
+ * Hourly, so a `daily-peak` day is sampled through the day and every period's report — under either
+ * cadence — lands in its last day whatever hour the period ends at. Contributed by `payments()` only when the catalog sells a
  * reported product; a project that bills nothing by quantity binds nothing for it.
  */
 export const paymentsUsageWorkflows = {

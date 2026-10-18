@@ -21545,7 +21545,7 @@
                       "type": "integer",
                       "minimum": 0,
                       "maximum": 9007199254740991,
-                      "description": "The version the next write must name. 0 when the subject has no override."
+                      "description": "The version the next write must name. 0 when the subject has never had an override; a cleared one keeps its version, so a stale writer stays stale."
                     }
                   },
                   "required": [
@@ -21734,7 +21734,7 @@
                       "type": "integer",
                       "minimum": 0,
                       "maximum": 9007199254740991,
-                      "description": "The version the next write must name. 0 when the subject has no override."
+                      "description": "The version the next write must name. 0 when the subject has never had an override; a cleared one keeps its version, so a stale writer stays stale."
                     }
                   },
                   "required": [
@@ -21774,7 +21774,7 @@
         "summary": "Unpin allowances for one subject, or clear its override.",
         "requestBody": {
           "required": true,
-          "description": "A control-plane request to unpin names, or — naming neither list — to clear the subject's override entirely. Idempotent: clearing nothing answers 200.",
+          "description": "A control-plane request to unpin names, or — naming neither list — to clear the subject's override entirely, `unrestricted` included. Idempotent: clearing nothing answers 200. A clear never resets the version.",
           "content": {
             "application/json": {
               "schema": {
@@ -21795,7 +21795,7 @@
                     "description": "The subject whose allowances this shades."
                   },
                   "version": {
-                    "description": "The override version the caller read. Optional: sent, a clear behind the row is refused as stale; omitted, the clear is not checked, which is safe because a clear can only move a subject back toward its plan.",
+                    "description": "The override version the caller read. Optional: sent, a clear behind the row is refused as stale; omitted, the clear is not checked, which is safe because a clear can only move a subject back toward its plan — unpinning a name on an unrestricted subject is refused.",
                     "type": "integer",
                     "minimum": 0,
                     "maximum": 9007199254740991
@@ -21807,7 +21807,7 @@
                     "maxLength": 500
                   },
                   "quotas": {
-                    "description": "Quota pins to remove. Each resolves from the plan again.",
+                    "description": "Quota pins to remove. Each resolves from the plan again. Refused on an unrestricted subject, where it would resolve to unlimited.",
                     "maxItems": 100,
                     "type": "array",
                     "items": {
@@ -21819,7 +21819,7 @@
                     }
                   },
                   "features": {
-                    "description": "Feature pins to remove. Each resolves from the plan again.",
+                    "description": "Feature pins to remove. Each resolves from the plan again. Refused on an unrestricted subject, where it would resolve to on.",
                     "maxItems": 100,
                     "type": "array",
                     "items": {
@@ -21836,7 +21836,7 @@
                   "subjectId"
                 ],
                 "additionalProperties": false,
-                "description": "A control-plane request to unpin names, or — naming neither list — to clear the subject's override entirely. Idempotent: clearing nothing answers 200."
+                "description": "A control-plane request to unpin names, or — naming neither list — to clear the subject's override entirely, `unrestricted` included. Idempotent: clearing nothing answers 200. A clear never resets the version."
               }
             }
           }
@@ -21940,7 +21940,7 @@
                       "type": "integer",
                       "minimum": 0,
                       "maximum": 9007199254740991,
-                      "description": "The version the next write must name. 0 when the subject has no override."
+                      "description": "The version the next write must name. 0 when the subject has never had an override; a cleared one keeps its version, so a stale writer stays stale."
                     }
                   },
                   "required": [

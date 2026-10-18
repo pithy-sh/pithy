@@ -4,7 +4,7 @@
 import type { PaymentsPurchaseRecord } from "../admin/read";
 import { compOnlyEntitlements, type PaymentsConfig } from "../config/config";
 import type { PaymentsEntitlement } from "../data/entitlement";
-import type { PaymentsOverride } from "../data/override";
+import { isEmptyOverride, type PaymentsOverride } from "../data/override";
 import type { PaymentsReconcileRun } from "../data/reconcileRun";
 import type { PaymentsUsageRun } from "../data/usageRun";
 import type { ResolvedAllowances } from "../entitlement/allowance";
@@ -217,7 +217,8 @@ export function adminUsageRunView(run: PaymentsUsageRun): PaymentsAdminUsageRunV
 
 /** Project one subject's override for a management client, or null when it has none. */
 export function adminOverrideView(row: PaymentsOverride | undefined): PaymentsAdminOverrideView | null {
-  return row === undefined ? null : overrideView(row);
+  // A cleared row is kept only for its version — it overrides nothing, so it shows as no override.
+  return row === undefined || isEmptyOverride(row) ? null : overrideView(row);
 }
 
 /** Project one override row for a management client. */

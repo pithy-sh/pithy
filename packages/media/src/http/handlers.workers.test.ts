@@ -218,7 +218,7 @@ describe("createMedia — the mediaItems meter (#561)", () => {
   }
 
   test("an enforced ceiling refuses the create past it with payments/quota_exceeded at 402, and writes nothing", async () => {
-    const deps = makeDeps(env.DB, ALICE, { itemLimit: async () => 2 });
+    const deps = makeDeps(env.DB, ALICE, { itemLimit: async () => ({ limit: 2, tenant: null }) });
     await createMedia(deps, imageBody);
     await createMedia(deps, imageBody);
     await expect(createMedia(deps, imageBody)).rejects.toMatchObject({
@@ -228,14 +228,14 @@ describe("createMedia — the mediaItems meter (#561)", () => {
   });
 
   test("concurrent creates cannot race past the ceiling", async () => {
-    const deps = makeDeps(env.DB, ALICE, { itemLimit: async () => 3 });
+    const deps = makeDeps(env.DB, ALICE, { itemLimit: async () => ({ limit: 3, tenant: null }) });
     const results = await Promise.allSettled(Array.from({ length: 10 }, () => createMedia(deps, imageBody)));
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(3);
     expect(await count()).toBe(3);
   });
 
   test("an unrestricted subject — a null ceiling — is never refused", async () => {
-    const deps = makeDeps(env.DB, ALICE, { itemLimit: async () => null });
+    const deps = makeDeps(env.DB, ALICE, { itemLimit: async () => ({ limit: null, tenant: null }) });
     for (let i = 0; i < 5; i++) await createMedia(deps, imageBody);
     expect(await count()).toBe(5);
   });
@@ -246,5 +246,33 @@ describe("createMedia — the mediaItems meter (#561)", () => {
     const none = makeDeps(env.DB, ALICE);
     await createMedia(none, imageBody);
     expect(await count()).toBe(4);
+  });
+
+  test("an organization's ceiling is the organization's: every member's items count against one allowance", async () => {
+    // Billed per organization, the plan's two items are the company's. Counted per member, a colleague
+    // would get two more — a paid quota bypassed by an invitation.
+    const itemLimit = async () => ({ limit: 2, tenant: "org-a" });
+    await createMedia(makeDeps(env.DB, ALICE, { itemLimit }), imageBody);
+    await createMedia(makeDeps(env.DB, caller("bob", "org-a"), { itemLimit }), imageBody);
+    await expect(
+      createMedia(makeDeps(env.DB, caller("carol", "org-a"), { itemLimit }), imageBody),
+    ).rejects.toMatchObject({
+      payload: { code: "payments/quota_exceeded", status: 402 },
+    });
+    expect(await count()).toBe(2);
+  });
+
+  test("a ceiling for one organization refuses a record that would be held for another, or for nobody", async () => {
+    // The record would sit outside the count the ceiling is checked against, so it would never be counted.
+    const itemLimit = async () => ({ limit: 5, tenant: "org-a" });
+    await expect(
+      createMedia(makeDeps(env.DB, caller("alice", "org-b"), { itemLimit }), imageBody),
+    ).rejects.toMatchObject({
+      payload: { code: "core/internal" },
+    });
+    await expect(createMedia(makeDeps(env.DB, caller("alice"), { itemLimit }), imageBody)).rejects.toMatchObject({
+      payload: { code: "core/internal" },
+    });
+    expect(await count()).toBe(0);
   });
 });

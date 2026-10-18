@@ -485,6 +485,64 @@ describe("POST /payments/entitlements/overrides/clear", () => {
     const response = await clear(app, { ...ACME, version: 7 });
     expect(response.status).toBe(409);
   });
+
+  test("a version never repeats after a whole clear, so a writer holding the cleared row's version is refused", async () => {
+    const app = makeApp();
+    // A second operator's pane reads version 1 here, and keeps it.
+    await set(app, pin(0, { emails: 20_000 }));
+    const cleared = await clear(app, { ...ACME, version: 1 });
+    expect(PaymentsOverrideResponse.parse(await cleared.json())).toEqual({ ...ACME, override: null, version: 2 });
+    const read = await subjectRead(app);
+    expect(read.override).toBeNull();
+    expect(read.overrideVersion).toBe(2);
+    expect((await set(app, pin(2, { emails: 30_000 }, "New contract"))).status).toBe(200);
+    // The stale pane writes the name the newer contract pinned. Were the version reset by the clear, 1 would
+    // be current again and the newer pin would be overwritten in silence.
+    expect((await set(app, pin(1, { emails: 9_000 }))).status).toBe(409);
+    expect((await set(app, pin(0, { emails: 9_000 }))).status).toBe(409);
+    expect(quotaOf(await subjectRead(app), "emails")).toMatchObject({ effective: 30_000, source: "override" });
+  });
+
+  test("a cleared override is listed nowhere, and clearing it again changes nothing", async () => {
+    const app = makeApp();
+    await set(app, pin(0, { emails: 20_000 }));
+    await clear(app, { ...ACME, version: 1 });
+    emitted = [];
+    const again = await clear(app, { ...ACME });
+    expect(PaymentsOverrideResponse.parse(await again.json())).toEqual({ ...ACME, override: null, version: 2 });
+    expect(emitted.some((e) => e.action === "payments/override_cleared")).toBe(false);
+    const listing = PaymentsAdminOverridesResponse.parse(
+      await (await send(app, "GET", "/payments/admin/overrides", PAYMENTS_ENTITLEMENTS_READ_SCOPE)).json(),
+    );
+    expect(listing.overrides).toEqual([]);
+  });
+
+  test("a clear cannot lift a pinned name on an unrestricted subject to unlimited", async () => {
+    // Unpinning on an unrestricted subject moves the name away from its plan, to unlimited. That is the
+    // unrestricted scope's grant, and a credential holding only the clear scope must not be able to make it.
+    const app = makeApp();
+    await unrestricted(app, { ...ACME, version: 0, reason: "Enterprise contract", unrestricted: true });
+    await set(app, pin(1, { emails: 20_000 }));
+    await set(app, { ...ACME, version: 2, reason: "Contract #4471", features: { auditExport: false } });
+    for (const names of [{ quotas: ["emails"] }, { features: ["auditExport"] }]) {
+      const response = await clear(app, { ...ACME, ...names });
+      expect(response.status).toBe(400);
+      expect((await errorOf(response)).message).toContain("unrestricted");
+    }
+    const read = await subjectRead(app);
+    expect(quotaOf(read, "emails")).toMatchObject({ effective: 20_000, source: "override" });
+    expect(read.override?.features).toEqual({ auditExport: false });
+    expect(read.overrideVersion).toBe(3);
+  });
+
+  test("a whole clear of an unrestricted subject is allowed — it takes unrestricted with it, back to the plan", async () => {
+    const app = makeApp();
+    await unrestricted(app, { ...ACME, version: 0, reason: "Enterprise contract", unrestricted: true });
+    expect((await clear(app, { ...ACME, version: 1 })).status).toBe(200);
+    const read = await subjectRead(app);
+    expect(read.unrestricted).toBe(false);
+    expect(quotaOf(read, "emails")).toMatchObject({ effective: 50, source: "default" });
+  });
 });
 
 describe("the subject read across a tier change", () => {

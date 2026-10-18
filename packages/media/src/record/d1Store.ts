@@ -31,7 +31,7 @@ export function d1RecordStore(db: MediaDatabase, schema: z.ZodObject): RecordSto
   return {
     async create(record, options) {
       const row = encode(record);
-      const limit = options?.ownerLimit;
+      const limit = options?.limit;
       if (limit === undefined || record.ownerId === null) {
         // Kysely writes every runtime key on the object, so extension columns are inserted too; the cast
         // narrows the compile-time type to the base table without dropping those keys at runtime.
@@ -52,7 +52,12 @@ export function d1RecordStore(db: MediaDatabase, schema: z.ZodObject): RecordSto
             eb
               .selectFrom(MEDIA_ASSETS_TABLE)
               .select((inner) => inner.fn.countAll<number>().as("held"))
-              .where("ownerId", "=", record.ownerId as string),
+              // An organization's allowance is the organization's: every member's records count against it.
+              .where(
+                options?.organizationId === undefined ? "ownerId" : "organizationId",
+                "=",
+                options?.organizationId ?? (record.ownerId as string),
+              ),
             "<",
             limit,
           ),

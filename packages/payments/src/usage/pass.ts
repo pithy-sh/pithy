@@ -7,6 +7,7 @@ import { messageOf } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { sql } from "kysely";
 import { type PaymentsConfig, type PaymentsReportedBilling, reportedProducts } from "../config/config";
+import { knownPeriodStart } from "../data/period";
 import { PaymentsPurchase } from "../data/purchase";
 import { grantingStatuses } from "../data/status";
 import { encodeSubjectReference, type PaymentsSubject } from "../data/subject";
@@ -52,7 +53,14 @@ import type { UsageReporter } from "./reporter";
  *   the first run inside its last {@link PERIOD_END_WINDOW_MS}, dated at that run. Every later run in the
  *   period finds the row.
  * - `daily-peak` — every run asks, and the day's row keeps the highest answer; a lower later answer never
- *   lowers it. A day is reported once it is over, dated in its last second, so the value sent is final.
+ *   lowers it. **A day is never sent on its own.** The period's report is the highest of its days, sent once,
+ *   in the period's last {@link PERIOD_END_WINDOW_MS} — keyed and dated exactly as a `period-end` report.
+ *   Both stores add up what they are sent: Stripe's meter sums its events, and every Paddle charge is a line
+ *   on the bill. A report per day would bill the sum of thirty daily peaks, not the period's peak. The day
+ *   rows stay behind, and they are the audit: the number billed is the largest of them.
+ *
+ * A `daily-peak` report goes out when the last day opens, as a `period-end` one does, so a peak reached in
+ * the period's final hours after it was sent is not billed. Under-billing an hour is the right way round.
  */
 
 /** How close to a period's end a `period-end` report goes out. A day, so an hourly or daily cron lands inside it. */
@@ -60,9 +68,6 @@ export const PERIOD_END_WINDOW_MS = 86_400_000;
 
 /** How long after a period's end its subscription is still reported — a run that missed the window by a little. */
 const LATE_WINDOW_MS = 86_400_000;
-
-/** One day, for the `daily-peak` arithmetic. */
-const DAY_MS = 86_400_000;
 
 /** What `resolveQuantity` is told besides who: the env, the product, and when. */
 export interface PaymentsQuantityContext {
@@ -351,51 +356,80 @@ export async function runUsageReport(deps: UsagePassDeps): Promise<UsagePassTall
     await send(period, productId, billing, claimed, reportDate(period, now));
   }
 
-  /** `daily-peak`: sample today, then report every finished day. */
+  /**
+   * `daily-peak`: sample today, and in the period's last day report the highest day the period sampled.
+   * Once per period, keyed on its end — the same row, key and date a `period-end` report has.
+   */
   async function dailyPeak(
     period: CurrentPeriod,
     productId: string,
     billing: PaymentsReportedBilling,
     now: Date,
   ): Promise<void> {
-    const today = utcDay(now);
     if (now.getTime() < period.periodEnd.getTime()) {
       const quantity = await ask(period, productId, billing, now);
       if (quantity !== undefined) {
-        await sample(period, productId, billing, today, quantity, now);
+        await sample(period, productId, billing, utcDay(now), quantity, now);
         tally.sampled++;
       }
     }
-    const open = await db
-      .selectFrom(PAYMENTS_USAGE_REPORTS_TABLE)
-      .selectAll()
-      .where("rail", "=", period.purchase.rail as "stripe")
-      .where("providerSubscriptionId", "=", period.providerSubscriptionId)
-      .where("status", "in", ["sampling", "claimed"])
-      .where("period", "<", today)
-      .orderBy("period")
-      .execute();
-    for (const row of open) {
-      const report = PaymentsUsageReport.parse(row);
-      // Claimed by this run, from sampling — so a racing run cannot send the same day.
-      if (report.status === "sampling") {
-        const taken = await db
-          .updateTable(PAYMENTS_USAGE_REPORTS_TABLE)
-          // biome-ignore lint/suspicious/noExplicitAny: the SQLite row shape.
-          .set({ status: "claimed", updatedAt: now.getTime() } as any)
-          .where("id", "=", report.id)
-          .where("status", "=", "sampling")
-          .returning("id")
-          .executeTakeFirst();
-        if (taken === undefined) {
-          tally.alreadyReported++;
-          continue;
-        }
-      }
-      // Dated in the day's last second: inside the day it bills, and after every sample it took.
-      const at = new Date(Date.parse(`${report.period}T00:00:00.000Z`) + DAY_MS - 1000);
-      await send(period, productId, billing, report, at);
+    if (now.getTime() < period.periodEnd.getTime() - PERIOD_END_WINDOW_MS) return;
+    const key = period.periodEnd.toISOString();
+    const existing = await readReport(db, period.purchase.rail, period.providerSubscriptionId, key);
+    if (existing?.status === "reported") {
+      tally.alreadyReported++;
+      return;
     }
+    if (existing?.status === "claimed") {
+      await send(period, productId, billing, existing, reportDate(period, now));
+      return;
+    }
+    // No day answered: the resolver's refusals were each noted when it was asked, and nothing is a guess.
+    const peak = await periodPeak(period, key);
+    if (peak === undefined) return;
+    const claimed = await claim(period, productId, billing, key, peak, now, "claimed");
+    if (claimed === undefined) {
+      tally.alreadyReported++;
+      return;
+    }
+    await send(period, productId, billing, claimed, reportDate(period, now));
+  }
+
+  /**
+   * The highest day one period sampled, or undefined when it sampled none.
+   *
+   * **A period's days are the ones after the previous period's.** The lower bound is the later of the
+   * period's start, where the row states one (`data/period.ts`), and the day the subscription's previous
+   * report was keyed on — so a high day last period is never billed again this one, on a rail whose start
+   * is not stored too. The day a renewal falls on belongs to both: its peak was reached in one of them.
+   */
+  async function periodPeak(period: CurrentPeriod, key: string): Promise<number | undefined> {
+    const rail = period.purchase.rail as "stripe";
+    const previous = await db
+      .selectFrom(PAYMENTS_USAGE_REPORTS_TABLE)
+      .select("period")
+      .where("rail", "=", rail)
+      .where("providerSubscriptionId", "=", period.providerSubscriptionId)
+      // A period's report is the only row that is ever claimed or reported; a day only ever samples.
+      .where("status", "in", ["claimed", "reported"])
+      .where("period", "<", key)
+      .orderBy("period", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    const bounds = [knownPeriodStart(period.purchase), previous && new Date(previous.period)]
+      .filter((at): at is Date => at instanceof Date && !Number.isNaN(at.getTime()))
+      .map(utcDay);
+    let days = db
+      .selectFrom(PAYMENTS_USAGE_REPORTS_TABLE)
+      .select((eb) => eb.fn.max<number | null>("quantity").as("peak"))
+      .where("rail", "=", rail)
+      .where("providerSubscriptionId", "=", period.providerSubscriptionId)
+      .where("status", "=", "sampling")
+      .where("period", "<=", utcDay(period.periodEnd));
+    const from = bounds.sort().at(-1);
+    if (from !== undefined) days = days.where("period", ">=", from);
+    const row = await days.executeTakeFirst();
+    return row?.peak ?? undefined;
   }
 
   /** Write a period's row as claimed or sampling, or nothing when a row for it exists. */

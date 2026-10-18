@@ -12,7 +12,7 @@ import { PaymentsConfig, type PaymentsConfigInput } from "../config/config";
 import type { PaymentsSubject } from "../data/subject";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
 import { payments_0002_allowances } from "../migrations/0002_allowances";
-import { judgeQuantity, type PaymentsQuantityResolver, runUsageReport, utcDay } from "./pass";
+import { judgeQuantity, type PaymentsQuantityResolver, runUsageReport } from "./pass";
 import type { UsageReporter, UsageReportRequest } from "./reporter";
 
 /**
@@ -285,7 +285,7 @@ describe("the subscription reads' last reported count", () => {
 describe("daily-peak", () => {
   const DAY_ONE = Date.parse("2026-10-10T00:00:00.000Z");
 
-  test("the value reported for a day is the highest the resolver answered that day", async () => {
+  test("a period bills its peak once — the highest any day sampled — never one charge per day", async () => {
     await period({
       subject: ACME,
       rail: "stripe",
@@ -295,21 +295,58 @@ describe("daily-peak", () => {
       end: END,
     });
     const stripe = recorder();
-    const answers = [5, 9, 4];
-    for (const [index, hour] of [9, 13, 18].entries()) {
-      const answer = answers[index];
-      await pass(DAY_ONE + hour * HOUR, async () => answer, { stripe });
+    // Three days of samples: the first day's peak is 9, the second's 12, the third's 7.
+    const days: [number, number[]][] = [
+      [DAY_ONE, [5, 9, 4]],
+      [DAY_ONE + DAY, [12]],
+      [DAY_ONE + 2 * DAY, [7]],
+    ];
+    for (const [day, answers] of days) {
+      for (const [index, answer] of answers.entries()) {
+        await pass(day + (9 + index * 4) * HOUR, async () => answer, { stripe });
+      }
     }
-    // Nothing is sent while the day is open — the peak is not final until it is over.
+    // Nothing is sent while the period is open. A report per day would bill seat-days — the sum of every
+    // day's peak, about thirty times the period's — on a store that sums what it is sent.
     expect(stripe.calls).toEqual([]);
-    await pass(DAY_ONE + DAY + HOUR, async () => 2, { stripe });
+    await pass(END - HOUR, async () => 3, { stripe });
     expect(stripe.calls).toHaveLength(1);
-    expect(stripe.calls[0]).toMatchObject({ period: utcDay(new Date(DAY_ONE)), quantity: 9 });
-    // Dated inside the day it bills.
-    expect(utcDay(stripe.calls[0]?.at as Date)).toBe("2026-10-10");
+    expect(stripe.calls[0]).toMatchObject({ period: new Date(END).toISOString(), quantity: 12 });
+    // Dated inside the period it bills.
+    expect(stripe.calls[0]?.at.getTime()).toBeLessThan(END);
+    // A later run in the last day finds the period reported, and sends nothing.
+    await pass(END - HOUR / 2, async () => 40, { stripe });
+    expect(stripe.calls).toHaveLength(1);
   });
 
-  test("two products with different cadences each report on their own schedule", async () => {
+  test("each period's peak is its own — a high day in one period is never billed in the next", async () => {
+    await period({
+      subject: ACME,
+      rail: "stripe",
+      product: "coaching",
+      subscription: "sub_coach",
+      start: START,
+      end: END,
+    });
+    const stripe = recorder();
+    await pass(DAY_ONE + 12 * HOUR, async () => 30, { stripe });
+    await pass(END - HOUR, async () => 3, { stripe });
+    // The renewal, as the projection writes it: a new row for the next period.
+    const NEXT = END + 30 * DAY;
+    await period({
+      subject: ACME,
+      rail: "stripe",
+      product: "coaching",
+      subscription: "sub_coach",
+      start: END,
+      end: NEXT,
+    });
+    await pass(END + 5 * DAY, async () => 4, { stripe });
+    await pass(NEXT - HOUR, async () => 2, { stripe });
+    expect(stripe.calls.map((call) => call.quantity)).toEqual([30, 4]);
+  });
+
+  test("two products with different cadences each report once, in their period's last day", async () => {
     await period({
       subject: ACME,
       rail: "stripe",
@@ -328,14 +365,16 @@ describe("daily-peak", () => {
     });
     const stripe = recorder();
     const resolve: PaymentsQuantityResolver = async (context) => (context.productId === "coaching" ? 3 : 25);
-    // A mid-period day: the coaching product samples and later reports; the seats product waits.
+    // Mid-period: the coaching product samples, and neither sends.
     await pass(DAY_ONE + 12 * HOUR, resolve, { stripe });
     await pass(DAY_ONE + DAY + 12 * HOUR, resolve, { stripe });
-    expect(stripe.calls.map((call) => call.billing.stripe?.meterEventName)).toEqual(["academy_coaches"]);
-    // And the period's last day reports the seats product once.
+    expect(stripe.calls).toEqual([]);
+    // The period's last day reports each product once.
     await pass(END - HOUR, resolve, { stripe });
-    const seats = stripe.calls.filter((call) => call.billing.stripe?.meterEventName === "academy_students");
-    expect(seats).toHaveLength(1);
+    expect(stripe.calls.map((call) => [call.billing.stripe?.meterEventName, call.quantity]).sort()).toEqual([
+      ["academy_coaches", 3],
+      ["academy_students", 25],
+    ]);
   });
 });
 

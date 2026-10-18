@@ -131,10 +131,11 @@ function defaultResolveDeps(
       ...(permission ? { permission } : {}),
       env: c.env,
       signer: () => resolveDeliverySigner(env),
-      // The `mediaItems` ceiling where the entitlement provider enforces it; undefined where it does not.
+      // The `mediaItems` ceiling where the entitlement provider enforces it, with the organization it covers;
+      // undefined where it does not.
       itemLimit: async () => {
         const ceiling = await meterLimit(c, "mediaItems");
-        return ceiling.enforced ? ceiling.limit : undefined;
+        return ceiling.enforced ? { limit: ceiling.limit, tenant: ceiling.tenant } : undefined;
       },
     };
   };

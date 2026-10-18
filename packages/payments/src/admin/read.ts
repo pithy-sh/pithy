@@ -342,7 +342,10 @@ export interface OverridesQuery {
   limit?: number;
 }
 
-/** Every subject's override, most recently changed first. */
+/**
+ * Every subject's override, most recently changed first. A row a clear emptied is kept only so its version
+ * never repeats, and overrides nothing, so it is not listed.
+ */
 export async function listOverrides(
   d1: D1Database,
   query: OverridesQuery = {},
@@ -352,6 +355,17 @@ export async function listOverrides(
   let selection = paymentsDatabase(d1)
     .selectFrom(PAYMENTS_OVERRIDES_TABLE)
     .selectAll()
+    // The SQL side of `isEmptyOverride`: the encoded 0/1 and the encoded empty JSON objects the codec writes.
+    .where((eb) =>
+      eb.or([
+        // biome-ignore lint/suspicious/noExplicitAny: the encoded 0/1 the codec writes.
+        eb("unrestricted", "=", 1 as any),
+        // biome-ignore lint/suspicious/noExplicitAny: the encoded JSON text the codec writes.
+        eb("quotas", "!=", "{}" as any),
+        // biome-ignore lint/suspicious/noExplicitAny: as above.
+        eb("features", "!=", "{}" as any),
+      ]),
+    )
     .orderBy("updatedAt", "desc")
     .orderBy("id", "desc")
     .limit(limit + 1);

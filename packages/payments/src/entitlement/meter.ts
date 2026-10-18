@@ -181,6 +181,10 @@ export async function chargeMeter(
 /**
  * The ceiling a capability enforces on a level it counts itself — `storageBytes`, `mediaItems` — for a
  * subject, or `{ enforced: false }` where the meter is advisory and the capability keeps its own.
+ *
+ * **The ceiling names the organization it covers.** An organization's plan is the organization's, so the
+ * capability must sum every member's rows against it, not the caller's alone — `tenant` says so, the same
+ * value the holder's `tenant` carries. A user subject, or nobody, is `null`: the caller's own rows.
  */
 export async function meterLimitFor(
   db: PaymentsDatabase,
@@ -191,7 +195,11 @@ export async function meterLimitFor(
 ): Promise<MeterLimit> {
   if (!meterEnforced(allowances.meters, meter)) return { enforced: false };
   const input = await allowanceInputFor(db, allowances.declarations, subject, now);
-  return { enforced: true, limit: resolveQuota(input, meter).effective.value };
+  return {
+    enforced: true,
+    limit: resolveQuota(input, meter).effective.value,
+    tenant: subject?.subjectType === "organization" ? subject.subjectId : null,
+  };
 }
 
 /**

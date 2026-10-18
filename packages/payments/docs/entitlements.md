@@ -110,7 +110,7 @@ Three control-plane writes, three scopes:
 | --- | --- | --- |
 | `POST {base}/entitlements/overrides` | `payments:overrides:set` | Pin quotas or features by name. A merge: only the names sent change |
 | `POST {base}/entitlements/overrides/unrestricted` | `payments:overrides:unrestricted` | Every quota unlimited and every feature on, for every name declared now or later — or take it back |
-| `POST {base}/entitlements/overrides/clear` | `payments:overrides:clear` | Unpin names, or clear the whole override. Clearing nothing answers 200 |
+| `POST {base}/entitlements/overrides/clear` | `payments:overrides:clear` | Unpin names, or clear the whole override. Clearing nothing answers 200. Unpinning on an unrestricted subject is refused |
 
 ```json
 {
@@ -122,7 +122,8 @@ Three control-plane writes, three scopes:
 }
 ```
 
-- **Version-checked.** Every read carries the subject's `overrideVersion`; a write must send it back. A write behind the row is `payments/override_stale` (409), and nothing is written — so two operators editing one customer cannot silently overwrite each other.
+- **Version-checked.** Every read carries the subject's `overrideVersion`; a write must send it back. A write behind the row is `payments/override_stale` (409), and nothing is written — so two operators editing one customer cannot silently overwrite each other. A clear never resets the version: a pane still holding the version it read before a clear stays stale.
+- **A clear only narrows.** On an `unrestricted` subject a pin is all that holds a name below unlimited, so unpinning it is a 400: lifting a name to unlimited is the unrestricted scope's grant. Turn `unrestricted` off first, or clear the whole override, which takes `unrestricted` with it.
 - **A reason is required**, and the audit event carries it verbatim beside the subject, the mode, the before and the after.
 - **Bounded.** A number past the tier's `overrideMax` is a 400 naming the limit. Never clamped. A quota with no ceiling accepts any whole number.
 - **Declared names only.** A name the declarations do not mention is a 400 naming it and listing what is declared.
@@ -138,7 +139,7 @@ Three control-plane writes, three scopes:
 | Meter | Counted from | Enforced by |
 | --- | --- | --- |
 | `emails` | a per-period counter in `pithy_payments_meter_counters` | `@pithy-sh/email`, at enqueue |
-| `storageBytes` | `pithy_storage_objects` | `@pithy-sh/storage`, as the per-owner ceiling in place of `bytesPerOwner` |
+| `storageBytes` | `pithy_storage_objects` | `@pithy-sh/storage`, as the subject's ceiling in place of `bytesPerOwner` |
 | `mediaItems` | `pithy_media_assets` | `@pithy-sh/media`, at create |
 
 ```ts
@@ -151,6 +152,8 @@ payments({
 **Every meter is advisory until named here.** Declaring `quotas: { emails: 500 }` makes 500 readable; enforcing the `emails` meter makes it binding. Two steps, because the first is a pricing decision and the second is a production one. An enforced meter with no quota of its name is refused at parse — it would refuse everyone.
 
 **A refusal is `payments/quota_exceeded` (402)** — nothing is written — and an `unrestricted` subject is never refused by any meter. `storageBytes` keeps `@pithy-sh/storage`'s own `storage/quota_exceeded`: its ceiling is now the subject's quota where one is enforced, and `bytesPerOwner` where none is.
+
+**An organization's quota is the organization's.** Under `billingSubject: "organization"`, `storageBytes` sums every member's bytes stored for the organization and `mediaItems` counts every member's records, against one number. Counted per member, a paid quota would grow with every invitation. A write held for a different organization than the one billed, or for none, is refused as `core/internal` — it would sit outside the sum it was checked against, so the payments subject resolver and the organization in force must agree.
 
 **An email is counted when you say whose it is.** Pass `subject` on the enqueue for mail a customer's plan pays for; the kit's own mail — a magic link to somebody who has not signed up — names nobody and is never counted.
 
@@ -203,7 +206,7 @@ payments({
 
 **`resolveQuantity` rides on the options, beside `resolveSubject`, and never in config** — the config crosses a var as JSON and a function does not survive it. A reported product with no resolver is refused at boot, naming the product.
 
-**`cadence`, per product.** `period-end` (the default) sends one count per subscription per billing period, in the period's last day. `daily-peak` keeps each day's high-water mark — a lower later answer never lowers it — and reports the day once it is over.
+**`cadence`, per product.** `period-end` (the default) sends one count per subscription per billing period, in the period's last day. `daily-peak` keeps each day's high-water mark — a lower later answer never lowers it — and in the period's last day sends the highest day once. Both stores add up what they are sent, so a report per day would bill the sum of the days; one report at the peak bills the peak. The day rows stay behind as the audit.
 
 **What is never reported:**
 
@@ -240,4 +243,4 @@ export class PaymentsUsageWorkflow extends WorkflowEntrypoint<Record<string, unk
 "triggers": { "crons": ["15 * * * *"] }
 ```
 
-Hourly, so a `daily-peak` day is sampled through the day and a `period-end` report lands in its period's last day whatever hour it ends at. `createEntrypoint` fires it on the cron, and `c.var.workflows.trigger("payments/usage", {})` runs it on demand.
+Hourly, so a `daily-peak` day is sampled through the day and every period's report, under either cadence, lands in its last day whatever hour it ends at. `createEntrypoint` fires it on the cron, and `c.var.workflows.trigger("payments/usage", {})` runs it on demand.

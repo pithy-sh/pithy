@@ -150,14 +150,27 @@ export interface EntitlementResolver {
 
 /**
  * What a provider says about one meter for the current caller: whether it binds a ceiling at all, and if
- * it does, what the ceiling is. `limit: null` is unlimited — an enforced meter on a subject whose plan or
- * override says so.
+ * it does, what the ceiling is and whose rows it covers. `limit: null` is unlimited — an enforced meter on
+ * a subject whose plan or override says so.
  *
  * Two states rather than a nullable number, because "this meter is advisory here" and "this subject is
  * unlimited" are different facts and a capability must fall back to its own configured ceiling on the
  * first and never on the second.
+ *
+ * **An enforced ceiling says which rows it is the whole of**, because a ceiling counted against the wrong
+ * rows is a different allowance. Under organization billing the plan's 10 GB is the company's: counted
+ * against one member's files it becomes 10 GB per member, and a paid quota is bypassed by an invitation.
+ * So `tenant` is the organization the ceiling was resolved for, exactly as {@link EntitlementHolder.tenant}
+ * is, and a capability sums every row it holds for that tenant, whoever wrote it. `null` means the holder
+ * is not a tenant: the ceiling is the caller's own, and the caller's rows are what count.
+ *
+ * It is a counting key, never a gate. A capability that would write a row for a different tenant than the
+ * one the ceiling covers refuses the write — that row would sit outside the sum, and under-counting has no
+ * recovery.
  */
-export type MeterLimit = { readonly enforced: false } | { readonly enforced: true; readonly limit: number | null };
+export type MeterLimit =
+  | { readonly enforced: false }
+  | { readonly enforced: true; readonly limit: number | null; readonly tenant: string | null };
 
 /**
  * How a resolver's holder appears in a denial's `detail` and on the denial's audit row — and **nothing a

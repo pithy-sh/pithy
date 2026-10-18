@@ -1262,7 +1262,9 @@ export const PaymentsOverrideResponse = z
       .number()
       .int()
       .nonnegative()
-      .describe("The version the next write must name. 0 when the subject has no override."),
+      .describe(
+        "The version the next write must name. 0 when the subject has never had an override; a cleared one keeps its version, so a stale writer stays stale.",
+      ),
   })
   .describe("An override write's result: the subject, its override now, and the version to write against next.");
 export type PaymentsOverrideResponse = z.output<typeof PaymentsOverrideResponse>;

@@ -44,6 +44,10 @@ import { StorageQuotaExceededError } from "../error/errors";
  *
  * A `null` limit is unlimited and skips the query entirely. A `null` owner (a system object) has no
  * quota — there is no principal to bill it to.
+ *
+ * **Whose bytes are summed is the ceiling's to say.** A configured `bytesPerOwner` is per owner. An
+ * organization's plan is the organization's, so a check carrying `organizationId` sums every row held for
+ * that organization, whoever uploaded it — counted per member, the plan's number would be per member.
  */
 
 /** What a quota check needs. */
@@ -52,6 +56,11 @@ export interface QuotaCheck {
   db: StorageDatabase;
   /** The owner the bytes are billed to. Null is a system object, which no quota applies to. */
   ownerId: string | null;
+  /**
+   * The organization the ceiling covers, when it is an organization's. Set, the sum is every row held for it
+   * rather than the owner's alone. The row being written must be held for it too, or it would never count.
+   */
+  organizationId?: string;
   /** The configured per-owner ceiling in bytes. Null is unlimited. */
   limitBytes: number | null;
   /** The bytes this upload declares — what the pending row is about to reserve. */
@@ -84,17 +93,24 @@ export interface QuotaSettlement extends QuotaCheck {
  */
 export const QUOTA_COUNTED_STATUSES: readonly StorageObjectStatus[] = ["pending", "stored"];
 
+/** The column and value a sum is keyed on: the organization's rows where the ceiling is one's, the owner's otherwise. */
+function heldBy(ownerId: string, organizationId: string | undefined): ["ownerId" | "organizationId", string] {
+  return organizationId === undefined ? ["ownerId", ownerId] : ["organizationId", organizationId];
+}
+
 /**
- * Bytes an owner currently holds: every `pending` reservation plus every `stored` object. `failed`
- * rows are excluded — they hold no bytes and reserve nothing.
+ * Bytes an owner currently holds — or, with `organizationId`, every byte held for that organization:
+ * every `pending` reservation plus every `stored` object. `failed` rows are excluded — they hold no bytes
+ * and reserve nothing.
  */
-export async function usedBytes(db: StorageDatabase, ownerId: string): Promise<number> {
+export async function usedBytes(db: StorageDatabase, ownerId: string, organizationId?: string): Promise<number> {
+  const [column, holder] = heldBy(ownerId, organizationId);
   const row = await db
     .selectFrom(STORAGE_OBJECTS_TABLE)
     // `size` is nullable (a caller may not declare one), and SUM over no rows is NULL — coalesce both
     // to zero here rather than letting a null leak into arithmetic.
     .select(sql<number>`coalesce(sum(size), 0)`.as("used"))
-    .where("ownerId", "=", ownerId)
+    .where(column, "=", holder)
     .where("status", "in", [...QUOTA_COUNTED_STATUSES])
     .executeTakeFirst();
   return Number(row?.used ?? 0);
@@ -124,7 +140,7 @@ export async function assertWithinQuota(check: QuotaCheck): Promise<void> {
   if (check.limitBytes === null || check.ownerId === null) return;
   assertDeclaredSize(check.additionalBytes);
 
-  const used = await usedBytes(check.db, check.ownerId);
+  const used = await usedBytes(check.db, check.ownerId, check.organizationId);
   if (used + check.additionalBytes > check.limitBytes) {
     throw new StorageQuotaExceededError({
       detail: `owner would hold ${used + check.additionalBytes} bytes against a limit of ${check.limitBytes}`,
@@ -152,6 +168,7 @@ export async function insertReservingQuota(reservation: QuotaReservation): Promi
     return;
   }
   assertDeclaredSize(additionalBytes);
+  const [column, holder] = heldBy(ownerId, reservation.organizationId);
 
   // The column list is read off the encoded record rather than spelled out, so a new column on
   // `StorageObject` is carried here without an edit — and stays camelCase, which `CamelCasePlugin`
@@ -166,7 +183,7 @@ export async function insertReservingQuota(reservation: QuotaReservation): Promi
         eb
           .selectFrom(STORAGE_OBJECTS_TABLE)
           .select(sql<number>`coalesce(sum(size), 0)`.as("used"))
-          .where("ownerId", "=", ownerId)
+          .where(column, "=", holder)
           .where("status", "in", [...QUOTA_COUNTED_STATUSES]),
         "<=",
         limitBytes - additionalBytes,
@@ -212,6 +229,7 @@ export async function updateSettlingQuota(settlement: QuotaSettlement): Promise<
     return;
   }
   assertDeclaredSize(additionalBytes);
+  const [column, holder] = heldBy(ownerId, settlement.organizationId);
 
   const updated = await db
     .updateTable(STORAGE_OBJECTS_TABLE)
@@ -224,7 +242,7 @@ export async function updateSettlingQuota(settlement: QuotaSettlement): Promise<
         eb
           .selectFrom(STORAGE_OBJECTS_TABLE)
           .select(sql<number>`coalesce(sum(size), 0)`.as("used"))
-          .where("ownerId", "=", ownerId)
+          .where(column, "=", holder)
           .where("status", "in", [...QUOTA_COUNTED_STATUSES]),
         "<=",
         limitBytes - additionalBytes,

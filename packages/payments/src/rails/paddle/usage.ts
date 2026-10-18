@@ -9,6 +9,10 @@ import { type PaddleEnvironment, type PaddleHttpFetch, paddleHttpFetch, paddleJs
 /**
  * Reporting a count to Paddle: one one-time charge per reported period, on the subscription's next bill.
  *
+ * **One per billing period, whatever the cadence.** Every charge is its own line on the bill, so a charge
+ * per day would bill the sum of the days. The pass sends a `daily-peak` product's period once, at the
+ * highest day it sampled (`usage/pass.ts`).
+ *
  * `POST /subscriptions/{id}/charge` with `effective_from: "next_billing_period"` and one item — the product's
  * one-time per-unit price at the reported quantity. Paddle adds it to the next renewal's transaction.
  *

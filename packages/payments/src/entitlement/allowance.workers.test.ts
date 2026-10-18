@@ -323,13 +323,13 @@ describe("the emails meter", () => {
 });
 
 describe("meterLimit for a level the capability counts itself", () => {
-  test("an enforced storageBytes meter answers the subject's effective quota", async () => {
-    expect((await read("/meter/storageBytes")).body).toEqual({ enforced: true, limit: 1024 });
+  test("an enforced storageBytes meter answers the subject's effective quota, and the organization it covers", async () => {
+    expect((await read("/meter/storageBytes")).body).toEqual({ enforced: true, limit: 1024, tenant: "acme" });
   });
 
   test("an unrestricted subject is unlimited on every enforced meter", async () => {
     await setUnrestricted(env.DB, { subject: ACME, version: 0, reason: "ourselves", unrestricted: true });
-    expect((await read("/meter/storageBytes")).body).toEqual({ enforced: true, limit: null });
+    expect((await read("/meter/storageBytes")).body).toEqual({ enforced: true, limit: null, tenant: "acme" });
   });
 
   test("an advisory meter is unenforced, so the capability keeps its own ceiling", async () => {

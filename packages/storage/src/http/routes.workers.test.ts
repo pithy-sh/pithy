@@ -18,6 +18,7 @@ import { storage_0002_ownership } from "../migrations/0002_ownership";
 import { collectParts, planMultipart } from "../object/multipart";
 import { type ObjectStore, objectStore, type PresignedObjects } from "../object/store";
 import type { UploadedPart } from "../object/uploadedPart";
+import type { StorageCeiling } from "../quota/ceiling";
 import { usedBytes } from "../quota/quota";
 import type { HandlerDeps } from "./handlers";
 import {
@@ -172,7 +173,7 @@ let clock = new Date("2026-01-01T00:00:00.000Z");
 function makeApp(
   configInput: StorageConfigInput = {},
   permission?: PermissionHook,
-  quotaLimit?: () => Promise<number | null>,
+  quotaLimit?: () => Promise<StorageCeiling>,
 ) {
   idCounter = 0;
   tokenCounter = 0;
@@ -759,11 +760,36 @@ describe("resuming a multipart upload", () => {
 describe("quota", () => {
   test("a ceiling resolved from the storageBytes meter replaces the configured one, both ways", async () => {
     // A plan's quota below `bytesPerOwner` refuses what the configured number would have allowed …
-    const tighter = makeApp({ quota: { bytesPerOwner: 1000 } }, undefined, async () => 50);
+    const tighter = makeApp({ quota: { bytesPerOwner: 1000 } }, undefined, async () => ({
+      limitBytes: 50,
+      tenant: null,
+    }));
     expect((await init(tighter, ADA, { path: "a.bin", contentType: "text/plain", size: 60 })).status).toBe(413);
     // … and an unrestricted subject — `null` — is never refused, whatever was configured.
-    const unlimited = makeApp({ quota: { bytesPerOwner: 10 } }, undefined, async () => null);
+    const unlimited = makeApp({ quota: { bytesPerOwner: 10 } }, undefined, async () => ({
+      limitBytes: null,
+      tenant: null,
+    }));
     expect((await init(unlimited, ADA, { path: "b.bin", contentType: "text/plain", size: 10_000 })).status).toBe(201);
+  });
+
+  test("an organization's ceiling is the organization's: every member's bytes count against one allowance", async () => {
+    // Billed per organization, the plan's 100 bytes are the company's. Counted per member, they would be 100
+    // bytes each — a paid quota bypassed by inviting a colleague.
+    const app = makeApp({}, undefined, async () => ({ limitBytes: 100, tenant: "org-a" }));
+    const file = { contentType: "text/plain", size: 60 };
+    expect((await init(app, `${ADA}@org-a`, { ...file, path: "a.bin" })).status).toBe(201);
+    expect((await init(app, `${GRACE}@org-a`, { ...file, path: "b.bin" })).status).toBe(413);
+    expect((await init(app, `${GRACE}@org-a`, { ...file, path: "c.bin", size: 40 })).status).toBe(201);
+  });
+
+  test("a ceiling for one organization refuses a file that would be stored for another, or for nobody", async () => {
+    // The bytes would sit outside the sum the ceiling is checked against, so they would never be counted.
+    const app = makeApp({}, undefined, async () => ({ limitBytes: 100, tenant: "org-a" }));
+    const file = { contentType: "text/plain", size: 10 };
+    expect((await init(app, `${ADA}@org-b`, { ...file, path: "a.bin" })).status).toBe(500);
+    expect((await init(app, ADA, { ...file, path: "b.bin" })).status).toBe(500);
+    expect(await usedBytes(db, ADA)).toBe(0);
   });
 
   test("an upload that would exceed the owner's quota is refused at init, before a URL is minted", async () => {

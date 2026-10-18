@@ -527,22 +527,26 @@ export const OverrideClearRequest = z
     subjectType: OverrideSubjectType,
     subjectId: OverrideSubjectId,
     version: OverrideVersion.optional().describe(
-      "The override version the caller read. Optional: sent, a clear behind the row is refused as stale; omitted, the clear is not checked, which is safe because a clear can only move a subject back toward its plan.",
+      "The override version the caller read. Optional: sent, a clear behind the row is refused as stale; omitted, the clear is not checked, which is safe because a clear can only move a subject back toward its plan — unpinning a name on an unrestricted subject is refused.",
     ),
     reason: OverrideReason.optional().describe("Why, when the caller says. Recorded on the audit event."),
     quotas: z
       .array(AllowanceName)
       .max(MAX_OVERRIDE_NAMES)
       .optional()
-      .describe("Quota pins to remove. Each resolves from the plan again."),
+      .describe(
+        "Quota pins to remove. Each resolves from the plan again. Refused on an unrestricted subject, where it would resolve to unlimited.",
+      ),
     features: z
       .array(AllowanceName)
       .max(MAX_OVERRIDE_NAMES)
       .optional()
-      .describe("Feature pins to remove. Each resolves from the plan again."),
+      .describe(
+        "Feature pins to remove. Each resolves from the plan again. Refused on an unrestricted subject, where it would resolve to on.",
+      ),
   })
   .describe(
-    "A control-plane request to unpin names, or — naming neither list — to clear the subject's override entirely. Idempotent: clearing nothing answers 200.",
+    "A control-plane request to unpin names, or — naming neither list — to clear the subject's override entirely, `unrestricted` included. Idempotent: clearing nothing answers 200. A clear never resets the version.",
   );
 export type OverrideClearRequest = z.output<typeof OverrideClearRequest>;
 

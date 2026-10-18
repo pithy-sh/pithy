@@ -12,8 +12,8 @@ import { type StripeHttpFetch, stripeHttpFetch, stripeJson } from "./api";
  * `POST /v1/billing/meter_events` with the meter's `event_name`, the customer, the count as `value`, and the
  * period's row id as `identifier` — which Stripe enforces as unique, so a report sent twice is one event. The
  * subscription's metered price reads the meter, and the meter's own aggregation over the period — a setting
- * on the meter in Stripe, not here — is what the invoice bills. Summed, one `period-end` report bills its
- * count and a month of `daily-peak` reports bills seat-days.
+ * on the meter in Stripe, not here — is what the invoice bills. The pass sends one event per period for both
+ * cadences — a `daily-peak` event carries the period's highest day — so a summing meter bills that count.
  *
  * The timestamp is the report's own `at`, which the pass dates inside the period it bills, so the event
  * lands on that period's invoice.

@@ -41,7 +41,8 @@ const allowances: EntitlementResolver = {
   list: async () => [],
   quota: async (name) => (name === "seats" ? 10 : null),
   feature: async (name) => name === "sso",
-  meterLimit: async (meter) => (meter === "storageBytes" ? { enforced: true, limit: 1024 } : { enforced: false }),
+  meterLimit: async (meter) =>
+    meter === "storageBytes" ? { enforced: true, limit: 1024, tenant: null } : { enforced: false },
 };
 
 describe("quota and feature", () => {
@@ -73,6 +74,7 @@ describe("meterLimit", () => {
     expect((await within(allowances, (c) => meterLimit(c, "storageBytes"))).value).toEqual({
       enforced: true,
       limit: 1024,
+      tenant: null,
     });
     expect((await within(allowances, (c) => meterLimit(c, "mediaItems"))).value).toEqual({ enforced: false });
   });

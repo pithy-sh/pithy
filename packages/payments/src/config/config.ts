@@ -273,7 +273,7 @@ export const REPORTED_BILLING_RAILS = ["stripe", "paddle"] as const satisfies re
 export const PaymentsReportCadence = z
   .enum(["period-end", "daily-peak"])
   .describe(
-    "How often the count is reported. `period-end` sends one count per subscription per billing period — simplest, and what a store's metering expects to be fed. `daily-peak` reports each day's high-water mark once the day is over, which is the number a customer disputing an invoice can audit and the fair one when seats churn mid-period.",
+    "How often the count is reported. `period-end` sends one count per subscription per billing period — simplest, and what a store's metering expects to be fed. `daily-peak` samples every run and keeps each day's high-water mark, then sends the period's highest day once, in its last day — the period's peak, never the sum of its days. The day rows stay as the audit a customer disputing an invoice can check.",
   );
 export type PaymentsReportCadence = z.infer<typeof PaymentsReportCadence>;
 
