@@ -215,6 +215,22 @@ describe("the kinds an app declares and the kit writes but never provisions (#66
     }
   });
 
+  test("a browser or images binding under another name is missing, and is never overwritten", () => {
+    // One per Worker, but `validateBindings` reads `env[binding.name]`: a `RENDERER` there leaves `BROWSER`
+    // unbound at boot. So the stanza does not have it, and doctor says so, and the adopter's own is kept.
+    for (const type of ["browser", "images"] as const) {
+      const binding = BindingSpec.parse({ type, name: type.toUpperCase() });
+      expect(stanzaHasBinding({ [type]: { binding: binding.name } }, binding)).toBe(true);
+      const theirs: WranglerStanza = { [type]: { binding: "RENDERER" } };
+      expect(stanzaHasBinding(theirs, binding)).toBe(false);
+      expect(appendBinding(theirs, binding, app)).toEqual({
+        outcome: "skipped",
+        reason: `this Worker already binds ${type} as RENDERER, and a Worker takes one`,
+      });
+      expect(theirs).toEqual({ [type]: { binding: "RENDERER" } });
+    }
+  });
+
   test("writes an email's send_email entry with nothing but its name", () => {
     // Where this environment's mail may go is the adopter's decision, stated in their stanza; the binding is ours.
     expect(write({ type: "email", name: "MAILER" })).toEqual({ send_email: [{ name: "MAILER" }] });

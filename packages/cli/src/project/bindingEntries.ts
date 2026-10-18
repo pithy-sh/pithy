@@ -415,8 +415,9 @@ export function stanzaHasBinding(stanza: WranglerStanza, binding: BindingSpec): 
       return (stanza.send_email ?? []).some((entry) => entry.name === binding.name);
     case "browser":
     case "images":
-      // One binding per Worker, an object like `ai`, so any entry is the one.
-      return stanza[binding.type] !== undefined;
+      // One per Worker, an object like `ai`, but present only under this name: `validateBindings` reads
+      // `env[binding.name]`, so one bound as anything else leaves this binding unbound at boot.
+      return stanza[binding.type]?.binding === binding.name;
     case "hyperdrive":
     case "analytics_engine_datasets":
     case "pipelines":
@@ -535,10 +536,19 @@ export function appendBinding(stanza: WranglerStanza, binding: BindingSpec, scop
       stanza.send_email.push(withRemote({ name: binding.name }, binding));
       return { outcome: "written" };
     case "browser":
-    case "images":
-      // One per Worker, like `ai`, and left alone by the presence check above when one is already there.
+    case "images": {
+      // One per Worker, like `ai`. One already bound under another name is the adopter's, and overwriting
+      // it would unbind their code; the presence check above has reported this one missing, so say why.
+      const existing = stanza[binding.type];
+      if (existing !== undefined) {
+        return {
+          outcome: "skipped",
+          reason: `this Worker already binds ${binding.type} as ${existing.binding}, and a Worker takes one`,
+        };
+      }
       stanza[binding.type] = withRemote({ binding: binding.name }, binding);
       return { outcome: "written" };
+    }
     case "hyperdrive":
     case "analytics_engine_datasets":
     case "pipelines":

@@ -1031,13 +1031,13 @@
       }
     },
     "feature destroy": {
-      "schemaVersion": 1,
+      "schemaVersion": 2,
       "payload": {
         "$": "object",
         "$.command": "\"feature.destroy\"",
         "$.deletedResources": "array",
         "$.deletedResources[]": "object",
-        "$.deletedResources[].kind": "\"d1\" | \"kv\" | \"r2\" | \"worker\"",
+        "$.deletedResources[].kind": "\"d1\" | \"kv\" | \"queue\" | \"r2\" | \"vectorize\" | \"worker\" | \"workflow\"",
         "$.deletedResources[].name": "string",
         "$.deletedResources[].id": "string",
         "$.remote": "boolean",

@@ -209,7 +209,9 @@ const FeatureDestroyPayload = z
       .array(
         z
           .object({
-            kind: z.enum(["worker", "d1", "kv", "r2"]).describe("The resource kind. `worker` is a Worker script."),
+            kind: z
+              .enum(["worker", "d1", "kv", "r2", "queue", "workflow", "vectorize"])
+              .describe("The resource kind. `worker` is a Worker script, `workflow` a Workflow definition."),
             name: z.string().describe("The resource name."),
             id: z.string().describe("The id that was deleted."),
           })
@@ -630,7 +632,8 @@ const destroy = withContract(
   }),
   {
     output: "document",
-    schemaVersion: 1,
+    // 2: `deletedResources[].kind` takes `queue`, and the `workflow` and `vectorize` it already emitted (#662).
+    schemaVersion: 2,
     payload: FeatureDestroyPayload,
     mutates: true,
     idempotent: true,

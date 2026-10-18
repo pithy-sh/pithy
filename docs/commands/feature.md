@@ -162,7 +162,7 @@ $ pithy feature destroy --json
 | `command` | `"feature.destroy"` | The subcommand that produced the line |
 | `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `deletedResources` | `object[]` | Every Worker script and Cloudflare resource deleted, from the manifest and from the name reconcile, scripts first. Empty when nothing remained, or when the remote half was skipped |
-| `deletedResources[].kind` | `"worker" \| "d1" \| "kv" \| "r2"` | The resource kind. `worker` is a Worker script |
+| `deletedResources[].kind` | `"worker" \| "d1" \| "kv" \| "r2" \| "queue" \| "workflow" \| "vectorize"` | The resource kind. `worker` is a Worker script, `workflow` a Workflow definition |
 | `deletedResources[].name` | `string` | The resource name |
 | `deletedResources[].id` | `string` | The id that was deleted. A Worker script's is its name, which is all Cloudflare addresses one by |
 | `remote` | `boolean` | Whether the remote teardown ran. `false` under `--local-only` |
