@@ -320,7 +320,7 @@ Every step is idempotent, so running it when nothing is missing reports that not
 
 #### Naming and wiring a feature's live environment
 
-The same branch-first identity that names a feature's D1/KV/R2 resources also names its **Workers**, so a feature environment is fully self-wiring in CI:
+The same branch-first identity that names a feature's D1, KV, R2 and queue resources also names its **Workers**, so a feature environment is fully self-wiring in CI:
 
 ```
 <project>-f<issue>-<slug>--<worker>          acme-f69-media-cli--api      (Worker script)

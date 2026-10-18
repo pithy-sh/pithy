@@ -80,7 +80,7 @@ When it is **not** on the machine, which is every CI runner, the two differ:
 
 **`destroy` does not need a Worker config to load.** Its local half — free the port block, prune the worktree — is derived from the branch and the root `pithy.config.ts`, and that is deliberate: the state it is most needed in is a `create` that failed partway, which leaves a worktree whose Worker config throws. A teardown that loaded it first was unavailable in exactly that state, and the port block leaked to a branch that no longer existed. The remote half genuinely cannot run without those configs, so an unloadable one is refused unless `--local-only` says the remote half is not wanted.
 
-Missing credentials are a hard failure on `destroy` rather than a silent skip, and the reason is worth stating: skipping the remote half would leak every Worker script, D1, KV, and R2 while reporting success, and the teardown then deletes the branch the resource names are derived from — so a later attempt could no longer work out what to delete. A CI job whose credentials did not propagate must fail loudly. `--local-only` is the deliberate opt-out.
+Missing credentials are a hard failure on `destroy` rather than a silent skip, and the reason is worth stating: skipping the remote half would leak every Worker script, D1, KV, R2 and queue while reporting success, and the teardown then deletes the branch the resource names are derived from — so a later attempt could no longer work out what to delete. A CI job whose credentials did not propagate must fail loudly. `--local-only` is the deliberate opt-out.
 
 **`prune`** frees the port blocks of features whose worktree and branch are both gone. `destroy` frees a feature's block, but it has to run from inside the worktree to know which — so a worktree removed any other way, by `git worktree prune`, a teardown script of your own, or a directory deleted by hand, leaves nothing to run it from. The branch outlives the worktree, the block outlives both, and the sweep that frees a deleted checkout's blocks never reaches it, because the checkout it is filed under is still there. `prune` is how you get those ports back.
 
@@ -154,7 +154,7 @@ The payload for a feature's Cloudflare environment is [`provision.md`](provision
 
 ```
 $ pithy feature destroy --json
-{"command":"feature.destroy","schemaVersion":1,"deletedResources":[{"kind":"worker","name":"acme-f69-media-cli--api","id":"acme-f69-media-cli--api"},{"kind":"d1","name":"acme-f69-media-cli--db-d1","id":"…"}],"remote":true,"portsFreed":true,"branch":"feature/69-media-cli","worktreePruned":true,"branchDeleted":false,"manifestRead":true,"manifestPath":"/repo/.worktrees/69-media-cli/.pithy-feature.json"}
+{"command":"feature.destroy","schemaVersion":2,"deletedResources":[{"kind":"worker","name":"acme-f69-media-cli--api","id":"acme-f69-media-cli--api"},{"kind":"d1","name":"acme-f69-media-cli--db-d1","id":"…"}],"remote":true,"portsFreed":true,"branch":"feature/69-media-cli","worktreePruned":true,"branchDeleted":false,"manifestRead":true,"manifestPath":"/repo/.worktrees/69-media-cli/.pithy-feature.json"}
 ```
 
 | key | type | meaning |
@@ -176,7 +176,7 @@ $ pithy feature destroy --json
 
 ```
 $ pithy feature prune --json
-{"command":"feature.prune","schemaVersion":1,"root":"/repo","dryRun":false,"freedBlocks":[{"branch":"feature/70-old-idea","block":2,"base":8827,"size":20}]}
+{"command":"feature.prune","schemaVersion":2,"root":"/repo","dryRun":false,"freedBlocks":[{"branch":"feature/70-old-idea","block":2,"base":8827,"size":20}]}
 ```
 
 | key | type | meaning |

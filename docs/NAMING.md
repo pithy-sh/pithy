@@ -114,7 +114,7 @@ An ephemeral feature environment is an environment, so it occupies the environme
 <project>-f<issue>-<slug>--<binding>-<kind>
 ```
 
-`pithy feature create` computes these, `provision` creates them, and `destroy` recomputes the identical strings to delete them. The worktree's manifest records them too, but it is repository content rather than a trusted record: an entry is honored only when it recomputes, which is why every segment has to be derivable from `(project, issue, slug, binding, kind)` alone.
+`pithy feature create` computes these, `provision` creates them, and `destroy` recomputes the identical strings to delete them. The worktree's manifest records them too, but it is repository content rather than a trusted record: an entry is honored only when it recomputes, which is why every segment has to be derivable from `(project, issue, slug, binding, kind)` alone. And it is trusted for its name and nothing else. The id `destroy` deletes is the one the account answers for that name, never the id the entry states, so an entry that pairs the feature's own name with production's id reaches nothing.
 
 There is **no Worker segment**. Two Workers that both declare `DB` are backed by one D1; a Worker that wants its own declares a different binding. Sharing is expressed in the binding name.
 

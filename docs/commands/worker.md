@@ -129,7 +129,7 @@ The name argument is matched against either identity, so both `pithy worker remo
 
 ```
 $ pithy worker rename api board --json
-{"command":"worker.rename","schemaVersion":1,"dryRun":false,"worker":"board","deployedAs":"acme-board","from":"api","to":"board","dir":"/repo/apps/board","script":{"from":"acme-api","to":"acme-board"},"orphaned":[],"accountChecked":true,"reconciled":false}
+{"command":"worker.rename","schemaVersion":2,"dryRun":false,"worker":"board","deployedAs":"acme-board","from":"api","to":"board","dir":"/repo/apps/board","script":{"from":"acme-api","to":"acme-board"},"orphaned":[],"accountChecked":true,"reconciled":false}
 ```
 
 `worker` and `deployedAs` describe the Worker **after** the move, so a caller reading the identity keys gets the same two facts here it gets from the other four subcommands. `from`, `to` and `script` are what a rename adds on top: the transition. `deployedAs` is therefore always the script name the Worker deploys under now — including when `script` is `null` because a name the adopter chose was left alone.
