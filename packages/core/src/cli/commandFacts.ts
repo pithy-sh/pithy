@@ -62,6 +62,7 @@ export const WORKER_NARROWS = [
   "env",
   "init",
   "migrate",
+  "secrets tables",
   "seed",
   "support deprovision",
   "upgrade",
