@@ -132,6 +132,7 @@ describe("client-env.d.ts is emitted from the declared projections", () => {
       resolveClientProjection(
         payments({
           billingSubject: "user",
+          entitlements: { pro: { name: "pro" } },
           rails: { stripe: true },
           stripe: {
             successUrl: "https://acme.example/thanks",
