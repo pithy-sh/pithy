@@ -191,7 +191,7 @@ export interface SupportSearchTriggersOptions {
 }
 
 /** The app database id in one Worker's stanza for one environment, read from files. */
-async function appDatabaseIdFromWrangler(workerDir: string, env: string): Promise<string | null> {
+export async function appDatabaseIdFromWrangler(workerDir: string, env: string): Promise<string | null> {
   const config = (await readWranglerConfig(workerDir)) as {
     env?: Record<string, { d1_databases?: { binding: string; database_id?: string }[] } | undefined>;
   };

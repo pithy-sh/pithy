@@ -967,6 +967,13 @@ describe("every finding in every block carries fix", () => {
         state: "findings",
         environments: [{ env: "prod", worker: "api", directory: dirOf("api"), state: "drift", triggers: "none" }],
       }),
+      checkPaymentsAllowances: async () => ({
+        state: "ok",
+        meters: [{ worker: "api", meter: "emails", enforced: true, quotaDeclared: true }],
+        environments: [
+          { env: "prod", worker: "api", directory: dirOf("api"), state: "listed", subjects: ["organization:acme"] },
+        ],
+      }),
       checkEnvironmentInheritance: async () => ({
         state: "unrepeated",
         unrepeated: [{ worker: dirOf("api"), env: "staging", key: "vars", carries: ["APP_NAME"] }],

@@ -87,6 +87,13 @@ import {
 } from "../doctor/health";
 import { checkLocalDelivery, describeLocalDelivery, type LocalDeliveryCheck } from "../doctor/localDelivery";
 import {
+  checkPaymentsAllowances,
+  describePaymentsAllowances,
+  namesUnrestricted,
+  type PaymentsAllowancesCheck,
+  type PaymentsAllowancesOptions,
+} from "../doctor/paymentsAllowances";
+import {
   checkPortsRegistry,
   describePortsRegistry,
   type PortsRegistryCheck,
@@ -393,6 +400,15 @@ export interface DoctorReport {
    * remedy is the next scheduled pass rather than a command; it keeps the report verbose instead.
    */
   secretTables: SecretTablesCheck | null;
+  /**
+   * What this project's payments enforces, and who holds the whole product (#561): each kit meter, whether
+   * it is enforced and whether a quota of its name is declared, and every deployed environment's
+   * `unrestricted` subjects by name. `null` outside a project, `not-applicable` with no payments composed.
+   *
+   * **It reports and never fails the exit.** An unrestricted subject is a legitimate grant — an Enterprise
+   * contract, the operator's own account — and the point is that it is never invisible, not that it is wrong.
+   */
+  paymentsAllowances: PaymentsAllowancesCheck | null;
   /**
    * Whether every declared environment's `pithy.config.ts` **loads** (#548) — the question the block above
    * does not ask, because comparing a stanza to a declaration never evaluates either config. `null`
@@ -839,6 +855,11 @@ export interface DoctorReportOptions {
    * each environment's vault — never a value — and nothing at all on a project that declares no table.
    */
   checkSecretTables?: (options: SecretTablesOptions) => Promise<SecretTablesCheck>;
+  /**
+   * Payments allowances seam; defaults to {@link checkPaymentsAllowances}. One `SELECT` per deployed
+   * environment whose composition includes payments, and none at all otherwise.
+   */
+  checkPaymentsAllowances?: (options: PaymentsAllowancesOptions) => Promise<PaymentsAllowancesCheck>;
   /** Origin-declaration seam; defaults to {@link checkOrigins}. Reads files only — no account call. */
   checkOrigins?: (projectDir: string) => Promise<OriginsCheck>;
   /** App-Workflow binding seam; defaults to {@link checkWorkflows}. Reads files only — no account call. */
@@ -1016,6 +1037,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeTurnstileSitekeys = options.checkTurnstileSitekeys ?? checkTurnstileSitekeys;
   const probeSupportSearchTriggers = options.checkSupportSearchTriggers ?? checkSupportSearchTriggers;
   const probeSecretTables = options.checkSecretTables ?? checkSecretTables;
+  const probePaymentsAllowances = options.checkPaymentsAllowances ?? checkPaymentsAllowances;
   const probeOrigins = options.checkOrigins ?? checkOrigins;
   const probeWorkflows = options.checkWorkflows ?? checkWorkflows;
   const probeDevPreferences =
@@ -1450,6 +1472,30 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
           { state: "could-not-check", declared: [], environments: [] },
         )
       : null;
+  // Who holds the whole product, and which meters bind (#561). A deployed read like the support index's, on
+  // the same `remoteSkip`, and nothing at all for a project that composes no payments.
+  const paymentsAllowances =
+    inProject && workersResolved
+      ? await probed<PaymentsAllowancesCheck>(
+          () =>
+            probePaymentsAllowances({
+              environments: declaredEnvironments,
+              workers: resolvedWorkers.map((worker) => ({ name: worker.name, dir: worker.dir })),
+              account,
+              remoteSkip,
+              composeWorker:
+                composeWorkerFor ??
+                (async (worker, environment) => {
+                  const found = await resolve(environment, { projectDir: options.projectDir, worker: worker.name });
+                  const match = found.find((candidate) => candidate.dir === worker.dir);
+                  if (match === undefined)
+                    throw new ValidationError({ message: `${worker.name} did not resolve for ${environment}.` });
+                  return { capabilities: match.capabilities };
+                }),
+            }),
+          { state: "could-not-check", meters: [], environments: [] },
+        )
+      : null;
   // The same declaration, asked the question the block above cannot: comparing a stanza to a declaration
   // never evaluates a config, and a `pithy.config.ts` is code that may load under one environment and
   // throw under another (#548). Files only once more — the composition is taken in this process, and
@@ -1570,6 +1616,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     turnstileSitekeys,
     supportSearchTriggers,
     secretTables,
+    paymentsAllowances,
     environmentConfigs,
     origins,
     workflows,
@@ -2670,6 +2717,17 @@ function secretTablesBlock(check: SecretTablesCheck): string {
 }
 
 /**
+ * The `Payments allowances:` lines — each meter, then each environment's unrestricted subjects (#561).
+ *
+ * Printed whenever payments is composed and the report is verbose, and it makes the report verbose by itself
+ * when a subject is unrestricted or a read did not land: the largest grant the kit has is never something a
+ * terse report may leave out.
+ */
+function paymentsAllowancesBlock(check: PaymentsAllowancesCheck): string {
+  return ["Payments allowances:", ...describePaymentsAllowances(check).map((line) => `  ${line}`)].join("\n");
+}
+
+/**
  * The `Environment configs:` lines — shown only when a declared environment's `pithy.config.ts` throws
  * when it is composed (#548). Silence is the healthy answer, as everywhere in this half of the report.
  *
@@ -3025,6 +3083,11 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     report.secretTables === null ||
     report.secretTables.state === "ok" ||
     report.secretTables.state === "not-applicable";
+  // Quiet unless somebody is unrestricted or a read did not land — never a failing exit (#561).
+  const paymentsAllowancesQuiet =
+    report.paymentsAllowances === null ||
+    report.paymentsAllowances.state === "not-applicable" ||
+    (report.paymentsAllowances.state === "ok" && !namesUnrestricted(report.paymentsAllowances));
   // Its own answer, because it is its own question — see {@link DoctorReport.environmentConfigs}. A config
   // that does not load for a declared environment is never terse: it is the loudest finding this report has
   // about a file the adopter owns.
@@ -3086,6 +3149,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     turnstileSitekeysOk &&
     supportSearchTriggersQuiet &&
     secretTablesQuiet &&
+    paymentsAllowancesQuiet &&
     environmentConfigsOk &&
     originsOk &&
     workflowsOk &&
@@ -3309,6 +3373,11 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // Both forms, whenever a table is declared — see {@link secretTablesBlock}.
   if (report.secretTables && report.secretTables.state !== "not-applicable") {
     blocks.push(secretTablesBlock(report.secretTables));
+  }
+
+  // Every meter and every unrestricted subject, whenever payments is composed and the report is verbose.
+  if (report.paymentsAllowances && report.paymentsAllowances.state !== "not-applicable") {
+    blocks.push(paymentsAllowancesBlock(report.paymentsAllowances));
   }
 
   // Straight after it, because it is the same declaration asked whether it *works*: one of these
@@ -3574,6 +3643,16 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
           ...report.secretTables,
           environments: report.secretTables.environments.map((answer) => ({ ...answer, fix: secretTablesFix(answer) })),
           detail: describeSecretTables(report.secretTables),
+        }
+      : null,
+    // No command fixes either list: a meter is a config decision and an unrestricted subject is a grant
+    // somebody made on purpose. Each item still carries `fix`, as null, so a client reads every list one way.
+    paymentsAllowances: report.paymentsAllowances
+      ? {
+          state: report.paymentsAllowances.state,
+          meters: report.paymentsAllowances.meters.map((line) => ({ ...line, fix: null })),
+          environments: report.paymentsAllowances.environments.map((answer) => ({ ...answer, fix: null })),
+          detail: describePaymentsAllowances(report.paymentsAllowances),
         }
       : null,
     environmentInheritance: report.environmentInheritance
@@ -4010,6 +4089,12 @@ const DoctorPayload = z
         .array(z.looseObject({}).describe("One declared table, with its Worker, its keys and its secret names."))
         .describe("Every declared table."),
       environments: Fixed("environment's answer"),
+      detail: Lines,
+    }),
+    paymentsAllowances: Check("Payments meters and unrestricted subjects per environment, or `null`.", {
+      state: State("`ok`, `not-applicable`, `could-not-check`"),
+      meters: Fixed("meter of a Worker that composes payments"),
+      environments: Fixed("deployed environment"),
       detail: Lines,
     }),
     environmentInheritance: Check("Non-inherited keys a stanza does not repeat, or `null`.", {

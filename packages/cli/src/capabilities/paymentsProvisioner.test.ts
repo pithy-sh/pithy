@@ -29,6 +29,7 @@ const PROJECT = "acme";
 
 const CATALOG = PaymentsConfig.parse({
   billingSubject: "user",
+  entitlements: { pro: { name: "pro" } },
   rails: { apple: true },
   products: {
     pro_monthly: {
@@ -157,6 +158,7 @@ describe("the committed reconcile-worker template", () => {
     // exactly like a rail with nothing wrong.
     const catalog = PaymentsConfig.parse({
       billingSubject: "user",
+      entitlements: { pro: { name: "pro" } },
       rails: { lemonSqueezy: true },
       lemonSqueezy: { successUrl: "https://app.example.com/thanks" },
       products: {

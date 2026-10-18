@@ -92,6 +92,9 @@ const SHIPPED_DELEGATES = [
   "packages/core/src/workflow/faults.ts#classifiedSteps",
   "packages/email/src/workflows/sendBatch.ts#runSendBatch",
   "packages/payments/src/workflows/reconcile.ts#reconcilePayments",
+  // #561. The usage-reporting body. Its class is the adopter's, five lines in their own entry, so the walk
+  // meets the kit's half here: one step, and the clock the pass reads is a thunk handed into it.
+  "packages/payments/src/workflows/usage.ts#reportPaymentsUsage",
   "packages/secrets/src/manager/rotationWorkflow.ts#runRotationWorkflow",
   // #647. The at-rest rotation's two read-back helpers. Each is handed the step runner because each is a
   // *sequence* of steps rather than one: the binding confirm sleeps between separate `step.do` reads, so the
