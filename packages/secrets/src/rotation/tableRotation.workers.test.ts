@@ -3,6 +3,7 @@
 
 import { env } from "cloudflare:test";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
+import type { KyselyPlugin } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { EncryptionConfig } from "../crypto/envelope";
@@ -18,7 +19,7 @@ import { secretTableMigration } from "../tables/migration";
 import { StubConfigStore } from "../test-utils/stubConfigWriter";
 import { runAtRestKeyRotation, type StepRunner } from "./atRestKeyRotation";
 import { countOnKeyVersions, reencryptBatch } from "./keyRotation";
-import { registeredSecretTables } from "./tableRotation";
+import { reencryptTableBatch, registeredSecretTables } from "./tableRotation";
 
 /**
  * The at-rest rotation reaches every declared table — the property the whole design rests on. A table the
@@ -172,6 +173,43 @@ describe("at-rest rotation over declared tables", () => {
     await customers.put({ userId: "u1", organizationId: "org_a" }, "STRIPE_KEY", "sk_1");
     expect(await countOnKeyVersions(db(), ["1"])).toBe(1);
     expect(await countOnKeyVersions(db(), ["2"])).toBe(0);
+  });
+
+  test("a row written between the batch's read and its update keeps the write — the stale copy is dropped", async () => {
+    await migrate("customer");
+    const owner = { userId: "u1", organizationId: "org_a" };
+    await (await secretsStore(envFor(config), registry)).table(CustomerSecrets).put(owner, "STRIPE_KEY", "sk_old");
+    const promoted: EncryptionConfig = {
+      ...config,
+      currentVersion: "2",
+      versions: { ...config.versions, "2": keyB64() },
+    };
+    // A request replaces the value after the batch selected the row and before it writes the re-encryption.
+    let fired = false;
+    const writeBetween: KyselyPlugin = {
+      transformQuery: (args) => args.node,
+      transformResult: async (args) => {
+        if (!fired) {
+          fired = true;
+          await (await secretsStore(envFor(config), registry))
+            .table(CustomerSecrets)
+            .put(owner, "STRIPE_KEY", "sk_new", { replace: true });
+        }
+        return args.result;
+      },
+    };
+    const [customer] = await registeredSecretTables(db());
+    if (!customer) throw new Error("expected the customer table to be registered");
+    expect(await reencryptTableBatch(db().withPlugin(writeBetween), promoted, customer, 10)).toEqual({
+      rotated: 0,
+      failed: 0,
+    });
+    expect(await (await secretsStore(envFor(promoted), registry)).table(CustomerSecrets).get(owner, "STRIPE_KEY")).toBe(
+      "sk_new",
+    );
+    // Left on the key it was written under, for the next batch to move.
+    expect(await keyVersions("pithy_secrets_customer_secrets")).toEqual([1]);
+    expect(await reencryptTableBatch(db(), promoted, customer, 10)).toEqual({ rotated: 1, failed: 0 });
   });
 
   test("a store with no registry table yet rotates as it always did", async () => {

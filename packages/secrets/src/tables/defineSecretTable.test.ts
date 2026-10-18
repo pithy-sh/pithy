@@ -2,18 +2,23 @@
 // SPDX-License-Identifier: MIT
 
 import { InternalError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { CamelCasePlugin } from "kysely";
 import { describe, expect, expectTypeOf, test } from "vitest";
 import { z } from "zod";
 import {
   defineSecretTable,
+  isSecretTableKeyName,
+  isSecretTableName,
   type SecretTableOwner,
   type SecretTableOwnerPredicate,
   type SecretTableSecretName,
   type SecretTableValue,
   secretTableContext,
+  secretTableIdentifier,
   secretTableOwner,
   secretTablePredicate,
   secretTableRow,
+  snakeCase,
 } from "./defineSecretTable";
 
 const Webhook = z
@@ -58,6 +63,47 @@ describe("defineSecretTable", () => {
       secrets: { KEY: { valueType: "text", rotatable: false } },
     });
     expect(table.sqlName).toBe("pithy_secrets_billing_account_secrets");
+  });
+
+  test("derives the SQL name through CamelCasePlugin itself, so the migration and every lookup agree", () => {
+    // The migration creates the table through the plugin; a sweep looks it up by `sqlName`. One conversion.
+    class Probe extends CamelCasePlugin {
+      sql(identifier: string): string {
+        return this.snakeCase(identifier);
+      }
+    }
+    for (const identifier of ["pithySecretsBillingAccountSecrets", "pithySecretsCustomerAPISecrets", "userID"]) {
+      expect(snakeCase(identifier)).toBe(new Probe().sql(identifier));
+    }
+  });
+
+  test("refuses a name or a key with a run of capitals — one that would not come back from snake_case as itself", () => {
+    // `customerAPI` becomes `pithy_secrets_customer_apisecrets`, which reads back as `customerApisecrets`, and a
+    // registry row naming it would look up a table nobody created. A row's key columns come back camel-cased
+    // the same way, so `userID` would read back as `userId` and every row would lose its owner.
+    for (const name of ["customerAPI", "aB", "a"]) {
+      expect(isSecretTableName(name)).toBe(false);
+      const error = thrown(() =>
+        defineSecretTable({
+          name,
+          keys: { userId: z.string().describe("The user.") },
+          secrets: { KEY: { valueType: "text", rotatable: false } },
+        }),
+      );
+      expect(error).toBeInstanceOf(InternalError);
+      expect(error.payload.message).toContain("capitals");
+    }
+    expect(isSecretTableKeyName("userID")).toBe(false);
+    const key = thrown(() =>
+      defineSecretTable({
+        name: "customer",
+        keys: { userID: z.string().describe("The user.") },
+        secrets: { KEY: { valueType: "text", rotatable: false } },
+      }),
+    );
+    expect(key.payload.message).toContain("userID");
+    expect(isSecretTableName("customerApi")).toBe(true);
+    expect(snakeCase(secretTableIdentifier("customerApi"))).toBe("pithy_secrets_customer_api_secrets");
   });
 
   test("refuses the cf-secrets-store backend, naming why", () => {
@@ -216,6 +262,24 @@ describe("secretTableOwner", () => {
     const nobody = thrown(() => secretTableOwner(CustomerSecrets, { userId: "", organizationId: "" }));
     expect(nobody).toBeInstanceOf(ValidationError);
     expect(nobody.payload.message).toContain("at least one key");
+  });
+
+  test("a new row runs every key through its schema — the empty exemption reaches existing rows only", () => {
+    const Strict = defineSecretTable({
+      name: "member",
+      keys: {
+        userId: z.string().min(1).describe("The user."),
+        organizationId: z.string().uuid().describe("The organization."),
+      },
+      secrets: { KEY: { valueType: "text", rotatable: false } },
+    });
+    const owner = { userId: "u1", organizationId: "" };
+    // Addressing: `""` reaches a row written before the key existed, and nothing else holds one.
+    expect(secretTableOwner(Strict, owner)).toEqual(owner);
+    // Creating: the adopter's schema decides, and a uuid key refuses `""`.
+    const error = thrown(() => secretTableOwner(Strict, owner, { creating: true }));
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.payload.detail).toContain("organizationId");
   });
 
   test("runs the declared schema, so a key's own rule holds at the call", () => {

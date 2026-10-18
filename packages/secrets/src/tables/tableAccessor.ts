@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { AuditOutcome } from "@pithy-sh/core/src/audit/auditEvent";
-import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { type SecretsAuditAction, SecretsAuditActions } from "../audit/actions";
 import { appendVersion, currentValue, initialVersionedValue, type VersionedValue } from "../crypto/versionedValue";
 import type { SecretsStoreEnv } from "../env/bindings";
@@ -37,6 +37,9 @@ import { type StoredTableRow, TableSecretsStore } from "./tableStore";
  * Nothing is cached. The store is built per operation so it re-resolves the master key, as a keyspace
  * member's is — one owner's credential must not sit in an accessor the next request reuses.
  */
+
+/** How many times `rotate` redoes its append over a row a concurrent write changed, before it gives up. */
+const ROTATE_ATTEMPTS = 3;
 
 /** Options for {@link SecretTableAccessor.put}. */
 export interface TablePutOptions {
@@ -123,7 +126,8 @@ export class SecretTableAccessor<T extends AnySecretTable> {
     options: TablePutOptions = {},
   ): Promise<KeyedWriteResult> {
     const mode = options.replace ? "replace" : "create";
-    const { entry, valid } = this.#prepare(owner, name);
+    // Either mode may insert, so the owner is a new row's: every key held to its schema, `""` included.
+    const { entry, valid } = this.#prepare(owner, name, { creating: true });
     const serialized = serializeValue(entry, name, value);
     const audit = (outcome: AuditOutcome) =>
       this.#audit(options.audit, SecretsAuditActions.tableSecretWritten, outcome, name, valid, { mode });
@@ -166,10 +170,7 @@ export class SecretTableAccessor<T extends AnySecretTable> {
       this.#audit(options.audit, SecretsAuditActions.tableSecretRotated, outcome, name, valid);
     try {
       const store = await this.#open(this.#table);
-      const existing = await store.read(valid, name);
-      if (!existing) throw this.#missing(name);
-      const next = appendVersion(existing, serialized);
-      await store.write(valid, name, next, entry.valueType, "replace");
+      const next = await this.#appendGuarded(store, valid, name, entry, serialized);
       await audit("success");
       return { currentVersion: next.currentVersion };
     } catch (error) {
@@ -225,8 +226,38 @@ export class SecretTableAccessor<T extends AnySecretTable> {
     return removed;
   }
 
+  /**
+   * Read, append, and write back over exactly the row that was read. **Update-only**: an upsert here would
+   * re-insert a row a `deleteWhere` removed between the two statements, and bring an offboarded owner's
+   * credential back. A row rewritten in that window — a `put` with `replace`, another `rotate` — fails the
+   * guard, and the append is redone over what is there now rather than discarding it. A row gone is not found.
+   */
+  async #appendGuarded(
+    store: TableSecretsStore,
+    owner: Record<string, string>,
+    name: string,
+    entry: SecretTableSecret,
+    serialized: string,
+  ): Promise<VersionedValue> {
+    for (let attempt = 0; attempt < ROTATE_ATTEMPTS; attempt++) {
+      const existing = await store.readSealed(owner, name);
+      if (!existing) throw this.#missing(name);
+      const next = appendVersion(existing.value, serialized);
+      if (await store.update(owner, name, next, entry.valueType, existing.iv)) return next;
+    }
+    throw new ConflictError({
+      message: `Secret '${name}' in table '${this.#table.name}' kept changing while it was rotated.`,
+      action: "Rotate it again. Something else is writing this owner's secret in a loop.",
+      detail: `secret table '${this.#table.name}': rotate lost the row to a concurrent write ${ROTATE_ATTEMPTS} times`,
+    });
+  }
+
   /** Prove the name is declared and the owner is whole, before anything touches the store. */
-  #prepare(owner: Record<string, unknown>, name: string): { entry: SecretTableSecret; valid: Record<string, string> } {
+  #prepare(
+    owner: Record<string, unknown>,
+    name: string,
+    options: { creating?: boolean } = {},
+  ): { entry: SecretTableSecret; valid: Record<string, string> } {
     const entry = this.#table.secrets[name];
     if (!entry) {
       throw new SecretNotFoundError({
@@ -234,7 +265,7 @@ export class SecretTableAccessor<T extends AnySecretTable> {
         detail: `secret table '${this.#table.name}': '${name}' is not declared`,
       });
     }
-    return { entry, valid: secretTableOwner(this.#table, owner) };
+    return { entry, valid: secretTableOwner(this.#table, owner, options) };
   }
 
   /** One owner's stored envelope, or the not-found that names the table and never the owner. */

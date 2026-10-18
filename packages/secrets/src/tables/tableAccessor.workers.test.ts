@@ -5,6 +5,7 @@ import { env } from "cloudflare:test";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { KyselyPlugin } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
 import { SecretsAuditActions } from "../audit/actions";
@@ -24,6 +25,8 @@ import { defineSecretRegistry } from "../registry";
 import { secretsStore } from "../secretsStore";
 import { defineSecretTable, secretTableContext } from "./defineSecretTable";
 import { secretTableMigration } from "./migration";
+import { SecretTableAccessor } from "./tableAccessor";
+import { anyTableDb, TableSecretsStore } from "./tableStore";
 
 /**
  * A declared table against a real D1 and the real envelope. A node test can prove which owner a query was
@@ -215,6 +218,69 @@ describe("rotate", () => {
     await t.put(alice, "WEBHOOK_SIG", { secret: "whsec_long_enough" });
     await expect(t.rotate(alice, "WEBHOOK_SIG", { secret: "whsec_second_one" })).rejects.toBeInstanceOf(InternalError);
     await expect(t.rotate(carol, "STRIPE_KEY", "sk_new")).rejects.toBeInstanceOf(SecretNotFoundError);
+  });
+});
+
+/**
+ * A Kysely plugin that runs `between` once, after the first query's rows come back and before the caller
+ * sees them — the window between a read and the write built from it, made deterministic.
+ */
+function interleave(between: () => Promise<unknown>): KyselyPlugin {
+  let fired = false;
+  return {
+    transformQuery: (args) => args.node,
+    transformResult: async (args) => {
+      if (!fired) {
+        fired = true;
+        await between();
+      }
+      return args.result;
+    },
+  };
+}
+
+/** The accessor over a store whose first read is followed by `between`, on a separate connection. */
+function racing(between: () => Promise<unknown>) {
+  const db = anyTableDb(env.SECRETS).withPlugin(interleave(between));
+  return new SecretTableAccessor(CustomerSecrets, async (declared) => new TableSecretsStore(db, config, declared));
+}
+
+describe("rotate against a concurrent write", () => {
+  test("an owner deleted between the read and the write stays deleted — rotate never re-inserts", async () => {
+    await (await table()).put(alice, "STRIPE_KEY", "sk_one");
+    const offboarded = racing(async () => (await table()).deleteWhere({ organizationId: "org_acme" }));
+    await expect(offboarded.rotate(alice, "STRIPE_KEY", "sk_two")).rejects.toBeInstanceOf(SecretNotFoundError);
+    expect(await rows()).toEqual([]);
+  });
+
+  test("a value replaced between the read and the write is rotated from, never overwritten", async () => {
+    await (await table()).put(alice, "STRIPE_KEY", "sk_one");
+    const replaced = racing(async () => (await table()).put(alice, "STRIPE_KEY", "sk_fresh", { replace: true }));
+    expect(await replaced.rotate(alice, "STRIPE_KEY", "sk_two")).toEqual({ currentVersion: "2" });
+    expect(await (await table()).getVersions(alice, "STRIPE_KEY")).toEqual({
+      currentVersion: "2",
+      versions: { "1": "sk_fresh", "2": "sk_two" },
+    });
+  });
+});
+
+describe("put holds a new row's owner to the declared schema", () => {
+  test("an empty key the schema forbids is refused, and nothing is written", async () => {
+    const Strict = defineSecretTable({
+      name: "customer",
+      keys: {
+        userId: z.string().describe("The user."),
+        organizationId: z.string().min(1).describe("The organization."),
+      },
+      secrets: { STRIPE_KEY: { valueType: "text", rotatable: true } },
+    });
+    const t = (await secretsStore(envFor(), registry)).table(Strict);
+    const orphan = { userId: "u_alice", organizationId: "" };
+    await expect(t.put(orphan, "STRIPE_KEY", "sk_unreachable")).rejects.toBeInstanceOf(ValidationError);
+    await expect(t.put(orphan, "STRIPE_KEY", "sk_unreachable", { replace: true })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(await rows()).toEqual([]);
   });
 });
 

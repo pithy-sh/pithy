@@ -110,7 +110,10 @@ export async function reencryptTableBatch(
       // Same context in and out: re-encryption changes the key, never what the ciphertext is bound to.
       const context = secretTableContext(table.name, owner, row.name);
       const reencrypted = await encryptValue(config, context, await decryptValue(config, context, row));
-      await any
+      // Guarded on the iv that was read — every write draws a fresh one. A declared table is written on the
+      // request path, so a `put` or a `rotate` can land between the select and this; without the guard the
+      // stale copy would overwrite it. A row that changed updates nothing, and is left for a later batch.
+      const updated = await any
         .updateTable(table.identifier)
         .set({
           encryptedValue: reencrypted.encryptedValue,
@@ -119,8 +122,9 @@ export async function reencryptTableBatch(
           updatedAt: SQLiteDate.encode(new Date()),
         })
         .where("id", "=", row.id)
-        .execute();
-      result.rotated++;
+        .where("iv", "=", row.iv)
+        .executeTakeFirst();
+      if (Number(updated.numUpdatedRows ?? 0n) > 0) result.rotated++;
     } catch {
       // No binding (#386): what a decrypt or an encrypt throws names the context, and the context holds the owner.
       result.failed++;

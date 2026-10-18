@@ -97,6 +97,17 @@ export class TableSecretsStore {
    * throws `secrets/crypto_failed`, naming the table and the secret and never the owner.
    */
   async read(owner: Readonly<Record<string, string>>, name: string): Promise<VersionedValue | undefined> {
+    return (await this.readSealed(owner, name))?.value;
+  }
+
+  /**
+   * {@link read}, with the `iv` the row was sealed under. Every write draws a fresh one, so it is the row's
+   * version: a write-back guarded on it lands only on the row that was read.
+   */
+  async readSealed(
+    owner: Readonly<Record<string, string>>,
+    name: string,
+  ): Promise<{ value: VersionedValue; iv: string } | undefined> {
     const row = await this.#matching(owner)
       .select(["encryptedValue", "iv", "keyVersion"])
       .where("name", "=", name)
@@ -104,7 +115,7 @@ export class TableSecretsStore {
     if (!row) return undefined;
     try {
       const context = secretTableContext(this.#table.name, owner, name);
-      return decodeVersionedValue(await decryptValue(this.#config, context, row));
+      return { value: decodeVersionedValue(await decryptValue(this.#config, context, row)), iv: row.iv };
     } catch {
       // No binding: what a decrypt throws names the context it tried, and the context holds the owner.
       throw new SecretCryptoError({
@@ -145,6 +156,28 @@ export class TableSecretsStore {
       )
       .executeTakeFirst();
     return Number(result.numInsertedOrUpdatedRows ?? 0n) > 0;
+  }
+
+  /**
+   * Seal and write over one owner's secret, only if the row is still the one sealed under `iv` — never an
+   * insert. Answers whether it landed: `false` is a row deleted or rewritten since it was read, and a caller
+   * that wrote it anyway would resurrect an offboarded owner or discard somebody else's write.
+   */
+  async update(
+    owner: Readonly<Record<string, string>>,
+    name: string,
+    value: VersionedValue,
+    valueType: SecretValueType,
+    iv: string,
+  ): Promise<boolean> {
+    const context = secretTableContext(this.#table.name, owner, name);
+    const sealed = await encryptValue(this.#config, context, encodeVersionedValue(value));
+    let query = this.#db
+      .updateTable(this.#table.identifier)
+      .set({ ...sealed, valueType, updatedAt: SQLiteDate.encode(new Date()) });
+    for (const [key, column] of Object.entries(owner)) query = query.where(sql.ref(key), "=", column);
+    const result = await query.where("name", "=", name).where("iv", "=", iv).executeTakeFirst();
+    return Number(result.numUpdatedRows ?? 0n) > 0;
   }
 
   /** Remove one owner's secret. Answers how many rows went — zero or one. */

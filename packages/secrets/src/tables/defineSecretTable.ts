@@ -3,6 +3,7 @@
 
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { CamelCasePlugin } from "kysely";
 import { z } from "zod";
 import { type SecretBackend, SecretValueType } from "../registry";
 
@@ -34,7 +35,7 @@ const MAX_TABLE_NAME = 32;
 /** Longest owner key value. Generous for a uuid or a prefixed id; bounded so a row's context stays bounded. */
 const MAX_KEY_VALUE = 256;
 
-/** A declared table's name: camelCase, so `CamelCasePlugin` and {@link snakeCase} agree on its SQL form. */
+/** A declared table's name: camelCase. {@link roundTrips} is the rest of the rule. */
 const TABLE_NAME = /^[a-z][a-zA-Z0-9]*$/;
 
 /** An owner key's name: a camelCase column identifier. */
@@ -149,9 +150,34 @@ export type SecretTableValue<
   ? z.output<Z>
   : string;
 
-/** `camelCase` → `snake_case`, the way `CamelCasePlugin` converts an identifier. */
+/**
+ * `CamelCasePlugin`'s own two conversions, as the kit installs it (`createDatabase`, default options). Exposed
+ * through a subclass because the plugin keeps them `protected` — and borrowed rather than re-implemented,
+ * because a second copy of the rule is how a migration and a lookup come to name two different tables.
+ */
+class Conversions extends CamelCasePlugin {
+  toSnake(identifier: string): string {
+    return this.snakeCase(identifier);
+  }
+  toCamel(column: string): string {
+    return this.camelCase(column);
+  }
+}
+
+const conversions = new Conversions();
+
+/** `camelCase` → `snake_case`, exactly as `CamelCasePlugin` converts an identifier — it is the plugin's. */
 export function snakeCase(identifier: string): string {
-  return identifier.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+  return conversions.toSnake(identifier);
+}
+
+/**
+ * Whether an identifier comes back from `snake_case` as itself. The plugin folds a run of capitals into one
+ * word — `customerAPI` writes `customer_api` and reads back `customerApi` — so a name that does not round-trip
+ * is a table a registry lookup cannot find, or a key column a row read comes back without.
+ */
+function roundTrips(identifier: string): boolean {
+  return conversions.toCamel(snakeCase(identifier)) === identifier;
 }
 
 /** The camelCase table identifier for a declared name: `customer` → `pithySecretsCustomerSecrets`. */
@@ -161,12 +187,12 @@ export function secretTableIdentifier(name: string): string {
 
 /** Whether a string is a legal declared table name. Exported so a registry row is held to the same rule. */
 export function isSecretTableName(name: string): boolean {
-  return TABLE_NAME.test(name) && name.length <= MAX_TABLE_NAME;
+  return TABLE_NAME.test(name) && name.length <= MAX_TABLE_NAME && roundTrips(secretTableIdentifier(name));
 }
 
 /** Whether a string is a legal owner key column name. Exported so a registry row is held to the same rule. */
 export function isSecretTableKeyName(name: string): boolean {
-  return KEY_NAME.test(name) && !(SECRET_TABLE_BASE_COLUMNS as readonly string[]).includes(name);
+  return KEY_NAME.test(name) && roundTrips(name) && !(SECRET_TABLE_BASE_COLUMNS as readonly string[]).includes(name);
 }
 
 /** The author error every refusal here raises — a declaration is code, so its mistake is ours to name. */
@@ -190,7 +216,7 @@ export function defineSecretTable<
   if (typeof name !== "string" || !isSecretTableName(name)) {
     throw refuse(
       String(name),
-      `the name must be camelCase, start with a lower-case letter, and be at most ${MAX_TABLE_NAME} characters.`,
+      `the name must be camelCase, start with a lower-case word, never put two capitals together, and be at most ${MAX_TABLE_NAME} characters — "customerApi", not "customerAPI".`,
     );
   }
 
@@ -201,6 +227,9 @@ export function defineSecretTable<
       throw refuse(name, `key "${key}" is a base column every table already carries. Rename the key.`);
     }
     if (!KEY_NAME.test(key)) throw refuse(name, `key "${key}" must be a camelCase column name.`);
+    if (!roundTrips(key)) {
+      throw refuse(name, `key "${key}" must never put two capitals together — "userId", not "userID".`);
+    }
     if (!(keys[key] instanceof z.ZodType)) throw refuse(name, `key "${key}" must declare a Zod schema.`);
   }
 
@@ -254,7 +283,7 @@ export function isSecretTable(value: unknown): value is AnySecretTable {
  * Validate one key value against its declared schema, refusing in words that name the key and never the
  * value: `detail` reaches logs verbatim, and an owner key identifies a customer.
  */
-function ownerValue(table: AnySecretTable, key: string, value: unknown): string {
+function ownerValue(table: AnySecretTable, key: string, value: unknown, creating: boolean): string {
   const schema = table.keys[key];
   if (!schema) {
     throw new ValidationError({
@@ -262,9 +291,10 @@ function ownerValue(table: AnySecretTable, key: string, value: unknown): string 
       detail: `secret table '${table.name}': key '${key}' is not declared`,
     });
   }
-  // The empty string is a legal key value only as itself: it is what every row holds in a key added after the
-  // row was written, so it reaches those rows. The declared schema still decides everything else.
-  if (value === "") return "";
+  // Addressing a row, the empty string is a legal key value as itself: it is what every row holds in a key added
+  // after the row was written, so it reaches those rows. Creating one, it is not: a new row's owner is whatever
+  // the declared schema allows, and nothing else — or `deleteWhere` on that key could never reach it.
+  if (value === "" && !creating) return "";
   const parsed = schema.safeParse(value);
   if (!parsed.success || typeof parsed.data !== "string") {
     throw new ValidationError({
@@ -306,9 +336,16 @@ function requireSomeKey(table: AnySecretTable, owner: Record<string, string>): v
 /**
  * A whole owner, validated: every declared key present and each satisfying its schema, at least one of them
  * set. The only way an owner reaches a query or a bound context, so there is one place an owner is proven legal.
- * A key may be `""` beside a set one — what a row written before that key was added holds there.
+ *
+ * Addressing a row, a key may be `""` beside a set one — what a row written before that key was added holds
+ * there. With `creating`, for a write that may insert, every key is held to its schema, `""` included: the
+ * exemption exists for rows an alter left behind, and a new row is not one.
  */
-export function secretTableOwner(table: AnySecretTable, given: Record<string, unknown>): Record<string, string> {
+export function secretTableOwner(
+  table: AnySecretTable,
+  given: Record<string, unknown>,
+  options: { creating?: boolean } = {},
+): Record<string, string> {
   refuseUndeclared(table, given);
   const owner: Record<string, string> = {};
   for (const key of table.keyNames) {
@@ -318,7 +355,7 @@ export function secretTableOwner(table: AnySecretTable, given: Record<string, un
         detail: `secret table '${table.name}': key '${key}' is missing`,
       });
     }
-    owner[key] = ownerValue(table, key, given[key]);
+    owner[key] = ownerValue(table, key, given[key], options.creating === true);
   }
   requireSomeKey(table, owner);
   return owner;
@@ -333,7 +370,7 @@ export function secretTablePredicate(table: AnySecretTable, given: Record<string
   const predicate: Record<string, string> = {};
   for (const key of table.keyNames) {
     if (given[key] === undefined) continue;
-    predicate[key] = ownerValue(table, key, given[key]);
+    predicate[key] = ownerValue(table, key, given[key], false);
   }
   requireSomeKey(table, predicate);
   return predicate;
