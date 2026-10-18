@@ -3,6 +3,7 @@
 
 import { readdirSync } from "node:fs";
 import { join, relative } from "node:path";
+import { callerTokenRegistry } from "@pithy-sh/auth/src/caller/request";
 import { authSecretsRegistry } from "@pithy-sh/auth/src/instance/secrets";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
@@ -65,6 +66,7 @@ const PACKAGES = join(import.meta.dirname, "..", "..", "..", "..", "packages");
  * rather than calling it, and `packages/secrets/src/index.ts` only re-exports the name.
  */
 const REGISTRY_SITES = [
+  "auth/src/caller/request.ts",
   "auth/src/instance/secrets.ts",
   "email/src/crypto/signingKey.ts",
   "media/src/secret/registry.ts",
@@ -106,6 +108,8 @@ function registrySites(): string[] {
  */
 const SHIPPED_REGISTRIES: Record<string, { site: string; registry: SecretRegistry }> = {
   auth: { site: "auth/src/instance/secrets.ts", registry: authSecretsRegistry },
+  // Opt-in: an adopter spreads it into `secrets({ registry })` when a resolver verifies caller tokens (#560).
+  "auth caller token": { site: "auth/src/caller/request.ts", registry: callerTokenRegistry },
   email: { site: "email/src/crypto/signingKey.ts", registry: emailSigningRegistry },
   media: { site: "media/src/secret/registry.ts", registry: mediaSecretsRegistry },
   payments: { site: "payments/src/secret/registry.ts", registry: paymentsSecretsRegistry },
@@ -206,6 +210,7 @@ describe("the registries this file claims to read are the ones the kit ships", (
     // one, and nothing else here would notice.
     expect(Object.fromEntries(REGISTRIES.map(([name, registry]) => [name, declaredMintable(registry)]))).toEqual({
       auth: ["auth-session-secret"],
+      "auth caller token": ["auth-caller-token-key"],
       email: ["email-link-signing-key"],
       media: [],
       payments: [],

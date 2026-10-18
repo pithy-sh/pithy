@@ -203,6 +203,8 @@ export function healthWithFixes(
       const name = worker.directory;
       return {
         ...worker,
+        // An edit to `pithy.config.ts` the adopter has to decide on — which caller is trusted is theirs.
+        scopes: { ...worker.scopes, gates: worker.scopes.gates.map((gate) => ({ ...gate, ...none })) },
         prerequisites: {
           ...worker.prerequisites,
           missing: worker.prerequisites.missing.map((entry) => ({

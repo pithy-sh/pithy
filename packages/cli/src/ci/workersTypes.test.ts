@@ -120,13 +120,14 @@ const DECLARED_ONLY: Record<string, string> = {
  *
  * Measured 2026-08-22, last moved 2026-10-16 by migration state over the control plane (#729): `core`'s
  * `migrations/state.ts` and `controlPlane/migrationState/migrationState.ts`; and by `pithy setup` (#764):
- * `cli`'s `setup/dataHeld.ts`, which asks the local D1 whether `dev` holds rows; and by index state over the
- * control plane (#730): `vector`'s `admin/health.ts`, which reads the corpus off `DB`. A file added or removed
+ * `cli`'s `setup/dataHeld.ts`, which asks the local D1 whether `dev` holds rows; by index state over the
+ * control plane (#730): `vector`'s `admin/health.ts`, which reads the corpus off `DB`; and by #560: `auth`'s
+ * `test-utils/scopedBackend.ts`, the fixture that composes a real auth for the scope gates. A file added or removed
  * moves a count, which is the point: the number is a second reader of the same change.
  */
 const IMPORTERS: Record<string, number> = {
   "packages/audit": 2,
-  "packages/auth": 4,
+  "packages/auth": 5,
   "packages/cli": 13,
   "packages/cloudflare": 2,
   "packages/core": 16,

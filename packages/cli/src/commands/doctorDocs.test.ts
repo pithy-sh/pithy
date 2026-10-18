@@ -287,7 +287,9 @@ describe("docs/commands/doctor.md", () => {
     // Nineteen since #539 gave that same section its second finding — one capability two Workers hold at
     // two versions, which is `shared:`'s sentence about a package rather than about a resource, and the
     // first finding on this page that prints while the exit stays 0.
-    expect(WHAT_BLOCKS).toHaveLength(19);
+    // Twenty since #560 added the `scopes` fragment — a gate no resolver can open, the second finding that
+    // prints while the exit stays 0, and the last block of the section because it is the newest.
+    expect(WHAT_BLOCKS).toHaveLength(20);
     expect(EXAMPLE_BLOCKS).toHaveLength(2);
     expect(JSON_SAMPLES).toHaveLength(1);
     // The carry-over sequence is prose and shell rather than a rendered report, so it is its own class:
@@ -1108,6 +1110,47 @@ describe("docs/commands/doctor.md", () => {
     );
     const fragment = FRAGMENTS[16];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the local delivery fragment.`);
+    expect(renderDoctorText(report, harness.dir)).toContain(fragment);
+  });
+
+  /**
+   * The scopes fragment (#560), pinned against a Worker composing a leaderboard and a ledger whose auth has
+   * no `resolveScopes`.
+   *
+   * The page shows it because the state it names has no other symptom than a 403: every gate fails closed,
+   * and an adopter reading their own routes sees nothing wrong with any of them.
+   */
+  test("the scopes fragment is what the renderer prints for a gate no resolver can open", async () => {
+    const report = await buildDoctorReport(
+      docOptions(
+        harness.baseOptions({
+          resolveWorkersFor: async () =>
+            [
+              {
+                name: "api",
+                dir: "/p/apps/api",
+                capabilities: [
+                  { name: "auth", requiredBindings: [], providesScopes: false },
+                  {
+                    name: "leaderboard",
+                    requiredBindings: [],
+                    scopeGates: [{ scope: "leaderboard:submit", route: "POST /leaderboard/:board" }],
+                  },
+                  {
+                    name: "ledger",
+                    requiredBindings: [],
+                    scopeGates: [{ scope: "ledger:admin", route: "POST /ledger/:currency/credit" }],
+                  },
+                ],
+              },
+            ] as unknown as ReturnType<typeof workerSet>,
+          buildPlan: planStub(cleanPlanFor("api")),
+          readCapabilityReach: async () => ({ ok: true, reachable: [], unreachable: [], split: [] }),
+        }),
+      ),
+    );
+    const fragment = FRAGMENTS[18];
+    if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the scopes fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
 });
