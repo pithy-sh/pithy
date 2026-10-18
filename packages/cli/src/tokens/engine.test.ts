@@ -17,7 +17,11 @@ import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError
 import { NAMESPACE_LIMITS } from "@pithy-sh/core/src/naming/limits";
 import { media } from "@pithy-sh/media/src/capability";
 import { SECRETS_RUNTIME_PERMISSIONS } from "@pithy-sh/secrets/src/manager/managerRegistry";
-import { runtimeTokenName, runtimeTokenSecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
+import {
+  MANAGER_CF_API_TOKEN_SECRET,
+  runtimeTokenName,
+  runtimeTokenSecretName,
+} from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   type AccountTokenControl,
@@ -423,6 +427,24 @@ describe("revokeProfileToken", () => {
 
     await expect(revokeProfileToken(engine, "ci-system", "prod")).rejects.toThrow(/rate limited/);
     expect(JSON.parse(await readFile(tokensFile(dir), "utf8"))).toEqual({ prod: { CF_TOKEN_CI_SYSTEM: "prod-value" } });
+  });
+
+  /**
+   * `secrets` left the registry when `runtime` replaced it (#728), and `pithy doctor` still names
+   * `token revoke secrets --env <env>` for the old token. Its local copy is keyed by the variable the
+   * retired profile wrote, so the cleanup knows that key without the registry.
+   */
+  test("a superseded profile's revoke clears its local copy too", async () => {
+    const engine = engineWith(dir, fakeControl());
+    await writeMintedToken(PROJECT, "prod", MANAGER_CF_API_TOKEN_SECRET, "old-manager-value", engine.paths);
+    await writeMintedToken(PROJECT, "prod", "CF_TOKEN_CI_SYSTEM", "ci-value", engine.paths);
+
+    const result = await revokeProfileToken(engine, "secrets", "prod");
+
+    expect(result).toMatchObject({ revoked: 1, localCopy: "forgotten", location: tokensFile(dir) });
+    expect(result.localCopyProblem).toBeUndefined();
+    expect(JSON.parse(await readFile(tokensFile(dir), "utf8"))).toEqual({ prod: { CF_TOKEN_CI_SYSTEM: "ci-value" } });
+    expect(await revokeProfileToken(engine, "secrets", "staging")).toMatchObject({ revoked: 1, localCopy: "absent" });
   });
 
   test("deletes every token of the profile's name and audits the revoke", async () => {

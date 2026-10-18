@@ -7,7 +7,7 @@ import { commandName } from "@pithy-sh/core/src/cli/command";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { SecretFieldProbe } from "@pithy-sh/secrets/src/cli/dispatch";
-import { managerCfApiTokenName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
+import { MANAGER_CF_API_TOKEN_SECRET, managerCfApiTokenName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 
 /**
  * **The Cloudflare tokens `runtime` superseded, and where each one still is (#728).**
@@ -26,6 +26,22 @@ import { managerCfApiTokenName } from "@pithy-sh/secrets/src/provision/provision
 
 /** The profile the manager's own token was minted under by `pithy token mint`, before `runtime`. */
 const SUPERSEDED_PROFILE = "secrets";
+
+/**
+ * The variable key each retired profile wrote its value under, by profile name.
+ *
+ * A retired profile is not in the registry, and `pithy doctor` still tells an operator to run `token revoke
+ * secrets --env <env>`. The revoke deletes by a name the root config composes. Its local cleanup needs the
+ * variable key, and this table is where that key lives once the profile is gone.
+ */
+const SUPERSEDED_PROFILE_SECRETS: Readonly<Record<string, string>> = {
+  [SUPERSEDED_PROFILE]: MANAGER_CF_API_TOKEN_SECRET,
+};
+
+/** The variable key a retired profile wrote its value under, or `undefined` when the name was never one. */
+export function supersededProfileSecret(profile: string): string | undefined {
+  return Object.hasOwn(SUPERSEDED_PROFILE_SECRETS, profile) ? SUPERSEDED_PROFILE_SECRETS[profile] : undefined;
+}
 
 /** One credential `runtime` superseded that is still there. */
 export interface SupersededToken {

@@ -30,7 +30,7 @@ import type { StatePathOptions } from "../notifier/state";
 import { forgetMintedToken, holdsMintedToken, mintedTokensPath } from "./mintedTokens";
 import { type ResolvedRouteZone, routeZoneIds } from "./routeZones";
 import { type SinkTarget, writeTokenToSink } from "./sinks";
-import { type SupersededToken, supersededAccountTokens } from "./superseded";
+import { type SupersededToken, supersededAccountTokens, supersededProfileSecret } from "./superseded";
 
 /** The account-token control plane the engine drives — the subset of `CloudflareAccountTokensManager` it needs. */
 export interface AccountTokenControl {
@@ -770,8 +770,9 @@ async function clearLocalCopy(
   const paths = engine.paths ?? {};
   const location = mintedTokensPath(engine.project, paths);
   try {
-    const profile = resolveProfile(engine.profiles, profileName);
-    const { forgotten } = await forgetMintedToken(engine.project, env, profile.secret, paths);
+    // A profile `runtime` retired (#728) is not in the registry, and its revoke is the step doctor names.
+    const secret = supersededProfileSecret(profileName) ?? resolveProfile(engine.profiles, profileName).secret;
+    const { forgotten } = await forgetMintedToken(engine.project, env, secret, paths);
     return { localCopy: forgotten ? "forgotten" : "absent", location };
   } catch (error) {
     // A refusal's message names the file and never a line of it. Anything else gets this sentence rather
