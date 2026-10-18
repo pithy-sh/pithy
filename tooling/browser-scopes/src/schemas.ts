@@ -16,6 +16,7 @@ import * as secrets from "@pithy-sh/secrets/src/http/schemas";
 import * as storage from "@pithy-sh/storage/src/http/schemas";
 import * as support from "@pithy-sh/support/src/http/schemas";
 import * as testers from "@pithy-sh/testers/src/http/schemas";
+import * as turnstile from "@pithy-sh/turnstile/src/http/schemas";
 import * as vector from "@pithy-sh/vector/src/http/schemas";
 
 /**
@@ -61,5 +62,6 @@ export const EVERY_REQUEST_SCHEMA_MODULE: readonly object[] = [
   storage,
   support,
   testers,
+  turnstile,
   vector,
 ];

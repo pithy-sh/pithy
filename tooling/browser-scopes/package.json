@@ -29,6 +29,7 @@
     "@pithy-sh/support": "workspace:*",
     "@pithy-sh/testers": "workspace:*",
     "@pithy-sh/tsconfig": "workspace:*",
+    "@pithy-sh/turnstile": "workspace:*",
     "@pithy-sh/vector": "workspace:*",
     "@types/node": "^22.15.0",
     "@vitest/coverage-v8": "^4.1.0",

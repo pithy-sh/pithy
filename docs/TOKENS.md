@@ -132,6 +132,8 @@ CI runs under one token. So does the application. `runtime` is the credential ev
 runtimePermissions: ["secrets:read", "secrets:write"]
 // media, built from its resolved config:
 runtimePermissions: ["images:write", "stream:write", "analytics:read"]
+// turnstile:
+runtimePermissions: ["analytics:read"]
 ```
 
 `runtime`'s scope is the union of every composed capability's `runtimePermissions`, each key once. A capability declares no token of its own: there is no field for one. A project composing nothing that declares runtime permissions resolves `ci-system` alone and mints no runtime token.
@@ -140,6 +142,7 @@ runtimePermissions: ["images:write", "stream:write", "analytics:read"]
 |---|---|---|
 | `@pithy-sh/secrets` | `secrets:read`, `secrets:write` | The manager's at-rest rotation writes the new key set back to the Secrets Store. |
 | `@pithy-sh/media` | `images:write` while images are in Cloudflare Images, `stream:write` while video is in Stream, `analytics:read` while either is | Mints direct uploads, changes signing, deletes, and reads what was served. Both in R2: nothing. |
+| `@pithy-sh/turnstile` | `analytics:read` | Reads a real widget's challenge outcomes, filtered by its sitekey. A test-key environment makes no call. |
 
 **One token per environment.** `runtime` is minted into the Secrets Store at `<project>-<env>-runtime-cf-api-token` and bound into every Worker of that environment that calls Cloudflare as `RUNTIME_CF_API_TOKEN` — the secrets manager, the media host, and your app Worker. Revoking staging's leaves production reading. `pithy secrets provision` mints it for each environment, and `pithy token mint runtime --env <env>` writes the same entry under the same token name, so the two cannot leave an environment holding two.
 
@@ -149,12 +152,12 @@ runtimePermissions: ["images:write", "stream:write", "analytics:read"]
 pithy token mint runtime --env prod
 ```
 
-**It reads the whole account's analytics, not one environment's.** `analytics:read` is Account Analytics Read, and that is Cloudflare's grain: a staging token and a production token read the same numbers. A capability narrows what it returns itself. Media joins Stream minutes and Images requests to this environment's own assets, which live in this environment's own database, so an account-wide dataset answers for this environment and nothing else.
+**It reads the whole account's analytics, not one environment's.** `analytics:read` is Account Analytics Read, and that is Cloudflare's grain: a staging token and a production token read the same numbers. A capability narrows what it returns itself. Media joins Stream minutes and Images requests to this environment's own assets, which live in this environment's own database, so an account-wide dataset answers for this environment and nothing else. Turnstile filters Turnstile events by the sitekey in force for this environment, so it answers for that widget and no other.
 
 Two things to know before you mint it:
 
 - **The minter must hold every runtime permission too.** Cloudflare refuses to delegate a permission the caller does not hold, so the bootstrap token needs the groups, or the signed-in session needs their scopes. `pithy cloudflare connect` asks for every scope the composition needs, so a session made after you add media can mint it. A session made before cannot: connect again.
-- **A token that already exists needs a rotate, not a mint.** Compose media after `runtime` was minted for secrets alone, and the token lacks Images Write, Stream Write and Account Analytics Read. A mint hands back a fresh value with the old policies. `pithy token list` reports it as missing a grant and names the rotate.
+- **A token that already exists needs a rotate, not a mint.** Compose media after `runtime` was minted for secrets alone, and the token lacks Images Write, Stream Write and Account Analytics Read. Compose turnstile after it, and the token lacks Account Analytics Read. A mint hands back a fresh value with the old policies. `pithy token list` reports it as missing a grant and names the rotate.
 
 ### Upgrading to one token
 

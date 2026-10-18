@@ -2,24 +2,42 @@
 // SPDX-License-Identifier: MIT
 
 import { readFileSync } from "node:fs";
+import { RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
 import { resolveClientProjection } from "@pithy-sh/core/src/capability/client";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { describe, expect, test } from "vitest";
 import { isTurnstileCapability, turnstile } from "./capability";
 import type { TurnstileConfigInput } from "./config/config";
-import { TURNSTILE_SECRET_NAME, turnstileSecretsRegistry } from "./secret/registry";
+import { TURNSTILE_WIDGETS_PATH, TURNSTILE_WIDGETS_READ_SCOPE } from "./http/scopes";
+import { TURNSTILE_SECRET_NAME, turnstileCapabilitySecretsRegistry } from "./secret/registry";
 
 const sitekeys = { dev: "d", staging: "s", prod: "p" };
 
 describe("turnstile capability", () => {
-  test("is stateless — no bindings of its own (its secret is read through @pithy-sh/secrets)", () => {
+  test("is stateless — no table and no binding of its own (its secret is read through @pithy-sh/secrets)", () => {
     const cap = turnstile({ widgets: { visible: { sitekeys } } });
     expect(cap.name).toBe("turnstile");
     expect(cap.requiredBindings).toEqual([]);
     expect(cap.databases).toBeUndefined();
-    expect(cap.routes).toBeUndefined();
     expect(cap.middleware).toBeUndefined();
+  });
+
+  test("declares analytics:read for the one runtime token, and no token of its own (#731)", () => {
+    const cap = turnstile({ widgets: { visible: { sitekeys } } });
+    expect(cap.runtimePermissions).toEqual(["analytics:read"]);
+    expect(cap.ciPermissions).toBeUndefined();
+    // The one Cloudflare API token it reads is the application's runtime token.
+    const tokens = Object.entries(cap.secretRegistry ?? {}).filter(([, entry]) => entry.backend === "cf-secrets-store");
+    expect(tokens.map(([name]) => name)).toEqual([RUNTIME_TOKEN_SECRET]);
+  });
+
+  test("mounts one control-plane read, a GET, advertised on the manifest under its own scope (#731)", () => {
+    const cap = turnstile({ widgets: { visible: { sitekeys } } });
+    expect(cap.routes).toBeDefined();
+    expect(cap.adminRoutes).toEqual([
+      expect.objectContaining({ method: "GET", path: TURNSTILE_WIDGETS_PATH, scope: TURNSTILE_WIDGETS_READ_SCOPE }),
+    ]);
   });
 
   test("attaches the resolved config with brand defaults", () => {
@@ -176,7 +194,7 @@ describe("pithy.manifest.json — declared secrets", () => {
     //
     // Stated as the invariant, never as a filtered comparison: an entry declaring neither axis drops off
     // both sides of a filtered comparison at once and passes green.
-    const entries: [string, SecretRegistryEntry][] = Object.entries(turnstileSecretsRegistry);
+    const entries: [string, SecretRegistryEntry][] = Object.entries(turnstileCapabilitySecretsRegistry);
     expect(manifest.secrets.map((secret) => secret.name)).toEqual(entries.map(([name]) => name));
     for (const [name, entry] of entries) {
       expect(entry.origin, `${name} declares no origin`).toBeDefined();

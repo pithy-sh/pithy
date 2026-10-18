@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
-import type { TurnstileMode } from "../config/config";
+import type { TurnstileMode, TurnstileSitekeys } from "../config/config";
 
 /**
  * Cloudflare's documented Turnstile test keys. dev and staging wire these instead of provisioning a
@@ -19,6 +19,8 @@ export const TURNSTILE_TEST_KEYS = {
     visibleBlock: "2x00000000000000000000AB",
     /** Invisible widget that always passes. */
     invisiblePass: "1x00000000000000000000BB",
+    /** Invisible widget that always blocks. */
+    invisibleBlock: "2x00000000000000000000BB",
     /** A widget that always forces an interactive challenge. */
     forceChallenge: "3x00000000000000000000FF",
   },
@@ -34,6 +36,26 @@ export const TURNSTILE_TEST_KEYS = {
 /** The test sitekey for a mode's always-pass widget — what dev and staging render with. */
 export function testSitekey(mode: TurnstileMode): string {
   return mode === "visible" ? TURNSTILE_TEST_KEYS.sitekey.visiblePass : TURNSTILE_TEST_KEYS.sitekey.invisiblePass;
+}
+
+/** What a documented test sitekey always does: pass every visitor, block every one, or force a challenge. */
+export type TestKeyVerdict = "passes" | "blocks" | "challenges";
+
+const TEST_KEY_VERDICTS: Readonly<Record<string, TestKeyVerdict>> = {
+  [TURNSTILE_TEST_KEYS.sitekey.visiblePass]: "passes",
+  [TURNSTILE_TEST_KEYS.sitekey.invisiblePass]: "passes",
+  [TURNSTILE_TEST_KEYS.sitekey.visibleBlock]: "blocks",
+  [TURNSTILE_TEST_KEYS.sitekey.invisibleBlock]: "blocks",
+  [TURNSTILE_TEST_KEYS.sitekey.forceChallenge]: "challenges",
+};
+
+/**
+ * **What a sitekey always does, when it is one of Cloudflare's documented test keys (#731)** — and `null` for
+ * a real widget's. A test key's outcome is fixed by Cloudflare, so there is nothing to count: a read that
+ * meets one says so rather than asking the analytics what it already knows.
+ */
+export function testKeyVerdict(sitekey: string): TestKeyVerdict | null {
+  return TEST_KEY_VERDICTS[sitekey] ?? null;
 }
 
 /** The always-pass test secret — what dev and staging verify against. */
@@ -105,6 +127,25 @@ function defaultsToTestKeys(environment: string | null): boolean {
  */
 export function defaultSitekey(environment: string, mode: TurnstileMode): string | undefined {
   return defaultsToTestKeys(environment) ? testSitekey(mode) : undefined;
+}
+
+/**
+ * **The sitekey a widget renders with in an environment** — the one the config states, or for a feature
+ * build that states none, {@link defaultSitekey}'s test key (#656). One resolution for the build's client
+ * projection and the control-plane read (#731), so the two cannot disagree about which widget is in force.
+ *
+ * `??`, not `||`: a key stated blank still resolves nothing, deliberately, exactly as a blank dev or prod key
+ * does. `undefined` is an environment with no widget.
+ */
+export function resolveSitekey(
+  sitekeys: TurnstileSitekeys,
+  environment: string,
+  mode: TurnstileMode,
+): string | undefined {
+  // Indexed as a record: `environment` is any adopter name, not just the documented keys.
+  const stated: Record<string, string | undefined> = sitekeys;
+  const sitekey = stated[environment] ?? defaultSitekey(environment, mode);
+  return sitekey ? sitekey : undefined;
 }
 
 /**

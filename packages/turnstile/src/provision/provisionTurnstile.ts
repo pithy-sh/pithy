@@ -21,6 +21,13 @@ export const MANAGED_ENVIRONMENTS = ["staging", "prod"] as const;
 export type ManagedTurnstileEnv = (typeof MANAGED_ENVIRONMENTS)[number];
 
 /**
+ * The environments `turnstile-account` is written for: every one this command writes a secret into (#731).
+ * Only prod reads it today, but a real sitekey stated for staging by hand would need it too.
+ */
+export const ACCOUNT_ENVIRONMENTS = ["dev", ...MANAGED_ENVIRONMENTS] as const;
+export type AccountEnvironment = (typeof ACCOUNT_ENVIRONMENTS)[number];
+
+/**
  * The one environment a real widget is created for, named once rather than spelled at four call sites.
  *
  * It appears in the widget's own name, in the secret write, and in the sitekey write, and those three
@@ -178,6 +185,13 @@ export interface TurnstileProvisioner {
   /** Write the turnstile secret to a deployed environment's managed store (via the manager). */
   writeManagedSecret(env: ManagedTurnstileEnv, secret: TurnstileSecrets): Promise<void>;
   /**
+   * Record the Cloudflare account the widgets live in, as `turnstile-account`, for one environment — dev's
+   * secrets file, or a deployed environment's managed store (#731). The control-plane read cannot ask
+   * Cloudflare's analytics anything without it. Every run writes it, so a re-run that reuses every widget is
+   * how an existing project picks it up.
+   */
+  writeAccount(env: AccountEnvironment): Promise<void>;
+  /**
    * Write every environment's public sitekey into the `turnstile(...)` registration in the Worker's
    * `pithy.config.ts` — **the input the build projects from**, and so the one place a sitekey reaches a
    * browser from. Refuses, rather than returning, when what the config then says is not what was asked for.
@@ -261,8 +275,9 @@ function allowsSharedDomain(plan: TurnstilePlan): boolean {
 /**
  * Provision Turnstile across environments. **dev and staging** get Cloudflare's documented test secret
  * (written per-environment — dev to the dev secrets file, staging to its managed store); **`prod`** gets a
- * real widget per mode, bound to the domain, its secret written to the production managed store. Then
- * every environment's public sitekey is written, in one edit, into the `turnstile(...)` registration the
+ * real widget per mode, bound to the domain, its secret written to the production managed store. The
+ * account the widgets live in is recorded as `turnstile-account` for dev, staging and prod on every run, for
+ * the control-plane read (#731). Then every environment's public sitekey is written, in one edit, into the `turnstile(...)` registration the
  * build projects from — test sitekeys for dev and staging, the widget's for prod — and any sitekey var an
  * older provisioner stranded in Worker vars is removed.
  *
@@ -334,6 +349,7 @@ export async function provisionTurnstile(
   if (productionSecretWritten) {
     await provisioner.writeManagedSecret(REAL_WIDGET_ENV, realSecrets);
   }
+  for (const env of ACCOUNT_ENVIRONMENTS) await provisioner.writeAccount(env);
   await provisioner.writeSitekeys(sitekeys);
   const strandedVarsRemoved = await provisioner.removeStrandedSitekeyVars();
 

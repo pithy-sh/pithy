@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
+import { runtimeTokenRegistry } from "@pithy-sh/secrets/src/tokens/runtimeTokenRegistry";
 import { z } from "zod";
 import type { TurnstileMode } from "../config/config";
 import { TurnstileConfigError } from "../error/errors";
@@ -78,6 +80,66 @@ export const turnstileSecretsRegistry = defineSecretRegistry({
     origin: { kind: "obtained", issuer: "cloudflare", documentation: TURNSTILE_WIDGETS_PAGE },
     rotation: { kind: "provider", issuer: "cloudflare", documentation: TURNSTILE_ROTATE_SECRET },
   },
+});
+
+/** The name the account turnstile's widgets live in is stored under (#731). */
+export const TURNSTILE_ACCOUNT_SECRET = "turnstile-account";
+
+/** Where the account id comes from, for an operator who would rather check it by hand. */
+const ACCOUNT_PAGE = "https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/";
+
+/**
+ * **The Cloudflare account this project's widgets live in, and nothing else (#731).**
+ *
+ * The control-plane read asks Cloudflare's GraphQL Analytics about the widget's sitekey, and that API
+ * refuses an account query that names no account. The runtime token cannot say which account it is for and
+ * a Worker has no account id of its own, so `pithy turnstile provision` writes this on every run, the way
+ * `media-storage-credentials` carries media's. It is an id, not a credential: the token stays the
+ * application's one `runtime` token, and the parse drops any other field.
+ */
+export const TurnstileAccount = z
+  .object({
+    accountId: z
+      .string()
+      .min(1)
+      .meta({ multiline: false })
+      .describe("The Cloudflare account id this project's Turnstile widgets live in."),
+  })
+  .describe("The Cloudflare account turnstile's widgets live in.");
+export type TurnstileAccount = z.infer<typeof TurnstileAccount>;
+
+/** The account half of turnstile's registry — read by the control-plane read alone. */
+export const turnstileAccountRegistry = defineSecretRegistry({
+  [TURNSTILE_ACCOUNT_SECRET]: {
+    // An encrypted row in the per-environment secrets D1, written by `pithy turnstile provision` through
+    // the manager Workflow like the widget secret beside it.
+    backend: "d1",
+    scope: "environment",
+    rotatable: false,
+    valueType: "json",
+    schema: TurnstileAccount,
+    origin: { kind: "obtained", issuer: "cloudflare", documentation: ACCOUNT_PAGE },
+    rotation: { kind: "manual", issuer: "cloudflare", documentation: ACCOUNT_PAGE },
+  },
+});
+
+/**
+ * What turnstile's Worker calls Cloudflare with (#731): the analytics read behind its control-plane scope.
+ * Unioned into the application's one `runtime` token, so a project composing turnstile alone mints
+ * `runtime` with exactly this, and one composing media too still holds one token.
+ */
+export const TURNSTILE_RUNTIME_PERMISSIONS: readonly PermissionKey[] = ["analytics:read"];
+
+/**
+ * Everything the turnstile capability declares — what `pithy provision` binds and the `pithy secrets` CLI
+ * lists. The widget secret, the account, and the application's runtime token, declared through
+ * `@pithy-sh/secrets`' factory so every declaration of it agrees. The middleware reads through
+ * {@link turnstileSecretsRegistry} alone and never touches the token.
+ */
+export const turnstileCapabilitySecretsRegistry = defineSecretRegistry({
+  ...turnstileSecretsRegistry,
+  ...turnstileAccountRegistry,
+  ...runtimeTokenRegistry(TURNSTILE_RUNTIME_PERMISSIONS),
 });
 
 /**

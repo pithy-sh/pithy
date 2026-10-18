@@ -1,14 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { IMAGE_REQUESTS, STREAM_MINUTES } from "@pithy-sh/cloudflare/src/analytics/analyticsManager";
+import { IMAGE_REQUESTS, STREAM_MINUTES } from "@pithy-sh/cloudflare/src/analytics/datasets";
+import { DEFAULT_WINDOW_DAYS } from "@pithy-sh/cloudflare/src/analytics/window";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test, vi } from "vitest";
 import { MediaConfig, type MediaConfigInput } from "../config/config";
 import type { MediaType, StorageBackend } from "../data/enums";
 import type { MediaRecord } from "../record/store";
 import type { StoredAssetReader } from "./assets";
-import { DEFAULT_WINDOW_DAYS, type DeliverySource, readDelivery, resolveWindow } from "./delivery";
+import { type DeliverySource, readDelivery, resolveWindow } from "./delivery";
 
 const DAY = 86_400_000;
 const now = new Date("2026-10-17T12:00:00.000Z");

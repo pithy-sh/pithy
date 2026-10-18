@@ -3,7 +3,8 @@
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ANALYTICS_KEY_CHUNK, CloudflareAnalyticsManager, IMAGE_REQUESTS, STREAM_MINUTES } from "./analyticsManager";
+import { ANALYTICS_KEY_CHUNK, CloudflareAnalyticsManager, TURNSTILE_EVENT_GROUP_LIMIT } from "./analyticsManager";
+import { IMAGE_REQUESTS, STREAM_MINUTES, TURNSTILE_EVENTS } from "./datasets";
 
 /** The SDK's raw `post`, which every query goes through. Answers what the GraphQL endpoint answers. */
 const mockPost = vi.fn();
@@ -188,6 +189,67 @@ describe("CloudflareAnalyticsManager", () => {
         limit: 2,
       });
       expect(sent().query).toContain("imageId");
+    });
+  });
+
+  describe("turnstileEvents (#731)", () => {
+    it("counts events per sitekey and event type inside the window, filtered to the sitekeys asked about", async () => {
+      // The dataset, its filter and its dimensions were found by schema introspection on 2026-10-18:
+      // `turnstileAdaptiveGroups` on the account node, `count`, `dimensions { siteKey eventType }`.
+      mockPost.mockResolvedValueOnce(
+        answer({
+          [TURNSTILE_EVENTS]: [
+            { count: 90, dimensions: { siteKey: "0xAAA", eventType: "challenge_issued" } },
+            { count: 80, dimensions: { siteKey: "0xAAA", eventType: "challenge_non_interactive_solved" } },
+            { count: 5, dimensions: { siteKey: "0xBBB", eventType: "challenge_issued" } },
+          ],
+        }),
+      );
+      const events = await manager.turnstileEvents({ since, until, siteKeys: ["0xAAA", "0xBBB"] });
+      expect(events).toEqual(
+        new Map([
+          [
+            "0xAAA",
+            new Map([
+              ["challenge_issued", 90],
+              ["challenge_non_interactive_solved", 80],
+            ]),
+          ],
+          ["0xBBB", new Map([["challenge_issued", 5]])],
+        ]),
+      );
+      expect(sent().variables).toEqual({
+        account: "acct-1",
+        filter: {
+          datetime_geq: since.toISOString(),
+          datetime_lt: until.toISOString(),
+          siteKey_in: ["0xAAA", "0xBBB"],
+        },
+        limit: TURNSTILE_EVENT_GROUP_LIMIT,
+      });
+      expect(sent().query).toContain("AccountTurnstileAdaptiveGroupsFilter_InputObject");
+      expect(sent().query).toContain("dimensions { siteKey eventType }");
+    });
+
+    it("asks nothing for no sitekeys", async () => {
+      expect(await manager.turnstileEvents({ since, until, siteKeys: [] })).toEqual(new Map());
+      expect(mockPost).not.toHaveBeenCalled();
+    });
+
+    it("refuses an answer that filled the group limit, because the counts past it are missing", async () => {
+      const full = Array.from({ length: TURNSTILE_EVENT_GROUP_LIMIT }, (_, i) => ({
+        count: 1,
+        dimensions: { siteKey: "0xAAA", eventType: `event_${i}` },
+      }));
+      mockPost.mockResolvedValueOnce(answer({ [TURNSTILE_EVENTS]: full }));
+      const failure = await manager.turnstileEvents({ since, until, siteKeys: ["0xAAA"] }).catch((error) => error);
+      expect((failure as PithyError).payload.code).toBe("cloudflare/invalid_response");
+    });
+
+    it("refuses a response of the wrong shape rather than reading it as no challenges", async () => {
+      mockPost.mockResolvedValueOnce(answer({ [TURNSTILE_EVENTS]: [{ dimensions: { siteKey: "0xAAA" } }] }));
+      const failure = await manager.turnstileEvents({ since, until, siteKeys: ["0xAAA"] }).catch((error) => error);
+      expect((failure as PithyError).payload.code).toBe("cloudflare/invalid_response");
     });
   });
 });

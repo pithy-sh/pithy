@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { CloudflareAnalyticsManager, DatasetLimits } from "@pithy-sh/cloudflare/src/analytics/analyticsManager";
+import { type AnalyticsDataset, IMAGE_REQUESTS, STREAM_MINUTES } from "@pithy-sh/cloudflare/src/analytics/datasets";
 import {
-  type AnalyticsDataset,
-  type CloudflareAnalyticsManager,
-  type DatasetLimits,
-  IMAGE_REQUESTS,
-  STREAM_MINUTES,
-} from "@pithy-sh/cloudflare/src/analytics/analyticsManager";
+  type AnalyticsWindow,
+  checkAnalyticsWindow,
+  resolveAnalyticsWindow,
+  type WindowRefusal,
+} from "@pithy-sh/cloudflare/src/analytics/window";
 import type { MediaConfig } from "../config/config";
 import type { MediaType, StorageBackend } from "../data/enums";
 import { MediaAnalyticsUnavailableError, MediaAnalyticsWindowError } from "../error/errors";
@@ -23,17 +24,6 @@ import type { StoredAssetReader } from "./assets";
  * a Stream uid or an Images id another environment owns is never in the filter, so it can never be in the
  * answer. No account total is reported, because one cannot be scoped.
  */
-
-/** The default window, in days, ending now. Fits every dataset read here: hosted Images answers 30 days and an hour. */
-export const DEFAULT_WINDOW_DAYS = 30;
-
-const DAY_MS = 86_400_000;
-
-/** A resolved window: `since` inclusive, `until` exclusive. */
-export interface DeliveryWindow {
-  since: Date;
-  until: Date;
-}
 
 /** The slice of {@link CloudflareAnalyticsManager} this read uses — what a test hands in instead. */
 export type DeliverySource = Pick<
@@ -68,51 +58,15 @@ interface Measured {
 const VIDEO: Measured = { type: "video", backend: "cf-stream", dataset: STREAM_MINUTES, label: "Stream minutes" };
 const IMAGES: Measured = { type: "image", backend: "cf-images", dataset: IMAGE_REQUESTS, label: "Images requests" };
 
-/** Whole days in a span of seconds, for a cap stated to a person. */
-function days(seconds: number): number {
-  return Math.floor(seconds / 86_400);
-}
+/** A refused window, as media's own code. */
+const refuseWindow = (refusal: WindowRefusal) => new MediaAnalyticsWindowError(refusal);
 
 /**
- * The window a request asks for: the last {@link DEFAULT_WINDOW_DAYS} days by default, a `since` alone
- * running to now, and an `until` alone reaching back the default span. A window that ends before it
- * starts is refused.
+ * The window a request asks for, through the shared rule (`@pithy-sh/cloudflare/src/analytics/window`): the
+ * last 30 days by default, refused with `media/analytics_window` when it ends before it starts.
  */
-export function resolveWindow(input: { since?: Date; until?: Date }, now: Date): DeliveryWindow {
-  const until = input.until ?? now;
-  const since = input.since ?? new Date(until.getTime() - DEFAULT_WINDOW_DAYS * DAY_MS);
-  if (since.getTime() >= until.getTime()) {
-    throw new MediaAnalyticsWindowError({
-      message: "That window ends before it starts. Put since before until.",
-      detail: `since ${since.toISOString()} is not before until ${until.toISOString()}`,
-    });
-  }
-  return { since, until };
-}
-
-/**
- * Hold a window to one dataset's limits, read from the account's own settings rather than assumed. The
- * refusal names the cap in days, so a caller can pick a window that works.
- */
-function checkWindow(window: DeliveryWindow, limits: DatasetLimits, measured: Measured, now: Date): void {
-  const reach = (now.getTime() - window.since.getTime()) / 1000;
-  if (reach > limits.notOlderThan) {
-    const maxDays = days(limits.notOlderThan);
-    throw new MediaAnalyticsWindowError({
-      message: `That window starts ${days(reach)} days ago. Cloudflare keeps ${measured.label} for ${maxDays} days.`,
-      params: { maxDays, dataset: measured.dataset },
-      detail: `${measured.dataset} notOlderThan ${limits.notOlderThan}s; window reaches ${Math.round(reach)}s`,
-    });
-  }
-  const span = (window.until.getTime() - window.since.getTime()) / 1000;
-  if (span > limits.maxDuration) {
-    const maxDays = days(limits.maxDuration);
-    throw new MediaAnalyticsWindowError({
-      message: `That window spans ${days(span)} days. Cloudflare answers at most ${maxDays} days of ${measured.label} at once.`,
-      params: { maxDays, dataset: measured.dataset },
-      detail: `${measured.dataset} maxDuration ${limits.maxDuration}s; window spans ${Math.round(span)}s`,
-    });
-  }
+export function resolveWindow(input: { since?: Date; until?: Date }, now: Date): AnalyticsWindow {
+  return resolveAnalyticsWindow(input, now, refuseWindow);
 }
 
 /** Most first, then by name, so the order is stable between two reads of the same numbers. */
@@ -162,7 +116,7 @@ export async function readDelivery(
         });
       }
     }
-    for (const m of measured) checkWindow(window, limits[m.dataset] as DatasetLimits, m, now);
+    for (const m of measured) checkAnalyticsWindow(window, limits[m.dataset] as DatasetLimits, m, now, refuseWindow);
   }
 
   let video: VideoDelivery = storedInR2("Videos", "Cloudflare Stream", "video.store");

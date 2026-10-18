@@ -87,6 +87,8 @@ export const esErrors: MessageCatalog = {
   "turnstile/missing_token": "Falta la verificación de seguridad.",
   "turnstile/failed": "No se ha superado la verificación de seguridad. Inténtalo de nuevo.",
   "turnstile/config": "La verificación de seguridad no está disponible ahora.",
+  "turnstile/analytics_window": "Ese periodo queda fuera de lo que Cloudflare conserva.",
+  "turnstile/analytics_unavailable": "Cloudflare no ofrece estas estadísticas a esta cuenta.",
 
   // Audit.
   "audit/invalid_event": "El evento de auditoría no es válido.",

@@ -699,6 +699,7 @@
       "devDependencies": {
         "@cloudflare/vitest-plugin": "^1.4.2",
         "@cloudflare/workers-types": "^5.20260729.1",
+        "@pithy-sh/cloudflare": "workspace:*",
         "@pithy-sh/core": "workspace:*",
         "@pithy-sh/secrets": "workspace:*",
         "@pithy-sh/tsconfig": "workspace:*",
@@ -712,6 +713,7 @@
         "zod": "^4.4.0",
       },
       "peerDependencies": {
+        "@pithy-sh/cloudflare": "^0.5.0",
         "@pithy-sh/core": "^0.10.0",
         "@pithy-sh/secrets": "^0.4.0",
         "hono": "^4.13.2",
@@ -818,6 +820,7 @@
         "@pithy-sh/support": "workspace:*",
         "@pithy-sh/testers": "workspace:*",
         "@pithy-sh/tsconfig": "workspace:*",
+        "@pithy-sh/turnstile": "workspace:*",
         "@pithy-sh/vector": "workspace:*",
         "@types/node": "^22.15.0",
         "@vitest/coverage-v8": "^4.1.0",
