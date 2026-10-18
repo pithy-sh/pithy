@@ -2,7 +2,7 @@
 
 Three payment rails — Apple, Google, Stripe — resolving to one cross-rail entitlement, in your own Worker and your own D1.
 
-Buy Pro on iOS, be entitled on the web. That resolution is the whole product, and it is the same one **[RevenueCat](https://www.revenuecat.com)** built a very good business on — their SDKs, their store-quirk coverage and their dashboards are genuinely ahead of this package. The honest difference is not the feature list. It is **where the purchase history lives**: RevenueCat is a hosted data plane holding your customers' transactions, and this is five tables in a D1 you own, written by a Worker you deploy.
+Buy Pro on iOS, be entitled on the web. That resolution is the whole product, and it is the same one **[RevenueCat](https://www.revenuecat.com)** built a very good business on — their SDKs, their store-quirk coverage and their dashboards are genuinely ahead of this package. The honest difference is not the feature list. It is **where the purchase history lives**: RevenueCat is a hosted data plane holding your customers' transactions, and this is ten tables in a D1 you own, written by a Worker you deploy.
 
 ```sh
 pithy add payments
