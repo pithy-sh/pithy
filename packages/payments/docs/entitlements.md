@@ -122,9 +122,10 @@ Three control-plane writes, three scopes:
 }
 ```
 
-- **Version-checked.** Every read carries the subject's `overrideVersion`; a write must send it back. A write behind the row is `payments/override_stale` (409), and nothing is written — so two operators editing one customer cannot silently overwrite each other. A clear never resets the version: a pane still holding the version it read before a clear stays stale.
+- **Version-checked.** Every read carries the subject's `overrideVersion`; a set and an unrestricted write must send it back. A write behind the row is `payments/override_stale` (409), and nothing is written — so two operators setting one customer cannot silently overwrite each other. A clear never resets the version: a pane still holding the version it read before a clear stays stale.
+- **A clear's version is optional.** Sent, it is checked the same way, and a clear behind the row is a 409. Left out, the clear is not checked: it removes whatever is pinned now, including a pin another operator wrote after your read. That is allowed because a clear only moves a subject back toward its plan. Send the version when the pane must not undo a change it has not seen.
 - **A clear only narrows.** On an `unrestricted` subject a pin is all that holds a name below unlimited, so unpinning it is a 400: lifting a name to unlimited is the unrestricted scope's grant. Turn `unrestricted` off first, or clear the whole override, which takes `unrestricted` with it.
-- **A reason is required**, and the audit event carries it verbatim beside the subject, the mode, the before and the after.
+- **A reason is required on a set and an unrestricted write**, and the audit event carries it verbatim beside the subject, the mode, the before and the after. On a clear it is optional: sent, the event carries it; left out, the event's reason is `null`. A clear that removes nothing changes nothing and writes no audit event.
 - **Bounded.** A number past the tier's `overrideMax` is a 400 naming the limit. Never clamped. A quota with no ceiling accepts any whole number.
 - **Declared names only.** A name the declarations do not mention is a 400 naming it and listing what is declared.
 - **It grants no key.** A subject with an override and no entitlement is refused at every gate. A comped key and a pinned number compose.
@@ -208,7 +209,7 @@ payments({
 
 **`resolveQuantity` rides on the options, beside `resolveSubject`, and never in config** — the config crosses a var as JSON and a function does not survive it. A reported product with no resolver is refused at boot, naming the product.
 
-**`cadence`, per product.** `period-end` (the default) sends one count per subscription per billing period, in the period's last day. `daily-peak` keeps each day's high-water mark — a lower later answer never lowers it — and in the period's last day sends the highest day once. Both stores add up what they are sent, so a report per day would bill the sum of the days; one report at the peak bills the peak. The day rows stay behind as the audit.
+**`cadence`, per product.** `period-end` (the default) sends one count per subscription per billing period, in the period's last day. `daily-peak` keeps each day's high-water mark — a lower later answer never lowers it — and in the period's last day sends the highest day once. Both stores add up what they are sent, so a report per day would bill the sum of the days; one report bills the peak. That report goes out at the first run inside the period's last day, and it bills the peak up to then. Sampling goes on until the period ends, so a higher answer later that day is recorded in its day row and never billed. The day rows stay behind as the audit, and a row above the reported count on the last day is that gap. Under-billing a few hours is the right way round.
 
 **What is never reported:**
 

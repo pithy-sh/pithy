@@ -57,7 +57,7 @@ import type { UsageReporter } from "./reporter";
  *   in the period's last {@link PERIOD_END_WINDOW_MS} — keyed and dated exactly as a `period-end` report.
  *   Both stores add up what they are sent: Stripe's meter sums its events, and every Paddle charge is a line
  *   on the bill. A report per day would bill the sum of thirty daily peaks, not the period's peak. The day
- *   rows stay behind, and they are the audit: the number billed is the largest of them.
+ *   rows stay behind, and they are the audit: the number billed is the largest of them up to the report.
  *
  * A `daily-peak` report goes out when the last day opens, as a `period-end` one does, so a peak reached in
  * the period's final hours after it was sent is not billed. Under-billing an hour is the right way round.
