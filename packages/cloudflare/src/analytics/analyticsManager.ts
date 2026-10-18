@@ -4,6 +4,7 @@
 import { z } from "zod";
 import { CloudflareInvalidResponseError, cloudflareRefusal, cloudflareRequest, decodeResponse } from "../client/errors";
 import { CloudflareManager } from "../client/manager";
+import { type AnalyticsDataset, IMAGE_REQUESTS, STREAM_MINUTES, TURNSTILE_EVENTS } from "./datasets";
 
 /**
  * **Cloudflare's GraphQL Analytics API, for the account-level datasets the kit reads (#728).**
@@ -13,25 +14,17 @@ import { CloudflareManager } from "../client/manager";
  * `{ data, errors }` even when it refuses, so `errors` is read on every answer and a non-empty one is a
  * refusal in Cloudflare's own words.
  *
- * The token it runs on carries "Account Analytics Read" (the shared `analytics` profile), whose grain is
+ * The token it runs on is the application's one `runtime` token, carrying "Account Analytics Read", whose grain is
  * the whole account. This manager narrows nothing on its own: every query takes the keys it is about, and
  * the caller decides which keys those are.
  */
 
-/** Minutes of Stream video delivered, groupable by video `uid`. Account-level, US-only under a metadata boundary. */
-export const STREAM_MINUTES = "streamMinutesViewedAdaptiveGroups";
-
 /**
- * Hosted Images delivery requests, groupable by `imageId` — the id Cloudflare Images assigns at upload.
- *
- * Not `imagesRequestsAdaptiveGroups`: that dataset groups by time and nothing else, so it can only ever
- * answer an account total, which cannot be scoped to an environment. This one carries the image id,
- * found by schema introspection on 2026-10-17.
+ * The most groups one Turnstile read asks for. A group is one sitekey and one event type, and Cloudflare
+ * documents ten event types, so a project's one or two widgets need a few dozen. An answer that fills the
+ * limit is refused rather than read short.
  */
-export const IMAGE_REQUESTS = "imagesHostedRequestsAdaptiveGroups";
-
-/** The datasets this manager queries. */
-export type AnalyticsDataset = typeof STREAM_MINUTES | typeof IMAGE_REQUESTS;
+export const TURNSTILE_EVENT_GROUP_LIMIT = 1000;
 
 /**
  * How many keys one query filters on. The answer is one group per key, so this is also the `limit`, and
@@ -100,6 +93,18 @@ const ImageRequestsGroup = z
     dimensions: z.object({ imageId: z.string().describe("The Cloudflare Images id.") }).describe("The group's key."),
   })
   .describe("Delivery requests for one hosted image.");
+
+const TurnstileEventGroup = z
+  .object({
+    count: z.number().describe("Events of this type for this sitekey."),
+    dimensions: z
+      .object({
+        siteKey: z.string().describe("The widget's public sitekey."),
+        eventType: z.string().describe("The Turnstile event type, as Cloudflare names it."),
+      })
+      .describe("The group's key."),
+  })
+  .describe("Events of one type for one Turnstile widget.");
 
 /** A window and the keys to read it for. */
 export interface WindowQuery {
@@ -257,6 +262,49 @@ export class CloudflareAnalyticsManager extends CloudflareManager {
       for (const group of groups) {
         totals.set(group.dimensions.imageId, (totals.get(group.dimensions.imageId) ?? 0) + group.count);
       }
+    }
+    return totals;
+  }
+
+  /**
+   * Turnstile events per sitekey and event type inside the window, for the sitekeys given (#731). The sitekey
+   * filter is what scopes the account-wide dataset to the widgets the caller is about. Absent means none.
+   */
+  async turnstileEvents(
+    window: WindowQuery & { siteKeys: readonly string[] },
+  ): Promise<Map<string, Map<string, number>>> {
+    const totals = new Map<string, Map<string, number>>();
+    if (window.siteKeys.length === 0) return totals;
+    const operation = "read Turnstile events";
+    const data = await this.query(
+      operation,
+      `query ($account: string!, $filter: AccountTurnstileAdaptiveGroupsFilter_InputObject!, $limit: uint64!) { viewer { accounts(filter: { accountTag: $account }) { ${TURNSTILE_EVENTS}(filter: $filter, limit: $limit) { count dimensions { siteKey eventType } } } } }`,
+      {
+        account: this.accountId,
+        filter: {
+          datetime_geq: window.since.toISOString(),
+          datetime_lt: window.until.toISOString(),
+          siteKey_in: [...window.siteKeys],
+        },
+        limit: TURNSTILE_EVENT_GROUP_LIMIT,
+      },
+    );
+    const groups = this.onlyAccount(
+      z.object({ [TURNSTILE_EVENTS]: z.array(TurnstileEventGroup).describe("Events per sitekey and type.") }),
+      data,
+      operation,
+    )[TURNSTILE_EVENTS] as z.output<typeof TurnstileEventGroup>[];
+    if (groups.length >= TURNSTILE_EVENT_GROUP_LIMIT) {
+      throw new CloudflareInvalidResponseError({
+        message: `Cloudflare answered ${groups.length} Turnstile event groups, the most one read asks for. The counts past them are missing.`,
+        detail: `${TURNSTILE_EVENTS} filled limit ${TURNSTILE_EVENT_GROUP_LIMIT} for ${window.siteKeys.length} sitekeys`,
+      });
+    }
+    for (const group of groups) {
+      const { siteKey, eventType } = group.dimensions;
+      const events = totals.get(siteKey) ?? new Map<string, number>();
+      events.set(eventType, (events.get(eventType) ?? 0) + group.count);
+      totals.set(siteKey, events);
     }
     return totals;
   }
