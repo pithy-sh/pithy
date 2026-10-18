@@ -12,7 +12,7 @@ import type {
 import { compareMetadataIndexes } from "../index/drift";
 import { describeVectors, type VectorStore } from "../index/index";
 import { metadataIndexes } from "../index/metadata";
-import { provisionVectors, resetVectors, type VectorProvisionRecord } from "../index/provisioned";
+import { provisionedIndex, provisionVectors, resetVectors, type VectorProvisionRecord } from "../index/provisioned";
 
 /**
  * The control-plane read of every declared index (#730): what config declares, what Vectorize holds, what the
@@ -64,7 +64,7 @@ export function provisionState(
   record: VectorProvisionRecord | undefined,
   environment: string | undefined,
 ): VectorIndexProvision {
-  const observed = record?.indexes[name];
+  const observed = provisionedIndex(record, name);
   if (!observed) {
     return { state: "unprovisioned", message: provisionVectors(environment, `create \`${name}\``) };
   }

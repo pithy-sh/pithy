@@ -8,7 +8,7 @@ import type { CorpusState } from "../data/corpusState";
 import { VectorIndexesResponse } from "../http/responses";
 import { filterable } from "../index/filter";
 import type { VectorStore } from "../index/index";
-import type { VectorProvisionRecord } from "../index/provisioned";
+import { readProvisionRecord, VECTOR_PROVISIONED_VAR, type VectorProvisionRecord } from "../index/provisioned";
 import { type IndexReadDeps, provisionState, readIndexes } from "./indexes";
 
 /**
@@ -155,6 +155,12 @@ describe("readIndexes (#730)", () => {
 });
 
 describe("provisionState (#730)", () => {
+  test("an index named after an Object.prototype key is unprovisioned when the parsed record does not name it", () => {
+    const parsed = readProvisionRecord({ [VECTOR_PROVISIONED_VAR]: '{"indexes":{}}' });
+    const state = provisionState("constructor", docsIndex, parsed, "staging");
+    expect(state.state).toBe("unprovisioned");
+  });
+
   test("an index absent from the record is unprovisioned, never omitted", () => {
     const state = provisionState("docs", docsIndex, { indexes: {} }, "staging");
     expect(state.state).toBe("unprovisioned");

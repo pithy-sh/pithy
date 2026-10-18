@@ -11,7 +11,7 @@ import type { VectorConfig } from "../config/config";
 import { type CorpusState, vectorCorpusState } from "../data/corpusState";
 import { vectorDatabase } from "../data/tables";
 import { VECTOR_INDEXES_READ_SCOPE } from "../http/scopes";
-import { readProvisionRecord, type VectorProvisionRecord } from "../index/provisioned";
+import { provisionedIndex, readProvisionRecord, type VectorProvisionRecord } from "../index/provisioned";
 
 /**
  * What vector contributes to its manifest entry: a state and a count, so a management client can say *this
@@ -55,7 +55,7 @@ export async function corpusEmbedding(config: VectorConfig, corpus: CorpusState)
 
 /** How many declared indexes the record does not name. No network: the record is a var. */
 export function unprovisionedIndexes(config: VectorConfig, record: VectorProvisionRecord | undefined): number {
-  return Object.keys(config.indexes).filter((name) => !record?.indexes[name]).length;
+  return Object.keys(config.indexes).filter((name) => !provisionedIndex(record, name)).length;
 }
 
 /** The corpus over the request's `DB` binding. A missing binding throws, which the seam reports as unavailable. */

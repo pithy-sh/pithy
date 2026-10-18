@@ -12,7 +12,7 @@ import { VectorConfig } from "../config/config";
 import type { CorpusState } from "../data/corpusState";
 import { VECTOR_INDEXES_READ_SCOPE } from "../http/scopes";
 import { filterable } from "../index/filter";
-import { VECTOR_PROVISIONED_VAR, type VectorProvisionRecord } from "../index/provisioned";
+import { readProvisionRecord, VECTOR_PROVISIONED_VAR, type VectorProvisionRecord } from "../index/provisioned";
 import {
   corpusEmbedding,
   UNPROVISIONED_VECTOR_INDEXES,
@@ -120,6 +120,12 @@ describe("unprovisionedIndexes (#730)", () => {
       },
     };
     expect(unprovisionedIndexes(config, drifted)).toBe(0);
+  });
+
+  test("an index named after an Object.prototype key is unprovisioned when the parsed record does not name it", () => {
+    const named = VectorConfig.parse({ indexes: { constructor: { model: "current", dimensions: 3 } } });
+    const parsed = readProvisionRecord({ [VECTOR_PROVISIONED_VAR]: '{"indexes":{}}' });
+    expect(unprovisionedIndexes(named, parsed)).toBe(1);
   });
 });
 

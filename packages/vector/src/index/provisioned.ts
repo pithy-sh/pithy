@@ -120,6 +120,17 @@ export const VectorProvisionRecord = z
 export type VectorProvisionRecord = z.infer<typeof VectorProvisionRecord>;
 
 /**
+ * The record's entry for one configured index, by own key only. The parsed record is a plain object, so a plain
+ * read of an index named `constructor` — a valid index name — returns the inherited `Object` and passes for one.
+ */
+export function provisionedIndex(
+  record: VectorProvisionRecord | undefined,
+  name: string,
+): ProvisionedIndex | undefined {
+  return record && Object.hasOwn(record.indexes, name) ? record.indexes[name] : undefined;
+}
+
+/**
  * Read the record off a Worker env. Absent or blank returns `undefined` — the caller decides what absence
  * means. Present but unreadable **throws**: a record that cannot be parsed cannot be compared against, and
  * treating it as absence would silently downgrade a corrupted record into "never provisioned".
@@ -202,7 +213,7 @@ export function assertProvisionedMetadataIndexes(
   for (const [name, descriptors] of declared) {
     // An index absent from the record has no observed metadata indexes at all, which the comparison already
     // reports as every declared field missing — no separate branch, no separate message to keep in step.
-    const report = compareMetadataIndexes(descriptors, record.indexes[name]?.metadataIndexes ?? []);
+    const report = compareMetadataIndexes(descriptors, provisionedIndex(record, name)?.metadataIndexes ?? []);
     for (const entry of report.missing) missing.push(`${name}.${entry.propertyName} (${entry.indexType})`);
     for (const entry of report.mismatched) {
       mismatched.push(`${name}.${entry.propertyName} (declared ${entry.declared}, indexed as ${entry.live})`);
