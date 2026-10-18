@@ -1319,6 +1319,30 @@ const PaymentsSubscriptionChangeRefusedPublic = z
   })
   .describe("A subscription's state forbids the change asked of it (409).");
 
+const PaymentsOverrideStalePublic = z
+  .object({
+    code: z
+      .literal("payments/override_stale")
+      .describe(
+        "A control-plane override write named a version behind the subject's override row. Two operators share one customer: both opened the same allowance, and the second would silently overwrite the first while the first believed they had succeeded. So the write is refused and nothing is written. 409, because the request is well-formed and the same request against the version it now holds would be accepted — the caller re-reads, and tries again.",
+      ),
+    status: z.literal(409).describe("Conflict — the override changed since the caller read it."),
+    ...publicFields,
+  })
+  .describe("An override write named a stale version (409).");
+
+const PaymentsQuotaExceededPublic = z
+  .object({
+    code: z
+      .literal("payments/quota_exceeded")
+      .describe(
+        "An enforced kit meter — emails enqueued, bytes stored, media items held — would pass the subject's effective quota for the period. Nothing was written. 402 Payment Required, because it is the honest status: the plan does not allow more and the remedy is a purchase, a bigger tier, or a number pinned for this subject from the control plane. A meter refuses and never bills — the kit does not sell overage.",
+      ),
+    status: z.literal(402).describe("Payment Required — the plan's allowance for this period is used up."),
+    ...publicFields,
+  })
+  .describe("An enforced meter is at its quota for this period (402).");
+
 // --- @pithy-sh/core: the `control-plane` verification strategy ---
 //
 // NOT Cloudflare's control plane. Everywhere else in this repo "control plane" means the Cloudflare
@@ -1774,6 +1798,8 @@ export const KitPublicErrorPayload = z
     PaymentsEntitlementNotInCatalogPublic,
     PaymentsSubjectUnresolvedPublic,
     PaymentsSubscriptionChangeRefusedPublic,
+    PaymentsOverrideStalePublic,
+    PaymentsQuotaExceededPublic,
     ControlPlaneNotConnectedPublic,
     ControlPlaneInvalidCredentialPublic,
     ControlPlaneInsufficientScopePublic,
@@ -2096,6 +2122,12 @@ const PaymentsSubjectUnresolved = PaymentsSubjectUnresolvedPublic.extend(interna
 const PaymentsSubscriptionChangeRefused = PaymentsSubscriptionChangeRefusedPublic.extend(internalFields).describe(
   PaymentsSubscriptionChangeRefusedPublic.description ?? "",
 );
+const PaymentsOverrideStale = PaymentsOverrideStalePublic.extend(internalFields).describe(
+  PaymentsOverrideStalePublic.description ?? "",
+);
+const PaymentsQuotaExceeded = PaymentsQuotaExceededPublic.extend(internalFields).describe(
+  PaymentsQuotaExceededPublic.description ?? "",
+);
 const ControlPlaneNotConnected = ControlPlaneNotConnectedPublic.extend(internalFields).describe(
   ControlPlaneNotConnectedPublic.description ?? "",
 );
@@ -2298,6 +2330,8 @@ export const KitErrorPayload = z
     PaymentsEntitlementNotInCatalog,
     PaymentsSubjectUnresolved,
     PaymentsSubscriptionChangeRefused,
+    PaymentsOverrideStale,
+    PaymentsQuotaExceeded,
     ControlPlaneNotConnected,
     ControlPlaneInvalidCredential,
     ControlPlaneInsufficientScope,

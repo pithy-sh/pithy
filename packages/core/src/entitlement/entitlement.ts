@@ -132,7 +132,32 @@ export interface EntitlementResolver {
    * See {@link EntitlementHolder} for why this is a label and a tenant rather than the holder itself.
    */
   holder?(): Promise<EntitlementHolder | undefined>;
+  /**
+   * How many of `name` the current caller's holder may have — a whole number, or `null` for unlimited.
+   * Optional: a provider with no allowances omits it, and {@link import("./allowance").quota} refuses
+   * rather than inventing a number. A provider throws for a name it does not declare, never answers 0.
+   */
+  quota?(name: string): Promise<number | null>;
+  /** Whether `name` is on for the current caller's holder. Never null. Optional, as {@link quota} is. */
+  feature?(name: string): Promise<boolean>;
+  /**
+   * The ceiling a capability that counts its own rows enforces for `meter` — storage's bytes, media's
+   * items — or `{ enforced: false }` where the provider binds no ceiling to it. Optional, and absent is
+   * `{ enforced: false }`: a capability composed with no provider keeps its own configured behavior.
+   */
+  meterLimit?(meter: string): Promise<MeterLimit>;
 }
+
+/**
+ * What a provider says about one meter for the current caller: whether it binds a ceiling at all, and if
+ * it does, what the ceiling is. `limit: null` is unlimited — an enforced meter on a subject whose plan or
+ * override says so.
+ *
+ * Two states rather than a nullable number, because "this meter is advisory here" and "this subject is
+ * unlimited" are different facts and a capability must fall back to its own configured ceiling on the
+ * first and never on the second.
+ */
+export type MeterLimit = { readonly enforced: false } | { readonly enforced: true; readonly limit: number | null };
 
 /**
  * How a resolver's holder appears in a denial's `detail` and on the denial's audit row — and **nothing a
