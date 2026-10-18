@@ -250,6 +250,19 @@ export type SecretBranchSeam = Record<string, readonly string[]>;
 export type InapplicableSecretSeam = Record<string, string>;
 
 /**
+ * One route a capability gates on an `AuthContext` scope — see {@link Capability.scopeGates}.
+ *
+ * Descriptive, never behavioral: the gate itself is the capability's own middleware, and this is what a
+ * diagnostic reads to name it. `route` is the method and the mounted path, as the route table writes them.
+ */
+export interface ScopeGate {
+  /** The scope the gate requires, as the resolved config names it — `leaderboard:submit`. */
+  readonly scope: string;
+  /** The method and mounted path it guards, `POST /leaderboard/:board`. */
+  readonly route: string;
+}
+
+/**
  * One thing an **adopter** plugged into a capability — the capability's own name for something the kit
  * did not ship and cannot enumerate. `@pithy-sh/auth` declares one per additional Better Auth plugin
  * (`{ kind: "better-auth-plugin", id: "organization", tables: ["organization", "member", "invitation"] }`).
@@ -577,6 +590,27 @@ export interface Capability<
    * flag and say so, which turns a fleet of production 403s into one line at startup.
    */
   providesEntitlements?: boolean;
+  /**
+   * Whether this capability fills `AuthContext.scopes` — whether anything will ever put a string in the
+   * array the scope gates read. `@pithy-sh/auth` declares it when an adopter supplies `resolveScopes`, and
+   * not otherwise (#560).
+   *
+   * The same reason {@link providesEntitlements} exists, one seam over. Every scope gate fails closed, so a
+   * Worker composing `leaderboard` with no resolver is not broken: it refuses every caller on the gated
+   * routes, forever, and the runtime cannot tell that from a caller who simply is not trusted. `pithy doctor`
+   * compares this flag against {@link scopeGates} and says so.
+   */
+  providesScopes?: boolean;
+  /**
+   * The routes this capability gates on an `AuthContext` scope, built from the resolved config — a gate the
+   * config has switched off is not declared. Omit it when nothing is gated, which is the ordinary case.
+   *
+   * **Declared so the CLI can name what will deny.** With no capability composed that
+   * {@link providesScopes}, every route listed here answers 403 to every caller, and `pithy doctor` names
+   * each one. Each capability's route-contract test holds this list to the `scopes` its `describeRoute`s
+   * carry, so the declaration cannot drift from the routes.
+   */
+  scopeGates?: readonly ScopeGate[];
   /**
    * This capability's client-safe projection — the **only** values of its config that may reach a
    * browser bundle. Resolved at build time against a {@link ClientProjectionContext} (the environment),
