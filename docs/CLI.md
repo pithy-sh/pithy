@@ -37,7 +37,7 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | `pithy init [--target mobile\|web\|both]` | Scaffold a new Pithy project in the current directory. `--target` says which clients call it: `mobile` (the default) scaffolds the API alone, `web` and `both` add a React front end to the first Worker (see [`commands/init.md`](commands/init.md)) |
 | `pithy add <capability> [--worker <name>]` | Install a capability (auth, leaderboard, storage, vector) — installs the package, wires it into **that Worker's** `apps/<name>/pithy.config.ts` and `wrangler.jsonc`, writes any Durable Object class it binds into that Worker's entry (wrangler resolves `class_name` against the module `main` names), scaffolds its **config** (you pick the mount path; handler source stays in the package), and runs its migrations. `--eject` copies the source into your repo — the only path that writes handler source (see `docs/EJECT.md`) |
 | `pithy remove <capability> [--worker <name>]` | The manual, interactive inverse of `add` (and `add --eject`): unwires that Worker's config, bindings, and Durable Object exports, and uninstalls the package (or deletes the ejected source), leaving your data untouched unless you pass `--drop`. **Manual-only — `--json`, `--no-input` and `PITHY_NONINTERACTIVE=1` are rejected, exit 5** (see below) |
-| `pithy worker <add\|list\|remove\|rename\|sync> [name]` | Manage the project's Workers under `apps/<name>/`; `apps/` is the registry every command discovers (see [`commands/dev.md`](commands/dev.md)). `rename` moves the directory and the two other places a Worker's name is stamped (see Section 6.6). `sync` writes the Worker's **app-declared** Workflows and cron triggers into its `wrangler.jsonc`, for every environment it declares — the app's equivalent of what `pithy <capability> provision` writes for a library capability's (see Section 6.5) |
+| `pithy worker <add\|list\|remove\|rename\|sync\|bind\|unbind>` | Manage the project's Workers under `apps/<name>/`; `apps/` is the registry every command discovers (see [`commands/dev.md`](commands/dev.md)). `rename` moves the directory and the two other places a Worker's name is stamped (see Section 6.6). `bind` and `unbind` declare a service binding from one of your Workers to another, kit Workers included (see Section 6.7). `sync` writes the Worker's **app-declared** Workflows and cron triggers into its `wrangler.jsonc`, for every environment it declares — the app's equivalent of what `pithy <capability> provision` writes for a library capability's (see Section 6.5) |
 | `pithy ui <add\|sync\|list> [--worker <name>]` | Scaffold a front end into an existing Worker and wire it end to end — Vite, the SPA entry, the routes, the `assets` stanza, the dev command. `sync` re-derives the asset routing after the Worker's capabilities change; `list` reports which Workers carry a UI (see [`commands/ui.md`](commands/ui.md) and `docs/UI.md`) |
 | `pithy setup [--skip-install] [--dry-run]` | Make this checkout ready to develop, whatever state it is in: install against the lockfile, check the project, mint the local secrets the kit can mint, migrate dev, pin ports and generate each Worker's `.dev.vars`, seed an empty dev. Dev only — it never reaches a Cloudflare account — and it never starts `pithy dev` (see [`commands/setup.md`](commands/setup.md)) |
 | `pithy dev [--app <name>]… [--list]` | Start the local development environment — app Workers plus each composed capability's host Worker, on per-feature ports (see [`commands/dev.md`](commands/dev.md)) |
@@ -1267,8 +1267,10 @@ Idempotent, comment-preserving, and all-or-nothing: a run with nothing to change
 ### 6.6 Renaming a worker (`pithy worker rename`)
 
 ```
-pithy worker rename <old> <new> [--force] [--dry-run] [--json]
+pithy worker rename --from <old> --to <new> [--force] [--dry-run] [--json]
 ```
+
+The positional `pithy worker rename <old> <new>` still works, and prints one line naming the flag form: `bind` and `unbind` name every Worker by flag, so the group reads one way.
 
 **A worker's name is not one string. It is three, and they have to agree.**
 
@@ -1282,7 +1284,27 @@ Two things it deliberately leaves alone. The **app capability's `name`** in `pit
 
 **A rename after a deploy is not a rename.** Resource names are computed rather than stored, so `<project>-<env>-<binding>` survives untouched — but the Worker script is named for the worker, so a renamed worker deploys as a *new* script and leaves the old one live, serving, and billing. So the account is asked first, and a live script under the old name is refused by name. `--force` is how you say it is understood; the report then names exactly what was left behind. Where the account cannot be reached — no credentials, an offline laptop, a token that will not list — the rename proceeds and says it did not check. It never reports an unchecked account as a clear one.
 
-What it does not touch is everything outside the worker's own directory: the root `tsconfig.json` references, a vitest config, a CI workflow. Those are yours, they are grep-able, and the command's last line says to look. `pithy doctor` checks the three stamps agree on every run ([`commands/doctor.md`](commands/doctor.md)), so a hand-rename that misses one fails CI instead of a deploy.
+What it does not touch is everything outside the worker's own directory: the root `tsconfig.json` references, a vitest config, a CI workflow. Those are yours, they are grep-able, and the command's last line says to look. `pithy doctor` checks the three stamps agree on every run ([`commands/doctor.md`](commands/doctor.md)), so a hand-rename that misses one fails CI instead of a deploy. The one thing outside it that it does move is another Worker's service binding to this one: the declaration's `service` takes the new name, the binding name stays, and each stanza's `services` entry takes the script its stanza deploys as now.
+
+### 6.7 Binding one Worker to another (`pithy worker bind`)
+
+```
+pithy worker bind --from <worker> --to <worker> [--binding <NAME>] [--json]
+pithy worker unbind --from <worker> (--to <worker> | --binding <NAME>) [--json]
+```
+
+**A call to another Worker of the project goes through a service binding, not a URL.** A subrequest to a hostname leaves the runtime and comes back through the edge; a service binding keeps it inside Cloudflare. `bind` declares one in the calling Worker's own `pithy.config.ts`, as an entry in its app capability's `requiredBindings` — the shape a capability's service binding already has:
+
+```ts
+const app = defineCapability({
+  name: "appa",
+  requiredBindings: [{ type: "service", name: "APP_B", service: "app-b" }],
+});
+```
+
+The target is another `apps/` Worker, by its directory, or a kit Worker by its capability (`email`, `secrets`, …), which is bindable only when some Worker composes that capability. The binding name defaults to the target in upper snake case. A loop through the project's bindings is refused with its whole path, and so is a Worker binding itself — that is `administersItself`'s `SELF`. `pithy doctor` reports a loop, a target that no longer exists, and a kit target nothing composes, for a config edited by hand.
+
+**Every environment resolves it to its own script.** `bind` and `worker sync` write `services` into the top level and every declared stanza, at the script the target deploys as there. `pithy provision --feature` writes a feature's, at the feature's own deployment of the target, kit Workers included. `pithy deploy` ships a target before the Worker that binds it. **Under `pithy dev`, the call reaches the local target on its pinned port**: `pithy dev` publishes each binding's local address as `PITHY_SERVICE_ORIGINS`, and under `dev` core swaps `env.<BINDING>` for a stand-in whose `fetch` goes there — `pithy dev --app app-a` with the target running in another session included. A target nobody is running fails the call at once, `core/upstream_failed`, naming the binding and the address. RPC entrypoints are out; a binding is a plain `fetch` target. [`docs/commands/worker.md`](commands/worker.md) has every refusal and every `--json` key.
 
 ---
 

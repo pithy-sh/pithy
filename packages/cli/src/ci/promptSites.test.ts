@@ -17,6 +17,7 @@ import { requireScopeAnswerable } from "../commands/docs";
 import { rollbackPhrase } from "../commands/migrate";
 import { requireDropConfirmable } from "../commands/remove";
 import { canPrompt } from "../commands/secrets";
+import { askFlag, askNewName } from "../commands/worker";
 import { assertRollbackConfirmed } from "../migrations/confirm";
 import { requireEditor } from "../platform/editor";
 import { DEFAULT_WORKER, scaffoldProject } from "../project/scaffold";
@@ -105,6 +106,13 @@ const SITES: Record<string, PromptSite> = {
   },
   "commands/ui.ts": { prompts: ["promptScreens"], kind: "optional", gatedBy: "commands/ui.ts" },
   "commands/vector.ts": { prompts: ["resetPrompt"], kind: "required", gatedBy: "commands/vector.ts" },
+  "commands/worker.ts": {
+    // `bind`, `unbind` and `rename` ask for a Worker they were not named (#617). No default: a binding has a
+    // direction, so forbidden is `input/required`, naming `--from` or `--to`.
+    prompts: ["askFlag", "askNewName"],
+    kind: "required",
+    gatedBy: "commands/worker.ts",
+  },
   "project/askDomains.ts": {
     // Skippable: a project with no domain yet is legitimate. Asked by `init` and `worker add`.
     prompts: ["askDomains"],
@@ -347,6 +355,28 @@ const REQUIRED: readonly {
     // The gate both subcommands run. `commands/docs.test.ts` drives the whole command and reads the
     // `--json` line, for `--client` as well as `--scope`.
     run: () => requireScopeAnswerable(undefined, false),
+  },
+  {
+    // `pithy worker bind` with no `--from` (#617): which Worker holds the binding has no default.
+    site: "commands/worker.ts",
+    prompt: "askFlag",
+    flag: "--from",
+    choices: ["app-a", "app-b"],
+    run: (interactive) =>
+      askFlag({
+        flag: "--from",
+        question: "Which Worker holds the binding?",
+        choices: ["app-a", "app-b"],
+        interactive,
+        missing: "Pass --from: the apps/ Worker that holds the binding.",
+      }),
+  },
+  {
+    // `pithy worker rename --from app-a` with no `--to`: a new name is open, so nothing can be chosen for it.
+    site: "commands/worker.ts",
+    prompt: "askNewName",
+    flag: "--to",
+    run: (interactive) => askNewName("app-a", interactive),
   },
   {
     site: "platform/editor.ts",

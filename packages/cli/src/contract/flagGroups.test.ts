@@ -121,6 +121,7 @@ const CASES: Record<string, () => Promise<{ exit: number | undefined; message: s
     const neither = await refusal("provision", []);
     return { exit: both.exit === neither.exit ? both.exit : undefined, message: `${both.message} ${neither.message}` };
   },
+  "worker unbind: exactlyOne --to --binding": () => refusal("worker unbind", ["--to", "app-b", "--binding", "APP_B"]),
   "upgrade: requires --latest --packages": () => refusal("upgrade", ["--latest"]),
   "upgrade: atMostOne --packages --worker": () => refusal("upgrade", ["--packages", "--worker", "api"]),
   // `migrate` reads its databases before it can name the group to reverse, so the refusal is asked of the

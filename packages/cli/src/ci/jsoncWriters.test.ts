@@ -55,6 +55,12 @@ const ALLOWED = new Map<string, string>([
     "serializes to compare two trees, never to emit — the bytes go out through project/jsonc.ts",
   ],
   [
+    "project/serviceStanzas.ts",
+    // The same shape as `appWorkflows.ts` beside it, for the same reason (#617): `stringify` decides whether a
+    // stanza's `services` moved, and the file goes out through `writeWranglerConfig`.
+    "serializes to compare two trees, never to emit — the bytes go out through project/jsonc.ts",
+  ],
+  [
     "devSecrets/file.ts",
     // Listed rather than excused, and asserted exactly, so closing it fails this test until the list
     // shrinks with it. `.dev.secrets.jsonc` is scaffolded, Biome formats it since #249 stopped exempting

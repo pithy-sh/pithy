@@ -1628,7 +1628,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   alreadyInstalled: ["alias", "completion"],
   branch: ["dev", "feature"],
   alias: ["alias", "doctor"],
-  changed: ["secrets", "ui"],
+  changed: ["secrets", "ui", "worker"],
   command: [
     "add",
     "alias",

@@ -285,3 +285,161 @@ describe("pithy worker add, rename and remove --json conform to their published 
     }
   });
 });
+
+/**
+ * **`pithy worker bind` and `unbind` (#617)**, driven as an agent drives them: `--json`, every Worker named by a
+ * flag, and the one line each writes held to the payload `pithy schema` publishes.
+ */
+describe("worker bind and unbind", () => {
+  /** Two Workers whose configs load without the kit installed. */
+  async function twoApps(): Promise<void> {
+    await writeFile(join(dir, "pithy.config.ts"), 'export default { name: "acme" };\n');
+    for (const name of ["app-a", "app-b"]) {
+      const workerDir = join(dir, "apps", name);
+      await mkdir(workerDir, { recursive: true });
+      await writeFile(
+        join(workerDir, "wrangler.jsonc"),
+        `{\n  "name": "acme-${name}",\n  "env": { "prod": { "name": "acme-prod-${name}" } }\n}\n`,
+      );
+      await writeFile(
+        join(workerDir, "pithy.config.ts"),
+        `const app = {\n  name: "${name.replace("-", "")}",\n  requiredBindings: [],\n};\n\nexport default { capabilities: [], app };\n`,
+      );
+    }
+  }
+
+  /** The one JSON line a run wrote, held to the payload its command publishes. */
+  async function json(
+    path: "worker bind" | "worker unbind" | "worker rename",
+    argv: string[],
+  ): Promise<Record<string, unknown>> {
+    const lines = await runCaptured(path, [...argv, "--json"]);
+    vi.restoreAllMocks();
+    if (path === "worker bind") await expectConforms("worker bind", lines);
+    else if (path === "worker unbind") await expectConforms("worker unbind", lines);
+    else await expectConforms("worker rename", lines);
+    return JSON.parse(lines.join("")) as Record<string, unknown>;
+  }
+
+  /** The error line a refused `--json` run wrote to stderr, and its exit code. */
+  async function refused(
+    path: string,
+    argv: string[],
+  ): Promise<{ exit: number | undefined; error: Record<string, unknown> }> {
+    const err: string[] = [];
+    let exit: number | undefined;
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      err.push(String(chunk));
+      return true;
+    });
+    vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      exit = code;
+      throw new Error("exited");
+    }) as never);
+    try {
+      await runCaptured(path, [...argv, "--json"]).catch((error: unknown) => {
+        if (!(error instanceof Error) || error.message !== "exited") throw error;
+      });
+    } finally {
+      vi.restoreAllMocks();
+    }
+    return { exit, error: (JSON.parse(err.join("")) as { error: Record<string, unknown> }).error };
+  }
+
+  test("bind writes the declaration, and a second run reports changed: false", async () => {
+    await twoApps();
+    expect(await json("worker bind", ["--from", "app-a", "--to", "app-b"])).toMatchObject({
+      from: "app-a",
+      to: "app-b",
+      binding: "APP_B",
+      kind: "app",
+      changed: true,
+    });
+    expect(await readFile(join(dir, "apps", "app-a", "pithy.config.ts"), "utf8")).toContain(
+      '{ type: "service", name: "APP_B", service: "app-b" }',
+    );
+    expect((await json("worker bind", ["--from", "app-a", "--to", "app-b"])).changed).toBe(false);
+  });
+
+  test("unbind by --to and by --binding, each idempotent", async () => {
+    await twoApps();
+    await json("worker bind", ["--from", "app-a", "--to", "app-b"]);
+    expect((await json("worker unbind", ["--from", "app-a", "--to", "app-b"])).changed).toBe(true);
+    expect((await json("worker unbind", ["--from", "app-a", "--to", "app-b"])).changed).toBe(false);
+    await json("worker bind", ["--from", "app-a", "--to", "app-b"]);
+    expect((await json("worker unbind", ["--from", "app-a", "--binding", "APP_B"])).changed).toBe(true);
+    expect((await json("worker unbind", ["--from", "app-a", "--binding", "APP_B"])).changed).toBe(false);
+  });
+
+  test("unbind with both --to and --binding, or neither, is a usage error", async () => {
+    await twoApps();
+    const both = await refused("worker unbind", ["--from", "app-a", "--to", "app-b", "--binding", "APP_B"]);
+    expect(both.exit).toBe(2);
+    expect(both.error.message).toBe("Pass --to or --binding, not both.");
+    const neither = await refused("worker unbind", ["--from", "app-a"]);
+    expect(neither.exit).toBe(2);
+    expect(neither.error.message).toBe("Pass --to or --binding: which binding to remove.");
+  });
+
+  test("a missing required flag under --json is refused, naming the flag", async () => {
+    await twoApps();
+    const from = await refused("worker bind", ["--to", "app-b"]);
+    expect(from.error).toMatchObject({ code: "input/required", flag: "--from", choices: ["app-a", "app-b"] });
+    const to = await refused("worker bind", ["--from", "app-a"]);
+    expect(to.error).toMatchObject({ code: "input/required", flag: "--to", choices: ["app-b"] });
+  });
+
+  test("rename takes --from and --to, and the positional form still works and names the flag form", async () => {
+    await twoApps();
+    await json("worker bind", ["--from", "app-a", "--to", "app-b"]);
+    const renamed = await json("worker rename", ["--from", "app-b", "--to", "app-x"]);
+    expect(renamed).toMatchObject({ from: "app-b", to: "app-x", rebound: ["app-a"] });
+    expect(await readFile(join(dir, "apps", "app-a", "pithy.config.ts"), "utf8")).toContain(
+      '{ type: "service", name: "APP_B", service: "app-x" }',
+    );
+
+    const err: string[] = [];
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      err.push(String(chunk));
+      return true;
+    });
+    try {
+      const lines = await runCaptured("worker rename", ["app-x", "app-y", "--json"]);
+      expect(JSON.parse(lines.join(""))).toMatchObject({ from: "app-x", to: "app-y" });
+    } finally {
+      stderr.mockRestore();
+      vi.restoreAllMocks();
+    }
+    expect(err.join("")).toContain("The flag form is pithy worker rename --from app-x --to app-y.");
+  });
+
+  test("sync writes a declared binding into every stanza, and a second sync changes nothing", async () => {
+    await twoApps();
+    await writeFile(
+      join(dir, "apps", "app-a", "pithy.config.ts"),
+      `const app = {\n  name: "appa",\n  requiredBindings: [{ type: "service", name: "APP_B", service: "app-b" }],\n};\n\nexport default { capabilities: [], app };\n`,
+    );
+    const first = JSON.parse((await runCaptured("worker sync", ["--worker", "app-a", "--json"])).join("")) as {
+      serviceRuns: { env: string; services: unknown[]; changed: boolean }[];
+    };
+    vi.restoreAllMocks();
+    expect(first.serviceRuns).toEqual([
+      { env: "dev", services: [{ binding: "APP_B", service: "acme-app-b" }], changed: true },
+      { env: "prod", services: [{ binding: "APP_B", service: "acme-prod-app-b" }], changed: true },
+    ]);
+    const second = JSON.parse((await runCaptured("worker sync", ["--worker", "app-a", "--json"])).join("")) as {
+      serviceRuns: { changed: boolean }[];
+    };
+    vi.restoreAllMocks();
+    expect(second.serviceRuns.every((run) => !run.changed)).toBe(true);
+  });
+
+  test("remove refuses while another Worker binds the target", async () => {
+    await twoApps();
+    await json("worker bind", ["--from", "app-a", "--to", "app-b"]);
+    const { exit, error } = await refused("worker remove", ["app-b"]);
+    expect(error.message).toBe("app-a binds app-b.");
+    expect(exit).not.toBe(0);
+  });
+});

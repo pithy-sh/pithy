@@ -10,26 +10,31 @@ Manage the project's Workers under `apps/` — the registry every other command 
 pithy worker add <name> [--skip-install] [--json]
 pithy worker list [--json]
 pithy worker remove <name> [--json]
-pithy worker rename <from> <to> [--force] [--dry-run] [--json]
+pithy worker rename --from <worker> --to <name> [--force] [--dry-run] [--json]
 pithy worker sync [--worker <name>] [--env <environment>] [--json]
+pithy worker bind --from <worker> --to <worker> [--binding <NAME>] [--json]
+pithy worker unbind --from <worker> (--to <worker> | --binding <NAME>) [--json]
 ```
 
 `apps/` *is* the registry. There is no hand-maintained list: `pithy dev`, `pithy deploy`, `pithy migrate`, and the rest enumerate `apps/*` and read each Worker's `pithy.worker.jsonc`. Add, remove, or rename a Worker here and the set follows automatically. The **dev** set is larger than this registry — it is `apps/*` plus the host Worker of every capability those Workers compose — which is why `pithy dev --list` exists and this command does not answer that question.
 
-**Only `rename` reaches Cloudflare, and only to ask a question.** It asks the account which scripts are live under the old name before anything moves; it never writes there. `add`, `list`, `remove`, and `sync` touch no account at all — `sync` in particular writes config and runs no deploy, so it is safe on any branch, at any time, as often as you like. An interactive `worker add` reads the account's zones to offer a domain picker; under `--json` it asks nothing and reads nothing.
+**Only `rename` reaches Cloudflare, and only to ask a question.** It asks the account which scripts are live under the old name before anything moves; it never writes there. `add`, `list`, `remove`, `sync`, `bind` and `unbind` touch no account at all — `sync` in particular writes config and runs no deploy, so it is safe on any branch, at any time, as often as you like. An interactive `worker add` reads the account's zones to offer a domain picker; under `--json` it asks nothing and reads nothing.
 
 ## Flags
 
 | Argument / flag | Applies to | Default | Purpose |
 |---|---|---|---|
 | `<name>` | `add`, `remove` | required | The Worker. `add` takes a new kebab-case name; `remove` takes the name `worker list` shows or the `apps/<dir>` basename |
-| `<from> <to>` | `rename` | required | The Worker to rename, and its new kebab-case name |
+| `--from <worker>` | `bind`, `unbind`, `rename` | required | `bind` and `unbind`: the Worker that holds the binding, an `apps/` Worker, never a kit Worker. `rename`: the Worker to rename. At a terminal a missing one is asked for, from the `apps/` Workers; under `--json` it fails `input/required`, naming `--from` |
+| `--to <worker>` | `bind`, `rename`; `unbind` unless `--binding` | required | `bind` and `unbind`: the Worker called — an `apps/` Worker, or a kit Worker named by its capability (`email`, `secrets`, …). `rename`: the new kebab-case name. A missing one is asked for at a terminal and fails `input/required`, naming `--to`, under `--json` |
+| `--binding <NAME>` | `bind`, `unbind` | `bind`: `--to` in upper snake case (`app-b` → `APP_B`) | The binding name in `env`, `SCREAMING_SNAKE_CASE`. On `unbind` it picks the entry instead of `--to`, and exactly one of the two is passed |
+| `<from> <to>` | `rename` | — | The positional form, still accepted. It prints one line, on stderr, naming the flag form |
 | `--skip-install` | `add` | `false` | Skip the workspace install after scaffolding |
 | `--force` | `rename` | `false` | Rename even though a script is deployed under the old name. It stays live, and the report names it |
 | `--dry-run` | `rename` | `false` | Show the plan and write nothing. Every refusal still applies, the live-script check included |
 | `--worker <name>` | `sync` | resolved | Which Worker to reconcile (`apps/<name>`). A single-Worker project needs no flag; several prompt at a terminal and fail `input/required`, naming `--worker`, under `--json`, `--no-input` or `PITHY_NONINTERACTIVE=1` |
 | `--env <environment>` | `sync` | every declared one | Reconcile just this environment — its route, its Workflow bindings, its cron. Omit for the top-level stanza plus every `env.<name>` the Worker already declares |
-| `--json` | all five | `false` | One line of machine-readable output |
+| `--json` | all seven | `false` | One line of machine-readable output |
 
 ## What it does
 
@@ -41,7 +46,7 @@ One gap, stated rather than hidden: `add` writes the new Worker's `tsconfig.json
 
 It also names **answers recorded for a checkout that is gone**. Those answers are keyed on the checkout's absolute path, so moving or renaming the checkout orphans them and every Worker starts again — and *you never said anything* and *what you said is under a path nothing looks up* used to be the same silence. The line goes to stderr, naming the root and the Workers; `--json` carries the same facts in `staleAutostart`. The registry is machine-wide, so the root may be another project's deleted clone rather than this one's old path, and the line says so rather than guessing. It is a report and nothing more: the Workers still start, and `pithy doctor` lists every root in the registry.
 
-**`remove`** deletes `apps/<name>/` and releases its port back to the feature's block. The target is resolved from the discovered set and restricted to `apps/*`, so nothing outside it can be addressed. Your data is untouched: this deletes a directory, not a database.
+**`remove`** deletes `apps/<name>/` and releases its port back to the feature's block. The target is resolved from the discovered set and restricted to `apps/*`, so nothing outside it can be addressed. Your data is untouched: this deletes a directory, not a database. **It refuses while another Worker binds the one going**, and names every one: their service bindings would name a script nothing deploys. Unbind each first.
 
 **`sync`** writes what the Worker's `pithy.config.ts` declares into its `wrangler.jsonc`. Two halves, one job — the declaration is the truth, and this is what makes wrangler agree with it.
 
@@ -49,7 +54,17 @@ The first half is the address. A `domains` block names where the Worker answers 
 
 The second half writes the app capability's declared Workflows and cron triggers, for every environment it declares — the app's equivalent of what `pithy <capability> provision` writes for a library capability's. `docs/CLI.md` §6.5 has the three rules it works by: the app's entries are replaced rather than merged, an entry carrying a `script_name` belongs to a library capability's provisioner and is never touched, `triggers.crons` is set to exactly the declared schedules, and the `WorkflowEntrypoint` subclass stays yours to export from the Worker's `main`. Idempotent, comment-preserving, and all-or-nothing.
 
-**`pithy doctor` and `pithy deploy --env <name>` read that half back.** A declared job that was never synced used to deploy clean and never run, with nothing anywhere saying so; both now report a stanza that does not bind what the app declares, and both name this command. Which is why an app capability declaring **no** Workflows is reconciled too rather than skipped: dropping the last job has to take its binding and its cron out, or the fault would name a command that could not fix it. Nothing is invented for a project that never had either — no empty `workflows` key, no `triggers` block.
+The third half is the app's service bindings: each declared one written into `services` in every stanza, at the script its target deploys as there, as `bind` writes it. An entry you wrote by hand is left as it is.
+
+**`pithy doctor` and `pithy deploy --env <name>` read the Workflow half back.** A declared job that was never synced used to deploy clean and never run, with nothing anywhere saying so; both now report a stanza that does not bind what the app declares, and both name this command. Which is why an app capability declaring **no** Workflows is reconciled too rather than skipped: dropping the last job has to take its binding and its cron out, or the fault would name a command that could not fix it. Nothing is invented for a project that never had either — no empty `workflows` key, no `triggers` block.
+
+**`bind`** declares a service binding from one of your Workers to another Worker of the project, so a call stays inside Cloudflare instead of going out through the edge and back. It adds `{ type: "service", name: "APP_B", service: "app-b" }` to the binding Worker's app capability, in its `requiredBindings`, and leaves every other byte of `pithy.config.ts` as it was. Then it writes the `services` entry into each stanza of that Worker's `wrangler.jsonc`, at the script the target deploys as there — read from the target's own `wrangler.jsonc` where it says, composed the way `pithy provision` composes it where it does not. A kit Worker resolves to its host: `email` is `<project>-staging-email` in staging. A run that finds the binding already there changes nothing, says so, and exits 0.
+
+A binding has a direction, so every Worker is named by a flag. The target is any `apps/` Worker, or a kit Worker named by its capability — the name `pithy dev` registers it under — and a kit Worker is bindable only when some Worker composes that capability, because only then is its host deployed. Six refusals, each before anything is written: a `--from` that is a kit Worker; a Worker binding itself, which is the self binding's job (`administersItself`, #616); a target that is no Worker, naming what is bindable; a kit Worker nothing composes, with `pithy add` as the action; a `--binding` that is not a binding name, or that the Worker already uses for something else; a second binding to a target already bound under another name. And a binding that would close a loop through the project's bindings — `A -> B -> A`, or `A -> B -> C -> A` — prints the whole path and is refused. `pithy doctor` reports the same loop, in the same words, for a config edited by hand.
+
+Every environment carries it. `staging`, `prod` and every declared stanza get it from `bind` and `sync`; a feature gets it from `pithy provision --feature`, at the feature's own deployment of the target, kit Workers included, so a call stays inside the feature. Under `pithy dev` the call reaches the local target on its pinned port, never an edge address and never wrangler's own registry — `pithy dev --app app-a` with `app-b` running in another session included. A target nobody is running refuses the connection, and the call fails at once as `core/upstream_failed`, naming the binding and the address. `pithy deploy` ships a binding's target before the Worker that binds it, the kit's Workers first when an app binds one.
+
+**`unbind`** takes one out, chosen by `--to` or by `--binding`, never both: the entry in `pithy.config.ts`, and its `services` entry in every stanza. A binding that is not there changes nothing and exits 0.
 
 **`rename`** is documented in full at `docs/CLI.md` §6.6, and that section is the authority. In short: a Worker's name is three strings that have to agree — the directory `apps/<name>/`, the deployed script name in `wrangler.jsonc` and `package.json`, and `vars.WORKER`, which is what tells two Workers' audit events apart when they share a database. This command moves all three at once, comment-preserving, holding the new name to the same kebab-case rule `add` holds a new one to and refusing a destination that already exists.
 
@@ -59,13 +74,15 @@ Two things it deliberately leaves alone: the app capability's `name` in `pithy.c
 
 **`--dry-run` decides everything the rename decides and moves nothing.** The name is checked, the destination is checked, and the account is asked about a live script exactly as the real run asks it — a refusal there is the refusal the rename would give. Then, instead of moving anything, it plans: the directory move, the `wrangler.jsonc` and `package.json` edits as diffs of the bytes the rename writes, and, inside a feature worktree, the `.dev.config.json` it would reconcile. The plan shape is the one every `--dry-run` shares (`docs/CLI.md` §1.2). Asking the account is a read; nothing is written there or anywhere else.
 
+**Every other Worker's binding follows the rename.** Each `service: "<from>"` in another app's `pithy.config.ts` becomes the new name, and each `services` entry naming one of the old scripts takes the script its stanza deploys as now. The binding names stay, because that app's code reads them. `rebound` names the Workers it rewrote.
+
 What `rename` does not touch is everything outside the Worker's own directory: the root `tsconfig.json` references, a vitest config, a CI workflow. Those are yours, they are grep-able, and the command's last line says to look. `pithy doctor` checks the three stamps agree on every run, so a hand-rename that misses one fails CI instead of a deploy.
 
 ## `--json`
 
 One line, one object, one shape per subcommand. The `command` field is the subcommand's dotted name, matching `feature.create` and `ui.add` rather than the space-separated form the resource commands use.
 
-**All five subcommands name the Worker the same way.** `worker` is the `apps/` directory — what the adopter typed, what `--worker` accepts, and what every path in the same payload is relative to. `deployedAs` is the script name from `wrangler.jsonc` — what the Cloudflare dashboard shows, and what `wrangler deploy` writes. They are two identities and not interchangeable; a Worker scaffolded as `web` in project `acme` is `web` and `acme-web` at once, and `pithy worker rename` can leave the two unrelated entirely. Read `worker` to act on a Worker, `deployedAs` to find it in an account.
+**Five subcommands name the Worker the same way**, and `bind` and `unbind`, which name two, say `from` and `to`. `worker` is the `apps/` directory — what the adopter typed, what `--worker` accepts, and what every path in the same payload is relative to. `deployedAs` is the script name from `wrangler.jsonc` — what the Cloudflare dashboard shows, and what `wrangler deploy` writes. They are two identities and not interchangeable; a Worker scaffolded as `web` in project `acme` is `web` and `acme-web` at once, and `pithy worker rename` can leave the two unrelated entirely. Read `worker` to act on a Worker, `deployedAs` to find it in an account.
 
 ```
 $ pithy worker add web --json
@@ -128,8 +145,8 @@ The name argument is matched against either identity, so both `pithy worker remo
 | `reconciled` | `boolean` | Whether the feature's `.dev.config.json` was rewritten, returning the freed port to the block. Only ever true inside a feature worktree |
 
 ```
-$ pithy worker rename api board --json
-{"command":"worker.rename","schemaVersion":2,"dryRun":false,"worker":"board","deployedAs":"acme-board","from":"api","to":"board","dir":"/repo/apps/board","script":{"from":"acme-api","to":"acme-board"},"orphaned":[],"accountChecked":true,"reconciled":false}
+$ pithy worker rename --from api --to board --json
+{"command":"worker.rename","schemaVersion":2,"dryRun":false,"worker":"board","deployedAs":"acme-board","from":"api","to":"board","dir":"/repo/apps/board","script":{"from":"acme-api","to":"acme-board"},"orphaned":[],"accountChecked":true,"reconciled":false,"rebound":["web"]}
 ```
 
 `worker` and `deployedAs` describe the Worker **after** the move, so a caller reading the identity keys gets the same two facts here it gets from the other four subcommands. `from`, `to` and `script` are what a rename adds on top: the transition. `deployedAs` is therefore always the script name the Worker deploys under now — including when `script` is `null` because a name the adopter chose was left alone.
@@ -150,11 +167,12 @@ $ pithy worker rename api board --json
 | `orphaned` | `string[]` | Script names left live on the account under the old name. Non-empty only under `--force`. Read it with `accountChecked` — it is empty both when the account said nothing is there and when it said nothing at all |
 | `accountChecked` | `boolean` | Whether the account answered. `false` means unchecked, not clear, and `orphaned` then establishes nothing |
 | `reconciled` | `boolean` | Whether the feature's `.dev.config.json` was rewritten. Only ever true inside a feature worktree, and never under `--dry-run` |
+| `rebound` | `string[]` | The other `apps/` Workers whose service bindings named the renamed one and now name the new name. Their binding names are unchanged |
 | `plan` | `object` | Present only under `--dry-run`: the move, the two edits with their diffs, and the dev config inside a worktree, in the shape every `--dry-run` shares (`docs/CLI.md` §1.2) |
 
 ```
 $ pithy worker sync --worker api --json
-{"command":"worker.sync","schemaVersion":1,"worker":"api","deployedAs":"acme-api","routes":[{"env":"prod","pattern":"api.example.com","baseUrl":"https://api.example.com","changed":true}],"runs":[{"env":"dev","workflows":[{"binding":"KEY_ROTATION","name":"acme-dev-app-key-rotation","class_name":"KeyRotationWorkflow"}],"crons":["0 4 * * *"],"changed":true}]}
+{"command":"worker.sync","schemaVersion":1,"worker":"api","deployedAs":"acme-api","routes":[{"env":"prod","pattern":"api.example.com","baseUrl":"https://api.example.com","changed":true}],"runs":[{"env":"dev","workflows":[{"binding":"KEY_ROTATION","name":"acme-dev-app-key-rotation","class_name":"KeyRotationWorkflow"}],"crons":["0 4 * * *"],"changed":true}],"serviceRuns":[{"env":"dev","services":[{"binding":"APP_B","service":"acme-app-b"}],"changed":true}]}
 ```
 
 | key | type | meaning |
@@ -176,6 +194,28 @@ $ pithy worker sync --worker api --json
 | `runs[].workflows[].class_name` | `string` | The exported `WorkflowEntrypoint` subclass that runs the job. Cloudflare resolves it in this script, so it must be exported from the Worker's `main` |
 | `runs[].crons` | `string[]` | The cron schedules that environment's `triggers` now carries |
 | `runs[].changed` | `boolean` | Whether anything moved. `false` on a re-run with nothing to change |
+| `serviceRuns` | `object[]` | One entry per environment reconciled, when the app declares a service binding. Empty when it declares none |
+| `serviceRuns[].env` | `string` | The environment reconciled. `dev` names the top-level stanza |
+| `serviceRuns[].services` | `object[]` | The `services` entries the app's declarations wrote there |
+| `serviceRuns[].services[].binding` | `string` | The binding name in the Worker's env |
+| `serviceRuns[].services[].service` | `string` | The script it calls in that environment |
+| `serviceRuns[].changed` | `boolean` | Whether that stanza moved |
+
+```
+$ pithy worker bind --from app-a --to app-b --json
+{"schemaVersion":1,"from":"app-a","to":"app-b","binding":"APP_B","kind":"app","changed":true}
+```
+
+`bind` and `unbind` write the same line.
+
+| key | type | meaning |
+|---|---|---|
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
+| `from` | `string` | The `apps/` Worker that holds the binding, by its directory |
+| `to` | `string \| null` | The Worker it calls: an `apps/` directory, or a kit Worker's capability. `null` only for an `unbind --binding` that found nothing |
+| `binding` | `string` | The binding name in `from`'s env |
+| `kind` | `"app" \| "kit" \| null` | `app` for an `apps/` Worker, `kit` for a kit Worker. `null` exactly when `to` is |
+| `changed` | `boolean` | Whether this run wrote anything. `false` on a run that found it already so |
 
 That split holds across every command that reports a Worker, `pithy add`, `pithy ui` and `pithy upgrade` included. It did not always: `add`, `list`, `remove` and `rename` reported a single `name`, and it was the *directory* in `add` and the *deployed script name* in the other three — one key, two meanings, with nothing in the payload saying which. The two coincide whenever a project and its Worker are named alike, which is what kept it hidden. `name` is gone from all four rather than redefined; a payload carrying both spellings would leave every consumer of the old one reading whichever half it happened to be written against.
 
@@ -231,6 +271,64 @@ Declare `domains` or `app` in the worker's pithy.config.ts. This writes what the
 
 **The project has no name.** `sync` requires `pithy.config.ts`'s `name` and never guesses it: a Workflow name is account-scoped and stable forever once deployed, so a guessed project would name a Workflow another project owns. It is `core/precondition_failed`, exit 3: the call is right and the project is missing what it depends on.
 
+**A binding that would close a loop.** The whole path, from the target.
+
+```
+$ pithy worker bind --from app-b --to app-a
+app-b -> app-a would close a loop: app-a -> app-b -> app-a.
+Remove one binding in that path first.
+```
+
+**A kit Worker nothing composes.**
+
+```
+$ pithy worker bind --from app-a --to email
+No Worker in this project composes email, so there is no email Worker to bind.
+Run `pithy add email --worker app-a` first.
+```
+
+**A Worker binding itself.**
+
+```
+$ pithy worker bind --from app-a --to app-a
+A Worker does not bind itself here.
+Declare `administersItself: true` in the root pithy.config.ts instead. Provision then binds SELF in every environment (#616).
+```
+
+**A target that is no Worker.**
+
+```
+$ pithy worker bind --from app-a --to app-z
+No Worker named app-z.
+Bindable: app-b, app-c, email, secrets.
+```
+
+**A binding name the Worker already uses.**
+
+```
+$ pithy worker bind --from app-a --to app-b --binding DB
+app-a already binds DB, to a D1 database.
+Pass a different --binding.
+```
+
+**A second binding to one target.**
+
+```
+$ pithy worker bind --from app-a --to app-b --binding OTHER
+app-a already binds app-b as APP_B.
+A Worker binds another once. Use APP_B, or run pithy worker unbind first.
+```
+
+**A `--from` that is a kit Worker**, and **`unbind` with both `--to` and `--binding`, or neither** — each a call to fix, exit 2.
+
+**Removing a Worker another one binds.**
+
+```
+$ pithy worker remove app-b
+app-a and app-c bind app-b.
+Run pithy worker unbind for each first.
+```
+
 **Several Workers, no `--worker`, under `--json`.** The same resolution error `pithy add` raises, naming the Workers it found.
 
 ## Examples
@@ -271,10 +369,34 @@ acme-api  api  autostart  port 8787
 acme-web  web  autostart  port 8788
 ```
 
+Bind one Worker to another, then run it again.
+
+```
+$ pithy worker bind --from app-a --to app-b
+Bound app-a to app-b as APP_B.
+Done.
+
+$ pithy worker bind --from app-a --to app-b
+app-a already binds app-b as APP_B.
+Done.
+```
+
+Bind a kit Worker, and take a binding out by name.
+
+```
+$ pithy worker bind --from app-a --to email
+Bound app-a to email as EMAIL.
+Done.
+
+$ pithy worker unbind --from app-a --binding EMAIL
+Unbound EMAIL from app-a.
+Done.
+```
+
 Rename, when nothing is deployed under the old name.
 
 ```
-$ pithy worker rename api board
+$ pithy worker rename --from api --to board
 Renamed api to board.
 Deploys as acme-board, not acme-api.
 Check anything outside the worker that names it: tsconfig, CI, imports.
@@ -284,7 +406,7 @@ Done.
 See the rename before it happens.
 
 ```
-$ pithy worker rename api board --dry-run
+$ pithy worker rename --from api --to board --dry-run
 Would move apps/api to apps/board.
 Would edit apps/board/wrangler.jsonc.
 Would edit apps/board/package.json.
@@ -295,7 +417,7 @@ Dry run. Nothing written.
 Rename anyway, knowing what is orphaned.
 
 ```
-$ pithy worker rename api board --force
+$ pithy worker rename --from api --to board --force
 Renamed api to board.
 Deploys as acme-board, not acme-api.
 Still deployed under the old name: acme-api. Delete or keep.

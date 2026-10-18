@@ -2512,6 +2512,32 @@ export const COMMANDS = {
     },
     "groups": []
   },
+  "worker bind": {
+    "positionals": [],
+    "flags": {
+      "--from": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--to": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--binding": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
   "worker list": {
     "positionals": [],
     "flags": {
@@ -2543,17 +2569,27 @@ export const COMMANDS = {
   "worker rename": {
     "positionals": [
       {
-        "name": "from",
-        "required": true,
+        "name": "old",
+        "required": false,
         "variadic": false
       },
       {
-        "name": "to",
-        "required": true,
+        "name": "new",
+        "required": false,
         "variadic": false
       }
     ],
     "flags": {
+      "--from": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--to": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
       "--force": {
         "type": "boolean",
         "required": false,
@@ -2592,6 +2628,40 @@ export const COMMANDS = {
       }
     },
     "groups": []
+  },
+  "worker unbind": {
+    "positionals": [],
+    "flags": {
+      "--from": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--to": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--binding": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": [
+      {
+        "kind": "exactlyOne",
+        "flags": [
+          "--to",
+          "--binding"
+        ]
+      }
+    ]
   }
 } as const;
 

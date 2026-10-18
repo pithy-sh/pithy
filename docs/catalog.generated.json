@@ -1060,6 +1060,16 @@
       ]
     },
     {
+      "path": "worker bind",
+      "flags": [
+        "--from",
+        "--to",
+        "--binding",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
       "path": "worker list",
       "flags": [
         "--json",
@@ -1076,6 +1086,8 @@
     {
       "path": "worker rename",
       "flags": [
+        "--from",
+        "--to",
         "--force",
         "--no-force",
         "--dry-run",
@@ -1090,6 +1102,16 @@
       "flags": [
         "--worker",
         "--env",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
+      "path": "worker unbind",
+      "flags": [
+        "--from",
+        "--to",
+        "--binding",
         "--json",
         "--no-json"
       ]
