@@ -106,4 +106,18 @@ describe("the drift guard and the control plane", () => {
     expect(body.error.code).not.toBe("vector/metadata_index_drift");
     expect(body.error.code).toMatch(/^controlplane\//);
   });
+
+  it("leaves vector's own index read answering on a drifted Worker, the state it most needs to report (#730)", async () => {
+    // The same shape as the seam's ping above: no credential, so the control-plane gate answers. The route is
+    // declared on `adminRoutes`, which is what exempts it from the guard; were it not, this is a drift 500.
+    const app = createBackend({ capabilities: [vector(options), controlplane()] });
+    const response = await app.fetch(new Request("https://example.test/vector/indexes"), {
+      ...bindings,
+      CONTROL_PLANE: {},
+      [VECTOR_PROVISIONED_VAR]: recordVar([]),
+    });
+    const body = (await response.json()) as { error: { code: string } };
+    expect(body.error.code).not.toBe("vector/metadata_index_drift");
+    expect(body.error.code).toMatch(/^controlplane\//);
+  });
 });

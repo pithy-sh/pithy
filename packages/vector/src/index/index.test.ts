@@ -4,7 +4,14 @@
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, it } from "vitest";
 import { VectorIndexConfig } from "../config/config";
-import { deleteVectors, queryVectors, upsertVectors, type VectorStore, type VectorUpsert } from "./index";
+import {
+  deleteVectors,
+  describeVectors,
+  queryVectors,
+  upsertVectors,
+  type VectorStore,
+  type VectorUpsert,
+} from "./index";
 import { MAX_METADATA_BYTES, MAX_NAME_BYTES, MAX_UPSERT_BATCH, MAX_VECTOR_ID_BYTES } from "./limits";
 
 const index = VectorIndexConfig.parse({ model: "@cf/baai/bge-base-en-v1.5", dimensions: 4 });
@@ -214,5 +221,66 @@ describe("deleteVectors", () => {
     const { store } = fakeStore();
     const withoutDelete: VectorStore = { upsert: store.upsert, query: store.query };
     expect(await codeOf(() => deleteVectors(withoutDelete, ["a"]))).toBe("core/internal");
+  });
+});
+
+describe("describeVectors (#730)", () => {
+  const info = {
+    vectorCount: 12,
+    dimensions: 4,
+    processedUpToDatetime: "2026-10-18T12:00:00.000Z",
+    processedUpToMutation: "3f2a8c1e-0d4b-4c6e-9a7f-5b1d2e3c4f5a",
+  };
+
+  it("reads what Vectorize reports about the index", async () => {
+    const { store } = fakeStore({ describe: async () => info });
+    expect(await describeVectors(store)).toEqual({ state: "read", ...info });
+  });
+
+  it("states an epoch-millisecond watermark as ISO-8601, the one form a client parses", async () => {
+    const at = Date.parse(info.processedUpToDatetime);
+    const { store } = fakeStore({ describe: async () => ({ ...info, processedUpToDatetime: at }) });
+    expect(await describeVectors(store)).toMatchObject({ processedUpToDatetime: info.processedUpToDatetime });
+  });
+
+  it("reports an index that has processed no mutation yet with null watermarks, never a fabricated one", async () => {
+    const { store } = fakeStore({
+      describe: async () => ({
+        vectorCount: 0,
+        dimensions: 4,
+        processedUpToDatetime: null,
+        processedUpToMutation: null,
+      }),
+    });
+    expect(await describeVectors(store)).toEqual({
+      state: "read",
+      vectorCount: 0,
+      dimensions: 4,
+      processedUpToDatetime: null,
+      processedUpToMutation: null,
+    });
+  });
+
+  it("is unreadable, not zero vectors, when the binding is absent", async () => {
+    expect(await describeVectors(undefined)).toEqual({ state: "unreadable", reason: "unbound" });
+  });
+
+  it("is unreadable when the binding carries no describe — a fake, or an older binding", async () => {
+    const { store } = fakeStore();
+    expect(await describeVectors(store)).toEqual({ state: "unreadable", reason: "unsupported" });
+  });
+
+  it("is unreadable when describe throws, and nothing of the error travels", async () => {
+    const { store } = fakeStore({
+      describe: async () => {
+        throw new Error("index docs-prod not found in account 0123");
+      },
+    });
+    expect(await describeVectors(store)).toEqual({ state: "unreadable", reason: "failed" });
+  });
+
+  it("is unreadable when describe answers a shape this package does not know", async () => {
+    const { store } = fakeStore({ describe: async () => ({ vectorsCount: 12 }) });
+    expect(await describeVectors(store)).toEqual({ state: "unreadable", reason: "failed" });
   });
 });

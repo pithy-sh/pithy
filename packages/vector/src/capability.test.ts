@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { isVectorCapability, VECTOR_MIGRATION_ORDER, vector } from "./capability";
 import { VECTOR_DOCUMENTS_TABLE } from "./data/tables";
+import { VECTOR_INDEXES_READ_SCOPE } from "./http/scopes";
 import { filterable } from "./index/filter";
 
 const DocMeta = z.object({
@@ -15,6 +16,25 @@ const DocMeta = z.object({
 const options = { indexes: { docs: { model: "@cf/baai/bge-base-en-v1.5", dimensions: 768, metadata: DocMeta } } };
 
 describe("vector()", () => {
+  it("mounts one control-plane read, a GET, advertised on the manifest at the configured mount point (#730)", () => {
+    expect(vector(options).adminRoutes).toEqual([
+      expect.objectContaining({ method: "GET", path: "/vector/indexes", scope: VECTOR_INDEXES_READ_SCOPE }),
+    ]);
+    expect(vector({ ...options, basePath: "/search" }).adminRoutes?.map((route) => route.path)).toEqual([
+      "/search/indexes",
+    ]);
+  });
+
+  it("reports two health counts behind the index read's scope, and adds nothing to the runtime token (#730)", () => {
+    const capability = vector(options);
+    expect(capability.health?.keys.map((key) => [key.key, key.scope])).toEqual([
+      ["staleVectorDocuments", VECTOR_INDEXES_READ_SCOPE],
+      ["unprovisionedVectorIndexes", VECTOR_INDEXES_READ_SCOPE],
+    ]);
+    // The read is the binding, the corpus and a var. No Cloudflare API call, so no permission on `runtime`.
+    expect(capability.runtimePermissions).toBeUndefined();
+  });
+
   it("exposes its name and resolved config", () => {
     const capability = vector(options);
     expect(capability.name).toBe("vector");

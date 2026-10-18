@@ -14314,6 +14314,360 @@
         ]
       }
     },
+    "/vector/indexes": {
+      "get": {
+        "tags": [
+          "vector"
+        ],
+        "operationId": "getVectorIndexes",
+        "summary": "Read every declared index's state.",
+        "description": "What config declares, what Vectorize reports over the binding, how the corpus splits by embedding model, how many namespaces it uses, and where each index stands against the provision record. Namespace names are never reported.",
+        "responses": {
+          "200": {
+            "description": "Which vector indexes exist, how much is in them, and whether each is current.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "environment": {
+                      "description": "The environment this Worker serves, from its `ENVIRONMENT` var. Null for a Worker that names none.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "indexes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "description": "The index's name in `pithy.config.ts`, not its Cloudflare resource name."
+                          },
+                          "declared": {
+                            "type": "object",
+                            "properties": {
+                              "model": {
+                                "type": "string",
+                                "description": "The Workers AI embedding model config pins for writes and queries alike."
+                              },
+                              "dimensions": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "How many components config says each vector carries."
+                              },
+                              "metric": {
+                                "type": "string",
+                                "enum": [
+                                  "cosine",
+                                  "euclidean",
+                                  "dot-product"
+                                ],
+                                "description": "How the index scores nearest neighbors, as config declares it. Fixed at index creation."
+                              }
+                            },
+                            "required": [
+                              "model",
+                              "dimensions",
+                              "metric"
+                            ],
+                            "description": "What `pithy.config.ts` declares for this index."
+                          },
+                          "vectorize": {
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "state": {
+                                    "type": "string",
+                                    "const": "read",
+                                    "description": "Vectorize described the index."
+                                  },
+                                  "vectorCount": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991,
+                                    "description": "How many vectors the index holds."
+                                  },
+                                  "dimensions": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991,
+                                    "description": "How many components the index was created for."
+                                  },
+                                  "processedUpToDatetime": {
+                                    "description": "ISO-8601. Every mutation made before it is reflected in the index, which answers whether recent writes have landed. Null while the index has processed none.",
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  },
+                                  "processedUpToMutation": {
+                                    "description": "The id of the last mutation the index has applied, or null while it has applied none.",
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  },
+                                  "dimensionMismatch": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "declared": {
+                                            "type": "integer",
+                                            "minimum": -9007199254740991,
+                                            "maximum": 9007199254740991,
+                                            "description": "The dimensions config declares."
+                                          },
+                                          "actual": {
+                                            "type": "integer",
+                                            "minimum": -9007199254740991,
+                                            "maximum": 9007199254740991,
+                                            "description": "The dimensions Vectorize reports the index was created with."
+                                          },
+                                          "message": {
+                                            "type": "string",
+                                            "description": "That dimensions are fixed at creation, and the reset that rebuilds the index, said as a person's decision because it deletes every vector in it."
+                                          }
+                                        },
+                                        "required": [
+                                          "declared",
+                                          "actual",
+                                          "message"
+                                        ],
+                                        "description": "Config and the live index disagree on dimensions. Writes and queries against it fail until a person decides."
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "Null when config and the index agree on dimensions, or what disagrees and the decision it needs."
+                                  }
+                                },
+                                "required": [
+                                  "state",
+                                  "vectorCount",
+                                  "dimensions",
+                                  "processedUpToDatetime",
+                                  "processedUpToMutation",
+                                  "dimensionMismatch"
+                                ],
+                                "description": "The index as Vectorize describes it, on the binding the Worker already holds. No account token."
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "state": {
+                                    "type": "string",
+                                    "const": "unreadable",
+                                    "description": "The index could not be described on this read. Never zero."
+                                  },
+                                  "reason": {
+                                    "type": "string",
+                                    "enum": [
+                                      "unbound",
+                                      "unsupported",
+                                      "failed"
+                                    ],
+                                    "description": "`unbound`: the index's binding is not on the Worker. `unsupported`: the binding has no `describe`. `failed`: `describe` threw or answered an unknown shape. Nothing of the error itself is reported."
+                                  }
+                                },
+                                "required": [
+                                  "state",
+                                  "reason"
+                                ],
+                                "description": "Vectorize could not be asked, or did not answer. A different fact from an empty index."
+                              }
+                            ],
+                            "description": "What Vectorize reports about this index."
+                          },
+                          "documents": {
+                            "type": "object",
+                            "properties": {
+                              "declaredModel": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "Documents embedded under the model config declares."
+                              },
+                              "otherModel": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "Documents embedded under any other model. Queries compare them across two embedding spaces and nothing errors. `pithy vector reprocess` re-embeds them."
+                              },
+                              "unembedded": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "Documents written and never embedded: durable, and not searchable."
+                              }
+                            },
+                            "required": [
+                              "declaredModel",
+                              "otherModel",
+                              "unembedded"
+                            ],
+                            "description": "This index's documents, by the model they were embedded under."
+                          },
+                          "namespaces": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "How many distinct namespaces the corpus uses in this index, the default not counted. A count and never the names: a namespace is often a tenant or organization id."
+                          },
+                          "provision": {
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "state": {
+                                    "type": "string",
+                                    "const": "unprovisioned",
+                                    "description": "Config declares the index and the provision record has none."
+                                  },
+                                  "message": {
+                                    "type": "string",
+                                    "description": "The provision that creates it, for this Worker's environment."
+                                  }
+                                },
+                                "required": [
+                                  "state",
+                                  "message"
+                                ],
+                                "description": "Declared and never provisioned."
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "state": {
+                                    "type": "string",
+                                    "const": "provisioned",
+                                    "description": "The record's metadata indexes match what config declares."
+                                  }
+                                },
+                                "required": [
+                                  "state"
+                                ],
+                                "description": "Provisioned, and agreeing with config."
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "state": {
+                                    "type": "string",
+                                    "const": "drifted",
+                                    "description": "A filterable field provision never saw, or saw as another type. Filters on it return short, plausible results and nothing errors."
+                                  },
+                                  "missing": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "propertyName": {
+                                          "type": "string",
+                                          "description": "The metadata field config marks filterable."
+                                        },
+                                        "indexType": {
+                                          "type": "string",
+                                          "description": "The type config declares it as."
+                                        }
+                                      },
+                                      "required": [
+                                        "propertyName",
+                                        "indexType"
+                                      ],
+                                      "description": "A field declared filterable with no metadata index behind it."
+                                    },
+                                    "description": "Fields declared filterable with no metadata index."
+                                  },
+                                  "mismatched": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "propertyName": {
+                                          "type": "string",
+                                          "description": "The metadata field config marks filterable."
+                                        },
+                                        "declared": {
+                                          "type": "string",
+                                          "description": "The type config declares it as."
+                                        },
+                                        "indexed": {
+                                          "type": "string",
+                                          "description": "The type provision recorded the metadata index as."
+                                        }
+                                      },
+                                      "required": [
+                                        "propertyName",
+                                        "declared",
+                                        "indexed"
+                                      ],
+                                      "description": "A field declared filterable whose metadata index is another type."
+                                    },
+                                    "description": "Fields indexed as a different type."
+                                  },
+                                  "message": {
+                                    "type": "string",
+                                    "description": "The provision that creates what is missing, and the reset a mis-typed one needs."
+                                  }
+                                },
+                                "required": [
+                                  "state",
+                                  "missing",
+                                  "mismatched",
+                                  "message"
+                                ],
+                                "description": "Provisioned, and since drifted from config. Every route but the admin surface refuses until fixed."
+                              }
+                            ],
+                            "description": "This index against the provision record, which the Worker reads from a var with no network. A record, so it says what provision last saw, not what Cloudflare holds now."
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "declared",
+                          "vectorize",
+                          "documents",
+                          "namespaces",
+                          "provision"
+                        ],
+                        "description": "One index: what config declares, what Vectorize holds, what the corpus holds, and whether it was provisioned."
+                      },
+                      "description": "Every index config declares, in config order. None is omitted."
+                    }
+                  },
+                  "required": [
+                    "environment",
+                    "indexes"
+                  ],
+                  "description": "Which vector indexes exist, how much is in them, and whether each is current."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "vector:indexes:read"
+        ]
+      }
+    },
     "/vector/{index}/documents": {
       "post": {
         "tags": [
