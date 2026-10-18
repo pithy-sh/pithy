@@ -15,6 +15,12 @@ export interface StorageCeiling {
    * that organization counts against it, whoever uploaded it — an organization's plan is the organization's.
    */
   tenant: string | null;
+  /**
+   * Whether the number is an enforced `storageBytes` meter's. A refusal is then the plan's —
+   * `payments/quota_exceeded` at 402, the remedy a bigger tier — and otherwise the configured
+   * `bytesPerOwner`'s, `storage/quota_exceeded` at 413.
+   */
+  metered: boolean;
 }
 
 /**
@@ -33,6 +39,6 @@ export interface StorageCeiling {
 export async function storageCeiling(c: Context<PithyHonoEnv>, config: StorageConfig): Promise<StorageCeiling> {
   const ceiling = await meterLimit(c, "storageBytes");
   return ceiling.enforced
-    ? { limitBytes: ceiling.limit, tenant: ceiling.tenant }
-    : { limitBytes: config.quota.bytesPerOwner, tenant: null };
+    ? { limitBytes: ceiling.limit, tenant: ceiling.tenant, metered: true }
+    : { limitBytes: config.quota.bytesPerOwner, tenant: null, metered: false };
 }

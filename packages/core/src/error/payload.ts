@@ -1012,7 +1012,7 @@ const StorageQuotaExceededPublic = z
     code: z
       .literal("storage/quota_exceeded")
       .describe(
-        "The declared upload size would push the owner past their byte quota. Checked at init against pending and stored rows together, so concurrent inits cannot race past the limit.",
+        "The declared upload size would push the owner past the configured `bytesPerOwner` quota. Checked at init against pending and stored rows together, so concurrent inits cannot race past the limit. Where the `storageBytes` meter is enforced, the same refusal is `payments/quota_exceeded` (402).",
       ),
     status: z.literal(413).describe("Content Too Large."),
     ...publicFields,

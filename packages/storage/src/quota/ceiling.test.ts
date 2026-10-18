@@ -40,25 +40,25 @@ const enforced = (limit: number | null, tenant: string | null = null): Entitleme
 
 describe("storageCeiling", () => {
   test("with no entitlement provider, the configured bytesPerOwner — unchanged", async () => {
-    expect(await ceilingWith(noEntitlementProvider)).toEqual({ limitBytes: 100, tenant: null });
+    expect(await ceilingWith(noEntitlementProvider)).toEqual({ limitBytes: 100, tenant: null, metered: false });
   });
 
   test("an advisory storageBytes meter leaves the configured number in force", async () => {
     expect(
       await ceilingWith({ provider: "payments", list: async () => [], meterLimit: async () => ({ enforced: false }) }),
-    ).toEqual({ limitBytes: 100, tenant: null });
+    ).toEqual({ limitBytes: 100, tenant: null, metered: false });
   });
 
   test("an enforced meter makes the caller's effective quota the ceiling", async () => {
-    expect(await ceilingWith(enforced(5000))).toEqual({ limitBytes: 5000, tenant: null });
+    expect(await ceilingWith(enforced(5000))).toEqual({ limitBytes: 5000, tenant: null, metered: true });
   });
 
   test("an organization's ceiling carries the organization, so the sum is every member's bytes", async () => {
-    expect(await ceilingWith(enforced(5000, "org-a"))).toEqual({ limitBytes: 5000, tenant: "org-a" });
+    expect(await ceilingWith(enforced(5000, "org-a"))).toEqual({ limitBytes: 5000, tenant: "org-a", metered: true });
   });
 
   test("an unrestricted subject is unlimited, whatever bytesPerOwner says", async () => {
-    expect(await ceilingWith(enforced(null))).toEqual({ limitBytes: null, tenant: null });
+    expect(await ceilingWith(enforced(null))).toEqual({ limitBytes: null, tenant: null, metered: true });
   });
 
   test("a provider whose read fails refuses, rather than serving unbounded", async () => {

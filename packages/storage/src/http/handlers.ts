@@ -118,12 +118,13 @@ async function quotaFor(
   deps: HandlerDeps,
   ownerId: string | null,
   organizationId: string | null,
-): Promise<Pick<QuotaCheck, "ownerId" | "organizationId" | "limitBytes">> {
+): Promise<Pick<QuotaCheck, "ownerId" | "organizationId" | "limitBytes" | "metered">> {
   const ceiling = deps.quotaLimit
     ? await deps.quotaLimit()
-    : { limitBytes: deps.config.quota.bytesPerOwner, tenant: null };
+    : { limitBytes: deps.config.quota.bytesPerOwner, tenant: null, metered: false };
+  const { metered } = ceiling;
   if (ceiling.tenant === null || ceiling.limitBytes === null || ownerId === null) {
-    return { ownerId, limitBytes: ceiling.limitBytes };
+    return { ownerId, limitBytes: ceiling.limitBytes, metered };
   }
   if (organizationId !== ceiling.tenant) {
     throw new InternalError({
@@ -133,7 +134,7 @@ async function quotaFor(
       detail: `The storageBytes ceiling covers organization ${ceiling.tenant}; the file would be held for ${organizationId ?? "no organization"}.`,
     });
   }
-  return { ownerId, organizationId: ceiling.tenant, limitBytes: ceiling.limitBytes };
+  return { ownerId, organizationId: ceiling.tenant, limitBytes: ceiling.limitBytes, metered };
 }
 
 /** The client-facing shape of a stored file. Deliberately without `key` and `uploadId`. */
