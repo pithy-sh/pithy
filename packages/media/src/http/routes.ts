@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import { CloudflareAnalyticsManager } from "@pithy-sh/cloudflare/src/analytics/analyticsManager";
 import { accessCaller, type PermissionHook } from "@pithy-sh/core/src/access/access";
 import { UsageQuery, UsageResponse, usageRollup } from "@pithy-sh/core/src/access/usage";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { validate } from "@pithy-sh/core/src/http/validation";
 import type { VerificationStrategy } from "@pithy-sh/core/src/http/verification";
@@ -13,12 +15,15 @@ import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import type { Context, Hono } from "hono";
 import type { Kysely } from "kysely";
 import type { z } from "zod";
+import { storedAssets } from "../analytics/assets";
+import { type DeliveryDeps, readDelivery } from "../analytics/delivery";
+import { MediaAuditActions } from "../audit/actions";
 import type { MediaConfig } from "../config/config";
 import { MEDIA_ASSETS_TABLE, mediaDatabase } from "../data/tables";
 import { resolveDeliverySigner } from "../deliver/resolve";
 import { d1RecordStore } from "../record/d1Store";
 import { d1HashStore } from "../record/hashStore";
-import { resolveStorage, type StorageEnv } from "../storage/resolve";
+import { mediaCloudflareConfig, resolveStorage, type StorageEnv } from "../storage/resolve";
 import { type EnrichmentBindings, makeEnrichmentDispatcher } from "./dispatch";
 import { requireAuth } from "./guard";
 import {
@@ -35,6 +40,7 @@ import {
 import {
   DuplicatesResponse,
   MediaDeletedResponse,
+  MediaDeliveryResponse,
   MediaDeliveryUrlResponse,
   MediaListResponse,
   MediaRecordResponse,
@@ -42,6 +48,7 @@ import {
 } from "./responses";
 import {
   CreateMediaInput,
+  DeliveryQuery,
   DeliveryUrlQuery,
   DuplicatesInput,
   FinalizeMediaInput,
@@ -49,7 +56,7 @@ import {
   MediaIdParam,
   UpdateMediaInput,
 } from "./schemas";
-import { MEDIA_USAGE_READ_SCOPE } from "./scopes";
+import { MEDIA_DELIVERY_READ_SCOPE, MEDIA_USAGE_READ_SCOPE } from "./scopes";
 import { mediaView } from "./views";
 
 /**
@@ -64,6 +71,7 @@ import { mediaView } from "./views";
  *   PATCH  /media/:id           → rename, re-scope (bearer | session) param: MediaIdParam, json: UpdateMediaInput
  *   GET    /media               → list             (bearer | session) query: ListMediaQuery
  *   DELETE /media/:id           → delete           (bearer | session) param: MediaIdParam
+ *   GET    /media/admin/delivery → what was served  (control-plane: media:delivery:read) query: DeliveryQuery
  *
  * **Reading one record is open to anyone it is public to.** `GET /media/:id` and its delivery URL are not
  * wrapped in {@link requireAuth}: a public record must be readable with no session, so the handler
@@ -77,6 +85,9 @@ import { mediaView } from "./views";
  *
  * **Static segments before `:id`.** Hono matches in registration order, so `/media/duplicates` and
  * `/media/admin/usage` are registered ahead of the `:id` routes.
+ *
+ * The management routes are gated by `requireControlPlane` instead of {@link requireAuth}, never both: the
+ * seam leaves `c.var.auth` null by design.
  */
 export interface MediaRoutesOptions {
   /** The resolved media config. */
@@ -89,6 +100,8 @@ export interface MediaRoutesOptions {
   permission?: PermissionHook;
   /** Test seam: resolve handler deps from the request context. Defaults to the env-based resolver. */
   resolveDeps?: (c: Context<PithyHonoEnv>) => Promise<HandlerDeps>;
+  /** Test seam: resolve the delivery read's deps. Defaults to the env-based resolver. */
+  resolveDelivery?: (c: Context<PithyHonoEnv>) => Promise<DeliveryDeps>;
 }
 
 /** The full request env the media routes read. */
@@ -121,6 +134,36 @@ function defaultResolveDeps(
   };
 }
 
+/**
+ * The delivery read's deps from the request env.
+ *
+ * The analytics reader is built **only when asked for**, which `readDelivery` does only when a type is
+ * stored somewhere Cloudflare counts — so a Worker storing everything in R2 never reads a token it has no
+ * use for. The token is the application's one `runtime` token (#728), through the one secrets reader; the
+ * account is the one media's own `media-storage-credentials` names, since the assets live there.
+ */
+function defaultResolveDelivery(config: MediaConfig): (c: Context<PithyHonoEnv>) => Promise<DeliveryDeps> {
+  return async (c) => {
+    const env = c.env as unknown as MediaEnv;
+    const cloudflare = mediaCloudflareConfig(env, config);
+    return {
+      assets: storedAssets(mediaDatabase(env.DB)),
+      config,
+      source: async () => new CloudflareAnalyticsManager(await cloudflare()),
+      now: () => new Date(),
+    };
+  };
+}
+
+/** The verified management caller. `requireControlPlane` has run, so a null here is a wiring mistake. */
+function managementCaller(c: Context<PithyHonoEnv>) {
+  const context = c.var.controlPlane;
+  if (!context) {
+    throw new InternalError({ detail: "requireControlPlane() must run before a media management handler." });
+  }
+  return context;
+}
+
 /** `requireAuth()` lets either a bearer token or a session through. */
 const AUTHENTICATED: readonly VerificationStrategy[] = ["bearer", "session"];
 
@@ -131,8 +174,48 @@ const PUBLIC_OR_AUTHENTICATED: readonly VerificationStrategy[] = ["public", "bea
 export function registerMediaRoutes(options: MediaRoutesOptions): (app: Hono<PithyHonoEnv>) => void {
   const base = options.basePath ?? "/media";
   const resolve = options.resolveDeps ?? defaultResolveDeps(options.config, options.schema, options.permission);
+  const resolveDelivery = options.resolveDelivery ?? defaultResolveDelivery(options.config);
 
   return (app) => {
+    // The management surface, registered first. `/media/admin/delivery` is two segments past the mount,
+    // so `/media/:id` could never have matched it — the order is presentation, not semantics.
+    app.get(
+      `${base}/admin/delivery`,
+      describeRoute({
+        summary: "Read what this environment's media was served.",
+        description:
+          "Minutes of video and image requests, per asset, from Cloudflare's analytics — joined to this environment's own assets, never an account total. The window defaults to the last 30 days.",
+        verification: "control-plane",
+        scopes: [MEDIA_DELIVERY_READ_SCOPE],
+        responses: { 200: MediaDeliveryResponse },
+      }),
+      requireControlPlane(MEDIA_DELIVERY_READ_SCOPE),
+      validate("query", DeliveryQuery),
+      async (c) => {
+        const report = await readDelivery(await resolveDelivery(c), c.req.valid("query"));
+        const who = managementCaller(c);
+        await c.var.emit({
+          action: MediaAuditActions.deliveryRead,
+          outcome: "success",
+          actorType: "control-plane",
+          actorId: who.subject,
+          resourceType: "media_delivery",
+          resourceId: null,
+          requestId: c.req.header("cf-ray"),
+          ip: c.req.header("cf-connecting-ip"),
+          userAgent: c.req.header("user-agent"),
+          metadata: {
+            connectionId: who.connectionId,
+            since: report.since,
+            until: report.until,
+            videos: report.video.state === "reported" ? report.video.assets.length : null,
+            images: report.images.state === "reported" ? report.images.assets.length : null,
+          },
+        });
+        return c.json(report satisfies MediaDeliveryResponse, 200);
+      },
+    );
+
     app.post(
       `${base}/duplicates`,
       describeRoute({

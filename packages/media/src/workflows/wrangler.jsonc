@@ -32,10 +32,17 @@
   // The Workers AI binding — image-to-text, whisper transcription, and toMarkdown all run through it.
   "ai": { "binding": "AI" },
 
-  // The master key for decrypting the storage credentials, read through the secretsStore accessor.
+  // The master key for decrypting the stored secrets, and the application's one Cloudflare API token
+  // (#728), which a video transcription reads to ask Stream for its playback. Both read through the
+  // secretsStore accessor; every `secret_name` is resolved at provision.
   "secrets_store_secrets": [
     {
       "binding": "SECRETS_ENCRYPTION_KEYS",
+      "store_id": "<filled-at-provision>",
+      "secret_name": "<filled-at-provision>"
+    },
+    {
+      "binding": "RUNTIME_CF_API_TOKEN",
       "store_id": "<filled-at-provision>",
       "secret_name": "<filled-at-provision>"
     }

@@ -3,7 +3,7 @@
 
 import { readFile } from "node:fs/promises";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
-import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
+import { masterKeySecretName, runtimeTokenSecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { describe, expect, test } from "vitest";
 import { MediaConfig } from "../config/config";
 import { resolveMediaConfig } from "./resolveMediaConfig";
@@ -28,6 +28,7 @@ function template(): WorkflowHostTemplate {
         store_id: "<filled-at-provision>",
         secret_name: "SECRETS_ENCRYPTION_KEYS",
       },
+      { binding: "RUNTIME_CF_API_TOKEN", store_id: "<filled-at-provision>", secret_name: "<filled-at-provision>" },
     ],
     workflows: [
       { binding: "MEDIA_IMAGE_TO_TEXT", name: "pithy-media-image-to-text", class_name: "MediaImageToTextWorkflow" },
@@ -142,6 +143,34 @@ describe("resolveMediaConfig", () => {
       resources: { bucketName: "acme-staging-media" },
     });
     expect(resolved.secrets_store_secrets?.[0]?.secret_name).toBe(masterKeySecretName("acme", "staging"));
+  });
+
+  test("binds the environment's runtime token — the application's one, which a Stream job reads (#728)", () => {
+    const resolved = resolveMediaConfig(template(), {
+      ...BASE,
+      env: "staging",
+      resources: { bucketName: "acme-staging-media" },
+    });
+    expect(resolved.secrets_store_secrets?.[1]).toEqual({
+      binding: "RUNTIME_CF_API_TOKEN",
+      store_id: "store-1",
+      secret_name: runtimeTokenSecretName("acme", "staging"),
+    });
+  });
+
+  test("a feature's host binds the feature's own entry, never an environment's", () => {
+    const resolved = resolveMediaConfig(template(), {
+      ...BASE,
+      env: "feature",
+      feature: { project: "acme", issue: "728", slug: "media-analytics" },
+      resources: { bucketName: "acme-f728-media-analytics--media" },
+    });
+    expect(resolved.secrets_store_secrets?.[1]?.secret_name).toBe("acme-f728-media-analytics--runtime-cf-api-token");
+  });
+
+  test("the committed template binds the runtime token beside the master key", async () => {
+    const source = await readFile(new URL("../workflows/wrangler.jsonc", import.meta.url), "utf8");
+    expect(source).toContain('"binding": "RUNTIME_CF_API_TOKEN"');
   });
 
   test("a second project resolves to entirely different worker and Workflow names", () => {

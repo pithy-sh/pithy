@@ -2,16 +2,26 @@
 // SPDX-License-Identifier: MIT
 
 import type { R2Bucket } from "@cloudflare/workers-types";
+import type { CloudflareManagerConfig } from "@pithy-sh/cloudflare/src/client/manager";
 import { CloudflareImageManager } from "@pithy-sh/cloudflare/src/media/imageManager";
 import type { AssetOwner } from "@pithy-sh/cloudflare/src/media/ownership";
 import { CloudflareStreamManager } from "@pithy-sh/cloudflare/src/media/streamManager";
+import { RUNTIME_PROFILE, RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
+import { runtimeTokenRegistry } from "@pithy-sh/secrets/src/tokens/runtimeTokenRegistry";
 import { objectStore } from "@pithy-sh/storage/src/object/store";
 import type { MediaConfig } from "../config/config";
-import { MEDIA_R2_SECRET, MEDIA_STORAGE_SECRET, mediaSecretsRegistry } from "../secret/registry";
+import {
+  MEDIA_R2_SECRET,
+  MEDIA_STORAGE_SECRET,
+  mediaOwnSecretsRegistry,
+  mediaRuntimePermissions,
+} from "../secret/registry";
 import { imageMinter, objectStoreMinter, videoMinter } from "./cloudflare";
+import type { ImageMinter, VideoMinter } from "./minter";
 import { type MediaStorage, mediaStorage } from "./storage";
 
 /** The env the storage layer reads: the secrets bindings, the `MEDIA_BUCKET` R2 binding, and the owner. */
@@ -50,27 +60,80 @@ export function assetOwner(env: StorageEnv): AssetOwner {
 }
 
 /**
+ * **How this Worker reaches Cloudflare Images, Stream and their analytics: the application's one runtime
+ * token, and the account media's assets live in (#728).** Resolved once per call to the returned function's
+ * first use, and never before — so a request that touches only R2 reads no token at all.
+ *
+ * The token is read through the one secrets reader, from a registry naming exactly what this config needs
+ * of it — the same declaration `media()` hangs on its `secretRegistry`. A config storing both types in R2
+ * declares no token, so asking for one here is refused by name rather than by the reader's wiring error:
+ * the record it was asked for was stored on a product this Worker is no longer configured to use.
+ */
+export function mediaCloudflareConfig(
+  env: SecretsStoreEnv,
+  config: Pick<MediaConfig, "images" | "video">,
+): () => Promise<CloudflareManagerConfig> {
+  let resolved: Promise<CloudflareManagerConfig> | undefined;
+  return () => {
+    resolved ??= (async () => {
+      const needs = mediaRuntimePermissions(config);
+      if (needs.length === 0) {
+        throw new InternalError({
+          message: "This Worker stores no media on Cloudflare Images or Stream, so it holds no token to reach them.",
+          action: `Store a type on Cloudflare Images or Stream in media({ … }), then ${commandName("token rotate")} ${RUNTIME_PROFILE} --env <env> so the token carries it.`,
+          detail: "media asked for the runtime token under a config that declares none (both stores are r2)",
+        });
+      }
+      const own = await sharedSecretsStore(env, mediaOwnSecretsRegistry);
+      const runtime = await sharedSecretsStore(env, runtimeTokenRegistry(needs));
+      return { apiToken: runtime.get(RUNTIME_TOKEN_SECRET), accountId: own.get(MEDIA_STORAGE_SECRET).accountId };
+    })();
+    return resolved;
+  };
+}
+
+/** An {@link ImageMinter} whose manager is built at its first call, never before. */
+function deferredImageMinter(make: () => Promise<ImageMinter>): ImageMinter {
+  return {
+    mintDirectUpload: async (metadata, options) => (await make()).mintDirectUpload(metadata, options),
+    setSigning: async (id, required) => (await make()).setSigning(id, required),
+    delete: async (id) => (await make()).delete(id),
+  };
+}
+
+/** A {@link VideoMinter} whose manager is built at its first call, never before. */
+function deferredVideoMinter(make: () => Promise<VideoMinter>): VideoMinter {
+  return {
+    mintDirectUpload: async (metadata, options) => (await make()).mintDirectUpload(metadata, options),
+    setSigning: async (uid, required) => (await make()).setSigning(uid, required),
+    delete: async (uid) => (await make()).delete(uid),
+  };
+}
+
+/**
  * Resolve the storage seam from the request env.
  *
- * Images and Stream are media's own: the scoped CF API token is read once through the shared
- * `@pithy-sh/secrets` accessor (never a raw binding) and the two managers are built from it. Both
- * minters are constructed with {@link assetOwner}, so every asset they mint carries the project and
- * environment that created it.
+ * Images and Stream are reached with the application's runtime token, through {@link mediaCloudflareConfig},
+ * and **only when a call needs one** (#728). Both minters are built with {@link assetOwner}, so every asset
+ * they mint carries the project and environment that created it — and that too is asked only then. So a
+ * project storing everything in R2 serves every route without reading a Cloudflare token or needing a
+ * `PROJECT` var.
  *
- * R2 is not. `objectStore` from `@pithy-sh/storage` owns the bucket, the credential, and the S3 client;
- * media points it at `MEDIA_BUCKET` under its own secret name and consumes two presign methods through
- * the `R2Minter` port. Nothing here reads an access key. The store resolves that credential
- * **lazily**, so a request that only reads or deletes — both of which stay on the bucket binding —
- * never touches the secrets store at all.
+ * R2 is not media's. `objectStore` from `@pithy-sh/storage` owns the bucket, the credential, and the S3
+ * client; media points it at `MEDIA_BUCKET` under its own secret name and consumes two presign methods
+ * through the `R2Minter` port. Nothing here reads an access key. The store resolves that credential
+ * **lazily**, so a request that only reads or deletes — both of which stay on the bucket binding — never
+ * touches the secrets store at all.
  */
 export async function resolveStorage(env: StorageEnv, config: MediaConfig): Promise<MediaStorage> {
-  const store = await sharedSecretsStore(env, mediaSecretsRegistry);
-  const credentials = store.get(MEDIA_STORAGE_SECRET);
-  const clientConfig = { apiToken: credentials.apiToken, accountId: credentials.accountId };
-  const owner = assetOwner(env);
+  const cloudflare = mediaCloudflareConfig(env, config);
   return mediaStorage({
-    image: imageMinter(new CloudflareImageManager(clientConfig), owner),
-    video: videoMinter(new CloudflareStreamManager(clientConfig), owner),
+    image: deferredImageMinter(async () =>
+      imageMinter(new CloudflareImageManager(await cloudflare()), assetOwner(env)),
+    ),
+    video: deferredVideoMinter(async () =>
+      videoMinter(new CloudflareStreamManager(await cloudflare()), assetOwner(env)),
+    ),
     r2: objectStoreMinter(objectStore({ bucket: env.MEDIA_BUCKET, env, secretName: MEDIA_R2_SECRET })),
     bucket: env.MEDIA_BUCKET,
     config,

@@ -3,7 +3,7 @@
 
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
-import { MEDIA_IMAGES_SIGNING_SECRET, MEDIA_STREAM_SIGNING_SECRET, mediaSecretsRegistry } from "../secret/registry";
+import { MEDIA_IMAGES_SIGNING_SECRET, MEDIA_STREAM_SIGNING_SECRET, mediaOwnSecretsRegistry } from "../secret/registry";
 import { type DeliverySigner, deliverySigner } from "./sign";
 
 /**
@@ -15,7 +15,7 @@ import { type DeliverySigner, deliverySigner } from "./sign";
  * is not refused for lacking a Stream key.
  */
 export async function resolveDeliverySigner(env: SecretsStoreEnv): Promise<DeliverySigner> {
-  const secrets = await sharedSecretsStore(env, mediaSecretsRegistry);
+  const secrets = await sharedSecretsStore(env, mediaOwnSecretsRegistry);
   const read = <T>(get: () => T): T | undefined => {
     try {
       return get();

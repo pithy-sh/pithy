@@ -5,6 +5,7 @@ import type { PermissionHook } from "@pithy-sh/core/src/access/access";
 import { recordsOutsidePolicy } from "@pithy-sh/core/src/access/policyCheck";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { allSettings } from "@pithy-sh/core/src/capability/settings";
 import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
 import type { KvNamespaceSpecMap } from "@pithy-sh/core/src/kv/namespaces";
 import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
@@ -19,7 +20,8 @@ import { mediaAdminRoutes } from "./http/scopes";
 import { media_0001_init } from "./migrations/0001_init";
 import { media_0003_ownership } from "./migrations/0003_ownership";
 import { mediaExtendMigration } from "./migrations/extend";
-import { MEDIA_BUCKET_BINDING, mediaSecretsRegistry } from "./secret/registry";
+import { MEDIA_BUCKET_BINDING, mediaRuntimePermissions, mediaSecretsRegistryFor } from "./secret/registry";
+import { suppliedTokenCheck } from "./secret/supersededToken";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 import { mediaWorkflows } from "./workflows/specs";
 
@@ -79,8 +81,8 @@ export interface MediaCapability
  * it every record writes a null organization. `media:manage` is declared on `powers`, so a project that
  * composes tenancy must give it to some role.
  *
- * Storage credentials and signing keys are read through `@pithy-sh/secrets`, so the `secrets` capability
- * must be composed; writes need an identity, so `@pithy-sh/auth` should be composed too — without it,
+ * Its account, signing keys and the application's runtime token are read through `@pithy-sh/secrets`, so
+ * the `secrets` capability must be composed; writes need an identity, so `@pithy-sh/auth` should be composed too — without it,
  * `c.var.auth` is null, every write is denied, and only public records can be read.
  */
 export function media(options: MediaOptions = {}): MediaCapability {
@@ -123,7 +125,14 @@ export function media(options: MediaOptions = {}): MediaCapability {
     package: PACKAGE_NAME,
     // Storage credentials are read through @pithy-sh/secrets, so secrets must be composed.
     dependsOn: ["secrets"],
-    secretRegistry: mediaSecretsRegistry,
+    // Built from the resolved config (#728): a project storing both types in R2 calls Cloudflare for
+    // nothing, so it declares no runtime token and adds nothing to it. Declared and marked inapplicable was
+    // not enough — provision binds every declared store secret.
+    secretRegistry: mediaSecretsRegistryFor(resolved),
+    // What media's Workers call Cloudflare with — Images and Stream uploads, and the delivery read — unioned
+    // into the one `runtime` token the application holds. Nothing is added to `ci-system`: it all runs in
+    // the Worker.
+    runtimePermissions: mediaRuntimePermissions(resolved),
     workflows: mediaWorkflows,
     requiredBindings,
     // The power a role holds to edit, delete and re-scope any record in its own organization. Declared so
@@ -140,14 +149,18 @@ export function media(options: MediaOptions = {}): MediaCapability {
     // Built from the resolved mount path, never the default, so the manifest names this Worker's paths.
     adminRoutes: mediaAdminRoutes(mountPath),
     // `pithy doctor` names every record a narrowed `visibility.allowed` no longer admits. Nothing rewrites
-    // them: making a public record private breaks every link already published.
-    settings: recordsOutsidePolicy({
-      capability: "media",
-      noun: "media record",
-      table: "pithy_media_assets",
-      policy: resolved.visibility,
-      remedy: `Move each with PATCH ${mountPath}/:id`,
-    }),
+    // them: making a public record private breaks every link already published. And it names a bundle
+    // still holding the Images and Stream token the runtime token superseded (#728), which nothing revokes.
+    settings: allSettings(
+      recordsOutsidePolicy({
+        capability: "media",
+        noun: "media record",
+        table: "pithy_media_assets",
+        policy: resolved.visibility,
+        remedy: `Move each with PATCH ${mountPath}/:id`,
+      }),
+      suppliedTokenCheck(),
+    ),
     routes: registerMediaRoutes({
       config: resolved,
       schema,

@@ -49,12 +49,12 @@
       "origin": {
         "kind": "obtained",
         "issuer": "cloudflare",
-        "documentation": "https://developers.cloudflare.com/fundamentals/api/get-started/create-token/"
+        "documentation": "https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/"
       },
       "rotation": {
-        "kind": "provider",
+        "kind": "manual",
         "issuer": "cloudflare",
-        "documentation": "https://developers.cloudflare.com/api/resources/user/subresources/tokens/methods/update/"
+        "documentation": "https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/"
       }
     },
     {
@@ -95,20 +95,35 @@
         "issuer": "cloudflare",
         "documentation": "https://developers.cloudflare.com/r2/api/tokens/"
       }
+    },
+    {
+      "name": "RUNTIME_CF_API_TOKEN",
+      "origin": {
+        "kind": "helped",
+        "issuer": "cloudflare",
+        "needs": { "cloudflare": ["images:write", "stream:write", "analytics:read"] },
+        "documentation": "https://developers.cloudflare.com/fundamentals/api/get-started/create-token/"
+      },
+      "rotation": {
+        "kind": "provider",
+        "issuer": "cloudflare",
+        "documentation": "https://developers.cloudflare.com/api/resources/user/subresources/tokens/methods/update/"
+      }
     }
   ],
-  "whenToEnable": "Store, track, and enrich media — images (R2 or Cloudflare Images), video (R2 or Cloudflare Stream), audio and documents (R2). Uploads use direct-upload URLs, so bytes never proxy through your Worker. Every record carries its owner, the organization in force, and a visibility — private, organization or public — and a non-public Images or Stream asset is delivered only through short-lived signed URLs. Duplicate detection stays inside the tenant. Opt in per type to AI alt text, transcription, and text extraction. Records live in D1. R2 presigning runs through @pithy-sh/storage's ObjectStore seam pointed at MEDIA_BUCKET, so media owns no bucket mechanics and none of storage's tables or routes come with it. Storage credentials and signing keys are read through @pithy-sh/secrets, so the secrets capability is required; writes need an identity, so add auth too, and organization if records belong to teams.",
+  "whenToEnable": "Store, track, and enrich media — images (R2 or Cloudflare Images), video (R2 or Cloudflare Stream), audio and documents (R2). Uploads use direct-upload URLs, so bytes never proxy through your Worker. Every record carries its owner, the organization in force, and a visibility — private, organization or public — and a non-public Images or Stream asset is delivered only through short-lived signed URLs. Duplicate detection stays inside the tenant. Opt in per type to AI alt text, transcription, and text extraction. Records live in D1. R2 presigning runs through @pithy-sh/storage's ObjectStore seam pointed at MEDIA_BUCKET, so media owns no bucket mechanics and none of storage's tables or routes come with it. Its account, signing keys and the application's one Cloudflare API token are read through @pithy-sh/secrets, so the secrets capability is required; writes need an identity, so add auth too, and organization if records belong to teams.",
   "scaffold": [
     "Ensure the secrets capability is provisioned (`pithy add secrets` then `pithy secrets provision`) — the CF API token, the R2 credentials and the signing keys are stored and read through @pithy-sh/secrets.",
     "Create an R2 S3 access-key pair (R2 → Manage API tokens) and an API token with Images and Stream permissions. Cloudflare exposes no API for minting an R2 key pair, so this pair is yours to create — pithy stores and rotates it, but cannot mint it.",
-    "Run `pithy media provision` — it creates the R2 bucket, writes the per-environment secrets, reads the Images URL-signing key and creates a Stream signing key, and deploys the media enrichment worker hosting the four Workflows for each environment. `media-storage-credentials` holds your Images + Stream API token; `media-r2-credentials` holds the R2 key pair and that environment's bucket, and is read by @pithy-sh/storage's ObjectStore, which media presigns through. It refuses while an Images variant is set to `neverRequireSignedURLs`, because that variant would serve a private image to anyone. Pass the credentials with `--api-token`, `--r2-access-key-id`, and `--r2-secret-access-key`, or set `R2_CREDENTIALS` in `.dev.vars`. Every step is idempotent; re-run it freely.",
+    "Run `pithy media provision` — it creates the R2 bucket, writes the per-environment secrets, reads the Images URL-signing key and creates a Stream signing key, and deploys the media enrichment worker hosting the four Workflows for each environment. `media-storage-credentials` holds your account id; `media-r2-credentials` holds the R2 key pair and that environment's bucket, and is read by @pithy-sh/storage's ObjectStore, which media presigns through. It refuses while an Images variant is set to `neverRequireSignedURLs`, because that variant would serve a private image to anyone. Pass the R2 pair with `--r2-access-key-id` and `--r2-secret-access-key`, or set `R2_CREDENTIALS` in `.dev.vars`. No Images or Stream token is asked for: media mints uploads with the application's one `runtime` token. Every step is idempotent; re-run it freely.",
     "Add the `DB` (D1) and `MEDIA_BUCKET` (R2) bindings to each wrangler.jsonc env. Add the enrichment Workflow bindings your app dispatches to on finalize: `MEDIA_IMAGE_TO_TEXT`, `MEDIA_AUDIO_TRANSCRIBE`, `MEDIA_VIDEO_TRANSCRIBE`, `MEDIA_DOC_EXTRACT`.",
     "Set the `delivery` config (public identifiers) so delivery URLs can be built: `imagesAccountHash` (Cloudflare Images) and `streamCustomerCode` (Cloudflare Stream). A non-public record's URL comes from `GET /media/:id/url`, signed and short-lived. `r2PublicBaseUrl` serves every key in a public bucket, so it is refused unless `visibility.allowed` is `[\"public\"]`.",
     "Decide who may see what: `visibility: { default: \"private\", allowed: [\"private\", \"organization\", \"public\"] }` in `media({ ... })`. `[\"private\", \"organization\"]` means nothing can ever be published. Records written before this release are private and system-owned until you assign owners.",
     "Enable AI enrichment per type in `media({ ... })` in pithy.config.ts — `images.imageToText`, `video.transcribe`, `audio.transcribe`, `documents.extractText` (extraction runs for pdf/doc/docx only). Each is independently opt-in and a no-op (no cost) when off. Override any model with the type's `model` field.",
     "Writes require an authenticated caller. Add the auth capability (`pithy add auth`) so `c.var.auth` is populated; without it only public records can be read. Add the organization capability to scope records to teams, and give some role `media:manage` so an organization can clean up after somebody who left.",
     "Share a record with one person, or put one on legal hold, with `media({ permission })` — a hook asked on every read and write that answers `allow`, `deny` or `default`.",
-    "Extend a media record with your own fields — tags, an album — by passing an `extend` Zod object to `media({ extend })`. The extra fields become real D1 columns (a generated migration) from that one schema. The owner and organization are already there."
+    "Extend a media record with your own fields — tags, an album — by passing an `extend` Zod object to `media({ extend })`. The extra fields become real D1 columns (a generated migration) from that one schema. The owner and organization are already there.",
+    "Media calls Cloudflare with the application's one `runtime` token — `images:write` and `stream:write` for the products your config stores on, and `analytics:read` for the delivery read — minted per environment by `pithy secrets provision`. A token minted before media was composed lacks those grants: `pithy token list --env <env>` says so, and `pithy token rotate runtime --env <env>` replaces it with the current scope, since a mint only rolls the value. A project storing every type in R2 adds nothing to it. `GET /media/admin/delivery` reports minutes of video and image requests per asset, from Cloudflare's analytics, behind the `media:delivery:read` control-plane scope. The token reads the whole account's analytics; the read narrows them to this environment's own assets."
   ],
   "configOptions": [
     {

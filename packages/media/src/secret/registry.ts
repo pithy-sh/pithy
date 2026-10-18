@@ -1,52 +1,46 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
+import { runtimeTokenRegistry } from "@pithy-sh/secrets/src/tokens/runtimeTokenRegistry";
 import { r2CredentialsRegistry } from "@pithy-sh/storage/src/secret/registry";
 import { z } from "zod";
+import type { MediaConfig } from "../config/config";
 
 /**
- * The secrets the media capability reads (CLAUDE.md §secrets). There are four, and they answer to two
- * different owners.
+ * The secrets the media capability reads (CLAUDE.md §secrets). Four are media's own or its object store's,
+ * and the fifth is the application's.
  *
- * `media-storage-credentials` is media's own: the scoped Cloudflare API token that mints Images and
- * Stream direct-upload URLs, and the account id it is scoped to. Nothing else.
+ * `media-storage-credentials` is media's own: the Cloudflare account id its Images and Stream assets live
+ * in. **Nothing else** — the token that mints Images and Stream uploads was supplied here by hand until
+ * #728, and is now the application's one `runtime` token.
  *
  * `media-r2-credentials` is **declared here and read nowhere in this package**. It is
  * `@pithy-sh/storage`'s R2 bundle, declared through that package's `r2CredentialsRegistry` factory and
  * resolved by the `ObjectStore` seam media presigns through. One factory means every declaration of
  * the name agrees on `backend`, `scope`, `rotatable`, and `valueType` — exactly what
  * `aggregateSecretRegistries` requires before it will let two capabilities share a name. So media
- * *names* the R2 secret and never handles an R2 key again.
+ * *names* the R2 secret and never handles an R2 key again. R2's S3 key pair is not a Cloudflare API token
+ * in the sense the one-token rule means, and stays outside it: there is no API to mint one.
  *
  * `media-images-signing-key` and `media-stream-signing-key` are what a private record's bytes are
  * delivered through: a non-public Images or Stream asset is uploaded with `requireSignedURLs`, and the
  * Worker signs a short-lived URL for a caller who may read it (`deliver/sign.ts`). Both are **fetched by
- * `pithy media provision`** with the Images and Stream token: Images keeps an account signing key, and a
- * Stream key's private half is handed back once, at creation.
+ * `pithy media provision`** with the operator's own credential: Images keeps an account signing key, and
+ * a Stream key's private half is handed back once, at creation.
  *
- * The credentials are **supplied, not minted**: Cloudflare exposes no API for creating an R2 S3
- * access-key pair, and the permission catalog carries no Images or Stream keys, so the operator creates
- * both and hands them to `pithy media provision`. Pithy stores, scopes, and rotates them from there.
+ * `RUNTIME_CF_API_TOKEN` is the application's one Cloudflare API token (#728), declared through
+ * `@pithy-sh/secrets`' `runtimeTokenRegistry` so every reader declares it the same way. Media reads it to
+ * mint Images and Stream uploads and to read their delivery analytics, and declares it only when its
+ * config stores a type on one of them — see {@link mediaSecretsRegistryFor}.
  */
 
 /** The name the Images + Stream credentials are stored and resolved under. */
 export const MEDIA_STORAGE_SECRET = "media-storage-credentials";
 
-/**
- * Where a human makes the scoped Images + Stream token, and where Cloudflare rolls it.
- *
- * **Two pages, because the two axes genuinely differ here.** The kit cannot compose the creation command:
- * `pithy token mint` works from a permission catalog, and that catalog carries no Images or Stream group,
- * so an operator picks them in the dashboard. Replacement is not the same act — a Cloudflare API token
- * rolls through Cloudflare's own API and comes back with its successor, which is what `provider` means
- * and what the manager's own token already declares.
- *
- * This is the pair `media-r2-credentials` does *not* have, and the reason rotation is declared per secret
- * rather than per issuer: both come from Cloudflare, and only one of them can replace itself.
- */
-const MEDIA_TOKEN_PAGE = "https://developers.cloudflare.com/fundamentals/api/get-started/create-token/";
-const MEDIA_TOKEN_ROLL = "https://developers.cloudflare.com/api/resources/user/subresources/tokens/methods/update/";
+/** Where the account id comes from, for an operator who would rather check it by hand. */
+const MEDIA_ACCOUNT_PAGE = "https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/";
 
 /** The name the Cloudflare Images URL-signing key is stored under. */
 export const MEDIA_IMAGES_SIGNING_SECRET = "media-images-signing-key";
@@ -71,17 +65,24 @@ export const MEDIA_R2_SECRET = "media-r2-credentials";
  */
 export const MEDIA_BUCKET_BINDING = "MEDIA_BUCKET";
 
-/** The credential bundle media reads to mint Cloudflare Images and Stream direct-upload URLs. */
+/**
+ * The account media's Images and Stream assets live in — and, since #728, nothing else. A value written
+ * before then also carries the `apiToken` an operator supplied; it is not read, the parse drops it, and
+ * `pithy doctor` names it until `pithy media provision` rewrites the bundle without it.
+ */
 export const MediaStorageCredentials = z
   .object({
-    apiToken: z
-      .string()
-      .meta({ multiline: false })
-      .describe("A scoped Cloudflare API token with Images and Stream permissions, for minting direct-upload URLs."),
     accountId: z.string().meta({ multiline: false }).describe("The Cloudflare account id the media resources live in."),
   })
-  .describe("The credentials the media capability reads to mint Cloudflare Images and Stream direct-upload URLs.");
+  .describe("The Cloudflare account media's Images and Stream assets live in.");
 export type MediaStorageCredentials = z.output<typeof MediaStorageCredentials>;
+
+/**
+ * The field a `media-storage-credentials` bundle written before #728 also carries: the Images and Stream
+ * token an operator supplied. Superseded by the runtime token, never read, and named by `pithy doctor` and
+ * `pithy token list` until `pithy media provision` rewrites the bundle without it.
+ */
+export const MEDIA_SUPPLIED_TOKEN_FIELD = "apiToken";
 
 /** The Images URL-signing key, as `pithy media provision` reads it off the account. */
 export const MediaImagesSigningKey = z
@@ -121,8 +122,11 @@ export type MediaStreamSigningKey = z.output<typeof MediaStreamSigningKey>;
  */
 export const mediaR2Registry = r2CredentialsRegistry(MEDIA_R2_SECRET, MEDIA_BUCKET_BINDING);
 
-/** The media capability's secret-registry slice — aggregated into the shared accessor at startup. */
-export const mediaSecretsRegistry = defineSecretRegistry({
+/**
+ * Media's own secrets and its object store's — what it declares whatever its config, and what every read
+ * that is not the runtime token's goes through.
+ */
+export const mediaOwnSecretsRegistry = defineSecretRegistry({
   [MEDIA_STORAGE_SECRET]: {
     // An encrypted row in the per-environment secrets D1 — where this value actually lives. No
     // wrangler template binds it from the Cloudflare Secrets Store; `pithy media provision` writes it
@@ -133,8 +137,8 @@ export const mediaSecretsRegistry = defineSecretRegistry({
     rotatable: false,
     valueType: "json",
     schema: MediaStorageCredentials,
-    origin: { kind: "obtained", issuer: "cloudflare", documentation: MEDIA_TOKEN_PAGE },
-    rotation: { kind: "provider", issuer: "cloudflare", documentation: MEDIA_TOKEN_ROLL },
+    origin: { kind: "obtained", issuer: "cloudflare", documentation: MEDIA_ACCOUNT_PAGE },
+    rotation: { kind: "manual", issuer: "cloudflare", documentation: MEDIA_ACCOUNT_PAGE },
   },
   [MEDIA_IMAGES_SIGNING_SECRET]: {
     backend: "d1",
@@ -158,4 +162,41 @@ export const mediaSecretsRegistry = defineSecretRegistry({
   // two declarations of one name would drift, and `aggregateSecretRegistries` is what would then refuse
   // to boot a Worker composing both capabilities.
   ...mediaR2Registry,
+});
+
+/**
+ * What media's Workers call Cloudflare with, from the resolved config (#728): `images:write` while images
+ * live in Cloudflare Images, `stream:write` while video lives in Stream, and `analytics:read` while either
+ * does, for the delivery read. Empty for a project storing both in R2, which calls Cloudflare for nothing
+ * and adds nothing to the `runtime` token.
+ */
+export function mediaRuntimePermissions(config: Pick<MediaConfig, "images" | "video">): PermissionKey[] {
+  const keys: PermissionKey[] = [];
+  if (config.images.store === "cf-images") keys.push("images:write");
+  if (config.video.store === "cf-stream") keys.push("stream:write");
+  if (keys.length > 0) keys.push("analytics:read");
+  return keys;
+}
+
+/**
+ * The media capability's secret-registry slice for one resolved config — aggregated into the shared
+ * accessor at startup. Media's own secrets always; the runtime token only when the config gives media a
+ * reason to read it. A declared token is one `pithy provision` binds, so an R2-only project declaring it
+ * would be asked for a grant nothing here uses.
+ */
+export function mediaSecretsRegistryFor(config: Pick<MediaConfig, "images" | "video">) {
+  const needs = mediaRuntimePermissions(config);
+  return needs.length === 0
+    ? mediaOwnSecretsRegistry
+    : defineSecretRegistry({ ...mediaOwnSecretsRegistry, ...runtimeTokenRegistry(needs) });
+}
+
+/**
+ * The full slice — for a config with images in Cloudflare Images and video in Stream, the default. It is
+ * what the prebuilt enrichment worker reads: one deploy serves every config, and it reads the runtime
+ * token only for a video in Stream.
+ */
+export const mediaSecretsRegistry = defineSecretRegistry({
+  ...mediaOwnSecretsRegistry,
+  ...runtimeTokenRegistry(["images:write", "stream:write", "analytics:read"]),
 });

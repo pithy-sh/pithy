@@ -2,12 +2,20 @@
 // SPDX-License-Identifier: MIT
 
 import { readFileSync } from "node:fs";
+import { resolveTokenProfiles } from "@pithy-sh/cloudflare/src/tokens/profiles";
+import { RUNTIME_PROFILE, RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { isMediaCapability, MEDIA_MIGRATION_ORDER, media } from "./capability";
-import { MEDIA_R2_SECRET, MEDIA_STORAGE_SECRET, mediaSecretsRegistry } from "./secret/registry";
+import { MEDIA_DELIVERY_READ_SCOPE } from "./http/scopes";
+import {
+  MEDIA_R2_SECRET,
+  MEDIA_STORAGE_SECRET,
+  mediaOwnSecretsRegistry,
+  mediaSecretsRegistry,
+} from "./secret/registry";
 
 /** Binding names a capability requires (ignoring optionality). */
 function bindingNames(cap: ReturnType<typeof media>): string[] {
@@ -53,9 +61,10 @@ describe("media()", () => {
     expect(media().powers).toEqual(["media:manage"]);
   });
 
-  test("advertises its usage read at the resolved mount path", () => {
+  test("advertises its usage and delivery reads at the resolved mount path", () => {
     expect(media({ basePath: "/files" }).adminRoutes).toEqual([
       expect.objectContaining({ method: "GET", path: "/files/admin/usage", scope: "media:usage:read" }),
+      expect.objectContaining({ method: "GET", path: "/files/admin/delivery", scope: "media:delivery:read" }),
     ]);
   });
 
@@ -86,14 +95,79 @@ describe("media()", () => {
           asked.push(`${request.table}:${request.values.join(",")}`);
           return ["m1"];
         },
+        vaultSecretField: async () => false,
+        accountToken: async () => false,
       },
     });
     expect(asked).toEqual(["pithy_media_assets:organization,public"]);
     expect(findings?.[0]?.problem).toContain("m1");
   });
 
+  test("and the one that names a bundle still holding the token runtime superseded (#728)", async () => {
+    const findings = await media({}).settings?.account?.({
+      project: "acme",
+      worker: "acme-api",
+      workerDirectory: "api",
+      environments: [{ name: "prod", origin: null }],
+      account: {
+        d1Databases: async () => [],
+        zone: async () => true,
+        vaultSecret: async () => true,
+        storeEntry: async () => true,
+        appRows: async () => [],
+        vaultSecretField: async () => true,
+        accountToken: async () => false,
+      },
+    });
+    expect(findings).toEqual([
+      expect.objectContaining({ setting: "media-storage-credentials apiToken", environment: "prod" }),
+    ]);
+  });
+
   test("a visibility default outside allowed is refused at boot", () => {
     expect(() => media({ visibility: { default: "public", allowed: ["private"] } })).toThrow();
+  });
+});
+
+describe("media() — the runtime token (#728)", () => {
+  test("declares what its Workers call Cloudflare with, so a project composing media resolves runtime", () => {
+    const cap = media({});
+    expect(cap.runtimePermissions).toEqual(["images:write", "stream:write", "analytics:read"]);
+    expect(resolveTokenProfiles([cap])[RUNTIME_PROFILE]?.permissions).toEqual([
+      "images:write",
+      "stream:write",
+      "analytics:read",
+    ]);
+    expect(Object.keys(cap.secretRegistry ?? {})).toContain(RUNTIME_TOKEN_SECRET);
+  });
+
+  test("declares no token profile of its own — a second token is not something it can ask for", () => {
+    expect("tokenProfiles" in media({})).toBe(false);
+    expect("claimsTokenProfiles" in media({})).toBe(false);
+  });
+
+  test("adds nothing to the CI token — media's Cloudflare calls run in the Worker, never in CI", () => {
+    expect(media({}).ciPermissions).toBeUndefined();
+    expect(resolveTokenProfiles([media({})])["ci-system"]).toEqual(resolveTokenProfiles([])["ci-system"]);
+  });
+
+  test("a project storing both types in R2 declares nothing for the token, and reads no token", () => {
+    const cap = media({ images: { store: "r2" }, video: { store: "r2" } });
+    expect(cap.runtimePermissions).toEqual([]);
+    expect(Object.keys(resolveTokenProfiles([cap]))).toEqual(["ci-system"]);
+    // Not declared at all: provision binds every declared store secret.
+    expect(Object.keys(cap.secretRegistry ?? {}).sort()).toEqual(Object.keys(mediaOwnSecretsRegistry).sort());
+  });
+
+  test("one type on a Cloudflare product is enough to need the token, and to declare it", () => {
+    expect(media({ images: { store: "r2" } }).runtimePermissions).toEqual(["stream:write", "analytics:read"]);
+    expect(Object.keys(media({ video: { store: "r2" } }).secretRegistry ?? {})).toContain(RUNTIME_TOKEN_SECRET);
+  });
+
+  test("advertises the delivery read on its management surface, at the mount it was given", () => {
+    expect(media({ basePath: "/assets" }).adminRoutes).toContainEqual(
+      expect.objectContaining({ method: "GET", path: "/assets/admin/delivery", scope: MEDIA_DELIVERY_READ_SCOPE }),
+    );
   });
 });
 
@@ -122,12 +196,15 @@ describe("pithy.manifest.json — declared secrets", () => {
     }
   });
 
-  test("the credentials are obtained from Cloudflare, and only the token rolls itself", () => {
-    // The two owners, and the reason rotation is declared per secret rather than per issuer. A scoped API
-    // token is replaced by asking Cloudflare, which returns the successor; an R2 S3 access-key pair has
-    // no such call, so a human makes the next one.
-    const token = manifest.secrets.find((secret) => secret.name === MEDIA_STORAGE_SECRET);
-    expect(token?.origin).toMatchObject({ kind: "obtained", issuer: "cloudflare" });
+  test("the account and the R2 pair are obtained from Cloudflare by a human, and only the token rolls itself", () => {
+    // The reason rotation is declared per secret rather than per issuer. The runtime token is replaced by
+    // asking Cloudflare, which returns the successor; an account id never changes, and an R2 S3
+    // access-key pair has no such call, so a human makes the next one.
+    const account = manifest.secrets.find((secret) => secret.name === MEDIA_STORAGE_SECRET);
+    expect(account?.origin).toMatchObject({ kind: "obtained", issuer: "cloudflare" });
+    expect(account?.rotation).toMatchObject({ kind: "manual", issuer: "cloudflare" });
+
+    const token = manifest.secrets.find((secret) => secret.name === RUNTIME_TOKEN_SECRET);
     expect(token?.rotation).toMatchObject({ kind: "provider", issuer: "cloudflare" });
 
     const r2 = manifest.secrets.find((secret) => secret.name === MEDIA_R2_SECRET);
@@ -141,6 +218,11 @@ describe("pithy.manifest.json — declared secrets", () => {
     expect(mediaSecretsRegistry[MEDIA_R2_SECRET]?.origin).toEqual(
       manifest.secrets.find((secret) => secret.name === MEDIA_R2_SECRET)?.origin,
     );
+  });
+
+  test("the runtime token is helped, not obtained: the kit names its grants and mints it (#728)", () => {
+    const token = manifest.secrets.find((secret) => secret.name === RUNTIME_TOKEN_SECRET);
+    expect(token?.origin).toMatchObject({ kind: "helped", issuer: "cloudflare" });
   });
 
   test("mints nothing — neither an Images token nor an access key can be invented", () => {

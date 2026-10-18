@@ -7188,6 +7188,245 @@
         ]
       }
     },
+    "/media/admin/delivery": {
+      "get": {
+        "tags": [
+          "media"
+        ],
+        "operationId": "getMediaAdminDelivery",
+        "summary": "Read what this environment's media was served.",
+        "description": "Minutes of video and image requests, per asset, from Cloudflare's analytics — joined to this environment's own assets, never an account total. The window defaults to the last 30 days.",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "The window's start, inclusive, ISO-8601. Defaults to 30 days before `until`.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "description": "The window's end, exclusive, ISO-8601. Defaults to now.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What this environment's media was served in the window, read from Cloudflare's analytics and joined to its own assets.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "since": {
+                      "type": "string",
+                      "description": "The window's start, inclusive, as ISO-8601."
+                    },
+                    "until": {
+                      "type": "string",
+                      "description": "The window's end, exclusive, as ISO-8601."
+                    },
+                    "video": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "state": {
+                              "type": "string",
+                              "const": "reported",
+                              "description": "Read from Cloudflare Stream's analytics."
+                            },
+                            "assets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string",
+                                    "description": "The media record's id."
+                                  },
+                                  "name": {
+                                    "type": "string",
+                                    "description": "The record's display name."
+                                  },
+                                  "storageKey": {
+                                    "type": "string",
+                                    "description": "The Cloudflare Stream uid the minutes were joined on."
+                                  },
+                                  "minutesViewed": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991,
+                                    "description": "Minutes of video Cloudflare delivered for this asset in the window. `0` when nobody watched."
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "name",
+                                  "storageKey",
+                                  "minutesViewed"
+                                ],
+                                "description": "Minutes of one video delivered in the window."
+                              },
+                              "description": "Every stored Stream video in this environment, most watched first."
+                            }
+                          },
+                          "required": [
+                            "state",
+                            "assets"
+                          ],
+                          "description": "Minutes delivered, per video."
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "state": {
+                              "type": "string",
+                              "const": "unavailable",
+                              "description": "This type's delivery is not reported here."
+                            },
+                            "reason": {
+                              "type": "string",
+                              "enum": [
+                                "stored-in-r2"
+                              ],
+                              "description": "Why a type's delivery is not reported: `stored-in-r2` — this Worker stores that type in R2, where Cloudflare Images and Stream count nothing."
+                            },
+                            "message": {
+                              "type": "string",
+                              "description": "Why, in a sentence an operator can act on."
+                            }
+                          },
+                          "required": [
+                            "state",
+                            "reason",
+                            "message"
+                          ],
+                          "description": "A type whose delivery cannot be read, and why. Never reported as zero."
+                        }
+                      ],
+                      "description": "Minutes of video delivered in the window, per asset — or why they cannot be read."
+                    },
+                    "images": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "state": {
+                              "type": "string",
+                              "const": "reported",
+                              "description": "Read from Cloudflare Images' analytics."
+                            },
+                            "assets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string",
+                                    "description": "The media record's id."
+                                  },
+                                  "name": {
+                                    "type": "string",
+                                    "description": "The record's display name."
+                                  },
+                                  "storageKey": {
+                                    "type": "string",
+                                    "description": "The Cloudflare Images id the requests were joined on."
+                                  },
+                                  "requests": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991,
+                                    "description": "Delivery requests Cloudflare Images served for this asset in the window, every variant counted."
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "name",
+                                  "storageKey",
+                                  "requests"
+                                ],
+                                "description": "Delivery requests for one image in the window."
+                              },
+                              "description": "Every stored Cloudflare Images asset in this environment, most served first."
+                            }
+                          },
+                          "required": [
+                            "state",
+                            "assets"
+                          ],
+                          "description": "Delivery requests, per image."
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "state": {
+                              "type": "string",
+                              "const": "unavailable",
+                              "description": "This type's delivery is not reported here."
+                            },
+                            "reason": {
+                              "type": "string",
+                              "enum": [
+                                "stored-in-r2"
+                              ],
+                              "description": "Why a type's delivery is not reported: `stored-in-r2` — this Worker stores that type in R2, where Cloudflare Images and Stream count nothing."
+                            },
+                            "message": {
+                              "type": "string",
+                              "description": "Why, in a sentence an operator can act on."
+                            }
+                          },
+                          "required": [
+                            "state",
+                            "reason",
+                            "message"
+                          ],
+                          "description": "A type whose delivery cannot be read, and why. Never reported as zero."
+                        }
+                      ],
+                      "description": "Images served in the window, per asset — or why they cannot be read. Never an account total."
+                    }
+                  },
+                  "required": [
+                    "since",
+                    "until",
+                    "video",
+                    "images"
+                  ],
+                  "description": "What this environment's media was served in the window, read from Cloudflare's analytics and joined to its own assets."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "media:delivery:read"
+        ]
+      }
+    },
     "/media/duplicates": {
       "post": {
         "tags": [

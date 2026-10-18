@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
+import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { hostWorkflowsFor, resolveWorkflowHost, type WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
@@ -68,6 +70,14 @@ export function resolveMediaConfig(template: WorkflowHostTemplate, params: Media
     secretsStoreId: storeId,
     // The master key entry is project- and env-scoped, matching what the secrets manager wrote.
     masterKeySecretName: masterKeySecretName(project, env, feature),
+    // The application's one runtime token (#728), at the entry `pithy token mint runtime` and the secrets
+    // manager's provisioning write — composed by the same scope call, so the two cannot name two entries.
+    secretNames: {
+      [RUNTIME_TOKEN_SECRET]: (feature ? featureScope(feature) : environmentScope(project, env)).secretEntry(
+        RUNTIME_TOKEN_SECRET,
+        "environment",
+      ),
+    },
     vars: { MEDIA_CONFIG: JSON.stringify(mediaConfig) },
     // The four enrichment Workflows, derived from the specs rather than from the template's own block.
     // A Workflow name is account-scoped, so the template's `pithy-media-image-to-text` cannot be made
