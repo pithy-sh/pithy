@@ -113,24 +113,32 @@ const WorkerRenamePayload = z
   })
   .describe("What `pithy worker rename` moved, or under `--dry-run` would.");
 
-/** `pithy worker bind --json` and `pithy worker unbind --json`: one line, the same five keys. */
+/** The five keys `pithy worker bind --json` and `pithy worker unbind --json` share. */
+const WorkerBindingShape = {
+  from: z.string().describe("The `apps/` Worker that holds the binding, by its directory name."),
+  to: z
+    .string()
+    .nullable()
+    .describe(
+      "The Worker it calls: an `apps/` Worker by its directory name, or a kit Worker by its capability. `null` only for an `unbind --binding` that found nothing.",
+    ),
+  binding: z.string().describe("The binding name in `from`'s env."),
+  kind: z
+    .enum(["app", "kit"])
+    .nullable()
+    .describe("`app` for an `apps/` Worker, `kit` for a kit Worker. `null` exactly when `to` is."),
+  changed: z.boolean().describe("Whether this run wrote anything. `false` on a run that found it already so."),
+};
+
+/** `pithy worker bind --json`. */
 const WorkerBindPayload = z
-  .object({
-    from: z.string().describe("The `apps/` Worker that holds the binding, by its directory name."),
-    to: z
-      .string()
-      .nullable()
-      .describe(
-        "The Worker it calls: an `apps/` Worker by its directory name, or a kit Worker by its capability. `null` only for an `unbind --binding` that found nothing.",
-      ),
-    binding: z.string().describe("The binding name in `from`'s env."),
-    kind: z
-      .enum(["app", "kit"])
-      .nullable()
-      .describe("`app` for an `apps/` Worker, `kit` for a kit Worker. `null` exactly when `to` is."),
-    changed: z.boolean().describe("Whether this run wrote anything. `false` on a run that found it already so."),
-  })
-  .describe("The service binding `pithy worker bind` or `unbind` settled.");
+  .object({ command: z.literal("worker.bind").describe('`"worker.bind"`.'), ...WorkerBindingShape })
+  .describe("The service binding `pithy worker bind` settled.");
+
+/** `pithy worker unbind --json`: the same keys as `bind`, under its own `command`. */
+const WorkerUnbindPayload = z
+  .object({ command: z.literal("worker.unbind").describe('`"worker.unbind"`.'), ...WorkerBindingShape })
+  .describe("The service binding `pithy worker unbind` settled.");
 
 /** `pithy worker sync --json`. */
 const WorkerSyncPayload = z
@@ -415,7 +423,7 @@ const bind = withContract(
         });
         if (args.json) {
           process.stdout.write(
-            `${formatJsonLine({ from: report.from, to: report.to, binding: report.binding, kind: report.kind, changed: report.changed })}\n`,
+            `${formatJsonLine({ command: "worker.bind", from: report.from, to: report.to, binding: report.binding, kind: report.kind, changed: report.changed })}\n`,
           );
           return;
         }
@@ -469,7 +477,7 @@ const unbind = withContract(
         });
         if (args.json) {
           process.stdout.write(
-            `${formatJsonLine({ from: report.from, to: report.to, binding: report.binding, kind: report.kind, changed: report.changed })}\n`,
+            `${formatJsonLine({ command: "worker.unbind", from: report.from, to: report.to, binding: report.binding, kind: report.kind, changed: report.changed })}\n`,
           );
           return;
         }
@@ -482,7 +490,7 @@ const unbind = withContract(
   {
     output: "document",
     schemaVersion: 1,
-    payload: WorkerBindPayload,
+    payload: WorkerUnbindPayload,
     mutates: true,
     idempotent: true,
     needsNetwork: false,

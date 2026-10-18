@@ -2754,6 +2754,7 @@
       "schemaVersion": 1,
       "payload": {
         "$": "object",
+        "$.command": "\"worker.bind\"",
         "$.from": "string",
         "$.to": "null | string",
         "$.binding": "string",
@@ -2897,6 +2898,7 @@
       "schemaVersion": 1,
       "payload": {
         "$": "object",
+        "$.command": "\"worker.unbind\"",
         "$.from": "string",
         "$.to": "null | string",
         "$.binding": "string",

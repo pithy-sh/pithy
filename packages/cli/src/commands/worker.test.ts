@@ -350,6 +350,7 @@ describe("worker bind and unbind", () => {
   test("bind writes the declaration, and a second run reports changed: false", async () => {
     await twoApps();
     expect(await json("worker bind", ["--from", "app-a", "--to", "app-b"])).toMatchObject({
+      command: "worker.bind",
       from: "app-a",
       to: "app-b",
       binding: "APP_B",
@@ -365,7 +366,9 @@ describe("worker bind and unbind", () => {
   test("unbind by --to and by --binding, each idempotent", async () => {
     await twoApps();
     await json("worker bind", ["--from", "app-a", "--to", "app-b"]);
-    expect((await json("worker unbind", ["--from", "app-a", "--to", "app-b"])).changed).toBe(true);
+    const unbound = await json("worker unbind", ["--from", "app-a", "--to", "app-b"]);
+    expect(unbound.command).toBe("worker.unbind");
+    expect(unbound.changed).toBe(true);
     expect((await json("worker unbind", ["--from", "app-a", "--to", "app-b"])).changed).toBe(false);
     await json("worker bind", ["--from", "app-a", "--to", "app-b"]);
     expect((await json("worker unbind", ["--from", "app-a", "--binding", "APP_B"])).changed).toBe(true);
