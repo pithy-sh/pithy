@@ -634,16 +634,19 @@ The same block carries two findings about the name a Worker deploys under **in e
 
 **And it is only written where the convention names something you are allowed to create.** For an `apps/email` the convention composes `acme-staging-email` — the email capability's own host Worker, and the exact name the paragraph above fails the exit over. So the note recommended, as a friendly optional suggestion, the collision the other half exists to find, and an adopter who took the advice created it. A Worker there is no legal convention name for gets no note at all: its suffixed name collides with nothing, so there is nothing to say.
 
-A Worker that composes a **scope-gated** capability — `leaderboard`, `rating` or `ledger` — gets a **`scopes`** line too. Those routes are for your own trusted backend, and each one checks an `AuthContext` scope that only `auth()`'s `resolveScopes` can fill. With no resolver, every one of them refuses every caller, and the runtime cannot tell that from a caller who simply is not trusted. So doctor names each gate:
+A Worker that composes a **scope-gated** capability — `leaderboard`, `rating` or `ledger` — gets a **`scopes`** line too. Those routes are for your own trusted backend, and each one checks an `AuthContext` scope that only `auth()`'s `resolveScopes` can fill. With no resolver, every one of them refuses every caller, and the runtime cannot tell that from a caller who simply is not trusted. So doctor names each gate. For a Worker composing `leaderboard` and `ledger`, that is five:
 
 ```
     scopes       gated routes, no scope resolver. Each refuses every caller.
+                 leaderboard: PUT /leaderboard/:board/entries/:userId/hidden needs leaderboard:admin
+                 leaderboard: DELETE /leaderboard/:board/entries/:userId needs leaderboard:admin
                  leaderboard: POST /leaderboard/:board needs leaderboard:submit
                  ledger: POST /ledger/:currency/credit needs ledger:admin
+                 ledger: POST /ledger/:currency/debit needs ledger:admin
                  Give auth() a resolveScopes in pithy.config.ts. Reported, not failed.
 ```
 
-**It reports and does not fail the exit.** A project can compose `ledger` for its players' balances and never move one from a backend, and a red over a route nobody calls is a red nobody can clear. It is never collapsed into `healthy ✓` either, because this line is the only place the state is said. Once auth has a resolver the line reads `2 gated routes, resolved by auth's resolveScopes ✓`. A Worker that composes no gate prints no line. In `--json` it rides under `project.health.workers[].scopes`, and every gate carries `fix: null`: which caller to trust is your decision. `@pithy-sh/auth`'s `docs/server-authoritative.md` ranks the three ways to make it.
+**It reports and does not fail the exit.** A project can compose `ledger` for its players' balances and never move one from a backend, and a red over a route nobody calls is a red nobody can clear. It is never collapsed into `healthy ✓` either, because this line is the only place the state is said. Once auth has a resolver the line reads `5 gated routes, resolved by auth's resolveScopes ✓`. A Worker that composes no gate prints no line. In `--json` it rides under `project.health.workers[].scopes`, and every gate carries `fix: null`: which caller to trust is your decision. `@pithy-sh/auth`'s `docs/server-authoritative.md` ranks the three ways to make it.
 
 ## Carrying the data across
 

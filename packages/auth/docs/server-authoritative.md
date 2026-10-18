@@ -6,7 +6,7 @@ Some writes belong to your backend and never to a device. A score, a match resul
 
 ## What a scope is
 
-Four routes in the kit check a scope on `AuthContext`:
+Six routes in the kit check one of four scopes on `AuthContext`:
 
 | Scope | Capability | What it opens | Off switch |
 |---|---|---|---|
