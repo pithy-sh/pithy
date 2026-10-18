@@ -32,8 +32,9 @@ import type { WorkerScope } from "../migrations/run";
  *
  * - **A key the chain created is gone from the declaration** — removed or renamed. A migration that drops a
  *   column holding somebody's key is a loss the adopter authors deliberately, so the diff names it and stops.
- * - **A migration file on disk the spec does not compose.** It was written and never wired, or the index was
- *   lost; diffing against a chain missing it would write it again.
+ * - **A migration file on disk the spec does not compose.** It was written and never wired, the index was
+ *   lost, or it was written by hand and never added to the index; diffing against a chain missing it would
+ *   write it again.
  * - **One table declared by two Workers.** Two Workers sharing `SECRETS` would each migrate it under one
  *   namespace with different files. One Worker owns a table; the others read it with `.table(T)`, which needs
  *   the declaration and nothing else.
@@ -129,9 +130,18 @@ export async function generateSecretTableMigrations(options: GenerateOptions): P
       .map((file) => file.slice(0, -".ts".length))
       .filter((key) => !composed.has(key));
     if (unwired.length > 0) {
+      const index = shown(options.projectDir, join(dir, "index.ts"));
+      const them = unwired.length === 1 ? "it" : "them";
+      const again = pithyCommand("migrate", { flags: { "--env": options.env } });
+      // Nothing composed means the wiring is missing. Something composed means the wiring is there and the
+      // index does not list these files — a hand-written migration nobody added to it.
+      const action =
+        composed.size === 0
+          ? `Pass secretTableMigrations from ${index} to secretTablesDatabase in ${worker.name}'s pithy.config.ts, then run ${again} again.`
+          : `Import ${unwired.join(", ")} in ${index} and add ${them} to secretTableMigrations, or delete ${them}, then run ${again} again.`;
       throw new ValidationError({
         message: `${shown(options.projectDir, dir)} holds ${unwired.join(", ")}, which ${worker.name} does not compose.`,
-        action: `Pass secretTableMigrations from ${shown(options.projectDir, join(dir, "index.ts"))} to secretTablesDatabase in ${worker.name}'s pithy.config.ts, then run ${pithyCommand("migrate", { flags: { "--env": options.env } })} again.`,
+        action,
       });
     }
 

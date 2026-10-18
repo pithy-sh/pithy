@@ -158,7 +158,30 @@ describe("generateSecretTableMigrations", () => {
     await expect(readdir(join(api.dir, SECRET_TABLE_MIGRATIONS_DIR))).rejects.toThrow();
   });
 
-  test("a hand-written file in the directory counts toward the number and joins the index", async () => {
+  test("a hand-written file the index does not list is refused, naming the line to add to index.ts", async () => {
+    const first = await worker(declare(["userId"]));
+    await generateSecretTableMigrations({ projectDir: root, env: "dev", workers: [first], write: true });
+    await writeFile(
+      join(first.dir, SECRET_TABLE_MIGRATIONS_DIR, "0002_backfill.ts"),
+      "export default { up: async () => {} };\n",
+    );
+    // `secretTableMigrations` is wired, but nobody added the hand-written file to index.ts.
+    const wired = await worker(declare(["userId"]), await composed(first.dir));
+    const error = await generateSecretTableMigrations({
+      projectDir: root,
+      env: "dev",
+      workers: [wired],
+      write: true,
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).payload.message).toContain("0002_backfill");
+    expect((error as ValidationError).payload.action).toContain("index.ts");
+    expect((error as ValidationError).payload.action).toContain("0002_backfill");
+    expect((error as ValidationError).payload.action).not.toContain("Pass secretTableMigrations");
+    expect(await files(first.dir)).toEqual(["0001_customer_init.ts", "0002_backfill.ts", "index.ts"]);
+  });
+
+  test("a hand-written file added to index.ts counts toward the number and stays in the index", async () => {
     const first = await worker(declare(["userId"]));
     await generateSecretTableMigrations({ projectDir: root, env: "dev", workers: [first], write: true });
     await writeFile(
