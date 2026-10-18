@@ -58,7 +58,6 @@ const R2_BUNDLE = {
   secretAccessKey: "secret-test",
   accountId: "acct-1",
   bucket: "acme-prod-media",
-  apiToken: "r2-scoped",
 };
 
 /**

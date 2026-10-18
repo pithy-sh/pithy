@@ -135,12 +135,6 @@ export interface CloudflareMediaProvisionerOptions {
    * Cloudflare exposes no API for creating one.
    */
   r2Credentials: { accessKeyId: string; secretAccessKey: string };
-  /**
-   * The API token carried alongside the R2 key pair so the object store can prove bucket access — the
-   * token the pair derives from, outside the one-token rule like the pair itself. Defaults to the bootstrap token,
-   * matching what `pithy storage provision` does; supply an R2-scoped one for production.
-   */
-  r2ApiToken?: string;
   /** The app's resolved media config — decides which signing keys are written, and fills `MEDIA_CONFIG`. */
   mediaConfig: MediaConfig;
   /** The secrets manager dispatcher — writes the credentials into a deployed env's managed store. */
@@ -168,7 +162,6 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
   readonly #apiToken: string;
   readonly #storeId: string;
   readonly #r2Credentials: { accessKeyId: string; secretAccessKey: string };
-  readonly #r2ApiToken: string;
   readonly #mediaConfig: MediaConfig;
   readonly #dispatcher: SecretDispatcher;
   readonly #probe: SecretProbe | undefined;
@@ -188,7 +181,6 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
     this.#apiToken = options.apiToken;
     this.#storeId = options.storeId;
     this.#r2Credentials = options.r2Credentials;
-    this.#r2ApiToken = options.r2ApiToken ?? options.apiToken;
     this.#mediaConfig = options.mediaConfig;
     this.#dispatcher = options.dispatcher;
     this.#probe = options.probe;
@@ -320,7 +312,6 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
     const storage = MediaStorageCredentials.parse({ accountId: this.#account.accountId });
     const r2 = mediaR2Registry[MEDIA_R2_SECRET].schema.parse({
       accountId: this.#account.accountId,
-      apiToken: this.#r2ApiToken,
       accessKeyId: this.#r2Credentials.accessKeyId,
       secretAccessKey: this.#r2Credentials.secretAccessKey,
       bucket: resources.bucketName,

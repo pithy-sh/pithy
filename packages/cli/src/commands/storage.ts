@@ -158,11 +158,6 @@ const provision = withContract(
         description:
           "The app worker whose wrangler.jsonc carries the per-environment DB binding and receives the sweep Workflow binding (default: the project's only worker)",
       },
-      "api-token": {
-        type: "string",
-        description:
-          "Cloudflare API token carried alongside the R2 key pair, so the object store can prove bucket access. Defaults to CLOUDFLARE_API_TOKEN from .dev.vars — a broad token; supply an R2-scoped one for production.",
-      },
       "r2-access-key-id": {
         type: "string",
         description:
@@ -220,7 +215,6 @@ const provision = withContract(
           account,
           apiToken,
           storeId,
-          storageApiToken: args["api-token"] ?? apiToken,
           r2Credentials,
           storageConfig,
           dispatcher: await buildSecretDispatcher(accountId, apiToken, project),

@@ -143,6 +143,8 @@ runtimePermissions: ["images:write", "stream:write", "analytics:read"]
 
 **One token per environment.** `runtime` is minted into the Secrets Store at `<project>-<env>-runtime-cf-api-token` and bound into every Worker of that environment that calls Cloudflare as `RUNTIME_CF_API_TOKEN` — the secrets manager, the media host, and your app Worker. Revoking staging's leaves production reading. `pithy secrets provision` mints it for each environment, and `pithy token mint runtime --env <env>` writes the same entry under the same token name, so the two cannot leave an environment holding two.
 
+**One token is fewer credentials, not less privilege per Worker.** `runtime` is the union, and every Worker it is bound into holds all of it. Compose secrets and media, and the manager holds Images, Stream and analytics grants it never calls, while the media host and your app Worker hold Secrets Store Write. That store is flat and account-wide: every environment's entries live in it, production's master key included. Before `runtime`, only the manager held that write. A compromised app Worker can now rewrite any entry in the account's Secrets Store, so treat app Worker code as holding the manager's authority. What the rule buys is one credential per environment to mint, rotate and revoke, and none built by hand. A feature's Workers bind no runtime token at all: nothing mints one for a feature, so branch code never holds it.
+
 ```bash
 pithy token mint runtime --env prod
 ```
@@ -166,7 +168,7 @@ Before `runtime`, an application held up to three: the secrets manager's own tok
 
 ### R2's key pair is outside the rule
 
-The rule is about Cloudflare API tokens a Worker calls the Cloudflare API with. R2's S3 access-key pair is not one: Cloudflare offers no API to mint it, it addresses one bucket over the S3 protocol, and a Worker reaches its bucket through a binding wherever it can. `pithy storage provision` and `pithy media provision` still take it, and the bundle that stores it carries the token the pair derives from. It is the object store's credential, scoped to R2, and nothing else reads it.
+The rule is about Cloudflare API tokens a Worker calls the Cloudflare API with. R2's S3 access-key pair is not one: Cloudflare offers no API to mint it, it addresses one bucket over the S3 protocol, and a Worker reaches its bucket through a binding wherever it can. `pithy storage provision` and `pithy media provision` still take it. The bundle that stores it holds the account id, the pair and the bucket, and no Cloudflare API token: the object store signs every call with the pair. A bundle written before #728 also holds a token, the bootstrap one unless you passed another. Re-run the provision to rewrite the bundle without it, then revoke that token if you made it for R2. `pithy doctor` names each bundle still holding one once `runtime` is minted.
 
 ## Where a token is written — the store
 

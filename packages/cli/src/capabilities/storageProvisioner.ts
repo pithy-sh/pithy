@@ -135,11 +135,6 @@ export interface CloudflareStorageProvisionerOptions {
   /** The CF Secrets Store id holding the per-env master keys (the sweep worker decrypts its credentials). */
   storeId: string;
   /**
-   * The API token written into the storage secret. An R2 S3 access key *is* a CF API token, so whatever
-   * minted the key pair already holds this; it is carried so `CloudflareR2Manager` can prove bucket access.
-   */
-  storageApiToken: string;
-  /**
    * The R2 S3 access-key pair the Worker presigns uploads and downloads with. Supplied, not minted:
    * Cloudflare exposes no API for creating one.
    */
@@ -164,7 +159,6 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
   readonly #project: string;
   readonly #apiToken: string;
   readonly #storeId: string;
-  readonly #storageApiToken: string;
   readonly #r2Credentials: { accessKeyId: string; secretAccessKey: string };
   readonly #storageConfig: StorageConfig;
   readonly #dispatcher: SecretDispatcher;
@@ -183,7 +177,6 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
     this.#project = options.project;
     this.#apiToken = options.apiToken;
     this.#storeId = options.storeId;
-    this.#storageApiToken = options.storageApiToken;
     this.#r2Credentials = options.r2Credentials;
     this.#storageConfig = options.storageConfig;
     this.#dispatcher = options.dispatcher;
@@ -239,7 +232,6 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
       secretAccessKey: this.#r2Credentials.secretAccessKey,
       accountId: this.#account.accountId,
       bucket: resources.bucketName,
-      apiToken: this.#storageApiToken,
     });
     // Upsert: create on first provision, update on a re-run (create rejects an existing secret) — so
     // the write is idempotent. If create fails for a real reason the update almost always fails too;

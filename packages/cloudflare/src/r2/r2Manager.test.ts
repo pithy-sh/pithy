@@ -83,6 +83,23 @@ describe("CloudflareR2Manager", () => {
       );
     });
 
+    /**
+     * The Worker builds this manager from an R2 bundle that carries no Cloudflare API token (#728): the
+     * application's one token is `runtime`. Every object operation is S3, signed with the key pair.
+     */
+    it("works over S3 with no API token, and cannot prove bucket access without one", async () => {
+      const { apiToken: _none, ...s3Only } = config;
+      const objects = new CloudflareR2Manager(s3Only);
+      mockGetSignedUrl.mockResolvedValue("https://presigned-upload.example.com");
+      mockBucketsGet.mockResolvedValue({ name: "bucket-1" });
+
+      expect(await objects.createUploadUrl("docs/a.pdf", "application/pdf", 1024)).toBe(
+        "https://presigned-upload.example.com",
+      );
+      expect(await objects.validateServiceAccess()).toBe(false);
+      expect(mockBucketsGet).not.toHaveBeenCalled();
+    });
+
     it("throws cloudflare/not_configured when accountId is missing (base guard)", () => {
       expect(() => new CloudflareR2Manager({ ...config, accountId: "" })).toThrowError(
         expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/not_configured" }) }),

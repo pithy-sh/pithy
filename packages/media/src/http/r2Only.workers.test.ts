@@ -80,7 +80,6 @@ beforeEach(async () => {
       secretAccessKey: "secret-test",
       accountId: "acct-1",
       bucket: "acme-dev-media",
-      apiToken: "r2-scoped",
     },
   });
 });

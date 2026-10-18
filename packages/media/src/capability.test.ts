@@ -103,7 +103,7 @@ describe("media()", () => {
     expect(findings?.[0]?.problem).toContain("m1");
   });
 
-  test("and the one that names a bundle still holding the token runtime superseded (#728)", async () => {
+  test("and the ones that name a bundle still holding a token: media's own and the R2 bundle's (#728)", async () => {
     const findings = await media({}).settings?.account?.({
       project: "acme",
       worker: "acme-api",
@@ -121,6 +121,7 @@ describe("media()", () => {
     });
     expect(findings).toEqual([
       expect.objectContaining({ setting: "media-storage-credentials apiToken", environment: "prod" }),
+      expect.objectContaining({ setting: "media-r2-credentials apiToken", environment: "prod" }),
     ]);
   });
 

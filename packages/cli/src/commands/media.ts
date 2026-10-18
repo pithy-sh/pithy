@@ -173,11 +173,6 @@ const provision = withContract(
         description:
           "R2 S3 secret access key, paired with --r2-access-key-id. Falls back to R2_CREDENTIALS in the account config.",
       },
-      "r2-api-token": {
-        type: "string",
-        description:
-          "Cloudflare API token carried alongside the R2 key pair, so the object store can prove bucket access. Defaults to CLOUDFLARE_API_TOKEN from .dev.vars — a broad token; supply an R2-scoped one for production.",
-      },
       json: { type: "boolean", default: false, description: "Machine-readable output" },
     },
     run: ({ args }) =>
@@ -230,7 +225,6 @@ const provision = withContract(
           apiToken,
           storeId,
           r2Credentials,
-          r2ApiToken: args["r2-api-token"] ?? apiToken,
           mediaConfig,
           dispatcher,
           // The same manager answers whether a Stream signing key is already stored, so a re-run keeps it.

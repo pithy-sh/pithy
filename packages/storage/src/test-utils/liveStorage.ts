@@ -202,11 +202,7 @@ export async function withLiveBucket<T>(
   const bucketName = uniqueName("storage");
   const manager = clients.r2({ ...r2, bucketName });
   const open = new Map<string, OpenUpload>();
-  const store = liveObjectStore(
-    { ...r2, accountId: creds.accountId, apiToken: creds.apiToken, bucket: bucketName },
-    manager,
-    open,
-  );
+  const store = liveObjectStore({ ...r2, accountId: creds.accountId, bucket: bucketName }, manager, open);
 
   return withThrowawayResource(
     () => provisioner.createBucket(bucketName),

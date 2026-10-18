@@ -7,7 +7,7 @@ Stands up what `pithy add media` only wired: the per-environment R2 bucket, the 
 ## Synopsis
 
 ```
-pithy media provision [--worker <name>] [--r2-access-key-id <id>] [--r2-secret-access-key <key>] [--r2-api-token <token>] [--json]
+pithy media provision [--worker <name>] [--r2-access-key-id <id>] [--r2-secret-access-key <key>] [--json]
 pithy media deprovision --env <environment> [--storage] [--r2-access-key-id <id>] [--r2-secret-access-key <key>] [--json]
 ```
 
@@ -24,7 +24,6 @@ pithy media deprovision --env <environment> [--storage] [--r2-access-key-id <id>
 | `--worker <name>` | the project's only Worker | The app Worker whose `media(...)` registration is provisioned, and whose `wrangler.jsonc` carries the per-environment `DB` binding. Required when a project has several |
 | `--r2-access-key-id <id>` | `R2_CREDENTIALS` | R2 S3 access key id the Worker presigns uploads and downloads with. Made under R2 → Manage API tokens |
 | `--r2-secret-access-key <key>` | `R2_CREDENTIALS` | The secret half of the pair. Passing one of the two without the other is refused |
-| `--r2-api-token <token>` | `CLOUDFLARE_API_TOKEN` | The token carried beside the R2 key pair so the object store can prove bucket access |
 | `--json` | `false` | Machine-readable output — one line, one object |
 
 `pithy media deprovision`
@@ -41,7 +40,7 @@ pithy media deprovision --env <environment> [--storage] [--r2-access-key-id <id>
 
 **No Images or Stream token is asked for.** Media mints uploads, changes signing and reads what was served with the application's one `runtime` token, which `pithy secrets provision` mints per environment ([`TOKENS.md`](../TOKENS.md)). Each environment's deploy refuses, before anything ships, while its Secrets Store holds no runtime token, and names `pithy token mint runtime --env <env>`.
 
-**The R2 pair is supplied, not minted.** Cloudflare exposes no API for creating an R2 S3 access-key pair. It comes from the flags or from `R2_CREDENTIALS` in the account config, and is written into the secret as given. It is the object store's credential, outside the one-token rule.
+**The R2 pair is supplied, not minted.** Cloudflare exposes no API for creating an R2 S3 access-key pair. It comes from the flags or from `R2_CREDENTIALS` in the account config, and is written into the secret as given. It is the object store's credential, outside the one-token rule. No Cloudflare API token is stored beside it: the object store signs every call with the pair.
 
 `provision` runs in phases across every managed environment rather than one environment end to end, so a failure in `prod` stops the run before `staging` is deployed against a half-provisioned account:
 

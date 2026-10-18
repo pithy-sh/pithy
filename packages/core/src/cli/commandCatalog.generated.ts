@@ -1106,11 +1106,6 @@ export const COMMANDS = {
         "required": false,
         "repeatable": false
       },
-      "--r2-api-token": {
-        "type": "string",
-        "required": false,
-        "repeatable": false
-      },
       "--json": {
         "type": "boolean",
         "required": false,
@@ -1652,11 +1647,6 @@ export const COMMANDS = {
     "positionals": [],
     "flags": {
       "--worker": {
-        "type": "string",
-        "required": false,
-        "repeatable": false
-      },
-      "--api-token": {
         "type": "string",
         "required": false,
         "repeatable": false

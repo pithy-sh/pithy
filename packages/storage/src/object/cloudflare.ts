@@ -41,12 +41,12 @@ export function r2Manager(manager: CloudflareR2Manager): PresignedObjects {
 
 /**
  * The default port factory: build an R2 manager from the resolved credential bundle and adapt it.
- * This is what `objectStore` calls when no `presigned` seam is injected.
+ * This is what `objectStore` calls when no `presigned` seam is injected. S3 only: the bundle carries no
+ * Cloudflare API token, and nothing here calls the Cloudflare API (#728).
  */
 export function r2Presigned(credentials: R2StorageCredentials): PresignedObjects {
   return r2Manager(
     new CloudflareR2Manager({
-      apiToken: credentials.apiToken,
       accountId: credentials.accountId,
       accessKeyId: credentials.accessKeyId,
       secretAccessKey: credentials.secretAccessKey,

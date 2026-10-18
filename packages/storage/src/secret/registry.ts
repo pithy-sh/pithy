@@ -27,6 +27,11 @@ import { z } from "zod";
  * The credentials one R2 bucket is addressed and presigned with. Composed from
  * {@link R2Credentials} rather than redeclaring the key pair — that shape is `@pithy-sh/cloudflare`'s
  * to define, and `CloudflareR2Manager` validates its config against it.
+ *
+ * **No Cloudflare API token (#728).** A deployed application holds one, `runtime`, and the object store
+ * needs none: every operation is S3, signed with the key pair. The bundle carried the token the pair
+ * derives from until then; a bundle written before parses, the parse drops it, and the next provision
+ * rewrites the bundle without it.
  */
 export const R2StorageCredentials = R2Credentials.extend({
   accountId: z
@@ -39,14 +44,7 @@ export const R2StorageCredentials = R2Credentials.extend({
     .min(1)
     .meta({ multiline: false })
     .describe("The R2 bucket name every presigned URL and server-side object call targets."),
-  apiToken: z
-    .string()
-    .min(1)
-    .meta({ multiline: false })
-    .describe(
-      "The R2-scoped Cloudflare API token the key pair was derived from. Carried alongside because an R2 S3 access key IS a CF API token — the id is the key id, the SHA-256 of the value is the secret — so whatever provisions the pair already holds it, and `CloudflareR2Manager` needs it to prove bucket access.",
-    ),
-}).describe("The account, key pair, scoped token, and bucket name the object store presigns and addresses R2 with.");
+}).describe("The account, key pair, and bucket name the object store presigns and addresses R2 with.");
 export type R2StorageCredentials = z.output<typeof R2StorageCredentials>;
 
 /**

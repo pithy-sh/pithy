@@ -489,8 +489,6 @@
         "--r2AccessKeyId",
         "--r2-secret-access-key",
         "--r2SecretAccessKey",
-        "--r2-api-token",
-        "--r2ApiToken",
         "--json",
         "--no-json"
       ]
@@ -723,8 +721,6 @@
       "path": "storage provision",
       "flags": [
         "--worker",
-        "--api-token",
-        "--apiToken",
         "--r2-access-key-id",
         "--r2AccessKeyId",
         "--r2-secret-access-key",

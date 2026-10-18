@@ -67,7 +67,6 @@ function provisioner(
     account: { accountId: "acct-1", confirmation: "pinned" },
     apiToken: "tok",
     storeId: "store-1",
-    storageApiToken: "storage-tok",
     r2Credentials: { accessKeyId: "ak", secretAccessKey: "sk" },
     storageConfig: StorageConfig.parse({}),
     dispatcher: { dispatch: dispatch as never },
@@ -129,14 +128,11 @@ describe("CloudflareStorageProvisioner", () => {
     expect(payload.name).toBe("storage-r2-credentials");
     // An environment-scoped secret is routed to exactly the environment asked for.
     expect(payload.env).toBe("staging");
-    // The value round-trips through the same schema the Worker reads it with.
-    expect(R2StorageCredentials.parse(JSON.parse(payload.value))).toEqual({
-      accessKeyId: "ak",
-      secretAccessKey: "sk",
-      accountId: "acct-1",
-      bucket: STAGING_BUCKET,
-      apiToken: "storage-tok",
-    });
+    // The value round-trips through the same schema the Worker reads it with, and carries no Cloudflare
+    // API token: a deployed application holds one, `runtime` (#728).
+    const expected = { accessKeyId: "ak", secretAccessKey: "sk", accountId: "acct-1", bucket: STAGING_BUCKET };
+    expect(JSON.parse(payload.value)).toEqual(expected);
+    expect(R2StorageCredentials.parse(JSON.parse(payload.value))).toEqual(expected);
   });
 
   test("writeCredentials upserts — create first, update on the re-run that create rejects", async () => {

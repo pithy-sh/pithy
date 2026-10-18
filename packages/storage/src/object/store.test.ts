@@ -21,7 +21,6 @@ const credentials: R2StorageCredentials = {
   accessKeyId: "ak-1",
   secretAccessKey: "sk-1",
   bucket: "pithy-storage",
-  apiToken: "tok-1",
 };
 
 /** Declare storage's slice and resolve it to `credentials`, the way a composed backend would. */

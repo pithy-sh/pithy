@@ -205,6 +205,17 @@ describe("CloudflareMediaProvisioner", () => {
     expect(writes.find((write) => write.name === "media-storage-credentials")?.value).toEqual({ accountId: "acct-1" });
   });
 
+  test("writes the R2 bundle with the key pair and no Cloudflare API token — never the bootstrap one (#728)", async () => {
+    const { media, writes } = signing(MediaConfig.parse({}));
+    await media.writeCredentials("staging", { bucketName: STAGING_BUCKET });
+    expect(writes.find((write) => write.name === "media-r2-credentials")?.value).toEqual({
+      accountId: "acct-1",
+      accessKeyId: "ak",
+      secretAccessKey: "sk",
+      bucket: STAGING_BUCKET,
+    });
+  });
+
   test("deployWorker refuses before deploying while the environment holds no runtime token (#728)", async () => {
     // The enrichment worker binds the runtime token's store entry. A project upgraded from the manager's
     // own token has none until it mints one, and wrangler would refuse the binding with no word of why.

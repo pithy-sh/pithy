@@ -282,8 +282,8 @@ describe("what pithy provision declares and cannot create", () => {
  * **A deployed application holds one Cloudflare API token, and no more (#728).** The owner's rule, held as a
  * property of every registry the kit ships rather than of one capability: the only Cloudflare token a Worker
  * reads is `runtime`'s. A capability that wants another has to declare a secret for it, and this is where that
- * declaration fails. R2's bundles carry the token their S3 key pair derives from, and stay outside the rule: the
- * pair is the object store's credential, minted by no API, and scoped to the bucket it presigns.
+ * declaration fails. R2's S3 key pair stays outside the rule, as the object store's credential minted by no API,
+ * but its bundles carry no Cloudflare API token beside it: the object store signs every call with the pair.
  */
 describe("one Cloudflare API token per deployed application (#728)", () => {
   const entries = Object.entries(everyShippedSecret());
@@ -295,7 +295,7 @@ describe("one Cloudflare API token per deployed application (#728)", () => {
     expect(helped).toEqual(["RUNTIME_CF_API_TOKEN"]);
   });
 
-  test("no bundle carries a Cloudflare API token beside its other fields, but an R2 pair's own", () => {
+  test("no bundle carries a Cloudflare API token beside its other fields, an R2 bundle included", () => {
     const carrying = entries
       .filter(([, entry]) => {
         const shape =
@@ -304,6 +304,6 @@ describe("one Cloudflare API token per deployed application (#728)", () => {
       })
       .map(([name]) => name)
       .sort();
-    expect(carrying).toEqual(["media-r2-credentials", "storage-r2-credentials"]);
+    expect(carrying).toEqual([]);
   });
 });

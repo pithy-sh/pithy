@@ -9,6 +9,7 @@ import { allSettings } from "@pithy-sh/core/src/capability/settings";
 import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
 import type { KvNamespaceSpecMap } from "@pithy-sh/core/src/kv/namespaces";
 import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
+import { bundleTokenCheck } from "@pithy-sh/storage/src/secret/bundleToken";
 import type { Migration } from "kysely/migration";
 import type { z } from "zod";
 import { MediaConfig, type MediaConfigInput, refuseRemovedMediaOptions } from "./config/config";
@@ -20,7 +21,12 @@ import { mediaAdminRoutes } from "./http/scopes";
 import { media_0001_init } from "./migrations/0001_init";
 import { media_0003_ownership } from "./migrations/0003_ownership";
 import { mediaExtendMigration } from "./migrations/extend";
-import { MEDIA_BUCKET_BINDING, mediaRuntimePermissions, mediaSecretsRegistryFor } from "./secret/registry";
+import {
+  MEDIA_BUCKET_BINDING,
+  MEDIA_R2_SECRET,
+  mediaRuntimePermissions,
+  mediaSecretsRegistryFor,
+} from "./secret/registry";
 import { suppliedTokenCheck } from "./secret/supersededToken";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 import { mediaWorkflows } from "./workflows/specs";
@@ -150,7 +156,8 @@ export function media(options: MediaOptions = {}): MediaCapability {
     adminRoutes: mediaAdminRoutes(mountPath),
     // `pithy doctor` names every record a narrowed `visibility.allowed` no longer admits. Nothing rewrites
     // them: making a public record private breaks every link already published. And it names a bundle
-    // still holding the Images and Stream token the runtime token superseded (#728), which nothing revokes.
+    // still holding the Images and Stream token the runtime token superseded (#728), which nothing revokes,
+    // and an R2 bundle still holding the Cloudflare API token provisioning once stored beside the key pair.
     settings: allSettings(
       recordsOutsidePolicy({
         capability: "media",
@@ -160,6 +167,7 @@ export function media(options: MediaOptions = {}): MediaCapability {
         remedy: `Move each with PATCH ${mountPath}/:id`,
       }),
       suppliedTokenCheck(),
+      bundleTokenCheck({ secret: MEDIA_R2_SECRET, provision: "media provision" }),
     ),
     routes: registerMediaRoutes({
       config: resolved,
