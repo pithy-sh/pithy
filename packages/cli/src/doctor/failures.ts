@@ -19,6 +19,7 @@ import { capabilityReachFix, DoctorFix, localMigrationFix, prerequisiteFix, upgr
 import type { ProjectHealth, WorkerChecks } from "./health";
 import { describeProjectName } from "./projectName";
 import { describeSelfBinding } from "./selfBinding";
+import { serviceBindingDetail, serviceBindingFix } from "./serviceBindings";
 import { describeSettingsFinding } from "./settings";
 import { describeSupportSearchTriggers, supportSearchFix } from "./supportSearchTriggers";
 import { describeReservedWorkerName, describeWorkerName } from "./workerName";
@@ -65,6 +66,7 @@ export const DoctorCheck = z
     "projectName",
     "workerNames",
     "selfBinding",
+    "serviceBindings",
     "featureRatelimitIds",
     "environments",
     "environmentConfigs",
@@ -319,6 +321,14 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
         `${entry.worker}: ${describeSelfBinding(entry)}`,
         provisionFixCommand(entry.env, report.productionEnvironments),
       );
+    }
+  }
+
+  // A service binding that cannot land (#617): a loop, a target that is no Worker, a kit Worker nothing composes.
+  // Each is established by the project's own configs. A binding to nothing is unbound; the other two are choices.
+  if (report.serviceBindings?.state === "faulty") {
+    for (const fault of report.serviceBindings.faults) {
+      add("serviceBindings", serviceBindingDetail(fault), serviceBindingFix(fault));
     }
   }
 

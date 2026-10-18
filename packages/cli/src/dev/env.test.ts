@@ -7,7 +7,7 @@ import { describe, expect, test } from "vitest";
 import type { DevConfig } from "../feature/devConfig";
 import { execArgs } from "../project/packageManager";
 import type { WorkerTarget } from "../project/workers";
-import { buildWorkerEnv, childEnvFor, ownOriginFor, startCommand } from "./env";
+import { buildWorkerEnv, childEnvFor, ownOriginFor, serviceOrigins, startCommand } from "./env";
 
 const config: DevConfig = {
   version: 1,
@@ -83,6 +83,54 @@ describe("ownOriginFor and childEnvFor", () => {
 
 describe("startCommand", () => {
   const launch: (args: string[]) => { command: string; args: string[] } = (args) => execArgs("bun", "wrangler", args);
+
+  /**
+   * **Each service binding the Worker declares, at its target's pinned address (#617).** One var, a JSON map, so
+   * core's stand-in can find every binding by its own name. Nothing is published for a Worker that binds nothing.
+   */
+  describe("publishing a Worker's service bindings", () => {
+    const api: WorkerTarget = { name: "api", dir: "/p/apps/api", hasWrangler: true };
+
+    test("as one PITHY_SERVICE_ORIGINS var", () => {
+      const { args } = startCommand(
+        api,
+        8787,
+        "http://localhost:8787",
+        launch,
+        "/p/state",
+        {},
+        {},
+        {
+          APP_B: "http://localhost:8790",
+          EMAIL: "http://localhost:8797",
+        },
+      );
+      expect(args.slice(-2)).toEqual([
+        "--var",
+        'PITHY_SERVICE_ORIGINS:{"APP_B":"http://localhost:8790","EMAIL":"http://localhost:8797"}',
+      ]);
+    });
+
+    test("not at all for a Worker that binds nothing", () => {
+      const { args } = startCommand(api, 8787, "http://localhost:8787", launch, "/p/state", {}, {}, {});
+      expect(args.join(" ")).not.toContain("PITHY_SERVICE_ORIGINS");
+    });
+  });
+
+  describe("serviceOrigins", () => {
+    test("an apps/ target resolves to its pinned origin, a kit target to its host's port, anything else to nothing", () => {
+      expect(
+        serviceOrigins(
+          [
+            { binding: "APP_B", target: "app-b" },
+            { binding: "EMAIL", target: "email" },
+            { binding: "GONE", target: "app-z" },
+          ],
+          { appOrigins: { "app-b": "http://localhost:8790" }, hostPorts: { email: 8797 } },
+        ),
+      ).toEqual({ APP_B: "http://localhost:8790", EMAIL: "http://localhost:8797" });
+    });
+  });
 
   test("a wrangler worker runs `wrangler --cwd <dir> dev --port <port> --inspector-port 0 --persist-to <store>`", () => {
     const worker: WorkerTarget = {

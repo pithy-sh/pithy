@@ -121,6 +121,8 @@ const OPEN_SUBTREES = [
   "doctor: $.secretBindings|0.missing[]",
   "doctor: $.selfBinding|0",
   "doctor: $.selfBinding|0.missing[]",
+  "doctor: $.serviceBindings|0",
+  "doctor: $.serviceBindings|0.faults[]",
   "doctor: $.settings|0",
   "doctor: $.settings|0.account",
   "doctor: $.settings|0.checked[]",

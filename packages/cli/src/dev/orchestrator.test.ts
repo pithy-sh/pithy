@@ -2061,6 +2061,27 @@ describe("startDev — capability hosts", () => {
     expect(api?.opts.env.EMAIL_ORIGIN).toBe("http://localhost:8789");
   });
 
+  /**
+   * **A service binding reaches the target's pinned port, started here or not (#617).** `--app api` starts only
+   * `api`; `web` may be running in another session, and its address is the one its feature pinned either way.
+   */
+  test("an app Worker's service binding is published at its target's pinned origin, under --app too", async () => {
+    const h = hosted({
+      apps: ["api"],
+      serviceBindingsFor: async (dir) =>
+        dir === "/proj/apps/api"
+          ? [
+              { binding: "WEB", target: "web" },
+              { binding: "MAIL", target: "email" },
+            ]
+          : [],
+    });
+    await startDev(h.options);
+    const api = h.spawned.find((s) => s.opts.cwd === "/proj/apps/api");
+    expect(api?.args).toContain('PITHY_SERVICE_ORIGINS:{"WEB":"http://localhost:8788","MAIL":"http://localhost:8789"}');
+    expect(h.spawned.some((s) => s.opts.cwd === "/proj/apps/web")).toBe(false);
+  });
+
   test("the host is never handed its own address", async () => {
     const h = hosted();
     await startDev(h.options);

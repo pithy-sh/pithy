@@ -4,6 +4,7 @@
 import { CI_ENV, isContinuousIntegration } from "@pithy-sh/core/src/env/ci";
 import { envStem } from "@pithy-sh/core/src/env/stem";
 import { WORKER_ORIGIN_VAR } from "@pithy-sh/core/src/worker/identity";
+import { SERVICE_ORIGINS_VAR } from "@pithy-sh/core/src/worker/serviceLoopback";
 import type { DevConfig } from "../feature/devConfig";
 import { DEV_PORT_TOKEN } from "../project/workerManifest";
 import type { WorkerTarget } from "../project/workers";
@@ -90,6 +91,7 @@ export function startCommand(
   persistTo: string,
   baseEnv: NodeJS.ProcessEnv = process.env,
   hostPorts: Readonly<Record<string, number>> = {},
+  services: Readonly<Record<string, string>> = {},
 ): StartCommand {
   const custom = worker.dev?.command;
   if (custom && custom.length > 0) {
@@ -116,7 +118,44 @@ export function startCommand(
     ...ownOriginVarArgs(origin),
     ...ciVarArgs(baseEnv),
     ...hostVarArgs(worker.name, hostPorts),
+    ...serviceVarArgs(services),
   ]);
+}
+
+/**
+ * **Where each of this Worker's service bindings answers locally, as one var (#617).**
+ *
+ * Core's stand-in (`withLocalServices`, `@pithy-sh/core/src/worker/serviceLoopback`) reads it under `dev` and
+ * sends `env.<BINDING>.fetch()` there, so a call reaches the target on its pinned port rather than wrangler's
+ * cross-process registry. One JSON map keyed by binding name, because a binding is named by the binder, not by
+ * the target: `APP_B` and `BEE` can both call `app-b`. Nothing is written for a Worker that binds nothing.
+ */
+function serviceVarArgs(services: Readonly<Record<string, string>>): string[] {
+  if (Object.keys(services).length === 0) return [];
+  // wrangler splits a `--var` at its first colon, so the value — colons and all — survives intact.
+  return ["--var", `${SERVICE_ORIGINS_VAR}:${JSON.stringify(services)}`];
+}
+
+/**
+ * Each declared service binding's local origin: an `apps/` target's pinned origin, a kit target's host port.
+ *
+ * **Pinned, not running.** A target this run did not start still has its address — `pithy dev --app app-a`
+ * with `app-b` running in another session reaches it there — and one nobody is running refuses the connection,
+ * which core turns into a failure naming the binding at once. A target with no address at all (no such Worker)
+ * is left out, so the binding stays what wrangler hands the Worker and `pithy doctor` names it.
+ */
+export function serviceOrigins(
+  services: readonly { binding: string; target: string }[],
+  addresses: { appOrigins: Readonly<Record<string, string>>; hostPorts: Readonly<Record<string, number>> },
+): Record<string, string> {
+  const origins: Record<string, string> = {};
+  for (const service of services) {
+    const app = addresses.appOrigins[service.target];
+    const port = addresses.hostPorts[service.target];
+    if (app !== undefined) origins[service.binding] = app;
+    else if (port !== undefined) origins[service.binding] = `http://localhost:${port}`;
+  }
+  return origins;
 }
 
 /**

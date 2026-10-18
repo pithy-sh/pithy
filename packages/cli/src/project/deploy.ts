@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { basename } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { InternalError, messageOf, NotFoundError, PithyError } from "@pithy-sh/core/src/error/pithyError";
@@ -20,9 +21,11 @@ import {
   wranglerEnvironment,
 } from "./effectiveConfig";
 import { detectPackageManager, execArgs, type PackageManager } from "./packageManager";
+import { dependencyOrder } from "./serviceGraph";
 import type { DeployVerification, VerifyDeployResult } from "./verifyDeploy";
 import { isDeployFailure, verifyDeployedVersion } from "./verifyDeploy";
 import { readAddressStanza, resolveWorkerAddress } from "./workerAddress";
+import { readServiceProject } from "./workerBind";
 import { parseWorkerManifest } from "./workerManifest";
 import { discoverWorkers, type WorkerTarget } from "./workers";
 import { refusesTheRun, runWrangler } from "./wrangler";
@@ -437,10 +440,26 @@ async function verifyWorkerDeploy(
   return probe({ url: address.url, expectedVersion: versionId });
 }
 
+/**
+ * The Workers in the order they can ship in: each one after every Worker its app binds. Read from the same
+ * declarations `pithy worker bind` writes; a Worker whose config will not load keeps its place, and so does
+ * every Worker of a project with no bindings at all.
+ */
+async function inBindingOrder(projectDir: string, workers: readonly WorkerTarget[]): Promise<WorkerTarget[]> {
+  const { edges } = await readServiceProject({ projectDir, discoverWorkers: async () => [...workers] });
+  const byApp = new Map(workers.map((worker) => [basename(worker.dir), worker]));
+  return dependencyOrder([...byApp.keys()], edges).flatMap((app) => {
+    const worker = byApp.get(app);
+    return worker ? [worker] : [];
+  });
+}
+
 export async function deployProject(options: DeployProjectOptions): Promise<WorkerDeploy[]> {
   // Only real Workers deploy. A non-Worker process in the dev set (a Vite frontend with a
   // `pithy.worker.jsonc` but no `wrangler.jsonc`) has nothing for `wrangler deploy` to ship.
-  const workers = (await discoverWorkers(options.projectDir)).filter((worker) => worker.hasWrangler !== false);
+  const discovered = (await discoverWorkers(options.projectDir)).filter((worker) => worker.hasWrangler !== false);
+  // **Every service binding's target first (#617)**: an upload binding a script that does not exist is refused.
+  const workers = await inBindingOrder(options.projectDir, discovered);
   if (workers.length === 0) {
     throw new NotFoundError({
       message: "No deployable workers here.",

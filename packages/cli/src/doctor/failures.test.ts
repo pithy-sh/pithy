@@ -116,6 +116,36 @@ describe("each gating check is one entry, with its fix", () => {
     ]);
   });
 
+  test("a service binding that cannot land names the unbind for a missing target, and none for a choice", async () => {
+    const report = await healthyWith({
+      checkServiceBindings: async () => ({
+        state: "faulty",
+        faults: [
+          { kind: "missing-target", worker: "app-a", binding: "APP_Z", target: "app-z", path: null },
+          { kind: "uncomposed", worker: "app-a", binding: "EMAIL", target: "email", path: null },
+          { kind: "loop", worker: "app-a", binding: null, target: null, path: ["app-a", "app-b", "app-a"] },
+        ],
+      }),
+    });
+    expect(failuresOf(report)).toEqual([
+      {
+        check: "serviceBindings",
+        detail: "app-a binds APP_Z to app-z, which is no Worker of this project.",
+        fix: "pithy worker unbind --from app-a --binding APP_Z",
+      },
+      {
+        check: "serviceBindings",
+        detail: "app-a binds EMAIL to email, and no Worker composes email, so its Worker is not deployed.",
+        fix: null,
+      },
+      {
+        check: "serviceBindings",
+        detail: "app-b -> app-a closes a loop: app-a -> app-b -> app-a.",
+        fix: null,
+      },
+    ]);
+  });
+
   test("an environment the project declares production gets no provision fix either", async () => {
     const report = await healthyWith({
       loadProject: async () => ({ name: "pithy-app", seed: { productionEnvironments: ["live"] } }),
@@ -894,6 +924,10 @@ describe("every finding in every block carries fix", () => {
         findings: ["Cursor — pithy docs connect --client cursor"],
         clients: [{ client: "cursor", label: "Cursor" }],
       }),
+      checkServiceBindings: async () => ({
+        state: "faulty",
+        faults: [{ kind: "missing-target", worker: "api", binding: "APP_Z", target: "app-z", path: null }],
+      }),
       checkSelfBinding: async () => ({
         state: "unbound",
         declared: true,
@@ -1103,6 +1137,7 @@ describe("every finding in every block carries fix", () => {
     const failed = new Set(doctorFailures(report).map((failure) => failure.fix));
     for (const path of [
       "selfBinding.missing",
+      "serviceBindings.faults",
       "origins.drift",
       "workflows.drift",
       "supportSearchTriggers.environments",

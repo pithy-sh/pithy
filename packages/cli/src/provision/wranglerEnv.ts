@@ -436,6 +436,7 @@ function featureServices(
   top: Record<string, unknown>,
   scopedScript: ScopedScript,
   dropped: string[],
+  resolved: ReadonlySet<string>,
 ): void {
   const declared = (top as EnvBindings).services ?? [];
   const own = stanza.services;
@@ -448,6 +449,9 @@ function featureServices(
   const entries = stanza.services;
   if (!entries) return;
   const kept = entries.filter((entry) => {
+    // A declared binding the caller resolved for this scope is written over the top of this one, kit Worker
+    // targets included (#617) — so it is neither retargeted nor reported as a stranger's script.
+    if (resolved.has(entry.binding)) return true;
     const scoped = retargetScript(`service ${entry.binding}`, entry.service, scopedScript, dropped);
     if (scoped === null) return false;
     entry.service = scoped;
@@ -621,7 +625,7 @@ export async function applyProvisionedEnv(options: {
       const scopedScript = options.scopedScript ?? (() => undefined);
       const dropped: string[] = [];
       featureDurableObjects(stanza, top, scopedScript, dropped);
-      featureServices(stanza, top, scopedScript, dropped);
+      featureServices(stanza, top, scopedScript, dropped, new Set(options.services.map((entry) => entry.binding)));
       if (dropped.length > 0) options.onBindingsDropped?.(dropped);
       // The app's own Workflows, named for this scope — see `app` above for why only here, and
       // `project/appWorkflows.ts` for the one derivation both this and `pithy worker sync` write from (#650).

@@ -27,7 +27,15 @@ import deploy, { assertDeployFlags, deploySelection, requireDeployEnvironment } 
 const counted = vi.hoisted(() => ({ calls: [] as unknown[], ledger: { pending: 0, undeclared: [] } as unknown }));
 
 /** What each half of the deploy was asked to do this run — the two named steps, observed. */
-const ran = vi.hoisted(() => ({ apps: 0, kit: [] as unknown[] }));
+const ran = vi.hoisted(() => ({ apps: 0, kit: [] as unknown[], order: [] as string[] }));
+
+/** Whether an app binds a kit Worker, as the stubbed read answers it (#617). */
+const binding = vi.hoisted(() => ({ kit: false }));
+
+vi.mock("../project/workerBind", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../project/workerBind")>()),
+  bindsKitWorker: async () => binding.kit,
+}));
 
 /** What the stubbed app half reports. Empty unless a case says otherwise. */
 const shipped = vi.hoisted(() => ({ rows: [] as unknown[] }));
@@ -81,6 +89,7 @@ vi.mock("../project/deploy", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../project/deploy")>()),
   deployProject: async () => {
     ran.apps += 1;
+    ran.order.push("apps");
     if (narrating.on) {
       const { settleStep, startStep } = await import("../terminal/progress");
       startStep("acme-api");
@@ -99,6 +108,7 @@ vi.mock("../project/deployKit", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../project/deployKit")>()),
   deployKitWorkers: async (options: unknown) => {
     ran.kit.push(options);
+    ran.order.push("kit");
     return {
       workers: [{ capability: "email", worker: "acme-staging-email", outcome: "unchanged", reason: "current." }],
       problems: [],
@@ -820,5 +830,39 @@ describe("a deploy of apps/ refuses a stanza whose bindings have no id", () => {
     expect(err).toContain("board.DB (d1)");
     expect(err).not.toContain("In dev the kit's Workers run locally");
     expect(err).not.toContain("No --env, so the kit's Workers were not deployed");
+  });
+});
+
+/**
+ * **A kit Worker an app binds ships first (#617).** The binding names the host's script, and an upload binding a
+ * script that does not exist yet is refused, so the order follows the bindings and nothing else.
+ */
+describe("deploy order", () => {
+  async function runBoth(): Promise<string[]> {
+    ran.order.length = 0;
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      await deploy.run?.({
+        args: { env: "staging", json: true, apps: false, kit: false, force: false },
+        rawArgs: [],
+      } as never);
+    } finally {
+      stdout.mockRestore();
+    }
+    return [...ran.order];
+  }
+
+  test("the adopter's Workers go first when no app binds a kit Worker", async () => {
+    binding.kit = false;
+    expect(await runBoth()).toEqual(["apps", "kit"]);
+  });
+
+  test("the kit's Workers go first when an app binds one", async () => {
+    binding.kit = true;
+    try {
+      expect(await runBoth()).toEqual(["kit", "apps"]);
+    } finally {
+      binding.kit = false;
+    }
   });
 });
