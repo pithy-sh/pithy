@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { PithyError, ValidationError } from "../error/pithyError";
 import { FEATURE_ENVIRONMENT, GLOBAL_SCOPE, isValidEnvironment } from "./environment";
-import { FEATURE_RESOURCE_KINDS } from "./feature";
+import { FEATURE_RESOURCE_KINDS, isFeatureOwnedName } from "./feature";
 import { NAMESPACE_LIMITS } from "./limits";
 import {
   type BindingNaming,
@@ -458,5 +458,21 @@ describe("bindingResourceName", () => {
       expect((error as PithyError).payload.code).toBe("core/internal");
       expect((error as PithyError).payload.detail).toContain("DB");
     }
+  });
+});
+
+describe("a scope's Artifacts namespace (#673)", () => {
+  it("is the environment's own in a declared environment", () => {
+    expect(environmentScope("acme", "prod").artifactsNamespace).toBe("acme-prod");
+    expect(environmentScope("acme", "staging").artifactsNamespace).toBe("acme-staging");
+  });
+
+  it("is the feature's own in a feature, and the ownership check reads it back as that feature's", () => {
+    const identity = { project: "acme", issue: "662", slug: "thing" };
+    expect(featureScope(identity).artifactsNamespace).toBe("acme-f662-thing--artifacts");
+    expect(isFeatureOwnedName(identity, featureScope(identity).artifactsNamespace)).toBe(true);
+    expect(isFeatureOwnedName({ ...identity, slug: "thing-two" }, featureScope(identity).artifactsNamespace)).toBe(
+      false,
+    );
   });
 });

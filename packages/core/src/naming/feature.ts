@@ -380,6 +380,29 @@ export function featureWorkerName(identity: FeatureIdentity, app: string): strin
   );
 }
 
+/** The `<thing>` a feature's Artifacts namespace ends with, after {@link FEATURE_TAIL_SEPARATOR} (#673). */
+export const FEATURE_ARTIFACTS_THING = "artifacts";
+
+/**
+ * A feature's **Artifacts namespace** — `<project>-f<issue>-<slug>--artifacts` (#673).
+ *
+ * A declared environment's namespace is `<project>-<env>` and has no `<thing>`. A feature's needs one, because the
+ * separator and what follows it are what make a name a feature name: {@link isFeatureOwnedName} reads this one back
+ * as this feature's, so `pithy feature destroy` reaps the repos of exactly this branch and of no sibling. Held to the
+ * namespace's 63, the same number the rest of a feature's names are derived against, and `artifacts` is shorter than
+ * the shortest binding tail, so it moves no slug budget.
+ */
+export function featureArtifactsNamespace(identity: FeatureIdentity): string {
+  return composeFeatureName(
+    identity,
+    kebab(identity.slug),
+    FEATURE_ARTIFACTS_THING,
+    "",
+    NAMESPACE_LIMITS.artifactsNamespace.maxLength,
+    NAMESPACE_LIMITS.artifactsNamespace.label,
+  );
+}
+
 /**
  * The deployed name of one of a feature's **Workflows** — `<project>-f<issue>-<slug>--<capability>-<job>` (#643).
  *
