@@ -195,9 +195,12 @@ export const SIDES: readonly Side[] = ["input", "output"];
  * Measured on 2026-09-09, and moved on 2026-09-13: `@pithy-sh/organization` is the seventeenth package
  * and brings five tables — organizations, memberships, invitations, ownership nominations, and the
  * per-session acting selection. Moved on 2026-10-18: `@pithy-sh/secrets` brings `pithy_secrets_tables`,
- * the registry of declared secret tables the at-rest rotation sweeps.
+ * the registry of declared secret tables the at-rest rotation sweeps. Moved on 2026-10-18: `@pithy-sh/payments`
+ * brings `pithy_payments_overrides`, `pithy_payments_meter_counters`, `pithy_payments_usage_reports` and
+ * `pithy_payments_usage_runs` — the allowance overrides, the kit meters' per-period use, and the usage
+ * reporting to the provider.
  */
-export const CENSUS = { tables: 52, packages: 17 };
+export const CENSUS = { tables: 56, packages: 17 };
 
 /**
  * Where the generated programs are written — **outside the checkout, and that is forced**.
