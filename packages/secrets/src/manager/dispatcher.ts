@@ -80,6 +80,19 @@ export function secretsValueRotateWorkflowName(
 }
 
 /**
+ * Every Workflow one environment's manager is deployed with — write, at-rest rotation and value rotation, by the
+ * three namers above, which the resolved `wrangler.jsonc` is filled from. What `pithy secrets deprovision` deletes
+ * before the manager, because deleting the Worker leaves them registered (#789).
+ */
+export function managerWorkflowNames(project: string, env: ManagedEnvironment): string[] {
+  return [
+    secretsWriteWorkflowName(project, env),
+    secretsRotateWorkflowName(project, env),
+    secretsValueRotateWorkflowName(project, env),
+  ];
+}
+
+/**
  * What redeploys a manager: `pithy secrets provision`, which redeploys every environment's, production included — a
  * person's decision, never a fix for one environment's manager (#711).
  */

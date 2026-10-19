@@ -239,6 +239,9 @@ describe("deprovisionSecrets", () => {
   ): SecretsDeprovisioner {
     return {
       countRetained: vi.fn(async (env: ManagedEnvironment) => vaultRows(env, state.rows?.[env] ?? 0)),
+      deleteWorkflows: vi.fn(async (env: ManagedEnvironment) => {
+        calls.push(`workflows:${env}`);
+      }),
       deleteManager: vi.fn(async (env: ManagedEnvironment) => {
         calls.push(`manager:${env}`);
       }),
@@ -281,7 +284,7 @@ describe("deprovisionSecrets", () => {
 
     const result = await deprovisionSecrets(deprovisioner, { environment: "staging", declared: DEFAULT_ENVIRONMENTS });
 
-    expect(calls).toEqual(["manager:staging", "db:staging", "token:staging"]);
+    expect(calls).toEqual(["workflows:staging", "manager:staging", "db:staging", "token:staging"]);
     expect(result).toEqual({ environment: "staging", runtimeTokenDeleted: true });
   });
 
@@ -297,7 +300,7 @@ describe("deprovisionSecrets", () => {
     // Per environment, so production's manager keeps rotating on production's token whatever staging does.
     const calls: string[] = [];
     await deprovisionSecrets(recordingDeprovisioner(calls), { environment: "prod", declared: DEFAULT_ENVIRONMENTS });
-    expect(calls).toEqual(["manager:prod", "db:prod", "token:prod"]);
+    expect(calls).toEqual(["workflows:prod", "manager:prod", "db:prod", "token:prod"]);
   });
 
   test("reports a runtime token that was already gone as not removed by this run", async () => {
@@ -316,7 +319,7 @@ describe("deprovisionSecrets", () => {
       { environment: "staging", declared: DEFAULT_ENVIRONMENTS },
       options,
     );
-    expect(calls).toEqual(["manager:staging", "key:staging", "db:staging", "token:staging"]);
+    expect(calls).toEqual(["workflows:staging", "manager:staging", "key:staging", "db:staging", "token:staging"]);
   });
 
   test("an environment whose vault holds rows refuses without a count, naming the environment and the count", async () => {
@@ -354,6 +357,6 @@ describe("deprovisionSecrets", () => {
       { environment: "prod", declared: DEFAULT_ENVIRONMENTS },
       { destroyRetained: 3 },
     );
-    expect(calls).toEqual(["manager:prod", "db:prod", "token:prod"]);
+    expect(calls).toEqual(["workflows:prod", "manager:prod", "db:prod", "token:prod"]);
   });
 });

@@ -17,6 +17,7 @@ import {
   type TestersDeprovisioner,
   type TestersProvisioner,
   testersWorkerName,
+  testersWorkflowNames,
 } from "./provisionTesters";
 import { resolveTestersConfig, type TestersEmailIdentity } from "./resolveTestersConfig";
 
@@ -35,6 +36,9 @@ function fake(overrides: { failPreflight?: boolean; failOn?: ManagedEnvironment 
     deployWorker: async (env) => {
       calls.push(`deploy:${env}`);
       if (overrides.failOn === env) throw new Error(`deploy failed for ${env}`);
+    },
+    deleteWorkflows: async (env) => {
+      calls.push(`deleteWorkflows:${env}`);
     },
     deleteWorker: async (env) => {
       calls.push(`delete:${env}`);
@@ -100,10 +104,10 @@ describe("provisioning the daily-pass host", () => {
 });
 
 describe("deprovisioning", () => {
-  test("deletes each environment's worker and reports it", async () => {
+  test("deletes each environment's Workflows, then its worker, and reports it (#789)", async () => {
     const { calls, provisioner } = fake();
     const results = await deprovisionTesters(provisioner, PROJECT, ENVIRONMENTS);
-    expect(calls).toEqual(["delete:staging", "delete:prod"]);
+    expect(calls).toEqual(["deleteWorkflows:staging", "delete:staging", "deleteWorkflows:prod", "delete:prod"]);
     expect(results.map((r) => r.worker)).toEqual(["acme-staging-testers", "acme-prod-testers"]);
   });
 
@@ -111,6 +115,13 @@ describe("deprovisioning", () => {
     const { calls, provisioner } = fake({ failPreflight: true });
     await expect(deprovisionTesters(provisioner, PROJECT, ENVIRONMENTS)).resolves.toBeDefined();
     expect(calls).not.toContain("preflight");
+  });
+});
+
+describe("testersWorkflowNames", () => {
+  test("names the daily Workflow the host is deployed with, for one environment (#789)", () => {
+    expect(testersWorkflowNames(PROJECT, "staging")).toEqual(["acme-staging-testers-daily"]);
+    expect(testersWorkflowNames(PROJECT, "prod")).toEqual(["acme-prod-testers-daily"]);
   });
 });
 

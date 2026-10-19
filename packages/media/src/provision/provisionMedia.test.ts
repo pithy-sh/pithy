@@ -16,6 +16,7 @@ import {
   type MediaProvisioner,
   mediaBucketName,
   mediaWorkerName,
+  mediaWorkflowNames,
   provisionMedia,
 } from "./provisionMedia";
 
@@ -191,12 +192,26 @@ describe("names", () => {
   });
 });
 
+describe("mediaWorkflowNames", () => {
+  test("names the four enrichment Workflows the host is deployed with, for one environment (#789)", () => {
+    expect(mediaWorkflowNames(PROJECT, "staging")).toEqual([
+      "acme-staging-media-image-to-text",
+      "acme-staging-media-audio-transcribe",
+      "acme-staging-media-video-transcribe",
+      "acme-staging-media-doc-extract",
+    ]);
+  });
+});
+
 describe("deprovisionMedia", () => {
   function fakeDeprovisioner(): { deprovisioner: MediaDeprovisioner; calls: string[] } {
     const calls: string[] = [];
     return {
       calls,
       deprovisioner: {
+        async deleteWorkflows(env) {
+          calls.push(`deleteWorkflows:${env}`);
+        },
         async deleteWorker(env) {
           calls.push(`deleteWorker:${env}`);
         },
@@ -212,13 +227,13 @@ describe("deprovisionMedia", () => {
   test("deletes the named environment's worker and keeps the stored media by default", async () => {
     const { deprovisioner, calls } = fakeDeprovisioner();
     await deprovisionMedia(deprovisioner, staging);
-    expect(calls).toEqual(["deleteWorker:staging"]);
+    expect(calls).toEqual(["deleteWorkflows:staging", "deleteWorker:staging"]);
   });
 
   test("a staging teardown with --storage deletes staging's bucket, after its worker, and never production's (#591)", async () => {
     const { deprovisioner, calls } = fakeDeprovisioner();
     await deprovisionMedia(deprovisioner, staging, { deleteStorage: true });
-    expect(calls).toEqual(["deleteWorker:staging", "deleteBucket:staging"]);
+    expect(calls).toEqual(["deleteWorkflows:staging", "deleteWorker:staging", "deleteBucket:staging"]);
   });
 
   test("naming no environment refuses, lists the declared ones, and deletes nothing", async () => {

@@ -5,7 +5,12 @@ import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSe
 import { describe, expect, test } from "vitest";
 import { catalogsFromEnv } from "../templates/messages";
 import { defaultTheme } from "../templates/theme";
-import { type EmailWorkerWranglerTemplate, MAX_WORKER_VAR_BYTES, resolveEmailConfig } from "./resolveEmailConfig";
+import {
+  type EmailWorkerWranglerTemplate,
+  emailWorkflowNames,
+  MAX_WORKER_VAR_BYTES,
+  resolveEmailConfig,
+} from "./resolveEmailConfig";
 
 const template: EmailWorkerWranglerTemplate = {
   name: "pithy-email",
@@ -306,5 +311,23 @@ describe("the words the host is deployed with", () => {
     expect(new TextEncoder().encode(config.vars.EMAIL_MESSAGES_ES ?? "").length).toBeLessThanOrEqual(
       MAX_WORKER_VAR_BYTES,
     );
+  });
+});
+
+describe("what email teardown deletes, by the names provision used (#789)", () => {
+  const resolved = resolveEmailConfig(template, {
+    project: "acme",
+    env: "staging",
+    appDatabaseId: "app-123",
+    suppressionDatabaseId: "sup-456",
+    secretsDatabaseId: "sec-789",
+    storeId: "store-1",
+    baseUrl: "https://staging.example.com",
+    theme: defaultTheme,
+  });
+
+  test("emailWorkflowNames is every Workflow the resolved host declares", () => {
+    expect(emailWorkflowNames("acme", "staging")).toEqual(["acme-staging-email-send", "acme-staging-email-schedule"]);
+    expect(emailWorkflowNames("acme", "staging")).toEqual(resolved.workflows.map((workflow) => workflow.name));
   });
 });

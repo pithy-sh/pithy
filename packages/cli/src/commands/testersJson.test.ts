@@ -110,7 +110,10 @@ vi.mock("../cloudflare/config", async (importOriginal) => ({
   cloudflareEnv: () => ({ CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "token" }),
   cloudflareAccountConfirmation: () => ({ source: "test" }),
 }));
-vi.mock("../cloudflare/clients", () => ({ cloudflareClients: async () => ({}) }));
+vi.mock("../cloudflare/clients", () => ({
+  cloudflareClients: async () => ({}),
+  cloudflareWorkflows: async () => ({}),
+}));
 vi.mock("../audit/cliAudit", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../audit/cliAudit")>()),
   createProjectCliAudit: async () => async () => {},

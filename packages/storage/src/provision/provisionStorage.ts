@@ -4,13 +4,14 @@
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
+import { hostWorkflowsFor } from "@pithy-sh/core/src/workflow/host";
 import {
   type DeprovisionTarget,
   deprovisionTarget,
   type ManagedEnvironment,
   managedEnvironments,
 } from "@pithy-sh/secrets/src/scope";
-import { STORAGE_CAPABILITY } from "../workflows/specs";
+import { STORAGE_CAPABILITY, storageWorkflowRegistry } from "../workflows/specs";
 
 /**
  * The provisioning orchestration for the storage capability — the live counterpart to
@@ -78,6 +79,18 @@ export function storageBucketName(project: string, env: ManagedEnvironment): str
  */
 export function storageWorkerName(project: string, env: ManagedEnvironment): string {
   return resourceNames(project).env(env).worker(STORAGE_CAPABILITY);
+}
+
+/**
+ * The Workflows the sweep worker is deployed with in one environment — `<project>-<env>-storage-sweep`.
+ * Derived from the specs by the call `resolveStorageConfig` deploys with, so teardown deletes the names
+ * provision created and no others (#789). Deleting a Worker does not delete the Workflows registered
+ * against it.
+ */
+export function storageWorkflowNames(project: string, env: ManagedEnvironment): string[] {
+  return hostWorkflowsFor(storageWorkflowRegistry, { project, capability: STORAGE_CAPABILITY, env }).workflows.map(
+    (workflow) => workflow.name,
+  );
 }
 
 /** The provisioned resources an environment's worker and secret are wired to. */
@@ -158,6 +171,11 @@ function resourcesFor(resources: Map<ManagedEnvironment, StorageResources>, env:
 
 /** The teardown seam — the inverse of {@link StorageProvisioner}. Every step idempotent. */
 export interface StorageDeprovisioner {
+  /**
+   * Delete this environment's sweep Workflows, by {@link storageWorkflowNames}. Idempotent (a Workflow
+   * already gone is a no-op). Deleting the worker leaves them registered, so they go first (#789).
+   */
+  deleteWorkflows(env: ManagedEnvironment): Promise<void>;
   /** Delete this environment's sweep worker. Idempotent (a missing worker is a no-op). */
   deleteWorker(env: ManagedEnvironment): Promise<void>;
   /**
@@ -183,7 +201,7 @@ export interface StorageDeprovisionOptions {
 
 /**
  * Tear down **one named environment's** storage infrastructure, reversing {@link provisionStorage} for it:
- * its sweep worker first (it binds the bucket), then — only when `deleteStorage` is set — its bucket and
+ * its sweep Workflows, then its sweep worker (it binds the bucket), then — only when `deleteStorage` is set — its bucket and
  * everything in it. Idempotent end to end.
  *
  * The environment is resolved by `@pithy-sh/secrets`' {@link deprovisionTarget}, before anything is deleted:
@@ -197,6 +215,7 @@ export async function deprovisionStorage(
   options: StorageDeprovisionOptions = {},
 ): Promise<{ env: ManagedEnvironment }> {
   const env = deprovisionTarget(target);
+  await deprovisioner.deleteWorkflows(env);
   await deprovisioner.deleteWorker(env);
   if (options.deleteStorage) await deprovisioner.deleteBucket(env);
   return { env };

@@ -197,6 +197,11 @@ export interface EmailDeprovisioner {
    * before it deletes the list they share (#591).
    */
   hasWorker(env: ManagedEnvironment): Promise<boolean>;
+  /**
+   * Delete the env's send and schedule Workflows, by `emailWorkflowNames`. Idempotent (a Workflow already gone is
+   * a no-op). Deleting the worker leaves them registered, so they go first (#789).
+   */
+  deleteWorkflows(env: ManagedEnvironment): Promise<void>;
   /** Delete the env's email worker. Idempotent (a missing worker is a no-op). */
   deleteWorker(env: ManagedEnvironment): Promise<void>;
   /**
@@ -230,7 +235,10 @@ export interface EmailDeprovisionOptions {
  * 2. With `deleteSuppression` only: refuse while any other declared environment still runs an email worker
  *    (`assertSharedLeavesLast`). The list is one per project, and a staging teardown must not take production's.
  * 3. Count the list, and refuse unless the operator counted the same (`assertRetainedAgreed`, #588's guard).
- * 4. Delete the environment's worker (it binds the list), then — only when asked — the list.
+ * 4. Delete the environment's Workflows (#789), then its worker (it binds the list), then — only when asked — the list.
+ *
+ * It never deletes the environment's link-signing key. `pithy secrets provision` creates that entry and binds it
+ * into the app Worker, which is still deployed, and every link already sent is signed with it (#596).
  *
  * Idempotent end to end: a missing worker or database is a no-op.
  */
@@ -251,6 +259,7 @@ export async function deprovisionEmail(
       "anything was deleted",
     );
   }
+  await deprovisioner.deleteWorkflows(env);
   await deprovisioner.deleteWorker(env);
   if (options.deleteSuppression) await deprovisioner.deleteSuppressionDatabase();
   return { env };

@@ -12,6 +12,7 @@ import {
   type StorageProvisioner,
   storageBucketName,
   storageWorkerName,
+  storageWorkflowNames,
 } from "./provisionStorage";
 
 /** The project every name in this suite leads with — the root `pithy.config.ts` `name`. */
@@ -129,6 +130,9 @@ function fakeDeprovisioner(): { deprovisioner: StorageDeprovisioner; calls: stri
   return {
     calls,
     deprovisioner: {
+      async deleteWorkflows(env: ManagedEnvironment) {
+        calls.push(`deleteWorkflows:${env}`);
+      },
       async deleteWorker(env: ManagedEnvironment) {
         calls.push(`deleteWorker:${env}`);
       },
@@ -139,19 +143,26 @@ function fakeDeprovisioner(): { deprovisioner: StorageDeprovisioner; calls: stri
   };
 }
 
+describe("storageWorkflowNames", () => {
+  test("names the sweep Workflow the host is deployed with, for one environment (#789)", () => {
+    expect(storageWorkflowNames(PROJECT, "staging")).toEqual(["acme-staging-storage-sweep"]);
+    expect(storageWorkflowNames(PROJECT, "prod")).toEqual(["acme-prod-storage-sweep"]);
+  });
+});
+
 describe("deprovisionStorage", () => {
   const staging = { environment: "staging", declared: DEFAULT_ENVIRONMENTS };
 
   test("removes the named environment's worker and keeps the files — stored data is never collateral", async () => {
     const { deprovisioner, calls } = fakeDeprovisioner();
     await deprovisionStorage(deprovisioner, staging);
-    expect(calls).toEqual(["deleteWorker:staging"]);
+    expect(calls).toEqual(["deleteWorkflows:staging", "deleteWorker:staging"]);
   });
 
   test("a staging teardown with --storage deletes staging's bucket, after its worker, and never production's (#591)", async () => {
     const { deprovisioner, calls } = fakeDeprovisioner();
     await deprovisionStorage(deprovisioner, staging, { deleteStorage: true });
-    expect(calls).toEqual(["deleteWorker:staging", "deleteBucket:staging"]);
+    expect(calls).toEqual(["deleteWorkflows:staging", "deleteWorker:staging", "deleteBucket:staging"]);
   });
 
   test("naming no environment refuses, lists the declared ones, and deletes nothing", async () => {

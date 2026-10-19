@@ -168,6 +168,9 @@ describe("deprovisionEmail", () => {
         async hasWorker(env) {
           return running.has(env);
         },
+        async deleteWorkflows(env) {
+          calls.push(`deleteWorkflows:${env}`);
+        },
         async deleteWorker(env) {
           running.delete(env);
           calls.push(`deleteWorker:${env}`);
@@ -190,7 +193,7 @@ describe("deprovisionEmail", () => {
   test("removes the named environment's worker and no other, and keeps the suppression list", async () => {
     const { deprovisioner, calls } = fakeDeprovisioner(4);
     expect(await deprovisionEmail(deprovisioner, staging)).toEqual({ env: "staging" });
-    expect(calls).toEqual(["deleteWorker:staging"]);
+    expect(calls).toEqual(["deleteWorkflows:staging", "deleteWorker:staging"]);
   });
 
   test("naming no environment refuses, lists the declared ones, and deletes nothing", async () => {
@@ -228,7 +231,7 @@ describe("deprovisionEmail", () => {
   test("the last environment's teardown deletes an empty list when explicitly asked", async () => {
     const { deprovisioner, calls } = fakeDeprovisioner(0, ["prod"]);
     await deprovisionEmail(deprovisioner, prod, { deleteSuppression: true });
-    expect(calls).toEqual(["deleteWorker:prod", "deleteSuppressionDatabase"]);
+    expect(calls).toEqual(["deleteWorkflows:prod", "deleteWorker:prod", "deleteSuppressionDatabase"]);
   });
 
   /**
@@ -248,6 +251,6 @@ describe("deprovisionEmail", () => {
   test("the exact count deletes it", async () => {
     const { deprovisioner, calls } = fakeDeprovisioner(4, ["prod"]);
     await deprovisionEmail(deprovisioner, prod, { deleteSuppression: true, destroyRetained: 4 });
-    expect(calls).toEqual(["deleteWorker:prod", "deleteSuppressionDatabase"]);
+    expect(calls).toEqual(["deleteWorkflows:prod", "deleteWorker:prod", "deleteSuppressionDatabase"]);
   });
 });

@@ -4,6 +4,7 @@
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
@@ -13,6 +14,7 @@ import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/acc
 import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
 import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
+import { deleteHostWorkflows } from "./hostWorkflows";
 import { capabilityLoadError } from "./loadFailure";
 
 /**
@@ -93,6 +95,8 @@ export interface CloudflareTestersProvisionerOptions {
    */
   readonly projectDir: string;
   readonly cf: CloudflareClients;
+  /** The account's Workflows client — teardown deletes the daily Workflow through it, by name (#789). */
+  readonly workflows: Pick<CloudflareWorkflowsClient, "deleteWorkflow">;
   /**
    * The account this provisions into, and what vouches for it (#378).
    *
@@ -129,6 +133,7 @@ export interface CloudflareTestersProvisionerOptions {
 export class CloudflareTestersProvisioner implements TestersProvisioner, TestersDeprovisioner {
   readonly #projectDir: string;
   readonly #cf: CloudflareClients;
+  readonly #workflows: Pick<CloudflareWorkflowsClient, "deleteWorkflow">;
   readonly #account: ConfirmedAccount;
   readonly #project: string;
   readonly #apiToken: string;
@@ -141,6 +146,7 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
   constructor(options: CloudflareTestersProvisionerOptions) {
     this.#projectDir = options.projectDir;
     this.#cf = options.cf;
+    this.#workflows = options.workflows;
     this.#account = options.account;
     this.#project = options.project;
     this.#apiToken = options.apiToken;
@@ -219,6 +225,19 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
       });
       throw error;
     }
+  }
+
+  /** Delete the env's daily Workflows, by the names the project's own `@pithy-sh/testers` composes (#789). */
+  async deleteWorkflows(env: ManagedEnvironment): Promise<void> {
+    const { testersWorkflowNames } = await loadTestersProvisioning(this.#projectDir);
+    await deleteHostWorkflows({
+      workflows: this.#workflows,
+      account: this.#account,
+      capability: "testers",
+      env,
+      names: testersWorkflowNames(this.#project, env),
+      audit: this.#audit,
+    });
   }
 
   /**

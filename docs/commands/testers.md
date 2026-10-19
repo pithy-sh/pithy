@@ -122,7 +122,7 @@ An environment is **ready** when its stanza carries a `DB` binding with a `datab
 
 The sending identity is read off the composed `email` capability rather than asked for. When no email capability is composed, the host is still deployed and the pass records the day but sends nothing — said at provision time rather than discovered on the first silent morning. The pass runs daily at 05:00 UTC.
 
-**`deprovision`** deletes the host and nothing else. The cohorts, the roster, and the whole snapshot series are rows in your own D1 and are not this command's to remove.
+**`deprovision`** deletes the host's daily Workflow (`<project>-<env>-testers-daily`), then the host, and nothing else. The Workflow goes first: deleting a Worker leaves the Workflows registered against it. The cohorts, the roster, and the whole snapshot series are rows in your own D1 and are not this command's to remove.
 
 **`create`** creates a cohort, freezing the target, window, roster cap, platform, and reset policy onto the row. They are stored rather than read from config at query time: raising `targetSize` from twelve to fifteen later would otherwise retroactively rewrite whether last Tuesday counted.
 

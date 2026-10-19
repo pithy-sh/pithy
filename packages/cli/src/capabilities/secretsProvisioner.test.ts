@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { decodeVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import { secretsRotateWorkflowName, secretsWriteWorkflowName } from "@pithy-sh/secrets/src/manager/dispatcher";
 import {
+  deprovisionSecrets,
   masterKeySecretName,
   runtimeTokenName,
   runtimeTokenSecretName,
@@ -13,6 +15,7 @@ import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManage
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
+import { declaredWorkflowNames, workflowsHolding } from "../test-utils/workflows";
 import {
   CloudflareSecretsDeprovisioner,
   CloudflareSecretsProvisioner,
@@ -392,6 +395,7 @@ describe("two projects sharing one Cloudflare account", () => {
     // Every delete is `if exists`-guarded, so the name is the whole containment: acme's teardown must
     // recompute acme's names and no others, or it silently exits 0 having deleted globex's manager.
     const teardown = new CloudflareSecretsDeprovisioner({
+      workflows: workflowsHolding().workflows,
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: "acme",
@@ -429,6 +433,7 @@ describe("two projects sharing one Cloudflare account", () => {
     const globexKey = store.get(masterKeySecretName("globex", "prod"));
 
     const teardown = new CloudflareSecretsDeprovisioner({
+      workflows: workflowsHolding().workflows,
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: "acme",
@@ -476,6 +481,7 @@ describe("CloudflareSecretsDeprovisioner", () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     getWorker.mockResolvedValue({ id: "acme-staging-secrets" });
     const deprovisioner = new CloudflareSecretsDeprovisioner({
+      workflows: workflowsHolding().workflows,
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
@@ -490,6 +496,7 @@ describe("CloudflareSecretsDeprovisioner", () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     getWorker.mockResolvedValue(null);
     const deprovisioner = new CloudflareSecretsDeprovisioner({
+      workflows: workflowsHolding().workflows,
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
@@ -504,6 +511,7 @@ describe("CloudflareSecretsDeprovisioner", () => {
     const { cf, exists, deleteSecret } = fakeCf();
     exists.mockResolvedValue(true);
     const deprovisioner = new CloudflareSecretsDeprovisioner({
+      workflows: workflowsHolding().workflows,
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
@@ -518,6 +526,7 @@ describe("CloudflareSecretsDeprovisioner", () => {
     const { cf, exists, deleteSecret } = fakeCf();
     exists.mockResolvedValue(false);
     const deprovisioner = new CloudflareSecretsDeprovisioner({
+      workflows: workflowsHolding().workflows,
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
@@ -533,6 +542,7 @@ describe("CloudflareSecretsDeprovisioner", () => {
     exists.mockResolvedValue(true);
     const events: CliAuditEvent[] = [];
     const deprovisioner = new CloudflareSecretsDeprovisioner({
+      workflows: workflowsHolding().workflows,
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
@@ -561,6 +571,7 @@ describe("CloudflareSecretsDeprovisioner", () => {
     const { cf, findDatabaseByName, deleteDatabase } = fakeCf();
     findDatabaseByName.mockResolvedValue({ uuid: "db-7", name: "acme-staging-secrets" });
     const deprovisioner = new CloudflareSecretsDeprovisioner({
+      workflows: workflowsHolding().workflows,
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
@@ -576,6 +587,7 @@ describe("CloudflareSecretsDeprovisioner", () => {
     const { cf, findDatabaseByName, deleteDatabase } = fakeCf();
     findDatabaseByName.mockResolvedValue(null);
     const deprovisioner = new CloudflareSecretsDeprovisioner({
+      workflows: workflowsHolding().workflows,
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
@@ -590,6 +602,7 @@ describe("CloudflareSecretsDeprovisioner", () => {
     const { cf, exists, deleteSecret, deleteTokensByName } = fakeCf();
     exists.mockResolvedValue(true);
     const deprovisioner = new CloudflareSecretsDeprovisioner({
+      workflows: workflowsHolding().workflows,
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
@@ -604,6 +617,7 @@ describe("CloudflareSecretsDeprovisioner", () => {
   test("deleteRuntimeToken answers whether anything was there to remove", async () => {
     const { cf, exists, deleteTokensByName } = fakeCf();
     const deprovisioner = new CloudflareSecretsDeprovisioner({
+      workflows: workflowsHolding().workflows,
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
@@ -621,6 +635,7 @@ describe("CloudflareSecretsDeprovisioner", () => {
     const { cf, exists, deleteSecret, deleteTokensByName } = fakeCf();
     exists.mockResolvedValue(false);
     const deprovisioner = new CloudflareSecretsDeprovisioner({
+      workflows: workflowsHolding().workflows,
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
@@ -637,6 +652,7 @@ describe("CloudflareSecretsDeprovisioner", () => {
     exists.mockResolvedValue(true);
     const events: CliAuditEvent[] = [];
     const deprovisioner = new CloudflareSecretsDeprovisioner({
+      workflows: workflowsHolding().workflows,
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
@@ -674,6 +690,7 @@ describe("teardown refuses an unconfirmed account", () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     getWorker.mockResolvedValue(null);
     const stranger = new CloudflareSecretsDeprovisioner({
+      workflows: workflowsHolding().workflows,
       cf,
       project: PROJECT,
       storeId: "store-1",
@@ -765,5 +782,61 @@ describe("ensureRuntimeToken under a race", () => {
       honors: async () => false,
     });
     await expect(provisioner.ensureRuntimeToken("staging")).rejects.toThrow(/kept being rolled by another run/);
+  });
+});
+
+/**
+ * **Every Workflow the committed template declares goes with the worker (#789).** Deleting a Worker leaves the
+ * Workflows registered against it, and `pithy secrets deprovision` once did exactly that. The names are read from the template's
+ * own `workflows` block, not from any namer, so a Workflow added there and nowhere else fails this.
+ */
+describe("pithy secrets deprovision deletes its Workflows", () => {
+  test("a teardown deletes every Workflow the template declares for that environment, and no other", async () => {
+    const declared = await declaredWorkflowNames("@pithy-sh/secrets/src/manager/worker", PROJECT, "staging");
+    expect(declared.length).toBeGreaterThan(0);
+    // Production's, and another project's in the same account, are not this teardown's.
+    const others = [
+      ...(await declaredWorkflowNames("@pithy-sh/secrets/src/manager/worker", PROJECT, "prod")),
+      ...(await declaredWorkflowNames("@pithy-sh/secrets/src/manager/worker", "other", "staging")),
+    ];
+    const { workflows, held } = workflowsHolding([...declared, ...others]);
+    const events: CliAuditEvent[] = [];
+    const deprovisioner = new CloudflareSecretsDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      project: PROJECT,
+      storeId: "store-1",
+      cf: fakeCf().cf,
+      workflows,
+      audit: async (event) => void events.push(event),
+    });
+
+    await deprovisionSecrets(deprovisioner, { environment: "staging", declared: DEFAULT_ENVIRONMENTS });
+    expect([...held]).toEqual(others);
+    expect(events.filter((event) => event.resourceType === "cf_workflow").map((event) => event.resourceId)).toEqual(
+      declared,
+    );
+  });
+
+  test("a second run, or one after a hand deletion, exits cleanly and deletes nothing", async () => {
+    const declared = await declaredWorkflowNames("@pithy-sh/secrets/src/manager/worker", PROJECT, "staging");
+    // One deleted by hand already; the rest go on the first run, and nothing is left for the second.
+    const { workflows, held } = workflowsHolding(declared.slice(1));
+    const events: CliAuditEvent[] = [];
+    const deprovisioner = new CloudflareSecretsDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      project: PROJECT,
+      storeId: "store-1",
+      cf: fakeCf().cf,
+      workflows,
+      audit: async (event) => void events.push(event),
+    });
+
+    await deprovisionSecrets(deprovisioner, { environment: "staging", declared: DEFAULT_ENVIRONMENTS });
+    expect(held.size).toBe(0);
+    events.length = 0;
+    await expect(
+      deprovisionSecrets(deprovisioner, { environment: "staging", declared: DEFAULT_ENVIRONMENTS }),
+    ).resolves.toBeDefined();
+    expect(events).toEqual([]);
   });
 });

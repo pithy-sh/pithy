@@ -14,7 +14,7 @@ import {
   loadSupport,
   type SupportEnvResources,
 } from "../capabilities/supportProvisioner";
-import { cloudflareClients } from "../cloudflare/clients";
+import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { commandCredentials } from "../cloudflare/commandCredentials";
 import { withContract } from "../contract/commandContract";
 import { resolveCapabilityWorker } from "../project/capabilityWorker";
@@ -379,6 +379,7 @@ const deprovision = withContract(
         const deprovisioner = new CloudflareSupportDeprovisioner({
           account,
           cf: await cloudflareClients({ accountId, apiToken }),
+          workflows: await cloudflareWorkflows({ accountId, apiToken }),
           projectDir,
           project,
           ...(args["routing-zone"] !== undefined ? { routingZoneId: args["routing-zone"] } : {}),
@@ -397,6 +398,7 @@ const deprovision = withContract(
           deprovisioner,
           rules: {
             hasWorker: "read",
+            deleteWorkflows: "environment",
             deleteWorker: "environment",
             deleteBucket: args.storage ? { what: "the support bucket", flag: "--storage" } : "refused",
             removeRoutingRule:

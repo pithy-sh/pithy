@@ -21,7 +21,7 @@ import {
 } from "../capabilities/emailProvisioner";
 import { capabilityNotComposed } from "../capabilities/notComposed";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
-import { cloudflareClients } from "../cloudflare/clients";
+import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { commandCredentials } from "../cloudflare/commandCredentials";
 import { withContract } from "../contract/commandContract";
 import { DESTROY_RETAINED_DESCRIPTION, parseDestroyRetained } from "../migrations/confirm";
@@ -405,7 +405,8 @@ const deprovision = withContract(
   defineCommand({
     meta: {
       name: "deprovision",
-      description: "Remove one environment's email worker (and, with the last, optionally the suppression DB)",
+      description:
+        "Remove one environment's email worker and its Workflows (and, with the last, optionally the suppression DB)",
     },
     args: {
       // No default (#591): a bare `deprovision` removed every declared environment's email worker, production's
@@ -441,6 +442,7 @@ const deprovision = withContract(
         const deprovisioner = new CloudflareEmailDeprovisioner({
           account,
           cf,
+          workflows: await cloudflareWorkflows({ accountId, apiToken }),
           project,
           audit: await buildAudit(projectDir, accountId, apiToken),
           // The operator's number, spent at the delete — the floor under the count `deprovisionEmail` demands (#591).
@@ -458,6 +460,7 @@ const deprovision = withContract(
           rules: {
             countSuppressionRetained: "read",
             hasWorker: "read",
+            deleteWorkflows: "environment",
             deleteWorker: "environment",
             deleteSuppressionDatabase: args.suppression
               ? { what: "the suppression list", flag: "--suppression" }

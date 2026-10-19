@@ -79,6 +79,18 @@ export const emailWorkflowRegistry: WorkflowRegistry = Object.fromEntries(
 );
 
 /**
+ * The Workflows one environment's email worker is deployed with — `<project>-<env>-email-send` and
+ * `<project>-<env>-email-schedule`. Derived by the call {@link resolveEmailConfig} deploys with, so teardown
+ * deletes the names provision created and no others (#789). Deleting a Worker does not delete the Workflows
+ * registered against it.
+ */
+export function emailWorkflowNames(project: string, env: ManagedEnvironment): string[] {
+  return hostWorkflowsFor(emailWorkflowRegistry, { project, capability: EMAIL_CAPABILITY, env }).workflows.map(
+    (workflow) => workflow.name,
+  );
+}
+
+/**
  * The most one Cloudflare Worker variable holds. **Per variable, and that is the whole design.**
  *
  * Cloudflare's documented limit is 5 KB per variable, on Free and Paid alike, and a Worker carries 64
