@@ -34,6 +34,7 @@ import { mintedThisRun } from "../provision/mintedThisRun";
 import {
   AUDIT_RESOURCE_TYPE,
   type FeatureIndexes,
+  type FeatureRepos,
   ProvisionAuditActions,
   type ResourceProvisioners,
   type TeardownKind,
@@ -455,6 +456,11 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
   return { ...report, hosts: hosts.workers, ...(featureSecrets ? { featureSecrets } : {}) };
 }
 
+/** Whether a capability binds Artifacts — the only reason a teardown asks the account about repos (#673). */
+function bindsArtifacts(capability: Capability): boolean {
+  return capability.requiredBindings.some((binding) => binding.type === "artifacts");
+}
+
 /** One deleted resource in the teardown report — a Cloudflare resource, or a Worker script. */
 export interface DeprovisionedResource {
   /** The resource kind. `worker` for a Worker script (#592). */
@@ -544,6 +550,11 @@ export interface DeprovisionFeatureOptions {
    * no account is reachable for them.
    */
   indexes?: FeatureIndexes;
+  /**
+   * The repos in the feature's own Artifacts namespace (#673), listed and deleted when anything the feature
+   * composes binds `artifacts`. Omitted when no account is reachable for them.
+   */
+  repos?: FeatureRepos;
   /**
    * The project's Workers, as the branch has them now — each one's two names are what the scripts a
    * feature deployed before scripts were recorded are recomputed from. Empty when they cannot be known;
@@ -663,6 +674,18 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
     if (options.indexes) {
       for (const index of await featureIndexesFor(options.capabilities, options.projectDir, options.identity)) {
         if (await options.indexes.remove(index.name)) await record("vectorize", index.name, index.name);
+      }
+    }
+
+    // **The repos in the feature's own Artifacts namespace (#673)**, after the scripts that bind them. Every repo in
+    // it, because the namespace is the feature's and nothing else's: `isFeatureOwnedName` reads it back as this
+    // branch's alone. Asked only where something binds `artifacts`, because a project that never did holds no
+    // `artifacts:write`, and a teardown refused for a permission it never needed is a teardown that leaks the rest.
+    if (options.repos && options.capabilities.some(bindsArtifacts)) {
+      const namespace = featureScope(options.identity).artifactsNamespace;
+      for (const repo of await options.repos.list(namespace)) {
+        const name = `${namespace}/${repo}`;
+        if (await options.repos.remove(namespace, repo)) await record("artifacts", name, name);
       }
     }
 

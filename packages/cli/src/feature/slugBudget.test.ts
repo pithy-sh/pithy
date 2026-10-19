@@ -80,6 +80,16 @@ describe("featureNameShapes", () => {
     expect(maxFeatureSlug(head, shapes)).toBe(28);
   });
 
+  test("reads the feature's Artifacts namespace where a capability binds one, and moves no budget (#673)", async () => {
+    const head = { project: "replay", issue: "673" };
+    const binds = defineCapability({ name: "app", requiredBindings: [{ type: "artifacts", name: "ARTIFACTS" }] });
+    const shapes = await featureNameShapes({ head, capabilities: [binds], workers: WORKERS, projectDir: dir });
+    expect(shapes).toContainEqual({ label: "an Artifacts namespace name", limit: 63, thing: "artifacts" });
+    const without = await featureNameShapes({ head, capabilities: CAPABILITIES, workers: WORKERS, projectDir: dir });
+    expect(without.map((shape) => shape.thing)).not.toContain("artifacts");
+    expect(maxFeatureSlug(head, [...without, ...shapes])).toBe(maxFeatureSlug(head, without));
+  });
+
   /** The reviewer's case, as the gate sees it: at the longest project and a six-digit issue, five characters. */
   test("gives the longest project and a six-digit issue a small budget, and a name for it", async () => {
     const head = { project: "p".repeat(MAX_PROJECT_NAME), issue: "123456" };

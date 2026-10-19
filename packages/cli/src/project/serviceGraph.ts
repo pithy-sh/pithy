@@ -151,6 +151,7 @@ const KIND_PHRASE: Record<BindingType, string> = {
   pipelines: "a pipeline",
   mtls_certificates: "an mTLS certificate",
   dispatch_namespaces: "a dispatch namespace",
+  artifacts: "an Artifacts namespace",
 };
 
 /** The resource a binding already holds, for a refusal: `a D1 database`, or the Worker a service binding calls. */

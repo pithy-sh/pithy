@@ -28,6 +28,7 @@ import { requireEnvironment } from "../project/environment";
 import { type CapabilitySet, capabilitySetOf, isUnknown } from "../project/workerScope";
 import {
   AUDIT_DESTINATION_ENV,
+  cloudflareFeatureRepos,
   cloudflareProvisioners,
   cloudflareWorkerScripts,
   cloudflareWorkflowDefinitions,
@@ -81,6 +82,8 @@ async function buildTeardown(
       project,
       workflows: await cloudflareWorkflows({ accountId, apiToken }),
     }),
+    // Every repo in the feature's own Artifacts namespace, where the feature binds one (#673).
+    repos: cloudflareFeatureRepos(clients),
   };
 }
 
@@ -210,8 +213,10 @@ const FeatureDestroyPayload = z
         z
           .object({
             kind: z
-              .enum(["worker", "d1", "kv", "r2", "queue", "workflow", "vectorize"])
-              .describe("The resource kind. `worker` is a Worker script, `workflow` a Workflow definition."),
+              .enum(["worker", "d1", "kv", "r2", "queue", "workflow", "vectorize", "artifacts"])
+              .describe(
+                "The resource kind. `worker` is a Worker script, `workflow` a Workflow definition, `artifacts` one repo, named `<namespace>/<repo>`.",
+              ),
             name: z.string().describe("The resource name."),
             id: z.string().describe("The id that was deleted."),
           })
@@ -633,7 +638,8 @@ const destroy = withContract(
   {
     output: "document",
     // 2: `deletedResources[].kind` takes `queue`, and the `workflow` and `vectorize` it already emitted (#662).
-    schemaVersion: 2,
+    // 3: it takes `artifacts`, one repo in the feature's own Artifacts namespace (#673).
+    schemaVersion: 3,
     payload: FeatureDestroyPayload,
     mutates: true,
     idempotent: true,

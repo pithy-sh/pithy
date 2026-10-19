@@ -90,6 +90,8 @@ interface EnvBindings {
   send_email?: { name: string; [field: string]: unknown }[];
   /** A queue binding's producer entries — the queue this scope created for each — and any consumers. */
   queues?: { producers?: BindingEntry[]; consumers?: unknown[] };
+  /** The Artifacts bindings, each naming this scope's namespace of repositories. */
+  artifacts?: { binding: string; namespace?: string; [field: string]: unknown }[];
   triggers?: { crons?: string[] };
 }
 
@@ -462,6 +464,28 @@ function featureServices(
 }
 
 /**
+ * **Every stanza binds every Artifacts entry the top level declares, each naming this scope's namespace (#673).**
+ *
+ * `artifacts` is array-shaped and its kind's `seedPolicy` is `provision`, so `stanzaFor` empties it in a stanza it
+ * creates: the top level's entry names `dev`'s namespace, and staging bound to it would put staging's repos beside a
+ * developer's. This refills it, by binding, from the top level, and then names this scope's namespace on every
+ * entry the stanza holds — the stanza's own included, because a namespace is not a choice an adopter makes per
+ * environment, it is `<project>-<env>`, and the value is this run's answer rather than the file's. Cloudflare
+ * creates the namespace on the first repo, so there is nothing to create first. The rest of each entry is kept.
+ */
+function scopedArtifacts(stanza: EnvBindings, top: Record<string, unknown>, namespace: () => string): void {
+  const declared = (top as EnvBindings).artifacts ?? [];
+  const own = stanza.artifacts;
+  if (declared.length === 0 && own === undefined) return;
+  const bound = new Set((own ?? []).map((entry) => entry.binding));
+  const missing = declared.filter((entry) => !bound.has(entry.binding)).map((entry) => structuredClone(entry));
+  // In place where the array is there, so comment-json keeps the adopter's comments on it.
+  if (own) own.push(...missing);
+  else stanza.artifacts = missing;
+  for (const entry of stanza.artifacts ?? []) entry.namespace = namespace();
+}
+
+/**
  * **A feature states its own cron schedule, empty included (#650 review).**
  *
  * `triggers` is one of the keys wrangler *does* inherit, so a feature stanza that says nothing takes the top
@@ -633,6 +657,7 @@ export async function applyProvisionedEnv(options: {
       featureCrons(stanza);
       if (options.subdomain !== undefined) stampFeatureAddress(stanza, top, options.subdomain);
     }
+    scopedArtifacts(stanza, top, () => options.scope.artifactsNamespace);
     for (const resource of options.resources) {
       const { array, fields } = KIND_TO_WRANGLER[resource.kind];
       // Reuse the existing comment-json array (preserving its comments) or start a fresh one, then

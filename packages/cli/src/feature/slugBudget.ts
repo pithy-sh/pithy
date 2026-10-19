@@ -99,6 +99,11 @@ export async function featureNameShapes(sources: FeatureNameSources): Promise<Fe
   for (const index of await featureIndexesFor(sources.capabilities, sources.projectDir, probe)) {
     add("vectorizeIndex", index.name);
   }
+  // The feature's Artifacts namespace, where anything binds one (#673). Never the tightest today, since `artifacts`
+  // is shorter than any binding's tail, but a name the feature composes is a name the budget reads.
+  if (sources.capabilities.some((capability) => capability.requiredBindings.some((b) => b.type === "artifacts"))) {
+    add("artifactsNamespace", scope.artifactsNamespace);
+  }
   return [...shapes.values()];
 }
 

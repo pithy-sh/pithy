@@ -7,7 +7,13 @@ import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { partialWriteReport } from "@pithy-sh/secrets/src/cli/partialWrite";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import type { ProvisionWorker } from "../provision/environment";
-import type { FeatureIndexes, ResourceProvisioners, WorkerScripts, WorkflowDefinitions } from "../provision/resources";
+import type {
+  FeatureIndexes,
+  FeatureRepos,
+  ResourceProvisioners,
+  WorkerScripts,
+  WorkflowDefinitions,
+} from "../provision/resources";
 import type { SecretsStore } from "../provision/store";
 import { devConfigPath } from "./devConfig";
 import { manifestPath } from "./manifest";
@@ -116,6 +122,8 @@ export type RemoteTeardown =
       workflows: WorkflowDefinitions;
       /** The feature's own Vectorize indexes, deleted by recomputed name (#643). */
       indexes?: FeatureIndexes;
+      /** The repos in the feature's own Artifacts namespace, every one deleted (#673). */
+      repos?: FeatureRepos;
     }
   | {
       /** Absent: remote teardown is skipped (e.g. `--local-only`, or no CF credentials). */
@@ -126,6 +134,8 @@ export type RemoteTeardown =
       workflows?: undefined;
       /** Absent with `provisioners`. */
       indexes?: undefined;
+      /** Absent with `provisioners`. */
+      repos?: undefined;
     };
 
 /** Options for {@link destroyFeature}. */
@@ -234,6 +244,7 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
         scripts: options.scripts,
         workflows: options.workflows,
         ...(options.indexes ? { indexes: options.indexes } : {}),
+        ...(options.repos ? { repos: options.repos } : {}),
         workers: options.workers,
         ...(options.store !== undefined ? { store: options.store } : {}),
         ...(options.audit !== undefined ? { audit: options.audit } : {}),

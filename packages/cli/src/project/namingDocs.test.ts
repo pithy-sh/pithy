@@ -90,6 +90,8 @@ const ROW_LABEL: Record<Namespace, string> = {
   d1: "D1 database",
   secretEntry: "Secrets Store entry",
   apiToken: "Cloudflare API token",
+  artifactsNamespace: "Artifacts namespace",
+  artifactsRepo: "Artifacts repo",
 };
 
 /**

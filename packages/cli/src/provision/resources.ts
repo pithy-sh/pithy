@@ -211,7 +211,7 @@ export const AUDIT_DESTINATION_ENV = "dev";
  * Everything feature teardown deletes and reports, by kind: the resources provisioning creates, and the
  * Worker scripts it names for deploy (#592).
  */
-export type TeardownKind = FeatureResourceKind | "worker" | "workflow" | "vectorize";
+export type TeardownKind = FeatureResourceKind | "worker" | "workflow" | "vectorize" | "artifacts";
 
 /** The resource kind recorded on a provisioning audit event. */
 export const AUDIT_RESOURCE_TYPE: Record<TeardownKind, string> = {
@@ -225,7 +225,29 @@ export const AUDIT_RESOURCE_TYPE: Record<TeardownKind, string> = {
   workflow: "cf_workflow",
   // A feature's own Vectorize index (#643).
   vectorize: "cf_vectorize",
+  // One repo in a feature's own Artifacts namespace, recorded as `<namespace>/<repo>` (#673).
+  artifacts: "cf_artifacts_repo",
 };
+
+/**
+ * **The repos in a feature's Artifacts namespace (#673)** — what `pithy feature destroy` reaps. The Worker creates
+ * them, through its binding, so teardown is the only half: `list` every repo name in a namespace, an absent
+ * namespace answering none, and `remove` one, resolving whether it was there.
+ */
+export interface FeatureRepos {
+  /** Every repo name in the namespace. Empty when Cloudflare has no such namespace. */
+  list(namespace: string): Promise<string[]>;
+  /** Delete one repo and its tokens. Resolves whether one was there. */
+  remove(namespace: string, repo: string): Promise<boolean>;
+}
+
+/** The account's Artifacts repos, through the REST client — the seam `pithy feature destroy` reaps with. */
+export function cloudflareFeatureRepos(cf: CloudflareClients): FeatureRepos {
+  return {
+    list: (namespace) => cf.artifacts().listRepos(namespace),
+    remove: (namespace, repo) => cf.artifacts().deleteRepo(namespace, repo),
+  };
+}
 
 /**
  * **The indexes a feature creates for itself (#643)** — see `FeatureIndex` in `capabilities/hostRegistry.ts`.

@@ -1306,6 +1306,86 @@ describe("deprovisionFeature — a delete that throws", () => {
 });
 
 /**
+ * **A feature's Artifacts repos are reaped with it (#673).** A repo costs storage against a 1 TB account cap, and
+ * nothing else ever deletes one, so every feature a team tears down would otherwise leak its repos forever.
+ */
+describe("deprovisionFeature — a feature's Artifacts repos", () => {
+  let dir: string;
+  const identity: FeatureIdentity = { project: "acme", issue: "662", slug: "thing" };
+  const namespace = "acme-f662-thing--artifacts";
+  const binds = defineCapability({ name: "app", requiredBindings: [{ type: "artifacts", name: "ARTIFACTS" }] });
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-feature-repos-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** An account's namespaces, in memory: namespace → repo names. */
+  function fakeRepos(seed: Record<string, string[]>) {
+    const namespaces = new Map(Object.entries(seed).map(([name, repos]) => [name, new Set(repos)]));
+    const listed: string[] = [];
+    return {
+      namespaces,
+      listed,
+      repos: {
+        list: async (name: string) => {
+          listed.push(name);
+          return [...(namespaces.get(name) ?? [])];
+        },
+        remove: async (name: string, repo: string) => namespaces.get(name)?.delete(repo) ?? false,
+      },
+    };
+  }
+
+  const teardown = (
+    capabilities: ReturnType<typeof defineCapability>[],
+    repos: ReturnType<typeof fakeRepos>["repos"],
+  ) =>
+    deprovisionFeature({
+      ...noScripts,
+      projectDir: dir,
+      identity,
+      capabilities,
+      env: "feature",
+      provisioners: fakeProvisioners().provisioners,
+      repos,
+    });
+
+  test("lists and deletes every repo in the feature's own namespace, and reports each", async () => {
+    const account = fakeRepos({
+      [namespace]: ["a", "b"],
+      "acme-dev": ["keep"],
+      "acme-f662-thing-two--artifacts": ["x"],
+    });
+    const report = await teardown([binds], account.repos);
+    expect(account.listed).toEqual([namespace]);
+    expect(account.namespaces.get(namespace)?.size).toBe(0);
+    expect(account.namespaces.get("acme-dev")).toEqual(new Set(["keep"]));
+    expect(account.namespaces.get("acme-f662-thing-two--artifacts")).toEqual(new Set(["x"]));
+    expect(report.deleted.filter((resource) => resource.kind === "artifacts")).toEqual([
+      { kind: "artifacts", name: `${namespace}/a`, id: `${namespace}/a` },
+      { kind: "artifacts", name: `${namespace}/b`, id: `${namespace}/b` },
+    ]);
+  });
+
+  test("is idempotent: a second run finds nothing and deletes nothing", async () => {
+    const account = fakeRepos({ [namespace]: ["a"] });
+    await teardown([binds], account.repos);
+    const again = await teardown([binds], account.repos);
+    expect(again.deleted.filter((resource) => resource.kind === "artifacts")).toEqual([]);
+  });
+
+  test("asks nothing of the account for a feature that binds no Artifacts", async () => {
+    const account = fakeRepos({ [namespace]: ["a"] });
+    await teardown([appCapability()], account.repos);
+    expect(account.listed).toEqual([]);
+    expect(account.namespaces.get(namespace)).toEqual(new Set(["a"]));
+  });
+});
+
+/**
  * **A feature's Worker scripts are torn down with it (#592).**
  *
  * `destroy` handled D1, KV, R2 and Secrets Store entries, and the manifest could not record a Worker
@@ -2053,6 +2133,86 @@ describe("a feature deployment serves a request (#650)", () => {
     expect(await res.text()).toMatch(
       /Missing required bindings: workflow:CONNECTION_ROTATION, workflow:ROTATION_SWEEP/,
     );
+  });
+});
+
+/**
+ * **#673: a Worker binding Artifacts deploys to a feature with `ARTIFACTS` in its env.** Before #662 the key was
+ * emptied in every stanza a feature created, so `env.ARTIFACTS` was `undefined` and nothing said so. The proof is
+ * the generated config: the real provisioning run, the stanza it wrote, and a Worker composed from that stanza's
+ * bindings alone answering a request.
+ */
+describe("a feature deployment binds Artifacts (#673)", () => {
+  let dir: string;
+  const identity: FeatureIdentity = { project: "acme", issue: "673", slug: "repos" };
+  const repos = defineCapability({ name: "app", requiredBindings: [{ type: "artifacts", name: "ARTIFACTS" }] });
+
+  interface GeneratedStanza {
+    vars?: Record<string, unknown>;
+    artifacts?: { binding: string; namespace: string }[];
+  }
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-feature-673-"));
+    await mkdir(join(dir, "apps", "board"), { recursive: true });
+    // What `pithy add` writes at the top level: dev's namespace, which no feature may bind.
+    await writeFile(
+      join(dir, "apps", "board", "wrangler.jsonc"),
+      JSON.stringify({
+        name: "acme-board",
+        main: "src/index.ts",
+        artifacts: [{ binding: "ARTIFACTS", namespace: "acme-dev" }],
+      }),
+    );
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  async function provisioned(): Promise<GeneratedStanza> {
+    await provisionFeature({
+      administersItself: false,
+      projectDir: dir,
+      capabilities: [repos],
+      identity,
+      provisioners: fakeProvisioners().provisioners,
+      resolveWorkers: async () => [
+        {
+          name: "acme-board",
+          dir: join(dir, "apps", "board"),
+          capabilities: [repos],
+          config: { capabilities: [], app: repos },
+        },
+      ],
+      migrate: async () => {},
+      seed: async () => {},
+    });
+    const config = parse(await readFile(featureConfigPath(join(dir, "apps", "board")), "utf8")) as unknown as {
+      env: Record<string, GeneratedStanza>;
+    };
+    return config.env.feature as GeneratedStanza;
+  }
+
+  test("the generated stanza binds ARTIFACTS to the feature's own namespace, never dev's", async () => {
+    const stanza = await provisioned();
+    expect(stanza.artifacts).toEqual([{ binding: "ARTIFACTS", namespace: "acme-f673-repos--artifacts" }]);
+    expect(isFeatureOwnedName(identity, stanza.artifacts?.[0]?.namespace ?? "")).toBe(true);
+  });
+
+  test("a Worker composed from that stanza's bindings serves /health, and one without them does not", async () => {
+    const stanza = await provisioned();
+    const env = (from: GeneratedStanza): Record<string, unknown> => {
+      const bound: Record<string, unknown> = { ...from.vars };
+      for (const entry of from.artifacts ?? []) bound[entry.binding] = {};
+      return bound;
+    };
+    // Two backends, because a backend checks its bindings once, on its first request.
+    const worker = createBackend({ capabilities: [], app: repos });
+    expect((await worker.request("/health", {}, env(stanza))).status).toBe(200);
+    const unbound = createBackend({ capabilities: [], app: repos });
+    const stripped = await unbound.request("/health", {}, env({ ...stanza, artifacts: [] }));
+    expect(stripped.status).toBe(500);
+    expect(await stripped.text()).toMatch(/Missing required bindings: artifacts:ARTIFACTS/);
   });
 });
 
