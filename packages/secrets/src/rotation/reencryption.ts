@@ -27,6 +27,15 @@ import { MAX_SECRETS_CACHE_TTL_SECONDS } from "../sharedSecretsStore";
  * manager would retire a version the dependent's rows are still sealed under. So a record names the value by
  * {@link versionFingerprint} as well, and a record whose fingerprint is not the envelope's names nothing.
  *
+ * ## Every holder, not every dependent
+ *
+ * A dependent can be held in more than one place: two auth Workers over two databases each seal their own
+ * JWKS keys under the one environment-scoped session secret. Each records under its own `holder` — the
+ * database's binding name — and a retirement waits for every holder of every dependent. A holder records
+ * even while the secret has one version ({@link recordSoleVersion}), so one that has served a request is known
+ * before the first rotation reaches it. A holder that is gone for good keeps its row, and a retirement holds
+ * for it: the version stays, which is the safe way to be wrong.
+ *
  * ## Nothing moves until every reader can open what it moves to
  *
  * Workers read a secret through a per-isolate cache. An isolate that cached the envelope just before the
@@ -96,13 +105,15 @@ export interface ReencryptionRecord extends SealedVersion {
   name: string;
   /** The dependent, as the entry's `overlap.reencrypt` names it. */
   dependent: string;
+  /** Where it is held: the database, by its binding name. */
+  holder: string;
   /** When it moved. Defaults to now. */
   now?: Date;
 }
 
 /**
- * Record that `dependent` is sealed under `version` of `name`. Upserts: one row per secret and dependent,
- * replaced each time it moves.
+ * Record that `dependent`, in `holder`, is sealed under `version` of `name`. Upserts: one row per secret,
+ * dependent and holder, replaced each time it moves.
  */
 export async function recordReencryption(db: SecretsDb, record: ReencryptionRecord): Promise<void> {
   const at = SQLiteDate.encode(record.now ?? new Date());
@@ -111,6 +122,7 @@ export async function recordReencryption(db: SecretsDb, record: ReencryptionReco
     .values({
       name: record.name,
       dependent: record.dependent,
+      holder: record.holder,
       version: record.version,
       fingerprint: record.fingerprint,
       observedAt: at,
@@ -118,7 +130,7 @@ export async function recordReencryption(db: SecretsDb, record: ReencryptionReco
     })
     .onConflict((conflict) =>
       conflict
-        .columns(["name", "dependent"])
+        .columns(["name", "dependent", "holder"])
         .doUpdateSet({ version: record.version, fingerprint: record.fingerprint, movedAt: at }),
     )
     .execute();
@@ -139,6 +151,8 @@ export interface ReencryptionClaimInput {
   name: string;
   /** The dependent, as the entry's `overlap.reencrypt` names it. */
   dependent: string;
+  /** Where it is held: the database, by its binding name. */
+  holder: string;
   /** The version the dependent sees as current. */
   sealed: SealedVersion;
   /** The clock. Defaults to now. */
@@ -159,6 +173,7 @@ export async function claimReencryption(db: SecretsDb, input: ReencryptionClaimI
     .select(["version", "fingerprint", "observedAt", "movedAt"])
     .where("name", "=", input.name)
     .where("dependent", "=", input.dependent)
+    .where("holder", "=", input.holder)
     .executeTakeFirst();
   if (row !== undefined && row.version === input.sealed.version && row.fingerprint === input.sealed.fingerprint) {
     if (row.movedAt !== null && row.movedAt !== undefined) return { state: "moved" };
@@ -171,13 +186,14 @@ export async function claimReencryption(db: SecretsDb, input: ReencryptionClaimI
     .values({
       name: input.name,
       dependent: input.dependent,
+      holder: input.holder,
       version: input.sealed.version,
       fingerprint: input.sealed.fingerprint,
       observedAt: at,
       movedAt: null,
     })
     .onConflict((conflict) =>
-      conflict.columns(["name", "dependent"]).doUpdateSet({
+      conflict.columns(["name", "dependent", "holder"]).doUpdateSet({
         version: input.sealed.version,
         fingerprint: input.sealed.fingerprint,
         observedAt: at,
@@ -189,12 +205,49 @@ export async function claimReencryption(db: SecretsDb, input: ReencryptionClaimI
 }
 
 /**
+ * Record a holder while the secret has one version: sealed under it, since there is nothing else to be sealed
+ * under. Writes only when the holder's row says otherwise, so an isolate's first request costs one read.
+ *
+ * This is how the manager learns a holder exists before the first rotation does. Without it, a database whose
+ * Worker served no request between a rotation and its retirement would never have recorded, and the version
+ * its keys are sealed under would be retired over them.
+ */
+export async function recordSoleVersion(
+  db: SecretsDb,
+  input: Omit<ReencryptionClaimInput, "now"> & { now?: Date },
+): Promise<void> {
+  const row = await db
+    .selectFrom("pithySecretsReencryptions")
+    .select(["version", "fingerprint", "movedAt"])
+    .where("name", "=", input.name)
+    .where("dependent", "=", input.dependent)
+    .where("holder", "=", input.holder)
+    .executeTakeFirst();
+  const recorded =
+    row !== undefined &&
+    row.version === input.sealed.version &&
+    row.fingerprint === input.sealed.fingerprint &&
+    row.movedAt !== null &&
+    row.movedAt !== undefined;
+  if (recorded) return;
+  await recordReencryption(db, {
+    name: input.name,
+    dependent: input.dependent,
+    holder: input.holder,
+    ...input.sealed,
+    ...(input.now === undefined ? {} : { now: input.now }),
+  });
+}
+
+/**
  * The dependents of `name` not yet re-encrypted under `version` — the ones a retirement still waits for.
  *
- * `fingerprints` is the envelope as it stands now, by version key ({@link fingerprintVersions}). A dependent
- * is caught up only when its row says it moved, names a version the envelope still holds under the same
- * value, and that version is `version` or later — compared as the integers they spell, so `"10"` is past
- * `"9"`. Anything else is pending: no row, a row still settling, or a row from before a reset.
+ * `fingerprints` is the envelope as it stands now, by version key ({@link fingerprintVersions}). A holder is
+ * caught up only when its row says it moved, names a version the envelope still holds under the same value,
+ * and that version is `version` or later — compared as the integers they spell, so `"10"` is past `"9"`. A
+ * dependent is caught up when it has a row and every holder's row is. Anything else is pending: no row, a row
+ * still settling, or a row from before a reset. A dependent with no row at all answers as itself; one that
+ * is behind in one holder answers as `<dependent>/<holder>`, so the trail says which database to look at.
  */
 export async function pendingReencryptions(
   db: SecretsDb,
@@ -206,16 +259,20 @@ export async function pendingReencryptions(
   if (dependents.length === 0) return [];
   const rows = await db
     .selectFrom("pithySecretsReencryptions")
-    .select(["dependent", "version", "fingerprint", "movedAt"])
+    .select(["dependent", "holder", "version", "fingerprint", "movedAt"])
     .where("name", "=", name)
     .where("dependent", "in", [...dependents])
+    .orderBy("holder")
     .execute();
-  const recorded = new Map(rows.map((row) => [row.dependent, row]));
-  return dependents.filter((dependent) => {
-    const row = recorded.get(dependent);
-    if (row === undefined || row.movedAt === null || row.movedAt === undefined) return true;
+  const behind = (row: (typeof rows)[number]): boolean => {
+    if (row.movedAt === null || row.movedAt === undefined) return true;
     if (fingerprints[row.version] !== row.fingerprint) return true;
     const at = Number(row.version);
     return !Number.isInteger(at) || at < Number(version);
+  };
+  return dependents.flatMap((dependent) => {
+    const held = rows.filter((row) => row.dependent === dependent);
+    if (held.length === 0) return [dependent];
+    return held.filter(behind).map((row) => `${dependent}/${row.holder}`);
   });
 }

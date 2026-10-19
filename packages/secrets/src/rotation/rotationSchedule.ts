@@ -193,6 +193,12 @@ export interface ValueRotationPlanInput {
   globalEnvironment?: string;
   /** The newest successful row for a name in this environment's ledger — a rotation or a baseline — or `null`. */
   lastSuccess: (name: string) => Date | null;
+  /**
+   * When the schedule last reset a name's clock — its newest rotation, or the baseline the cron recorded when
+   * the period first reached it — or `null` while the cron has never recorded one. A baseline written when the
+   * secret was created is not a start: it says when the value was set, not when anything began to count.
+   */
+  scheduledSince: (name: string) => Date | null;
   /** The tick's clock. */
   now: Date;
 }
@@ -208,8 +214,9 @@ function elapsed(since: Date, days: number, now: Date): boolean {
  * What the cron does with each secret on this tick. Pure, so every rule is a test rather than a claim.
  *
  * - **`start`** — due, rotatable here, and this manager's to rotate.
- * - **`baseline`** — no history at all. The first tick records a baseline instead of rotating, so a period
- *   added to an existing secret starts counting from today rather than replacing the value at 03:00 tonight.
+ * - **`baseline`** — the schedule has never seen it. The first tick records a baseline instead of rotating, so
+ *   a period added to an existing secret starts counting from today rather than replacing the value at 03:00
+ *   tonight. Its creation-time baseline does not count: every rotatable secret has one, as old as the secret.
  * - **`not-due`**, **`not-owner`** — nothing to do, and nothing wrong.
  * - **`refused`** — a declaration the cron must never act on, arriving anyway.
  * - **`report`** — a secret nothing here can rotate. `overdue` is the same answer the status read gives.
@@ -234,8 +241,9 @@ export function planValueRotations(input: ValueRotationPlanInput): ValueRotation
       };
     }
     if (stamped.valueType !== "text") return { name, decision: "refused", reason: "json" };
-    if (last === null) return { name, decision: "baseline" };
-    return elapsed(last, stamped.rotateEveryDays, input.now)
+    const since = input.scheduledSince(name);
+    if (since === null) return { name, decision: "baseline" };
+    return elapsed(since, stamped.rotateEveryDays, input.now)
       ? { name, decision: "start" }
       : { name, decision: "not-due" };
   });

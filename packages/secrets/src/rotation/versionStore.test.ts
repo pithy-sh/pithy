@@ -26,22 +26,43 @@ function memory(initial: Record<string, VersionedValue>) {
 }
 
 describe("envelopeVersionStore", () => {
-  test("append makes the successor current and names the versions it overlaps", async () => {
+  test("stage adds the successor beside the current version, which stays current", async () => {
     const { held, store } = memory({ key: initialVersionedValue("a") });
-    expect(await store.append("key", "b")).toEqual({ version: "2", prior: ["1"] });
-    expect(held.get("key")).toEqual({ currentVersion: "2", versions: { "1": "a", "2": "b" } });
+    expect(await store.stage("key", "b")).toEqual({
+      version: "2",
+      fingerprint: await versionFingerprint("b"),
+      prior: ["1"],
+    });
+    expect(held.get("key")).toEqual({ currentVersion: "1", versions: { "1": "a", "2": "b" } });
   });
 
-  test("append is idempotent on the value: a retried store writes nothing twice", async () => {
+  test("stage is idempotent on the value: a retried store writes nothing twice", async () => {
     const { store, writes } = memory({ key: initialVersionedValue("a") });
-    await store.append("key", "b");
-    expect(await store.append("key", "b")).toEqual({ version: "2", prior: ["1"] });
+    const once = await store.stage("key", "b");
+    expect(await store.stage("key", "b")).toEqual(once);
     expect(writes()).toBe(1);
   });
 
-  test("append refuses a name with nothing stored, rather than inventing a version 1", async () => {
+  test("stage refuses a name with nothing stored, rather than inventing a version 1", async () => {
     const { store } = memory({});
-    await expect(store.append("key", "b")).rejects.toThrow(SecretNotFoundError);
+    await expect(store.stage("key", "b")).rejects.toThrow(SecretNotFoundError);
+  });
+
+  test("promote makes the staged version current, once", async () => {
+    const { held, store, writes } = memory({ key: initialVersionedValue("a") });
+    const staged = await store.stage("key", "b");
+    expect(await store.promote("key", staged)).toBe(true);
+    expect(held.get("key")).toEqual({ currentVersion: "2", versions: { "1": "a", "2": "b" } });
+    expect(await store.promote("key", staged)).toBe(true);
+    expect(writes()).toBe(2);
+  });
+
+  test("promote refuses a version an update has since replaced, whatever its key says", async () => {
+    const { held, store } = memory({ key: initialVersionedValue("a") });
+    const staged = await store.stage("key", "b");
+    held.set("key", { currentVersion: "1", versions: { "1": "pasted", "2": "another" } });
+    expect(await store.promote("key", staged)).toBe(false);
+    expect(held.get("key")?.currentVersion).toBe("1");
   });
 
   test("retire drops the prior versions, keeps the current one, and reports what is left", async () => {
@@ -82,7 +103,7 @@ describe("secretsStoreVersionStore — a Secrets Store entry, read through its b
         entries.set("acme-prod-email-link-signing-key", text);
       },
     });
-    expect(await store.append("email-link-signing-key", "b")).toEqual({ version: "2", prior: ["1"] });
+    await store.promote("email-link-signing-key", await store.stage("email-link-signing-key", "b"));
     expect(decodeVersionedValue(entries.get("acme-prod-email-link-signing-key") as string)).toEqual({
       currentVersion: "2",
       versions: { "1": "a", "2": "b" },

@@ -169,8 +169,8 @@ export interface ValueRotationTick {
 
 /**
  * One cron tick's value rotations: read the schedule, plan every secret against this environment's ledger,
- * and act on the plan — start what is due, baseline what has no history, report what nothing here can
- * rotate. Returns the plan, so a test asserts on decisions rather than on side effects alone.
+ * and act on the plan — start what is due, baseline what the schedule has never seen, report what nothing
+ * here can rotate. Returns the plan, so a test asserts on decisions rather than on side effects alone.
  *
  * Each `start` is independent: one that fails to start does not stop the next. The first failure is
  * rethrown once every secret has been considered, so the invocation is still recorded as failed.
@@ -183,12 +183,17 @@ export async function scheduleValueRotations(
   if (stamped.length === 0) return [];
   const tracker = RotationTracker.fromD1(env.SECRETS);
   const last = new Map<string, Date | null>();
-  for (const one of stamped) last.set(one.name, await tracker.getLatestSuccess(one.name));
+  const since = new Map<string, Date | null>();
+  for (const one of stamped) {
+    last.set(one.name, await tracker.getLatestSuccess(one.name));
+    since.set(one.name, await tracker.getScheduleClock(one.name));
+  }
   const plan = planValueRotations({
     stamped,
     environment: env.ENVIRONMENT,
     ...(env.GLOBAL_ENVIRONMENT === undefined ? {} : { globalEnvironment: env.GLOBAL_ENVIRONMENT }),
     lastSuccess: (name) => last.get(name) ?? null,
+    scheduledSince: (name) => since.get(name) ?? null,
     now: tick.now,
   });
   const failures: unknown[] = [];
@@ -199,7 +204,7 @@ export async function scheduleValueRotations(
         await tick.start(valueRotationInstanceId(decision.name, tick.now), { rotation });
         tick.log.info("value rotation started", { name: decision.name });
       } else if (decision.decision === "baseline") {
-        await tracker.recordBaseline(decision.name);
+        await tracker.recordScheduleBaseline(decision.name);
         tick.log.info("value rotation baseline recorded", { name: decision.name });
       } else if (decision.decision === "report" && decision.overdue === true) {
         tick.log.warn("secret overdue, and nothing here can rotate it", {

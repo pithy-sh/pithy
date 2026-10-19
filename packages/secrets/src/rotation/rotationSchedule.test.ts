@@ -94,6 +94,7 @@ describe("stampedRotations — what provisioning writes into the manager (#602)"
         environment: "prod",
         globalEnvironment: "prod",
         lastSuccess: () => daysAgo(400),
+        scheduledSince: () => daysAgo(400),
         now: NOW,
       }),
     ).toEqual([{ name: "turnstile-secret", decision: "report", reason: "no-rotator", overdue: true }]);
@@ -125,8 +126,11 @@ describe("stampedRotations — what provisioning writes into the manager (#602)"
 
 describe("planValueRotations — what one cron tick does with each secret", () => {
   const stamped = stampedRotations(registry);
-  const plan = (environment: string, lastSuccess: (name: string) => Date | null) =>
-    planValueRotations({ stamped, environment, globalEnvironment: "prod", lastSuccess, now: NOW });
+  const plan = (
+    environment: string,
+    lastSuccess: (name: string) => Date | null,
+    scheduledSince: (name: string) => Date | null = lastSuccess,
+  ) => planValueRotations({ stamped, environment, globalEnvironment: "prod", lastSuccess, scheduledSince, now: NOW });
 
   test("a due local secret starts, one not yet due does not, and a manual one is only reported overdue", () => {
     expect(plan("staging", (name) => (name === "auth-session-secret" ? daysAgo(91) : daysAgo(400)))).toEqual([
@@ -142,6 +146,32 @@ describe("planValueRotations — what one cron tick does with each secret", () =
     expect(plan("staging", () => null)[0]).toEqual({ name: "auth-session-secret", decision: "baseline" });
   });
 
+  test("a secret a year old that the schedule has never seen is baselined, not rotated tonight", () => {
+    // Its creation-time baseline is a year old; the period was added today, so the clock starts today.
+    expect(
+      plan(
+        "staging",
+        () => daysAgo(365),
+        () => null,
+      )[0],
+    ).toEqual({
+      name: "auth-session-secret",
+      decision: "baseline",
+    });
+  });
+
+  test("once the schedule has a start, the period counts from it rather than from the secret's creation", () => {
+    const fromCreation = () => daysAgo(365);
+    expect(plan("staging", fromCreation, () => daysAgo(10))[0]).toEqual({
+      name: "auth-session-secret",
+      decision: "not-due",
+    });
+    expect(plan("staging", fromCreation, () => daysAgo(91))[0]).toEqual({
+      name: "auth-session-secret",
+      decision: "start",
+    });
+  });
+
   test("only the last declared environment's manager rotates a global secret, however late it is", () => {
     const late = () => daysAgo(4000);
     expect(plan("staging", late).find((one) => one.name === "shared-hmac")).toEqual({
@@ -154,7 +184,7 @@ describe("planValueRotations — what one cron tick does with each secret", () =
     });
     // A manager that was never told which environment owns global secrets owns none of them.
     expect(
-      planValueRotations({ stamped, environment: "prod", lastSuccess: late, now: NOW }).find(
+      planValueRotations({ stamped, environment: "prod", lastSuccess: late, scheduledSince: late, now: NOW }).find(
         (one) => one.name === "shared-hmac",
       ),
     ).toEqual({ name: "shared-hmac", decision: "not-owner" });
@@ -169,6 +199,7 @@ describe("planValueRotations — what one cron tick does with each secret", () =
         environment: "prod",
         globalEnvironment: "prod",
         lastSuccess: () => daysAgo(400),
+        scheduledSince: () => daysAgo(400),
         now: NOW,
       }),
     ).toEqual([{ name: "auth-session-secret", decision: "refused", reason: "global-d1" }]);

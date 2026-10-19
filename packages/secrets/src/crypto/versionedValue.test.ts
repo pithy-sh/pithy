@@ -9,8 +9,9 @@ import {
   decodeVersionedValue,
   encodeVersionedValue,
   initialVersionedValue,
+  promotedValue,
   retireVersions,
-  rotatedValue,
+  stagedValue,
 } from "./versionedValue";
 
 describe("versioned value serde", () => {
@@ -49,19 +50,25 @@ describe("versioned value serde", () => {
 });
 
 describe("a rotation's versions (#602)", () => {
-  test("rotatedValue appends the successor and names every version it now overlaps", () => {
-    const rotated = rotatedValue({ currentVersion: "2", versions: { "1": "a", "2": "b" } }, "c");
-    expect(rotated).toEqual({
-      value: { currentVersion: "3", versions: { "1": "a", "2": "b", "3": "c" } },
+  test("stagedValue adds the successor beside the current version and leaves current where it was", () => {
+    const staged = stagedValue({ currentVersion: "2", versions: { "1": "a", "2": "b" } }, "c");
+    expect(staged).toEqual({
+      value: { currentVersion: "2", versions: { "1": "a", "2": "b", "3": "c" } },
       version: "3",
       prior: ["1", "2"],
     });
   });
 
-  test("rotatedValue is idempotent on the value: a store retried with the same successor appends nothing", () => {
-    const once = rotatedValue(initialVersionedValue("a"), "b");
-    const twice = rotatedValue(once.value, "b");
+  test("stagedValue is idempotent on the value: a store retried with the same successor adds nothing", () => {
+    const once = stagedValue(initialVersionedValue("a"), "b");
+    const twice = stagedValue(once.value, "b");
     expect(twice).toEqual(once);
+  });
+
+  test("promotedValue makes a staged version current, and answers null for a version the envelope lacks", () => {
+    const staged = stagedValue(initialVersionedValue("a"), "b");
+    expect(promotedValue(staged.value, "2")).toEqual({ currentVersion: "2", versions: { "1": "a", "2": "b" } });
+    expect(promotedValue(initialVersionedValue("z"), "2")).toBeNull();
   });
 
   test("retireVersions drops the named versions and keeps the current one whatever it is asked", () => {

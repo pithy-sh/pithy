@@ -5,8 +5,8 @@ import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { z } from "zod";
 
 /**
- * The `pithy_secrets_reencryptions` table — one row per secret and per value sealed under it at rest,
- * saying which version of the secret that value was last re-encrypted under (#602).
+ * The `pithy_secrets_reencryptions` table — one row per secret, per value sealed under it at rest and per
+ * database holding that value, saying which version of the secret it was last re-encrypted under (#602).
  *
  * **It exists because the rotation and the re-encryption run in different Workers.** The secrets manager
  * rotates `auth-session-secret` and later retires its previous version; the JWKS private keys sealed under
@@ -24,11 +24,16 @@ import { z } from "zod";
  */
 export const SecretReencryption = z
   .object({
-    name: z.string().describe("The secret the value is sealed under, by registry name. Half the primary key."),
+    name: z.string().describe("The secret the value is sealed under, by registry name. Part of the primary key."),
     dependent: z
       .string()
       .describe(
-        "What is sealed under it, as its registry entry's `overlap.reencrypt` names it — `auth-jwks`. Half the primary key.",
+        "What is sealed under it, as its registry entry's `overlap.reencrypt` names it — `auth-jwks`. Part of the primary key.",
+      ),
+    holder: z
+      .string()
+      .describe(
+        "Where that dependent is held: the database, by its binding name — `DB`. Two auth Workers over two databases are two holders, and each is waited for. Part of the primary key.",
       ),
     version: z.string().describe("The secret's version key this row is about."),
     fingerprint: z
@@ -44,6 +49,6 @@ export const SecretReencryption = z
     ),
   })
   .describe(
-    "Which version of a secret one value sealed under it at rest was last re-encrypted under (`pithy_secrets_reencryptions`).",
+    "Which version of a secret one value sealed under it at rest, in one database, was last re-encrypted under (`pithy_secrets_reencryptions`).",
   );
 export type SecretReencryption = z.output<typeof SecretReencryption>;

@@ -148,9 +148,9 @@ function refusingD1(): { db: D1Database; asked: () => number } {
 /** The re-encryption row, as the secrets D1 holds it. */
 async function recordRow() {
   return await env.SECRETS.prepare(
-    "select version, fingerprint, observed_at, moved_at from pithy_secrets_reencryptions where name = ? and dependent = ?",
+    "select version, fingerprint, observed_at, moved_at from pithy_secrets_reencryptions where name = ? and dependent = ? and holder = ?",
   )
-    .bind(AUTH_SESSION_SECRET, AUTH_JWKS_DEPENDENT)
+    .bind(AUTH_SESSION_SECRET, AUTH_JWKS_DEPENDENT, "DB")
     .first<{ version: string; fingerprint: string; observed_at: number; moved_at: number | null }>();
 }
 
@@ -158,23 +158,56 @@ describe("ensureJwksSealedUnderCurrent (#602)", () => {
   const T0 = new Date("2026-10-18T03:00:00.000Z");
   const settled = new Date(T0.getTime() + REENCRYPTION_SETTLE_MS);
 
-  test("with one version held there is nothing to move, and the secrets D1 is never asked", async () => {
-    const { db, asked } = refusingD1();
+  test("with one version held there is nothing to move, and the database is recorded as a holder under it", async () => {
+    await insertKey("enveloped", await symmetricEncrypt({ key: config(1), data: "private-enveloped" }));
     const { log, lines } = recorder();
+    const sole = { currentVersion: "1", versions: { "1": ONE } };
     await ensureJwksSealedUnderCurrent({
       db: authDatabase(env.DB),
-      secrets: db,
+      holder: "DB",
+      secrets: env.SECRETS,
+      versions: sole,
+      log,
+      now: T0,
+    });
+    expect(await storedKey("enveloped")).toMatch(/^\$ba\$1\$/);
+    expect(await recordRow()).toMatchObject({
+      version: "1",
+      fingerprint: await versionFingerprint(ONE),
+      moved_at: T0.getTime(),
+    });
+    expect(lines).toEqual([]);
+    // Once per isolate: the next request does not ask again.
+    const { db, asked } = refusingD1();
+    await ensureJwksSealedUnderCurrent({ db: authDatabase(env.DB), holder: "DB", secrets: db, versions: sole, log });
+    expect(asked()).toBe(0);
+  });
+
+  test("two auth databases are two holders: the one that moved does not answer for the one that has not", async () => {
+    const { log } = recorder();
+    const secretsDb = createDatabase(env.SECRETS, secretsTables);
+    // A second auth Worker, over its own database, served a request before the rotation.
+    await ensureJwksSealedUnderCurrent({
+      db: authDatabase(env.DB),
+      holder: "COLLAB_DB",
+      secrets: env.SECRETS,
       versions: { currentVersion: "1", versions: { "1": ONE } },
       log,
+      now: T0,
     });
-    expect(asked()).toBe(0);
-    expect(lines).toEqual([]);
+    const deps = { db: authDatabase(env.DB), holder: "DB", secrets: env.SECRETS, versions, log };
+    await ensureJwksSealedUnderCurrent({ ...deps, now: T0 });
+    await ensureJwksSealedUnderCurrent({ ...deps, now: settled });
+    const fingerprints = await fingerprintVersions(versions.versions);
+    expect(
+      await pendingReencryptions(secretsDb, AUTH_SESSION_SECRET, [AUTH_JWKS_DEPENDENT], "2", fingerprints),
+    ).toEqual([`${AUTH_JWKS_DEPENDENT}/COLLAB_DB`]);
   });
 
   test("waits out every reader's cache before it moves: an isolate still holding version 1 alone keeps opening", async () => {
     await insertKey("enveloped", await symmetricEncrypt({ key: config(1), data: "private-enveloped" }));
     const { log } = recorder();
-    const deps = { db: authDatabase(env.DB), secrets: env.SECRETS, versions, log };
+    const deps = { db: authDatabase(env.DB), holder: "DB", secrets: env.SECRETS, versions, log };
 
     // The first request to see version 2 records the sighting, and moves nothing.
     await ensureJwksSealedUnderCurrent({ ...deps, now: T0 });
@@ -191,7 +224,7 @@ describe("ensureJwksSealedUnderCurrent (#602)", () => {
         "2",
         fingerprints,
       ),
-    ).toEqual([AUTH_JWKS_DEPENDENT]);
+    ).toEqual([`${AUTH_JWKS_DEPENDENT}/DB`]);
 
     // Just short of the window, still nothing — a fresh isolate asks and is told to wait.
     resetJwksReencryption();
@@ -216,10 +249,18 @@ describe("ensureJwksSealedUnderCurrent (#602)", () => {
 
   test("an isolate told to wait does not ask again until the window has passed", async () => {
     const { log } = recorder();
-    await ensureJwksSealedUnderCurrent({ db: authDatabase(env.DB), secrets: env.SECRETS, versions, log, now: T0 });
+    await ensureJwksSealedUnderCurrent({
+      db: authDatabase(env.DB),
+      holder: "DB",
+      secrets: env.SECRETS,
+      versions,
+      log,
+      now: T0,
+    });
     const { db, asked } = refusingD1();
     await ensureJwksSealedUnderCurrent({
       db: authDatabase(env.DB),
+      holder: "DB",
       secrets: db,
       versions,
       log,
@@ -227,14 +268,21 @@ describe("ensureJwksSealedUnderCurrent (#602)", () => {
     });
     expect(asked()).toBe(0);
     await expect(
-      ensureJwksSealedUnderCurrent({ db: authDatabase(env.DB), secrets: db, versions, log, now: settled }),
+      ensureJwksSealedUnderCurrent({
+        db: authDatabase(env.DB),
+        holder: "DB",
+        secrets: db,
+        versions,
+        log,
+        now: settled,
+      }),
     ).resolves.toBeUndefined();
     expect(asked()).toBeGreaterThan(0);
   });
 
   test("once moved, this isolate does not ask again for that version", async () => {
     const { log } = recorder();
-    const deps = { db: authDatabase(env.DB), secrets: env.SECRETS, versions, log };
+    const deps = { db: authDatabase(env.DB), holder: "DB", secrets: env.SECRETS, versions, log };
     await ensureJwksSealedUnderCurrent({ ...deps, now: T0 });
     await ensureJwksSealedUnderCurrent({ ...deps, now: settled });
     expect((await recordRow())?.moved_at).toBe(settled.getTime());
@@ -245,7 +293,7 @@ describe("ensureJwksSealedUnderCurrent (#602)", () => {
 
   test("the same version key under a new value is a new version: settled under the old one does not skip it", async () => {
     const { log } = recorder();
-    const deps = { db: authDatabase(env.DB), secrets: env.SECRETS, log };
+    const deps = { db: authDatabase(env.DB), holder: "DB", secrets: env.SECRETS, log };
     await ensureJwksSealedUnderCurrent({ ...deps, versions, now: T0 });
     await ensureJwksSealedUnderCurrent({ ...deps, versions, now: settled });
 
@@ -269,7 +317,14 @@ describe("ensureJwksSealedUnderCurrent (#602)", () => {
     const { db } = refusingD1();
     const { log, lines } = recorder();
     await expect(
-      ensureJwksSealedUnderCurrent({ db: authDatabase(env.DB), secrets: db, versions, log, now: settled }),
+      ensureJwksSealedUnderCurrent({
+        db: authDatabase(env.DB),
+        holder: "DB",
+        secrets: db,
+        versions,
+        log,
+        now: settled,
+      }),
     ).resolves.toBeUndefined();
     expect(lines.map((line) => line.level)).toEqual(["warn"]);
     expect(lines[0]?.msg).toMatch(/did not finish/);

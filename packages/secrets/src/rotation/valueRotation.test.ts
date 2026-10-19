@@ -5,9 +5,11 @@ import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import { describe, expect, test } from "vitest";
 import { initialVersionedValue, type VersionedValue } from "../crypto/versionedValue";
 import type { SecretRegistryEntry } from "../registry";
+import { MAX_SECRETS_CACHE_TTL_SECONDS } from "../sharedSecretsStore";
 import type { SecretRotationOutcome } from "./rotateValue";
 import { type RotationLedger, rotationClosure } from "./rotationLedger";
 import {
+  PROPAGATION_WAIT_MS,
   REENCRYPTION_CHECKS,
   REENCRYPTION_WAIT_MS,
   runValueRotation,
@@ -120,11 +122,52 @@ describe("runValueRotation — rotate, wait out the overlap, retire (#602)", () 
     expect(held.get("auth-session-secret")?.currentVersion).toBe("2");
     expect(Object.keys(held.get("auth-session-secret")?.versions ?? {})).toEqual(["2"]);
     expect(rows).toEqual([{ name: "auth-session-secret", closed: { status: "success" } }]);
-    // The overlap is a durable sleep between the two writes, never a timer inside a step.
-    expect(log.find((entry) => entry.kind === "sleep")).toEqual({ kind: "sleep", name: "overlap", ms: 7 * DAY_MS });
+    // The overlap is a durable sleep between the writes, never a timer inside a step.
+    expect(log.find((entry) => entry.name === "overlap")).toEqual({ kind: "sleep", name: "overlap", ms: 7 * DAY_MS });
     const order = log.map((entry) => entry.name);
-    expect(order.indexOf("rotate")).toBeLessThan(order.indexOf("overlap"));
+    expect(order.indexOf("rotate")).toBeLessThan(order.indexOf("propagate"));
+    expect(order.indexOf("propagate")).toBeLessThan(order.indexOf("promote"));
+    expect(order.indexOf("promote")).toBeLessThan(order.indexOf("overlap"));
     expect(order.indexOf("overlap")).toBeLessThan(order.indexOf("retire"));
+  });
+
+  test("the successor is added beside the current version and promoted only once every reader's cache holds it", async () => {
+    const { deps, held } = harness();
+    let duringPropagation: VersionedValue | undefined;
+    const { steps, log } = platformSteps();
+    await runValueRotation(deps, {
+      ...steps,
+      async sleep(name, ms) {
+        if (name === "propagate") duringPropagation = structuredClone(held.get("auth-session-secret"));
+        await steps.sleep(name, ms);
+      },
+    });
+    // Every isolate that refreshes in this window learns version 2 as a key it verifies, and still signs under 1.
+    expect(duringPropagation?.currentVersion).toBe("1");
+    expect(Object.keys(duringPropagation?.versions ?? {})).toEqual(["1", "2"]);
+    // The longest any Worker may cache a secret, so no isolate still holds the envelope from before the stage.
+    expect(PROPAGATION_WAIT_MS).toBe(MAX_SECRETS_CACHE_TTL_SECONDS * 1000);
+    expect(log.find((entry) => entry.name === "propagate")).toEqual({
+      kind: "sleep",
+      name: "propagate",
+      ms: PROPAGATION_WAIT_MS,
+    });
+  });
+
+  test("an update while the successor waits stops the rotation: nothing is promoted and nothing retired", async () => {
+    const { deps, held } = harness();
+    const { steps, log } = platformSteps();
+    await expect(
+      runValueRotation(deps, {
+        ...steps,
+        async sleep(name, ms) {
+          if (name === "propagate") held.set("auth-session-secret", initialVersionedValue("pasted"));
+          await steps.sleep(name, ms);
+        },
+      }),
+    ).rejects.toThrow(/replaced/);
+    expect(held.get("auth-session-secret")).toEqual(initialVersionedValue("pasted"));
+    expect(log.map((entry) => entry.name)).not.toContain("retire");
   });
 
   test("the version is live and the old one still verifies until the overlap ends", async () => {
@@ -172,9 +215,12 @@ describe("runValueRotation — rotate, wait out the overlap, retire (#602)", () 
     const { deps, events, rows } = harness({
       entry: provider,
       store: {
-        append: async (_name, value) => {
+        stage: async (_name, value) => {
           writes.push(value);
           throw new Error("store unavailable");
+        },
+        promote: async () => {
+          throw new Error("never reached");
         },
         retire: async () => {
           throw new Error("never reached");

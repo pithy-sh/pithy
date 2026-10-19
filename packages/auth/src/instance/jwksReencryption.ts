@@ -9,6 +9,7 @@ import {
   claimReencryption,
   currentSealedVersion,
   recordReencryption,
+  recordSoleVersion,
 } from "@pithy-sh/secrets/src/rotation/reencryption";
 import { parseEnvelope, type SecretConfig, symmetricDecrypt, symmetricEncrypt } from "better-auth/crypto";
 import type { AuthDatabase } from "../data/tables";
@@ -125,6 +126,11 @@ export function resetJwksReencryption(): void {
 export interface EnsureJwksDeps {
   /** The application database the JWKS keys live in. */
   db: AuthDatabase;
+  /**
+   * That database's binding name — `auth({ database })`. The holder the move is recorded under, so two auth
+   * Workers over two databases are waited for one by one rather than one answering for both.
+   */
+  holder: string;
   /** The secrets D1 the move is recorded in. */
   secrets: D1Database;
   /** The session secret's retained versions, as this request resolved them. */
@@ -137,7 +143,11 @@ export interface EnsureJwksDeps {
 
 /**
  * Make sure the JWKS keys are sealed under the current version, and that the secrets D1 says so — once per
- * version per isolate, and only while a previous version is retained.
+ * version per isolate.
+ *
+ * **Recorded with one version too.** While the secret holds one version there is nothing to move, and the
+ * record says the keys are under it ({@link recordSoleVersion}). That is how the manager knows this database
+ * holds keys before the first rotation: a holder it has never heard from is one it cannot wait for.
  *
  * **Not on the first request that sees the version.** Another isolate may still hold the envelope it cached
  * before the append, with no key for the new version; a key re-sealed under it now would fail there. So the
@@ -150,20 +160,21 @@ export interface EnsureJwksDeps {
  */
 export async function ensureJwksSealedUnderCurrent(deps: EnsureJwksDeps): Promise<void> {
   const { versions } = deps;
-  if (Object.keys(versions.versions).length < 2) return;
+  const sole = Object.keys(versions.versions).length < 2;
   const now = deps.now ?? new Date();
   try {
     const sealed = await currentSealedVersion(versions);
-    const key = `${sealed.version}:${sealed.fingerprint}`;
+    const key = `${deps.holder}:${sole ? "sole" : "rotating"}:${sealed.version}:${sealed.fingerprint}`;
     if (settled.has(key) || (waiting.get(key) ?? 0) > now.getTime()) return;
     try {
       const secretsDb = createDatabase(deps.secrets, secretsTables);
-      const claim = await claimReencryption(secretsDb, {
-        name: AUTH_SESSION_SECRET,
-        dependent: AUTH_JWKS_DEPENDENT,
-        sealed,
-        now,
-      });
+      const where = { name: AUTH_SESSION_SECRET, dependent: AUTH_JWKS_DEPENDENT, holder: deps.holder };
+      if (sole) {
+        settled.add(key);
+        await recordSoleVersion(secretsDb, { ...where, sealed, now });
+        return;
+      }
+      const claim = await claimReencryption(secretsDb, { ...where, sealed, now });
       if (claim.state === "moved") {
         settled.add(key);
         return;
@@ -174,12 +185,7 @@ export async function ensureJwksSealedUnderCurrent(deps: EnsureJwksDeps): Promis
       }
       settled.add(key);
       const moved = await reencryptJwks(deps.db, versions);
-      await recordReencryption(secretsDb, {
-        name: AUTH_SESSION_SECRET,
-        dependent: AUTH_JWKS_DEPENDENT,
-        ...sealed,
-        now,
-      });
+      await recordReencryption(secretsDb, { ...where, ...sealed, now });
       deps.log.info("jwks re-encrypted under the current session secret", { version: sealed.version, ...moved });
       if (moved.unopenable > 0) {
         deps.log.warn("jwks keys no retained session secret opens were left as they were", {

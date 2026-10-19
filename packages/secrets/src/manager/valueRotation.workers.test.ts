@@ -34,6 +34,7 @@ function ownerMovesDuringOverlap(name: string): ValueRotationSteps {
       await recordReencryption(createDatabase(env.SECRETS, secretsTables), {
         name,
         dependent: "auth-jwks",
+        holder: "DB",
         ...(await currentSealedVersion(envelope)),
       });
     },
@@ -147,14 +148,19 @@ async function seedD1(name: string, days: number): Promise<void> {
   await backdate(name, days);
 }
 
-/** Record a baseline for a name the ledger has not seen, `days` ago. */
-async function baseline(name: string, days: number): Promise<void> {
+/** Record a creation baseline for a name the ledger has not seen, `days` ago — what a first write leaves. */
+async function baseline(name: string, days: number, actor = "baseline"): Promise<void> {
   const at = Date.now() - days * DAY_MS;
   await env.SECRETS.prepare(
-    "insert into pithy_secrets_rotations (name, started_at, completed_at, status, trigger, rotated_by) values (?, ?, ?, 'success', 'baseline', 'baseline')",
+    "insert into pithy_secrets_rotations (name, started_at, completed_at, status, trigger, rotated_by) values (?, ?, ?, 'success', 'baseline', ?)",
   )
-    .bind(name, at, at)
+    .bind(name, at, at, actor)
     .run();
+}
+
+/** Record that the cron's schedule began counting a name's period `days` ago. */
+async function scheduleBegan(name: string, days: number): Promise<void> {
+  await baseline(name, days, "schedule");
 }
 
 async function backdate(name: string, days: number): Promise<void> {
@@ -198,7 +204,9 @@ beforeEach(async () => {
 describe("the manager's scheduled() — value rotation on each secret's own period (#602)", () => {
   test("a due local secret rotates, one not yet due does not, and a manual one is only reported", async () => {
     await seedD1("app-session-secret", 91);
+    await scheduleBegan("app-session-secret", 91);
     await seedD1("fresh-secret", 10);
+    await scheduleBegan("fresh-secret", 10);
     await runWriteWorkflow(managerEnv("staging"), {
       mode: "create",
       name: "github-client-secret",
@@ -218,18 +226,23 @@ describe("the manager's scheduled() — value rotation on each secret's own peri
     // Recorded with trigger `cron`, closed success — so it stops reporting overdue.
     expect(await rows("app-session-secret")).toEqual([
       { trigger: "baseline", status: "success" },
+      { trigger: "baseline", status: "success" },
       { trigger: "cron", status: "success" },
     ]);
 
     expect(await stored("fresh-secret")).toEqual(initialVersionedValue("fresh-secret-v1"));
-    expect(await rows("fresh-secret")).toEqual([{ trigger: "baseline", status: "success" }]);
+    expect(await rows("fresh-secret")).toEqual([
+      { trigger: "baseline", status: "success" },
+      { trigger: "baseline", status: "success" },
+    ]);
     expect(await stored("github-client-secret")).toEqual(initialVersionedValue("gh-v1"));
     expect(await rows("github-client-secret")).toEqual([{ trigger: "baseline", status: "success" }]);
   });
 
   test("a value in D1 and a value in the Cloudflare Secrets Store both rotate", async () => {
     await seedD1("app-session-secret", 91);
-    await baseline("link-signing-key", 91);
+    await scheduleBegan("app-session-secret", 91);
+    await scheduleBegan("link-signing-key", 91);
 
     await manager.scheduled(undefined, managerEnv("staging"));
 
@@ -245,7 +258,7 @@ describe("the manager's scheduled() — value rotation on each secret's own peri
   });
 
   test("staging's manager never rotates a global secret however overdue it is, and production's does", async () => {
-    await baseline("shared-hmac", 4000);
+    await scheduleBegan("shared-hmac", 4000);
     const before = entries.get(`${PROJECT}-global-shared-hmac`);
 
     await manager.scheduled(undefined, managerEnv("staging"));
@@ -304,6 +317,7 @@ describe("the manager's scheduled() — value rotation on each secret's own peri
     await recordReencryption(createDatabase(env.SECRETS, secretsTables), {
       name: "auth-session-secret",
       dependent: "auth-jwks",
+      holder: "DB",
       version: "3",
       fingerprint: await versionFingerprint("a-value-update-replaced"),
     });
@@ -313,7 +327,7 @@ describe("the manager's scheduled() — value rotation on each secret's own peri
       syncSteps,
       { writeEntry: async () => undefined, emit: async () => undefined, instanceId: "after-reset" },
     );
-    expect(held).toMatchObject({ status: "rotated", version: "2", retired: [], held: ["auth-jwks"] });
+    expect(held).toMatchObject({ status: "rotated", version: "2", retired: [], held: ["auth-jwks/DB"] });
     expect(Object.keys((await stored("auth-session-secret"))?.versions ?? {})).toEqual(["1", "2"]);
   });
 
@@ -330,8 +344,27 @@ describe("the manager's scheduled() — value rotation on each secret's own peri
     expect(await rows("app-session-secret")).toEqual([{ trigger: "baseline", status: "success" }]);
   });
 
+  test("a rotatable secret created a year ago is baselined the night its period is added, not rotated", async () => {
+    // The real write path: a rotatable create records a baseline, which is a year old by the time the period lands.
+    await seedD1("app-session-secret", 365);
+    await manager.scheduled(undefined, managerEnv("staging"));
+    expect(await stored("app-session-secret")).toEqual(initialVersionedValue("app-session-secret-v1"));
+    const actors = await env.SECRETS.prepare(
+      "select rotated_by from pithy_secrets_rotations where name = ? order by id",
+    )
+      .bind("app-session-secret")
+      .all<{ rotated_by: string }>();
+    expect(actors.results.map((row) => row.rotated_by)).toEqual(["baseline", "schedule"]);
+
+    // The period then counts from that night, and the secret rotates once it has passed.
+    await backdate("app-session-secret", 91);
+    await manager.scheduled(undefined, managerEnv("staging"));
+    expect((await stored("app-session-secret"))?.currentVersion).toBe("2");
+  });
+
   test("the at-rest half failing does not stop the value half", async () => {
     await seedD1("app-session-secret", 91);
+    await scheduleBegan("app-session-secret", 91);
     const broken: SecretsManagerEnv = { ...managerEnv("staging") };
     broken.AT_REST_ROTATION = {
       create: async () => {

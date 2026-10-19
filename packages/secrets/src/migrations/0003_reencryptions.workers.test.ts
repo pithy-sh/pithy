@@ -38,7 +38,7 @@ beforeEach(async () => {
 });
 
 describe("secrets_0003_reencryptions", () => {
-  test("up appends the re-encryption record after 0002, keyed by secret and dependent", async () => {
+  test("up appends the re-encryption record after 0002, keyed by secret, dependent and holder", async () => {
     const results = await runMigrations(env.SECRETS, provider());
     expect(results.map((r) => [r.migrationName, r.status])).toEqual([
       ["0100_secrets_0001_init", "Success"],
@@ -46,14 +46,16 @@ describe("secrets_0003_reencryptions", () => {
       ["0100_secrets_0003_reencryptions", "Success"],
     ]);
     expect(await secretsTables()).toContain("pithy_secrets_reencryptions");
-    const insert = (version: string): Promise<unknown> =>
+    const insert = (holder: string, version: string): Promise<unknown> =>
       env.SECRETS.prepare(
-        "insert into pithy_secrets_reencryptions (name, dependent, version, fingerprint, observed_at) values ('auth-session-secret', 'auth-jwks', ?, 'ab', 1)",
+        "insert into pithy_secrets_reencryptions (name, dependent, holder, version, fingerprint, observed_at) values ('auth-session-secret', 'auth-jwks', ?, ?, 'ab', 1)",
       )
-        .bind(version)
+        .bind(holder, version)
         .run();
-    await insert("2");
-    await expect(insert("3")).rejects.toThrow();
+    await insert("DB", "2");
+    await expect(insert("DB", "3")).rejects.toThrow();
+    // A second database holding the same dependent is its own row.
+    await insert("COLLAB_DB", "2");
   });
 
   test("down drops it and leaves the earlier tables alone", async () => {

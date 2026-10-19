@@ -80,6 +80,13 @@ function journalledSnapshot(snapshot: RotationSnapshot | undefined): string | nu
 }
 
 /**
+ * Who a schedule baseline names: the manager's cron, starting a secret's period (#602). A creation baseline
+ * names `baseline`; the two rows are otherwise alike, and this is how {@link RotationTracker.getScheduleClock}
+ * tells them apart.
+ */
+export const SCHEDULE_BASELINE_ACTOR = "schedule";
+
+/**
  * Append-only tracker for rotation attempts, over the per-environment secrets D1's
  * `pithy_secrets_rotations` table. Ported from the CMS `RotationTracker`, scoped to one
  * environment (the per-env manager owns one store).
@@ -362,6 +369,66 @@ export class RotationTracker {
         metadataSnapshot: null,
       })
       .execute();
+  }
+
+  /**
+   * Seed the `success`/`baseline` row the manager's cron writes when a period first reaches a secret (#602).
+   *
+   * **Not the creation baseline, and the actor says so.** Every rotatable secret already has a baseline from
+   * the write that created it, as old as the secret. Counting the period from that one would rotate a
+   * year-old secret on the first night a period is added to it. This row is what the schedule counts from
+   * ({@link getScheduleClock}); `rotatedBy` is {@link SCHEDULE_BASELINE_ACTOR}, where a creation's is `baseline`.
+   */
+  async recordScheduleBaseline(name: string): Promise<void> {
+    const now = SQLiteDate.encode(new Date());
+    await this.#db
+      .insertInto("pithySecretsRotations")
+      .values({
+        name,
+        startedAt: now,
+        completedAt: now,
+        status: "success" satisfies RotationStatus,
+        trigger: "baseline" satisfies RotationTrigger,
+        rotatedBy: SCHEDULE_BASELINE_ACTOR,
+        errorMessage: null,
+        metadataSnapshot: null,
+      })
+      .execute();
+  }
+
+  /**
+   * When the manager's schedule last reset a name's clock: its newest successful rotation, or the baseline the
+   * cron recorded ({@link recordScheduleBaseline}), whichever is later. `null` until the cron has recorded
+   * one — however many rotations or creation baselines the name has — so a period always starts with one.
+   */
+  async getScheduleClock(name: string): Promise<Date | null> {
+    const started = await this.#db
+      .selectFrom("pithySecretsRotations")
+      .select("id")
+      .where("name", "=", name)
+      .where("status", "=", "success")
+      .where("trigger", "=", "baseline" satisfies RotationTrigger)
+      .where("rotatedBy", "=", SCHEDULE_BASELINE_ACTOR)
+      .limit(1)
+      .executeTakeFirst();
+    if (started === undefined) return null;
+    const row = await this.#db
+      .selectFrom("pithySecretsRotations")
+      .select("completedAt")
+      .where("name", "=", name)
+      .where("status", "=", "success")
+      .where("completedAt", "is not", null)
+      .where((eb) =>
+        eb.or([
+          eb("trigger", "!=", "baseline" satisfies RotationTrigger),
+          eb("rotatedBy", "=", SCHEDULE_BASELINE_ACTOR),
+        ]),
+      )
+      .orderBy("completedAt", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    if (!row || row.completedAt == null) return null;
+    return new Date(row.completedAt as number);
   }
 
   /** The most recent successful completion for a name, or `null` if it has never succeeded. */

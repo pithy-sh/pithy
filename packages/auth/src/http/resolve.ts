@@ -123,10 +123,12 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
       detail: "auth-session-secret resolved with no value at its current version",
     });
   }
-  // Mid-rotation, move the JWKS keys under the current version before the old one is retired. Once per
-  // version per isolate, never fatal — see `../instance/jwksReencryption.ts`.
+  // Mid-rotation, move the JWKS keys under the current version before the old one is retired, and record this
+  // database as a holder either way. Once per version per isolate, never fatal — see
+  // `../instance/jwksReencryption.ts`.
   await ensureJwksSealedUnderCurrent({
     db: authDatabase(d1),
+    holder: cfg.database,
     secrets: env.SECRETS,
     versions: sessionSecrets,
     // Read off the context when a backend seeded one, as `createBackend` always does; a hand-built app in a

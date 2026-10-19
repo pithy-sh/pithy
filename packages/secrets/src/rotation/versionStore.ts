@@ -4,38 +4,42 @@
 import {
   decodeVersionedValue,
   encodeVersionedValue,
+  promotedValue,
   retireVersions,
-  rotatedValue,
+  stagedValue,
   type VersionedValue,
 } from "../crypto/versionedValue";
 import { SecretNotFoundError } from "../error/errors";
 import type { SecretValueType } from "../registry";
 import type { SystemSecretsStore } from "../store/systemSecretsStore";
-import { fingerprintVersions } from "./reencryption";
+import { fingerprintVersions, versionFingerprint } from "./reencryption";
 
 /**
  * **Where a rotation appends a version and, an overlap later, retires the one it replaced (#602).**
  *
  * `pithy secrets update` writes a fresh one-version envelope, which is right for a value pasted from a
  * console and wrong for a rotation: every reader of the old value fails the moment it lands. A rotation
- * keeps the old version beside the new one for the secret's declared overlap, so this seam has two writes
- * and neither of them is `update`.
+ * keeps the old version beside the new one for the secret's declared overlap, so this seam has three writes
+ * and none of them is `update`: `stage` adds the successor, `promote` makes it current once every reader's
+ * cache holds it, and `retire` removes what it replaced.
  *
  * One shape over both backends, because the envelope is the same on both — `{ currentVersion, versions }`,
  * sealed in a D1 row or held as the plaintext of a Secrets Store entry. Only how it is read and written
  * differs, and that is all {@link EnvelopeIO} is.
  *
- * **Version keys cross this seam; values never do.** `append` takes the successor in and hands back its
- * version key and the keys it overlaps. Nothing returned here can carry a secret, so a Workflow step that
+ * **Version keys cross this seam; values never do.** `stage` takes the successor in and hands back its
+ * version key, its fingerprint and the keys it overlaps. Nothing returned here can carry a secret, so a Workflow step that
  * journals the answer journals no value. `fingerprints` is the one read that says anything about a value,
  * and what it says is a key-check value (`./reencryption.ts`), never the value.
  */
 
-/** What an append did: the version the successor is current under, and every version it now overlaps. */
-export interface AppendedVersion {
+/** What a stage did: the version the successor is under, which value that is, and every version beside it. */
+export interface StagedVersion {
   /** The successor's version key. */
   version: string;
-  /** The versions still in the envelope beside it — what a retirement removes once the overlap has passed. */
+  /** Its key-check value (`./reencryption.ts`), so a promotion can tell the successor from a value that reused its key. */
+  fingerprint: string;
+  /** The versions still in the envelope beside it, current included — what a retirement removes after the overlap. */
   prior: string[];
 }
 
@@ -49,8 +53,13 @@ export interface StoredVersions {
 
 /** A rotation's two writes against one backend, and the read that plans them. */
 export interface VersionedSecretStore {
-  /** Make `value` the current version of `name`, keeping every prior one. Idempotent on the value. */
-  append(name: string, value: string): Promise<AppendedVersion>;
+  /** Add `value` to `name` beside the current version, which stays current. Idempotent on the value. */
+  stage(name: string, value: string): Promise<StagedVersion>;
+  /**
+   * Make a staged version current. `false` when the envelope no longer holds it under the same value — an
+   * `update` replaced the envelope while it waited. Idempotent: a version already current writes nothing.
+   */
+  promote(name: string, staged: Pick<StagedVersion, "version" | "fingerprint">): Promise<boolean>;
   /** Remove `versions` from `name`. The current version is never removed; one already gone is not an error. */
   retire(name: string, versions: readonly string[]): Promise<StoredVersions>;
   /** The version keys `name` holds, or `undefined` when nothing is stored under it. */
@@ -90,12 +99,20 @@ async function requireStored(io: EnvelopeIO, name: string): Promise<VersionedVal
 /** The version store over any backend that can read and write a whole envelope. */
 export function envelopeVersionStore(io: EnvelopeIO): VersionedSecretStore {
   return {
-    async append(name, value) {
+    async stage(name, value) {
       const stored = await requireStored(io, name);
-      const rotated = rotatedValue(stored, value);
-      // Nothing to write when the successor is already current: this attempt is a retry of one that landed.
-      if (rotated.value !== stored) await io.write(name, rotated.value);
-      return { version: rotated.version, prior: rotated.prior };
+      const staged = stagedValue(stored, value);
+      // Nothing to write when the successor is already there: this attempt is a retry of one that landed.
+      if (staged.value !== stored) await io.write(name, staged.value);
+      return { version: staged.version, fingerprint: await versionFingerprint(value), prior: staged.prior };
+    },
+    async promote(name, staged) {
+      const stored = await requireStored(io, name);
+      const held = stored.versions[staged.version];
+      if (held === undefined || (await versionFingerprint(held)) !== staged.fingerprint) return false;
+      if (stored.currentVersion === staged.version) return true;
+      await io.write(name, promotedValue(stored, staged.version) as VersionedValue);
+      return true;
     },
     async retire(name, versions) {
       const stored = await requireStored(io, name);

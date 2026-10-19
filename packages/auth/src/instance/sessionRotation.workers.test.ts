@@ -152,10 +152,18 @@ async function signIn(): Promise<{ name: string; value: string; token: string }>
   return { name, value, token };
 }
 
-/** Rotate the session secret the way the manager does: append a version, keep the previous one. */
-async function rotate(): Promise<void> {
-  await d1VersionStore(await SystemSecretsStore.fromEnv(env), "text").append(AUTH_SESSION_SECRET, NEW);
+/** The manager's first write: version 2 beside version 1, which stays current. What an isolate refreshed since holds. */
+async function stage(): Promise<void> {
+  await d1VersionStore(await SystemSecretsStore.fromEnv(env), "text").stage(AUTH_SESSION_SECRET, NEW);
   // The shared accessor caches for a minute; a Worker sees the new version within that TTL.
+  resetSharedSecrets();
+  configureSharedSecrets({ registry: authSecretsRegistry });
+}
+
+/** Rotate the session secret the way the manager does: stage version 2, then make it current, keeping version 1. */
+async function rotate(): Promise<void> {
+  const store = d1VersionStore(await SystemSecretsStore.fromEnv(env), "text");
+  await store.promote(AUTH_SESSION_SECRET, await store.stage(AUTH_SESSION_SECRET, NEW));
   resetSharedSecrets();
   configureSharedSecrets({ registry: authSecretsRegistry });
 }
@@ -217,6 +225,21 @@ describe("a session signed before the rotation, used after it", () => {
     expect(again.status).toBe(200);
   });
 
+  test("an isolate still holding the staged envelope accepts a cookie another isolate signed under version 2", async () => {
+    // The cross-isolate window: version 2 is current where the cache refreshed after the promotion, and this
+    // isolate's cache is from between the two writes. It holds version 2 as a verifying key, so the cookie is
+    // carried to the version it signs under rather than refused.
+    const cookie = await signIn();
+    await stage();
+    const signedUnderNew = encodeURIComponent(await signCredential(cookie.token, NEW));
+    const response = await app().request(
+      "/auth/devices",
+      { headers: { cookie: `${cookie.name}=${signedUnderNew}` } },
+      appEnv(),
+    );
+    expect(response.status).toBe(200);
+  });
+
   test("a bearer client holding the signed token is carried across too, and told its new one", async () => {
     const cookie = await signIn();
     await rotate();
@@ -275,7 +298,7 @@ describe("the JWKS keys sealed under the session secret", () => {
     // isolate may still hold the envelope it cached before the append, with no key for version 2.
     expect((await app().request("/auth/jwks", {}, appEnv())).status).toBe(200);
     expect(await privateKey()).not.toMatch(/^\$ba\$2\$/);
-    expect(await pending()).toEqual([AUTH_JWKS_DEPENDENT]);
+    expect(await pending()).toEqual([`${AUTH_JWKS_DEPENDENT}/DB`]);
 
     // Once every cache filled before the append has expired, the next request moves the keys and records it.
     await env.SECRETS.prepare("update pithy_secrets_reencryptions set observed_at = observed_at - ?")

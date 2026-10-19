@@ -6,17 +6,29 @@ import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { SecretsAuditActions } from "../audit/actions";
 import type { SecretRegistryEntry } from "../registry";
 import type { ManagedEnvironment } from "../scope";
+import { MAX_SECRETS_CACHE_TTL_SECONDS } from "../sharedSecretsStore";
 import { type RotationSleeper, rotateSecretValue, type SecretRotationOutcome } from "./rotateValue";
 import { type RotationLedger, rotationClosure } from "./rotationLedger";
-import type { AppendedVersion, VersionedSecretStore } from "./versionStore";
+import type { StagedVersion, VersionedSecretStore } from "./versionStore";
 
 /**
- * **One unattended rotation of one secret's value: rotate, wait out the overlap, retire (#602).**
+ * **One unattended rotation of one secret's value: stage, promote, wait out the overlap, retire (#602).**
  *
  * The secrets manager's cron starts one of these when a secret's `rotateEveryDays` has elapsed. It is a
- * Workflow because the act spans days: the new version is live at once, the previous one keeps verifying
- * for the entry's declared overlap, and only then is it removed. A timer cannot hold a week; a durable
- * sleep can.
+ * Workflow because the act spans days: the new version is added, made current an hour later, the previous
+ * one keeps verifying for the entry's declared overlap, and only then is it removed. A timer cannot hold a
+ * week; a durable sleep can.
+ *
+ * ## Nothing signs under the new version until every reader can verify it
+ *
+ * Workers read a secret through a per-isolate cache, up to {@link MAX_SECRETS_CACHE_TTL_SECONDS} old. Had the
+ * rotation made the successor current in the write that added it, one isolate would at once sign a session
+ * cookie, a link or a token under it while another, still holding the envelope from before, had no key to
+ * verify that signature — a caller signed out between two requests. So the rotate step adds the successor
+ * beside the current version, which stays current; the instance sleeps {@link PROPAGATION_WAIT_MS}, by when
+ * every cache filled before that write has expired and every reader holds the successor as a verifying key;
+ * and only then is it promoted. An isolate that still holds the staged envelope after the promotion verifies
+ * the new signatures, because the staged envelope already carries the key that made them.
  *
  * ## The rotation is `rotateSecretValue`, in one step that is never retried
  *
@@ -52,6 +64,9 @@ import type { AppendedVersion, VersionedSecretStore } from "./versionStore";
 /** How long one day is, in the unit a Workflow sleep takes. */
 const DAY_MS = 86_400_000;
 
+/** How long a staged successor waits before it is made current: the longest any Worker may cache a secret. */
+export const PROPAGATION_WAIT_MS = MAX_SECRETS_CACHE_TTL_SECONDS * 1000;
+
 /** How many daily checks retirement makes for a dependent to re-encrypt before it holds the old version. */
 export const REENCRYPTION_CHECKS = 7;
 
@@ -74,7 +89,7 @@ export interface ValueRotationDeps {
   entry: SecretRegistryEntry;
   /** The environment this manager is. The one environment the value is written to. */
   environment: ManagedEnvironment;
-  /** Where the version is appended and, later, the previous one retired. */
+  /** Where the successor is staged, then promoted, and, later, the previous version retired. */
   store: VersionedSecretStore;
   /** The rotation ledger, opened before the roll and closed after the store. Its trigger is `cron`. */
   ledger: RotationLedger;
@@ -113,7 +128,7 @@ interface JournalledRotation {
   recorded: ManagedEnvironment[];
   stranded: ManagedEnvironment[];
   attempts?: number;
-  appended?: AppendedVersion;
+  appended?: StagedVersion;
 }
 
 /**
@@ -121,7 +136,7 @@ interface JournalledRotation {
  * one place in this module a value could have been interpolated — so it stays in this process and is
  * never journalled, logged or audited. The closure's code says what an operator needs.
  */
-function journalled(outcome: SecretRotationOutcome, appended: AppendedVersion | undefined): JournalledRotation {
+function journalled(outcome: SecretRotationOutcome, appended: StagedVersion | undefined): JournalledRotation {
   return {
     status: outcome.status,
     kind: outcome.kind,
@@ -209,14 +224,14 @@ export async function runValueRotation(
   const rotation = await steps.do(
     "rotate",
     async () => {
-      let appended: AppendedVersion | undefined;
+      let appended: StagedVersion | undefined;
       const outcome = await rotateSecretValue({
         name,
         entry,
         targets: [deps.environment],
         ledger: deps.ledger,
         store: async ({ value }) => {
-          appended = await deps.store.append(name, value);
+          appended = await deps.store.stage(name, value);
         },
         ...(deps.attempts === undefined ? {} : { attempts: deps.attempts }),
         ...(deps.sleep === undefined ? {} : { sleep: deps.sleep }),
@@ -230,6 +245,19 @@ export async function runValueRotation(
   const appended = rotation.appended;
   if (rotation.status !== "rotated" || appended === undefined) {
     return { status: rotation.status, retired: [], held: [] };
+  }
+
+  await steps.sleep("propagate", PROPAGATION_WAIT_MS);
+  const promoted = await steps.do("promote", () =>
+    deps.store.promote(name, { version: appended.version, fingerprint: appended.fingerprint }),
+  );
+  if (!promoted) {
+    // Outside the step, so the platform does not retry what no retry can change.
+    throw new InternalError({
+      message: `Secret '${name}' was replaced while its new version waited to become current, so this rotation stops here.`,
+      action: "Nothing is lost: the value written in its place is current. The next due rotation starts again.",
+      detail: `value rotation of '${name}': version ${appended.version} no longer holds the staged value`,
+    });
   }
   if (appended.prior.length === 0) return { status: "rotated", version: appended.version, retired: [], held: [] };
 
