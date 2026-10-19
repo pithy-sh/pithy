@@ -79,6 +79,30 @@ export const emailWorkflowRegistry: WorkflowRegistry = Object.fromEntries(
 );
 
 /**
+ * The Workflows one environment's email worker is deployed with — `<project>-<env>-email-send` and
+ * `<project>-<env>-email-schedule`. Derived by the call {@link resolveEmailConfig} deploys with, so teardown
+ * deletes the names provision created and no others (#789). Deleting a Worker does not delete the Workflows
+ * registered against it.
+ */
+export function emailWorkflowNames(project: string, env: ManagedEnvironment): string[] {
+  return hostWorkflowsFor(emailWorkflowRegistry, { project, capability: EMAIL_CAPABILITY, env }).workflows.map(
+    (workflow) => workflow.name,
+  );
+}
+
+/**
+ * The Secrets Store entry one environment's link-signing key lives in — `<project>-<env>-email-link-signing-key`.
+ * The entry {@link resolveEmailConfig} binds, composed by the same call, so teardown deletes the key the worker
+ * signed with and no other (#789).
+ */
+export function emailLinkSigningKeySecretName(project: string, env: ManagedEnvironment): string {
+  return environmentScope(project, env).secretEntry(
+    EMAIL_LINK_SIGNING_KEY,
+    emailSigningRegistry[EMAIL_LINK_SIGNING_KEY].scope as SecretNameScope,
+  );
+}
+
+/**
  * The most one Cloudflare Worker variable holds. **Per variable, and that is the whole design.**
  *
  * Cloudflare's documented limit is 5 KB per variable, on Free and Paid alike, and a Worker carries 64
@@ -236,11 +260,14 @@ export function resolveEmailConfig(
     // composed by the same `environmentScope(...).secretEntry` call, from the declaration's own scope, so
     // the Worker that signs a link and the Worker that verifies it cannot be handed two different keys.
     // Keyed by the binding the template declares; the entry keeps the registry key's name (#603).
+    // A declared environment's goes through `emailLinkSigningKeySecretName`, the name teardown deletes (#789).
     secretNames: {
-      [EMAIL_LINK_SIGNING_KEY_BINDING]: scope.secretEntry(
-        EMAIL_LINK_SIGNING_KEY,
-        emailSigningRegistry[EMAIL_LINK_SIGNING_KEY].scope as SecretNameScope,
-      ),
+      [EMAIL_LINK_SIGNING_KEY_BINDING]: feature
+        ? scope.secretEntry(
+            EMAIL_LINK_SIGNING_KEY,
+            emailSigningRegistry[EMAIL_LINK_SIGNING_KEY].scope as SecretNameScope,
+          )
+        : emailLinkSigningKeySecretName(project, env),
     },
     // The theme and the catalogs travel the same way, and they have to: the host composes no
     // capabilities, so the brand and the words are both things only a provision run can hand it.

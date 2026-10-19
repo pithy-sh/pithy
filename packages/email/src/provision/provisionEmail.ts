@@ -197,8 +197,18 @@ export interface EmailDeprovisioner {
    * before it deletes the list they share (#591).
    */
   hasWorker(env: ManagedEnvironment): Promise<boolean>;
+  /**
+   * Delete the env's send and schedule Workflows, by `emailWorkflowNames`. Idempotent (a Workflow already gone is
+   * a no-op). Deleting the worker leaves them registered, so they go first (#789).
+   */
+  deleteWorkflows(env: ManagedEnvironment): Promise<void>;
   /** Delete the env's email worker. Idempotent (a missing worker is a no-op). */
   deleteWorker(env: ManagedEnvironment): Promise<void>;
+  /**
+   * Delete the env's link-signing key from the Secrets Store, by `emailLinkSigningKeySecretName`. Idempotent (an
+   * entry already gone is a no-op). Every tracking and unsubscribe link signed with it stops verifying (#789).
+   */
+  deleteLinkSigningKey(env: ManagedEnvironment): Promise<void>;
   /**
    * Delete the shared suppression D1. **Destructive** — the global suppression list is lost, so every
    * environment forgets who unsubscribed or hard-bounced — so the orchestration only calls it when
@@ -230,7 +240,8 @@ export interface EmailDeprovisionOptions {
  * 2. With `deleteSuppression` only: refuse while any other declared environment still runs an email worker
  *    (`assertSharedLeavesLast`). The list is one per project, and a staging teardown must not take production's.
  * 3. Count the list, and refuse unless the operator counted the same (`assertRetainedAgreed`, #588's guard).
- * 4. Delete the environment's worker (it binds the list), then — only when asked — the list.
+ * 4. Delete the environment's Workflows, then its worker (it binds the list), then its link-signing key (#789), then
+ *    — only when asked — the list.
  *
  * Idempotent end to end: a missing worker or database is a no-op.
  */
@@ -251,7 +262,9 @@ export async function deprovisionEmail(
       "anything was deleted",
     );
   }
+  await deprovisioner.deleteWorkflows(env);
   await deprovisioner.deleteWorker(env);
+  await deprovisioner.deleteLinkSigningKey(env);
   if (options.deleteSuppression) await deprovisioner.deleteSuppressionDatabase();
   return { env };
 }
