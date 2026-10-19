@@ -157,17 +157,13 @@ export class AtRestKeyRotationWorkflow extends WorkflowEntrypoint<SecretsManager
   }
 }
 
-/** A step the platform must run once and never again: `do` with a retry limit of zero. */
-interface OnceStep {
-  do<T>(name: string, config: { retries: { limit: number; delay: number } }, fn: () => Promise<T>): Promise<T>;
-}
-
 /**
  * The value-rotation Workflow — one secret's value replaced on its declared period (#602).
  *
- * The rotate step is declared with no retries: a `provider` roll is a call into somebody else's system, and
- * a platform re-running the step after an eviction would roll twice. Every other step runs under
- * {@link secretsWorkflowRetry}, like the write and the at-rest rotation. See `rotation/valueRotation.ts`.
+ * The rotate step runs through `classified.once`, with no retries: a `provider` roll is a call into
+ * somebody else's system, and a platform re-running the step after an eviction would roll twice. Every
+ * other step runs under {@link secretsWorkflowRetry}, like the write and the at-rest rotation. See
+ * `rotation/valueRotation.ts`.
  *
  * A store-backed secret is written over REST with the application's one runtime token (#728), edit-only:
  * `updateExistingSecret` refuses a name with no entry rather than creating one nothing binds.
@@ -175,20 +171,12 @@ interface OnceStep {
 export class SecretValueRotationWorkflow extends WorkflowEntrypoint<SecretsManagerEnv, ValueRotationPayload> {
   override async run(event: WorkflowEvent<ValueRotationPayload>, step: WorkflowStep): Promise<void> {
     const classified = classifiedSteps(step, secretsWorkflowRetry, NonRetryableError);
-    // The platform's configured `do`, typed for the body's own generic. The platform constrains a step's result
-    // to what it can journal, which a generic over the body's results cannot state; every result the body
-    // returns is a plain object of strings, numbers and arrays, so the constraint holds of all of them.
-    const once = step as unknown as OnceStep;
     const log = createWorkerLogger({ name: "secrets:value-rotation", fields: { instanceId: event.instanceId } });
     await runValueRotationWorkflow(
       this.env,
       event.payload,
       {
-        do: (name, fn, options) =>
-          options?.retries === false
-            ? // Unclassified on purpose: there is no retry for a classification to decide about.
-              once.do(name, { retries: { limit: 0, delay: 0 } }, fn)
-            : classified.do(name, fn),
+        do: (name, fn, options) => (options?.retries === false ? classified.once(name, fn) : classified.do(name, fn)),
         sleep: (name, ms) => classified.sleep(name, ms),
       },
       {

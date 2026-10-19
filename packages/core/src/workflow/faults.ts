@@ -193,6 +193,27 @@ export interface DurableStepLike extends WorkflowStepLike {
 }
 
 /**
+ * The platform step's configured `do`: a retry policy ahead of the body. Every `WorkflowStep` has it; a
+ * test double that only takes two arguments does not, which is why {@link ClassifiedSteps.once} is the one
+ * place it is reached for.
+ */
+interface ConfiguredStepLike {
+  do<T>(name: string, config: { retries: { limit: number; delay: number } }, fn: () => Promise<T>): Promise<T>;
+}
+
+/** What {@link classifiedSteps} hands back: a pausing runner, and a step that runs exactly once. */
+export interface ClassifiedSteps extends DurableStepLike {
+  /**
+   * Run a named step with **no retries**, still classified (pithy-sh/pithy#602).
+   *
+   * For a body that mutates somebody else's system — a provider roll — where a platform re-running the
+   * step after an eviction would do it twice. The classification still decides what the instance's
+   * failure says; it can no longer decide on a retry, because there is none to give.
+   */
+  once<T>(name: string, fn: () => Promise<T>): Promise<T>;
+}
+
+/**
  * The platform's terminal-error class — `NonRetryableError` from `cloudflare:workflows`, taken as a
  * parameter.
  *
@@ -222,31 +243,37 @@ export function classifiedSteps(
   step: WorkflowStepLike,
   policy: WorkflowRetryPolicy,
   terminalError: TerminalErrorConstructor,
-): DurableStepLike {
-  const runner: DurableStepLike = {
+): ClassifiedSteps {
+  const classify =
+    <T>(fn: () => Promise<T>) =>
+    async (): Promise<T> => {
+      try {
+        return await fn();
+      } catch (error) {
+        const fault = classifyWorkflowFault(error, policy);
+        if (fault.disposition === "retry") throw error;
+        // The one sanctioned non-`PithyError` throw in the kit: a platform contract, at the durable
+        // boundary, carrying the `PithyError` it replaced as its `cause` so nothing is lost in this
+        // process. Across the boundary the text is the whole channel — the engine records it and
+        // discards the throw — so what an operator is owed is encoded into it, at one stated site,
+        // and read back at one (./stepMessage). The `cause` does not travel; `detail` never did.
+        const terminal = new terminalError(
+          encodeWorkflowStepMessage({
+            code: fault.code,
+            message: messageOf(error),
+            action: pithyActionOf(error),
+          }),
+        );
+        terminal.cause = error;
+        throw terminal;
+      }
+    };
+  const runner: ClassifiedSteps = {
     do<T>(name: string, fn: () => Promise<T>): Promise<T> {
-      return step.do(name, async () => {
-        try {
-          return await fn();
-        } catch (error) {
-          const fault = classifyWorkflowFault(error, policy);
-          if (fault.disposition === "retry") throw error;
-          // The one sanctioned non-`PithyError` throw in the kit: a platform contract, at the durable
-          // boundary, carrying the `PithyError` it replaced as its `cause` so nothing is lost in this
-          // process. Across the boundary the text is the whole channel — the engine records it and
-          // discards the throw — so what an operator is owed is encoded into it, at one stated site,
-          // and read back at one (./stepMessage). The `cause` does not travel; `detail` never did.
-          const terminal = new terminalError(
-            encodeWorkflowStepMessage({
-              code: fault.code,
-              message: messageOf(error),
-              action: pithyActionOf(error),
-            }),
-          );
-          terminal.cause = error;
-          throw terminal;
-        }
-      });
+      return step.do(name, classify(fn));
+    },
+    once<T>(name: string, fn: () => Promise<T>): Promise<T> {
+      return (step as unknown as ConfiguredStepLike).do(name, { retries: { limit: 0, delay: 0 } }, classify(fn));
     },
     /**
      * Forwarded, and deliberately unclassified. A pause raises no fault of the capability's — the

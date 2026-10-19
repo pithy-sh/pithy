@@ -207,6 +207,73 @@ function rpcStubStep<T extends object>(target: T): T {
   });
 }
 
+/** The platform's configured `do`: a retry limit ahead of the body, honored the way the engine honors it. */
+function configuredStep(): {
+  do<T>(name: string, config: { retries: { limit: number; delay: number } }, fn: () => Promise<T>): Promise<T>;
+  attempts: number;
+  configs: unknown[];
+} {
+  const runner = {
+    attempts: 0,
+    configs: [] as unknown[],
+    async do<T>(
+      _name: string,
+      config: { retries: { limit: number; delay: number } },
+      fn: () => Promise<T>,
+    ): Promise<T> {
+      runner.configs.push(config);
+      let last: unknown;
+      for (let attempt = 0; attempt <= config.retries.limit; attempt++) {
+        runner.attempts += 1;
+        try {
+          return await fn();
+        } catch (error) {
+          if (error instanceof Terminal) throw error;
+          last = error;
+        }
+      }
+      throw last;
+    },
+  };
+  return runner;
+}
+
+describe("a classified runner can run a step exactly once", () => {
+  test("once hands the platform a step with no retries", async () => {
+    const step = configuredStep();
+    const steps = classifiedSteps(step as unknown as WorkflowStepLike, policy, Terminal);
+
+    await expect(steps.once("roll", async () => "rolled")).resolves.toBe("rolled");
+    expect(step.configs).toEqual([{ retries: { limit: 0, delay: 0 } }]);
+  });
+
+  test("a retryable fault in a once step is not re-driven", async () => {
+    const step = configuredStep();
+    const steps = classifiedSteps(step as unknown as WorkflowStepLike, policy, Terminal);
+
+    await expect(
+      steps.once("roll", async () => {
+        throw new UpstreamTimeoutError({ detail: "issuer" });
+      }),
+    ).rejects.toBeInstanceOf(UpstreamTimeoutError);
+    expect(step.attempts).toBe(1);
+  });
+
+  test("a terminal fault in a once step is still classified", async () => {
+    const step = configuredStep();
+    const steps = classifiedSteps(step as unknown as WorkflowStepLike, policy, Terminal);
+
+    const thrown = await steps
+      .once("roll", async () => {
+        throw new ConflictError({ message: "Already rolled.", detail: "second roll" });
+      })
+      .catch((error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(Terminal);
+    expect((thrown as Error).message).toBe("core/conflict: Already rolled.");
+  });
+});
+
 describe("a classified runner can also pause", () => {
   test("a sleep reaches the runner underneath, with the name and the duration it was given", async () => {
     const step = pausingStep();
