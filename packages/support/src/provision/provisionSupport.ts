@@ -5,6 +5,7 @@ import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment
 import { GLOBAL_SCOPE } from "@pithy-sh/core/src/naming/environment";
 import { resourceName } from "@pithy-sh/core/src/naming/resource";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
+import { hostWorkflowsFor } from "@pithy-sh/core/src/workflow/host";
 import {
   assertSharedLeavesLast,
   type DeprovisionTarget,
@@ -12,7 +13,7 @@ import {
   type ManagedEnvironment,
   managedEnvironments,
 } from "@pithy-sh/secrets/src/scope";
-import { SUPPORT_CAPABILITY } from "../workflows/specs";
+import { SUPPORT_CAPABILITY, supportWorkflowRegistry } from "../workflows/specs";
 
 /**
  * The provisioning orchestration for the support capability — the live counterpart to
@@ -65,6 +66,18 @@ export function supportRoutingRuleName(project: string): string {
  */
 export function supportWorkerName(project: string, env: ManagedEnvironment): string {
   return resourceNames(project).env(env).worker(SUPPORT_CAPABILITY);
+}
+
+/**
+ * The Workflows the classification worker is deployed with in one environment —
+ * `<project>-<env>-support-classify`. Derived by the call `resolveSupportConfig` deploys with, so teardown
+ * deletes the names provision created and no others (#789). Deleting a Worker does not delete the
+ * Workflows registered against it.
+ */
+export function supportWorkflowNames(project: string, env: ManagedEnvironment): string[] {
+  return hostWorkflowsFor(supportWorkflowRegistry, { project, capability: SUPPORT_CAPABILITY, env }).workflows.map(
+    (workflow) => workflow.name,
+  );
 }
 
 /** The live Cloudflare/wrangler seam. Each step must be idempotent. */
@@ -164,6 +177,11 @@ export interface SupportDeprovisioner {
    * environment before it removes the bucket or the rule they share (#591).
    */
   hasWorker(env: ManagedEnvironment): Promise<boolean>;
+  /**
+   * Delete the env's classification Workflows, by {@link supportWorkflowNames}. Idempotent (a Workflow already
+   * gone is a no-op). Deleting the worker leaves them registered, so they go first (#789).
+   */
+  deleteWorkflows(env: ManagedEnvironment): Promise<void>;
   /** Delete the env's classification worker. Idempotent. */
   deleteWorker(env: ManagedEnvironment): Promise<void>;
   /**
@@ -207,7 +225,7 @@ export interface SupportDeprovisionResult {
  *    is every environment's support history — so they go with the last environment, never a staging teardown.
  * 3. Remove the routing rule, when asked, **first**: stop new mail arriving before removing the worker that would
  *    have handled it.
- * 4. Delete the environment's worker, then — only when asked — the bucket and everything in it.
+ * 4. Delete the environment's Workflows, then its worker, then — only when asked — the bucket and everything in it.
  */
 export async function deprovisionSupport(
   deprovisioner: SupportDeprovisioner,
@@ -220,6 +238,7 @@ export async function deprovisionSupport(
     ...(options.removeRouting ? [{ what: "the inbound routing rule", flag: "--routing-zone" }] : []),
   ]);
   const routingRuleRemoved = options.removeRouting ? (await deprovisioner.removeRoutingRule()).removed : false;
+  await deprovisioner.deleteWorkflows(env);
   await deprovisioner.deleteWorker(env);
   if (options.deleteStorage) await deprovisioner.deleteBucket();
   return { env, routingRuleRemoved };

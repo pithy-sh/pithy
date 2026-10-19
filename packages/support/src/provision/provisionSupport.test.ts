@@ -13,6 +13,7 @@ import {
   type SupportProvisioner,
   supportRoutingRuleName,
   supportWorkerName,
+  supportWorkflowNames,
 } from "./provisionSupport";
 
 /**
@@ -190,6 +191,9 @@ function teardown(overrides: Partial<SupportDeprovisioner> = {}, workers: readon
       return { removed: true };
     },
     hasWorker: async (env) => running.has(env),
+    deleteWorkflows: async (env) => {
+      calls.push(`workflows:${env}`);
+    },
     deleteWorker: async (env) => {
       running.delete(env);
       calls.push(`worker:${env}`);
@@ -202,6 +206,12 @@ function teardown(overrides: Partial<SupportDeprovisioner> = {}, workers: readon
   return { deprovisioner, calls };
 }
 
+describe("supportWorkflowNames", () => {
+  test("names the classification Workflow the host is deployed with, for one environment (#789)", () => {
+    expect(supportWorkflowNames("acme", "staging")).toEqual(["acme-staging-support-classify"]);
+  });
+});
+
 describe("deprovisionSupport", () => {
   const staging = { environment: "staging", declared: DEFAULT_ENVIRONMENTS };
   const prod = { environment: "prod", declared: DEFAULT_ENVIRONMENTS };
@@ -213,7 +223,7 @@ describe("deprovisionSupport", () => {
   test("removes the named environment's worker and no other, and keeps the rule and the bucket", async () => {
     const { deprovisioner, calls } = teardown();
     expect(await deprovisionSupport(deprovisioner, staging)).toEqual({ env: "staging", routingRuleRemoved: false });
-    expect(calls).toEqual(["worker:staging"]);
+    expect(calls).toEqual(["workflows:staging", "worker:staging"]);
   });
 
   test("naming no environment refuses, lists the declared ones, and deletes nothing", async () => {
@@ -270,7 +280,7 @@ describe("deprovisionSupport", () => {
       env: "prod",
       routingRuleRemoved: true,
     });
-    expect(calls).toEqual(["routing", "worker:prod", "bucket"]);
+    expect(calls).toEqual(["routing", "workflows:prod", "worker:prod", "bucket"]);
   });
 
   test("keeps the bucket by default — it holds correspondence, not cache", async () => {
