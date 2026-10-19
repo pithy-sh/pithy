@@ -6,15 +6,15 @@ import { commandName } from "@pithy-sh/core/src/cli/command";
 import { cloudflareClients } from "../cloudflare/clients";
 import {
   type CloudflareConfigOptions,
-  cloudflareConfigPath,
   describeCloudflareAccountMismatch,
   resolveCloudflare,
-  writeCloudflareConfig,
+  writeCloudflareConfigFile,
 } from "./config";
 
 /**
  * Resolve the account's Secrets Store id **once, at provisioning time**, and record it in
- * `<config>/cloudflare.json` (#182).
+ * `<config>/cloudflare.json` (#182) — or, under a bound profile, in that profile's own
+ * `cloudflare.<profile>.json`, the only file it reads the id from (#788).
  *
  * **This is the one network call in the store id's whole life.** Discovery at read time was considered
  * and rejected: avoiding an API call per invocation would mean caching the resolved id in a file, which
@@ -74,6 +74,10 @@ export async function ensureSecretsStoreId(options: EnsureSecretsStoreIdOptions)
     ];
   }
   const vars = resolution.vars;
+  // The file this resolution read, which is the one to write: a bound profile's own
+  // `cloudflare.<profile>.json`, or the project's account file (#788). Anywhere else, the next read would
+  // not find what this records.
+  const file = resolution.path;
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const recorded = vars.SECRETS_STORE_ID ?? "";
@@ -91,7 +95,7 @@ export async function ensureSecretsStoreId(options: EnsureSecretsStoreIdOptions)
   if (stores === null) {
     if (recorded) return [];
     return [
-      `Could not reach Cloudflare to resolve SECRETS_STORE_ID, so it was not recorded. Run ${again} again, or set SECRETS_STORE_ID in ${cloudflareConfigPath(paths)}.`,
+      `Could not reach Cloudflare to resolve SECRETS_STORE_ID, so it was not recorded. Run ${again} again, or set SECRETS_STORE_ID in ${file}.`,
     ];
   }
 
@@ -107,7 +111,7 @@ export async function ensureSecretsStoreId(options: EnsureSecretsStoreIdOptions)
   if (stores.length > 1) {
     const named = stores.map((store) => `${store.name} (${store.id})`).join(", ");
     return [
-      `This account has more than one Secrets Store — ${named} — so SECRETS_STORE_ID was not recorded. Set the one you mean in ${cloudflareConfigPath(paths)}.`,
+      `This account has more than one Secrets Store — ${named} — so SECRETS_STORE_ID was not recorded. Set the one you mean in ${file}.`,
     ];
   }
 
@@ -118,12 +122,12 @@ export async function ensureSecretsStoreId(options: EnsureSecretsStoreIdOptions)
     // Reported, never corrected. The recorded id may be the deliberate one, and replacing it would point
     // every later `pithy secrets set` at another store without anyone asking for that.
     return [
-      `SECRETS_STORE_ID is recorded as ${recorded}, and this account's only Secrets Store is ${store.name} (${store.id}). Nothing was changed — fix it in ${cloudflareConfigPath(paths)} if the recorded one is wrong.`,
+      `SECRETS_STORE_ID is recorded as ${recorded}, and this account's only Secrets Store is ${store.name} (${store.id}). Nothing was changed — fix it in ${file} if the recorded one is wrong.`,
     ];
   }
 
-  await writeCloudflareConfig({ SECRETS_STORE_ID: store.id }, paths);
-  return [`Recorded SECRETS_STORE_ID (${store.name}) in ${cloudflareConfigPath(paths)}. Nothing resolves it again.`];
+  await writeCloudflareConfigFile(file, { SECRETS_STORE_ID: store.id });
+  return [`Recorded SECRETS_STORE_ID (${store.name}) in ${file}. Nothing resolves it again.`];
 }
 
 /** The account's stores, or `null` when the account could not be asked. Never throws. */

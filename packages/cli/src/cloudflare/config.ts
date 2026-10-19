@@ -41,7 +41,8 @@ import { readSessionSync, sessionPath } from "./session/store";
  * each run was considered and rejected: avoiding an API call per invocation would mean caching the id in
  * a file, which is this key again with a staleness question and a network failure mode added. `pithy
  * init` writes the pair at the one moment the operator is holding them; `pithy add secrets` appends the
- * store id at the moment it provisions one. A CLI that has to ask Cloudflare where its own store is
+ * store id at the moment it provisions one, and `pithy cloudflare connect` records it in a profile's own
+ * `cloudflare.<profile>.json` at sign-in (#788). A CLI that has to ask Cloudflare where its own store is
  * cannot run offline, which costs more than the key was costing.
  *
  * **`process.env` still overlays, per key.** CI supplies these as real environment variables and has no
@@ -103,7 +104,13 @@ export function sessionMark(profile: string, token: string): string {
 }
 
 /** The account-scoped keys that name a resource in one account, beside the credential pair. */
-const ACCOUNT_RESOURCE_KEYS = ["SECRETS_STORE_ID", "R2_CREDENTIALS"] as const;
+export const ACCOUNT_RESOURCE_KEYS = ["SECRETS_STORE_ID", "R2_CREDENTIALS"] as const;
+
+/** One of {@link ACCOUNT_RESOURCE_KEYS}. */
+export type CloudflareAccountKey = (typeof ACCOUNT_RESOURCE_KEYS)[number];
+
+/** Where an account key resolved from: the resolution's file, the environment, or nowhere. */
+export type CloudflareAccountKeySource = "file" | "environment" | null;
 
 /** Whether this environment is refusing ambient credentials and network probes. See {@link PITHY_OFFLINE_ENV}. */
 export function pithyOffline(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -248,7 +255,9 @@ export const CloudflareConfig = z
     SECRETS_STORE_ID: z
       .string()
       .optional()
-      .describe("The account's one Secrets Store id. Written by pithy add secrets; never resolved over the network."),
+      .describe(
+        "The account's one Secrets Store id. Written by pithy cloudflare connect and pithy add secrets; never resolved on read.",
+      ),
     R2_CREDENTIALS: z
       .string()
       .optional()
@@ -266,6 +275,21 @@ export type CloudflareConfig = z.output<typeof CloudflareConfig>;
  */
 export function cloudflareConfigPath(options: CloudflareConfigOptions): string {
   return join(stateDir(options), cloudflareAccountFile(options.account?.accountName));
+}
+
+/**
+ * `<config>/cloudflare.<profile>.json` — **a bound profile's own file**, the only one a profile reads its
+ * store id and R2 credentials from (#788).
+ *
+ * The same naming as an account's file, on purpose: `pithy cloudflare connect` names a profile after the
+ * project's `cloudflare.accountName` when nothing else names it, so the two are usually one file. What a
+ * profile never reads is the account-less `cloudflare.json`. That file is for a directory with no profile
+ * bound — CI, and the path before #759 — and under a session for another account its store id addresses a
+ * store the session cannot see. A profile name is held to the account name's rule already, so the path
+ * is built by the same function.
+ */
+export function cloudflareProfileConfigPath(profile: string, options: StatePathOptions = {}): string {
+  return join(stateDir(options), cloudflareAccountFile(profile));
 }
 
 /**
@@ -367,7 +391,10 @@ export interface CloudflareAmbientConflict {
 
 /** One credential resolution, with everything a caller may need to refuse or to report it. */
 export interface CloudflareResolution {
-  /** The file this resolution read, named whether or not it exists. */
+  /**
+   * The file this resolution read, named whether or not it exists: a bound profile's own
+   * `cloudflare.<profile>.json`, else the file the project's account selects (#788).
+   */
   path: string;
   /** The `cloudflare.accountName` that selected it, or `null` for the unnamed default. */
   accountName: string | null;
@@ -399,6 +426,11 @@ export interface CloudflareResolution {
   session: CloudflareSessionResolution | null;
   /** An exported credential the bound session disagrees with, or `null`. {@link cloudflareEnv} refuses it. */
   ambientConflict: CloudflareAmbientConflict | null;
+  /**
+   * Where each of {@link ACCOUNT_RESOURCE_KEYS} came from: {@link path}, the environment, or nowhere (#788).
+   * `pithy doctor` names it, because a store id read from a file nobody meant is the fault #788 found.
+   */
+  accountKeySources: Record<CloudflareAccountKey, CloudflareAccountKeySource>;
 }
 
 /**
@@ -412,7 +444,14 @@ export interface CloudflareResolution {
 export function resolveCloudflare(options: CloudflareConfigOptions): CloudflareResolution {
   const selection = options.account;
   const accountName = selection?.accountName ?? null;
-  const path = join(stateDir(options), cloudflareAccountFile(accountName));
+  // **A profile bound here outranks both the file and the environment** (#759), and it decides which file
+  // is read at all (#788): its own `cloudflare.<profile>.json`, never `cloudflare.json` nor the file the
+  // project's account name selects. A session's account keys come from the session's profile.
+  const bound = boundProfileSync(options.cwd ?? process.cwd(), options);
+  const path =
+    bound === null
+      ? join(stateDir(options), cloudflareAccountFile(accountName))
+      : cloudflareProfileConfigPath(bound.profile, options);
   const fromFile = readCloudflareConfigSync(path);
   const vars = { ...fromFile };
   const env = options.env ?? process.env;
@@ -426,9 +465,10 @@ export function resolveCloudflare(options: CloudflareConfigOptions): CloudflareR
       if (!vars[key] && overlay) vars[key] = overlay;
     }
   }
-  // **A profile bound here outranks both** (#759). Its session supplies the pair — and only the pair: the
-  // store id and R2 credentials are the account's, and keep coming from the file and the overlay above.
-  const bound = boundProfileSync(options.cwd ?? process.cwd(), options);
+  // The keys the file supplied and that survived, so the report can say which file each one came from.
+  const fromFileKept = new Set<string>(ACCOUNT_RESOURCE_KEYS.filter((key) => Boolean(fromFile[key])));
+  // The session supplies the pair — and only the pair: the store id and R2 credentials are the account's,
+  // and keep coming from the profile's file and the overlay above.
   const session = bound === null ? null : readSessionSync(bound.profile, options);
   let sessionResolution: CloudflareSessionResolution | null = null;
   let ambientConflict: CloudflareAmbientConflict | null = null;
@@ -452,6 +492,7 @@ export function resolveCloudflare(options: CloudflareConfigOptions): CloudflareR
       if (fromFile.CLOUDFLARE_ACCOUNT_ID && fromFile.CLOUDFLARE_ACCOUNT_ID !== session.accountId) {
         for (const key of ACCOUNT_RESOURCE_KEYS) {
           if (vars[key] !== fromFile[key]) continue;
+          fromFileKept.delete(key);
           // Dropped, and an exported value takes its place: an export is what CI and a person reach for,
           // and the session's account is the one it is read against.
           const exported = offline ? undefined : env[key];
@@ -477,6 +518,9 @@ export function resolveCloudflare(options: CloudflareConfigOptions): CloudflareR
     }
   }
   const credentialSource = session !== null ? "session" : sourceOf(fromFile, vars);
+  const accountKeySources = Object.fromEntries(
+    ACCOUNT_RESOURCE_KEYS.map((key) => [key, !vars[key] ? null : fromFileKept.has(key) ? "file" : "environment"]),
+  ) as Record<CloudflareAccountKey, CloudflareAccountKeySource>;
 
   const pinnedAccountId = selection?.accountId ?? null;
   const resolved = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
@@ -515,6 +559,7 @@ export function resolveCloudflare(options: CloudflareConfigOptions): CloudflareR
     confirmation,
     session: sessionResolution,
     ambientConflict,
+    accountKeySources,
   };
 }
 
@@ -742,8 +787,9 @@ export interface CloudflareCredentialSplit {
  * state this already says nothing about.
  */
 export function cloudflareCredentialSplit(options: CloudflareConfigOptions): CloudflareCredentialSplit | null {
-  // A session bound here supplies the whole pair (#759): one source decided it, so there is no split.
-  if (resolveCloudflare(options).credentialSource === "session") return null;
+  // A profile bound here decides the pair (#759) — its session supplies it whole, or nothing does — and
+  // `cloudflare.json` is not read under it (#788), so there is no split to report.
+  if (resolveCloudflare(options).session !== null) return null;
   const path = cloudflareConfigPath(options);
   let file: Record<string, string>;
   try {
@@ -792,7 +838,18 @@ export async function writeCloudflareConfig(
   values: Partial<Record<(typeof CLOUDFLARE_ENV_KEYS)[number], string>>,
   options: CloudflareConfigOptions,
 ): Promise<Record<string, string>> {
-  const path = cloudflareConfigPath(options);
+  return writeCloudflareConfigFile(cloudflareConfigPath(options), values);
+}
+
+/**
+ * {@link writeCloudflareConfig} at a path a resolution already named — {@link CloudflareResolution.path},
+ * which is a bound profile's own file where one applies (#788). A writer that recomputed the path from the
+ * project's account would record a key in a file the next read does not open.
+ */
+export async function writeCloudflareConfigFile(
+  path: string,
+  values: Partial<Record<(typeof CLOUDFLARE_ENV_KEYS)[number], string>>,
+): Promise<Record<string, string>> {
   const document = await readCloudflareDocument(path);
   const merged: Record<string, unknown> = { ...document };
   for (const [key, value] of Object.entries(values)) {
