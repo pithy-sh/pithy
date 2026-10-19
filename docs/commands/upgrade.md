@@ -217,7 +217,7 @@ Every *other* Worker still reports in full. A run that loses four Workers' repor
 | `perCapability[].missingBindings` | array | Required bindings absent from one or more environments' `wrangler.jsonc` stanzas |
 | `perCapability[].missingBindings[].env` | string | The environment missing the binding — `dev` for the top-level stanza, else the `env.<name>` key |
 | `perCapability[].missingBindings[].name` | string | The Worker env binding name the capability requires, e.g. `DB`, `SESSIONS` |
-| `perCapability[].missingBindings[].type` | string | The kind of Cloudflare resource: `d1`, `kv`, `r2`, `ai`, `vectorize`, `queue`, `ratelimit`, `email`, `secret`, `workflow`, `service`, `durable_object`, `hyperdrive`, `browser`, `images`, `analytics_engine_datasets`, `pipelines`, `mtls_certificates`, `dispatch_namespaces` |
+| `perCapability[].missingBindings[].type` | string | The kind of Cloudflare resource: `d1`, `kv`, `r2`, `ai`, `vectorize`, `queue`, `ratelimit`, `email`, `secret`, `workflow`, `service`, `durable_object`, `hyperdrive`, `browser`, `images`, `analytics_engine_datasets`, `pipelines`, `mtls_certificates`, `dispatch_namespaces`, `artifacts` |
 | `perCapability[].missingConfigKeys` | array | Manifest config options not yet present in this capability's `pithy.config.ts` registration |
 | `perCapability[].missingConfigKeys[].key` | string | The option name to add to the registration call |
 | `perCapability[].missingConfigKeys[].default` | JSON value | The manifest default rendered as the option's value — a scalar, or a worked example you replace |
