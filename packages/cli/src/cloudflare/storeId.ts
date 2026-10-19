@@ -88,11 +88,14 @@ export async function ensureSecretsStoreId(options: EnsureSecretsStoreIdOptions)
   const resolved = vars.SECRETS_STORE_ID ?? "";
   const exported = bound && resolution.accountKeySources.SECRETS_STORE_ID === "environment" ? resolved : "";
   const recorded = exported ? "" : resolved;
+  // Every early return below stays silent only for an id the file holds. Under a profile, an export
+  // that the lookup could not confirm is still an id the profile's file lacks, and saying nothing would
+  // read as "already recorded" (#788).
 
   // No credentials is not a fault here. `pithy add secrets` on a project that has not been pointed at an
   // account yet is an ordinary thing to do, and `pithy doctor` says the credentials are absent every run.
   if (!accountId || !apiToken) {
-    if (resolved) return [];
+    if (recorded) return [];
     return [
       `SECRETS_STORE_ID is not recorded, and there are no Cloudflare credentials to resolve it with. Run ${commandName("cloudflare connect")}, or export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account. Then run ${again} again.`,
     ];
@@ -111,14 +114,14 @@ export async function ensureSecretsStoreId(options: EnsureSecretsStoreIdOptions)
 
   const stores = await listStoresOrNull(options, { accountId, apiToken });
   if (stores === null) {
-    if (resolved) return [];
+    if (recorded) return [];
     return [
       `Could not reach Cloudflare to resolve SECRETS_STORE_ID, so it was not recorded. Run ${again} again, or set SECRETS_STORE_ID in ${file}.`,
     ];
   }
 
   if (stores.length === 0) {
-    if (resolved) return [];
+    if (recorded) return [];
     return [
       `This account has no Secrets Store yet, so SECRETS_STORE_ID was not recorded. Create one in the Cloudflare dashboard (Secrets Store), then run ${again} again.`,
     ];

@@ -345,6 +345,36 @@ describe("ensureSecretsStoreId, under a bound profile", () => {
     await expect(readFile(join(dir, "cloudflare.work.json"), "utf8")).rejects.toThrow();
   });
 
+  test("an exported store id is no reason to stay silent when the lookup fails", async () => {
+    const options = await signedIn({ SECRETS_STORE_ID: "store-work" });
+
+    const notes = await ensureSecretsStoreId({
+      again: "`pithy add secrets`",
+      paths: options,
+      listStores: async () => {
+        throw new Error("offline");
+      },
+    });
+
+    const said = notes.join(" ");
+    expect(said).toContain("Could not reach Cloudflare");
+    expect(said).toContain(join(dir, "cloudflare.work.json"));
+    await expect(readFile(join(dir, "cloudflare.work.json"), "utf8")).rejects.toThrow();
+  });
+
+  test("an exported store id is no reason to stay silent when the account has no store", async () => {
+    const options = await signedIn({ SECRETS_STORE_ID: "store-work" });
+
+    const notes = await ensureSecretsStoreId({
+      again: "`pithy add secrets`",
+      paths: options,
+      listStores: async () => [],
+    });
+
+    expect(notes.join(" ")).toContain("no Secrets Store");
+    await expect(readFile(join(dir, "cloudflare.work.json"), "utf8")).rejects.toThrow();
+  });
+
   test("the account it records is written beside the store id, so a profile re-signed to another account drops it", async () => {
     const options = await signedIn();
     await ensureSecretsStoreId({

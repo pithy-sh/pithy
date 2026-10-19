@@ -133,7 +133,7 @@ const ConnectPayload = z
     notes: z
       .array(z.string().describe("One sentence."))
       .describe(
-        "What recording the account's Secrets Store id in the profile's file had to say. Empty when it was already recorded.",
+        "What recording the account's Secrets Store id in the profile's file had to say. Empty when the profile's file already held the id. An exported id does not count.",
       ),
   })
   .describe("A signed-in Cloudflare session, bound to this directory.");
