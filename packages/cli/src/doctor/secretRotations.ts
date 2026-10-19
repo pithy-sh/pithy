@@ -134,6 +134,7 @@ export async function checkSecretRotations(options: SecretRotationsOptions): Pro
       readFailedRotations({ projectDir: options.projectDir, env, account: options.account, workers }, registry));
 
   let composesSecrets = false;
+  let composedAnywhere = false;
   const environments: EnvironmentSecretRotations[] = [];
   for (const env of options.environments) {
     let workers: WorkerScope[];
@@ -151,6 +152,7 @@ export async function checkSecretRotations(options: SecretRotationsOptions): Pro
       environments.push({ env, state: "not-composed" });
       continue;
     }
+    composedAnywhere = true;
     if (Object.keys(registry).length === 0) continue;
     composesSecrets = true;
 
@@ -170,7 +172,10 @@ export async function checkSecretRotations(options: SecretRotationsOptions): Pro
     }
   }
 
-  if (!composesSecrets && environments.every((answer) => answer.state !== "not-composed")) {
+  // Whether a project composes `secrets` is answered by any environment that composed: a config that throws
+  // under `prod` beside a `staging` with no registry is a project with nothing that rotates, and its failure is
+  // the `Environment configs:` block's to report. Only a config that composed nowhere leaves the question open.
+  if (!composesSecrets && composedAnywhere) {
     return { state: "not-applicable", environments: [] };
   }
   // An environment with no vault yet has no ledger and nothing that could have rotated, so it is a fact rather

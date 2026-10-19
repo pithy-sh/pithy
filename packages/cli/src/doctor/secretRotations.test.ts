@@ -107,6 +107,52 @@ describe("checkSecretRotations (#602)", () => {
     expect(readLedger).not.toHaveBeenCalled();
   });
 
+  test("a config that throws in one environment does not make a project with no secrets applicable", async () => {
+    const readLedger = vi.fn();
+    const check = await checkSecretRotations(
+      options({
+        composeWorker: async (_worker, env) => {
+          if (env === "prod") throw new Error("Billing is not configured for this environment");
+          return { capabilities: [defineCapability({ name: "app", requiredBindings: [] })] };
+        },
+        readLedger,
+      }),
+    );
+    expect(check).toEqual({ state: "not-applicable", environments: [] });
+    expect(readLedger).not.toHaveBeenCalled();
+  });
+
+  test("a config that throws beside one that composes secrets is still reported as not composed", async () => {
+    const check = await checkSecretRotations(
+      options({
+        composeWorker: async (_worker, env) => {
+          if (env === "prod") throw new Error("Billing is not configured for this environment");
+          return { capabilities: withSecrets() };
+        },
+      }),
+    );
+    expect(check.state).toBe("could-not-check");
+    expect(describeSecretRotations(check)).toEqual([
+      "staging: no failed rotation.",
+      "prod: pithy.config.ts did not compose for prod, so no ledger was read.",
+    ]);
+  });
+
+  test("a config that composes in no environment is unknown, since whether it composes secrets is too", async () => {
+    const check = await checkSecretRotations(
+      options({
+        composeWorker: async () => {
+          throw new Error("Billing is not configured for this environment");
+        },
+      }),
+    );
+    expect(check.state).toBe("could-not-check");
+    expect(describeSecretRotations(check)).toEqual([
+      "staging: pithy.config.ts did not compose for staging, so no ledger was read.",
+      "prod: pithy.config.ts did not compose for prod, so no ledger was read.",
+    ]);
+  });
+
   test("offline, nothing is read and the report says so rather than reading as healthy", async () => {
     const readLedger = vi.fn();
     const check = await checkSecretRotations(options({ remoteSkip: "offline", readLedger }));
