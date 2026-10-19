@@ -552,7 +552,7 @@ export interface DeprovisionFeatureOptions {
   indexes?: FeatureIndexes;
   /**
    * The repos in the feature's own Artifacts namespace (#673), listed and deleted when anything the feature
-   * composes binds `artifacts`. Omitted when no account is reachable for them.
+   * composes binds `artifacts`, and then the namespace. Omitted when no account is reachable for them.
    */
   repos?: FeatureRepos;
   /**
@@ -687,6 +687,9 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
         const name = `${namespace}/${repo}`;
         if (await options.repos.remove(namespace, repo)) await record("artifacts", name, name);
       }
+      // Then the namespace itself. Cloudflare made it on the first repo and nothing else ever deletes it. One a
+      // feature never made, or a run before this one already took, is nothing to do.
+      if (await options.repos.removeNamespace(namespace)) await record("artifacts-namespace", namespace, namespace);
     }
 
     for (const resource of manifest?.resources ?? []) {

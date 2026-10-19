@@ -31,6 +31,6 @@ Source: [Artifacts · Pricing](https://developers.cloudflare.com/artifacts/platf
 
 The kit does not meter a customer's storage against either cap. `GET /artifacts/repos/:name` reports what Cloudflare holds, and what to do about a large repository is your decision.
 
-Each environment has its own namespace, `<project>-<env>`, so production's rate limit is production's alone. A feature's is `<project>-f<issue>-<slug>--artifacts`, and `pithy feature destroy` deletes every repository in it, because a repository nobody deletes counts against the account's terabyte forever.
+Each environment has its own namespace, `<project>-<env>`, so production's rate limit is production's alone. A feature's is `<project>-f<issue>-<slug>--artifacts`, and `pithy feature destroy` deletes every repository in it, because a repository nobody deletes counts against the account's terabyte forever. Then it deletes the namespace.
 
 Source: [Artifacts · Limits](https://developers.cloudflare.com/artifacts/platform/limits/).

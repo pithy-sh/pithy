@@ -1335,6 +1335,11 @@ describe("deprovisionFeature — a feature's Artifacts repos", () => {
           return [...(namespaces.get(name) ?? [])];
         },
         remove: async (name: string, repo: string) => namespaces.get(name)?.delete(repo) ?? false,
+        removeNamespace: async (name: string) => {
+          if (!namespaces.has(name)) return false;
+          if ((namespaces.get(name)?.size ?? 0) > 0) throw new Error(`namespace ${name} is not empty`);
+          return namespaces.delete(name);
+        },
       },
     };
   }
@@ -1361,20 +1366,39 @@ describe("deprovisionFeature — a feature's Artifacts repos", () => {
     });
     const report = await teardown([binds], account.repos);
     expect(account.listed).toEqual([namespace]);
-    expect(account.namespaces.get(namespace)?.size).toBe(0);
+    expect(account.namespaces.has(namespace)).toBe(false);
     expect(account.namespaces.get("acme-dev")).toEqual(new Set(["keep"]));
     expect(account.namespaces.get("acme-f662-thing-two--artifacts")).toEqual(new Set(["x"]));
     expect(report.deleted.filter((resource) => resource.kind === "artifacts")).toEqual([
       { kind: "artifacts", name: `${namespace}/a`, id: `${namespace}/a` },
       { kind: "artifacts", name: `${namespace}/b`, id: `${namespace}/b` },
     ]);
+    expect(report.deleted.filter((resource) => resource.kind === "artifacts-namespace")).toEqual([
+      { kind: "artifacts-namespace", name: namespace, id: namespace },
+    ]);
+  });
+
+  test("deletes the namespace of a feature that made it and has no repos left, after the repos", async () => {
+    const account = fakeRepos({ [namespace]: [] });
+    const report = await teardown([binds], account.repos);
+    expect(account.namespaces.has(namespace)).toBe(false);
+    expect(report.deleted.filter((resource) => resource.kind.startsWith("artifacts"))).toEqual([
+      { kind: "artifacts-namespace", name: namespace, id: namespace },
+    ]);
+  });
+
+  test("a feature that never created a repo has no namespace, and its teardown records none", async () => {
+    const account = fakeRepos({ "acme-dev": ["keep"] });
+    const report = await teardown([binds], account.repos);
+    expect(report.deleted.filter((resource) => resource.kind.startsWith("artifacts"))).toEqual([]);
+    expect(account.namespaces.get("acme-dev")).toEqual(new Set(["keep"]));
   });
 
   test("is idempotent: a second run finds nothing and deletes nothing", async () => {
     const account = fakeRepos({ [namespace]: ["a"] });
     await teardown([binds], account.repos);
     const again = await teardown([binds], account.repos);
-    expect(again.deleted.filter((resource) => resource.kind === "artifacts")).toEqual([]);
+    expect(again.deleted.filter((resource) => resource.kind.startsWith("artifacts"))).toEqual([]);
   });
 
   test("asks nothing of the account for a feature that binds no Artifacts", async () => {

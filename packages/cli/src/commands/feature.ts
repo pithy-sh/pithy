@@ -213,9 +213,9 @@ const FeatureDestroyPayload = z
         z
           .object({
             kind: z
-              .enum(["worker", "d1", "kv", "r2", "queue", "workflow", "vectorize", "artifacts"])
+              .enum(["worker", "d1", "kv", "r2", "queue", "workflow", "vectorize", "artifacts", "artifacts-namespace"])
               .describe(
-                "The resource kind. `worker` is a Worker script, `workflow` a Workflow definition, `artifacts` one repo, named `<namespace>/<repo>`.",
+                "The resource kind. `worker` is a Worker script, `workflow` a Workflow definition, `artifacts` one repo, named `<namespace>/<repo>`, and `artifacts-namespace` the feature's Artifacts namespace, deleted after its repos.",
               ),
             name: z.string().describe("The resource name."),
             id: z.string().describe("The id that was deleted."),
@@ -638,7 +638,8 @@ const destroy = withContract(
   {
     output: "document",
     // 2: `deletedResources[].kind` takes `queue`, and the `workflow` and `vectorize` it already emitted (#662).
-    // 3: it takes `artifacts`, one repo in the feature's own Artifacts namespace (#673).
+    // 3: it takes `artifacts`, one repo in the feature's own Artifacts namespace, and `artifacts-namespace`, that
+    // namespace itself (#673).
     schemaVersion: 3,
     payload: FeatureDestroyPayload,
     mutates: true,

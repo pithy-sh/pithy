@@ -1078,7 +1078,7 @@
         "$.command": "\"feature.destroy\"",
         "$.deletedResources": "array",
         "$.deletedResources[]": "object",
-        "$.deletedResources[].kind": "\"artifacts\" | \"d1\" | \"kv\" | \"queue\" | \"r2\" | \"vectorize\" | \"worker\" | \"workflow\"",
+        "$.deletedResources[].kind": "\"artifacts\" | \"artifacts-namespace\" | \"d1\" | \"kv\" | \"queue\" | \"r2\" | \"vectorize\" | \"worker\" | \"workflow\"",
         "$.deletedResources[].name": "string",
         "$.deletedResources[].id": "string",
         "$.remote": "boolean",
