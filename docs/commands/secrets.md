@@ -238,6 +238,46 @@ That is a real cost and it is worth stating the alternative rather than implying
 
 **Two gaps, named rather than left to be discovered.** Nothing here verifies the new value against the issuer before treating it as current — a verification seam no rotator implements would be a step that always passes. And a crash between the roll returning and the store accepting leaves the same state with no report at all; that window is far smaller than the store's, and it is not zero. Both belong to the rotation Workflow this command will eventually enter rather than to the command.
 
+### Unattended rotation
+
+A secret can say how often it rotates: `rotateEveryDays` on its registry entry. For years that was an expectation — doctor and the status read called the secret overdue, and nothing replaced it. Now it is also the period. Each environment's secrets manager checks it every night at 03:00 UTC, and rotates every secret whose period has passed, by itself.
+
+**What the cron does follows the entry's `rotation`, and nothing else.**
+
+- **`local`** rotates. The kit minted the value, so it mints another, through the same `rotateSecretValue` `pithy secrets rotate` calls.
+- **`provider`** rotates only with a rotator attached to the entry. A rotator is code, and the manager is a prebuilt Worker that never loads `pithy.config.ts`, so today a `provider` secret is reported overdue and left alone.
+- **`manual`** never rotates. It is reported overdue, the way it always was.
+
+**A secret the cron rotates must be able to survive it.** `defineSecretRegistry` refuses, where the author is: a period on a `rotatable: false` entry, a keyspace, or the master key; a period with no overlap; an overlap shorter than its declared minimum, or as long as the period; and a `global` secret in D1, which is a sealed copy in every vault that one manager cannot reach. A `global` secret in the Secrets Store is one entry, and only the last declared environment's manager rotates it. Staging's never does, whatever its clock says.
+
+```ts
+"partner-webhook-secret": {
+  backend: "d1",
+  scope: "environment",
+  rotatable: true,
+  valueType: "text",
+  devValue: "random",
+  origin: { kind: "minted", recipe: { kind: "random", bytes: 32, encoding: "base64url" } },
+  rotation: { kind: "local" },
+  rotateEveryDays: 90,
+  overlap: { days: 7, minimumDays: 7 },
+},
+```
+
+**The overlap is how long the previous version keeps verifying.** A rotation appends a version and makes it current; it does not replace the envelope, which is what `update` does. The previous version stays for `overlap.days`, so a cookie, a link or a signature issued under it still verifies. Then the rotation retires it. `minimumDays` is the floor its owner states: the lifetime of the longest-lived thing issued under one version. `auth-session-secret` declares its session lifetime — seven days by default, and longer when `sessionExpiresIn` is. `email-link-signing-key` declares ninety, the default `LINK_TTL_DAYS`.
+
+**Some values have no lifetime to wait out.** Better Auth seals the JWKS private keys under the session secret, and a key never expires. So an entry names what is sealed under it at rest — `overlap.reencrypt: ["auth-jwks"]` — and retirement waits for each one. The auth Worker moves its keys under the new version on its first request after a rotation and records that it has. Retirement checks once a day for a week. If a dependent never reports, the previous version is kept, the rotation history gains a failed row with the code `not-retired`, and doctor says which secret. Keeping a version too long costs an envelope one entry larger. Retiring it too soon costs every key sealed under it.
+
+**A session survives it.** Better Auth signs its session cookie with the current version alone. So the auth Worker checks a cookie, or a signed bearer token, that fails under the current version against every version it still holds, and re-signs it under the current one. The response hands back the re-signed credential — a `Set-Cookie`, or `set-auth-token` for a bearer client. A session in use is carried across on its next request. One not used for the whole overlap has expired anyway. Turn it on with `auth({ sessionSecretRotateEveryDays: 90 })`; the kit turns nothing on for you.
+
+**The first tick records a baseline, not a rotation.** A secret with no history at all gets a `baseline` row and starts counting from that night. Adding a period to a secret that has existed for a year does not replace it at 03:00.
+
+**Every run is recorded.** The rotation opens its row before the roll and closes it after, with trigger `cron`, so `lastRotatedAt` moves and the secret stops reporting overdue. The value is minted and written inside the manager, and never journalled: the Workflow's own history holds version keys, not values. A failure is a row with a code — never the exception — and it appears in the status read as `lastFailure`, and in [`pithy doctor`](./doctor.md) under `Secret rotations:`. The manager composes no audit recorder, so its `secrets/rotated` and `secrets/version_retired` events are structured lines in that Worker's logs, with the code and never a value.
+
+**Two crons, two different things.** The at-rest rotation, on `rotationIntervalDays`, re-encrypts every row of the vault under a fresh master key. It changes no secret's value. Value rotation, on each entry's `rotateEveryDays`, replaces one secret's value and changes no key. Both run from the same nightly trigger, and neither waits for the other: a failure in one never stops the other.
+
+**`pithy secrets rotate` does not keep an overlap.** It writes the new value as `update` writes one, and the previous version is gone when it lands. Use it when the old value must stop working now. Leave the period to the cron when it must not.
+
 `ls` lists the declared names with their routing facts, offline. It reads the registry and nothing else — no credentials, no network.
 
 `edit` is the odd one out, and deliberately: it touches nothing but this machine's dev values at `<config>/<project>/secrets.jsonc`, the file every registry secret's local value lives in as a versioned envelope and the source generation reads. It opens a draft beside the real file, validates what comes back, and writes it atomically at `0600`. **It prints a path and a count, never a name and never a value** — `ls` is what lists names. A draft that will not validate is handed back with the problem printed above it; a draft that is still broken, that the editor abandoned, or that lost a race with another command is kept, and the refusal names its absolute path. Nothing here deletes text it could not write. With no terminal, or under `--json`, `--no-input` or `PITHY_NONINTERACTIVE=1`, it opens no editor at all: it refuses `input/required` with `"flag": null` and names the file to edit directly.
@@ -285,7 +325,7 @@ export const CustomerSecrets = defineSecretTable({
 });
 ```
 
-That declares `pithy_secrets_customer_secrets` in the secrets D1, beside the system table: the system table's row — `id`, `name`, `encryptedValue`, `iv`, `keyVersion`, `valueType`, `createdAt`, `updatedAt` — plus a column per key, unique on the keys and the name, with an index per key. **The value path is the system table's, unchanged**: the same master key, the same AES-256-GCM envelope, the same `{ currentVersion, versions }` value envelope, the same at-rest rotation. Each row's ciphertext is bound to its table, its owner and its secret name, so a value moved into another owner's row does not open. **`rotatable` is a gate here, not metadata**: `rotate` on a secret declared `rotatable: false` throws, and its value changes with `put(owner, name, value, { replace: true })`. `rotateEveryDays` is forward-looking metadata, exactly as it is on a registry entry; at-rest key rotation is what actually runs.
+That declares `pithy_secrets_customer_secrets` in the secrets D1, beside the system table: the system table's row — `id`, `name`, `encryptedValue`, `iv`, `keyVersion`, `valueType`, `createdAt`, `updatedAt` — plus a column per key, unique on the keys and the name, with an index per key. **The value path is the system table's, unchanged**: the same master key, the same AES-256-GCM envelope, the same `{ currentVersion, versions }` value envelope, the same at-rest rotation. Each row's ciphertext is bound to its table, its owner and its secret name, so a value moved into another owner's row does not open. **`rotatable` is a gate here, not metadata**: `rotate` on a secret declared `rotatable: false` throws, and its value changes with `put(owner, name, value, { replace: true })`. `rotateEveryDays` on a table's secret is an expectation and nothing more: the manager's cron rotates registry entries, never a table's rows, and at-rest key rotation is what actually runs over them.
 
 Compose it in the Worker that owns it, through the app capability's `SECRETS` database:
 
