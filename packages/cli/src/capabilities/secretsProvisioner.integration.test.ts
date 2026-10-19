@@ -75,6 +75,7 @@ describe.skipIf(!hasCreds || !optedIn)("secrets — LIVE provision, write/rotate
       new CloudflareSecretsDeprovisioner({
         account: { accountId: "acct-1", confirmation: "pinned" },
         cf,
+        workflows,
         project,
         storeId,
         budget: new RetainedBudget(rows),

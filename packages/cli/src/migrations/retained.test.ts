@@ -47,6 +47,7 @@ import {
   persistDir,
   withLocalD1 as withLocal,
 } from "../test-utils/migrateHarness";
+import { workflowsHolding } from "../test-utils/workflows";
 import { rollbackConfirmPhrase } from "./confirm";
 import { dropCapabilityTables, migrateProject, previewReset, resetProject } from "./run";
 
@@ -839,6 +840,7 @@ describe("the link-signing key survives the vault (#596)", () => {
 
       await deprovisionSecrets(
         new CloudflareSecretsDeprovisioner({
+          workflows: workflowsHolding().workflows,
           account: { accountId: "acct-1", confirmation: "pinned" },
           cf,
           project: "acme",

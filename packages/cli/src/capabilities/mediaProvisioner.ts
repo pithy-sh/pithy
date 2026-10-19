@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { R2Credentials } from "@pithy-sh/cloudflare/src/r2/r2Credentials";
 import { RUNTIME_PROFILE } from "@pithy-sh/cloudflare/src/tokens/runtime";
+import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
@@ -19,6 +20,7 @@ import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/acc
 import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
 import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
+import { deleteHostWorkflows } from "./hostWorkflows";
 import { capabilityLoadError } from "./loadFailure";
 import { deleteR2BucketWithContents } from "./r2Bucket";
 
@@ -458,6 +460,8 @@ export interface CloudflareMediaDeprovisionerOptions {
    */
   readonly projectDir: string;
   cf: CloudflareClients;
+  /** The account's Workflows client — the enrichment Workflows are deleted through it, by name (#789). */
+  workflows: Pick<CloudflareWorkflowsClient, "deleteWorkflow">;
   /** The project name, from `requireProjectName` — teardown finds resources by no other key. */
   project: string;
   /**
@@ -486,6 +490,7 @@ export interface CloudflareMediaDeprovisionerOptions {
 export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
   readonly #projectDir: string;
   readonly #cf: CloudflareClients;
+  readonly #workflows: Pick<CloudflareWorkflowsClient, "deleteWorkflow">;
   readonly #project: string;
   readonly #r2Credentials: R2Credentials | undefined;
   readonly #account: ConfirmedAccount;
@@ -494,10 +499,24 @@ export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
   constructor(options: CloudflareMediaDeprovisionerOptions) {
     this.#projectDir = options.projectDir;
     this.#cf = options.cf;
+    this.#workflows = options.workflows;
     this.#project = options.project;
     this.#r2Credentials = options.r2Credentials;
     this.#account = options.account;
     this.#audit = options.audit ?? (async () => {});
+  }
+
+  /** Delete the env's enrichment Workflows, by the names the project's own `@pithy-sh/media` composes (#789). */
+  async deleteWorkflows(env: ManagedEnvironment): Promise<void> {
+    const { mediaWorkflowNames } = await loadMedia(this.#projectDir);
+    await deleteHostWorkflows({
+      workflows: this.#workflows,
+      account: this.#account,
+      capability: "media",
+      env,
+      names: mediaWorkflowNames(this.#project, env),
+      audit: this.#audit,
+    });
   }
 
   /** Delete the env's media worker if it is deployed. */

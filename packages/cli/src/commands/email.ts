@@ -21,7 +21,7 @@ import {
 } from "../capabilities/emailProvisioner";
 import { capabilityNotComposed } from "../capabilities/notComposed";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
-import { cloudflareClients } from "../cloudflare/clients";
+import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { commandCredentials } from "../cloudflare/commandCredentials";
 import { withContract } from "../contract/commandContract";
 import { DESTROY_RETAINED_DESCRIPTION, parseDestroyRetained } from "../migrations/confirm";
@@ -433,14 +433,16 @@ const deprovision = withContract(
         // is the one that deletes.
         const declared = loadProjectEnvironments(config);
         const env = requireTeardownEnvironment(args.env, declared);
-        const { account, accountId, apiToken } = commandCredentials(await projectCloudflareAccount(projectDir), {
-          projectDir,
-          why: "the email worker binds its link-signing key from it",
-        });
+        const { account, accountId, apiToken, storeId } = commandCredentials(
+          await projectCloudflareAccount(projectDir),
+          { projectDir, why: "the email worker binds its link-signing key from it" },
+        );
         const cf = await cloudflareClients({ accountId, apiToken });
         const deprovisioner = new CloudflareEmailDeprovisioner({
           account,
           cf,
+          workflows: await cloudflareWorkflows({ accountId, apiToken }),
+          storeId,
           project,
           audit: await buildAudit(projectDir, accountId, apiToken),
           // The operator's number, spent at the delete — the floor under the count `deprovisionEmail` demands (#591).
@@ -458,7 +460,9 @@ const deprovision = withContract(
           rules: {
             countSuppressionRetained: "read",
             hasWorker: "read",
+            deleteWorkflows: "environment",
             deleteWorker: "environment",
+            deleteLinkSigningKey: "environment",
             deleteSuppressionDatabase: args.suppression
               ? { what: "the suppression list", flag: "--suppression" }
               : "refused",

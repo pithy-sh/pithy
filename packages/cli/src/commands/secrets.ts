@@ -73,7 +73,7 @@ import {
   verificationOutcome,
   verificationReportLines,
 } from "../capabilities/verifySecrets";
-import { cloudflareClients } from "../cloudflare/clients";
+import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { commandCredentials, type StoreNeed } from "../cloudflare/commandCredentials";
 import { cloudflareEnv } from "../cloudflare/config";
 import { withContract } from "../contract/commandContract";
@@ -1343,6 +1343,7 @@ const deprovision = withContract(
         const deprovisioner = new CloudflareSecretsDeprovisioner({
           account,
           cf,
+          workflows: await cloudflareWorkflows({ accountId, apiToken }),
           project: requireProjectName(await loadProject(projectDir)),
           storeId,
           audit: await buildAudit(projectDir, "dev"),
@@ -1359,6 +1360,7 @@ const deprovision = withContract(
           deprovisioner,
           rules: {
             countRetained: "read",
+            deleteWorkflows: "environment",
             deleteManager: "environment",
             deleteMasterKey: args.keys ? "environment" : "refused",
             deleteDatabase: "environment",

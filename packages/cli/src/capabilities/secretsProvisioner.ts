@@ -8,6 +8,7 @@ import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients"
 import type { TokenPermission } from "@pithy-sh/cloudflare/src/tokens/accountTokensManager";
 import type { PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
 import { RUNTIME_PROFILE } from "@pithy-sh/cloudflare/src/tokens/runtime";
+import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { commandName } from "@pithy-sh/core/src/cli/command";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { InternalError, UpstreamError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -17,6 +18,7 @@ import { readMigrationLedger, runMigrations } from "@pithy-sh/core/src/migration
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { encodeVersionedValue, initialVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import { secretsRetainedTables, secretsTables } from "@pithy-sh/secrets/src/data/tables";
+import { managerWorkflowNames } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { SECRETS_RUNTIME_PERMISSIONS } from "@pithy-sh/secrets/src/manager/managerRegistry";
 import { secretsMigrations } from "@pithy-sh/secrets/src/migrations/secretsMigrations";
 import {
@@ -42,6 +44,7 @@ import type { CliAuditEmit } from "../audit/cliAudit";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { kitSource } from "../project/kitSource";
 import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
+import { deleteHostWorkflows } from "./hostWorkflows";
 import { countDatabaseRetained, deleteRetainedDatabase } from "./retainedDatabase";
 
 /**
@@ -447,6 +450,8 @@ export function buildManagerDeploy(options: {
 
 export interface CloudflareSecretsDeprovisionerOptions {
   cf: CloudflareClients;
+  /** The account's Workflows client — the manager's Workflows are deleted through it, by name (#789). */
+  workflows: Pick<CloudflareWorkflowsClient, "deleteWorkflow">;
   /**
    * The project name (root `pithy.config.ts` `name`, via `requireProjectName`). Teardown recomputes
    * every name it deletes, so this must be the same value provisioning used — a guessed one would
@@ -481,6 +486,7 @@ export interface CloudflareSecretsDeprovisionerOptions {
  */
 export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
   readonly #cf: CloudflareClients;
+  readonly #workflows: Pick<CloudflareWorkflowsClient, "deleteWorkflow">;
   readonly #project: string;
   readonly #storeId: string;
   readonly #account: ConfirmedAccount;
@@ -489,6 +495,7 @@ export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
 
   constructor(options: CloudflareSecretsDeprovisionerOptions) {
     this.#cf = options.cf;
+    this.#workflows = options.workflows;
     this.#project = options.project;
     this.#storeId = options.storeId;
     this.#account = options.account;
@@ -519,6 +526,18 @@ export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
   async countRetained(env: ManagedEnvironment): Promise<RetainedRows[]> {
     const database = await this.#database(env);
     return database ? countDatabaseRetained(database) : [];
+  }
+
+  /** Delete the env's write, rotate and rotate-value Workflows, by `managerWorkflowNames` (#789). */
+  async deleteWorkflows(env: ManagedEnvironment): Promise<void> {
+    await deleteHostWorkflows({
+      workflows: this.#workflows,
+      account: this.#account,
+      capability: "secrets",
+      env,
+      names: managerWorkflowNames(this.#project, env),
+      audit: this.#audit,
+    });
   }
 
   /**

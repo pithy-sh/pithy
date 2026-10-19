@@ -32,7 +32,7 @@ import { analyzeStoreWrites, type Node, type StoreWriteSite, siteKey } from "./s
  * was written for. So the population is discovered, every run, by {@link analyzeStoreWrites}.
  *
  * **Is each member right?** That is not mechanical, and pretending otherwise is what killed the draft's
- * analyzer. Fourteen of the seventeen sites below pass a name that *arrived* — a parameter, a field, a
+ * analyzer. Fifteen of the eighteen sites below pass a name that *arrived* — a parameter, a field, a
  * destructured local. Deciding whether `this.entryName` was composed through the facade means reading a
  * constructor in another module and a builder in a third. The draft tried to chase that by fixed point
  * over bare function names across the whole tree, and two defects fell out of it: its member-path walker
@@ -106,6 +106,11 @@ interface Declared {
  * finds eight.
  */
 const DECLARED: readonly Declared[] = [
+  {
+    // #789. Email teardown removes the environment's link-signing key, which deleting the worker left behind.
+    site: "packages/cli/src/capabilities/emailProvisioner.ts deleteSecret(name)",
+    via: "`emailLinkSigningKeySecretName(this.#project, env)` at the top of the method — `environmentScope(project, env).secretEntry(…)`, the call `resolveEmailConfig` binds the entry with",
+  },
   {
     site: "packages/cli/src/capabilities/secretsProvisioner.ts createSecretIfAbsent(name, JSON.stringify(await initialMasterKeyConfig()))",
     via: "`masterKeySecretName(this.#project, env, this.#feature)` three lines above — `resourceNames(project).env(env).secretEntry(…)`, or the feature scope's",
@@ -236,7 +241,7 @@ describe("the population this gate ranges over", () => {
     // A tripwire whose input silently became empty passes every assertion about findings. This is the
     // exact-count assertion the draft's analyzer could not have made: it found nothing at all.
     expect(analysis.parsed).toBeGreaterThan(500);
-    expect(analysis.sites).toHaveLength(17);
+    expect(analysis.sites).toHaveLength(18);
   });
 });
 

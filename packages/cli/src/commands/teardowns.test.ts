@@ -33,8 +33,14 @@ const state = vi.hoisted(() => {
     async countSuppressionRetained() {
       return [];
     }
+    async deleteWorkflows(env: string) {
+      calls.push(`deleteWorkflows:${env}`);
+    }
     async deleteWorker(env: string) {
       calls.push(`deleteWorker:${env}`);
+    }
+    async deleteLinkSigningKey(env: string) {
+      calls.push(`deleteLinkSigningKey:${env}`);
     }
     async deleteBucket(env?: string) {
       calls.push(env === undefined ? "deleteBucket" : `deleteBucket:${env}`);
@@ -75,7 +81,10 @@ vi.mock("../cloudflare/config", async (importOriginal) => ({
   cloudflareEnv: () => ({ CLOUDFLARE_ACCOUNT_ID: "account", CLOUDFLARE_API_TOKEN: "token", SECRETS_STORE_ID: "store" }),
   cloudflareAccountConfirmation: () => ({ source: "test" }),
 }));
-vi.mock("../cloudflare/clients", () => ({ cloudflareClients: async () => ({}) }));
+vi.mock("../cloudflare/clients", () => ({
+  cloudflareClients: async () => ({}),
+  cloudflareWorkflows: async () => ({}),
+}));
 vi.mock("../audit/cliAudit", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../audit/cliAudit")>()),
   createProjectCliAudit: async () => async () => {},
@@ -132,16 +141,24 @@ const RECKLESS: Record<string, Orchestrator> = {
     const deprovisioner = d as Recorded;
     await deprovisioner.removeRoutingRule();
     await deprovisioner.deleteBucket();
-    for (const env of declaredOf(target)) await deprovisioner.deleteWorker(env);
+    for (const env of declaredOf(target)) {
+      await deprovisioner.deleteWorkflows(env);
+      await deprovisioner.deleteWorker(env);
+    }
   },
   email: async (d, target) => {
     const deprovisioner = d as Recorded;
     await deprovisioner.deleteSuppressionDatabase();
-    for (const env of declaredOf(target)) await deprovisioner.deleteWorker(env);
+    for (const env of declaredOf(target)) {
+      await deprovisioner.deleteWorkflows(env);
+      await deprovisioner.deleteWorker(env);
+      await deprovisioner.deleteLinkSigningKey(env);
+    }
   },
   storage: async (d, target) => {
     const deprovisioner = d as Recorded;
     for (const env of declaredOf(target)) {
+      await deprovisioner.deleteWorkflows(env);
       await deprovisioner.deleteWorker(env);
       await deprovisioner.deleteBucket(env);
     }
@@ -149,6 +166,7 @@ const RECKLESS: Record<string, Orchestrator> = {
   media: async (d, target) => {
     const deprovisioner = d as Recorded;
     for (const env of declaredOf(target)) {
+      await deprovisioner.deleteWorkflows(env);
       await deprovisioner.deleteWorker(env);
       await deprovisioner.deleteBucket(env);
     }
@@ -157,6 +175,7 @@ const RECKLESS: Record<string, Orchestrator> = {
     const deprovisioner = d as Recorded;
     for (const env of declaredOf(target)) {
       await deprovisioner.deleteRuntimeToken(env);
+      await deprovisioner.deleteWorkflows(env);
       await deprovisioner.deleteManager(env);
       await deprovisioner.deleteMasterKey(env);
       await deprovisioner.deleteDatabase(env);
@@ -269,6 +288,8 @@ const RULES: [
   outcome: Outcome,
 ][] = [
   // support: the worker is one environment's; the bucket and the routing rule are shared, and only when asked.
+  ["support", { storage: false }, "deleteWorkflows", "prod", "refused"],
+  ["support", { storage: false }, "deleteWorkflows", "staging", "made"],
   ["support", { storage: false }, "deleteWorker", "prod", "refused"],
   ["support", { storage: false }, "deleteWorker", "staging", "made"],
   ["support", { storage: false }, "deleteBucket", undefined, "refused"],
@@ -276,23 +297,34 @@ const RULES: [
   ["support", { storage: false }, "removeRoutingRule", undefined, "refused"],
   ["support", { storage: false, "routing-zone": "zone" }, "removeRoutingRule", undefined, "made"],
   // email: the worker is one environment's; the suppression list is shared, and only when asked.
+  ["email", { suppression: false }, "deleteWorkflows", "prod", "refused"],
+  ["email", { suppression: false }, "deleteWorkflows", "staging", "made"],
   ["email", { suppression: false }, "deleteWorker", "prod", "refused"],
   ["email", { suppression: false }, "deleteWorker", "staging", "made"],
+  // The link-signing key is one environment's too (#789).
+  ["email", { suppression: false }, "deleteLinkSigningKey", "prod", "refused"],
+  ["email", { suppression: false }, "deleteLinkSigningKey", "staging", "made"],
   ["email", { suppression: false }, "deleteSuppressionDatabase", undefined, "refused"],
   ["email", { suppression: true, "destroy-retained": "0" }, "deleteSuppressionDatabase", undefined, "made"],
   // storage: the worker is one environment's; so is the bucket, and only when asked.
+  ["storage", { storage: false }, "deleteWorkflows", "prod", "refused"],
+  ["storage", { storage: false }, "deleteWorkflows", "staging", "made"],
   ["storage", { storage: false }, "deleteWorker", "prod", "refused"],
   ["storage", { storage: false }, "deleteWorker", "staging", "made"],
   ["storage", { storage: false }, "deleteBucket", "staging", "refused"],
   ["storage", { storage: true, ...R2 }, "deleteBucket", "prod", "refused"],
   ["storage", { storage: true, ...R2 }, "deleteBucket", "staging", "made"],
   // media: as storage, with a namespace beside the bucket.
+  ["media", { storage: false }, "deleteWorkflows", "prod", "refused"],
+  ["media", { storage: false }, "deleteWorkflows", "staging", "made"],
   ["media", { storage: false }, "deleteWorker", "prod", "refused"],
   ["media", { storage: false }, "deleteWorker", "staging", "made"],
   ["media", { storage: false }, "deleteBucket", "staging", "refused"],
   ["media", { storage: true, ...R2 }, "deleteBucket", "prod", "refused"],
   ["media", { storage: true, ...R2 }, "deleteBucket", "staging", "made"],
   // secrets: the manager and database are one environment's; so is the master key, and only when asked.
+  ["secrets", { keys: false }, "deleteWorkflows", "prod", "refused"],
+  ["secrets", { keys: false }, "deleteWorkflows", "staging", "made"],
   ["secrets", { keys: false }, "deleteManager", "prod", "refused"],
   ["secrets", { keys: false }, "deleteManager", "staging", "made"],
   ["secrets", { keys: false }, "deleteDatabase", "prod", "refused"],
@@ -346,7 +378,7 @@ describe("the current orchestrators run unchanged through the confinement", () =
     >("@pithy-sh/support/src/provision/provisionSupport");
     state.orchestrator = deprovisionSupport as Orchestrator;
     expect(await deprovision("support", { env: "prod", "routing-zone": "zone", storage: true, ...R2 })).toBeUndefined();
-    expect(state.calls).toEqual(["removeRoutingRule", "deleteWorker:prod", "deleteBucket"]);
+    expect(state.calls).toEqual(["removeRoutingRule", "deleteWorkflows:prod", "deleteWorker:prod", "deleteBucket"]);
     await expectConforms("support deprovision", printed.out);
   });
 
@@ -356,7 +388,12 @@ describe("the current orchestrators run unchanged through the confinement", () =
     );
     state.orchestrator = deprovisionEmail as Orchestrator;
     expect(await deprovision("email", { env: "prod", suppression: true, "destroy-retained": "0" })).toBeUndefined();
-    expect(state.calls).toEqual(["deleteWorker:prod", "deleteSuppressionDatabase"]);
+    expect(state.calls).toEqual([
+      "deleteWorkflows:prod",
+      "deleteWorker:prod",
+      "deleteLinkSigningKey:prod",
+      "deleteSuppressionDatabase",
+    ]);
     await expectConforms("email deprovision", printed.out);
   });
 
@@ -366,7 +403,7 @@ describe("the current orchestrators run unchanged through the confinement", () =
     >("@pithy-sh/storage/src/provision/provisionStorage");
     state.orchestrator = deprovisionStorage as Orchestrator;
     expect(await deprovision("storage", { env: "staging", storage: true, ...R2 })).toBeUndefined();
-    expect(state.calls).toEqual(["deleteWorker:staging", "deleteBucket:staging"]);
+    expect(state.calls).toEqual(["deleteWorkflows:staging", "deleteWorker:staging", "deleteBucket:staging"]);
     await expectConforms("storage deprovision", printed.out);
 
     state.calls.length = 0;
@@ -375,7 +412,7 @@ describe("the current orchestrators run unchanged through the confinement", () =
     );
     state.orchestrator = deprovisionMedia as Orchestrator;
     expect(await deprovision("media", { env: "staging", storage: true, ...R2 })).toBeUndefined();
-    expect(state.calls).toEqual(["deleteWorker:staging", "deleteBucket:staging"]);
+    expect(state.calls).toEqual(["deleteWorkflows:staging", "deleteWorker:staging", "deleteBucket:staging"]);
     await expectConforms("media deprovision", printed.out);
   });
 
@@ -386,6 +423,7 @@ describe("the current orchestrators run unchanged through the confinement", () =
     state.orchestrator = deprovisionSecrets as Orchestrator;
     expect(await deprovision("secrets", { env: "prod", keys: true })).toBeUndefined();
     expect(state.calls).toEqual([
+      "deleteWorkflows:prod",
       "deleteManager:prod",
       "deleteMasterKey:prod",
       "deleteDatabase:prod",

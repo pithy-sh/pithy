@@ -3,11 +3,18 @@
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
-import { emailWorkerName, suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
+import {
+  deprovisionEmail,
+  emailWorkerName,
+  suppressionDatabaseName,
+} from "@pithy-sh/email/src/provision/provisionEmail";
+import { emailLinkSigningKeySecretName } from "@pithy-sh/email/src/provision/resolveEmailConfig";
 import type { EmailTheme } from "@pithy-sh/email/src/templates/theme";
 import { describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import { KIT_ROOT } from "../test-utils/kitRoot";
+import { declaredWorkflowNames, workflowsHolding } from "../test-utils/workflows";
 import { CloudflareEmailDeprovisioner, CloudflareEmailProvisioner } from "./emailProvisioner";
 
 /** The project every provisioned name leads with — `requireProjectName`'s answer, never a guess. */
@@ -27,13 +34,29 @@ function fakeCf() {
   const getWorker = vi.fn();
   const deleteWorker = vi.fn();
   const ensureWorkerRoute = vi.fn();
+  /** The Secrets Store entries the account holds — what `deleteLinkSigningKey` reads and deletes from (#789). */
+  const entries = new Set<string>();
+  const exists = vi.fn(async (name: string) => entries.has(name));
+  const deleteSecret = vi.fn(async (name: string) => void entries.delete(name));
   const cf = {
     d1Provisioner: () => ({ findDatabaseByName, createDatabase, deleteDatabase }),
     workers: () => ({ getWorker, deleteWorker }),
     emailRouting: () => ({ ensureWorkerRoute }),
+    secrets: () => ({ exists, deleteSecret }),
     d1: () => EMPTY_D1,
   } as unknown as CloudflareClients;
-  return { cf, findDatabaseByName, createDatabase, deleteDatabase, getWorker, deleteWorker, ensureWorkerRoute };
+  return {
+    cf,
+    findDatabaseByName,
+    createDatabase,
+    deleteDatabase,
+    getWorker,
+    deleteWorker,
+    ensureWorkerRoute,
+    entries,
+    exists,
+    deleteSecret,
+  };
 }
 
 /** A stand-in theme — these tests never touch `deployWorker`, the only method that reads it. */
@@ -157,6 +180,8 @@ describe("CloudflareEmailDeprovisioner", () => {
   test("hasWorker asks for this project's worker in that environment, and deletes nothing", async () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     const deprovisioner = new CloudflareEmailDeprovisioner({
+      workflows: workflowsHolding().workflows,
+      storeId: "store-1",
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
@@ -175,6 +200,8 @@ describe("CloudflareEmailDeprovisioner", () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     const events: CliAuditEvent[] = [];
     const deprovisioner = new CloudflareEmailDeprovisioner({
+      workflows: workflowsHolding().workflows,
+      storeId: "store-1",
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
@@ -204,6 +231,8 @@ describe("CloudflareEmailDeprovisioner", () => {
     const { cf, findDatabaseByName, deleteDatabase } = fakeCf();
     const events: CliAuditEvent[] = [];
     const deprovisioner = new CloudflareEmailDeprovisioner({
+      workflows: workflowsHolding().workflows,
+      storeId: "store-1",
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
@@ -245,6 +274,8 @@ describe("teardown refuses an unconfirmed account", () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     getWorker.mockResolvedValue(null);
     const stranger = new CloudflareEmailDeprovisioner({
+      workflows: workflowsHolding().workflows,
+      storeId: "store-1",
       cf,
       project: PROJECT,
       account: { accountId: "acct-stranger", confirmation: "ambient" },
@@ -276,5 +307,117 @@ describe("teardown refuses an unconfirmed account", () => {
       "Nothing states that Cloudflare account acct-stranger is this project's. Nothing was changed.",
     );
     expect(createDatabase).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * **Every Workflow the committed template declares goes with the worker (#789).** Deleting a Worker leaves the
+ * Workflows registered against it, and `pithy email deprovision` once did exactly that. The names are read from the template's
+ * own `workflows` block, not from any namer, so a Workflow added there and nowhere else fails this.
+ */
+describe("pithy email deprovision deletes its Workflows", () => {
+  test("a teardown deletes every Workflow the template declares for that environment, and no other", async () => {
+    const declared = await declaredWorkflowNames("@pithy-sh/email/src/workflows/worker", PROJECT, "staging");
+    expect(declared.length).toBeGreaterThan(0);
+    // Production's, and another project's in the same account, are not this teardown's.
+    const others = [
+      ...(await declaredWorkflowNames("@pithy-sh/email/src/workflows/worker", PROJECT, "prod")),
+      ...(await declaredWorkflowNames("@pithy-sh/email/src/workflows/worker", "other", "staging")),
+    ];
+    const { workflows, held } = workflowsHolding([...declared, ...others]);
+    const events: CliAuditEvent[] = [];
+    const deprovisioner = new CloudflareEmailDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      project: PROJECT,
+      storeId: "store-1",
+      cf: fakeCf().cf,
+      workflows,
+      audit: async (event) => void events.push(event),
+    });
+
+    await deprovisionEmail(deprovisioner, { environment: "staging", declared: DEFAULT_ENVIRONMENTS });
+    expect([...held]).toEqual(others);
+    expect(events.filter((event) => event.resourceType === "cf_workflow").map((event) => event.resourceId)).toEqual(
+      declared,
+    );
+  });
+
+  test("a second run, or one after a hand deletion, exits cleanly and deletes nothing", async () => {
+    const declared = await declaredWorkflowNames("@pithy-sh/email/src/workflows/worker", PROJECT, "staging");
+    // One deleted by hand already; the rest go on the first run, and nothing is left for the second.
+    const { workflows, held } = workflowsHolding(declared.slice(1));
+    const events: CliAuditEvent[] = [];
+    const deprovisioner = new CloudflareEmailDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      project: PROJECT,
+      storeId: "store-1",
+      cf: fakeCf().cf,
+      workflows,
+      audit: async (event) => void events.push(event),
+    });
+
+    await deprovisionEmail(deprovisioner, { environment: "staging", declared: DEFAULT_ENVIRONMENTS });
+    expect(held.size).toBe(0);
+    events.length = 0;
+    await expect(
+      deprovisionEmail(deprovisioner, { environment: "staging", declared: DEFAULT_ENVIRONMENTS }),
+    ).resolves.toBeDefined();
+    expect(events).toEqual([]);
+  });
+});
+
+describe("pithy email deprovision deletes the link-signing key (#789)", () => {
+  test("deletes this environment's entry, audits it, and leaves every other", async () => {
+    const { cf, entries, deleteSecret } = fakeCf();
+    const staging = emailLinkSigningKeySecretName(PROJECT, "staging");
+    const others = [emailLinkSigningKeySecretName(PROJECT, "prod"), emailLinkSigningKeySecretName("other", "staging")];
+    for (const name of [staging, ...others]) entries.add(name);
+    const events: CliAuditEvent[] = [];
+    const deprovisioner = new CloudflareEmailDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      project: PROJECT,
+      storeId: "store-1",
+      cf,
+      workflows: workflowsHolding().workflows,
+      audit: async (event) => void events.push(event),
+    });
+
+    await deprovisionEmail(deprovisioner, { environment: "staging", declared: DEFAULT_ENVIRONMENTS });
+    expect(staging).toBe("acme-staging-email-link-signing-key");
+    expect(deleteSecret).toHaveBeenCalledExactlyOnceWith(staging);
+    expect([...entries]).toEqual(others);
+    expect(events).toEqual([
+      {
+        environment: "staging",
+        action: "email/secret_removed",
+        outcome: "success",
+        severity: "warning",
+        resourceType: "secret",
+        resourceId: staging,
+        metadata: { name: staging, kind: "link_signing_key" },
+      },
+    ]);
+
+    // Gone, so a second run deletes nothing and records nothing.
+    events.length = 0;
+    await deprovisionEmail(deprovisioner, { environment: "staging", declared: DEFAULT_ENVIRONMENTS });
+    expect(deleteSecret).toHaveBeenCalledTimes(1);
+    expect(events).toEqual([]);
+  });
+
+  test("refuses an unconfirmed account before it reads the store", async () => {
+    const { cf, exists, deleteSecret } = fakeCf();
+    const stranger = new CloudflareEmailDeprovisioner({
+      account: { accountId: "acct-stranger", confirmation: "ambient" },
+      project: PROJECT,
+      storeId: "store-1",
+      cf,
+      workflows: workflowsHolding().workflows,
+    });
+    await expect(stranger.deleteLinkSigningKey("staging")).rejects.toThrow(
+      "Nothing states that Cloudflare account acct-stranger is this project's. Nothing was changed.",
+    );
+    expect(exists).not.toHaveBeenCalled();
+    expect(deleteSecret).not.toHaveBeenCalled();
   });
 });

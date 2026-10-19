@@ -17,7 +17,7 @@ import {
 import { resolveR2Credentials } from "../capabilities/r2Bucket";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
-import { cloudflareClients } from "../cloudflare/clients";
+import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { commandCredentials } from "../cloudflare/commandCredentials";
 import { withContract } from "../contract/commandContract";
 import { resolveCapabilityWorker } from "../project/capabilityWorker";
@@ -335,6 +335,7 @@ const deprovision = withContract(
         const deprovisioner = new CloudflareMediaDeprovisioner({
           account,
           cf,
+          workflows: await cloudflareWorkflows({ accountId, apiToken }),
           projectDir,
           project,
           r2Credentials,
@@ -349,6 +350,7 @@ const deprovision = withContract(
           declared,
           deprovisioner,
           rules: {
+            deleteWorkflows: "environment",
             deleteWorker: "environment",
             deleteBucket: args.storage ? "environment" : "refused",
           },

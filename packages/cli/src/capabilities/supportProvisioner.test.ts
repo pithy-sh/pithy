@@ -4,15 +4,21 @@
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { SupportConfig, type SupportConfigInput } from "@pithy-sh/support/src/config/config";
-import { supportRoutingRuleName, supportWorkerName } from "@pithy-sh/support/src/provision/provisionSupport";
+import {
+  deprovisionSupport,
+  supportRoutingRuleName,
+  supportWorkerName,
+} from "@pithy-sh/support/src/provision/provisionSupport";
 import { resolveSupportConfig } from "@pithy-sh/support/src/provision/resolveSupportConfig";
 import { parse } from "comment-json";
 import { describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import { kitSource } from "../project/kitSource";
 import { KIT_ROOT } from "../test-utils/kitRoot";
+import { declaredWorkflowNames, workflowsHolding } from "../test-utils/workflows";
 import { CloudflareSupportDeprovisioner, CloudflareSupportProvisioner, supportBucketName } from "./supportProvisioner";
 
 /**
@@ -190,6 +196,7 @@ describe("the inbound routing rule", () => {
   test("hasWorker asks for this project's classification worker in that environment, and deletes nothing", async () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     const deprovisioner = new CloudflareSupportDeprovisioner({
+      workflows: workflowsHolding().workflows,
       projectDir: KIT_ROOT,
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
@@ -209,6 +216,7 @@ describe("the inbound routing rule", () => {
     const { cf, removeWorkerRoute } = fakeCf();
     removeWorkerRoute.mockResolvedValue({ removed: true });
     const deprovisioner = new CloudflareSupportDeprovisioner({
+      workflows: workflowsHolding().workflows,
       projectDir: KIT_ROOT,
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
@@ -276,6 +284,7 @@ describe("teardown refuses an unconfirmed account", () => {
     const deleteWorker = vi.fn();
     const cf = { workers: () => ({ getWorker, deleteWorker }) } as unknown as CloudflareClients;
     const stranger = new CloudflareSupportDeprovisioner({
+      workflows: workflowsHolding().workflows,
       projectDir: KIT_ROOT,
       cf,
       project: PROJECT,
@@ -294,6 +303,7 @@ describe("teardown refuses an unconfirmed account", () => {
     const deleteWorker = vi.fn();
     const cf = { workers: () => ({ getWorker, deleteWorker }) } as unknown as CloudflareClients;
     const ours = new CloudflareSupportDeprovisioner({
+      workflows: workflowsHolding().workflows,
       projectDir: KIT_ROOT,
       cf,
       project: PROJECT,
@@ -437,5 +447,61 @@ describe("ensureSearchIndex", () => {
 
     expect(result).toEqual({ created: false, dropped: true, repaired: false });
     expect(issued(statements)).toContain("drop trigger if exists pithy_support_search_ai");
+  });
+});
+
+/**
+ * **Every Workflow the committed template declares goes with the worker (#789).** Deleting a Worker leaves the
+ * Workflows registered against it, and `pithy support deprovision` once did exactly that. The names are read from the template's
+ * own `workflows` block, not from any namer, so a Workflow added there and nowhere else fails this.
+ */
+describe("pithy support deprovision deletes its Workflows", () => {
+  test("a teardown deletes every Workflow the template declares for that environment, and no other", async () => {
+    const declared = await declaredWorkflowNames("@pithy-sh/support/src/workflows/worker", PROJECT, "staging");
+    expect(declared.length).toBeGreaterThan(0);
+    // Production's, and another project's in the same account, are not this teardown's.
+    const others = [
+      ...(await declaredWorkflowNames("@pithy-sh/support/src/workflows/worker", PROJECT, "prod")),
+      ...(await declaredWorkflowNames("@pithy-sh/support/src/workflows/worker", "other", "staging")),
+    ];
+    const { workflows, held } = workflowsHolding([...declared, ...others]);
+    const events: CliAuditEvent[] = [];
+    const deprovisioner = new CloudflareSupportDeprovisioner({
+      projectDir: KIT_ROOT,
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      project: PROJECT,
+      cf: fakeCf().cf,
+      workflows,
+      audit: async (event) => void events.push(event),
+    });
+
+    await deprovisionSupport(deprovisioner, { environment: "staging", declared: DEFAULT_ENVIRONMENTS });
+    expect([...held]).toEqual(others);
+    expect(events.filter((event) => event.resourceType === "cf_workflow").map((event) => event.resourceId)).toEqual(
+      declared,
+    );
+  });
+
+  test("a second run, or one after a hand deletion, exits cleanly and deletes nothing", async () => {
+    const declared = await declaredWorkflowNames("@pithy-sh/support/src/workflows/worker", PROJECT, "staging");
+    // One deleted by hand already; the rest go on the first run, and nothing is left for the second.
+    const { workflows, held } = workflowsHolding(declared.slice(1));
+    const events: CliAuditEvent[] = [];
+    const deprovisioner = new CloudflareSupportDeprovisioner({
+      projectDir: KIT_ROOT,
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      project: PROJECT,
+      cf: fakeCf().cf,
+      workflows,
+      audit: async (event) => void events.push(event),
+    });
+
+    await deprovisionSupport(deprovisioner, { environment: "staging", declared: DEFAULT_ENVIRONMENTS });
+    expect(held.size).toBe(0);
+    events.length = 0;
+    await expect(
+      deprovisionSupport(deprovisioner, { environment: "staging", declared: DEFAULT_ENVIRONMENTS }),
+    ).resolves.toBeDefined();
+    expect(events).toEqual([]);
   });
 });

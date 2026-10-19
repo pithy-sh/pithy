@@ -4,6 +4,7 @@
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
@@ -19,7 +20,12 @@ import {
   emailWorkerName,
   suppressionDatabaseName,
 } from "@pithy-sh/email/src/provision/provisionEmail";
-import { type EmailWorkerWranglerTemplate, resolveEmailConfig } from "@pithy-sh/email/src/provision/resolveEmailConfig";
+import {
+  type EmailWorkerWranglerTemplate,
+  emailLinkSigningKeySecretName,
+  emailWorkflowNames,
+  resolveEmailConfig,
+} from "@pithy-sh/email/src/provision/resolveEmailConfig";
 import type { EmailTheme } from "@pithy-sh/email/src/templates/theme";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
@@ -28,6 +34,7 @@ import type { CliAuditEmit } from "../audit/cliAudit";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { kitSource } from "../project/kitSource";
 import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
+import { deleteHostWorkflows } from "./hostWorkflows";
 import { countDatabaseRetained, deleteRetainedDatabase } from "./retainedDatabase";
 
 /** The suppression migration set, as provisioning runs it against the shared suppression D1 and teardown counts it. */
@@ -307,6 +314,10 @@ export function emailWorkerDir(projectDir: string): string {
 
 export interface CloudflareEmailDeprovisionerOptions {
   cf: CloudflareClients;
+  /** The account's Workflows client — the send and schedule Workflows are deleted through it, by name (#789). */
+  workflows: Pick<CloudflareWorkflowsClient, "deleteWorkflow">;
+  /** The CF Secrets Store id holding each environment's link-signing key (#789). */
+  storeId: string;
   /** The project name, from `requireProjectName` — teardown finds resources by no other key. */
   project: string;
   /**
@@ -333,6 +344,8 @@ export interface CloudflareEmailDeprovisionerOptions {
  */
 export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
   readonly #cf: CloudflareClients;
+  readonly #workflows: Pick<CloudflareWorkflowsClient, "deleteWorkflow">;
+  readonly #storeId: string;
   readonly #project: string;
   readonly #account: ConfirmedAccount;
   readonly #audit: CliAuditEmit;
@@ -340,6 +353,8 @@ export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
 
   constructor(options: CloudflareEmailDeprovisionerOptions) {
     this.#cf = options.cf;
+    this.#workflows = options.workflows;
+    this.#storeId = options.storeId;
     this.#project = options.project;
     this.#account = options.account;
     this.#audit = options.audit ?? (async () => {});
@@ -375,6 +390,18 @@ export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
     );
   }
 
+  /** Delete the env's send and schedule Workflows, by `emailWorkflowNames` (#789). */
+  async deleteWorkflows(env: ManagedEnvironment): Promise<void> {
+    await deleteHostWorkflows({
+      workflows: this.#workflows,
+      account: this.#account,
+      capability: "email",
+      env,
+      names: emailWorkflowNames(this.#project, env),
+      audit: this.#audit,
+    });
+  }
+
   /** Delete the env's email worker if it is deployed — and refuse if "deployed" cannot be settled (#378). */
   async deleteWorker(env: ManagedEnvironment): Promise<void> {
     const name = emailWorkerName(this.#project, env);
@@ -395,6 +422,32 @@ export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
         resourceId: name,
       });
     }
+  }
+
+  /**
+   * Delete the env's link-signing key entry if it is present (#789). The name carries the project and the
+   * environment, so this reaches no other environment's key and no other project's. Settled on a confirmed
+   * account, like every lookup here.
+   */
+  async deleteLinkSigningKey(env: ManagedEnvironment): Promise<void> {
+    const name = emailLinkSigningKeySecretName(this.#project, env);
+    const store = this.#cf.secrets(this.#storeId);
+    const present = await findOnConfirmedAccount({
+      ...this.#account,
+      what: `the ${name} Secrets Store entry`,
+      find: async () => ((await store.exists(name)) ? name : null),
+    });
+    if (present === null) return;
+    await store.deleteSecret(name);
+    await this.#audit({
+      environment: env,
+      action: "email/secret_removed",
+      outcome: "success",
+      severity: "warning",
+      resourceType: "secret",
+      resourceId: name,
+      metadata: { name, kind: "link_signing_key" },
+    });
   }
 
   /**

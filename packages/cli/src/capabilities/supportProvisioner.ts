@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { R2Credentials } from "@pithy-sh/cloudflare/src/r2/r2Credentials";
+import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { GLOBAL_SCOPE } from "@pithy-sh/core/src/naming/environment";
 import { bindingResourceName, type ProjectGlobalNaming } from "@pithy-sh/core/src/naming/provisionScope";
@@ -16,6 +17,7 @@ import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/acc
 import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
 import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
+import { deleteHostWorkflows } from "./hostWorkflows";
 import { capabilityLoadError } from "./loadFailure";
 import { deleteR2BucketWithContents } from "./r2Bucket";
 
@@ -474,6 +476,8 @@ export interface CloudflareSupportDeprovisionerOptions {
    */
   readonly projectDir: string;
   cf: CloudflareClients;
+  /** The account's Workflows client — the classification Workflow is deleted through it, by name (#789). */
+  workflows: Pick<CloudflareWorkflowsClient, "deleteWorkflow">;
   /** The project name, from `requireProjectName` — teardown finds resources by no other key. */
   project: string;
   /**
@@ -509,6 +513,7 @@ export interface CloudflareSupportDeprovisionerOptions {
 export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
   readonly #projectDir: string;
   readonly #cf: CloudflareClients;
+  readonly #workflows: Pick<CloudflareWorkflowsClient, "deleteWorkflow">;
   readonly #project: string;
   readonly #routingZoneId: string | undefined;
   readonly #r2Credentials: R2Credentials | undefined;
@@ -518,6 +523,7 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
   constructor(options: CloudflareSupportDeprovisionerOptions) {
     this.#projectDir = options.projectDir;
     this.#cf = options.cf;
+    this.#workflows = options.workflows;
     this.#project = options.project;
     this.#routingZoneId = options.routingZoneId;
     this.#r2Credentials = options.r2Credentials;
@@ -536,6 +542,19 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
         find: () => this.#cf.workers().getWorker(name),
       }),
     );
+  }
+
+  /** Delete the env's classification Workflows, by the names the project's own `@pithy-sh/support` composes (#789). */
+  async deleteWorkflows(env: ManagedEnvironment): Promise<void> {
+    const { supportWorkflowNames } = await loadSupport(this.#projectDir);
+    await deleteHostWorkflows({
+      workflows: this.#workflows,
+      account: this.#account,
+      capability: "support",
+      env,
+      names: supportWorkflowNames(this.#project, env),
+      audit: this.#audit,
+    });
   }
 
   /** Delete the env's classification worker if it is deployed. */

@@ -7,13 +7,14 @@ import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients"
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { MediaConfig } from "@pithy-sh/media/src/config/config";
-import { mediaBucketName, mediaWorkerName } from "@pithy-sh/media/src/provision/provisionMedia";
+import { deprovisionMedia, mediaBucketName, mediaWorkerName } from "@pithy-sh/media/src/provision/provisionMedia";
 import { resolveMediaConfig } from "@pithy-sh/media/src/provision/resolveMediaConfig";
 import { parse } from "comment-json";
 import { describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import { kitSource } from "../project/kitSource";
 import { KIT_ROOT } from "../test-utils/kitRoot";
+import { declaredWorkflowNames, workflowsHolding } from "../test-utils/workflows";
 import { CloudflareMediaDeprovisioner, CloudflareMediaProvisioner } from "./mediaProvisioner";
 
 /** The project every provisioned name leads with — `requireProjectName`'s answer, never a guess. */
@@ -316,6 +317,7 @@ describe("CloudflareMediaDeprovisioner", () => {
     const { cf, calls, getWorker, deleteWorker, findBucketByName, deleteBucket } = fakeCf();
     const events: CliAuditEvent[] = [];
     const media = new CloudflareMediaDeprovisioner({
+      workflows: workflowsHolding().workflows,
       projectDir: KIT_ROOT,
       account: { accountId: "acct-1", confirmation: "pinned" },
       project: PROJECT,
@@ -349,6 +351,7 @@ describe("CloudflareMediaDeprovisioner", () => {
   test("refuses a bucket teardown with no key pair, before anything is deleted", async () => {
     const { cf, calls, findBucketByName } = fakeCf();
     const media = new CloudflareMediaDeprovisioner({
+      workflows: workflowsHolding().workflows,
       projectDir: KIT_ROOT,
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
@@ -407,6 +410,7 @@ describe("teardown refuses an unconfirmed account", () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     getWorker.mockResolvedValue(null);
     const stranger = new CloudflareMediaDeprovisioner({
+      workflows: workflowsHolding().workflows,
       projectDir: KIT_ROOT,
       cf,
       project: PROJECT,
@@ -424,6 +428,7 @@ describe("teardown refuses an unconfirmed account", () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     getWorker.mockResolvedValue({ id: "acme-prod-media" });
     const ours = new CloudflareMediaDeprovisioner({
+      workflows: workflowsHolding().workflows,
       projectDir: KIT_ROOT,
       cf,
       project: PROJECT,
@@ -432,5 +437,61 @@ describe("teardown refuses an unconfirmed account", () => {
 
     await ours.deleteWorker("prod");
     expect(deleteWorker).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * **Every Workflow the committed template declares goes with the worker (#789).** Deleting a Worker leaves the
+ * Workflows registered against it, and `pithy media deprovision` once did exactly that. The names are read from the template's
+ * own `workflows` block, not from any namer, so a Workflow added there and nowhere else fails this.
+ */
+describe("pithy media deprovision deletes its Workflows", () => {
+  test("a teardown deletes every Workflow the template declares for that environment, and no other", async () => {
+    const declared = await declaredWorkflowNames("@pithy-sh/media/src/workflows/worker", PROJECT, "staging");
+    expect(declared.length).toBeGreaterThan(0);
+    // Production's, and another project's in the same account, are not this teardown's.
+    const others = [
+      ...(await declaredWorkflowNames("@pithy-sh/media/src/workflows/worker", PROJECT, "prod")),
+      ...(await declaredWorkflowNames("@pithy-sh/media/src/workflows/worker", "other", "staging")),
+    ];
+    const { workflows, held } = workflowsHolding([...declared, ...others]);
+    const events: CliAuditEvent[] = [];
+    const deprovisioner = new CloudflareMediaDeprovisioner({
+      projectDir: KIT_ROOT,
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      project: PROJECT,
+      cf: fakeCf().cf,
+      workflows,
+      audit: async (event) => void events.push(event),
+    });
+
+    await deprovisionMedia(deprovisioner, { environment: "staging", declared: DEFAULT_ENVIRONMENTS });
+    expect([...held]).toEqual(others);
+    expect(events.filter((event) => event.resourceType === "cf_workflow").map((event) => event.resourceId)).toEqual(
+      declared,
+    );
+  });
+
+  test("a second run, or one after a hand deletion, exits cleanly and deletes nothing", async () => {
+    const declared = await declaredWorkflowNames("@pithy-sh/media/src/workflows/worker", PROJECT, "staging");
+    // One deleted by hand already; the rest go on the first run, and nothing is left for the second.
+    const { workflows, held } = workflowsHolding(declared.slice(1));
+    const events: CliAuditEvent[] = [];
+    const deprovisioner = new CloudflareMediaDeprovisioner({
+      projectDir: KIT_ROOT,
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      project: PROJECT,
+      cf: fakeCf().cf,
+      workflows,
+      audit: async (event) => void events.push(event),
+    });
+
+    await deprovisionMedia(deprovisioner, { environment: "staging", declared: DEFAULT_ENVIRONMENTS });
+    expect(held.size).toBe(0);
+    events.length = 0;
+    await expect(
+      deprovisionMedia(deprovisioner, { environment: "staging", declared: DEFAULT_ENVIRONMENTS }),
+    ).resolves.toBeDefined();
+    expect(events).toEqual([]);
   });
 });

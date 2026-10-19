@@ -63,7 +63,7 @@ An environment is **ready** when its stanza in the app Worker's `wrangler.jsonc`
 
 The bucket is created on the first run **however many environments skip**; it is one per project and must not wait for production. If **every** environment is skipped the run exits 3 (`core/precondition_failed`, with a `fix`) rather than reporting a success, and the refusal names the bucket when this run created it.
 
-`deprovision` removes **one named environment's** classification worker. There is no default environment and no "all": it used to walk every declared environment, so a run meant for staging took production's worker with it. Named nothing, or something undeclared, it refuses before any credential is read and lists what could be named. `--env dev` is pointed at `pithy dev` instead.
+`deprovision` removes **one named environment's** classification worker and its `<project>-<env>-support-classify` Workflow, first, because deleting a Worker leaves the Workflows registered against it. There is no default environment and no "all": it used to walk every declared environment, so a run meant for staging took production's worker with it. Named nothing, or something undeclared, it refuses before any credential is read and lists what could be named. `--env dev` is pointed at `pithy dev` instead.
 
 The routing rule goes only with `--routing-zone`, and first, so mail stops before its handler does. The bucket stays unless `--storage` is passed, and with it the key pair is resolved **before** the worker comes down: discovering it missing at the bucket step would leave the worker gone and the bucket standing.
 

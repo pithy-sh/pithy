@@ -17,7 +17,7 @@ import {
   type StorageEnvResources,
 } from "../capabilities/storageProvisioner";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
-import { cloudflareClients } from "../cloudflare/clients";
+import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { commandCredentials } from "../cloudflare/commandCredentials";
 import { withContract } from "../contract/commandContract";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
@@ -339,6 +339,7 @@ const deprovision = withContract(
         const deprovisioner = new CloudflareStorageDeprovisioner({
           account,
           cf,
+          workflows: await cloudflareWorkflows({ accountId, apiToken }),
           projectDir,
           project,
           r2Credentials,
@@ -352,7 +353,11 @@ const deprovision = withContract(
           target: env,
           declared,
           deprovisioner,
-          rules: { deleteWorker: "environment", deleteBucket: args.storage ? "environment" : "refused" },
+          rules: {
+            deleteWorkflows: "environment",
+            deleteWorker: "environment",
+            deleteBucket: args.storage ? "environment" : "refused",
+          },
         });
         await deprovisionStorage(confined, target, { deleteStorage: args.storage });
 

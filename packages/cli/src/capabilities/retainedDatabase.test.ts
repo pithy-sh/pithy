@@ -20,6 +20,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { blankStrings } from "../ci/childProcesses";
 import { readSource, sourcePaths } from "../ci/sourceFiles";
 import { KIT_ROOT } from "../test-utils/kitRoot";
+import { workflowsHolding } from "../test-utils/workflows";
 import { CloudflareEmailDeprovisioner, suppressionMigrationProvider } from "./emailProvisioner";
 import { deleteRetainedDatabase } from "./retainedDatabase";
 import { CloudflareSecretsDeprovisioner, secretsMigrationProvider, vaultMigrationProvider } from "./secretsProvisioner";
@@ -112,7 +113,13 @@ describe("the secrets teardown counts the vault before it deletes it", () => {
     const db = await migratedD1(secretsMigrationProvider());
     await storeSecrets(db, 3);
     const { cf, deleteDatabase } = accountWith(managerWorkerName(PROJECT, "prod"), db);
-    const deprovisioner = new CloudflareSecretsDeprovisioner({ account: pinned, cf, project: PROJECT, storeId: "s" });
+    const deprovisioner = new CloudflareSecretsDeprovisioner({
+      workflows: workflowsHolding().workflows,
+      account: pinned,
+      cf,
+      project: PROJECT,
+      storeId: "s",
+    });
 
     await expect(
       deprovisionSecrets(deprovisioner, { environment: "prod", declared: ["staging", "prod"] }),
@@ -128,6 +135,7 @@ describe("the secrets teardown counts the vault before it deletes it", () => {
     const { cf, deleteDatabase } = accountWith(managerWorkerName(PROJECT, "prod"), db);
 
     const underBudget = new CloudflareSecretsDeprovisioner({
+      workflows: workflowsHolding().workflows,
       account: pinned,
       cf,
       project: PROJECT,
@@ -138,6 +146,7 @@ describe("the secrets teardown counts the vault before it deletes it", () => {
     expect(deleteDatabase).not.toHaveBeenCalled();
 
     const counted = new CloudflareSecretsDeprovisioner({
+      workflows: workflowsHolding().workflows,
       account: pinned,
       cf,
       project: PROJECT,
@@ -160,7 +169,13 @@ describe("the secrets teardown counts the vault before it deletes it", () => {
         .run();
     }
     const { cf, deleteDatabase } = accountWith(managerWorkerName(PROJECT, "prod"), db);
-    const deprovisioner = new CloudflareSecretsDeprovisioner({ account: pinned, cf, project: PROJECT, storeId: "s" });
+    const deprovisioner = new CloudflareSecretsDeprovisioner({
+      workflows: workflowsHolding().workflows,
+      account: pinned,
+      cf,
+      project: PROJECT,
+      storeId: "s",
+    });
 
     await expect(
       deprovisionSecrets(deprovisioner, { environment: "prod", declared: ["staging", "prod"] }),
@@ -179,7 +194,13 @@ describe("the secrets teardown counts the vault before it deletes it", () => {
   test("an empty vault deletes with the environment named and nothing else", async () => {
     const db = await migratedD1(secretsMigrationProvider());
     const { cf, deleteDatabase } = accountWith(managerWorkerName(PROJECT, "staging"), db);
-    const deprovisioner = new CloudflareSecretsDeprovisioner({ account: pinned, cf, project: PROJECT, storeId: "s" });
+    const deprovisioner = new CloudflareSecretsDeprovisioner({
+      workflows: workflowsHolding().workflows,
+      account: pinned,
+      cf,
+      project: PROJECT,
+      storeId: "s",
+    });
 
     await deprovisionSecrets(deprovisioner, { environment: "staging", declared: ["staging", "prod"] });
     expect(deleteDatabase).toHaveBeenCalledWith("db-1");
@@ -193,7 +214,13 @@ describe("the email teardown counts the suppression list before it deletes it", 
       .prepare("insert into pithy_email_suppressions (email, reason, created_at) values ('a@example.com', 'bounce', 1)")
       .run();
     const { cf, deleteDatabase } = accountWith(suppressionDatabaseName(PROJECT), db);
-    const deprovisioner = new CloudflareEmailDeprovisioner({ account: pinned, cf, project: PROJECT });
+    const deprovisioner = new CloudflareEmailDeprovisioner({
+      workflows: workflowsHolding().workflows,
+      storeId: "store-1",
+      account: pinned,
+      cf,
+      project: PROJECT,
+    });
 
     await expect(deprovisioner.deleteSuppressionDatabase()).rejects.toThrow(
       `Retained 1 row would be dropped: pithy_email_suppressions on ${suppressionDatabaseName(PROJECT)} (1 row).`,
