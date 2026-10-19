@@ -947,6 +947,16 @@ describe("every finding in every block carries fix", () => {
           { env: "staging", state: "read", newestKeyVersion: null, behind: 0, notMigrated: ["customer"] },
         ],
       }),
+      checkSecretRotations: async () => ({
+        state: "findings",
+        environments: [
+          {
+            env: "prod",
+            state: "read",
+            failed: [{ name: "auth-session-secret", at: "2026-10-18T03:00:04.000Z", reason: "not-recorded" }],
+          },
+        ],
+      }),
       checkTurnstileSitekeys: async () => ({
         state: "findings",
         unrendered: [

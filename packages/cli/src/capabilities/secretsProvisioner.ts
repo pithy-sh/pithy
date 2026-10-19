@@ -28,6 +28,7 @@ import {
   type SecretsProvisioner,
 } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import {
+  type ManagerConfigParams,
   type ManagerWranglerTemplate,
   managerWorkerName,
   resolveManagerConfig,
@@ -412,12 +413,19 @@ export function buildManagerDeploy(options: {
   projectDir: string;
   /** How the deploy gate reads the manager Worker's stamp back off the account (#537). */
   cf: CloudflareClients;
+  /**
+   * The value-rotation schedule and the environment that owns global secrets, from the project's registry
+   * (#602). Asked once per deploy, so a provision that touches no manager reads no Worker config for it.
+   * Omitted, the manager is deployed with no schedule and rotates no values.
+   */
+  schedule?: () => Promise<Pick<ManagerConfigParams, "valueRotations" | "globalEnvironment">>;
 }): DeployManager {
   const { accountId, apiToken, cf, project, projectDir } = options;
   return async (env, resolved) => {
     const dir = managerDir(projectDir);
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as ManagerWranglerTemplate;
-    const config = resolveManagerConfig(template, { env, accountId, project, ...resolved });
+    const schedule = options.schedule === undefined ? {} : await options.schedule();
+    const config = resolveManagerConfig(template, { env, accountId, project, ...resolved, ...schedule });
 
     // **The gate, inherited rather than opted into (#537).** `deployHostWorker` stamps the resolved
     // config with this package's version and a hash of the config itself, compares that against what

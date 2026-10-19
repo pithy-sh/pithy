@@ -89,6 +89,12 @@ export interface HostResolveContext {
   /** The app Worker's origin for this environment — what callback links are built against. */
   baseUrl: string;
   /**
+   * The project's declared environments, least production first (`docs/NAMING.md`), when the caller has them.
+   * The secrets manager reads the last one as the environment whose manager alone rotates a `global` secret
+   * (#602). Absent, no manager is told it owns one, so none rotates one.
+   */
+  environments?: readonly string[];
+  /**
    * The database id a D1 binding resolves to. Under `dev` this answers the **binding name**, because
    * that is wrangler's own local key (`getRemoteId(database_id) ?? binding`) and therefore the one
    * `pithy migrate --env dev` filled. A host answering anything else opens an empty database.
@@ -694,6 +700,11 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
         databaseId: context.databaseId("SECRETS"),
         storeId: context.storeId(),
         accountId: context.accountId(),
+        // **The value-rotation schedule, read off every capability the project composes (#602).** The manager
+        // is prebuilt and never reads `pithy.config.ts`, so this stamp is the only way it learns which
+        // secrets rotate on their own — the same one `pithy secrets provision` writes. A feature's manager
+        // runs no cron and gets none, and local dev has no manager to rotate anything.
+        ...(context.feature || context.env === "dev" ? {} : await secretsSchedule(context)),
         // **The cadence the project configured, not the template's literal (#647 review).** The manager's
         // cron and the capability's `lastAtRestRotation` health key both grade against this number, and only
         // the health key was reading the configured one — so a project on a shorter cadence got `stale` on a
@@ -706,6 +717,37 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     },
   },
 ];
+
+/**
+ * The value-rotation schedule the secrets manager is stamped with, from the composed capabilities: every
+ * capability's registry slice aggregated the way a Worker aggregates them, and the last declared
+ * environment as the one whose manager rotates a global secret (#602).
+ */
+async function secretsSchedule(context: HostResolveContext) {
+  const [{ aggregateSecretRegistries }, { stampedRotations }, { canonicalGlobalEnvironment }] = await load(
+    "secrets",
+    "@pithy-sh/secrets",
+    context.projectDir,
+    () =>
+      Promise.all([
+        kitImport<typeof import("@pithy-sh/secrets/src/sharedSecretsStore")>(
+          context.projectDir,
+          "@pithy-sh/secrets/src/sharedSecretsStore",
+        ),
+        kitImport<typeof import("@pithy-sh/secrets/src/rotation/rotationSchedule")>(
+          context.projectDir,
+          "@pithy-sh/secrets/src/rotation/rotationSchedule",
+        ),
+        kitImport<typeof import("@pithy-sh/secrets/src/scope")>(context.projectDir, "@pithy-sh/secrets/src/scope"),
+      ]),
+  );
+  const registry = aggregateSecretRegistries([context.capability, ...(context.siblings ?? [])]);
+  const globalEnvironment = canonicalGlobalEnvironment(context.environments ?? []);
+  return {
+    valueRotations: stampedRotations(registry),
+    ...(globalEnvironment === undefined ? {} : { globalEnvironment }),
+  };
+}
 
 /** The host Worker a capability owns, or `undefined` when it owns none (`auth`, `audit`, `turnstile`, …). */
 export function hostWorkerFor(capability: string): HostWorkerSpec | undefined {

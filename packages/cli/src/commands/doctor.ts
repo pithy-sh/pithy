@@ -103,6 +103,13 @@ import { checkProjectName, describeProjectName, type ProjectNameCheck } from "..
 import { ScopeGateFinding, ScopeGateHealth } from "../doctor/scopeGates";
 import { checkSecretBindings, describeSecretBindings, type SecretBindingsCheck } from "../doctor/secretBindings";
 import {
+  checkSecretRotations,
+  describeSecretRotations,
+  type SecretRotationsCheck,
+  type SecretRotationsOptions,
+  secretRotationsFix,
+} from "../doctor/secretRotations";
+import {
   checkSecretTables,
   describeSecretTables,
   type SecretTablesCheck,
@@ -400,6 +407,15 @@ export interface DoctorReport {
    * remedy is the next scheduled pass rather than a command; it keeps the report verbose instead.
    */
   secretTables: SecretTablesCheck | null;
+  /**
+   * Each declared environment's secrets whose newest rotation attempt failed, with why as a code (#602).
+   * `null` outside a project, `not-applicable` on a project composing no secrets capability.
+   *
+   * **It reports and never fails the exit**, like the line above: a failed unattended rotation's remedy depends
+   * on the code — a human at the issuer, the next tick, a dependent re-encrypting — and none of them is a
+   * command this report can name for every case. It keeps the report verbose instead.
+   */
+  secretRotations: SecretRotationsCheck | null;
   /**
    * What this project's payments enforces, and who holds the whole product (#561): each kit meter, whether
    * it is enforced and whether a quota of its name is declared, and every deployed environment's
@@ -856,6 +872,11 @@ export interface DoctorReportOptions {
    */
   checkSecretTables?: (options: SecretTablesOptions) => Promise<SecretTablesCheck>;
   /**
+   * Rotation-ledger seam; defaults to {@link checkSecretRotations}. Reads each deployed environment's newest
+   * closed rotation attempt per declared secret, through the status read — a name, an instant and a code.
+   */
+  checkSecretRotations?: (options: SecretRotationsOptions) => Promise<SecretRotationsCheck>;
+  /**
    * Payments allowances seam; defaults to {@link checkPaymentsAllowances}. One `SELECT` per deployed
    * environment whose composition includes payments, and none at all otherwise.
    */
@@ -1037,6 +1058,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeTurnstileSitekeys = options.checkTurnstileSitekeys ?? checkTurnstileSitekeys;
   const probeSupportSearchTriggers = options.checkSupportSearchTriggers ?? checkSupportSearchTriggers;
   const probeSecretTables = options.checkSecretTables ?? checkSecretTables;
+  const probeSecretRotations = options.checkSecretRotations ?? checkSecretRotations;
   const probePaymentsAllowances = options.checkPaymentsAllowances ?? checkPaymentsAllowances;
   const probeOrigins = options.checkOrigins ?? checkOrigins;
   const probeWorkflows = options.checkWorkflows ?? checkWorkflows;
@@ -1472,6 +1494,31 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
           { state: "could-not-check", declared: [], environments: [] },
         )
       : null;
+  // Whether an unattended rotation failed, per deployed environment (#602). Declared environments only: `dev`
+  // has no manager and no cron, so nothing rotates there on its own.
+  const secretRotations =
+    inProject && workersResolved
+      ? await probed<SecretRotationsCheck>(
+          () =>
+            probeSecretRotations({
+              projectDir: options.projectDir,
+              environments: declaredEnvironments,
+              workers: resolvedWorkers.map((worker) => ({ name: worker.name, dir: worker.dir })),
+              account,
+              remoteSkip,
+              composeWorker:
+                composeWorkerFor ??
+                (async (worker, environment) => {
+                  const found = await resolve(environment, { projectDir: options.projectDir, worker: worker.name });
+                  const match = found.find((candidate) => candidate.dir === worker.dir);
+                  if (match === undefined)
+                    throw new ValidationError({ message: `${worker.name} did not resolve for ${environment}.` });
+                  return { capabilities: match.capabilities };
+                }),
+            }),
+          { state: "could-not-check", environments: [] },
+        )
+      : null;
   // Who holds the whole product, and which meters bind (#561). A deployed read like the support index's, on
   // the same `remoteSkip`, and nothing at all for a project that composes no payments.
   const paymentsAllowances =
@@ -1616,6 +1663,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     turnstileSitekeys,
     supportSearchTriggers,
     secretTables,
+    secretRotations,
     paymentsAllowances,
     environmentConfigs,
     origins,
@@ -2716,6 +2764,11 @@ function secretTablesBlock(check: SecretTablesCheck): string {
   return ["Secret tables:", ...describeSecretTables(check).map((line) => `  ${line}`)].join("\n");
 }
 
+/** The `Secret rotations:` block — every environment's answer, and each failed rotation under it. */
+function secretRotationsBlock(check: SecretRotationsCheck): string {
+  return ["Secret rotations:", ...describeSecretRotations(check).map((line) => `  ${line}`)].join("\n");
+}
+
 /**
  * The `Payments allowances:` lines — each meter, then each environment's unrestricted subjects (#561).
  *
@@ -3083,6 +3136,11 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     report.secretTables === null ||
     report.secretTables.state === "ok" ||
     report.secretTables.state === "not-applicable";
+  // A failed rotation keeps the report verbose and leaves the exit alone (see {@link DoctorReport.secretRotations}).
+  const secretRotationsQuiet =
+    report.secretRotations === null ||
+    report.secretRotations.state === "ok" ||
+    report.secretRotations.state === "not-applicable";
   // Quiet unless somebody is unrestricted or a read did not land — never a failing exit (#561).
   const paymentsAllowancesQuiet =
     report.paymentsAllowances === null ||
@@ -3149,6 +3207,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     turnstileSitekeysOk &&
     supportSearchTriggersQuiet &&
     secretTablesQuiet &&
+    secretRotationsQuiet &&
     paymentsAllowancesQuiet &&
     environmentConfigsOk &&
     originsOk &&
@@ -3373,6 +3432,14 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // Both forms, whenever a table is declared — see {@link secretTablesBlock}.
   if (report.secretTables && report.secretTables.state !== "not-applicable") {
     blocks.push(secretTablesBlock(report.secretTables));
+  }
+
+  // Beside it, because it is the same vault asked a second question: not whether the master key reached every
+  // row, but whether a secret's own unattended rotation failed (#602).
+  // Only when there is something to say: a failure, or an environment it could not read. A healthy ledger is
+  // the ordinary state of every deployed project, and a block saying so on every run is a block nobody reads.
+  if (report.secretRotations && !secretRotationsQuiet) {
+    blocks.push(secretRotationsBlock(report.secretRotations));
   }
 
   // Every meter and every unrestricted subject, whenever payments is composed and the report is verbose.
@@ -3643,6 +3710,17 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
           ...report.secretTables,
           environments: report.secretTables.environments.map((answer) => ({ ...answer, fix: secretTablesFix(answer) })),
           detail: describeSecretTables(report.secretTables),
+        }
+      : null,
+    // Per environment, with `fix` — always null, and `secretRotationsFix` says why.
+    secretRotations: report.secretRotations
+      ? {
+          ...report.secretRotations,
+          environments: report.secretRotations.environments.map((answer) => ({
+            ...answer,
+            fix: secretRotationsFix(answer),
+          })),
+          detail: describeSecretRotations(report.secretRotations),
         }
       : null,
     // No command fixes either list: a meter is a config decision and an unrestricted subject is a grant
@@ -4088,6 +4166,11 @@ const DoctorPayload = z
       declared: z
         .array(z.looseObject({}).describe("One declared table, with its Worker, its keys and its secret names."))
         .describe("Every declared table."),
+      environments: Fixed("environment's answer"),
+      detail: Lines,
+    }),
+    secretRotations: Check("Each deployed environment's failed secret rotations, as codes, or `null`.", {
+      state: State("`ok`, `not-applicable`, `findings`, `could-not-check`"),
       environments: Fixed("environment's answer"),
       detail: Lines,
     }),
