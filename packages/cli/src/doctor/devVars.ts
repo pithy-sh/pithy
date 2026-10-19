@@ -3,11 +3,12 @@
 
 import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
-import { CLOUDFLARE_ENV_KEYS, parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
+import { CLOUDFLARE_CREDENTIAL_KEYS, CLOUDFLARE_ENV_KEYS, parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
-import { cloudflareConfigPath } from "../cloudflare/config";
+import { cloudflareConfigPath, cloudflareProfileConfigPath } from "../cloudflare/config";
+import { boundProfileSync } from "../cloudflare/session/bindings";
 import { bootstrapVarsPath, readBootstrapVars } from "../devSecrets/bootstrapVars";
 import { isGeneratedDevVars } from "../devSecrets/generate";
 import { type DevSecretsTarget, resolveDevSecretsTargets, type UnresolvableWorker } from "../devSecrets/targets";
@@ -150,6 +151,12 @@ export interface DevVarsCheck {
    */
   mintedTokensPath: string | null;
   /**
+   * Where a `credential` key belongs now (#788). Under a bound profile, `profile` names it and `path` is
+   * its own `cloudflare.<profile>.json` — the only file it reads the store id and R2 credentials from, and
+   * the pair is its sign-in's. Unbound, `profile` is `null` and `path` is `cloudflare.json`.
+   */
+  cloudflare: { path: string; profile: string | null };
+  /**
    * Minted-credential files left in the project by the old `dev-vars` token sink — `.dev.vars.<env>`,
    * one per environment, each holding that environment's live Cloudflare token (#182). Sorted.
    *
@@ -281,10 +288,28 @@ export async function checkDevVars(options: CheckDevVarsOptions): Promise<DevVar
     empty: empty.sort((a, b) => a.worker.localeCompare(b.worker)),
     devConfigPath: await bootstrapVarsPath(options.projectDir, options.paths ?? {}).catch(() => null),
     mintedTokensPath: await tokensPath(options.projectDir, options.paths ?? {}),
+    cloudflare: cloudflareHome(options.projectDir, options.paths ?? {}),
     minted: await mintedDevVarsFiles(options.projectDir),
     devJsonSecrets: devJsonSecrets.sort(),
     unresolvable,
   };
+}
+
+/**
+ * The file a `credential` key belongs in, as `resolveCloudflare` would read it: a bound profile's own file,
+ * else `cloudflare.json`. Never throws — a bindings file that will not open is the unbound answer here, and
+ * the Cloudflare block is the one that names it.
+ */
+function cloudflareHome(projectDir: string, paths: StatePathOptions): DevVarsCheck["cloudflare"] {
+  let profile: string | null = null;
+  try {
+    profile = boundProfileSync(projectDir, paths)?.profile ?? null;
+  } catch {
+    profile = null;
+  }
+  return profile === null
+    ? { path: cloudflareConfigPath({ ...paths, account: null }), profile: null }
+    : { path: cloudflareProfileConfigPath(profile, paths), profile };
 }
 
 /**
@@ -394,7 +419,7 @@ export function describeDevVars(check: DevVarsCheck): string[] {
     );
   }
   for (const entry of check.root) {
-    const line = describeRootDevVar(entry, check.devConfigPath, check.unresolvable);
+    const line = describeRootDevVar(entry, check);
     if (line !== null) lines.push(line);
   }
   return lines;
@@ -406,16 +431,19 @@ export function describeDevVars(check: DevVarsCheck): string[] {
  * A switch over {@link RootDevVarState} with no default, so adding a state is a type error here rather
  * than a key class that goes quiet — which is exactly how the `d1`-only check lost the other backend.
  */
-function describeRootDevVar(
-  entry: RootDevVar,
-  devConfigPath: string | null,
-  unresolvable: UnresolvableWorker[],
-): string | null {
+function describeRootDevVar(entry: RootDevVar, check: DevVarsCheck): string | null {
+  const { devConfigPath, unresolvable } = check;
   switch (entry.state) {
-    case "credential":
+    case "credential": {
       // Named, not deleted for them. The value is real and it is a live Cloudflare credential — the one
       // class of value in this file that is worth naming twice rather than removing on somebody's behalf.
-      return `${entry.key} is in .dev.vars, which nothing reads now. It is account-scoped — copy it into ${cloudflareConfigPath({ account: null })} as { "${entry.key}": "<value>" }, chmod 600, or export it.`;
+      const { path, profile } = check.cloudflare;
+      // Under a bound profile the pair is the sign-in's, and no file or export is read for it (#759).
+      if (profile !== null && (CLOUDFLARE_CREDENTIAL_KEYS as readonly string[]).includes(entry.key)) {
+        return `${entry.key} is in .dev.vars, which nothing reads now. The Cloudflare profile ${profile} bound here supplies it from its sign-in, so no file or export is read for it. Move the value out of the checkout.`;
+      }
+      return `${entry.key} is in .dev.vars, which nothing reads now. It is account-scoped — copy it into ${path} as { "${entry.key}": "<value>" }, chmod 600, or export it.`;
+    }
     case "secret":
       return null; // `describeDevSecrets` names it, and says which file it belongs in.
     case "binding": {

@@ -80,27 +80,45 @@ export async function ensureSecretsStoreId(options: EnsureSecretsStoreIdOptions)
   const file = resolution.path;
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
-  const recorded = vars.SECRETS_STORE_ID ?? "";
+  // **Under a bound profile, recorded means in the profile's file.** The resolved set overlays the
+  // environment, and an exported id is not one this file holds: counting it as recorded would leave the
+  // profile's file empty, and send the operator to fix a file that never had the id. Unbound, the export
+  // is how CI states the id with no file at all, and it still counts (#182).
+  const bound = resolution.session !== null;
+  const resolved = vars.SECRETS_STORE_ID ?? "";
+  const exported = bound && resolution.accountKeySources.SECRETS_STORE_ID === "environment" ? resolved : "";
+  const recorded = exported ? "" : resolved;
 
   // No credentials is not a fault here. `pithy add secrets` on a project that has not been pointed at an
   // account yet is an ordinary thing to do, and `pithy doctor` says the credentials are absent every run.
   if (!accountId || !apiToken) {
-    if (recorded) return [];
+    if (resolved) return [];
     return [
       `SECRETS_STORE_ID is not recorded, and there are no Cloudflare credentials to resolve it with. Run ${commandName("cloudflare connect")}, or export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account. Then run ${again} again.`,
     ];
   }
 
+  // **A profile file about another account is not this session's to write.** Its store id was dropped
+  // from the resolved set because it addresses that account's store, which is why it reads as absent. A
+  // merge would overwrite that account's recorded id, and the next read would drop this one too, since
+  // the file still names the other account.
+  const sessionAccount = resolution.credentialSource === "session";
+  if (sessionAccount && resolution.fileAccountId !== null && resolution.fileAccountId !== accountId) {
+    return [
+      `${file} is about account ${resolution.fileAccountId}, and this profile is signed in to ${accountId}. SECRETS_STORE_ID was not recorded, and the file was not changed. Fix its CLOUDFLARE_ACCOUNT_ID if it is meant for this account, or remove the file.`,
+    ];
+  }
+
   const stores = await listStoresOrNull(options, { accountId, apiToken });
   if (stores === null) {
-    if (recorded) return [];
+    if (resolved) return [];
     return [
       `Could not reach Cloudflare to resolve SECRETS_STORE_ID, so it was not recorded. Run ${again} again, or set SECRETS_STORE_ID in ${file}.`,
     ];
   }
 
   if (stores.length === 0) {
-    if (recorded) return [];
+    if (resolved) return [];
     return [
       `This account has no Secrets Store yet, so SECRETS_STORE_ID was not recorded. Create one in the Cloudflare dashboard (Secrets Store), then run ${again} again.`,
     ];
@@ -125,8 +143,20 @@ export async function ensureSecretsStoreId(options: EnsureSecretsStoreIdOptions)
       `SECRETS_STORE_ID is recorded as ${recorded}, and this account's only Secrets Store is ${store.name} (${store.id}). Nothing was changed — fix it in ${file} if the recorded one is wrong.`,
     ];
   }
+  // An export that disagrees is named as the export. Writing the file would quietly outrank it, since the
+  // overlay only fills keys a file left unset, and the file is not where the wrong id lives.
+  if (exported && exported !== store.id) {
+    return [
+      `SECRETS_STORE_ID is exported as ${exported}, and this account's only Secrets Store is ${store.name} (${store.id}). Nothing was recorded in ${file} — unset or correct the export, then run ${again} again.`,
+    ];
+  }
 
-  await writeCloudflareConfigFile(file, { SECRETS_STORE_ID: store.id });
+  // Under a session, the account goes in beside the store id. A profile can be signed in again to another
+  // account, and the read drops a file's store id only when the file names the account it belongs to.
+  await writeCloudflareConfigFile(
+    file,
+    sessionAccount ? { CLOUDFLARE_ACCOUNT_ID: accountId, SECRETS_STORE_ID: store.id } : { SECRETS_STORE_ID: store.id },
+  );
   return [`Recorded SECRETS_STORE_ID (${store.name}) in ${file}. Nothing resolves it again.`];
 }
 

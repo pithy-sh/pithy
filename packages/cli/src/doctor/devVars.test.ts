@@ -8,6 +8,7 @@ import { CLOUDFLARE_ENV_KEYS } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { bindProfile } from "../cloudflare/session/bindings";
 import { writeBootstrapVars } from "../devSecrets/bootstrapVars";
 import { GENERATED_HEADER } from "../devSecrets/generate";
 import type { DevSecretsTarget } from "../devSecrets/targets";
@@ -147,6 +148,34 @@ describe("the root .dev.vars — is anything reading it", () => {
     // Never the value.
     expect(lines).not.toContain("tok");
     expect(devVarsHealthy(result)).toBe(false);
+  });
+
+  test("under a bound profile, an account key belongs in the profile's own file, and the pair is the sign-in's", async () => {
+    // #788: a bound profile reads its store id and R2 credentials from `cloudflare.<profile>.json` and never
+    // from `cloudflare.json`, so advice to copy one there leaves it unresolved, and the Cloudflare line then
+    // says it is missing. The pair comes from the session, so a copied token would never be read at all.
+    await bindProfile(dir, "work", paths());
+    const board = await worker("board", { vars: {} });
+    await writeFile(join(dir, ".dev.vars"), "CLOUDFLARE_API_TOKEN=tok\nSECRETS_STORE_ID=store\n");
+
+    const lines = describeDevVars(await check([board]));
+
+    const store = lines.find((line) => line.startsWith("SECRETS_STORE_ID")) ?? "";
+    expect(store).toContain(join(config, "cloudflare.work.json"));
+    expect(store).not.toContain(join(config, "cloudflare.json"));
+    const token = lines.find((line) => line.startsWith("CLOUDFLARE_API_TOKEN")) ?? "";
+    expect(token).toContain("work");
+    expect(token).not.toContain("cloudflare.json");
+    expect(token).not.toContain("cloudflare.work.json");
+  });
+
+  test("unbound, the credential line names cloudflare.json in this machine's config directory", async () => {
+    const board = await worker("board", { vars: {} });
+    await writeFile(join(dir, ".dev.vars"), "SECRETS_STORE_ID=store\n");
+
+    const lines = describeDevVars(await check([board]));
+
+    expect(lines.join("\n")).toContain(join(config, "cloudflare.json"));
   });
 
   test("every key the CLI used to read out of that file is classified as a credential, so a fourth one cannot arrive unclassified", async () => {
@@ -356,6 +385,7 @@ describe("the root .dev.vars — is anything reading it", () => {
         devJsonSecrets: [],
         devConfigPath: "/config/replay/dev.json",
         mintedTokensPath: "/config/replay/tokens.json",
+        cloudflare: { path: "/config/cloudflare.json", profile: null },
         // Stated, because `unclassified` only exists when one is — and the sentence it earns names it.
         unresolvable: [{ name: "replay-board", dir: "/p/apps/board", reason: "pithy.config.ts would not import." }],
       });

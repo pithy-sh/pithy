@@ -1060,6 +1060,7 @@ describe("every finding in every block carries fix", () => {
         empty: [{ worker: "api", file: "apps/api/.dev.vars" }],
         devConfigPath: null,
         mintedTokensPath: null,
+        cloudflare: { path: "/home/u/.config/pithy/cloudflare.json", profile: null },
         minted: [],
         devJsonSecrets: [],
         unresolvable: [],

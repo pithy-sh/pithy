@@ -396,6 +396,12 @@ export interface CloudflareResolution {
    * `cloudflare.<profile>.json`, else the file the project's account selects (#788).
    */
   path: string;
+  /**
+   * The `CLOUDFLARE_ACCOUNT_ID` {@link path} itself names, or `null` when it names none. Under a session for
+   * another account, that file's store id and R2 credentials are dropped, so a writer has to know the file
+   * is about another account before it merges anything into it (#788).
+   */
+  fileAccountId: string | null;
   /** The `cloudflare.accountName` that selected it, or `null` for the unnamed default. */
   accountName: string | null;
   /** The credentials: the file's keys, with `process.env` overlaid per key for the ones it did not set. */
@@ -550,6 +556,7 @@ export function resolveCloudflare(options: CloudflareConfigOptions): CloudflareR
 
   return {
     path,
+    fileAccountId: fromFile.CLOUDFLARE_ACCOUNT_ID || null,
     accountName,
     vars,
     pinnedAccountId,

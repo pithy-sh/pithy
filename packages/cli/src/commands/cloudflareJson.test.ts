@@ -156,7 +156,8 @@ describe("pithy cloudflare connect records the Secrets Store id", () => {
     writeFileSync(join(config, "cloudflare.json"), JSON.stringify({ SECRETS_STORE_ID: "someone-elses" }));
     const { stdout } = await connectCaptured();
     await expectConforms("cloudflare connect", stdout);
-    expect(json(profileFile())).toEqual({ SECRETS_STORE_ID: "store-acme" });
+    // The account beside it, so a profile re-signed to another account drops this store id (#788).
+    expect(json(profileFile())).toEqual({ CLOUDFLARE_ACCOUNT_ID: "acct", SECRETS_STORE_ID: "store-acme" });
     expect(json(join(config, "cloudflare.json"))).toEqual({ SECRETS_STORE_ID: "someone-elses" });
     const payload = JSON.parse(stdout.join("")) as { notes: string[] };
     expect(payload.notes.join(" ")).toContain(`Recorded SECRETS_STORE_ID (default) in ${profileFile()}`);
