@@ -187,4 +187,20 @@ describe("pithy doctor names where a session's account keys came from", () => {
     // R2 credentials are absent on most accounts, so absence says nothing.
     expect(line).not.toContain("R2_CREDENTIALS");
   });
+
+  test("a store id the profile's file holds for another account is named as unused, not as missing", async () => {
+    await signedIn();
+    await writeFile(
+      join(dir, "cloudflare.pithy.json"),
+      JSON.stringify({ CLOUDFLARE_ACCOUNT_ID: "acct-file", SECRETS_STORE_ID: "other-accounts-store" }),
+    );
+    const access = await checkCloudflareAccess(here());
+    expect(access.state).toBe("ok");
+    expect(access.accountKeySources).toEqual({ SECRETS_STORE_ID: "other-account", R2_CREDENTIALS: null });
+    const line = describeCloudflareAccess(access);
+    const file = join(dir, "cloudflare.pithy.json");
+    expect(line).not.toContain(`no SECRETS_STORE_ID in ${file}`);
+    expect(line).toContain(`SECRETS_STORE_ID in ${file} not used: the file names account acct-file, not acct`);
+    expect(line).not.toContain("R2_CREDENTIALS");
+  });
 });

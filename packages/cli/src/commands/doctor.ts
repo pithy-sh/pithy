@@ -4103,11 +4103,15 @@ const DoctorPayload = z
             SECRETS_STORE_ID: z
               .string()
               .nullable()
-              .describe("`file` (the `configPath` file), `environment`, or `null` when nothing set it."),
+              .describe(
+                "`file` (the `configPath` file), `environment`, `other-account` (the file holds one but names another account than the session's, so it went unused), or `null` when nothing set it.",
+              ),
             R2_CREDENTIALS: z
               .string()
               .nullable()
-              .describe("`file` (the `configPath` file), `environment`, or `null` when nothing set it."),
+              .describe(
+                "`file` (the `configPath` file), `environment`, `other-account` (the file holds one but names another account than the session's, so it went unused), or `null` when nothing set it.",
+              ),
           })
           .nullable()
           .optional()

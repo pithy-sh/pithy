@@ -749,7 +749,10 @@ describe("a bound profile's session", () => {
   test("a store id in a profile file naming another account is dropped, and an export takes its place", async () => {
     const cwd = await signedIn();
     await profileConfig({ CLOUDFLARE_ACCOUNT_ID: "acct-file", SECRETS_STORE_ID: "other-accounts-store" });
-    expect(resolveCloudflare(here(cwd)).vars.SECRETS_STORE_ID).toBeUndefined();
+    const dropped = resolveCloudflare(here(cwd));
+    expect(dropped.vars.SECRETS_STORE_ID).toBeUndefined();
+    // Dropped is not absent: the file holds one, and the report must say why it went unused.
+    expect(dropped.accountKeySources).toEqual({ SECRETS_STORE_ID: "other-account", R2_CREDENTIALS: null });
     const resolved = resolveCloudflare(here(cwd, { SECRETS_STORE_ID: "exported-store" }));
     expect(resolved.vars.SECRETS_STORE_ID).toBe("exported-store");
     expect(resolved.accountKeySources.SECRETS_STORE_ID).toBe("environment");

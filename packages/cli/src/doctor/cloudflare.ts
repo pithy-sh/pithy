@@ -145,6 +145,12 @@ export interface CloudflareAccess {
    * line names them.
    */
   accountKeySources?: Record<CloudflareAccountKey, CloudflareAccountKeySource> | null;
+  /**
+   * The account {@link configPath} names and the session's, set when they disagree under a signed-in
+   * profile (#788). That file's account keys went unused, and the line says why rather than calling them
+   * missing.
+   */
+  accountKeyFileAccount?: { file: string; session: string } | null;
 }
 
 /** The credential's kind, from what resolved it — a session — or else from the token's own prefix. */
@@ -221,6 +227,12 @@ export async function checkCloudflareAccess(options: CloudflareConfigOptions): P
     // Under a bound profile only, where the pair and the account keys come from different places. Unbound,
     // the file and the overlay supply both, and the line already says which.
     accountKeySources: bound === null ? undefined : resolution.accountKeySources,
+    accountKeyFileAccount:
+      resolution.credentialSource === "session" &&
+      resolution.fileAccountId !== null &&
+      resolution.fileAccountId !== vars.CLOUDFLARE_ACCOUNT_ID
+        ? { file: resolution.fileAccountId, session: vars.CLOUDFLARE_ACCOUNT_ID ?? "" }
+        : undefined,
   };
 
   // Before the credentials are even counted, and long before any of them are used: credentials for an
@@ -407,7 +419,8 @@ function credentialOrigin(access: CloudflareAccess, home: string | undefined): s
  * Where a session's account keys came from, one clause each (#788). The pair is the session's; the store id
  * and R2 credentials are read from the profile's own file and then the environment, and a store id read
  * from a file nobody meant is a fault no other line names. A missing store id names the file it belongs in.
- * Missing R2 credentials say nothing: most accounts have none.
+ * Missing R2 credentials say nothing: most accounts have none. A key the file holds for another account is
+ * named as unused, with both accounts: the file does hold it, so "missing" would be false.
  */
 function accountKeyOrigins(access: CloudflareAccess, shown: (file: string) => string): string[] {
   const sources = access.accountKeySources;
@@ -417,6 +430,13 @@ function accountKeyOrigins(access: CloudflareAccess, shown: (file: string) => st
     const source = sources[key];
     if (source === "file") return [`${key} from ${file}`];
     if (source === "environment") return [`${key} from the environment`];
+    if (source === "other-account") {
+      const accounts = access.accountKeyFileAccount;
+      const why = accounts
+        ? `the file names account ${accounts.file}, not ${accounts.session}`
+        : "the file names another account";
+      return [`${key} in ${file} not used: ${why}`];
+    }
     return key === "SECRETS_STORE_ID" ? [`no ${key} in ${file}`] : [];
   });
 }

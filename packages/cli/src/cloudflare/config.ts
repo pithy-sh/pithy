@@ -109,8 +109,12 @@ export const ACCOUNT_RESOURCE_KEYS = ["SECRETS_STORE_ID", "R2_CREDENTIALS"] as c
 /** One of {@link ACCOUNT_RESOURCE_KEYS}. */
 export type CloudflareAccountKey = (typeof ACCOUNT_RESOURCE_KEYS)[number];
 
-/** Where an account key resolved from: the resolution's file, the environment, or nowhere. */
-export type CloudflareAccountKeySource = "file" | "environment" | null;
+/**
+ * Where an account key resolved from: the resolution's file, the environment, or nowhere. `other-account`
+ * is the file holding one that went unused, because the file names another account than the session's
+ * (#788): dropped is not absent, and a report that called it missing would be contradicted by the file.
+ */
+export type CloudflareAccountKeySource = "file" | "environment" | "other-account" | null;
 
 /** Whether this environment is refusing ambient credentials and network probes. See {@link PITHY_OFFLINE_ENV}. */
 export function pithyOffline(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -473,6 +477,8 @@ export function resolveCloudflare(options: CloudflareConfigOptions): CloudflareR
   }
   // The keys the file supplied and that survived, so the report can say which file each one came from.
   const fromFileKept = new Set<string>(ACCOUNT_RESOURCE_KEYS.filter((key) => Boolean(fromFile[key])));
+  // The keys the file held and that were dropped for naming another account, with nothing in their place.
+  const fromOtherAccount = new Set<string>();
   // The session supplies the pair — and only the pair: the store id and R2 credentials are the account's,
   // and keep coming from the profile's file and the overlay above.
   const session = bound === null ? null : readSessionSync(bound.profile, options);
@@ -497,13 +503,16 @@ export function resolveCloudflare(options: CloudflareConfigOptions): CloudflareR
       // that account's store with this one's credentials and fail in a way nothing names.
       if (fromFile.CLOUDFLARE_ACCOUNT_ID && fromFile.CLOUDFLARE_ACCOUNT_ID !== session.accountId) {
         for (const key of ACCOUNT_RESOURCE_KEYS) {
-          if (vars[key] !== fromFile[key]) continue;
+          if (!fromFile[key] || vars[key] !== fromFile[key]) continue;
           fromFileKept.delete(key);
           // Dropped, and an exported value takes its place: an export is what CI and a person reach for,
           // and the session's account is the one it is read against.
           const exported = offline ? undefined : env[key];
           if (exported) vars[key] = exported;
-          else delete vars[key];
+          else {
+            delete vars[key];
+            fromOtherAccount.add(key);
+          }
         }
       }
       // An exported credential is never used while a profile is bound — and one that *disagrees* is the
@@ -525,7 +534,10 @@ export function resolveCloudflare(options: CloudflareConfigOptions): CloudflareR
   }
   const credentialSource = session !== null ? "session" : sourceOf(fromFile, vars);
   const accountKeySources = Object.fromEntries(
-    ACCOUNT_RESOURCE_KEYS.map((key) => [key, !vars[key] ? null : fromFileKept.has(key) ? "file" : "environment"]),
+    ACCOUNT_RESOURCE_KEYS.map((key) => [
+      key,
+      fromOtherAccount.has(key) ? "other-account" : !vars[key] ? null : fromFileKept.has(key) ? "file" : "environment",
+    ]),
   ) as Record<CloudflareAccountKey, CloudflareAccountKeySource>;
 
   const pinnedAccountId = selection?.accountId ?? null;
