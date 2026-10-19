@@ -81,7 +81,6 @@ export function storageWorkerName(project: string, env: ManagedEnvironment): str
   return resourceNames(project).env(env).worker(STORAGE_CAPABILITY);
 }
 
-/** The provisioned resources an environment's worker and secret are wired to. */
 /**
  * The Workflows the sweep worker is deployed with in one environment — `<project>-<env>-storage-sweep`.
  * Derived from the specs by the call `resolveStorageConfig` deploys with, so teardown deletes the names
@@ -94,6 +93,7 @@ export function storageWorkflowNames(project: string, env: ManagedEnvironment): 
   );
 }
 
+/** The provisioned resources an environment's worker and secret are wired to. */
 export interface StorageResources {
   /** The R2 bucket objects live in. */
   bucketName: string;
