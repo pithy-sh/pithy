@@ -63,6 +63,7 @@ describe("deleteR2BucketWithContents", () => {
         payload: expect.objectContaining({
           code: "validation/invalid_input",
           message: "The R2 access-key pair is needed to delete the pithy-media-prod bucket.",
+          action: "Pass --r2-access-key-id and --r2-secret-access-key, or set R2_CREDENTIALS in the account config.",
         }),
       }),
     );
@@ -90,7 +91,11 @@ describe("resolveR2Credentials", () => {
     );
     expect(() => resolveR2Credentials(undefined, undefined, undefined)).toThrowError(
       expect.objectContaining({
-        payload: expect.objectContaining({ message: "No R2 S3 credentials were supplied." }),
+        payload: expect.objectContaining({
+          message: "No R2 S3 credentials were supplied.",
+          // The pair is read from the account config, never `.dev.vars`, so the fix names where it is read.
+          action: expect.stringContaining("set R2_CREDENTIALS in the account config."),
+        }),
       }),
     );
     expect(() => resolveR2Credentials(undefined, undefined, "not json")).toThrowError(

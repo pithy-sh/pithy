@@ -48,7 +48,7 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
  * prebuilt sweep worker that hosts the daily orphan reconciliation.
  *
  * **The R2 key pair is supplied, not minted.** Cloudflare exposes no API for creating an R2 S3
- * access-key pair, so it comes from flags or `R2_CREDENTIALS` in `.dev.vars` and is written into the
+ * access-key pair, so it comes from flags or `R2_CREDENTIALS` in the account config and is written into the
  * secret as given. Make the pair under R2 → Manage API tokens.
  */
 

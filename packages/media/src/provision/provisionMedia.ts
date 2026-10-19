@@ -41,7 +41,7 @@ import { MEDIA_CAPABILITY, mediaWorkflowRegistry } from "../workflows/specs";
  * overwrites — so re-running provisioning is a no-op on an already-provisioned account.
  *
  * **What it does not do.** Cloudflare exposes no API for minting an R2 S3 access-key pair, so the pair is
- * supplied by the operator (flags, or `R2_CREDENTIALS` in `.dev.vars`) and written into the secret as given.
+ * supplied by the operator (flags, or `R2_CREDENTIALS` in the account config) and written into the secret as given.
  * Nothing here mints a Cloudflare API token: the runtime token is `pithy secrets provision`'s and
  * `pithy token mint runtime`'s, and every Worker of the environment reads that one.
  */

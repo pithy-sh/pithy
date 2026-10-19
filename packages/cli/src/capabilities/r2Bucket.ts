@@ -16,7 +16,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
  */
 
 /**
- * Resolve the R2 S3 key pair: the explicit flags first, then `R2_CREDENTIALS` in `.dev.vars`. Both legs
+ * Resolve the R2 S3 key pair: the explicit flags first, then `R2_CREDENTIALS` in the account config. Both legs
  * validate through the canonical {@link R2Credentials} schema, so a half-supplied or malformed pair fails
  * here rather than at the Worker's first presign — or, on teardown, half way through deleting buckets.
  */
@@ -39,7 +39,7 @@ export function resolveR2Credentials(
     throw new ValidationError({
       message: "No R2 S3 credentials were supplied.",
       action:
-        "Pass --r2-access-key-id and --r2-secret-access-key, or set R2_CREDENTIALS in .dev.vars. Create the pair under R2 → Manage API tokens; Cloudflare has no API for minting one.",
+        "Pass --r2-access-key-id and --r2-secret-access-key, or set R2_CREDENTIALS in the account config. Create the pair under R2 → Manage API tokens; Cloudflare has no API for minting one.",
     });
   }
   let decoded: unknown;
@@ -102,7 +102,7 @@ export async function deleteR2BucketWithContents(options: DeleteR2BucketOptions)
   if (!credentials) {
     throw new ValidationError({
       message: `The R2 access-key pair is needed to delete the ${existing.name} bucket.`,
-      action: "Pass --r2-access-key-id and --r2-secret-access-key, or set R2_CREDENTIALS in .dev.vars.",
+      action: "Pass --r2-access-key-id and --r2-secret-access-key, or set R2_CREDENTIALS in the account config.",
       detail: "R2 refuses to delete a non-empty bucket, and emptying one is an S3-protocol operation.",
     });
   }
