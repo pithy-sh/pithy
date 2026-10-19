@@ -5,6 +5,7 @@ import { CloudflareAIManager } from "../ai/aiManager";
 import { CloudflareVectorizeManager } from "../ai/vectorizeManager";
 import { CloudflareVectorizeProvisioner } from "../ai/vectorizeProvisioner";
 import { CloudflareAnalyticsManager } from "../analytics/analyticsManager";
+import { CloudflareArtifactsManager } from "../artifacts/artifactsManager";
 import { CloudflareD1Manager } from "../d1/d1Manager";
 import { CloudflareD1Provisioner } from "../d1/d1Provisioner";
 import { CloudflareEmailRoutingManager } from "../email/emailRoutingManager";
@@ -86,6 +87,8 @@ export class CloudflareClients {
   private r2ProvisionerManager?: CloudflareR2Provisioner;
 
   private queueProvisionerManager?: CloudflareQueueProvisioner;
+
+  private artifactsManager?: CloudflareArtifactsManager;
 
   private vectorizeProvisionerManager?: CloudflareVectorizeProvisioner;
 
@@ -225,6 +228,12 @@ export class CloudflareClients {
   queueProvisioner(): CloudflareQueueProvisioner {
     this.queueProvisionerManager ??= new CloudflareQueueProvisioner(this.config);
     return this.queueProvisionerManager;
+  }
+
+  /** The account-scoped Artifacts control plane — list and delete the repos in a namespace (#673). */
+  artifacts(): CloudflareArtifactsManager {
+    this.artifactsManager ??= new CloudflareArtifactsManager(this.config);
+    return this.artifactsManager;
   }
 
   /** The account-scoped Vectorize control plane — create, find, list, and delete indexes and their metadata indexes. */

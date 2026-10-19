@@ -108,7 +108,7 @@ function assertPermissionKeys(keys: readonly string[], where: string): Permissio
 
 /**
  * Build the aggregating `ci-system` profile: the base permissions ∪ every capability's `ciPermissions` ∪
- * `queues:write` where a composed capability binds a queue.
+ * `queues:write` where a composed capability binds a queue ∪ `artifacts:write` where one binds Artifacts.
  *
  * **The queue permission is derived from the binding, not declared (#662).** `pithy provision` creates the queue
  * behind every `queue` binding it composes, the adopter's own app's included, and the app has no `ciPermissions`
@@ -125,6 +125,12 @@ function ciSystemProfile(capabilities: readonly Capability[]): TokenProfile {
     capability.requiredBindings.some((binding) => binding.type === "queue"),
   );
   if (bindsQueue && !permissions.includes("queues:write")) permissions.push("queues:write");
+  // **And `artifacts:write` where one binds Artifacts (#673)**, for the same reason: `pithy feature destroy` reaps
+  // every repo in the feature's namespace under this token, and the app that binds it declares no `ciPermissions`.
+  const bindsArtifacts = capabilities.some((capability) =>
+    capability.requiredBindings.some((binding) => binding.type === "artifacts"),
+  );
+  if (bindsArtifacts && !permissions.includes("artifacts:write")) permissions.push("artifacts:write");
   return {
     name: CI_SYSTEM_PROFILE,
     permissions,
