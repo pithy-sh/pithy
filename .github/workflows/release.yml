@@ -87,7 +87,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.3
 
       - name: Install
         run: bun install
@@ -153,7 +153,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.3
 
       - name: Plan the test matrix
         id: plan
@@ -193,7 +193,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.3
 
       - name: Install
         run: bun install
@@ -241,7 +241,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.3
 
       # `changeset publish` shells out to `npm publish` — bun workspaces fall through to the npm path
       # in @changesets/cli. Trusted publishing needs npm 11.5.1+ and Node 22.14+, so both are pinned
