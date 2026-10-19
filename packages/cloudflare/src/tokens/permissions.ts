@@ -69,9 +69,9 @@ export const PERMISSION_GROUPS = {
   // binding and `pithy feature destroy` deletes a feature's, so `ci-system` carries it wherever a composition
   // binds a queue. A Worker sends through its producer binding and needs no API token for it.
   "queues:write": ["Queues Write"],
-  // **Listing and deleting the repos in a feature's Artifacts namespace (#673).** `pithy feature destroy` reaps them,
-  // because a repo costs storage and nothing else deletes one, so `ci-system` carries it wherever a composition binds
-  // `artifacts`. A Worker creates, reads and mints through its binding and needs no API token for any of it.
+  // **Listing and deleting the repos in a feature's Artifacts namespace, then the namespace (#673).** `pithy feature
+  // destroy` reaps them, because a repo costs storage and nothing else deletes one, so `ci-system` carries it wherever
+  // a composition binds `artifacts`. The account catalog names the group Write; the API schema's label says Edit. A Worker creates, reads and mints through its binding and needs no API token for any of it.
   "artifacts:write": ["Artifacts Write"],
 } as const;
 

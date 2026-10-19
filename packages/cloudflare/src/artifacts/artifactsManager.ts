@@ -25,6 +25,9 @@ const PAGE_LIMIT = 200;
  */
 const ARTIFACTS_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
+/** What {@link CloudflareArtifactsManager.deleteNamespace} is told by a `409`: a repo is still in the namespace. */
+const OCCUPIED = Symbol("occupied");
+
 /** The standard `{ result, success, errors, result_info }` envelope, as far as this reads it. */
 const Envelope = z
   .object({
@@ -45,12 +48,12 @@ const RepoPage = z
   .describe("One page of an Artifacts namespace's repos.");
 
 /**
- * Account-level Artifacts control plane: **list and delete the repos in a namespace** (#673).
+ * Account-level Artifacts control plane: **list and delete the repos in a namespace, then the namespace** (#673).
  *
  * Inside a Worker a repo is reached through the `artifacts` binding. This is the other side of that: `pithy feature
  * destroy` reaps every repo in a feature's namespace, because repos cost storage and nothing else ever deletes one.
- * There is no create here, and no namespace call, because Cloudflare creates a namespace the first time a repo is
- * created in it and the kit creates repos only from the Worker.
+ * There is no create here, because Cloudflare creates a namespace the first time a repo is created in it and the kit
+ * creates repos only from the Worker. There is a namespace delete, because nothing else removes one.
  *
  * The SDK this package targets exposes no Artifacts resource, so this uses the documented escape hatch — the raw
  * token and `fetch` — against the paths [the REST API](https://developers.cloudflare.com/artifacts/api/rest-api/)
@@ -111,6 +114,25 @@ export class CloudflareArtifactsManager extends CloudflareManager {
     });
   }
 
+  /**
+   * Delete a namespace, once it is empty. Cloudflare makes one on the first repo and nothing else ever deletes it,
+   * so a feature's would outlive the feature. `DELETE /accounts/{id}/artifacts/namespaces/{namespace}` is in
+   * Cloudflare's published API schema, not on the Artifacts REST page: it deletes an empty namespace, answers `204`,
+   * and answers `409` while a repo remains.
+   *
+   * **Three answers, none of them a failure of teardown.** `deleted` it was there; `absent` it is already gone or was
+   * never created, so a re-run is a clean no-op; `occupied` a repo is still in it — a repo delete is `202 Accepted`,
+   * so one just reaped can hold the namespace a moment longer, and the caller decides how long to wait.
+   */
+  async deleteNamespace(namespace: string): Promise<"deleted" | "absent" | "occupied"> {
+    assertName(namespace, "namespace");
+    return cloudflareRequest(`delete Artifacts namespace ${namespace}`, async () => {
+      const result = await this.call("DELETE", this.namespacePath(namespace), { occupied: true });
+      if (result === OCCUPIED) return "occupied";
+      return result === null ? "absent" : "deleted";
+    });
+  }
+
   private namespacePath(namespace: string): string {
     return `/accounts/${this.getAccountId()}/artifacts/namespaces/${namespace}`;
   }
@@ -121,12 +143,26 @@ export class CloudflareArtifactsManager extends CloudflareManager {
 
   /**
    * One REST call, its envelope unwrapped. `null` for a 404 — the namespace or the repo is not there, which every
-   * caller here reads as nothing to do. Any other failure is Cloudflare's refusal, in Cloudflare's words.
+   * caller here reads as nothing to do. {@link OCCUPIED} for a 409 when the caller asks for it — a namespace that
+   * still holds a repo. Any other failure is Cloudflare's refusal, in Cloudflare's words.
    */
-  private async call(method: "GET" | "DELETE", path: string): Promise<z.output<typeof Envelope> | null> {
+  private async call(method: "GET" | "DELETE", path: string): Promise<z.output<typeof Envelope> | null>;
+  private async call(
+    method: "DELETE",
+    path: string,
+    options: { occupied: true },
+  ): Promise<z.output<typeof Envelope> | null | typeof OCCUPIED>;
+  private async call(
+    method: "GET" | "DELETE",
+    path: string,
+    options: { occupied?: boolean } = {},
+  ): Promise<z.output<typeof Envelope> | null | typeof OCCUPIED> {
     const response = await this.send(method, path);
     if (response.status === 404) return null;
+    if (response.status === 409 && options.occupied) return OCCUPIED;
     const text = await response.text();
+    // A `204` has no envelope to unwrap: the namespace delete answers that way.
+    if (response.ok && text.length === 0) return { result: null };
     let parsed: unknown = {};
     if (text.length > 0) {
       try {

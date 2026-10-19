@@ -73,9 +73,35 @@ describe("CloudflareArtifactsManager", () => {
     expect(await manager().deleteRepo("ns", "docs")).toBe(false);
   });
 
+  it("deletes an empty namespace, and says it was there", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    expect(await manager().deleteNamespace("acme-f662-thing--artifacts")).toBe("deleted");
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe(
+      "https://api.cloudflare.com/client/v4/accounts/acct-1/artifacts/namespaces/acme-f662-thing--artifacts",
+    );
+    expect((init as RequestInit).method).toBe("DELETE");
+  });
+
+  it("answers absent for a namespace already gone or never created, rather than failing", async () => {
+    fetchMock.mockResolvedValueOnce(refusal(404, 10404, "Namespace not found"));
+    expect(await manager().deleteNamespace("ns")).toBe("absent");
+  });
+
+  it("answers occupied for a namespace that still holds a repo, so the caller can wait for a repo delete to land", async () => {
+    fetchMock.mockResolvedValueOnce(refusal(409, 10409, "Namespace is not empty"));
+    expect(await manager().deleteNamespace("ns")).toBe("occupied");
+  });
+
+  it("raises any other refusal of a namespace delete, with Cloudflare's own words", async () => {
+    fetchMock.mockResolvedValueOnce(refusal(403, 10000, "Authentication error"));
+    await expect(manager().deleteNamespace("ns")).rejects.toThrow(/Authentication error/);
+  });
+
   it("refuses a namespace or repo name outside the charset rather than putting it in a path", async () => {
     await expect(manager().listRepos("../tokens")).rejects.toThrow();
     await expect(manager().deleteRepo("ns", "a/b")).rejects.toThrow();
+    await expect(manager().deleteNamespace("..")).rejects.toThrow();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
