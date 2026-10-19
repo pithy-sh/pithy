@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { organization } from "better-auth/plugins/organization";
+import { twoFactor } from "better-auth/plugins/two-factor";
 import { describe, expect, test } from "vitest";
 import { auth } from "../capability";
 import {
@@ -155,6 +158,23 @@ describe("the session secret's unattended rotation (#602)", () => {
       rotateEveryDays: 90,
       overlap: { days: 7, minimumDays: 7, reencrypt: [AUTH_JWKS_DEPENDENT] },
     });
+  });
+
+  test("twoFactor() with a period is refused at auth(): its secrets are sealed under the session secret, and nothing moves them", () => {
+    const composing = () =>
+      auth({ baseURL: "https://api.example.com", sessionSecretRotateEveryDays: 90, plugins: [twoFactor()] });
+    expect(composing).toThrow(PithyError);
+    expect(composing).toThrow(/two-factor/);
+    expect(() =>
+      authSecretsRegistryFor({ sessionExpiresIn: WEEK, sessionSecretRotateEveryDays: 90, plugins: [twoFactor()] }),
+    ).toThrow(/auth-session-secret/);
+  });
+
+  test("twoFactor() with no period, or a period with plugins that seal nothing, composes as before", () => {
+    expect(() => auth({ baseURL: "https://api.example.com", plugins: [twoFactor()] })).not.toThrow();
+    expect(() =>
+      auth({ baseURL: "https://api.example.com", sessionSecretRotateEveryDays: 90, plugins: [organization()] }),
+    ).not.toThrow();
   });
 
   test("a period no longer than the session lifetime is refused at auth(), naming the secret", () => {

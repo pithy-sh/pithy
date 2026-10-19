@@ -48,7 +48,7 @@ describe("secrets_0003_reencryptions", () => {
     expect(await secretsTables()).toContain("pithy_secrets_reencryptions");
     const insert = (version: string): Promise<unknown> =>
       env.SECRETS.prepare(
-        "insert into pithy_secrets_reencryptions (name, dependent, version, recorded_at) values ('auth-session-secret', 'auth-jwks', ?, 1)",
+        "insert into pithy_secrets_reencryptions (name, dependent, version, fingerprint, observed_at) values ('auth-session-secret', 'auth-jwks', ?, 'ab', 1)",
       )
         .bind(version)
         .run();

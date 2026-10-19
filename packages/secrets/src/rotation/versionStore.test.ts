@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 import type { VersionedValue } from "../crypto/versionedValue";
 import { decodeVersionedValue, encodeVersionedValue, initialVersionedValue } from "../crypto/versionedValue";
 import { SecretNotFoundError } from "../error/errors";
+import { versionFingerprint } from "./reencryption";
 import { envelopeVersionStore, secretsStoreVersionStore } from "./versionStore";
 
 /** One envelope per name, in memory, with every write counted. */
@@ -59,6 +60,14 @@ describe("envelopeVersionStore", () => {
     const { store } = memory({ key: { currentVersion: "2", versions: { "1": "a", "2": "b" } } });
     expect(await store.versions("key")).toEqual({ current: "2", versions: ["1", "2"] });
     expect(await store.versions("absent")).toBeUndefined();
+  });
+
+  test("fingerprints names each version by its key-check value, never by its value", async () => {
+    const { store } = memory({ key: { currentVersion: "2", versions: { "1": "a", "2": "b" } } });
+    const fingerprints = await store.fingerprints("key");
+    expect(fingerprints).toEqual({ "1": await versionFingerprint("a"), "2": await versionFingerprint("b") });
+    expect(Object.values(fingerprints ?? {})).not.toContain("a");
+    expect(await store.fingerprints("absent")).toBeUndefined();
   });
 });
 

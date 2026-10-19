@@ -9,7 +9,7 @@ import { secretsTables } from "../data/tables";
 import { secretBindingName } from "../env/bindingName";
 import { secretsMigrations } from "../migrations/secretsMigrations";
 import { defineSecretRegistry, type SecretRegistryEntry } from "../registry";
-import { recordReencryption } from "../rotation/reencryption";
+import { currentSealedVersion, recordReencryption, versionFingerprint } from "../rotation/reencryption";
 import { rotationStoreEntry, stampedRotations } from "../rotation/rotationSchedule";
 import type { ValueRotationSteps } from "../rotation/valueRotation";
 import { SystemSecretsStore } from "../store/systemSecretsStore";
@@ -22,6 +22,23 @@ const PROJECT = "acme";
 
 /** No durable replay in a test: a step runs once, a sleep returns. */
 const syncSteps: ValueRotationSteps = { do: (_name, fn) => fn(), sleep: async () => undefined };
+
+/** {@link syncSteps}, with the owner of `auth-jwks` moving under the current version while the overlap sleeps. */
+function ownerMovesDuringOverlap(name: string): ValueRotationSteps {
+  return {
+    do: (_step, fn) => fn(),
+    sleep: async (step) => {
+      if (step !== "overlap") return;
+      const envelope = await stored(name);
+      if (envelope === undefined) throw new Error(`nothing stored under ${name}`);
+      await recordReencryption(createDatabase(env.SECRETS, secretsTables), {
+        name,
+        dependent: "auth-jwks",
+        ...(await currentSealedVersion(envelope)),
+      });
+    },
+  };
+}
 
 const minted = {
   rotatable: true,
@@ -268,21 +285,36 @@ describe("the manager's scheduled() — value rotation on each secret's own peri
       { trigger: "cron", status: "failed" },
     ]);
 
-    // The owner re-encrypts under version 3 this time, and the next rotation retires both earlier versions.
+    // The owner re-encrypts under version 3 during the overlap this time, and the rotation retires both
+    // earlier versions.
     await backdate("auth-session-secret", 91);
-    await recordReencryption(createDatabase(env.SECRETS, secretsTables), {
-      name: "auth-session-secret",
-      dependent: "auth-jwks",
-      version: "3",
-    });
     const retired = await runValueRotationWorkflow(
       managerEnv("staging"),
       { rotation: stampedRotations(registry).find((one) => one.name === "auth-session-secret") as never },
-      syncSteps,
+      ownerMovesDuringOverlap("auth-session-secret"),
       { writeEntry: async () => undefined, emit: async () => undefined, instanceId: "second" },
     );
     expect(retired).toEqual({ status: "rotated", version: "3", retired: ["1", "2"], held: [] });
     expect(Object.keys((await stored("auth-session-secret"))?.versions ?? {})).toEqual(["3"]);
+  });
+
+  test("a record from before an update reset the version numbers holds retirement, whatever its number says", async () => {
+    // The owner moved under "3" of a value that `update` has since replaced with a fresh {"1"}.
+    await seedD1("auth-session-secret", 91);
+    await recordReencryption(createDatabase(env.SECRETS, secretsTables), {
+      name: "auth-session-secret",
+      dependent: "auth-jwks",
+      version: "3",
+      fingerprint: await versionFingerprint("a-value-update-replaced"),
+    });
+    const held = await runValueRotationWorkflow(
+      managerEnv("staging"),
+      { rotation: stampedRotations(registry).find((one) => one.name === "auth-session-secret") as never },
+      syncSteps,
+      { writeEntry: async () => undefined, emit: async () => undefined, instanceId: "after-reset" },
+    );
+    expect(held).toMatchObject({ status: "rotated", version: "2", retired: [], held: ["auth-jwks"] });
+    expect(Object.keys((await stored("auth-session-secret"))?.versions ?? {})).toEqual(["1", "2"]);
   });
 
   test("a secret with no history is baselined on the first tick, not rotated", async () => {

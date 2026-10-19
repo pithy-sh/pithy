@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
@@ -41,6 +42,16 @@ export const AUTH_GITHUB_CREDENTIALS = "auth-github-credentials";
  * newest version and records it, and the secrets manager retires nothing until it has.
  */
 export const AUTH_JWKS_DEPENDENT = "auth-jwks";
+
+/**
+ * The Better Auth plugins that seal rows of their own under the session secret, by id.
+ *
+ * `two-factor` seals every TOTP secret with `symmetricEncrypt({ key: ctx.context.secretConfig })`, and its
+ * backup codes the same way under `storeBackupCodes: "encrypted"` (`plugins/two-factor/index.mjs`,
+ * `backup-codes/index.mjs`). Neither expires. Nothing in the kit re-encrypts them, so an unattended rotation
+ * beside one is refused at `auth()` rather than allowed to retire the version they are sealed under.
+ */
+export const SESSION_SECRET_SEALING_PLUGINS: readonly string[] = ["two-factor"];
 
 /** Seconds in a day. */
 const DAY_SECONDS = 86_400;
@@ -216,8 +227,26 @@ export const authSecretsRegistry = defineSecretRegistry({
  *
  * Checked by `defineSecretRegistry` like every registry, so a period no longer than the session lifetime is
  * refused here, at `auth()`, naming the secret — rather than at a 03:00 cron that could only skip it.
+ *
+ * **A period is refused beside a plugin that seals rows under the session secret** —
+ * {@link SESSION_SECRET_SEALING_PLUGINS}. Only the JWKS keys are moved before a retirement; a plugin's own
+ * sealed rows would be left under the retired version, and nothing could open them again.
  */
-export function authSecretsRegistryFor(config: { sessionExpiresIn: number; sessionSecretRotateEveryDays?: number }) {
+export function authSecretsRegistryFor(config: {
+  sessionExpiresIn: number;
+  sessionSecretRotateEveryDays?: number;
+  plugins?: readonly { id: string }[];
+}) {
+  if (config.sessionSecretRotateEveryDays !== undefined) {
+    const sealing = (config.plugins ?? []).find((plugin) => SESSION_SECRET_SEALING_PLUGINS.includes(plugin.id));
+    if (sealing !== undefined) {
+      throw new ValidationError({
+        message: `${AUTH_SESSION_SECRET} cannot rotate unattended while the Better Auth "${sealing.id}" plugin is composed.`,
+        action: `Remove sessionSecretRotateEveryDays from auth({ ... }), or remove ${sealing.id}() from auth({ plugins: [...] }). ${sealing.id}() seals its secrets under ${AUTH_SESSION_SECRET}, and a rotation retires the version they are sealed under with nothing to move them first.`,
+        detail: `sessionSecretRotateEveryDays set with plugin "${sealing.id}", which seals rows under ${AUTH_SESSION_SECRET}`,
+      });
+    }
+  }
   const days = sessionSecretOverlapDays(config.sessionExpiresIn);
   return defineSecretRegistry({
     ...authSecretsRegistry,

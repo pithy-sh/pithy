@@ -14,9 +14,13 @@ import { z } from "zod";
  * holds them re-encrypts them under the new version and records it here, in the secrets D1 both Workers
  * bind, and the manager's retirement reads this row before it removes anything.
  *
- * A version key and a timestamp, and nothing else. No value, no ciphertext, and nothing a dependent's
- * rows hold: the manager asks one question of this table — *has every dependent moved?* — and the answer
- * is a comparison of two version keys.
+ * **A version key alone does not name a value.** `update` and `pithy secrets rotate` write a fresh
+ * one-version envelope, so version `"2"` after either is a different value from the `"2"` before it. The row
+ * therefore carries the version's fingerprint too — an HMAC of a fixed label keyed by the value, the
+ * key-check value a key ceremony prints — and a row whose fingerprint is not the envelope's names nothing.
+ *
+ * No value, no ciphertext, and nothing a dependent's rows hold. The manager asks one question of this table
+ * — *has every dependent moved?* — and the answer is a comparison of version keys and fingerprints.
  */
 export const SecretReencryption = z
   .object({
@@ -26,10 +30,18 @@ export const SecretReencryption = z
       .describe(
         "What is sealed under it, as its registry entry's `overlap.reencrypt` names it — `auth-jwks`. Half the primary key.",
       ),
-    version: z
+    version: z.string().describe("The secret's version key this row is about."),
+    fingerprint: z
       .string()
-      .describe("The secret's version key every one of the dependent's values was last re-encrypted under."),
-    recordedAt: SQLiteDate.describe("When that was recorded. Ms-epoch in SQLite, a `Date` in app code."),
+      .describe(
+        "HMAC-SHA256 of a fixed label keyed by that version's value, in hex. Says which value the version key meant.",
+      ),
+    observedAt: SQLiteDate.describe(
+      "When a dependent first saw this version as current. Re-encryption waits out every reader's cache from here.",
+    ),
+    movedAt: SQLiteDate.nullable().describe(
+      "When every one of the dependent's values was re-encrypted under this version. Null while it is still waiting.",
+    ),
   })
   .describe(
     "Which version of a secret one value sealed under it at rest was last re-encrypted under (`pithy_secrets_reencryptions`).",

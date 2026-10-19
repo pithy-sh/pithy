@@ -259,5 +259,10 @@ export async function withResignedCredentials(
     exposed.add("set-auth-token");
     response.headers.set("access-control-expose-headers", [...exposed].join(", "));
   }
+  // Cleared first, because Hono's `res` setter copies every header of the response it replaces onto the new
+  // one: `set-cookie` wholesale, which would drop each re-signed cookie whenever the route set any cookie of
+  // its own, and every other header by overwrite, which would put the route's expose list back over ours.
+  // `response` already carries all of them.
+  c.res = undefined;
   c.res = response;
 }

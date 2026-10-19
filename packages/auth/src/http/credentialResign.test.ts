@@ -1,12 +1,25 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, test } from "vitest";
-import { resignCredentials, signCredential, verifyCredential } from "./credentialResign";
+import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import { Hono } from "hono";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+import type { AuthInstance } from "../instance/auth";
+import type { SessionSecretVersions } from "../instance/sessionSecrets";
+import { resignCredentials, signCredential, verifyCredential, withResignedCredentials } from "./credentialResign";
+
+/** The version set `withResignedCredentials` reads, set per test. */
+const secrets = vi.hoisted(() => ({
+  resolve: async (): Promise<SessionSecretVersions> => {
+    throw new Error("no version set for this test");
+  },
+}));
+vi.mock("../instance/secrets", () => ({ resolveSessionSecrets: () => secrets.resolve() }));
 
 const OLD = "old-session-secret-000000000000000000000000";
 const NEW = "new-session-secret-000000000000000000000000";
 const COOKIE = "better-auth.session_token";
+const DONT_REMEMBER = "better-auth.dont_remember";
 
 describe("signCredential / verifyCredential — Better Auth's signed-cookie format", () => {
   test("signs as `value.signature` with a 44-character base64 HMAC-SHA256, the shape better-call verifies", async () => {
@@ -79,5 +92,118 @@ describe("resignCredentials — a credential signed before a rotation, carried a
     expect(
       await resignCredentials(new Headers({ cookie: `someone-else=${old}` }), { current: NEW, prior: [OLD] }, [COOKIE]),
     ).toBeNull();
+  });
+});
+
+describe("withResignedCredentials — the middleware that carries a request across a rotation (#602)", () => {
+  const WEEK = 604_800;
+  const rotated: SessionSecretVersions = { currentVersion: "2", versions: { "1": OLD, "2": NEW } };
+  const attributes = { path: "/", httpOnly: true, secure: true, sameSite: "lax" };
+  const instance = {
+    $context: Promise.resolve({
+      authCookies: {
+        sessionToken: { name: COOKIE, attributes },
+        dontRememberToken: { name: DONT_REMEMBER, attributes },
+      },
+      sessionConfig: { expiresIn: WEEK },
+    }),
+  } as unknown as AuthInstance;
+
+  /** The middleware in front of three routes: one that echoes what it was handed, a sign-out, and a refresh. */
+  function app(): Hono<PithyHonoEnv> {
+    const built = new Hono<PithyHonoEnv>();
+    built.use("*", (c, next) => withResignedCredentials(c, instance, next));
+    built.get("/echo", (c) => {
+      c.header("access-control-expose-headers", "x-request-id");
+      return c.json({ cookie: c.req.header("cookie") ?? null, authorization: c.req.header("authorization") ?? null });
+    });
+    built.post("/sign-out", (c) => {
+      c.header("set-cookie", `${COOKIE}=; Max-Age=0; Path=/`);
+      return c.body(null, 200);
+    });
+    built.get("/session", (c) => {
+      c.header("set-cookie", "better-auth.session_data=cached; Path=/");
+      return c.body(null, 200);
+    });
+    built.get("/refresh", (c) => {
+      c.header("set-auth-token", "handed-out-by-better-auth");
+      return c.body(null, 200);
+    });
+    return built;
+  }
+
+  const old = async (value: string) => encodeURIComponent(await signCredential(value, OLD));
+  const fresh = async (value: string) => encodeURIComponent(await signCredential(value, NEW));
+  const lineFor = (response: Response, name: string) =>
+    response.headers.getSetCookie().filter((line) => line.startsWith(`${name}=`));
+
+  beforeEach(() => {
+    secrets.resolve = async () => rotated;
+  });
+
+  test("the rest of the chain sees the re-signed cookie, and a remembered session's cookie lasts the session", async () => {
+    const response = await app().request("/echo", { headers: { cookie: `theme=dark; ${COOKIE}=${await old("t")}` } });
+    expect(await response.json()).toEqual({ cookie: `theme=dark; ${COOKIE}=${await fresh("t")}`, authorization: null });
+    expect(lineFor(response, COOKIE)).toEqual([
+      `${COOKIE}=${await fresh("t")}; Max-Age=${WEEK}; Path=/; HttpOnly; Secure; SameSite=Lax`,
+    ]);
+  });
+
+  test("a don't-remember-me session's cookies end with the browser: no Max-Age on either", async () => {
+    const cookie = `${COOKIE}=${await old("t")}; ${DONT_REMEMBER}=${await old("true")}`;
+    const response = await app().request("/echo", { headers: { cookie } });
+    expect(lineFor(response, COOKIE)).toEqual([
+      `${COOKIE}=${await fresh("t")}; Path=/; HttpOnly; Secure; SameSite=Lax`,
+    ]);
+    expect(lineFor(response, DONT_REMEMBER)).toEqual([
+      `${DONT_REMEMBER}=${await fresh("true")}; Path=/; HttpOnly; Secure; SameSite=Lax`,
+    ]);
+  });
+
+  test("a response that sets the cookie itself keeps its own: a sign-out is never undone by a re-signed cookie", async () => {
+    const response = await app().request("/sign-out", {
+      method: "POST",
+      headers: { cookie: `${COOKIE}=${await old("t")}` },
+    });
+    expect(lineFor(response, COOKIE)).toEqual([`${COOKIE}=; Max-Age=0; Path=/`]);
+  });
+
+  test("a response that sets some other cookie keeps it, and still carries the re-signed session cookie", async () => {
+    const response = await app().request("/session", { headers: { cookie: `${COOKIE}=${await old("t")}` } });
+    expect(lineFor(response, "better-auth.session_data")).toEqual(["better-auth.session_data=cached; Path=/"]);
+    expect(lineFor(response, COOKIE)).toEqual([
+      `${COOKIE}=${await fresh("t")}; Max-Age=${WEEK}; Path=/; HttpOnly; Secure; SameSite=Lax`,
+    ]);
+  });
+
+  test("a bearer client is handed its re-signed token, and the header is exposed beside what the route exposed", async () => {
+    const response = await app().request("/echo", { headers: { authorization: `Bearer ${await old("t")}` } });
+    expect(await response.json()).toEqual({ cookie: null, authorization: `Bearer ${await signCredential("t", NEW)}` });
+    expect(response.headers.get("set-auth-token")).toBe(await fresh("t"));
+    expect(response.headers.get("access-control-expose-headers")).toBe("x-request-id, set-auth-token");
+  });
+
+  test("a response that hands out its own bearer token keeps it", async () => {
+    const response = await app().request("/refresh", { headers: { authorization: `Bearer ${await old("t")}` } });
+    expect(response.headers.get("set-auth-token")).toBe("handed-out-by-better-auth");
+    expect(response.headers.get("access-control-expose-headers")).toBeNull();
+  });
+
+  test("with nothing to re-sign, the request and the response pass through untouched", async () => {
+    const response = await app().request("/echo", { headers: { cookie: `${COOKIE}=${await fresh("t")}` } });
+    expect(await response.json()).toEqual({ cookie: `${COOKIE}=${await fresh("t")}`, authorization: null });
+    expect(response.headers.getSetCookie()).toEqual([]);
+    expect(response.headers.get("access-control-expose-headers")).toBe("x-request-id");
+  });
+
+  test("a version set that cannot be read is not this middleware's to raise: the request goes on as it came", async () => {
+    secrets.resolve = async () => {
+      throw new Error("secrets D1 unavailable");
+    };
+    const cookie = `${COOKIE}=${await old("t")}`;
+    const response = await app().request("/echo", { headers: { cookie } });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ cookie, authorization: null });
+    expect(response.headers.getSetCookie()).toEqual([]);
   });
 });

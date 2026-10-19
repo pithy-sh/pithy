@@ -12,7 +12,11 @@ import { email } from "@pithy-sh/email/src/capability";
 import { email_0001_init } from "@pithy-sh/email/src/migrations/0001_init";
 import { secretsTables } from "@pithy-sh/secrets/src/data/tables";
 import { secrets_0003_reencryptions } from "@pithy-sh/secrets/src/migrations/0003_reencryptions";
-import { pendingReencryptions } from "@pithy-sh/secrets/src/rotation/reencryption";
+import {
+  fingerprintVersions,
+  pendingReencryptions,
+  REENCRYPTION_SETTLE_MS,
+} from "@pithy-sh/secrets/src/rotation/reencryption";
 import { d1VersionStore } from "@pithy-sh/secrets/src/rotation/versionStore";
 import { configureSharedSecrets, resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { SystemSecretsStore } from "@pithy-sh/secrets/src/store/systemSecretsStore";
@@ -39,7 +43,7 @@ import type { SessionSecretVersions } from "./sessionSecrets";
  *
  * The real stack, end to end: a session signed in under version 1, the secret rotated to version 2 the way
  * the secrets manager rotates it, and a request made with the old cookie. Then the JWKS keys: sealed under
- * version 1, moved by the first request after the rotation, version 1 retired, and a JWT signed.
+ * version 1, moved by a request once every reader's cache has caught up, version 1 retired, and a JWT signed.
  */
 
 const OLD = "session-secret-version-one-0000000000000000";
@@ -252,20 +256,35 @@ describe("a session signed before the rotation, used after it", () => {
 });
 
 describe("the JWKS keys sealed under the session secret", () => {
-  test("rotates, retires, and signs a JWT: the first request after the rotation moves the keys", async () => {
+  test("rotates, retires, and signs a JWT: a request after the settling window moves the keys", async () => {
     // A key sealed before the kit handed Better Auth a version set: bare ciphertext under version 1.
     await instance(OLD).auth.api.signJWT({ body: { payload: { sub: "before" } } });
     await rotate();
     const secretsDb = createDatabase(env.SECRETS, secretsTables);
-    expect(await pendingReencryptions(secretsDb, AUTH_SESSION_SECRET, [AUTH_JWKS_DEPENDENT], "2")).toEqual([
-      AUTH_JWKS_DEPENDENT,
-    ]);
+    const fingerprints = await fingerprintVersions({ "1": OLD, "2": NEW });
+    const pending = () =>
+      pendingReencryptions(secretsDb, AUTH_SESSION_SECRET, [AUTH_JWKS_DEPENDENT], "2", fingerprints);
+    expect(await pending()).toEqual([AUTH_JWKS_DEPENDENT]);
+    const privateKey = async () =>
+      JSON.parse(
+        (await env.DB.prepare("select private_key from pithy_auth_jwks").first<{ private_key: string }>())
+          ?.private_key ?? '""',
+      ) as string;
 
-    // Any request that builds the instance moves the keys and records it.
+    // The first request after the rotation records that it saw version 2, and moves nothing yet: another
+    // isolate may still hold the envelope it cached before the append, with no key for version 2.
     expect((await app().request("/auth/jwks", {}, appEnv())).status).toBe(200);
-    const row = await env.DB.prepare("select private_key from pithy_auth_jwks").first<{ private_key: string }>();
-    expect(JSON.parse(row?.private_key ?? '""')).toMatch(/^\$ba\$2\$/);
-    expect(await pendingReencryptions(secretsDb, AUTH_SESSION_SECRET, [AUTH_JWKS_DEPENDENT], "2")).toEqual([]);
+    expect(await privateKey()).not.toMatch(/^\$ba\$2\$/);
+    expect(await pending()).toEqual([AUTH_JWKS_DEPENDENT]);
+
+    // Once every cache filled before the append has expired, the next request moves the keys and records it.
+    await env.SECRETS.prepare("update pithy_secrets_reencryptions set observed_at = observed_at - ?")
+      .bind(REENCRYPTION_SETTLE_MS)
+      .run();
+    resetJwksReencryption();
+    expect((await app().request("/auth/jwks", {}, appEnv())).status).toBe(200);
+    expect(await privateKey()).toMatch(/^\$ba\$2\$/);
+    expect(await pending()).toEqual([]);
 
     // Retirement may now proceed, and a JWT still signs with only version 2 held.
     await retire();

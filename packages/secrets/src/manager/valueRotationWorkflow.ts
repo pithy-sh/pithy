@@ -125,18 +125,28 @@ export async function runValueRotationWorkflow(
   validateSecretEntry(rotation.name, entry);
   const tracker = RotationTracker.fromD1(env.SECRETS);
   const db = createDatabase(env.SECRETS, secretsTables);
+  const store = await valueRotationStore(env, rotation, host.writeEntry);
   return await runValueRotation(
     {
       name: rotation.name,
       entry,
       environment,
-      store: await valueRotationStore(env, rotation, host.writeEntry),
+      store,
       ledger: trackerRotationLedger(tracker, { environment, trigger: "cron", rotatedBy: host.instanceId }),
       holdRetirement: async (name) => {
         const id = await tracker.startRotation(name, "cron", host.instanceId);
         await tracker.markFailure(id, "not-retired");
       },
-      pending: (dependents, version) => pendingReencryptions(db, rotation.name, dependents, version),
+      // Checked against the envelope as it stands at the check, so a record from before an `update` reset the
+      // version numbers names nothing (#602).
+      pending: async (dependents, version) =>
+        await pendingReencryptions(
+          db,
+          rotation.name,
+          dependents,
+          version,
+          (await store.fingerprints(rotation.name)) ?? {},
+        ),
       emit: host.emit,
       rotatedBy: host.instanceId,
     },

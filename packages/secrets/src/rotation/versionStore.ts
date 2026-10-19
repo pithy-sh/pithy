@@ -11,6 +11,7 @@ import {
 import { SecretNotFoundError } from "../error/errors";
 import type { SecretValueType } from "../registry";
 import type { SystemSecretsStore } from "../store/systemSecretsStore";
+import { fingerprintVersions } from "./reencryption";
 
 /**
  * **Where a rotation appends a version and, an overlap later, retires the one it replaced (#602).**
@@ -26,7 +27,8 @@ import type { SystemSecretsStore } from "../store/systemSecretsStore";
  *
  * **Version keys cross this seam; values never do.** `append` takes the successor in and hands back its
  * version key and the keys it overlaps. Nothing returned here can carry a secret, so a Workflow step that
- * journals the answer journals no value.
+ * journals the answer journals no value. `fingerprints` is the one read that says anything about a value,
+ * and what it says is a key-check value (`./reencryption.ts`), never the value.
  */
 
 /** What an append did: the version the successor is current under, and every version it now overlaps. */
@@ -53,6 +55,8 @@ export interface VersionedSecretStore {
   retire(name: string, versions: readonly string[]): Promise<StoredVersions>;
   /** The version keys `name` holds, or `undefined` when nothing is stored under it. */
   versions(name: string): Promise<StoredVersions | undefined>;
+  /** Each version's fingerprint, by version key — what a re-encryption record is checked against. */
+  fingerprints(name: string): Promise<Record<string, string> | undefined>;
 }
 
 /** How one backend reads and writes a whole envelope. */
@@ -104,6 +108,10 @@ export function envelopeVersionStore(io: EnvelopeIO): VersionedSecretStore {
     async versions(name) {
       const stored = await io.read(name);
       return stored === undefined ? undefined : sortedVersions(stored);
+    },
+    async fingerprints(name) {
+      const stored = await io.read(name);
+      return stored === undefined ? undefined : await fingerprintVersions(stored.versions);
     },
   };
 }

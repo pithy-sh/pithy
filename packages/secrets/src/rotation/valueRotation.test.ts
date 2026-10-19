@@ -180,6 +180,7 @@ describe("runValueRotation — rotate, wait out the overlap, retire (#602)", () 
           throw new Error("never reached");
         },
         versions: async () => undefined,
+        fingerprints: async () => undefined,
       },
     });
     const { steps } = platformSteps(5);

@@ -21,7 +21,9 @@ export const secrets_0003_reencryptions: Migration = {
       .addColumn("name", "text", (c) => c.notNull())
       .addColumn("dependent", "text", (c) => c.notNull())
       .addColumn("version", "text", (c) => c.notNull())
-      .addColumn("recordedAt", "integer", (c) => c.notNull())
+      .addColumn("fingerprint", "text", (c) => c.notNull())
+      .addColumn("observedAt", "integer", (c) => c.notNull())
+      .addColumn("movedAt", "integer")
       .addPrimaryKeyConstraint("pithySecretsReencryptionsPk", ["name", "dependent"])
       .execute();
   },

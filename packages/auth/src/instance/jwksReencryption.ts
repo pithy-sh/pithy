@@ -5,7 +5,11 @@ import type { D1Database } from "@cloudflare/workers-types";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { secretsTables } from "@pithy-sh/secrets/src/data/tables";
-import { pendingReencryptions, recordReencryption } from "@pithy-sh/secrets/src/rotation/reencryption";
+import {
+  claimReencryption,
+  currentSealedVersion,
+  recordReencryption,
+} from "@pithy-sh/secrets/src/rotation/reencryption";
 import { parseEnvelope, type SecretConfig, symmetricDecrypt, symmetricEncrypt } from "better-auth/crypto";
 import type { AuthDatabase } from "../data/tables";
 import { AUTH_JWKS_DEPENDENT, AUTH_SESSION_SECRET } from "./secrets";
@@ -102,12 +106,19 @@ export async function reencryptJwks(db: AuthDatabase, versions: SessionSecretVer
   return result;
 }
 
-/** The versions this isolate has already moved the keys under — so one request per version pays for it. */
+/**
+ * The versions this isolate has finished with — moved, or failed to — keyed by version and fingerprint, so a
+ * version key reused after an `update` is a new version here too.
+ */
 const settled = new Set<string>();
 
-/** Forget what this isolate has settled. For tests. */
+/** The versions this isolate was told to wait on, with when to ask again. */
+const waiting = new Map<string, number>();
+
+/** Forget what this isolate has settled or is waiting on. For tests. */
 export function resetJwksReencryption(): void {
   settled.clear();
+  waiting.clear();
 }
 
 /** What {@link ensureJwksSealedUnderCurrent} needs. */
@@ -120,11 +131,18 @@ export interface EnsureJwksDeps {
   versions: SessionSecretVersions;
   /** Where a failure is said. Never fatal. */
   log: Logger;
+  /** The clock. Defaults to now. */
+  now?: Date;
 }
 
 /**
  * Make sure the JWKS keys are sealed under the current version, and that the secrets D1 says so — once per
  * version per isolate, and only while a previous version is retained.
+ *
+ * **Not on the first request that sees the version.** Another isolate may still hold the envelope it cached
+ * before the append, with no key for the new version; a key re-sealed under it now would fail there. So the
+ * first sight is recorded, and the move waits until every cache filled before it has expired
+ * (`claimReencryption`, `REENCRYPTION_SETTLE_MS`). An isolate told to wait does not ask again until then.
  *
  * **Never fatal.** It runs on a request, and the request it rides on is somebody signing in; a failure here
  * leaves the keys where they were — still opening, since the previous version is still held — and the
@@ -132,32 +150,49 @@ export interface EnsureJwksDeps {
  */
 export async function ensureJwksSealedUnderCurrent(deps: EnsureJwksDeps): Promise<void> {
   const { versions } = deps;
-  if (Object.keys(versions.versions).length < 2 || settled.has(versions.currentVersion)) return;
-  settled.add(versions.currentVersion);
+  if (Object.keys(versions.versions).length < 2) return;
+  const now = deps.now ?? new Date();
   try {
-    const secretsDb = createDatabase(deps.secrets, secretsTables);
-    const pending = await pendingReencryptions(
-      secretsDb,
-      AUTH_SESSION_SECRET,
-      [AUTH_JWKS_DEPENDENT],
-      versions.currentVersion,
-    );
-    if (pending.length === 0) return;
-    const moved = await reencryptJwks(deps.db, versions);
-    await recordReencryption(secretsDb, {
-      name: AUTH_SESSION_SECRET,
-      dependent: AUTH_JWKS_DEPENDENT,
-      version: versions.currentVersion,
-    });
-    deps.log.info("jwks re-encrypted under the current session secret", { version: versions.currentVersion, ...moved });
-    if (moved.unopenable > 0) {
-      deps.log.warn("jwks keys no retained session secret opens were left as they were", {
-        unopenable: moved.unopenable,
+    const sealed = await currentSealedVersion(versions);
+    const key = `${sealed.version}:${sealed.fingerprint}`;
+    if (settled.has(key) || (waiting.get(key) ?? 0) > now.getTime()) return;
+    try {
+      const secretsDb = createDatabase(deps.secrets, secretsTables);
+      const claim = await claimReencryption(secretsDb, {
+        name: AUTH_SESSION_SECRET,
+        dependent: AUTH_JWKS_DEPENDENT,
+        sealed,
+        now,
       });
+      if (claim.state === "moved") {
+        settled.add(key);
+        return;
+      }
+      if (claim.state === "settling") {
+        waiting.set(key, claim.until.getTime());
+        return;
+      }
+      settled.add(key);
+      const moved = await reencryptJwks(deps.db, versions);
+      await recordReencryption(secretsDb, {
+        name: AUTH_SESSION_SECRET,
+        dependent: AUTH_JWKS_DEPENDENT,
+        ...sealed,
+        now,
+      });
+      deps.log.info("jwks re-encrypted under the current session secret", { version: sealed.version, ...moved });
+      if (moved.unopenable > 0) {
+        deps.log.warn("jwks keys no retained session secret opens were left as they were", {
+          unopenable: moved.unopenable,
+        });
+      }
+    } catch (error) {
+      // Settled for this isolate, so a failing database is not asked again on every request it serves.
+      // Another isolate tries; until one finishes, retirement waits and the previous version keeps opening.
+      settled.add(key);
+      throw error;
     }
   } catch (error) {
-    // Left settled for this isolate, so a failing database is not asked again on every request it serves.
-    // Another isolate tries; until one finishes, retirement waits and the previous version keeps opening.
     deps.log.warn("jwks re-encryption did not finish; the previous session secret stays until it does", {
       reason: error instanceof Error ? error.message : String(error),
     });
