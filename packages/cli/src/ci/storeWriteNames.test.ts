@@ -172,6 +172,11 @@ const DECLARED: readonly Declared[] = [
     site: "packages/secrets/src/manager/secretsConfigWriter.ts updateExistingSecret(this.entryName, serialized, comment)",
     via: "the same field, on the branch that carries the pass's stamp in the entry comment",
   },
+  {
+    // #602. The value rotation's write-back of a Secrets Store secret's envelope, edit-only like the at-rest one.
+    site: "packages/secrets/src/manager/worker.ts updateExistingSecret(entry, text)",
+    via: "`StoreEntryWriter`'s `entry`, which `valueRotationStore` composes with `rotationStoreEntry(env.PROJECT, env.ENVIRONMENT, rotation)` — `environmentScope(project, env).secretEntry(name, scope)`, the composer provisioning wrote the entry with",
+  },
 ];
 
 /** A finding, rendered with everything somebody needs to fix it. */
@@ -231,7 +236,7 @@ describe("the population this gate ranges over", () => {
     // A tripwire whose input silently became empty passes every assertion about findings. This is the
     // exact-count assertion the draft's analyzer could not have made: it found nothing at all.
     expect(analysis.parsed).toBeGreaterThan(500);
-    expect(analysis.sites).toHaveLength(16);
+    expect(analysis.sites).toHaveLength(17);
   });
 });
 

@@ -5,6 +5,8 @@ import { readFile } from "node:fs/promises";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { describe, expect, test } from "vitest";
+import { defineSecretRegistry } from "../registry";
+import { stampedRotations } from "../rotation/rotationSchedule";
 import type { ManagedEnvironment } from "../scope";
 import { masterKeySecretName, runtimeTokenSecretName } from "./provisionSecrets";
 import {
@@ -30,6 +32,7 @@ function template(): ManagerWranglerTemplate {
     workflows: [
       { binding: "SECRETS_WRITE", name: "pithy-secrets-write", class_name: "SecretsWriteWorkflow" },
       { binding: "AT_REST_ROTATION", name: "pithy-secrets-rotate", class_name: "AtRestKeyRotationWorkflow" },
+      { binding: "VALUE_ROTATION", name: "pithy-secrets-rotate-value", class_name: "SecretValueRotationWorkflow" },
     ],
     triggers: { crons: ["0 3 * * *"] },
     vars: {
@@ -97,6 +100,7 @@ describe("resolveManagerConfig", () => {
     expect(resolved.workflows.map((w) => w.name)).toEqual([
       "acme-staging-secrets-write",
       "acme-staging-secrets-rotate",
+      "acme-staging-secrets-rotate-value",
     ]);
     expect(resolved.vars.CLOUDFLARE_ACCOUNT_ID).toBe("acct-9");
     expect(resolved.vars.SECRETS_STORE_ID).toBe("store-abc");
@@ -146,9 +150,17 @@ describe("resolveManagerConfig", () => {
     expect(acme.d1_databases.map((db) => db.database_name)).toEqual(["acme-prod-secrets"]);
     expect(globex.d1_databases.map((db) => db.database_name)).toEqual(["globex-prod-secrets"]);
 
-    // Both Workflows — the write one is what `pithy secrets create` dispatches to.
-    expect(acme.workflows.map((w) => w.name)).toEqual(["acme-prod-secrets-write", "acme-prod-secrets-rotate"]);
-    expect(globex.workflows.map((w) => w.name)).toEqual(["globex-prod-secrets-write", "globex-prod-secrets-rotate"]);
+    // Every Workflow — the write one is what `pithy secrets create` dispatches to.
+    expect(acme.workflows.map((w) => w.name)).toEqual([
+      "acme-prod-secrets-write",
+      "acme-prod-secrets-rotate",
+      "acme-prod-secrets-rotate-value",
+    ]);
+    expect(globex.workflows.map((w) => w.name)).toEqual([
+      "globex-prod-secrets-write",
+      "globex-prod-secrets-rotate",
+      "globex-prod-secrets-rotate-value",
+    ]);
 
     // And every Secrets Store entry, including the master key each manager decrypts with.
     expect(acme.secrets_store_secrets.map((e) => e.secret_name)).not.toEqual(
@@ -231,6 +243,7 @@ describe("resolveManagerConfig for a feature", () => {
     ]);
     // Its write Workflow, and no rotation Workflow or cron: a feature's key is created once and deleted with it.
     expect(resolved.workflows.map((workflow) => workflow.name)).toEqual(["acme-f643-feature-address--secrets-write"]);
+    expect(resolved.vars).not.toHaveProperty("VALUE_ROTATIONS");
     expect(resolved.triggers).toEqual({ crons: [] });
     expect(resolved.vars).toMatchObject({ ENVIRONMENT: "feature", PROJECT: "acme" });
     expect(resolved.vars).not.toHaveProperty("FEATURE_ISSUE");
@@ -265,5 +278,75 @@ describe("resolveAllManagerConfigs", () => {
     expect(all[1]?.config.name).toBe("acme-prod-secrets");
     expect(all[1]?.config.secrets_store_secrets[0]?.store_id).toBe("store-p");
     expect(all[1]?.config.vars.PROJECT).toBe("acme");
+  });
+});
+
+/** The schedule a project's registry stamps into each manager (#602). */
+describe("resolveManagerConfig — the value-rotation schedule", () => {
+  const minted = {
+    rotatable: true,
+    valueType: "text",
+    devValue: "random",
+    origin: { kind: "minted", recipe: { kind: "random", bytes: 32, encoding: "base64url" } },
+    rotation: { kind: "local" },
+    rotateEveryDays: 90,
+    overlap: { days: 7, minimumDays: 7 },
+  } as const;
+  const valueRotations = stampedRotations(
+    defineSecretRegistry({
+      "auth-session-secret": { ...minted, backend: "d1", scope: "environment" },
+      "email-link-signing-key": { ...minted, backend: "cf-secrets-store", scope: "environment" },
+      "shared-hmac": { ...minted, backend: "cf-secrets-store", scope: "global" },
+    }),
+  );
+  const resolve = (env: ManagedEnvironment) =>
+    resolveManagerConfig(template(), {
+      env,
+      databaseId: "db",
+      storeId: "store-abc",
+      accountId: "acct-9",
+      project: "acme",
+      valueRotations,
+      globalEnvironment: "prod",
+    });
+
+  test("stamps the schedule and the environment that owns global secrets", () => {
+    const resolved = resolve("staging");
+    expect(JSON.parse(resolved.vars.VALUE_ROTATIONS as string)).toEqual(valueRotations);
+    expect(resolved.vars.GLOBAL_ENVIRONMENT).toBe("prod");
+    expect(resolved.workflows.find((workflow) => workflow.binding === "VALUE_ROTATION")?.name).toBe(
+      "acme-staging-secrets-rotate-value",
+    );
+  });
+
+  test("binds each Secrets Store secret this manager rotates, and no other", () => {
+    const binds = (env: ManagedEnvironment) =>
+      resolve(env)
+        .secrets_store_secrets.slice(2)
+        .map((entry) => [entry.binding, entry.secret_name, entry.store_id]);
+    // Staging rotates its own link key and never the global secret, so it never binds production's entry.
+    expect(binds("staging")).toEqual([["EMAIL_LINK_SIGNING_KEY", "acme-staging-email-link-signing-key", "store-abc"]]);
+    expect(binds("prod")).toEqual([
+      ["EMAIL_LINK_SIGNING_KEY", "acme-prod-email-link-signing-key", "store-abc"],
+      ["SHARED_HMAC", "acme-global-shared-hmac", "store-abc"],
+    ]);
+  });
+
+  test("a manager given no schedule keeps the template's, which has none", () => {
+    const resolved = resolveManagerConfig(template(), {
+      env: "prod",
+      databaseId: "db",
+      storeId: "store-abc",
+      accountId: "acct-9",
+      project: "acme",
+    });
+    expect(resolved.vars).not.toHaveProperty("VALUE_ROTATIONS");
+    expect(resolved.secrets_store_secrets).toHaveLength(2);
+  });
+
+  test("the committed template hosts the value-rotation Workflow", async () => {
+    const source = await readFile(new URL("../manager/wrangler.jsonc", import.meta.url), "utf8");
+    expect(source).toContain('"SecretValueRotationWorkflow"');
+    expect(source).toContain('"VALUE_ROTATION"');
   });
 });

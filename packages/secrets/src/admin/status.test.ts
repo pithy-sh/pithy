@@ -31,6 +31,10 @@ const STATUS_FIELDS = [
   "backend",
   "createdAt",
   "keyVersion",
+  // Added by #602, and the argument is the same one `rotation` makes below: **no value fits in it.** An
+  // instant, and a code from `RotationFailure` — a closed enum read back off the fixed sentence a code
+  // wrote. `error_message` itself never crosses; a sentence this release did not compose reads as `null`.
+  "lastFailure",
   "lastRotatedAt",
   "name",
   "overdue",
@@ -58,7 +62,11 @@ const STATUS_FIELDS = [
  */
 const ROTATE_FIELDS = ["attempts", "kind", "name", "reason", "recorded", "rollFailed", "rolled", "status", "stranded"];
 
-const ROTATION_FIELDS = ["completedAt", "rotatedBy", "startedAt", "status", "trigger"];
+/**
+ * `failure` is #602's, and it is the same code `lastFailure` carries: an enum member or `null`, never the
+ * text in the column it is read back off.
+ */
+const ROTATION_FIELDS = ["completedAt", "failure", "rotatedBy", "startedAt", "status", "trigger"];
 
 /** Every spelling of a value, an envelope around one, or free text written where one is in scope. */
 const NEVER = [
@@ -122,6 +130,7 @@ describe("the status shape", () => {
       createdAt: 1_700_000_000_000,
       updatedAt: 1_700_000_000_000,
       lastRotatedAt: null,
+      lastFailure: null,
       rotationCount: 0,
       rotateEveryDays: null,
       overdue: null,
@@ -161,6 +170,7 @@ describe("the status shape", () => {
       status: "success",
       trigger: "cron",
       rotatedBy: "wf-1",
+      failure: null,
       errorMessage: "decrypt failed for value sk_live_oops",
       metadataSnapshot: '{"value":"sk_live_oops"}',
     });

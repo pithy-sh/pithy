@@ -30,6 +30,14 @@ export function secretStatusView(status: SecretStatus): SecretStatusView {
     createdAt: status.createdAt?.toISOString() ?? null,
     updatedAt: status.updatedAt?.toISOString() ?? null,
     lastRotatedAt: status.lastRotatedAt?.toISOString() ?? null,
+    ...(status.lastFailure === undefined
+      ? {}
+      : {
+          lastFailure:
+            status.lastFailure === null
+              ? null
+              : { at: status.lastFailure.at.toISOString(), reason: status.lastFailure.reason },
+        }),
     rotationCount: status.rotationCount,
     rotateEveryDays: status.rotateEveryDays,
     overdue: status.overdue,
@@ -70,5 +78,6 @@ export function secretRotationView(record: SecretRotationRecord): SecretRotation
     status: record.status,
     trigger: record.trigger,
     rotatedBy: record.rotatedBy,
+    failure: record.failure,
   };
 }

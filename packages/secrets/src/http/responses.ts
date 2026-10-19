@@ -6,6 +6,7 @@ import { z } from "zod";
 import { RotationStatus, RotationTrigger } from "../data/secretRotations";
 import { SecretBackend, SecretValueType } from "../registry";
 import { SecretRotationStatus, SecretRotationUnchangedReason } from "../rotation/rotateValue";
+import { RotationFailure } from "../rotation/rotationLedger";
 import type { CarriesNoValue } from "../valueBearing";
 
 /**
@@ -58,8 +59,13 @@ export const SecretRotationView = z
     status: RotationStatus.describe("How it ended: `in_progress`, `success`, or `failed`."),
     trigger: RotationTrigger.describe("What caused it: `cron`, `manual`, or the `baseline` marker on first write."),
     rotatedBy: z.string().describe("Who or what initiated it — a workflow instance id, an operator id, or `baseline`."),
+    failure: RotationFailure.nullable()
+      .optional()
+      .describe(
+        "Why a `failed` attempt failed, as a code — never the failure's text. Null when it did not fail, or failed in words this release does not write; absent from a Worker older than the field (#602).",
+      ),
   })
-  .describe("One rotation attempt as a client reads it. A failure is a status, never a message.");
+  .describe("One rotation attempt as a client reads it. A failure is a status and a code, never a message.");
 export type SecretRotationView = z.output<typeof SecretRotationView>;
 
 /** One secret's status on the wire. */
@@ -90,6 +96,19 @@ export const SecretStatusView = z
       .nullable()
       .describe(
         "The newest successful rotation, ISO-8601, or **null for never rotated** — not zero, and not the epoch.",
+      ),
+    lastFailure: z
+      .object({
+        at: z.iso.datetime().describe("When the failed attempt closed, ISO-8601."),
+        reason: RotationFailure.nullable().describe(
+          "Why, as a code. Null when the failure is in words this release does not write.",
+        ),
+      })
+      .describe("The newest closed attempt's failure: an instant and a code.")
+      .nullable()
+      .optional()
+      .describe(
+        "The newest closed rotation attempt, when it failed — the field an unattended rotation is reported through (#602). Null when the newest closed attempt succeeded or none is recorded. Absent from a Worker older than the field.",
       ),
     rotationCount: z
       .number()

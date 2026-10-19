@@ -5,6 +5,9 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloud
 import { NonRetryableError } from "cloudflare:workflows";
 import { CloudflareSecretsStoreManager } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
 import { RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
+import { remedy } from "@pithy-sh/core/src/cli/command";
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import { AT_REST_ROTATION_NAME } from "../data/secretRotations";
@@ -15,20 +18,30 @@ import { rotationBackedOff } from "../rotation/rotationLedger";
 import type { ManagedEnvironment } from "../scope";
 import { configureSharedSecrets, sharedSecretsStore } from "../sharedSecretsStore";
 import { RotationTracker } from "../store/rotationTracker";
+import { logAuditEmit } from "./auditLog";
 import { managerRegistry } from "./managerRegistry";
 import { secretsWorkflowRetry } from "./retryPolicy";
 import { runRotationWorkflow } from "./rotationWorkflow";
 import { rotationConfigWriter } from "./secretsConfigWriter";
+import {
+  runValueRotationWorkflow,
+  scheduleValueRotations,
+  type ValueRotationEnv,
+  type ValueRotationPayload,
+} from "./valueRotationWorkflow";
 import { runWriteWorkflow, type WriteWorkflowPayload, type WriteWorkflowResult } from "./writeWorkflow";
 
 /**
  * The prebuilt per-environment secrets manager worker. `pithy add secrets` deploys one per managed
  * environment (`<project>-staging-secrets`, `<project>-prod-secrets`); the user authors no code for it.
- * It hosts two Workflows and a cron:
+ * It hosts three Workflows and a cron:
  *
  *   - `SecretsWriteWorkflow` — the CLI's dispatch target for create/update/remove.
  *   - `AtRestKeyRotationWorkflow` — re-encrypts the store under a fresh master key.
- *   - `scheduled()` — fires the rotation Workflow when the configured interval has elapsed.
+ *   - `SecretValueRotationWorkflow` — replaces one secret's value on its declared period, waits out its
+ *     overlap, and retires the version it replaced (#602).
+ *   - `scheduled()` — fires the at-rest rotation when its interval has elapsed, and a value rotation for
+ *     every secret whose `rotateEveryDays` has.
  *
  * The Workflow bodies (`runWriteWorkflow`, `runRotationWorkflow`) are tested against Miniflare; these
  * classes are the thin durable-execution shells over them. This module imports `cloudflare:workers`,
@@ -42,8 +55,8 @@ const DEFAULT_ROTATION_INTERVAL_DAYS = 30;
 // through the one cached path (a rotation run reads the runtime token once) like every other worker.
 configureSharedSecrets({ registry: managerRegistry });
 
-/** The manager worker's env: the secrets D1 + key binding, the rotation Workflow binding, CF creds for the write-back. */
-export interface SecretsManagerEnv extends SecretsStoreEnv {
+/** The manager worker's env: the secrets D1 + key binding, the rotation Workflow bindings, CF creds for the write-back. */
+export interface SecretsManagerEnv extends SecretsStoreEnv, ValueRotationEnv {
   /**
    * The at-rest rotation Workflow binding, triggered by the cron.
    *
@@ -81,6 +94,12 @@ export interface SecretsManagerEnv extends SecretsStoreEnv {
   PROJECT: string;
   /** Rotation cadence in days; defaults to 30. Sourced from the `rotationIntervalDays` config option. */
   ROTATION_INTERVAL_DAYS?: string;
+  /**
+   * The value-rotation Workflow binding (#602), started by the cron once per due secret per day, under a
+   * deterministic id so a redelivered tick starts nothing twice. Absent on a feature's manager, which runs no
+   * cron. A manager with a schedule and no binding refuses the tick rather than rotating nothing in silence.
+   */
+  VALUE_ROTATION?: { create(options?: { id?: string; params?: ValueRotationPayload }): Promise<unknown> };
 }
 
 /**
@@ -138,43 +157,140 @@ export class AtRestKeyRotationWorkflow extends WorkflowEntrypoint<SecretsManager
   }
 }
 
+/** A step the platform must run once and never again: `do` with a retry limit of zero. */
+interface OnceStep {
+  do<T>(name: string, config: { retries: { limit: number; delay: number } }, fn: () => Promise<T>): Promise<T>;
+}
+
+/**
+ * The value-rotation Workflow — one secret's value replaced on its declared period (#602).
+ *
+ * The rotate step is declared with no retries: a `provider` roll is a call into somebody else's system, and
+ * a platform re-running the step after an eviction would roll twice. Every other step runs under
+ * {@link secretsWorkflowRetry}, like the write and the at-rest rotation. See `rotation/valueRotation.ts`.
+ *
+ * A store-backed secret is written over REST with the application's one runtime token (#728), edit-only:
+ * `updateExistingSecret` refuses a name with no entry rather than creating one nothing binds.
+ */
+export class SecretValueRotationWorkflow extends WorkflowEntrypoint<SecretsManagerEnv, ValueRotationPayload> {
+  override async run(event: WorkflowEvent<ValueRotationPayload>, step: WorkflowStep): Promise<void> {
+    const classified = classifiedSteps(step, secretsWorkflowRetry, NonRetryableError);
+    // The platform's configured `do`, typed for the body's own generic. The platform constrains a step's result
+    // to what it can journal, which a generic over the body's results cannot state; every result the body
+    // returns is a plain object of strings, numbers and arrays, so the constraint holds of all of them.
+    const once = step as unknown as OnceStep;
+    const log = createWorkerLogger({ name: "secrets:value-rotation", fields: { instanceId: event.instanceId } });
+    await runValueRotationWorkflow(
+      this.env,
+      event.payload,
+      {
+        do: (name, fn, options) =>
+          options?.retries === false
+            ? // Unclassified on purpose: there is no retry for a classification to decide about.
+              once.do(name, { retries: { limit: 0, delay: 0 } }, fn)
+            : classified.do(name, fn),
+        sleep: (name, ms) => classified.sleep(name, ms),
+      },
+      {
+        writeEntry: async (entry, text) => {
+          const secrets = await sharedSecretsStore(this.env, managerRegistry);
+          const manager = new CloudflareSecretsStoreManager({
+            accountId: this.env.CLOUDFLARE_ACCOUNT_ID,
+            apiToken: secrets.get(RUNTIME_TOKEN_SECRET),
+            storeId: this.env.SECRETS_STORE_ID,
+          });
+          await manager.updateExistingSecret(entry, text);
+        },
+        emit: logAuditEmit(log),
+        instanceId: event.instanceId,
+      },
+    );
+  }
+}
+
+/**
+ * Start one value rotation through the binding, treating an id that already exists as already started.
+ *
+ * A manager with a schedule and no binding is refused rather than skipped: it was deployed from a template
+ * that predates the Workflow, and a cron that quietly rotates nothing is the lapse this exists to end.
+ */
+async function startValueRotation(env: SecretsManagerEnv, id: string, payload: ValueRotationPayload): Promise<void> {
+  if (env.VALUE_ROTATION === undefined) {
+    throw new InternalError({
+      message: "The secrets manager has a rotation schedule and no value-rotation Workflow to run it.",
+      action: remedy("secrets provision").say((command) => `Redeploy the manager with ${command}.`),
+      detail: `value rotation ${id}: the VALUE_ROTATION binding is absent on this manager`,
+    });
+  }
+  try {
+    await env.VALUE_ROTATION.create({ id, params: payload });
+  } catch (error) {
+    if (!isDuplicateInstance(error)) throw error;
+  }
+}
+
+/** The at-rest half of the cron: trigger the master-key rotation only when its interval has elapsed. */
+async function scheduleAtRestRotation(env: SecretsManagerEnv): Promise<void> {
+  const config = await resolveEncryptionConfig(env);
+  // **A structurally failed pass has a cadence consequence (#647).** A pass that could not confirm its
+  // write through the binding leaves `lastRotatedAt` untouched — right for the store, since nothing
+  // rotated — so without this the same pass starts again every night, mints a fresh key, and edits the
+  // same entry the binding does not read, forever. The ledger is what remembers; `rotationBackedOff`
+  // is what decides.
+  const tracker = RotationTracker.fromD1(env.SECRETS);
+  const now = new Date();
+  if (rotationBackedOff(await tracker.lastClosed(AT_REST_ROTATION_NAME), now)) return;
+  // The coercion sits inside the call that checks it, rather than in a `const` above. `isRotationDue`
+  // refuses a non-finite or non-positive interval — a `"30 days"` that would otherwise make rotation
+  // never come due, silently, on every tick — and keeping the two in one expression is what
+  // `cli/src/ci/environmentNumbers.test.ts` reads to prove no raw `Number(env.…)` reaches a
+  // comparison unchecked (#521).
+  if (isRotationDue(config.lastRotatedAt, Number(env.ROTATION_INTERVAL_DAYS ?? DEFAULT_ROTATION_INTERVAL_DAYS), now)) {
+    // A deterministic id, so two triggers over one pointer on one day are one pass. See
+    // `atRestInstanceId` for what two concurrent passes do to a store.
+    //
+    // **The refusal it produces is the success case, so it is swallowed (#647 review).** Cron delivery is
+    // at-least-once, and a redelivered tick inside one UTC day over one pointer composes the same id;
+    // Cloudflare then rejects the `create`, which would fail the whole `scheduled()` invocation over a
+    // guard doing precisely its job. The pass that already exists is the one we wanted. Only this
+    // rejection is swallowed — anything else still leaves the handler, because a manager that cannot
+    // start a rotation at all is a fact somebody needs.
+    try {
+      await env.AT_REST_ROTATION.create({ id: atRestInstanceId(config.currentVersion, now) });
+    } catch (error) {
+      if (!isDuplicateInstance(error)) throw error;
+    }
+  }
+}
+
 export default {
-  /** Cron entry: trigger the at-rest rotation Workflow only when the interval has elapsed. */
+  /**
+   * Cron entry: the at-rest rotation when its interval has elapsed, then every due value rotation.
+   *
+   * **The two halves are independent, and neither may stop the other.** The at-rest half returns early on a
+   * backoff and throws on a master key that will not resolve; a value rotation that waited behind either
+   * would lapse for a reason that has nothing to do with it. Both run, and the first failure is rethrown
+   * after both, so the invocation is still recorded as failed.
+   */
   async scheduled(_controller: unknown, env: SecretsManagerEnv): Promise<void> {
     // A feature's manager has no cron and no rotation Workflow (#643). Should a trigger reach one anyway, it
     // rotates nothing: it holds no token to write the new key back with.
     if (env.ENVIRONMENT === FEATURE_ENVIRONMENT) return;
-    const config = await resolveEncryptionConfig(env);
-    // **A structurally failed pass has a cadence consequence (#647).** A pass that could not confirm its
-    // write through the binding leaves `lastRotatedAt` untouched — right for the store, since nothing
-    // rotated — so without this the same pass starts again every night, mints a fresh key, and edits the
-    // same entry the binding does not read, forever. The ledger is what remembers; `rotationBackedOff`
-    // is what decides.
-    const tracker = RotationTracker.fromD1(env.SECRETS);
-    const now = new Date();
-    if (rotationBackedOff(await tracker.lastClosed(AT_REST_ROTATION_NAME), now)) return;
-    // The coercion sits inside the call that checks it, rather than in a `const` above. `isRotationDue`
-    // refuses a non-finite or non-positive interval — a `"30 days"` that would otherwise make rotation
-    // never come due, silently, on every tick — and keeping the two in one expression is what
-    // `cli/src/ci/environmentNumbers.test.ts` reads to prove no raw `Number(env.…)` reaches a
-    // comparison unchecked (#521).
-    if (
-      isRotationDue(config.lastRotatedAt, Number(env.ROTATION_INTERVAL_DAYS ?? DEFAULT_ROTATION_INTERVAL_DAYS), now)
-    ) {
-      // A deterministic id, so two triggers over one pointer on one day are one pass. See
-      // `atRestInstanceId` for what two concurrent passes do to a store.
-      //
-      // **The refusal it produces is the success case, so it is swallowed (#647 review).** Cron delivery is
-      // at-least-once, and a redelivered tick inside one UTC day over one pointer composes the same id;
-      // Cloudflare then rejects the `create`, which would fail the whole `scheduled()` invocation over a
-      // guard doing precisely its job. The pass that already exists is the one we wanted. Only this
-      // rejection is swallowed — anything else still leaves the handler, because a manager that cannot
-      // start a rotation at all is a fact somebody needs.
-      try {
-        await env.AT_REST_ROTATION.create({ id: atRestInstanceId(config.currentVersion, now) });
-      } catch (error) {
-        if (!isDuplicateInstance(error)) throw error;
-      }
+    const failures: unknown[] = [];
+    try {
+      await scheduleAtRestRotation(env);
+    } catch (error) {
+      failures.push(error);
     }
+    try {
+      await scheduleValueRotations(env, {
+        now: new Date(),
+        start: (id, payload) => startValueRotation(env, id, payload),
+        log: createWorkerLogger({ name: "secrets:value-rotation" }),
+      });
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures[0] !== undefined) throw failures[0];
   },
 };

@@ -85,21 +85,36 @@ export const RotationClosure = z
 export type RotationClosure = z.output<typeof RotationClosure>;
 
 /**
+ * Every code that may close a rotation row `failed`, as a closed vocabulary a reader may publish.
+ *
+ * **The column's text never crosses; this does (#602).** `admin/status.ts` refuses `error_message` because
+ * it is the one column a failure site writes. But the text there is chosen by a code ({@link
+ * rotationFailureText}), so the code can be read back off it ({@link rotationFailureCodeOf}) — and a code is
+ * a member of this enum or it is nothing. That is what lets the status read say *why* an unattended rotation
+ * failed without publishing anything a failure site wrote: a sentence this release did not compose reads as
+ * `null`, never as itself.
+ */
+export const RotationFailure = z
+  .enum(["roll-failed", "not-recorded", "not-rotated", "at-rest-incomplete", "at-rest-unconfirmed", "not-retired"])
+  .describe(
+    "Why a rotation row closed failed, as a code. `roll-failed`, `not-recorded` and `not-rotated` are a value rotation's. `at-rest-incomplete` and `at-rest-unconfirmed` are the whole-store master-key rotation's. `not-retired` is an unattended value rotation that landed and kept the previous version, because a value sealed under it at rest was not re-encrypted.",
+  );
+
+/**
  * Every code that may close a rotation row `failed` — the domain of the column's fixed text.
  *
  * **A superset of {@link RotationFailureReason}, and the two are not the same question.** A *reason* is
- * how a value rotation's closure ended, and it crosses a process boundary as data, so it is a Zod enum
- * parsed on arrival. A *code* is what `RotationTracker.markFailure` accepts, and the whole-store at-rest
- * key rotation closes rows too — under `AT_REST_ROTATION_NAME`, from inside a Worker, never over a wire.
- * Widening the wire enum to admit a code no closure can produce would let a caller name a rotation it
- * cannot perform; keeping the code a TypeScript union keeps that impossible and still makes every reason
- * a code by construction.
+ * how a value rotation's closure ended, and it crosses a process boundary as data, so it is the enum a
+ * dispatched closure is parsed against. A *code* is what `RotationTracker.markFailure` accepts, and the
+ * whole-store at-rest key rotation and the cron's held retirement close rows too — from inside a Worker,
+ * never over a wire. The closure enum stays the narrow one, so no caller can name a rotation it cannot
+ * perform; this one is what a reader publishes, which is the other direction.
  *
  * The set is closed on purpose. `#386` is what an open one costs: the at-rest path composed `cause.message`
  * into this column, and the exceptions reaching that catch come from decryption, envelope decoding and
  * config parsing — the paths whose message text can carry key material.
  */
-export type RotationFailureCode = RotationFailureReason | "at-rest-incomplete" | "at-rest-unconfirmed";
+export type RotationFailureCode = z.output<typeof RotationFailure>;
 
 /** The sentence written into a failed row's `error_message`. Fixed text, chosen by a code, never composed from an exception. */
 const FAILURE_TEXT: Record<RotationFailureCode, string> = {
@@ -112,6 +127,10 @@ const FAILURE_TEXT: Record<RotationFailureCode, string> = {
   // reached. It names no entry and no version — the throw carries those in a `PithyError`'s `detail`,
   // and this column is the one a failure site writes.
   "at-rest-unconfirmed": "the at-rest key rotation could not confirm its write through the binding",
+  // `#602`. The rotation landed and its row closed `success`; this is a second row, about the cleanup. A value
+  // sealed under the previous version at rest was never re-encrypted, so the previous version is still held —
+  // nothing is broken, and an owner should find out which dependent is behind before the next rotation.
+  "not-retired": "rotated, and the previous version was kept: a value sealed under it was not re-encrypted",
 };
 
 /**

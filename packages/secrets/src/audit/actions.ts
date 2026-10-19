@@ -41,6 +41,15 @@ export const SecretsAuditActions = {
    * silent about exactly the ones somebody is looking for.
    */
   rotated: "secrets/rotated",
+  /**
+   * A value rotation retired the version it replaced, once its overlap had passed — or held it, because a
+   * value sealed under it at rest had not been re-encrypted yet (`outcome: failure`, `pending` naming which).
+   *
+   * Emitted by the secrets manager's own rotation Workflow (#602), as a `system` act. The manager composes no
+   * audit recorder, so it lands in that Worker's logs rather than in `pithy_audit_events`; see
+   * `manager/auditLog.ts`.
+   */
+  versionRetired: "secrets/version_retired",
   /** An application stored a keyspace member — created it, or replaced it (`mode` says which). */
   memberWritten: "secrets/member_written",
   /** An application added a version to a keyspace member, keeping the prior one valid. */

@@ -10,6 +10,7 @@ import { z } from "zod";
 import { RotationStatus, RotationTrigger } from "../data/secretRotations";
 import type { SecretsTables } from "../data/tables";
 import { SecretBackend, type SecretRegistry, SecretValueType } from "../registry";
+import { RotationFailure, rotationFailureCodeOf } from "../rotation/rotationLedger";
 import type { CarriesNoValue } from "../valueBearing";
 
 /**
@@ -41,8 +42,14 @@ import type { CarriesNoValue } from "../valueBearing";
  * Both columns exist on `pithy_secrets_rotations` and neither is exposed. They are free text written at
  * a failure site, which is precisely where a value gets pasted by accident — an exception message that
  * interpolated what it was decrypting, a snapshot taken "for debugging". A failed rotation is still
- * reported: {@link SecretRotationRecord.status} says `failed`, which is the fact an owner acts on. If a
- * reason is ever wanted it belongs here as a **code** the capability defines, never as the message.
+ * reported: {@link SecretRotationRecord.status} says `failed`, which is the fact an owner acts on.
+ *
+ * **And since #602 it says why, as a code.** An unattended rotation fails with nobody watching, so the
+ * status read is where an owner learns it did — and *failed* alone does not say whether to re-run it or go
+ * to a console now. Every sentence this capability writes into `error_message` is chosen by a code
+ * (`rotationFailureText`), so the code is read back off it (`rotationFailureCodeOf`) and published as a
+ * member of `RotationFailure`. The column is read only to make that lookup and never leaves this module; a
+ * sentence nothing here composed — the free text the rule above is about — reads back as `null`.
  *
  * ## What is reported, and what is deliberately not
  *
@@ -80,9 +87,23 @@ export const SecretRotationRecord = z
       "What caused it — a scheduled `cron` run, a `manual` action, or the `baseline` marker written when a secret is first stored.",
     ),
     rotatedBy: z.string().describe("Who or what initiated it: a workflow instance id, an operator id, or `baseline`."),
+    failure: RotationFailure.nullable().describe(
+      "Why a `failed` attempt failed, as a code. Null for an attempt that did not fail, and for one whose failure this release did not write — never the text of the failure.",
+    ),
   })
   .describe("One rotation attempt, in metadata only. Carries no value, no ciphertext, and no failure text.");
 export type SecretRotationRecord = z.output<typeof SecretRotationRecord>;
+
+/** The newest closed attempt on one secret, when it failed. An instant and a code — no message, no actor. */
+export const SecretFailure = z
+  .object({
+    at: SQLiteDate.describe("When the failed attempt closed. Ms-epoch in SQLite, a `Date` here."),
+    reason: RotationFailure.nullable().describe(
+      "Why, as a code. Null when the failure text is not one this release writes.",
+    ),
+  })
+  .describe("A secret's newest closed rotation attempt, when it failed — what an unattended rotation reports.");
+export type SecretFailure = z.output<typeof SecretFailure>;
 
 /**
  * One secret's status: what the registry declares about it, what the store knows about it, and whether
@@ -125,6 +146,11 @@ export const SecretStatus = z
     lastRotatedAt: SQLiteDate.nullable().describe(
       "The newest rotation that completed successfully, or **null for never rotated** — which is a different fact from rotated long ago, and must not render as one.",
     ),
+    lastFailure: SecretFailure.nullable()
+      .optional()
+      .describe(
+        "The newest closed attempt, when it failed: when, and why as a code. Null when the newest closed attempt succeeded or none is recorded — a failure an attempt since has put right is not reported. Absent when the read did not ask (`failures: false`), which the health summary never does.",
+      ),
     rotationCount: z
       .number()
       .int()
@@ -188,6 +214,8 @@ interface StoredFacts {
 interface RotationFacts {
   rotationCount: number;
   lastRotatedAt: Date | null;
+  /** Present only when the read asked for failures. */
+  lastFailure?: SecretFailure | null;
 }
 
 /**
@@ -268,7 +296,11 @@ async function storedFacts(db: SecretsStatusDb, names: string[]): Promise<Map<st
  * conversion. Worth stating plainly: the sweep that produced the issue looked at this file and did not
  * see it, which is the argument for asking the question again rather than for trusting a list.
  */
-async function rotationFacts(db: SecretsStatusDb, names: string[]): Promise<Map<string, Decoded<RotationFacts>>> {
+async function rotationFacts(
+  db: SecretsStatusDb,
+  names: string[],
+  failures: boolean,
+): Promise<Map<string, Decoded<RotationFacts>>> {
   const found = new Map<string, Decoded<RotationFacts>>();
   for (const chunk of chunkByBoundParameters(names, 0)) {
     const rows = await db
@@ -281,21 +313,65 @@ async function rotationFacts(db: SecretsStatusDb, names: string[]): Promise<Map<
       .where("name", "in", chunk)
       .groupBy("name")
       .execute();
+    const closed = failures ? await newestClosed(db, chunk) : undefined;
     for (const row of rows) {
       // Null is not a failure here and must not become one: it is the aggregate saying this secret has
       // never rotated successfully, which is the fact `SecretStatus.lastRotatedAt` is documented to carry.
       // Only a non-null value that will not decode is unreadable.
+      const last = closed?.get(row.name);
+      if (last?.state === "unreadable") {
+        found.set(row.name, { state: "unreadable" });
+        continue;
+      }
       try {
         found.set(row.name, {
           state: "readable",
           facts: {
             rotationCount: Number(row.rotationCount),
             lastRotatedAt: row.lastRotatedAt === null ? null : SQLiteDate.parse(row.lastRotatedAt),
+            ...(closed === undefined ? {} : { lastFailure: last?.facts ?? null }),
           },
         });
       } catch {
         found.set(row.name, { state: "unreadable" });
       }
+    }
+  }
+  return found;
+}
+
+/**
+ * The newest closed attempt per name, when it failed — as an instant and a code (#602).
+ *
+ * `error_message` is selected, and this is the one place in the module it is: it is handed to
+ * `rotationFailureCodeOf`, which answers a member of a closed enum or `null`, and the text goes no further.
+ * The ordering takes `id` as the tie-break, as the history read does, so two rows closed in one millisecond
+ * resolve the same way every time.
+ */
+async function newestClosed(db: SecretsStatusDb, names: string[]): Promise<Map<string, Decoded<SecretFailure | null>>> {
+  const rows = await db
+    .selectFrom("pithySecretsRotations")
+    .select(["name", "status", "completedAt", "errorMessage"])
+    .where("name", "in", names)
+    .where("completedAt", "is not", null)
+    .orderBy("completedAt", "desc")
+    .orderBy("id", "desc")
+    .execute();
+  const found = new Map<string, Decoded<SecretFailure | null>>();
+  for (const row of rows) {
+    if (found.has(row.name)) continue;
+    if (row.status !== "failed") {
+      found.set(row.name, { state: "readable", facts: null });
+      continue;
+    }
+    // The `catch` takes no binding, for the reason every decode in this file gives.
+    try {
+      found.set(row.name, {
+        state: "readable",
+        facts: SecretFailure.parse({ at: row.completedAt, reason: rotationFailureCodeOf(row.errorMessage) }),
+      });
+    } catch {
+      found.set(row.name, { state: "unreadable" });
     }
   }
   return found;
@@ -356,6 +432,12 @@ export type SecretRotationEntry =
 export interface SecretStatusOptions {
   /** The clock `overdue` is measured against. Injected so a freshness test does not have to wait 90 days. */
   now?: Date;
+  /**
+   * Also read why each secret's newest closed attempt failed, as a code (#602). Off by default, and the
+   * health summary leaves it off: that read is held to never asking the rotations table for its free-text
+   * columns at all, and the code is read back off one of them. The status route turns it on.
+   */
+  failures?: boolean;
 }
 
 /**
@@ -374,7 +456,10 @@ export async function readSecretStatus(
   const names = reportableNames(registry);
   if (names.length === 0) return [];
   const now = options.now ?? new Date();
-  const [stored, rotations] = await Promise.all([storedFacts(db, names), rotationFacts(db, names)]);
+  const [stored, rotations] = await Promise.all([
+    storedFacts(db, names),
+    rotationFacts(db, names, options.failures === true),
+  ]);
 
   return names.map((name): SecretStatusEntry => {
     // Present because `reportableNames` derived the list from this registry.
@@ -415,6 +500,7 @@ export async function readSecretStatus(
       createdAt: row?.createdAt ?? null,
       updatedAt: row?.updatedAt ?? null,
       lastRotatedAt,
+      ...(options.failures === true ? { lastFailure: rotation?.lastFailure ?? null } : {}),
       rotationCount: rotation?.rotationCount ?? 0,
       rotateEveryDays,
       overdue: overdueAgainst(reference, rotateEveryDays, now),
@@ -442,19 +528,23 @@ export async function readSecretRotations(
 ): Promise<SecretRotationEntry[]> {
   const rows = await db
     .selectFrom("pithySecretsRotations")
-    .select(["startedAt", "completedAt", "status", "trigger", "rotatedBy"])
+    .select(["startedAt", "completedAt", "status", "trigger", "rotatedBy", "errorMessage"])
     .where("name", "=", name)
     .orderBy("startedAt", "desc")
     .orderBy("id", "desc")
     .limit(limit)
     .execute();
-  return rows.map((row): SecretRotationEntry => {
+  return rows.map(({ errorMessage, ...row }): SecretRotationEntry => {
     // The `catch` takes no binding. A `ZodError` from this parse carries the offending column value as its
     // issue `input`, and the row it came from is one whose neighboring columns are `error_message` and
     // `metadata_snapshot` — free text written at a failure site. Nothing derived from the rejection may
     // travel, and with nothing in scope there is nothing that could.
+    //
+    // `errorMessage` is destructured off before the parse and reaches only `rotationFailureCodeOf` (#602):
+    // a code, or `null`, is what crosses.
     try {
-      return { state: "readable", record: SecretRotationRecord.parse(row) };
+      const failure = row.status === "failed" ? rotationFailureCodeOf(errorMessage) : null;
+      return { state: "readable", record: SecretRotationRecord.parse({ ...row, failure }) };
     } catch {
       return { state: "unreadable" };
     }

@@ -8,7 +8,15 @@ import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { workflowHostName } from "@pithy-sh/core/src/workflow/naming";
-import { SECRETS_CAPABILITY, secretsRotateWorkflowName, secretsWriteWorkflowName } from "../manager/dispatcher";
+import { secretBindingName } from "../env/bindingName";
+import {
+  SECRETS_CAPABILITY,
+  secretsRotateWorkflowName,
+  secretsValueRotateWorkflowName,
+  secretsWriteWorkflowName,
+} from "../manager/dispatcher";
+import { unattendedRotation } from "../registry";
+import { rotationStoreEntry, type StampedRotation, stampedEntry } from "../rotation/rotationSchedule";
 import { type ManagedEnvironment, managedEnvironments } from "../scope";
 import { masterKeySecretName, runtimeTokenSecretName } from "./provisionSecrets";
 
@@ -39,6 +47,9 @@ const MANAGER_TOKEN_BINDING = RUNTIME_TOKEN_SECRET;
 
 /** The manager's at-rest rotation Workflow binding — the Workflow a feature's manager never hosts (#643). */
 const ROTATION_BINDING = "AT_REST_ROTATION";
+
+/** The manager's value-rotation Workflow binding (#602) — a feature's manager never hosts this one either. */
+const VALUE_ROTATION_BINDING = "VALUE_ROTATION";
 
 /** The resolved resource ids for one environment's manager deploy. */
 export interface ManagerConfigParams {
@@ -77,6 +88,20 @@ export interface ManagerConfigParams {
    * key ignored. Omitted, the template's own value stands and both readers agree on it as before.
    */
   rotationIntervalDays?: number;
+  /**
+   * **The value-rotation schedule, from the project's registry (#602).** Every named secret declaring
+   * `rotateEveryDays`, aggregated across every capability the project composes and stamped by
+   * `stampedRotations`. Written into `VALUE_ROTATIONS` — the manager is prebuilt and never reads
+   * `pithy.config.ts`, so this var is the only way it learns which secrets rotate. Omitted, the manager
+   * rotates no values, which is what every manager provisioned before this existed does.
+   */
+  valueRotations?: readonly StampedRotation[];
+  /**
+   * The environment whose manager alone rotates a `global` secret: the last declared, by
+   * `canonicalGlobalEnvironment`. Stamped as `GLOBAL_ENVIRONMENT` on every manager, so each one can tell
+   * by construction whether a global secret is its to rotate. Omitted, no manager rotates one.
+   */
+  globalEnvironment?: ManagedEnvironment;
 }
 
 /**
@@ -122,6 +147,8 @@ function managerWorkflowName(
       return secretsWriteWorkflowName(project, env, feature);
     case ROTATION_BINDING:
       return secretsRotateWorkflowName(project, env, feature);
+    case VALUE_ROTATION_BINDING:
+      return secretsValueRotateWorkflowName(project, env, feature);
     default:
       throw new InternalError({
         message: "The secrets manager template declares a Workflow provisioning cannot name.",
@@ -148,6 +175,8 @@ export function resolveManagerConfig(
   params: ManagerConfigParams,
 ): ManagerWranglerTemplate {
   const { env, databaseId, storeId, accountId, project, feature, rotationIntervalDays } = params;
+  // A feature runs no cron, so it rotates nothing and needs no schedule (#643).
+  const valueRotations = feature ? undefined : params.valueRotations;
   const name = managerWorkerName(project, env, feature);
   const resolved: ManagerWranglerTemplate = structuredClone(template);
 
@@ -157,7 +186,9 @@ export function resolveManagerConfig(
     resolved.secrets_store_secrets = resolved.secrets_store_secrets.filter(
       (entry) => entry.binding !== MANAGER_TOKEN_BINDING,
     );
-    resolved.workflows = resolved.workflows.filter((wf) => wf.binding !== ROTATION_BINDING);
+    resolved.workflows = resolved.workflows.filter(
+      (wf) => wf.binding !== ROTATION_BINDING && wf.binding !== VALUE_ROTATION_BINDING,
+    );
     resolved.triggers = { crons: [] };
   }
   // A declared environment's manager and its D1 share one name. A feature's D1 is the one the feature's own
@@ -171,11 +202,14 @@ export function resolveManagerConfig(
   // entry name is resolved here, never passed through. The template's literals are placeholders: an
   // entry name provisioning did not write is an entry the worker cannot bind, so an unrecognized
   // binding is an authoring bug and fails loudly rather than deploying a worker that dies on first read.
-  resolved.secrets_store_secrets = resolved.secrets_store_secrets.map((entry) => ({
-    ...entry,
-    store_id: storeId,
-    secret_name: managerStoreEntryName(entry.binding, project, env, feature),
-  }));
+  resolved.secrets_store_secrets = [
+    ...resolved.secrets_store_secrets.map((entry) => ({
+      ...entry,
+      store_id: storeId,
+      secret_name: managerStoreEntryName(entry.binding, project, env, feature),
+    })),
+    ...rotatedStoreBindings(valueRotations ?? [], project, env, storeId, params.globalEnvironment),
+  ];
   // The write Workflow's name is the CLI's dispatch target (<project>-<env>-secrets-write). Both are
   // composed from the binding, so two projects' managers are addressable separately in one account.
   resolved.workflows = resolved.workflows.map((wf) => ({
@@ -191,9 +225,39 @@ export function resolveManagerConfig(
     // A var is a string on the wire, and the cron reads it through `Number()`. Left out, the template's own
     // value stands — see `ManagerConfigParams.rotationIntervalDays` for why it is stamped at all.
     ...(rotationIntervalDays === undefined ? {} : { ROTATION_INTERVAL_DAYS: String(rotationIntervalDays) }),
+    // JSON in a string var, parsed and re-checked by the manager: see `rotation/rotationSchedule.ts`.
+    ...(valueRotations === undefined ? {} : { VALUE_ROTATIONS: JSON.stringify(valueRotations) }),
+    ...(feature || params.globalEnvironment === undefined ? {} : { GLOBAL_ENVIRONMENT: params.globalEnvironment }),
   };
 
   return resolved;
+}
+
+/**
+ * **The Secrets Store bindings a manager needs for the secrets it rotates (#602)** — one per
+ * `cf-secrets-store` secret the cron rotates *here*: every environment-scoped one, and a global one only on
+ * the manager that owns global secrets. The rotation reads the envelope it appends to through the binding,
+ * because Cloudflare never serves a value over REST; a binding it does not need is one it is not given.
+ *
+ * Named the way an application Worker binds the same secret (`secretBindingName`), so the manager and the
+ * app read one entry under one binding name.
+ */
+function rotatedStoreBindings(
+  valueRotations: readonly StampedRotation[],
+  project: string,
+  env: ManagedEnvironment,
+  storeId: string,
+  globalEnvironment: ManagedEnvironment | undefined,
+): Array<{ binding: string; store_id: string; secret_name: string }> {
+  return valueRotations
+    .filter((rotation) => rotation.backend === "cf-secrets-store")
+    .filter((rotation) => unattendedRotation(stampedEntry(rotation)) === "rotates")
+    .filter((rotation) => rotation.scope === "environment" || globalEnvironment === env)
+    .map((rotation) => ({
+      binding: secretBindingName(rotation.name),
+      store_id: storeId,
+      secret_name: rotationStoreEntry(project, env, rotation),
+    }));
 }
 
 /**

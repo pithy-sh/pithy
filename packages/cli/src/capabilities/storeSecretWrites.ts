@@ -42,8 +42,9 @@ import type { SecretsStore } from "../provision/store";
  * The request carries the flag (`SecretWriteRequest.bootstrap`) for exactly the reason it carries
  * `backend` — a writer downstream of the routing seam cannot re-derive a registry fact.
  *
- * A value rotation (append a version) is still a deferred feature, exactly as it is for `d1`: an `update`
- * replaces the envelope with a fresh version 1. See `management/writeSecret.ts`, which says the same.
+ * An `update` here replaces the envelope with a fresh version 1, exactly as it does for `d1`. An append is
+ * the manager's: its unattended rotation reads the entry through a binding the CLI cannot have, appends a
+ * version, and retires the previous one after the entry's overlap (#602, `rotation/versionStore.ts`).
  *
  * ## The master key is not written here, and not because of this module
  *

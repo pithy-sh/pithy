@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { SecretReencryption } from "./secretReencryptions";
 import { SecretRotation } from "./secretRotations";
 import { SecretTableRegistration } from "./secretTables";
 import { SystemSecret } from "./systemSecrets";
@@ -14,6 +15,7 @@ export const secretsTables = {
   pithySecretsSystemSecrets: SystemSecret,
   pithySecretsRotations: SecretRotation,
   pithySecretsTables: SecretTableRegistration,
+  pithySecretsReencryptions: SecretReencryption,
 };
 export type SecretsTables = typeof secretsTables;
 

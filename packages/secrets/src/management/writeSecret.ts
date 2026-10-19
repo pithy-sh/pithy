@@ -23,7 +23,8 @@ import type { SystemSecretsStore } from "../store/systemSecretsStore";
  * `create` refuses an existing name; `update` refuses a missing one — the guard that keeps a typo
  * from creating a second secret or silently overwriting one. `probe` writes nothing and answers
  * whether a name is there. A new value is written as a fresh one-version envelope
- * (`initialVersionedValue`); value rotation (append) is a deferred feature.
+ * (`initialVersionedValue`). An append is not this module's: the manager's unattended rotation writes
+ * through `rotation/versionStore.ts`, which keeps the previous version for the entry's overlap (#602).
  */
 export type WriteSecretParams =
   | {

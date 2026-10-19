@@ -243,7 +243,9 @@ export function registerSecretsRoutes(options: SecretsRoutesOptions): (app: Hono
       }),
       requireControlPlane(SECRETS_STATUS_READ_SCOPE),
       async (c) => {
-        const entries = await readSecretStatus(secretsStatusDatabase(c), options.registry());
+        // With failures: an unattended rotation fails with nobody watching, and this is where an owner hears
+        // why (#602) — as a code, never as the column it is read back off.
+        const entries = await readSecretStatus(secretsStatusDatabase(c), options.registry(), { failures: true });
         // Narrowed, not filtered by shape. An entry whose row would not decode has no `status` to render, so
         // it cannot reach `secretStatusView` — the union is what makes that a compile error rather than an
         // `undefined` on the wire (#387).

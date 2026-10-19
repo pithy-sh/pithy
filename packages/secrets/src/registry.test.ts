@@ -15,6 +15,7 @@ import {
   type SecretRegistryEntry,
   SecretScope,
   SecretValueType,
+  unattendedRotation,
 } from "./registry";
 
 /** Build an invalid registry without `any`: route a loose object through the param type. */
@@ -666,5 +667,146 @@ describe("binding — what this secret's value exists to reach", () => {
     expect(() => defineSecretRegistry(asRegistry({ "support-r2-credentials": { ...bundle, binding: 7 } }))).toThrow(
       InternalError,
     );
+  });
+});
+
+describe("unattended rotation — rotateEveryDays with a kind the cron acts on (#602)", () => {
+  /** A minted, local, rotatable secret — the shape the manager's cron rotates by itself. */
+  const minted: SecretRegistryEntry = {
+    backend: "d1",
+    scope: "environment",
+    rotatable: true,
+    valueType: "text",
+    devValue: "random",
+    origin: { kind: "minted", recipe: { kind: "random", bytes: 32, encoding: "base64url" } },
+    rotation: { kind: "local" },
+    rotateEveryDays: 90,
+    overlap: { days: 7, minimumDays: 7 },
+  };
+  /** Supplied by a human, replaced by a human — reported overdue, never rotated. */
+  const manual: SecretRegistryEntry = {
+    backend: "d1",
+    scope: "environment",
+    rotatable: false,
+    valueType: "text",
+    origin: { kind: "obtained", issuer: "stripe", documentation: "https://dashboard.stripe.com/apikeys" },
+    rotation: { kind: "manual", issuer: "stripe", documentation: "https://dashboard.stripe.com/apikeys" },
+    rotateEveryDays: 90,
+  };
+
+  test("classifies what the cron does with each entry", () => {
+    expect(unattendedRotation(minted)).toBe("rotates");
+    expect(unattendedRotation(manual)).toBe("reports");
+    // A provider with no rotator is reported, because nothing here can call the issuer.
+    expect(
+      unattendedRotation({
+        ...manual,
+        rotatable: true,
+        rotation: { kind: "provider", issuer: "cloudflare", documentation: "https://developers.cloudflare.com/" },
+      }),
+    ).toBe("reports");
+    // No cadence, no schedule: the cron has nothing to say about it.
+    const { rotateEveryDays: _period, ...unscheduled } = minted;
+    expect(unattendedRotation(unscheduled)).toBeNull();
+  });
+
+  test("accepts a minted, rotatable secret with an overlap at or above its floor", () => {
+    expect(() => defineSecretRegistry({ "auth-session-secret": minted })).not.toThrow();
+    expect(() =>
+      defineSecretRegistry({ "auth-session-secret": { ...minted, overlap: { days: 14, minimumDays: 7 } } }),
+    ).not.toThrow();
+  });
+
+  test("refuses a missing overlap, naming the entry", () => {
+    const { overlap: _overlap, ...bare } = minted;
+    expect(() => defineSecretRegistry({ "auth-session-secret": bare })).toThrow(/auth-session-secret.*overlap/);
+  });
+
+  test("refuses an overlap shorter than its declared minimum", () => {
+    expect(() =>
+      defineSecretRegistry({ "auth-session-secret": { ...minted, overlap: { days: 3, minimumDays: 7 } } }),
+    ).toThrow(/shorter than its minimum/);
+  });
+
+  test("refuses an overlap as long as the period, which would retire a version after its successor rotated", () => {
+    expect(() =>
+      defineSecretRegistry({
+        "auth-session-secret": { ...minted, rotateEveryDays: 7, overlap: { days: 7, minimumDays: 7 } },
+      }),
+    ).toThrow(/shorter than rotateEveryDays/);
+  });
+
+  test("refuses unattended rotation of a single-version secret", () => {
+    expect(() => defineSecretRegistry({ "auth-session-secret": { ...minted, rotatable: false } })).toThrow(
+      /must be rotatable/,
+    );
+  });
+
+  test("refuses unattended rotation of a keyspace", () => {
+    const { devValue: _devValue, origin: _origin, rotation: _rotation, ...shape } = minted;
+    expect(() =>
+      defineSecretRegistry({
+        "connection-signing-key": {
+          ...shape,
+          keyed: true,
+          origin: { kind: "obtained", issuer: "other", documentation: "https://example.com/" },
+          rotation: { kind: "provider", issuer: "other", documentation: "https://example.com/" },
+          rotator: { roll: async () => ({ newValue: "next" }) },
+        },
+      }),
+    ).toThrow(/keyspace/);
+  });
+
+  test("refuses unattended rotation of the master key", () => {
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({
+          [MASTER_KEY_BINDING]: {
+            backend: "cf-secrets-store",
+            scope: "environment",
+            rotatable: true,
+            bootstrap: true,
+            valueType: "json",
+            schema: z.object({ currentVersion: z.string().describe("Pointer.") }).describe("Keys."),
+            origin: { kind: "minted", recipe: { kind: "encryptionConfig" } },
+            rotation: { kind: "local" },
+            rotateEveryDays: 30,
+            overlap: { days: 7, minimumDays: 7 },
+          },
+        }),
+      ),
+    ).toThrow(/master key/);
+  });
+
+  test("refuses unattended rotation of a global d1 secret: N sealed copies no one manager can reach", () => {
+    expect(() => defineSecretRegistry({ "shared-hmac": { ...minted, scope: "global" } })).toThrow(/global d1/);
+    // The same secret held once, in the Secrets Store, is one entry production's manager writes.
+    expect(() =>
+      defineSecretRegistry({ "shared-hmac": { ...minted, scope: "global", backend: "cf-secrets-store" } }),
+    ).not.toThrow();
+  });
+
+  test("still lets a manual secret declare a cadence with no overlap: it is reported, never rotated", () => {
+    expect(() => defineSecretRegistry({ "stripe-live-key": manual })).not.toThrow();
+  });
+
+  test("refuses a malformed overlap wherever it appears", () => {
+    for (const overlap of [
+      { days: 0, minimumDays: 0 },
+      { days: 1.5, minimumDays: 1 },
+      { days: 7, minimumDays: -1 },
+      { days: 7, minimumDays: 7, reencrypt: [""] },
+      { days: 7, minimumDays: 7, reencrypt: ["auth-jwks", "auth-jwks"] },
+    ]) {
+      expect(() => defineSecretRegistry(asRegistry({ "auth-session-secret": { ...minted, overlap } }))).toThrow(
+        InternalError,
+      );
+    }
+  });
+
+  test("refuses an overlap on a secret that keeps one version, since there is nothing to overlap", () => {
+    expect(() =>
+      defineSecretRegistry({ "stripe-live-key": { ...manual, overlap: { days: 7, minimumDays: 7 } } }),
+    ).toThrow(/rotatable: false/);
   });
 });

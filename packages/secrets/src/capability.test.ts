@@ -21,10 +21,11 @@ function cap() {
 }
 
 describe("secrets capability", () => {
-  test("contributes a dedicated SECRETS database with its three tables", () => {
+  test("contributes a dedicated SECRETS database with its four tables", () => {
     const db = cap().databases?.secrets;
     expect(db?.binding).toBe("SECRETS");
     expect(Object.keys(db?.tables ?? {}).sort()).toEqual([
+      "pithySecretsReencryptions",
       "pithySecretsRotations",
       "pithySecretsSystemSecrets",
       "pithySecretsTables",
@@ -45,9 +46,9 @@ describe("secrets capability", () => {
     expect(byName.SECRETS_ENCRYPTION_KEYS).toBe("secret");
   });
 
-  test("ships its chain — 0001_init, then the appended 0002_tables — at its declared order", () => {
+  test("ships its chain — 0001_init, then the appended 0002_tables and 0003_reencryptions — at its declared order", () => {
     const db = cap().databases?.secrets;
-    expect(Object.keys(db?.migrations ?? {})).toEqual(["0001_init", "0002_tables"]);
+    expect(Object.keys(db?.migrations ?? {})).toEqual(["0001_init", "0002_tables", "0003_reencryptions"]);
     expect(db?.migrationOrder).toBe(100);
   });
 

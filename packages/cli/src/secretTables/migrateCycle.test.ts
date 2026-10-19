@@ -102,6 +102,7 @@ describe("pithy migrate over a declared table", () => {
     expect(second.applied).toEqual([
       "0100_secrets_0001_init",
       "0100_secrets_0002_tables",
+      "0100_secrets_0003_reencryptions",
       "1500_app_0001_customer_init",
     ]);
     expect(await columns()).toContain("organization_id");

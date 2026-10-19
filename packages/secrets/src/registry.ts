@@ -13,8 +13,8 @@ import type { ValueRotator } from "./rotation/valueRotator";
 
 /**
  * The secret registry is the dispatcher. Each entry declares where a secret lives
- * (`backend`), whether its value is shared across environments (`scope`), whether a future
- * value-rotator may manage it (`rotatable`), and how it is interpreted (`valueType`). The
+ * (`backend`), whether its value is shared across environments (`scope`), whether it keeps a
+ * previous version while it changes (`rotatable`), and how it is interpreted (`valueType`). The
  * `secretsStore` read seam and the `pithy secrets` CLI both route off these axes — never off
  * hard-coded names. The entry itself is a TypeScript type (not a Zod object) because a `json`
  * entry carries a Zod schema; the enum axes below are exported Zod enums so they document
@@ -22,10 +22,10 @@ import type { ValueRotator } from "./rotation/valueRotator";
  *
  * **One uniform serde.** Every secret is stored the same way — a `{ currentVersion, versions }`
  * value envelope inside one AES-256-GCM envelope — and read through one uniform API
- * (`get` / `getVersions`). `rotatable` never changes storage or the fetch shape; it is
- * forward-looking metadata: may a value-rotator (a deferred feature) manage this secret, and so
- * accumulate multiple still-valid versions. Storing consistently today is how adding that rotator
- * becomes append-a-version rather than reshape-everything.
+ * (`get` / `getVersions`). `rotatable` never changes storage or the fetch shape: it says whether a
+ * rotation may accumulate still-valid versions, which is what the secrets manager's unattended rotation
+ * does (#602) — append a version, keep the previous one for the entry's `overlap`, then retire it. Storing
+ * consistently is what made that an append rather than a reshape.
  */
 
 export const SecretBackend = z
@@ -59,9 +59,13 @@ export interface SecretRegistryEntryBase {
   /** Whether the value is shared across environments or differs per environment. */
   scope: SecretScope;
   /**
-   * Whether a future value-rotator may manage this secret (and so it may carry multiple
-   * still-valid versions). Forward-looking metadata only — storage and the read API are the
-   * same either way. Value rotation itself is deferred.
+   * Whether this secret carries more than one still-valid version while it changes — the overlap a
+   * rotation needs so things issued under the old value keep verifying. Storage and the read API are the
+   * same either way: a `rotatable: false` secret is replaced in place and every reader moves at once.
+   *
+   * **Unattended rotation requires it (#602).** The secrets manager's cron rotates a secret on its own
+   * only when it can append a version and retire the previous one later, so `defineSecretRegistry`
+   * refuses a schedule the cron would act on for a secret declared `rotatable: false`.
    */
   rotatable: boolean;
   /**
@@ -82,8 +86,22 @@ export interface SecretRegistryEntryBase {
    *
    * Measured from the newest successful rotation, or from when the secret was first written when there
    * has never been one. See `admin/status.ts`.
+   *
+   * **It is also the period the secrets manager's cron rotates on, when it can (#602).** What the cron
+   * does with it follows {@link rotation}: a `local` secret is re-minted, a `provider` secret is rolled
+   * only when a {@link rotator} is attached, and a `manual` one is reported overdue and changed by nobody.
+   * {@link unattendedRotation} is the one answer to that question. A secret the cron rotates must declare
+   * an {@link overlap} as well, and the overlap must be shorter than this period.
    */
   rotateEveryDays?: number;
+  /**
+   * **How long a replaced version keeps verifying, and what has to move off it first (#602).**
+   *
+   * A rotation appends a version and makes it current. The previous one stays in the envelope for
+   * `days`, so a cookie, a link or a signature issued under it still verifies — and then the rotation
+   * retires it. Required on every secret the cron rotates by itself; see {@link SecretOverlap}.
+   */
+  overlap?: SecretOverlap;
   /**
    * How this secret's value may be minted, when it may be minted at all.
    *
@@ -225,6 +243,50 @@ export interface SecretRegistryEntryBase {
   binding?: string;
   /** Optional human note surfaced by the audit (`ls --check`). */
   notes?: string;
+}
+
+/**
+ * The window a replaced version stays valid in, declared by whoever owns the secret.
+ *
+ * **`minimumDays` is the floor, and the owner states it.** It is the lifetime of the longest-lived thing
+ * issued under one version: a session's sliding lifetime for a session secret, a link's lifetime for a
+ * link-signing key. Retiring a version sooner than that rejects something that was valid when it was
+ * issued, so `defineSecretRegistry` refuses a `days` below it. `days` is what the rotation actually waits.
+ *
+ * **`reencrypt` is what has no lifetime at all.** A value encrypted under the secret at rest — Better
+ * Auth's JWKS private keys under the session secret — does not expire, so waiting does not make it safe
+ * to retire the version it is sealed under. Each name here is a dependent its owner re-encrypts under the
+ * new version and records as done; retirement waits for every one of them, and gives up rather than
+ * retire over one that never reported. See `rotation/reencryption.ts`.
+ */
+export interface SecretOverlap {
+  /** Days a replaced version keeps verifying before the rotation retires it. A whole number, at least 1. */
+  days: number;
+  /** The shortest overlap this secret tolerates: the lifetime of the longest-lived thing issued under it. */
+  minimumDays: number;
+  /** Values sealed under this secret at rest, by name, that must be re-encrypted before a version retires. */
+  reencrypt?: readonly string[];
+}
+
+/**
+ * What the secrets manager's cron does with one entry: `rotates` it by itself, `reports` it overdue and
+ * changes nothing, or has nothing to say (`null`) because no period is declared.
+ *
+ * **The one answer, read by both halves.** `defineSecretRegistry` refuses a `rotates` entry that could not
+ * survive a rotation, and the cron plans from the same answer — so a secret the registry accepted is a
+ * secret the cron can rotate, and a secret it reports is one nothing here could rotate anyway.
+ *
+ * - `local` rotates: the kit makes another value the same way it made the first.
+ * - `provider` rotates only with a {@link SecretRegistryEntryBase.rotator} attached. Without one the issuer
+ *   cannot be called, and the honest answer is a report.
+ * - `manual` reports, always. A human in somebody else's console is the only way it changes.
+ * - No `rotation` at all reports: nobody has said how it is replaced, so nothing replaces it.
+ */
+export function unattendedRotation(entry: SecretRegistryEntry): "rotates" | "reports" | null {
+  if (entry.rotateEveryDays === undefined) return null;
+  if (entry.rotation?.kind === "local") return "rotates";
+  if (entry.rotation?.kind === "provider" && entry.rotator !== undefined) return "rotates";
+  return "reports";
 }
 
 /** A `text` entry exposes a raw string. */
@@ -416,6 +478,101 @@ function validateSecretDeclaration(name: string, entry: SecretRegistryEntry): vo
   }
 }
 
+/** Whether a value is a whole number of days, at least one. */
+function isWholeDays(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1;
+}
+
+/**
+ * Check one entry's {@link SecretOverlap}, and — when the cron would rotate it by itself — that a
+ * rotation could not break it (#602).
+ *
+ * **Every refusal is a rotation that would have gone wrong unattended.** Nobody is watching a 03:00 cron,
+ * so what an operator would catch at a terminal has to be caught here, where the author is.
+ */
+function validateUnattendedRotation(name: string, entry: SecretRegistryEntry): void {
+  const { overlap } = entry;
+  if (overlap !== undefined) {
+    if (typeof overlap !== "object" || overlap === null) {
+      throw new InternalError({ message: `secret registry: entry "${name}" has an invalid overlap.` });
+    }
+    if (!isWholeDays(overlap.days) || !isWholeDays(overlap.minimumDays)) {
+      throw new InternalError({
+        message: `secret registry: entry "${name}" must declare its overlap's days and minimumDays as whole numbers of days, at least 1.`,
+      });
+    }
+    if (overlap.days < overlap.minimumDays) {
+      throw new InternalError({
+        message: `secret registry: entry "${name}" declares an overlap of ${overlap.days} days, shorter than its minimum of ${overlap.minimumDays} — a version retired sooner rejects something that was valid when it was issued.`,
+      });
+    }
+    if (overlap.reencrypt !== undefined) {
+      const dependents: readonly unknown[] = Array.isArray(overlap.reencrypt) ? overlap.reencrypt : [null];
+      if (dependents.some((dependent) => typeof dependent !== "string" || dependent.length === 0)) {
+        throw new InternalError({
+          message: `secret registry: entry "${name}" must name each value its overlap re-encrypts as a non-empty string.`,
+        });
+      }
+      if (new Set(dependents).size !== dependents.length) {
+        throw new InternalError({
+          message: `secret registry: entry "${name}" names one re-encrypted value twice in its overlap.`,
+        });
+      }
+    }
+  }
+
+  if (unattendedRotation(entry) !== "rotates") {
+    // An overlap is the time two versions are both valid. A secret that keeps one has no second one.
+    if (overlap !== undefined && !entry.rotatable) {
+      throw new InternalError({
+        message: `secret registry: entry "${name}" declares an overlap but is rotatable: false — a secret that keeps one version has nothing to overlap.`,
+      });
+    }
+    return;
+  }
+  const period = entry.rotateEveryDays as number;
+  // The master key first: it is `rotatable: false` too, and the reason that matters is not that one.
+  if (entry.bootstrap) {
+    throw new InternalError({
+      message: `secret registry: entry "${name}" is the master key, and the cron never replaces it in place — it rotates on its own key versions.`,
+      action:
+        "Remove rotateEveryDays. Set rotationIntervalDays on secrets() to change how often the master key rotates.",
+    });
+  }
+  if (entry.keyed) {
+    throw new InternalError({
+      message: `secret registry: keyed entry "${name}" declares rotateEveryDays, and the cron does not rotate a keyspace — its members are rotated one key at a time by the application that owns them.`,
+    });
+  }
+  if (!entry.rotatable) {
+    throw new InternalError({
+      message: `secret registry: entry "${name}" rotates unattended every ${period} days, so it must be rotatable — a single-version secret has no overlap, and replacing it breaks every reader at once.`,
+    });
+  }
+  if (overlap === undefined) {
+    throw new InternalError({
+      message: `secret registry: entry "${name}" rotates unattended every ${period} days and declares no overlap — say how long the previous version keeps verifying.`,
+      action: "Add overlap: { days, minimumDays } to the entry.",
+    });
+  }
+  if (overlap.days >= period) {
+    throw new InternalError({
+      message: `secret registry: entry "${name}" declares an overlap of ${overlap.days} days, which must be shorter than rotateEveryDays (${period}) — otherwise a version is retired after its successor has already been replaced.`,
+    });
+  }
+  if (entry.scope === "global" && entry.backend === "d1") {
+    throw new InternalError({
+      message: `secret registry: entry "${name}" is a global d1 secret, and the cron does not rotate one — it is a sealed copy in every environment's vault, and one manager reaches only its own.`,
+      action: "Move it to the cf-secrets-store backend, where a global secret is one entry, or remove rotateEveryDays.",
+    });
+  }
+  if (entry.rotation?.kind === "local" && entry.devValue === undefined) {
+    throw new InternalError({
+      message: `secret registry: entry "${name}" is minted from a structure the cron cannot produce, so it cannot rotate unattended.`,
+    });
+  }
+}
+
 /** Whether a registry entry is read through a Worker binding of its own: a named `cf-secrets-store` secret. */
 export function isStoreBound(entry: Pick<SecretRegistryEntry, "backend" | "keyed">): boolean {
   return entry.backend === "cf-secrets-store" && !entry.keyed;
@@ -507,122 +664,134 @@ function declared(one: { name: string; owner?: string }): string {
  * type param preserves the precise entry literals for `SecretValue`/`SecretName`.
  */
 export function defineSecretRegistry<const R extends SecretRegistry>(registry: R): R {
-  for (const [name, entry] of Object.entries(registry)) {
-    if (!name) throw new InternalError({ message: "secret registry: every entry needs a non-empty name." });
-    // A name carrying the separator would be indistinguishable from a keyspace member, so one
-    // registry entry could shadow another tenant's stored credential. Refused at define time.
-    if (name.includes(KEYSPACE_SEPARATOR)) {
-      throw new InternalError({
-        message: `secret registry: entry "${name}" must not contain '${KEYSPACE_SEPARATOR}' — it separates a keyspace from a member key.`,
-      });
-    }
-    const axes: [string, z.ZodType, unknown][] = [
-      ["backend", SecretBackend, entry.backend],
-      ["scope", SecretScope, entry.scope],
-      ["valueType", SecretValueType, entry.valueType],
-    ];
-    for (const [field, schema, value] of axes) {
-      if (!schema.safeParse(value).success) {
-        throw new InternalError({
-          message: `secret registry: entry "${name}" has an invalid ${field} (${String(value)}).`,
-        });
-      }
-    }
-    if (typeof entry.rotatable !== "boolean") {
-      throw new InternalError({ message: `secret registry: entry "${name}" must declare rotatable as a boolean.` });
-    }
-    if (entry.rotateEveryDays !== undefined) {
-      // A cadence that is not a whole number of days, or is zero or negative, would make every read of
-      // this secret's status permanently overdue — a warning nobody can clear and everybody learns to
-      // ignore. Caught at define time, where the author is.
-      if (!Number.isInteger(entry.rotateEveryDays) || entry.rotateEveryDays < 1) {
-        throw new InternalError({
-          message: `secret registry: entry "${name}" must declare rotateEveryDays as a whole number of days, at least 1.`,
-        });
-      }
-    }
-    if (entry.valueType === "json" && !(entry.schema instanceof z.ZodType)) {
-      throw new InternalError({ message: `secret registry: json entry "${name}" must declare a Zod schema.` });
-    }
-    if (entry.devValue !== undefined) {
-      if (!DevSecretValue.safeParse(entry.devValue).success) {
-        throw new InternalError({
-          message: `secret registry: entry "${name}" has an invalid devValue (${String(entry.devValue)}).`,
-        });
-      }
-      // A minted value is a random string, so only a `text` entry can hold one: a `json` entry's shape
-      // is the schema's, and nothing can invent a credential that satisfies it.
-      if (entry.valueType !== "text") {
-        throw new InternalError({
-          message: `secret registry: entry "${name}" declares devValue but is not a text entry — a random value cannot satisfy a json schema.`,
-        });
-      }
-      // A keyspace has no single value to mint, and its members do not exist until runtime.
-      if (entry.keyed) {
-        throw new InternalError({
-          message: `secret registry: keyed entry "${name}" must not declare devValue — a keyspace has no one value.`,
-        });
-      }
-    }
-    validateSecretDeclaration(name, entry);
-    if (entry.bootstrap !== undefined) {
-      if (typeof entry.bootstrap !== "boolean") {
-        throw new InternalError({
-          message: `secret registry: entry "${name}" must declare bootstrap as a boolean.`,
-        });
-      }
-      // A bootstrap secret is one a Worker reads from a binding before the store exists, so the D1 store
-      // is not a place it can come from. Caught here, where the author is, rather than at a read that
-      // finds a row nothing will ever look at.
-      if (entry.bootstrap && entry.backend !== "cf-secrets-store") {
-        throw new InternalError({
-          message: `secret registry: bootstrap entry "${name}" must use the cf-secrets-store backend — it is read from its binding, before any store is open.`,
-        });
-      }
-      if (entry.bootstrap && entry.keyed) {
-        throw new InternalError({
-          message: `secret registry: keyed entry "${name}" must not declare bootstrap — a keyspace has no one value to bind.`,
-        });
-      }
-      // A bootstrap secret is what the decoder needs in order to exist, so nothing may invent one: the
-      // master key is composed by `initialMasterKeyConfig`, and a random string in its place orphans
-      // every secret already encrypted under the real one. Refused here so that every writer of a fresh
-      // dev secret — `pithy add`, `adopt`, the provisioners — can state a mintable secret is not
-      // bootstrap as a fact rather than as an assumption. See `initialDevSecret`.
-      if (entry.bootstrap && entry.devValue !== undefined) {
-        throw new InternalError({
-          message: `secret registry: bootstrap entry "${name}" must not declare devValue — nothing may mint the value every other secret is read through.`,
-        });
-      }
-    }
-    if (entry.keyed !== undefined && typeof entry.keyed !== "boolean") {
-      throw new InternalError({ message: `secret registry: entry "${name}" must declare keyed as a boolean.` });
-    }
-    // An empty string is the one value that reads as *declared and never declined*: the CLI would ask a
-    // Worker whether it declines `""`, get no for the life of the project, and call the secret reachable
-    // forever. Refused where the author is, like every other axis.
-    if (entry.binding !== undefined && (typeof entry.binding !== "string" || entry.binding.length === 0)) {
-      throw new InternalError({
-        message: `secret registry: entry "${name}" must declare binding as a non-empty binding name, or omit it.`,
-      });
-    }
-    if (entry.keyed) {
-      // Both axes are load-bearing for a keyspace — see `KeyedEntry`. Caught here, where the author
-      // is, rather than at a read that finds nothing and cannot say why.
-      if (entry.backend !== "d1") {
-        throw new InternalError({
-          message: `secret registry: keyed entry "${name}" must use the d1 backend — a Secrets Store binding is declared at build time, and its members are not.`,
-        });
-      }
-      if (entry.scope !== "environment") {
-        throw new InternalError({
-          message: `secret registry: keyed entry "${name}" must be environment-scoped — its members are written to one environment's store.`,
-        });
-      }
-    }
-  }
+  for (const [name, entry] of Object.entries(registry)) validateSecretEntry(name, entry);
   // After every entry's own axes, so an empty name is refused as empty and a malformed backend as
   // malformed, before a binding is derived from either.
   refuseUnbindableStoreSecrets(Object.entries(registry).map(([name, entry]) => ({ name, entry })));
   return registry;
+}
+
+/**
+ * **One entry, checked the way {@link defineSecretRegistry} checks every entry it is handed** — every axis,
+ * every pairing, and every refusal an unattended rotation depends on.
+ *
+ * Exported for a declaration that arrives from outside a registry: the secrets manager rebuilds each entry of
+ * its rotation schedule from a stamped var (#602), and a var is external config the registry's refusals must
+ * run over again before anything acts on it.
+ */
+export function validateSecretEntry(name: string, entry: SecretRegistryEntry): void {
+  if (!name) throw new InternalError({ message: "secret registry: every entry needs a non-empty name." });
+  // A name carrying the separator would be indistinguishable from a keyspace member, so one
+  // registry entry could shadow another tenant's stored credential. Refused at define time.
+  if (name.includes(KEYSPACE_SEPARATOR)) {
+    throw new InternalError({
+      message: `secret registry: entry "${name}" must not contain '${KEYSPACE_SEPARATOR}' — it separates a keyspace from a member key.`,
+    });
+  }
+  const axes: [string, z.ZodType, unknown][] = [
+    ["backend", SecretBackend, entry.backend],
+    ["scope", SecretScope, entry.scope],
+    ["valueType", SecretValueType, entry.valueType],
+  ];
+  for (const [field, schema, value] of axes) {
+    if (!schema.safeParse(value).success) {
+      throw new InternalError({
+        message: `secret registry: entry "${name}" has an invalid ${field} (${String(value)}).`,
+      });
+    }
+  }
+  if (typeof entry.rotatable !== "boolean") {
+    throw new InternalError({ message: `secret registry: entry "${name}" must declare rotatable as a boolean.` });
+  }
+  if (entry.rotateEveryDays !== undefined) {
+    // A cadence that is not a whole number of days, or is zero or negative, would make every read of
+    // this secret's status permanently overdue — a warning nobody can clear and everybody learns to
+    // ignore. Caught at define time, where the author is.
+    if (!Number.isInteger(entry.rotateEveryDays) || entry.rotateEveryDays < 1) {
+      throw new InternalError({
+        message: `secret registry: entry "${name}" must declare rotateEveryDays as a whole number of days, at least 1.`,
+      });
+    }
+  }
+  if (entry.valueType === "json" && !(entry.schema instanceof z.ZodType)) {
+    throw new InternalError({ message: `secret registry: json entry "${name}" must declare a Zod schema.` });
+  }
+  if (entry.devValue !== undefined) {
+    if (!DevSecretValue.safeParse(entry.devValue).success) {
+      throw new InternalError({
+        message: `secret registry: entry "${name}" has an invalid devValue (${String(entry.devValue)}).`,
+      });
+    }
+    // A minted value is a random string, so only a `text` entry can hold one: a `json` entry's shape
+    // is the schema's, and nothing can invent a credential that satisfies it.
+    if (entry.valueType !== "text") {
+      throw new InternalError({
+        message: `secret registry: entry "${name}" declares devValue but is not a text entry — a random value cannot satisfy a json schema.`,
+      });
+    }
+    // A keyspace has no single value to mint, and its members do not exist until runtime.
+    if (entry.keyed) {
+      throw new InternalError({
+        message: `secret registry: keyed entry "${name}" must not declare devValue — a keyspace has no one value.`,
+      });
+    }
+  }
+  validateSecretDeclaration(name, entry);
+  if (entry.bootstrap !== undefined) {
+    if (typeof entry.bootstrap !== "boolean") {
+      throw new InternalError({
+        message: `secret registry: entry "${name}" must declare bootstrap as a boolean.`,
+      });
+    }
+    // A bootstrap secret is one a Worker reads from a binding before the store exists, so the D1 store
+    // is not a place it can come from. Caught here, where the author is, rather than at a read that
+    // finds a row nothing will ever look at.
+    if (entry.bootstrap && entry.backend !== "cf-secrets-store") {
+      throw new InternalError({
+        message: `secret registry: bootstrap entry "${name}" must use the cf-secrets-store backend — it is read from its binding, before any store is open.`,
+      });
+    }
+    if (entry.bootstrap && entry.keyed) {
+      throw new InternalError({
+        message: `secret registry: keyed entry "${name}" must not declare bootstrap — a keyspace has no one value to bind.`,
+      });
+    }
+    // A bootstrap secret is what the decoder needs in order to exist, so nothing may invent one: the
+    // master key is composed by `initialMasterKeyConfig`, and a random string in its place orphans
+    // every secret already encrypted under the real one. Refused here so that every writer of a fresh
+    // dev secret — `pithy add`, `adopt`, the provisioners — can state a mintable secret is not
+    // bootstrap as a fact rather than as an assumption. See `initialDevSecret`.
+    if (entry.bootstrap && entry.devValue !== undefined) {
+      throw new InternalError({
+        message: `secret registry: bootstrap entry "${name}" must not declare devValue — nothing may mint the value every other secret is read through.`,
+      });
+    }
+  }
+  if (entry.keyed !== undefined && typeof entry.keyed !== "boolean") {
+    throw new InternalError({ message: `secret registry: entry "${name}" must declare keyed as a boolean.` });
+  }
+  // An empty string is the one value that reads as *declared and never declined*: the CLI would ask a
+  // Worker whether it declines `""`, get no for the life of the project, and call the secret reachable
+  // forever. Refused where the author is, like every other axis.
+  if (entry.binding !== undefined && (typeof entry.binding !== "string" || entry.binding.length === 0)) {
+    throw new InternalError({
+      message: `secret registry: entry "${name}" must declare binding as a non-empty binding name, or omit it.`,
+    });
+  }
+  if (entry.keyed) {
+    // Both axes are load-bearing for a keyspace — see `KeyedEntry`. Caught here, where the author
+    // is, rather than at a read that finds nothing and cannot say why.
+    if (entry.backend !== "d1") {
+      throw new InternalError({
+        message: `secret registry: keyed entry "${name}" must use the d1 backend — a Secrets Store binding is declared at build time, and its members are not.`,
+      });
+    }
+    if (entry.scope !== "environment") {
+      throw new InternalError({
+        message: `secret registry: keyed entry "${name}" must be environment-scoped — its members are written to one environment's store.`,
+      });
+    }
+  }
+  // Last, so every axis it reads has already been checked for shape.
+  validateUnattendedRotation(name, entry);
 }

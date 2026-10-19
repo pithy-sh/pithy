@@ -8,6 +8,7 @@ import { AT_REST_ROTATION_NAME } from "../data/secretRotations";
 import { secretsTables } from "../data/tables";
 import { secrets_0001_init } from "../migrations/0001_init";
 import { defineSecretRegistry } from "../registry";
+import { rotationFailureText } from "../rotation/rotationLedger";
 import { RotationTracker } from "../store/rotationTracker";
 import {
   readSecretRotations,
@@ -421,5 +422,89 @@ describe("readSecretRotations", () => {
 
     expect(first.map((rotation) => rotation.rotatedBy)).toEqual(["wf-c", "wf-b"]);
     expect(second).toEqual(first);
+  });
+});
+
+describe("why the last attempt failed, as a code and never as its text (#602)", () => {
+  test("is read only when asked: the default read never touches the free-text column", async () => {
+    await recordRotation(
+      "auth-signing-key",
+      daysAgo(2),
+      daysAgo(2),
+      "failed",
+      "cron",
+      "wf-1",
+      rotationFailureText("not-rotated"),
+    );
+    const [status] = readable(await readSecretStatus(db(), registry, { now: NOW })).filter(
+      (one) => one.name === "auth-signing-key",
+    );
+    expect(status).not.toHaveProperty("lastFailure");
+  });
+
+  test("the newest closed attempt, when it failed, is reported with the code its sentence was written from", async () => {
+    await storeSecret("auth-signing-key", daysAgo(100), daysAgo(100));
+    await recordRotation("auth-signing-key", daysAgo(100), daysAgo(100), "success", "baseline", "baseline");
+    await recordRotation(
+      "auth-signing-key",
+      daysAgo(2),
+      daysAgo(2),
+      "failed",
+      "cron",
+      "value-auth-signing-key-2026-08-09",
+      rotationFailureText("not-recorded"),
+    );
+    const [status] = readable(await readSecretStatus(db(), registry, { now: NOW, failures: true })).filter(
+      (one) => one.name === "auth-signing-key",
+    );
+    expect(status?.lastFailure).toEqual({ at: new Date(daysAgo(2)), reason: "not-recorded" });
+    const [failed] = records(await readSecretRotations(db(), "auth-signing-key", 10));
+    expect(failed?.failure).toBe("not-recorded");
+  });
+
+  test("text this release did not write is a failure with no reason, never the text", async () => {
+    await recordRotation("auth-signing-key", daysAgo(2), daysAgo(2), "failed", "cron", "wf-1", "boom sk_live_oops");
+    const entries = await readSecretStatus(db(), registry, { now: NOW, failures: true });
+    const [status] = readable(entries).filter((one) => one.name === "auth-signing-key");
+    expect(status?.lastFailure).toEqual({ at: new Date(daysAgo(2)), reason: null });
+    expect(JSON.stringify(entries)).not.toContain("sk_live_oops");
+    expect(JSON.stringify(await readSecretRotations(db(), "auth-signing-key", 10))).not.toContain("sk_live_oops");
+  });
+
+  test("a success after the failure clears it: the status says what is true now", async () => {
+    await recordRotation(
+      "auth-signing-key",
+      daysAgo(5),
+      daysAgo(5),
+      "failed",
+      "cron",
+      "wf-1",
+      rotationFailureText("not-rotated"),
+    );
+    await recordRotation("auth-signing-key", daysAgo(1), daysAgo(1), "success", "cron", "wf-2");
+    const [status] = readable(await readSecretStatus(db(), registry, { now: NOW, failures: true })).filter(
+      (one) => one.name === "auth-signing-key",
+    );
+    expect(status?.lastFailure).toBeNull();
+  });
+
+  test("a held retirement is reported against the secret it held", async () => {
+    await recordRotation("auth-signing-key", daysAgo(9), daysAgo(9), "success", "cron", "wf-1");
+    await recordRotation(
+      "auth-signing-key",
+      daysAgo(1),
+      daysAgo(1),
+      "failed",
+      "cron",
+      "wf-1",
+      rotationFailureText("not-retired"),
+    );
+    const [status] = readable(await readSecretStatus(db(), registry, { now: NOW, failures: true })).filter(
+      (one) => one.name === "auth-signing-key",
+    );
+    expect(status?.lastFailure?.reason).toBe("not-retired");
+    // The rotation itself happened, so freshness moved and nothing is overdue.
+    expect(status?.lastRotatedAt).toEqual(new Date(daysAgo(9)));
+    expect(status?.overdue).toBe(false);
   });
 });

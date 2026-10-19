@@ -64,6 +64,22 @@ export function secretsRotateWorkflowName(project: string, env: ManagedEnvironme
 }
 
 /**
+ * The canonical name of one project's value-rotation Workflow in one environment —
+ * `<project>-<env>-secrets-rotate-value` (#602). Started by the manager's own cron, once per due secret, and
+ * named here beside the other two for the reason they are: one account-scoped namespace, one resolver.
+ * A feature's manager runs no cron and hosts none, but the name still composes for one, like the at-rest one.
+ */
+export function secretsValueRotateWorkflowName(
+  project: string,
+  env: ManagedEnvironment,
+  feature?: FeatureIdentity,
+): string {
+  if (feature)
+    return workflowScriptName({ project, capability: SECRETS_CAPABILITY, job: "rotate-value", env, feature });
+  return resourceNames(project).env(env).workflow(SECRETS_CAPABILITY, "rotate-value");
+}
+
+/**
  * What redeploys a manager: `pithy secrets provision`, which redeploys every environment's, production included — a
  * person's decision, never a fix for one environment's manager (#711).
  */

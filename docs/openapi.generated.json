@@ -1560,6 +1560,50 @@
                             ],
                             "description": "The newest successful rotation, ISO-8601, or **null for never rotated** — not zero, and not the epoch."
                           },
+                          "lastFailure": {
+                            "description": "The newest closed rotation attempt, when it failed — the field an unattended rotation is reported through (#602). Null when the newest closed attempt succeeded or none is recorded. Absent from a Worker older than the field.",
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "at": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                    "description": "When the failed attempt closed, ISO-8601."
+                                  },
+                                  "reason": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "enum": [
+                                          "roll-failed",
+                                          "not-recorded",
+                                          "not-rotated",
+                                          "at-rest-incomplete",
+                                          "at-rest-unconfirmed",
+                                          "not-retired"
+                                        ],
+                                        "description": "Why a rotation row closed failed, as a code. `roll-failed`, `not-recorded` and `not-rotated` are a value rotation's. `at-rest-incomplete` and `at-rest-unconfirmed` are the whole-store master-key rotation's. `not-retired` is an unattended value rotation that landed and kept the previous version, because a value sealed under it at rest was not re-encrypted."
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "Why, as a code. Null when the failure is in words this release does not write."
+                                  }
+                                },
+                                "required": [
+                                  "at",
+                                  "reason"
+                                ],
+                                "description": "The newest closed attempt's failure: an instant and a code."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "rotationCount": {
                             "type": "integer",
                             "minimum": 0,
@@ -1727,6 +1771,26 @@
                           "rotatedBy": {
                             "type": "string",
                             "description": "Who or what initiated it — a workflow instance id, an operator id, or `baseline`."
+                          },
+                          "failure": {
+                            "description": "Why a `failed` attempt failed, as a code — never the failure's text. Null when it did not fail, or failed in words this release does not write; absent from a Worker older than the field (#602).",
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "roll-failed",
+                                  "not-recorded",
+                                  "not-rotated",
+                                  "at-rest-incomplete",
+                                  "at-rest-unconfirmed",
+                                  "not-retired"
+                                ],
+                                "description": "Why a rotation row closed failed, as a code. `roll-failed`, `not-recorded` and `not-rotated` are a value rotation's. `at-rest-incomplete` and `at-rest-unconfirmed` are the whole-store master-key rotation's. `not-retired` is an unattended value rotation that landed and kept the previous version, because a value sealed under it at rest was not re-encrypted."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           }
                         },
                         "required": [
@@ -1736,7 +1800,7 @@
                           "trigger",
                           "rotatedBy"
                         ],
-                        "description": "One rotation attempt as a client reads it. A failure is a status, never a message."
+                        "description": "One rotation attempt as a client reads it. A failure is a status and a code, never a message."
                       },
                       "description": "Its rotation attempts, newest first, capped by `limit`."
                     },
