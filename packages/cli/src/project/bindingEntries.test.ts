@@ -274,6 +274,31 @@ describe("the kinds an app declares and the kit writes but never provisions (#66
     expect(stanza).toEqual({});
   });
 
+  test("writes an artifacts entry naming this environment's namespace, and nothing else (#673)", () => {
+    expect(write({ type: "artifacts", name: "ARTIFACTS" })).toEqual({
+      artifacts: [{ binding: "ARTIFACTS", namespace: "acme-dev" }],
+    });
+    expect(write({ type: "artifacts", name: "ARTIFACTS" }, { ...app, env: "prod" })).toEqual({
+      artifacts: [{ binding: "ARTIFACTS", namespace: "acme-prod" }],
+    });
+  });
+
+  test("leaves an artifacts entry the adopter already wrote alone, and skips one it cannot name", () => {
+    const stanza: WranglerStanza = { artifacts: [{ binding: "ARTIFACTS", namespace: "theirs" }] };
+    expect(appendBinding(stanza, BindingSpec.parse({ type: "artifacts", name: "ARTIFACTS" }), app)).toEqual({
+      outcome: "present",
+    });
+    expect(stanza.artifacts).toEqual([{ binding: "ARTIFACTS", namespace: "theirs" }]);
+    const nameless: WranglerStanza = {};
+    expect(
+      appendBinding(nameless, BindingSpec.parse({ type: "artifacts", name: "ARTIFACTS" }), {
+        env: "dev",
+        capability: "app",
+      }),
+    ).toEqual({ outcome: "skipped", reason: "no project name is resolved" });
+    expect(nameless).toEqual({});
+  });
+
   test("answers present-or-missing for exactly the kinds it writes", () => {
     // `isWrittenBinding` and this writer are one rule stated twice. A kind written and never looked for would be
     // appended again on every upgrade; a kind looked for and never written would be reported missing forever.

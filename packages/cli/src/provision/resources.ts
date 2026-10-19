@@ -3,6 +3,7 @@
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
+import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import type { FeatureResourceKind } from "@pithy-sh/core/src/naming/feature";
 import type { FeatureIndex } from "../capabilities/hostRegistry";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
@@ -211,7 +212,13 @@ export const AUDIT_DESTINATION_ENV = "dev";
  * Everything feature teardown deletes and reports, by kind: the resources provisioning creates, and the
  * Worker scripts it names for deploy (#592).
  */
-export type TeardownKind = FeatureResourceKind | "worker" | "workflow" | "vectorize";
+export type TeardownKind =
+  | FeatureResourceKind
+  | "worker"
+  | "workflow"
+  | "vectorize"
+  | "artifacts"
+  | "artifacts-namespace";
 
 /** The resource kind recorded on a provisioning audit event. */
 export const AUDIT_RESOURCE_TYPE: Record<TeardownKind, string> = {
@@ -225,7 +232,61 @@ export const AUDIT_RESOURCE_TYPE: Record<TeardownKind, string> = {
   workflow: "cf_workflow",
   // A feature's own Vectorize index (#643).
   vectorize: "cf_vectorize",
+  // One repo in a feature's own Artifacts namespace, recorded as `<namespace>/<repo>` (#673).
+  artifacts: "cf_artifacts_repo",
+  // The feature's Artifacts namespace itself, once its repos are gone (#673).
+  "artifacts-namespace": "cf_artifacts_namespace",
 };
+
+/**
+ * **The repos in a feature's Artifacts namespace (#673)** — what `pithy feature destroy` reaps. The Worker creates
+ * them, through its binding, so teardown is the only half: `list` every repo name in a namespace, an absent
+ * namespace answering none, `remove` one, resolving whether it was there, and `removeNamespace` once they are gone.
+ */
+export interface FeatureRepos {
+  /** Every repo name in the namespace. Empty when Cloudflare has no such namespace. */
+  list(namespace: string): Promise<string[]>;
+  /** Delete one repo and its tokens. Resolves whether one was there. */
+  remove(namespace: string, repo: string): Promise<boolean>;
+  /**
+   * Delete the namespace, once its repos are gone. Resolves whether one was there: a namespace already gone, or
+   * never created, is `false` and not an error.
+   */
+  removeNamespace(namespace: string): Promise<boolean>;
+}
+
+/**
+ * How long a namespace delete waits out a `409` between asks, in milliseconds. A repo delete is `202 Accepted`, so a
+ * namespace whose last repo was just reaped can stay occupied a moment. Thirty seconds in all, and then teardown
+ * stops and says so, rather than leaving the namespace without a word.
+ */
+const NAMESPACE_WAITS_MS = [1000, 2000, 4000, 8000, 15000] as const;
+
+/** The account's Artifacts repos, through the REST client — the seam `pithy feature destroy` reaps with. */
+export function cloudflareFeatureRepos(
+  cf: CloudflareClients,
+  options: { wait?: (ms: number) => Promise<void> } = {},
+): FeatureRepos {
+  const wait = options.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  return {
+    list: (namespace) => cf.artifacts().listRepos(namespace),
+    remove: (namespace, repo) => cf.artifacts().deleteRepo(namespace, repo),
+    removeNamespace: async (namespace) => {
+      for (let attempt = 0; ; attempt += 1) {
+        const answer = await cf.artifacts().deleteNamespace(namespace);
+        if (answer !== "occupied") return answer === "deleted";
+        const delay = NAMESPACE_WAITS_MS[attempt];
+        if (delay === undefined) break;
+        await wait(delay);
+      }
+      throw new ConflictError({
+        message: `Artifacts namespace ${namespace} still holds a repo.`,
+        action: "Run the teardown again once Cloudflare has finished deleting its repos. The namespace goes then.",
+        detail: `DELETE answered 409 after ${NAMESPACE_WAITS_MS.length + 1} attempts over 30 seconds.`,
+      });
+    },
+  };
+}
 
 /**
  * **The indexes a feature creates for itself (#643)** — see `FeatureIndex` in `capabilities/hostRegistry.ts`.

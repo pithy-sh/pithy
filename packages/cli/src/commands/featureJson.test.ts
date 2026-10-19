@@ -115,17 +115,18 @@ describe("pithy feature --json conforms to its published payloads", () => {
     expect("plan" in real).toBe(false);
   });
 
-  test("destroy publishes every kind teardown deletes, queues among them, at schemaVersion 2", async () => {
+  test("destroy publishes every kind teardown deletes, queues and Artifacts repos among them, at schemaVersion 3", async () => {
     // `deprovisionFeature` reports each deletion under a `TeardownKind`, and the command spreads that
     // report into `deletedResources` unfiltered. A kind the schema leaves out is a line it does not describe.
     const contract = await contractAt("feature destroy");
-    expect(contract.schemaVersion).toBe(2);
+    expect(contract.schemaVersion).toBe(3);
     const kinds = Object.keys(AUDIT_RESOURCE_TYPE) as TeardownKind[];
     expect(kinds).toContain("queue");
+    expect(kinds).toContain("artifacts");
     for (const kind of kinds) {
       const line = JSON.stringify({
         command: "feature.destroy",
-        schemaVersion: 2,
+        schemaVersion: 3,
         deletedResources: [{ kind, name: `acme-12-media-cli-${kind}`, id: `${kind}-1` }],
         remote: true,
         portsFreed: true,

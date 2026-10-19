@@ -33,6 +33,7 @@ describe("BindingType", () => {
       "pipelines",
       "mtls_certificates",
       "dispatch_namespaces",
+      "artifacts",
     ]) {
       expect(BindingType.parse(t)).toBe(t);
     }
@@ -67,6 +68,7 @@ const SEED_POLICIES: Record<string, SeedPolicy> = {
   service: "provision",
   secret: "provision",
   email: "branch",
+  artifacts: "provision",
 };
 
 describe("seedPolicy", () => {
@@ -108,6 +110,13 @@ describe("isWrittenBinding", () => {
     // Both were in neither set, so `appendBinding` answered `unsupported` and nothing anywhere wrote them.
     expect(isWrittenBinding("queue")).toBe(true);
     expect(isWrittenBinding("email")).toBe(true);
+  });
+
+  test("writes an artifacts entry, and provisions no resource behind it (#673)", () => {
+    // `{ binding, namespace }`, and the namespace is derived from the project and the environment alone. Cloudflare
+    // makes the namespace on the first repo, so there is nothing for a provisioner to create.
+    expect(isWrittenBinding("artifacts")).toBe(true);
+    expect(isProvisionedBinding("artifacts")).toBe(false);
   });
 });
 
@@ -257,7 +266,7 @@ describe("BindingSpec", () => {
 
 describe("BindingType descriptions", () => {
   test("every option carries a non-empty description (self-documenting)", () => {
-    expect(BindingType.options).toHaveLength(19);
+    expect(BindingType.options).toHaveLength(20);
     for (const option of BindingType.options) {
       expect(option.description).toBeTruthy();
     }

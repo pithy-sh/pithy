@@ -584,7 +584,7 @@
       }
     },
     "doctor": {
-      "schemaVersion": 3,
+      "schemaVersion": 4,
       "payload": {
         "$": "object",
         "$.cli": "object",
@@ -648,7 +648,7 @@
         "$.project.health.workers[]<state=\"checked\">.bindings.generatedValues<state=\"read\">.drift": "array",
         "$.project.health.workers[]<state=\"checked\">.bindings.generatedValues<state=\"read\">.drift[]": "object",
         "$.project.health.workers[]<state=\"checked\">.bindings.generatedValues<state=\"read\">.drift[].name": "string",
-        "$.project.health.workers[]<state=\"checked\">.bindings.generatedValues<state=\"read\">.drift[].type": "\"ai\" | \"analytics_engine_datasets\" | \"browser\" | \"d1\" | \"dispatch_namespaces\" | \"durable_object\" | \"email\" | \"hyperdrive\" | \"images\" | \"kv\" | \"mtls_certificates\" | \"pipelines\" | \"queue\" | \"r2\" | \"ratelimit\" | \"secret\" | \"service\" | \"vectorize\" | \"workflow\"",
+        "$.project.health.workers[]<state=\"checked\">.bindings.generatedValues<state=\"read\">.drift[].type": "\"ai\" | \"analytics_engine_datasets\" | \"artifacts\" | \"browser\" | \"d1\" | \"dispatch_namespaces\" | \"durable_object\" | \"email\" | \"hyperdrive\" | \"images\" | \"kv\" | \"mtls_certificates\" | \"pipelines\" | \"queue\" | \"r2\" | \"ratelimit\" | \"secret\" | \"service\" | \"vectorize\" | \"workflow\"",
         "$.project.health.workers[]<state=\"checked\">.bindings.generatedValues<state=\"read\">.drift[].field": "string",
         "$.project.health.workers[]<state=\"checked\">.bindings.generatedValues<state=\"read\">.drift[].expected": "string",
         "$.project.health.workers[]<state=\"checked\">.bindings.generatedValues<state=\"read\">.drift[].actual": "string",
@@ -1072,13 +1072,13 @@
       }
     },
     "feature destroy": {
-      "schemaVersion": 2,
+      "schemaVersion": 3,
       "payload": {
         "$": "object",
         "$.command": "\"feature.destroy\"",
         "$.deletedResources": "array",
         "$.deletedResources[]": "object",
-        "$.deletedResources[].kind": "\"d1\" | \"kv\" | \"queue\" | \"r2\" | \"vectorize\" | \"worker\" | \"workflow\"",
+        "$.deletedResources[].kind": "\"artifacts\" | \"artifacts-namespace\" | \"d1\" | \"kv\" | \"queue\" | \"r2\" | \"vectorize\" | \"worker\" | \"workflow\"",
         "$.deletedResources[].name": "string",
         "$.deletedResources[].id": "string",
         "$.remote": "boolean",

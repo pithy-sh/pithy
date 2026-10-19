@@ -4,7 +4,13 @@
 import { InternalError, ValidationError } from "../error/pithyError";
 import { workflowHostName, workflowScriptName } from "../workflow/naming";
 import { assertValidEnvironment, GLOBAL_SCOPE } from "./environment";
-import { type FeatureIdentity, type FeatureResourceKind, featureResourceName, featureWorkerName } from "./feature";
+import {
+  type FeatureIdentity,
+  type FeatureResourceKind,
+  featureArtifactsNamespace,
+  featureResourceName,
+  featureWorkerName,
+} from "./feature";
 import { NAMESPACE_LIMITS, type NamespaceLimit } from "./limits";
 import { assertValidProjectName, kebab, resourceName } from "./resource";
 
@@ -67,6 +73,19 @@ export interface ScopedNames {
   apiToken(profile: string): string;
 }
 
+/**
+ * The names in one declared environment: everything a scope has, and the one name that exists per environment
+ * and never at `global`.
+ */
+export interface EnvironmentNames extends ScopedNames {
+  /**
+   * The Artifacts namespace — `<project>-<env>`, with no `<thing>` (#673). One per environment, so a feature's
+   * repos never sit beside production's and the per-namespace rate limit splits per environment. There is no
+   * global one, because a namespace shared across environments is exactly that mix.
+   */
+  artifactsNamespace(): string;
+}
+
 /** The names a feature environment provisions under, with the project already bound. */
 export interface FeatureNames {
   /** A feature's D1, KV, R2 or Queue resource — `<project>-f<issue>-<slug>--<binding>-<kind>`. */
@@ -76,6 +95,11 @@ export interface FeatureNames {
    * never the deploy name, which already leads with the project (#587).
    */
   worker(app: string): string;
+  /**
+   * A feature's Artifacts namespace — `<project>-f<issue>-<slug>--artifacts` (#673). The tail is what makes it a
+   * feature name `isFeatureOwnedName` reads back, so teardown reaps this feature's repos and no sibling's.
+   */
+  artifactsNamespace(): string;
 }
 
 /** Everything a project can be asked to name. Created once, from the project, by {@link resourceNames}. */
@@ -83,7 +107,7 @@ export interface ProjectNames {
   /** The kebabbed project name every name below leads with. */
   readonly project: string;
   /** The names in one environment. Throws if the environment is not one this scheme accepts. */
-  env(environment: string): ScopedNames;
+  env(environment: string): EnvironmentNames;
   /** The names shared by every environment — the `global` scope, without typing the word. */
   readonly global: ScopedNames;
   /** The names a feature environment provisions under. */
@@ -136,6 +160,22 @@ function scopedName(project: string, scope: string, thing: string, limit: Namesp
   return name;
 }
 
+/**
+ * `<project>-<env>`, under the Artifacts namespace rule. The project and environment are both validated by now, and
+ * the longest of each compose 34 characters, so the cap is a check rather than a truncation that ever happens.
+ */
+function artifactsNamespaceName(project: string, environment: string): string {
+  const limit = NAMESPACE_LIMITS.artifactsNamespace;
+  const name = `${project}-${environment}`;
+  if (name.length > limit.maxLength || name.length < limit.minLength) {
+    throw new InternalError({
+      message: `"${name}" does not fit ${limit.label}, which takes ${limit.minLength} to ${limit.maxLength} characters.`,
+      action: "Shorten the project or environment name.",
+    });
+  }
+  return name;
+}
+
 /** The getters for one scope. `global` and every environment share this, so nothing special-cases either. */
 function scopedNames(project: string, scope: string): ScopedNames {
   return {
@@ -164,9 +204,12 @@ export function resourceNames(project: string): ProjectNames {
 
   return {
     project: normalized,
-    env(environment: string): ScopedNames {
+    env(environment: string): EnvironmentNames {
       assertValidEnvironment(environment);
-      return scopedNames(normalized, environment);
+      return {
+        ...scopedNames(normalized, environment),
+        artifactsNamespace: () => artifactsNamespaceName(normalized, environment),
+      };
     },
     global: scopedNames(normalized, GLOBAL_SCOPE),
     feature(identity): FeatureNames {
@@ -174,6 +217,7 @@ export function resourceNames(project: string): ProjectNames {
       return {
         resource: (binding, kind) => featureResourceName(full, binding, kind),
         worker: (app) => featureWorkerName(full, app),
+        artifactsNamespace: () => featureArtifactsNamespace(full),
       };
     },
   };

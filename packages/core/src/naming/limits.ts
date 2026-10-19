@@ -116,6 +116,27 @@ export const NAMESPACE_LIMITS = {
    */
   queue: { label: "a Queue name", maxLength: 63, minLength: 1, policy: "truncate", source: "cloudflare" },
   /**
+   * An Artifacts namespace: **2 to 63 characters**, starting with a letter or digit, the rest letters, digits, `.`,
+   * `_` and `-` ([Artifacts · Limits](https://developers.cloudflare.com/artifacts/platform/limits/), verified
+   * 2026-10-18). Truncated rather than refused: the kit derives it from the project and the environment on every
+   * run, like an R2 bucket name, and the longest project and environment compose 34 characters, so it never is (#673).
+   */
+  artifactsNamespace: {
+    label: "an Artifacts namespace name",
+    maxLength: 63,
+    minLength: 2,
+    policy: "truncate",
+    source: "cloudflare",
+  },
+  /**
+   * An Artifacts repo name. **The charset is Cloudflare's** — a letter or digit, then letters, digits, `.`, `_` and
+   * `-` ([Artifacts · Limits](https://developers.cloudflare.com/artifacts/platform/limits/), verified 2026-10-18) —
+   * and **the length is ours**: that page states one for a namespace and none for a repo, so 2 to 63 mirrors the
+   * namespace rather than inventing a second number. Refused, never truncated: a repo name is either a UUID or a
+   * name somebody chose, and a name somebody chose is never silently shortened (#673).
+   */
+  artifactsRepo: { label: "an Artifacts repo name", maxLength: 63, minLength: 2, policy: "refuse", source: "pithy" },
+  /**
    * A D1 database name: `^[a-zA-Z0-9][a-zA-Z0-9_-]*$` in the OpenAPI schema, and **no documented
    * length cap** — the limits page has no row for it. So the ceiling here is {@link MAX_PITHY_NAME}.
    */

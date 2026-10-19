@@ -1,0 +1,38 @@
+{
+  "name": "artifacts",
+  "package": "@pithy-sh/artifacts",
+  "requiredBindings": [{ "type": "d1", "name": "DB" }, { "type": "artifacts", "name": "ARTIFACTS" }],
+  "peerCapabilities": [],
+  "optionalCapabilities": ["auth", "organization", "audit"],
+  "migrationNamespace": "artifacts",
+  "whenToEnable": "Real Git repositories for your own customers, without running a Git server. Cloudflare Artifacts stores them and speaks Git; this is the four things every product builds on top of it, built once. Who owns a repository: a person, or an organization when @pithy-sh/organization is composed. Who may read and who may push: a grant row per person, read or write, because Artifacts' token scope has exactly two values and no role vocabulary maps onto two values by itself. How a token's life ends: there is no token table, so the TTL is the revocation window, fifteen minutes by default and never more than an hour, and an owner can revoke every live token at once. How a git client gets one: a credential helper calls the mint route with your app's own credential, so the only long-lived credential is the one you already revoke in auth. A repository is named with a random UUID, so one tenant's docs cannot collide with another's and nobody can probe for a name; a caller with no grant gets a 404 byte-identical to the one for a repository that does not exist. Each environment gets its own namespace, and pithy feature destroy reaps a feature's repositories. Artifacts is Workers Paid only, and Cloudflare bills its operations and storage from 14 October 2026.",
+  "scaffold": [
+    "Add an `artifacts()` block to pithy.config.ts. The defaults mount the routes at `/artifacts`, mint fifteen-minute tokens, and name every repository with a random UUID.",
+    "Bind a D1 database named DB and an Artifacts namespace named ARTIFACTS in wrangler.jsonc. `pithy add` writes the namespace as `<project>-dev`, and `pithy provision` writes `<project>-<env>` into every other stanza. Cloudflare creates a namespace on its first repository.",
+    "Run `pithy migrate` to create pithy_artifacts_repos and pithy_artifacts_grants.",
+    "Add `@pithy-sh/auth` if it is not already installed. A repository belongs to a signed-in person or their organization; without auth every route is denied.",
+    "If @pithy-sh/organization is composed, name the power that manages an organization's repositories: `artifacts({ managePower: \"repos:manage\" })`, declared in your role catalog and held by a role. The Worker refuses to boot without one.",
+    "Decide what your roles mean in Git terms, and write it as grants: `POST /artifacts/repos/:name/grants` with `read` or `write`. An owner always has write. Nothing else gives access.",
+    "Leave `tokenTtlSeconds` short. It is how long a person keeps pushing after you remove their grant. The ceiling is an hour.",
+    "Set up the credential helper in packages/artifacts/docs/credential-helper.md, so a git client mints a fresh token per operation with your app's own credential.",
+    "Create a repository with `remoteAccess: false` when your app versions its own content and nobody clones it. The in-Worker reads still answer; the clone path and the clone URL stay shut.",
+    "Check your plan. Artifacts runs on Workers Paid only, and billing begins 14 October 2026: $0.15 per 1,000 operations past 10,000 a month, and $0.50 per GB-month past 1 GB."
+  ],
+  "configOptions": [
+    {
+      "key": "basePath",
+      "default": "/artifacts",
+      "describe": "Where the repository routes mount. Changing it changes every address this capability serves."
+    },
+    {
+      "key": "tokenTtlSeconds",
+      "default": 900,
+      "describe": "How long a minted git token lives, in seconds: 60 to 3600. This is the revocation window: with no token record, it is how long a revoked person keeps pushing, unless the owner revokes every token."
+    },
+    {
+      "key": "acceptRepoName",
+      "default": false,
+      "describe": "Let a create request supply the repository's physical name. Off, every name is a random UUID. On, uniqueness is yours."
+    }
+  ]
+}

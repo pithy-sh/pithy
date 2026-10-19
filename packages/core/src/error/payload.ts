@@ -1493,6 +1493,68 @@ const OrganizationNominationInvalidPublic = z
   })
   .describe("No standing ownership offer this caller may accept (400).");
 
+// --- @pithy-sh/artifacts: Git repositories, ownership, grants and short-lived tokens ---
+
+const ArtifactsNotFoundPublic = z
+  .object({
+    code: z
+      .literal("artifacts/not_found")
+      .describe(
+        "No such repository, **or** one the caller holds no grant on and does not own. One code for both, byte for byte: a repository's name is in its clone URL, and a refusal that told the two apart would hand it over. Also what the credential route answers for a repository with remote access off. Which it was survives in `detail`, which the HTTP codec strips.",
+      ),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("No such repository, or none this caller may see — the same answer for both (404).");
+
+const ArtifactsForbiddenPublic = z
+  .object({
+    code: z
+      .literal("artifacts/forbidden")
+      .describe(
+        "The caller can see the repository and may not do this to it: a grant holder asking for what only an owner may do, or a member of an organization whose role lacks the configured `managePower`. A 403 rather than the 404 above, because by then the caller already knows the repository exists.",
+      ),
+    status: z.literal(403).describe("Forbidden."),
+    ...publicFields,
+  })
+  .describe("The caller may see this repository and may not do this (403).");
+
+const ArtifactsInvalidNamePublic = z
+  .object({
+    code: z
+      .literal("artifacts/invalid_name")
+      .describe(
+        "A supplied repository name is outside Cloudflare's charset or the 2-to-63 cap. Refused and never shortened: a name somebody chose is in every clone URL, and a silently different one is a repository nobody can find.",
+      ),
+    status: z.literal(400).describe("Bad Request."),
+    ...publicFields,
+  })
+  .describe("A repository name breaks the naming rule (400).");
+
+const ArtifactsNameTakenPublic = z
+  .object({
+    code: z
+      .literal("artifacts/name_taken")
+      .describe(
+        "The owner already holds a repository with that display name, or a supplied physical name is already in the namespace. The second happens only where the adopter supplies names, so uniqueness is theirs.",
+      ),
+    status: z.literal(409).describe("Conflict."),
+    ...publicFields,
+  })
+  .describe("That repository name is already in use (409).");
+
+const ArtifactsInvalidConfigPublic = z
+  .object({
+    code: z
+      .literal("artifacts/invalid_config")
+      .describe(
+        "The capability's configuration cannot be honored: a `tokenTtlSeconds` above the ceiling, or `organization` composed with no `managePower` named. Raised at boot, so a mistake fails on deploy rather than at the first mint.",
+      ),
+    status: z.literal(400).describe("Bad Request — the configuration is malformed."),
+    ...publicFields,
+  })
+  .describe("The artifacts configuration is invalid (400).");
+
 // --- @pithy-sh/support: inbound inbox, taxonomy, and classification codes ---
 
 const SupportNotFoundPublic = z
@@ -1812,6 +1874,11 @@ export const KitPublicErrorPayload = z
     OrganizationLastAdministratorPublic,
     OrganizationSlugTakenPublic,
     OrganizationNominationInvalidPublic,
+    ArtifactsNotFoundPublic,
+    ArtifactsForbiddenPublic,
+    ArtifactsInvalidNamePublic,
+    ArtifactsNameTakenPublic,
+    ArtifactsInvalidConfigPublic,
     SupportNotFoundPublic,
     SupportInvalidCategoryPublic,
     SupportUnparseableMessagePublic,
@@ -2198,6 +2265,22 @@ const OrganizationNominationInvalid = OrganizationNominationInvalidPublic.extend
   OrganizationNominationInvalidPublic.description ?? "",
 );
 
+const ArtifactsNotFound = ArtifactsNotFoundPublic.extend(internalFields).describe(
+  ArtifactsNotFoundPublic.description ?? "",
+);
+const ArtifactsForbidden = ArtifactsForbiddenPublic.extend(internalFields).describe(
+  ArtifactsForbiddenPublic.description ?? "",
+);
+const ArtifactsInvalidName = ArtifactsInvalidNamePublic.extend(internalFields).describe(
+  ArtifactsInvalidNamePublic.description ?? "",
+);
+const ArtifactsNameTaken = ArtifactsNameTakenPublic.extend(internalFields).describe(
+  ArtifactsNameTakenPublic.description ?? "",
+);
+const ArtifactsInvalidConfig = ArtifactsInvalidConfigPublic.extend(internalFields).describe(
+  ArtifactsInvalidConfigPublic.description ?? "",
+);
+
 const SupportNotFound = SupportNotFoundPublic.extend(internalFields).describe(SupportNotFoundPublic.description ?? "");
 const SupportInvalidCategory = SupportInvalidCategoryPublic.extend(internalFields).describe(
   SupportInvalidCategoryPublic.description ?? "",
@@ -2344,6 +2427,11 @@ export const KitErrorPayload = z
     OrganizationLastAdministrator,
     OrganizationSlugTaken,
     OrganizationNominationInvalid,
+    ArtifactsNotFound,
+    ArtifactsForbidden,
+    ArtifactsInvalidName,
+    ArtifactsNameTaken,
+    ArtifactsInvalidConfig,
     SupportNotFound,
     SupportInvalidCategory,
     SupportUnparseableMessage,

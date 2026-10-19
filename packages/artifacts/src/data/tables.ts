@@ -1,0 +1,29 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
+import type { D1Database } from "@cloudflare/workers-types";
+import { createDatabase, type DatabaseSchema } from "@pithy-sh/core/src/data/db";
+import type { Kysely } from "kysely";
+import type { z } from "zod";
+import { ArtifactsGrantRecord, ArtifactsRepoRecord } from "./records";
+
+/**
+ * The capability's two tables. Names are camelCase constants; core's `createDatabase` installs the mandatory
+ * `CamelCasePlugin`, so query code never types the snake_case `pithy_artifacts_*` columns.
+ */
+export const ARTIFACTS_REPOS_TABLE = "pithyArtifactsRepos";
+export const ARTIFACTS_GRANTS_TABLE = "pithyArtifactsGrants";
+
+export function artifactsTables(): Record<string, z.ZodObject> {
+  return { [ARTIFACTS_REPOS_TABLE]: ArtifactsRepoRecord, [ARTIFACTS_GRANTS_TABLE]: ArtifactsGrantRecord };
+}
+
+type ArtifactsTables = {
+  [ARTIFACTS_REPOS_TABLE]: typeof ArtifactsRepoRecord;
+  [ARTIFACTS_GRANTS_TABLE]: typeof ArtifactsGrantRecord;
+};
+export type ArtifactsDatabase = Kysely<DatabaseSchema<ArtifactsTables>>;
+
+export function artifactsDatabase(d1: D1Database): ArtifactsDatabase {
+  return createDatabase(d1, artifactsTables()) as unknown as ArtifactsDatabase;
+}

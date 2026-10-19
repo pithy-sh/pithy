@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import * as artifacts from "@pithy-sh/artifacts/src/http/schemas";
 import * as audit from "@pithy-sh/audit/src/http/schemas";
 import * as auth from "@pithy-sh/auth/src/http/schemas";
 import * as email from "@pithy-sh/email/src/http/schemas";
@@ -47,6 +48,7 @@ import * as vector from "@pithy-sh/vector/src/http/schemas";
  * compiling the module that builds it.
  */
 export const EVERY_REQUEST_SCHEMA_MODULE: readonly object[] = [
+  artifacts,
   audit,
   auth,
   email,

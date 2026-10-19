@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test, vi } from "vitest";
-import { cloudflareProvisioners, cloudflareWorkerScripts } from "./resources";
+import { cloudflareFeatureRepos, cloudflareProvisioners, cloudflareWorkerScripts } from "./resources";
 
 /**
  * `find` is find-or-create's first half, and the half that decides whether the second one runs (#378).
@@ -174,5 +175,54 @@ describe("cloudflareWorkerScripts", () => {
     await scripts.delete("acme-f69-demo--api");
 
     expect(fake.deleteWorker).toHaveBeenCalledWith("acme-f69-demo--api", { force: true });
+  });
+});
+
+/**
+ * **A feature's Artifacts namespace goes once its repos have (#673).** A repo delete is `202 Accepted`, so the
+ * namespace can still answer `409` for a moment after the last repo was reaped. The seam waits that out, a bounded
+ * number of times, and an already-gone namespace is nothing to do.
+ */
+describe("cloudflareFeatureRepos removing a namespace", () => {
+  function fakeArtifacts(answers: ("deleted" | "absent" | "occupied")[]) {
+    const deleteNamespace = vi.fn(async () => answers.shift() ?? "occupied");
+    const clients = { artifacts: () => ({ deleteNamespace }) } as unknown as CloudflareClients;
+    const waits: number[] = [];
+    const wait = async (ms: number) => {
+      waits.push(ms);
+    };
+    return { clients, deleteNamespace, waits, wait };
+  }
+
+  test("deletes an empty namespace and says it was there", async () => {
+    const fake = fakeArtifacts(["deleted"]);
+    const repos = cloudflareFeatureRepos(fake.clients, { wait: fake.wait });
+    expect(await repos.removeNamespace("acme-f662-thing--artifacts")).toBe(true);
+    expect(fake.deleteNamespace).toHaveBeenCalledWith("acme-f662-thing--artifacts");
+    expect(fake.waits).toEqual([]);
+  });
+
+  test("a namespace already gone, or never created, is not an error", async () => {
+    const fake = fakeArtifacts(["absent"]);
+    const repos = cloudflareFeatureRepos(fake.clients, { wait: fake.wait });
+    expect(await repos.removeNamespace("ns")).toBe(false);
+  });
+
+  test("waits out a namespace still releasing a repo just reaped, then deletes it", async () => {
+    const fake = fakeArtifacts(["occupied", "occupied", "deleted"]);
+    const repos = cloudflareFeatureRepos(fake.clients, { wait: fake.wait });
+    expect(await repos.removeNamespace("ns")).toBe(true);
+    expect(fake.deleteNamespace).toHaveBeenCalledTimes(3);
+    expect(fake.waits).toEqual([1000, 2000]);
+  });
+
+  test("a namespace that stays occupied is refused by name, with the re-run that finishes it", async () => {
+    const fake = fakeArtifacts([]);
+    const repos = cloudflareFeatureRepos(fake.clients, { wait: fake.wait });
+    const failure = repos.removeNamespace("acme-f662-thing--artifacts");
+    await expect(failure).rejects.toBeInstanceOf(PithyError);
+    await expect(failure).rejects.toThrow(/acme-f662-thing--artifacts/);
+    expect(fake.waits).toEqual([1000, 2000, 4000, 8000, 15000]);
+    expect(fake.deleteNamespace).toHaveBeenCalledTimes(6);
   });
 });

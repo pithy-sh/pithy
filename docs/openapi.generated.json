@@ -62,6 +62,9 @@
     },
     {
       "name": "organization"
+    },
+    {
+      "name": "artifacts"
     }
   ],
   "paths": {
@@ -28658,6 +28661,1542 @@
         ],
         "x-pithy-scopes": [
           "organization:members:read"
+        ]
+      }
+    },
+    "/artifacts/repos": {
+      "post": {
+        "tags": [
+          "artifacts"
+        ],
+        "operationId": "postArtifactsRepos",
+        "summary": "Create a repository you own.",
+        "description": "The physical name is a random UUID, unless this Worker is configured to take one. The token Cloudflare creates with the repository is revoked before this answers.",
+        "requestBody": {
+          "required": true,
+          "description": "The body of a create-repository request.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "displayName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "The label to show. Free text, unique per owner and nowhere else."
+                  },
+                  "name": {
+                    "description": "The physical name, for a Worker configured with `acceptRepoName`. Refused otherwise. Held to Cloudflare's charset and the 2-to-63 cap, and refused rather than shortened. Omit it for a random UUID.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "description": {
+                    "description": "A description Cloudflare stores with the repository.",
+                    "type": "string",
+                    "maxLength": 500
+                  },
+                  "remoteAccess": {
+                    "default": true,
+                    "description": "Whether a git client may reach the repository. False, the credential route answers 404 and no response carries the clone URL; the in-Worker reads still answer. Defaults to true.",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "displayName"
+                ],
+                "description": "The body of a create-repository request."
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "One repository, as the caller may see it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "description": "The physical name, as in the clone URL."
+                    },
+                    "displayName": {
+                      "type": "string",
+                      "description": "The label the owner chose."
+                    },
+                    "owner": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "org",
+                            "user"
+                          ],
+                          "description": "Whether an organization or a person owns the repository."
+                        },
+                        "id": {
+                          "type": "string",
+                          "description": "The owning organization's id, or the owning person's user id."
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "id"
+                      ],
+                      "description": "Who owns it."
+                    },
+                    "access": {
+                      "type": "string",
+                      "enum": [
+                        "owner",
+                        "write",
+                        "read"
+                      ],
+                      "description": "What the caller may do: everything, push and pull, or pull only. A token is minted at this scope."
+                    },
+                    "remoteAccess": {
+                      "type": "boolean",
+                      "description": "Whether a git client may reach the repository."
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "description": "When the repository was created, ISO 8601."
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "description": "When its row last changed, ISO 8601."
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "displayName",
+                    "owner",
+                    "access",
+                    "remoteAccess",
+                    "createdAt",
+                    "updatedAt"
+                  ],
+                  "description": "One repository, as the caller may see it."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      },
+      "get": {
+        "tags": [
+          "artifacts"
+        ],
+        "operationId": "getArtifactsRepos",
+        "summary": "List the repositories you own or hold a grant on.",
+        "responses": {
+          "200": {
+            "description": "The repositories a caller may see.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "repos": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "description": "The physical name, as in the clone URL."
+                          },
+                          "displayName": {
+                            "type": "string",
+                            "description": "The label the owner chose."
+                          },
+                          "owner": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "org",
+                                  "user"
+                                ],
+                                "description": "Whether an organization or a person owns the repository."
+                              },
+                              "id": {
+                                "type": "string",
+                                "description": "The owning organization's id, or the owning person's user id."
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "id"
+                            ],
+                            "description": "Who owns it."
+                          },
+                          "access": {
+                            "type": "string",
+                            "enum": [
+                              "owner",
+                              "write",
+                              "read"
+                            ],
+                            "description": "What the caller may do: everything, push and pull, or pull only. A token is minted at this scope."
+                          },
+                          "remoteAccess": {
+                            "type": "boolean",
+                            "description": "Whether a git client may reach the repository."
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "description": "When the repository was created, ISO 8601."
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "description": "When its row last changed, ISO 8601."
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "displayName",
+                          "owner",
+                          "access",
+                          "remoteAccess",
+                          "createdAt",
+                          "updatedAt"
+                        ],
+                        "description": "One repository, as the caller may see it."
+                      },
+                      "description": "Every repository the caller may see. Never a listing of the namespace."
+                    }
+                  },
+                  "required": [
+                    "repos"
+                  ],
+                  "description": "The repositories a caller may see."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      }
+    },
+    "/artifacts/organization/repos": {
+      "post": {
+        "tags": [
+          "artifacts"
+        ],
+        "operationId": "postArtifactsOrganizationRepos",
+        "summary": "Create a repository the organization you act for owns.",
+        "description": "Requires the configured `managePower` in the organization in force.",
+        "requestBody": {
+          "required": true,
+          "description": "The body of a create-repository request.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "displayName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "The label to show. Free text, unique per owner and nowhere else."
+                  },
+                  "name": {
+                    "description": "The physical name, for a Worker configured with `acceptRepoName`. Refused otherwise. Held to Cloudflare's charset and the 2-to-63 cap, and refused rather than shortened. Omit it for a random UUID.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "description": {
+                    "description": "A description Cloudflare stores with the repository.",
+                    "type": "string",
+                    "maxLength": 500
+                  },
+                  "remoteAccess": {
+                    "default": true,
+                    "description": "Whether a git client may reach the repository. False, the credential route answers 404 and no response carries the clone URL; the in-Worker reads still answer. Defaults to true.",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "displayName"
+                ],
+                "description": "The body of a create-repository request."
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "One repository, as the caller may see it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "description": "The physical name, as in the clone URL."
+                    },
+                    "displayName": {
+                      "type": "string",
+                      "description": "The label the owner chose."
+                    },
+                    "owner": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "org",
+                            "user"
+                          ],
+                          "description": "Whether an organization or a person owns the repository."
+                        },
+                        "id": {
+                          "type": "string",
+                          "description": "The owning organization's id, or the owning person's user id."
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "id"
+                      ],
+                      "description": "Who owns it."
+                    },
+                    "access": {
+                      "type": "string",
+                      "enum": [
+                        "owner",
+                        "write",
+                        "read"
+                      ],
+                      "description": "What the caller may do: everything, push and pull, or pull only. A token is minted at this scope."
+                    },
+                    "remoteAccess": {
+                      "type": "boolean",
+                      "description": "Whether a git client may reach the repository."
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "description": "When the repository was created, ISO 8601."
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "description": "When its row last changed, ISO 8601."
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "displayName",
+                    "owner",
+                    "access",
+                    "remoteAccess",
+                    "createdAt",
+                    "updatedAt"
+                  ],
+                  "description": "One repository, as the caller may see it."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      },
+      "get": {
+        "tags": [
+          "artifacts"
+        ],
+        "operationId": "getArtifactsOrganizationRepos",
+        "summary": "List the repositories the organization you act for owns.",
+        "description": "Requires the configured `managePower` in the organization in force.",
+        "responses": {
+          "200": {
+            "description": "The repositories a caller may see.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "repos": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "description": "The physical name, as in the clone URL."
+                          },
+                          "displayName": {
+                            "type": "string",
+                            "description": "The label the owner chose."
+                          },
+                          "owner": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "org",
+                                  "user"
+                                ],
+                                "description": "Whether an organization or a person owns the repository."
+                              },
+                              "id": {
+                                "type": "string",
+                                "description": "The owning organization's id, or the owning person's user id."
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "id"
+                            ],
+                            "description": "Who owns it."
+                          },
+                          "access": {
+                            "type": "string",
+                            "enum": [
+                              "owner",
+                              "write",
+                              "read"
+                            ],
+                            "description": "What the caller may do: everything, push and pull, or pull only. A token is minted at this scope."
+                          },
+                          "remoteAccess": {
+                            "type": "boolean",
+                            "description": "Whether a git client may reach the repository."
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "description": "When the repository was created, ISO 8601."
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "description": "When its row last changed, ISO 8601."
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "displayName",
+                          "owner",
+                          "access",
+                          "remoteAccess",
+                          "createdAt",
+                          "updatedAt"
+                        ],
+                        "description": "One repository, as the caller may see it."
+                      },
+                      "description": "Every repository the caller may see. Never a listing of the namespace."
+                    }
+                  },
+                  "required": [
+                    "repos"
+                  ],
+                  "description": "The repositories a caller may see."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      }
+    },
+    "/artifacts/repos/{name}": {
+      "get": {
+        "tags": [
+          "artifacts"
+        ],
+        "operationId": "getArtifactsReposByName",
+        "summary": "Read a repository: its row, and what Cloudflare holds about it.",
+        "description": "The clone URL is absent when remote access is off.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "The repository's physical name, as in its clone URL.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One repository, with what Cloudflare holds about it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "description": "The physical name, as in the clone URL."
+                    },
+                    "displayName": {
+                      "type": "string",
+                      "description": "The label the owner chose."
+                    },
+                    "owner": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "org",
+                            "user"
+                          ],
+                          "description": "Whether an organization or a person owns the repository."
+                        },
+                        "id": {
+                          "type": "string",
+                          "description": "The owning organization's id, or the owning person's user id."
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "id"
+                      ],
+                      "description": "Who owns it."
+                    },
+                    "access": {
+                      "type": "string",
+                      "enum": [
+                        "owner",
+                        "write",
+                        "read"
+                      ],
+                      "description": "What the caller may do: everything, push and pull, or pull only. A token is minted at this scope."
+                    },
+                    "remoteAccess": {
+                      "type": "boolean",
+                      "description": "Whether a git client may reach the repository."
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "description": "When the repository was created, ISO 8601."
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "description": "When its row last changed, ISO 8601."
+                    },
+                    "description": {
+                      "description": "The description Cloudflare holds, or null.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "defaultBranch": {
+                      "type": "string",
+                      "description": "The default branch, e.g. `main`."
+                    },
+                    "lastPushAt": {
+                      "description": "When it was last pushed to, ISO 8601, or null if never.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "readOnly": {
+                      "type": "boolean",
+                      "description": "Whether Cloudflare holds it read-only."
+                    },
+                    "remote": {
+                      "description": "The clone URL. Absent when `remoteAccess` is false: a repository no git client may reach has no address.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "displayName",
+                    "owner",
+                    "access",
+                    "remoteAccess",
+                    "createdAt",
+                    "updatedAt",
+                    "description",
+                    "defaultBranch",
+                    "lastPushAt",
+                    "readOnly"
+                  ],
+                  "description": "One repository, with what Cloudflare holds about it."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      },
+      "delete": {
+        "tags": [
+          "artifacts"
+        ],
+        "operationId": "deleteArtifactsReposByName",
+        "summary": "Delete a repository, every token on it, and every grant.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "The repository's physical name, as in its clone URL.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The repository is gone."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      }
+    },
+    "/artifacts/repos/{name}/grants": {
+      "post": {
+        "tags": [
+          "artifacts"
+        ],
+        "operationId": "postArtifactsReposByNameGrants",
+        "summary": "Give a person read or write on a repository, or change what they hold.",
+        "description": "Tokens already minted at the old scope live out their life. Revoke them to end it now.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "The repository's physical name, as in its clone URL.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "The body of a set-grant request.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "userId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "The person the grant is for."
+                  },
+                  "grant": {
+                    "type": "string",
+                    "enum": [
+                      "read",
+                      "write"
+                    ],
+                    "description": "What the grant gives: `read` or `write`."
+                  }
+                },
+                "required": [
+                  "userId",
+                  "grant"
+                ],
+                "description": "The body of a set-grant request."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "One person's grant on one repository.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "repo": {
+                      "type": "string",
+                      "description": "The repository's physical name."
+                    },
+                    "userId": {
+                      "type": "string",
+                      "description": "The person the grant is for."
+                    },
+                    "grant": {
+                      "type": "string",
+                      "enum": [
+                        "read",
+                        "write"
+                      ],
+                      "description": "What the grant gives."
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "description": "When the grant last changed, ISO 8601."
+                    }
+                  },
+                  "required": [
+                    "repo",
+                    "userId",
+                    "grant",
+                    "updatedAt"
+                  ],
+                  "description": "One person's grant on one repository."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      }
+    },
+    "/artifacts/repos/{name}/grants/{userId}": {
+      "delete": {
+        "tags": [
+          "artifacts"
+        ],
+        "operationId": "deleteArtifactsReposByNameGrantsByUserId",
+        "summary": "Take a person's grant on a repository away.",
+        "description": "Their next mint is refused. A token they already hold works until it expires, so revoke every token to end it now.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "The repository's physical name.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+            }
+          },
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The person whose grant is removed.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The person holds no grant on the repository."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      }
+    },
+    "/artifacts/repos/{name}/credentials": {
+      "post": {
+        "tags": [
+          "artifacts"
+        ],
+        "operationId": "postArtifactsReposByNameCredentials",
+        "summary": "Mint a short-lived git token for a repository, at the scope your grant gives.",
+        "description": "Owners and write grants get `write`; read grants get `read`. The token lives `tokenTtlSeconds`. Answers 404 for a repository with remote access off.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "The repository's physical name, as in its clone URL.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "A short-lived git credential for one repository.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string",
+                      "description": "A repository-scoped git token, `art_v1_<40 hex>?expires=<unix seconds>`. Send it as `Authorization: Bearer`, or as the HTTP Basic password with any username. Never stored by the kit."
+                    },
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "read",
+                        "write"
+                      ],
+                      "description": "What the token may do: pull, or pull and push."
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "description": "When the token stops working, ISO 8601. Come back for another before then."
+                    },
+                    "remote": {
+                      "type": "string",
+                      "description": "The clone URL the token is for."
+                    }
+                  },
+                  "required": [
+                    "token",
+                    "scope",
+                    "expiresAt",
+                    "remote"
+                  ],
+                  "description": "A short-lived git credential for one repository."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      },
+      "delete": {
+        "tags": [
+          "artifacts"
+        ],
+        "operationId": "deleteArtifactsReposByNameCredentials",
+        "summary": "Revoke every live token on a repository.",
+        "description": "The break-glass. Every git client holding one is refused on its next request and must mint again.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "The repository's physical name, as in its clone URL.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What revoking every token on a repository did.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "revoked": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "How many live tokens were revoked."
+                    }
+                  },
+                  "required": [
+                    "revoked"
+                  ],
+                  "description": "What revoking every token on a repository did."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      }
+    },
+    "/artifacts/repos/{name}/log": {
+      "get": {
+        "tags": [
+          "artifacts"
+        ],
+        "operationId": "getArtifactsReposByNameLog",
+        "summary": "Read a repository's history, newest first.",
+        "description": "Answers whether or not remote access is on.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "The repository's physical name, as in its clone URL.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+            }
+          },
+          {
+            "name": "ref",
+            "in": "query",
+            "required": false,
+            "description": "The branch, tag or commit to walk back from. Defaults to `HEAD`.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "At most this many commits. Defaults to 50.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Skip this many commits first. Defaults to 0.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A repository's history from one ref.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "commits": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "hash": {
+                            "type": "string",
+                            "description": "The commit id, 40 lowercase hex characters."
+                          },
+                          "treeHash": {
+                            "type": "string",
+                            "description": "The id of the commit's root tree."
+                          },
+                          "message": {
+                            "type": "string",
+                            "description": "The commit message."
+                          },
+                          "author": {
+                            "type": "object",
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "description": "The name recorded on the commit."
+                              },
+                              "email": {
+                                "type": "string",
+                                "description": "The address recorded on the commit."
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "email"
+                            ],
+                            "description": "Who wrote the change."
+                          },
+                          "committer": {
+                            "type": "object",
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "description": "The name recorded on the commit."
+                              },
+                              "email": {
+                                "type": "string",
+                                "description": "The address recorded on the commit."
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "email"
+                            ],
+                            "description": "Who committed it."
+                          },
+                          "parents": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "The parent commit ids, in Git order. Empty for a root commit."
+                          },
+                          "authoredAt": {
+                            "type": "number",
+                            "description": "When it was authored, in Unix seconds."
+                          },
+                          "committedAt": {
+                            "type": "number",
+                            "description": "When it was committed, in Unix seconds."
+                          }
+                        },
+                        "required": [
+                          "hash",
+                          "treeHash",
+                          "message",
+                          "author",
+                          "committer",
+                          "parents",
+                          "authoredAt",
+                          "committedAt"
+                        ],
+                        "description": "One decoded commit."
+                      },
+                      "description": "Commits along the first-parent chain, newest first."
+                    }
+                  },
+                  "required": [
+                    "commits"
+                  ],
+                  "description": "A repository's history from one ref."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      }
+    },
+    "/artifacts/repos/{name}/commits/{hash}": {
+      "get": {
+        "tags": [
+          "artifacts"
+        ],
+        "operationId": "getArtifactsReposByNameCommitsByHash",
+        "summary": "Read one commit.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "The repository's physical name.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+            }
+          },
+          {
+            "name": "hash",
+            "in": "path",
+            "required": true,
+            "description": "The Git object to read, by id.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One decoded commit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "hash": {
+                      "type": "string",
+                      "description": "The commit id, 40 lowercase hex characters."
+                    },
+                    "treeHash": {
+                      "type": "string",
+                      "description": "The id of the commit's root tree."
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "The commit message."
+                    },
+                    "author": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "description": "The name recorded on the commit."
+                        },
+                        "email": {
+                          "type": "string",
+                          "description": "The address recorded on the commit."
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "email"
+                      ],
+                      "description": "Who wrote the change."
+                    },
+                    "committer": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "description": "The name recorded on the commit."
+                        },
+                        "email": {
+                          "type": "string",
+                          "description": "The address recorded on the commit."
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "email"
+                      ],
+                      "description": "Who committed it."
+                    },
+                    "parents": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The parent commit ids, in Git order. Empty for a root commit."
+                    },
+                    "authoredAt": {
+                      "type": "number",
+                      "description": "When it was authored, in Unix seconds."
+                    },
+                    "committedAt": {
+                      "type": "number",
+                      "description": "When it was committed, in Unix seconds."
+                    }
+                  },
+                  "required": [
+                    "hash",
+                    "treeHash",
+                    "message",
+                    "author",
+                    "committer",
+                    "parents",
+                    "authoredAt",
+                    "committedAt"
+                  ],
+                  "description": "One decoded commit."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      }
+    },
+    "/artifacts/repos/{name}/tree/{hash}": {
+      "get": {
+        "tags": [
+          "artifacts"
+        ],
+        "operationId": "getArtifactsReposByNameTreeByHash",
+        "summary": "Read one tree's immediate children.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "The repository's physical name.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+            }
+          },
+          {
+            "name": "hash",
+            "in": "path",
+            "required": true,
+            "description": "The Git object to read, by id.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One Git tree.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "description": "The entry's name in the tree."
+                          },
+                          "mode": {
+                            "type": "string",
+                            "description": "Its Git mode, e.g. `100644`."
+                          },
+                          "hash": {
+                            "type": "string",
+                            "description": "Its object id."
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "tree",
+                              "blob",
+                              "symlink",
+                              "gitlink",
+                              "exec"
+                            ],
+                            "description": "What it is: a directory, a file, a link, a submodule, or an executable."
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "mode",
+                          "hash",
+                          "type"
+                        ],
+                        "description": "One entry of a tree."
+                      },
+                      "description": "The tree's immediate children."
+                    }
+                  },
+                  "required": [
+                    "entries"
+                  ],
+                  "description": "One Git tree."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      }
+    },
+    "/artifacts/repos/{name}/blob/{hash}": {
+      "get": {
+        "tags": [
+          "artifacts"
+        ],
+        "operationId": "getArtifactsReposByNameBlobByHash",
+        "summary": "Read one blob's bytes.",
+        "description": "Served as an attachment, never sniffed, under a sandboxing content security policy.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "The repository's physical name.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+            }
+          },
+          {
+            "name": "hash",
+            "in": "path",
+            "required": true,
+            "description": "The Git object to read, by id.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The blob's bytes.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      }
+    },
+    "/artifacts/repos/{name}/file": {
+      "get": {
+        "tags": [
+          "artifacts"
+        ],
+        "operationId": "getArtifactsReposByNameFile",
+        "summary": "Read one file at a branch, tag or commit.",
+        "description": "Served with the content type Cloudflare resolves for it, as an attachment, never sniffed, under a sandboxing content security policy.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "The repository's physical name, as in its clone URL.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+            }
+          },
+          {
+            "name": "ref",
+            "in": "query",
+            "required": true,
+            "description": "The branch, tag or commit to read the file at.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "The file's path in the repository.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file's bytes.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
         ]
       }
     }

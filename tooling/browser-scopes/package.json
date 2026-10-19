@@ -12,6 +12,7 @@
     "reset": "bun run clean && rm -rf node_modules"
   },
   "devDependencies": {
+    "@pithy-sh/artifacts": "workspace:*",
     "@pithy-sh/audit": "workspace:*",
     "@pithy-sh/auth": "workspace:*",
     "@pithy-sh/cli": "workspace:*",

@@ -82,6 +82,8 @@ export const EXIT_CLASSES: Record<ExitClass, ExitClassRow> = {
  */
 export const EXIT_CLASS_BY_CODE = {
   // Usage or validation (2): the call itself is wrong, and a different call fixes it.
+  "artifacts/invalid_config": "usage",
+  "artifacts/invalid_name": "usage",
   "audit/invalid_event": "usage",
   "core/invalid_workflow_params": "usage",
   "email/invalid_payload": "usage",
@@ -168,6 +170,9 @@ export const EXIT_CLASS_BY_CODE = {
   "organization/last_administrator": "precondition",
   "organization/not_found": "precondition",
   "organization/slug_taken": "precondition",
+  "artifacts/forbidden": "precondition",
+  "artifacts/name_taken": "precondition",
+  "artifacts/not_found": "precondition",
   "payments/clawback_failed": "precondition",
   "payments/entitlement_required": "precondition",
   "payments/override_stale": "precondition",

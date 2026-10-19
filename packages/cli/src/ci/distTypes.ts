@@ -200,9 +200,11 @@ export const SIDES: readonly Side[] = ["input", "output"];
  * `pithy_payments_usage_runs` — the allowance overrides, the kit meters' per-period use, and the usage
  * reporting to the provider. Moved again the same day (#602): `@pithy-sh/secrets` brings
  * `pithy_secrets_reencryptions`, where a Worker records that the values it seals under a secret have moved
- * to its newest version — what a value rotation's retirement waits for.
+ * to its newest version — what a value rotation's retirement waits for. Moved on 2026-10-19 (#673):
+ * `@pithy-sh/artifacts` is the eighteenth package and brings `pithy_artifacts_repos` and `pithy_artifacts_grants`
+ * — who owns each Git repository, and each person's read or write grant on it.
  */
-export const CENSUS = { tables: 57, packages: 17 };
+export const CENSUS = { tables: 59, packages: 18 };
 
 /**
  * Where the generated programs are written — **outside the checkout, and that is forced**.

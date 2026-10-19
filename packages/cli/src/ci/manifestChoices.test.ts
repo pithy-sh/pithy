@@ -57,6 +57,7 @@ const CONFIG_SCHEMAS: Record<string, { module: string; export: string } | { none
   cloudflare: { none: "Not a capability: no manifest of config options, only provisioning clients." },
   core: { none: "The control-plane options are a TypeScript interface on createBackend, not a Zod object." },
   email: { module: "@pithy-sh/email/src/capability", export: "EmailConfig" },
+  artifacts: { module: "@pithy-sh/artifacts/src/config/config", export: "ArtifactsConfig" },
   i18n: { none: "Its options are the catalog and the default locale, typed as an interface, not a Zod object." },
   leaderboard: { module: "@pithy-sh/leaderboard/src/config/config", export: "LeaderboardConfig" },
   ledger: { module: "@pithy-sh/ledger/src/config/config", export: "LedgerConfig" },

@@ -69,6 +69,13 @@ interface QueueProducer {
   remote?: boolean;
 }
 
+/** One `artifacts` entry: the binding, and the namespace of repositories it addresses in this environment. */
+export interface ArtifactsEntry {
+  binding: string;
+  namespace?: string;
+  remote?: boolean;
+}
+
 /** One `send_email` entry. `name` is the binding, as in `ratelimits`; the rest is the adopter's routing. */
 interface SendEmailBinding {
   name: string;
@@ -124,6 +131,7 @@ export interface WranglerStanza {
   dispatch_namespaces?: CarriedEntry[];
   queues?: { producers?: QueueProducer[]; consumers?: unknown[] };
   send_email?: SendEmailBinding[];
+  artifacts?: ArtifactsEntry[];
   ratelimits?: RateLimitBinding[];
   workflows?: WorkflowBindingEntry[];
   durable_objects?: { bindings: DurableObjectBinding[] };
@@ -159,6 +167,7 @@ export const WRANGLER_KEYS: Readonly<Record<BindingType, string>> = {
   pipelines: "pipelines",
   mtls_certificates: "mtls_certificates",
   dispatch_namespaces: "dispatch_namespaces",
+  artifacts: "artifacts",
 };
 
 /** The array-shaped carried kinds, each an entry of `binding` plus the field its `target` is written as. */
@@ -434,6 +443,8 @@ export function stanzaHasBinding(stanza: WranglerStanza, binding: BindingSpec): 
       return (stanza.queues?.producers ?? []).some((entry) => entry.binding === binding.name);
     case "email":
       return (stanza.send_email ?? []).some((entry) => entry.name === binding.name);
+    case "artifacts":
+      return (stanza.artifacts ?? []).some((entry) => entry.binding === binding.name);
     case "browser":
     case "images":
       // One per Worker, an object like `ai`, but present only under this name: `validateBindings` reads
@@ -556,6 +567,22 @@ export function appendBinding(stanza: WranglerStanza, binding: BindingSpec, scop
       stanza.send_email ??= [];
       stanza.send_email.push(withRemote({ name: binding.name }, binding));
       return { outcome: "written" };
+    case "artifacts": {
+      // `{ binding, namespace }`, and the namespace is this environment's, `<project>-<env>` (#673). An entry with
+      // no namespace is one wrangler refuses, so a namespace this cannot name is skipped and said, never half-written.
+      if (scope.project === undefined) return { outcome: "skipped", reason: "no project name is resolved" };
+      if (!isValidEnvironment(scope.env)) {
+        return { outcome: "skipped", reason: `the naming scheme does not accept the environment "${scope.env}"` };
+      }
+      stanza.artifacts ??= [];
+      stanza.artifacts.push(
+        withRemote(
+          { binding: binding.name, namespace: resourceNames(scope.project).env(scope.env).artifactsNamespace() },
+          binding,
+        ),
+      );
+      return { outcome: "written" };
+    }
     case "browser":
     case "images": {
       // One per Worker, like `ai`. One already bound under another name is the adopter's, and overwriting

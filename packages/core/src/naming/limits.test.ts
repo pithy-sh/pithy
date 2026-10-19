@@ -30,6 +30,19 @@ describe("NAMESPACE_LIMITS", () => {
     // Queues · Get started: 1 to 63 characters, dashes only, starting and ending alphanumeric (#662).
     expect(NAMESPACE_LIMITS.queue.maxLength).toBe(63);
     expect(NAMESPACE_LIMITS.queue.minLength).toBe(1);
+    // Artifacts · Limits: a namespace name is 2 to 63 characters (#673).
+    expect(NAMESPACE_LIMITS.artifactsNamespace.maxLength).toBe(63);
+    expect(NAMESPACE_LIMITS.artifactsNamespace.minLength).toBe(2);
+    expect(NAMESPACE_LIMITS.artifactsRepo.maxLength).toBe(63);
+    expect(NAMESPACE_LIMITS.artifactsRepo.minLength).toBe(2);
+  });
+
+  it("refuses an Artifacts repo name somebody chose, and truncates the namespace the kit derives (#673)", () => {
+    expect(NAMESPACE_LIMITS.artifactsNamespace.policy).toBe("truncate");
+    expect(NAMESPACE_LIMITS.artifactsNamespace.source).toBe("cloudflare");
+    // Cloudflare states the repo charset and no repo length, so the 63 is ours, mirroring the namespace's.
+    expect(NAMESPACE_LIMITS.artifactsRepo.policy).toBe("refuse");
+    expect(NAMESPACE_LIMITS.artifactsRepo.source).toBe("pithy");
   });
 
   it("holds the Workflow and Worker caps apart, because they are genuinely different numbers", () => {

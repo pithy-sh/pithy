@@ -50,6 +50,17 @@ describe("resolveTokenProfiles — ci-system aggregation", () => {
     expect(resolveTokenProfiles([app])[RUNTIME_PROFILE]).toBeUndefined();
   });
 
+  test("a composed artifacts binding puts artifacts:write on ci-system, because feature teardown reaps repos (#673)", () => {
+    // `pithy feature destroy` lists and deletes a feature's repos under this token. The Worker reaches its repos
+    // through the binding, which needs no API token, so the runtime token gains nothing.
+    const app = defineCapability({ name: "app", requiredBindings: [{ type: "artifacts", name: "ARTIFACTS" }] });
+    const twice = defineCapability({ name: "other", requiredBindings: [{ type: "artifacts", name: "REPOS" }] });
+    const perms = resolveTokenProfiles([app, twice])[CI_SYSTEM_PROFILE]?.permissions ?? [];
+    expect(perms.filter((p) => p === "artifacts:write")).toEqual(["artifacts:write"]);
+    expect(resolveTokenProfiles([])[CI_SYSTEM_PROFILE]?.permissions).not.toContain("artifacts:write");
+    expect(resolveTokenProfiles([app])[RUNTIME_PROFILE]).toBeUndefined();
+  });
+
   test("an unknown ciPermissions key fails loudly", () => {
     const bad = defineCapability({ name: "bad", requiredBindings: [], ciPermissions: ["d1:destroy"] });
     expect(() => resolveTokenProfiles([bad])).toThrow(PithyError);

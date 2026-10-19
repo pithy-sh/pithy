@@ -2160,7 +2160,8 @@ export const COMMANDS = {
           "analytics:read",
           "images:write",
           "stream:write",
-          "queues:write"
+          "queues:write",
+          "artifacts:write"
         ]
       },
       "--json": {
@@ -2241,7 +2242,8 @@ export const COMMANDS = {
           "analytics:read",
           "images:write",
           "stream:write",
-          "queues:write"
+          "queues:write",
+          "artifacts:write"
         ]
       },
       "--keep-previous": {

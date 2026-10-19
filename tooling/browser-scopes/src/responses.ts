@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import * as artifacts from "@pithy-sh/artifacts/src/http/responses";
 import * as audit from "@pithy-sh/audit/src/http/responses";
 import * as auth from "@pithy-sh/auth/src/http/responses";
 import * as email from "@pithy-sh/email/src/http/responses";
@@ -57,6 +58,7 @@ import * as vector from "@pithy-sh/vector/src/http/responses";
  * compiling the module that builds it.
  */
 export const EVERY_RESPONSE_MODULE: readonly object[] = [
+  artifacts,
   audit,
   auth,
   email,

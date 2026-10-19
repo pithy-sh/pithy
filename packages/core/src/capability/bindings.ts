@@ -38,6 +38,11 @@ export const BindingType = z
     z
       .literal("dispatch_namespaces")
       .describe("Workers for Platforms dispatch namespace — call Workers uploaded into it. The adopter creates it."),
+    z
+      .literal("artifacts")
+      .describe(
+        "Artifacts — versioned storage that speaks Git, one namespace of repositories per environment. Cloudflare creates the namespace on its first repo.",
+      ),
   ])
   .describe("Kind of Cloudflare resource a binding refers to.");
 export type BindingType = z.infer<typeof BindingType>;
@@ -90,6 +95,8 @@ const SEED_POLICY: Record<BindingType, SeedPolicy> = {
   service: "provision",
   secret: "provision",
   email: "branch",
+  // The namespace is environment-derived, so a stanza starts empty and its own name is written in (#673).
+  artifacts: "provision",
 };
 
 /** How a newly created stanza gets this kind's entries. See {@link SeedPolicy}. */
@@ -145,6 +152,11 @@ export function isProvisionedBinding(type: BindingType): boolean {
  * and, where wrangler requires one, the account-level resource the spec states as `target`. Pithy writes the
  * entry; the adopter stands the resource up. `queue` writes its `queues.producers` entry under the name
  * `pithy provision` creates the queue with, and `email` writes `send_email` with nothing but its name.
+ *
+ * **`artifacts` is written and never provisioned (#673).** Its entry is `{ binding, namespace }`, and the namespace
+ * is `<project>-<env>`, derivable offline. There is no create call to make: Cloudflare creates a namespace the first
+ * time a repo is created in it. There is a teardown call, because repos cost storage, and `pithy feature destroy`
+ * makes it.
  */
 export function isWrittenBinding(type: BindingType): boolean {
   return WRITTEN.has(type);
@@ -167,6 +179,7 @@ const WRITTEN = new Set<BindingType>([
   "pipelines",
   "mtls_certificates",
   "dispatch_namespaces",
+  "artifacts",
 ]);
 
 /**

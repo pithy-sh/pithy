@@ -4314,7 +4314,8 @@ export default withContract(
     output: "document",
     // 2: a generated value's `type` is any `BindingType`, which grew seven kinds (#662).
     // 3: `failures[].check` takes `serviceBindings`, the block that holds every app's service bindings (#617).
-    schemaVersion: 3,
+    // 4: a generated value's `type` takes `artifacts`, the binding kind for a namespace of repositories (#673).
+    schemaVersion: 4,
     payload: DoctorPayload,
     // The default run, as every contract's `mutates` is (`commandContract.ts`). It writes nothing of the
     // project's, the account's or a database's: the update-notifier cache it refreshes is the CLI's own

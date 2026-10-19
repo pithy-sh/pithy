@@ -508,6 +508,79 @@ describe("a stanza applyProvisionedEnv creates", () => {
 });
 
 /**
+ * **Every stanza names its own environment's Artifacts namespace (#673).** The key is array-shaped and its kind is
+ * `provision`, so a stanza starts it empty; this is the writer that fills it, by binding, from the top level's.
+ */
+describe("the Artifacts namespace applyProvisionedEnv writes", () => {
+  let dir: string;
+  let wranglerPath: string;
+
+  const top = { binding: "ARTIFACTS", namespace: "replay-dev" };
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-artifacts-"));
+    wranglerPath = join(dir, "wrangler.jsonc");
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board", artifacts: [top] }, null, 2));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const apply = (scope: ReturnType<typeof environmentScope>) =>
+    applyProvisionedEnv({
+      administersItself: false,
+      workerDir: dir,
+      worker: BOARD,
+      scope,
+      resources: [],
+      services: [],
+      secrets: [],
+    });
+
+  type WithArtifacts = { artifacts?: unknown; env: Record<string, { artifacts?: unknown } | undefined> };
+
+  test("names staging's namespace in staging's stanza, and leaves the top level's alone", async () => {
+    await apply(environmentScope("replay", "staging"));
+    const config = parse(await readFile(wranglerPath, "utf8")) as unknown as WithArtifacts;
+    expect(config.env.staging?.artifacts).toEqual([{ binding: "ARTIFACTS", namespace: "replay-staging" }]);
+    expect(config.artifacts).toEqual([top]);
+  });
+
+  test("names the feature's own namespace in a feature's stanza", async () => {
+    const scope = featureScope({ project: "replay", issue: "69", slug: "demo" });
+    await apply(scope);
+    const config = parse(await readFile(featureConfigPath(dir), "utf8")) as unknown as WithArtifacts;
+    expect(config.env.feature?.artifacts).toEqual([{ binding: "ARTIFACTS", namespace: "replay-f69-demo--artifacts" }]);
+  });
+
+  test("rewrites a stale namespace in a stanza that already binds it, and is idempotent", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify(
+        {
+          name: "replay-board",
+          artifacts: [top],
+          env: { prod: { artifacts: [{ binding: "ARTIFACTS", namespace: "replay-dev" }] } },
+        },
+        null,
+        2,
+      ),
+    );
+    await apply(environmentScope("replay", "prod"));
+    await apply(environmentScope("replay", "prod"));
+    const config = parse(await readFile(wranglerPath, "utf8")) as unknown as WithArtifacts;
+    expect(config.env.prod?.artifacts).toEqual([{ binding: "ARTIFACTS", namespace: "replay-prod" }]);
+  });
+
+  test("writes no artifacts key into a Worker that binds none", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board" }, null, 2));
+    await apply(environmentScope("replay", "staging"));
+    const config = parse(await readFile(wranglerPath, "utf8")) as unknown as WithArtifacts;
+    expect(config.env.staging?.artifacts).toBeUndefined();
+  });
+});
+
+/**
  * **A feature's generated stanza carries its own address (#643).**
  *
  * The Worker cannot look up the account's `workers.dev` subdomain, so provisioning does, derives

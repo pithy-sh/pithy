@@ -45,6 +45,29 @@ describe("a queue's name (#662)", () => {
   });
 });
 
+describe("an Artifacts namespace (#673)", () => {
+  it("is the project and the environment, and nothing else", () => {
+    expect(names.env("prod").artifactsNamespace()).toBe("acme-prod");
+    expect(names.env("dev").artifactsNamespace()).toBe("acme-dev");
+    expect(names.env("staging").artifactsNamespace()).toBe("acme-staging");
+  });
+
+  it("fits Cloudflare's 2 to 63 and its charset for the longest project and environment", () => {
+    const longest = resourceNames("a".repeat(MAX_PROJECT_NAME)).env("staging").artifactsNamespace();
+    expect(longest.length).toBeLessThanOrEqual(NAMESPACE_LIMITS.artifactsNamespace.maxLength);
+    expect(longest.length).toBeGreaterThanOrEqual(NAMESPACE_LIMITS.artifactsNamespace.minLength);
+    expect(longest).toMatch(/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
+  });
+
+  it("is a feature's own, read back as that feature's by the ownership check", () => {
+    expect(names.feature({ issue: "662", slug: "thing" }).artifactsNamespace()).toBe("acme-f662-thing--artifacts");
+  });
+
+  it("has no global form: a namespace shared across environments would put a feature's repos beside production's", () => {
+    expect("artifactsNamespace" in names.global).toBe(false);
+  });
+});
+
 describe("an environment's names", () => {
   const prod = names.env("prod");
 
@@ -126,8 +149,11 @@ describe("the global scope", () => {
   });
 
   it("is the same interface as an environment, so no call site special-cases it", () => {
+    // Every name but the Artifacts namespace, which exists per environment and never at `global` (#673).
     const prod = names.env("prod");
-    for (const key of Object.keys(prod)) expect(names.global).toHaveProperty(key);
+    for (const key of Object.keys(prod).filter((key) => key !== "artifactsNamespace")) {
+      expect(names.global).toHaveProperty(key);
+    }
   });
 });
 

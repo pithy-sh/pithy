@@ -209,6 +209,13 @@ export const esErrors: MessageCatalog = {
   "organization/slug_taken": "Ese identificador ya está en uso.",
   "organization/nomination_invalid": "No hay ninguna oferta de titularidad que puedas aceptar.",
 
+  // Artifacts.
+  "artifacts/not_found": "Ese repositorio no existe.",
+  "artifacts/forbidden": "No puedes hacer eso en este repositorio.",
+  "artifacts/invalid_name": "Ese nombre de repositorio no es válido.",
+  "artifacts/name_taken": "Ese nombre de repositorio ya está en uso.",
+  "artifacts/invalid_config": "La configuración de repositorios no es válida.",
+
   // Testers.
   "testers/cohort_not_found": "Ese grupo de pruebas no existe.",
   "testers/member_not_found": "No hay ningún participante con esos datos.",

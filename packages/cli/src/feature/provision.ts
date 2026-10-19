@@ -34,6 +34,7 @@ import { mintedThisRun } from "../provision/mintedThisRun";
 import {
   AUDIT_RESOURCE_TYPE,
   type FeatureIndexes,
+  type FeatureRepos,
   ProvisionAuditActions,
   type ResourceProvisioners,
   type TeardownKind,
@@ -455,6 +456,11 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
   return { ...report, hosts: hosts.workers, ...(featureSecrets ? { featureSecrets } : {}) };
 }
 
+/** Whether a capability binds Artifacts — the only reason a teardown asks the account about repos (#673). */
+function bindsArtifacts(capability: Capability): boolean {
+  return capability.requiredBindings.some((binding) => binding.type === "artifacts");
+}
+
 /** One deleted resource in the teardown report — a Cloudflare resource, or a Worker script. */
 export interface DeprovisionedResource {
   /** The resource kind. `worker` for a Worker script (#592). */
@@ -544,6 +550,11 @@ export interface DeprovisionFeatureOptions {
    * no account is reachable for them.
    */
   indexes?: FeatureIndexes;
+  /**
+   * The repos in the feature's own Artifacts namespace (#673), listed and deleted when anything the feature
+   * composes binds `artifacts`, and then the namespace. Omitted when no account is reachable for them.
+   */
+  repos?: FeatureRepos;
   /**
    * The project's Workers, as the branch has them now — each one's two names are what the scripts a
    * feature deployed before scripts were recorded are recomputed from. Empty when they cannot be known;
@@ -666,6 +677,19 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
       }
     }
 
+    // **The repos in the feature's own Artifacts namespace (#673)**, after the scripts that bind them. Every repo in
+    // it, because the namespace is the feature's and nothing else's: `isFeatureOwnedName` reads it back as this
+    // branch's alone. Asked only where something binds `artifacts`, because a project that never did holds no
+    // `artifacts:write`, and a teardown refused for a permission it never needed is a teardown that leaks the rest.
+    const repos = options.repos && options.capabilities.some(bindsArtifacts) ? options.repos : null;
+    const namespace = featureScope(options.identity).artifactsNamespace;
+    if (repos) {
+      for (const repo of await repos.list(namespace)) {
+        const name = `${namespace}/${repo}`;
+        if (await repos.remove(namespace, repo)) await record("artifacts", name, name);
+      }
+    }
+
     for (const resource of manifest?.resources ?? []) {
       // Only delete what this feature could have named. An entry pointing anywhere else is not ours to
       // remove — the reconcile pass below re-derives every real name from the identity anyway, so nothing
@@ -710,6 +734,14 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
     }
     // No rate-limit teardown: a feature's namespaces are fixed per limiter and shared by every feature (#643).
     // Nothing to revoke: a feature's manager holds no Cloudflare API token (#643).
+
+    // **The Artifacts namespace last of all (#673).** Cloudflare made it on the first repo and nothing else ever
+    // deletes it. A repo delete is answered 202 and finishes later, so the namespace can still answer 409 after
+    // every retry: a passing state, not an account fault, and the one failure here that is expected. Last, so it
+    // cannot leave the feature's D1, KV, R2, queues and store entries live behind it, and so the repos get the
+    // whole teardown to finish going. Its throw still fails the run and keeps the manifest for the re-run that
+    // takes it. One a feature never made, or a run before this one already took, is nothing to do.
+    if (repos && (await repos.removeNamespace(namespace))) await record("artifacts-namespace", namespace, namespace);
   } catch (error) {
     // Carried, never replaced. `deleted` is what this run destroyed, by kind, name and id — the three
     // facts an operator needs to finish the teardown by hand. Nothing from the throw is copied into it.

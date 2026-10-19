@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { readFileSync } from "node:fs";
+import { artifacts } from "@pithy-sh/artifacts/src/index";
 import { audit } from "@pithy-sh/audit/src/index";
 import { auth } from "@pithy-sh/auth/src/index";
 import {
@@ -76,7 +77,8 @@ const ORIGIN = "https://app.example.com";
  * the catalog is the smallest one that has an owner to transfer.
  */
 const ORGANIZATION_ROLES = defineRoles({
-  powers: [],
+  // The power the artifacts capability is configured to gate an organization's repositories on (#673).
+  powers: ["repos:manage"],
   roles: {
     member: ["organization:read"],
     admin: ["organization:read", "organization:manage"],
@@ -88,6 +90,7 @@ const ORGANIZATION_ROLES = defineRoles({
       "organization:delete",
       "media:manage",
       "storage:manage",
+      "repos:manage",
     ],
   },
   administrativePower: "organization:manage",
@@ -212,6 +215,8 @@ export const KIT_COMPOSITION: Readonly<Record<string, () => Capability>> = {
   // The ownership pair is what mounts the three transfer routes.
   organization: () =>
     organization({ baseUrl: ORIGIN, roles: ORGANIZATION_ROLES, ownership: { confers: "owner", demotesTo: "admin" } }),
+  // A managePower, so the organization routes mount beside `organization` above.
+  artifacts: () => artifacts({ managePower: "repos:manage" }),
 };
 
 /** `@pithy-sh/cli`'s own version, read the way `main.ts` reads it: the document is published with the CLI. */

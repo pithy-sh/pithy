@@ -8,6 +8,7 @@ import { assertValidEnvironment, FEATURE_ENVIRONMENT, GLOBAL_SCOPE, isFeatureMar
 import {
   type FeatureIdentity,
   type FeatureResourceKind,
+  featureArtifactsNamespace,
   featureResourceName,
   featureSecretEntryName,
   featureWorkerName,
@@ -189,6 +190,12 @@ export interface ProvisionScope {
    * `<project>-feature-email-send` would be one Workflow every open branch deployed over every other's.
    */
   readonly workflowHost: Omit<WorkflowHostNameParts, "capability">;
+  /**
+   * The Artifacts namespace an `artifacts` binding names in this scope (#673): `<project>-<env>` in a declared
+   * environment, `<project>-f<issue>-<slug>--artifacts` in a feature. On the scope for the reason every other name
+   * is: the stanza a run writes and the namespace it writes into it are one decision.
+   */
+  readonly artifactsNamespace: string;
 }
 
 /** The wrangler binding array a resource kind's name is composed for. */
@@ -350,6 +357,7 @@ export function environmentScope(project: string, environment: string): Provisio
     secretEntry: (secret, secretScope) =>
       secretEntryName(project, secret, secretScope, () => names.secretEntry(secret)),
     workflowHost: { project, env: environment },
+    artifactsNamespace: names.artifactsNamespace(),
   };
 }
 
@@ -397,6 +405,11 @@ export function featureScope(identity: FeatureIdentity): ProvisionScope {
     secretEntry: (secret) => featureSecretEntryName(identity, secret),
     // `env` is the stanza — what the host's `ENVIRONMENT` var says — and `feature` is what its names take.
     workflowHost: { project: identity.project, env: FEATURE_ENVIRONMENT, feature: identity },
+    // The feature's own, read back as its own by `isFeatureOwnedName`, so teardown reaps no sibling's repos. A
+    // getter, so a slug too long for it refuses where the namespace is asked for, never where the scope is made.
+    get artifactsNamespace() {
+      return featureArtifactsNamespace(identity);
+    },
   };
 }
 
