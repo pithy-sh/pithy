@@ -681,15 +681,13 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
     // it, because the namespace is the feature's and nothing else's: `isFeatureOwnedName` reads it back as this
     // branch's alone. Asked only where something binds `artifacts`, because a project that never did holds no
     // `artifacts:write`, and a teardown refused for a permission it never needed is a teardown that leaks the rest.
-    if (options.repos && options.capabilities.some(bindsArtifacts)) {
-      const namespace = featureScope(options.identity).artifactsNamespace;
-      for (const repo of await options.repos.list(namespace)) {
+    const repos = options.repos && options.capabilities.some(bindsArtifacts) ? options.repos : null;
+    const namespace = featureScope(options.identity).artifactsNamespace;
+    if (repos) {
+      for (const repo of await repos.list(namespace)) {
         const name = `${namespace}/${repo}`;
-        if (await options.repos.remove(namespace, repo)) await record("artifacts", name, name);
+        if (await repos.remove(namespace, repo)) await record("artifacts", name, name);
       }
-      // Then the namespace itself. Cloudflare made it on the first repo and nothing else ever deletes it. One a
-      // feature never made, or a run before this one already took, is nothing to do.
-      if (await options.repos.removeNamespace(namespace)) await record("artifacts-namespace", namespace, namespace);
     }
 
     for (const resource of manifest?.resources ?? []) {
@@ -736,6 +734,14 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
     }
     // No rate-limit teardown: a feature's namespaces are fixed per limiter and shared by every feature (#643).
     // Nothing to revoke: a feature's manager holds no Cloudflare API token (#643).
+
+    // **The Artifacts namespace last of all (#673).** Cloudflare made it on the first repo and nothing else ever
+    // deletes it. A repo delete is answered 202 and finishes later, so the namespace can still answer 409 after
+    // every retry: a passing state, not an account fault, and the one failure here that is expected. Last, so it
+    // cannot leave the feature's D1, KV, R2, queues and store entries live behind it, and so the repos get the
+    // whole teardown to finish going. Its throw still fails the run and keeps the manifest for the re-run that
+    // takes it. One a feature never made, or a run before this one already took, is nothing to do.
+    if (repos && (await repos.removeNamespace(namespace))) await record("artifacts-namespace", namespace, namespace);
   } catch (error) {
     // Carried, never replaced. `deleted` is what this run destroyed, by kind, name and id — the three
     // facts an operator needs to finish the teardown by hand. Nothing from the throw is copied into it.

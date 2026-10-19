@@ -9,7 +9,7 @@ import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { callerOf } from "@pithy-sh/core/src/cli/command";
 import { createBackend } from "@pithy-sh/core/src/createBackend";
-import { PithyError, sentenceOf } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, PithyError, sentenceOf } from "@pithy-sh/core/src/error/pithyError";
 import {
   type FeatureIdentity,
   featureResourceName,
@@ -1399,6 +1399,51 @@ describe("deprovisionFeature — a feature's Artifacts repos", () => {
     await teardown([binds], account.repos);
     const again = await teardown([binds], account.repos);
     expect(again.deleted.filter((resource) => resource.kind.startsWith("artifacts"))).toEqual([]);
+  });
+
+  test("a namespace still busy with its repos' deletes frees everything else first, then fails", async () => {
+    // A repo delete is answered 202 and finishes later, so the namespace can still answer 409 after every retry.
+    // That is a passing state, not an account fault: the feature's D1, KV and R2 must not stay live behind it.
+    const capability = defineCapability({
+      name: "app",
+      requiredBindings: [{ type: "artifacts", name: "ARTIFACTS" }, ...appCapability().requiredBindings],
+    });
+    const { provisioners, stores } = fakeProvisioners();
+    for (const [binding, kind] of [
+      ["DB", "d1"],
+      ["CACHE", "kv"],
+      ["ASSETS", "r2"],
+    ] as const) {
+      stores[kind].set(featureResourceName(identity, binding, kind), `${kind}-live`);
+    }
+    const busy = new ConflictError({ message: `Artifacts namespace ${namespace} still holds a repo.` });
+    const error = await deprovisionFeature({
+      ...noScripts,
+      projectDir: dir,
+      identity,
+      capabilities: [capability],
+      env: "feature",
+      provisioners,
+      repos: {
+        list: async () => ["a"],
+        remove: async () => true,
+        removeNamespace: async () => {
+          throw busy;
+        },
+      },
+    }).then(
+      () => {
+        throw new Error("expected the busy namespace to fail the teardown");
+      },
+      (thrown: unknown) => thrown,
+    );
+    expect(error).toBe(busy);
+    expect(stores.d1.size + stores.kv.size + stores.r2.size).toBe(0);
+    expect(
+      deletedBeforeFailure(error)
+        .map((resource) => resource.kind)
+        .sort(),
+    ).toEqual(["artifacts", "d1", "kv", "r2"]);
   });
 
   test("asks nothing of the account for a feature that binds no Artifacts", async () => {
