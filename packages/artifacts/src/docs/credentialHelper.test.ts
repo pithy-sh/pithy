@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { spawn } from "node:child_process";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFileSync, spawn } from "node:child_process";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -44,12 +44,21 @@ let server: Server;
 let origin: string;
 let dir: string;
 let helper: string;
+/** Every argv the helper hands `curl`, one line per call, written by a shim ahead of the real one on `PATH`. */
+let argvLog: string;
+let shimDir: string;
 
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "pithy-credential-helper-"));
   helper = join(dir, "git-credential-pithy");
   await writeFile(helper, await helperScript());
   await chmod(helper, 0o755);
+  shimDir = join(dir, "bin");
+  argvLog = join(dir, "curl-argv.log");
+  const realCurl = execFileSync("sh", ["-c", "command -v curl"], { encoding: "utf8" }).trim();
+  await mkdir(shimDir);
+  await writeFile(join(shimDir, "curl"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${argvLog}'\nexec '${realCurl}' "$@"\n`);
+  await chmod(join(shimDir, "curl"), 0o755);
   server = createServer(mint);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -71,7 +80,7 @@ function fill(appUrl: string, useHttpPath = true): Promise<{ code: number | null
       ["-c", `credential.helper=${helper}`, "-c", `credential.useHttpPath=${useHttpPath}`, "credential", "fill"],
       {
         env: {
-          PATH: process.env.PATH ?? "",
+          PATH: `${shimDir}:${process.env.PATH ?? ""}`,
           HOME: dir,
           XDG_CONFIG_HOME: dir,
           GIT_CONFIG_NOSYSTEM: "1",
@@ -110,6 +119,26 @@ describe("the credential helper in docs/credential-helper.md", () => {
     expect(run.stdout).toContain(`password=${TOKEN}\n`);
     expect(run.stdout).toContain("username=x\n");
     expect(run.stdout).toContain("password_expiry_utc=1800000000\n");
+  });
+
+  test("never puts the app's credential in curl's argv, where any local user can read it", async () => {
+    answer = {
+      status: 200,
+      body: { token: TOKEN, scope: "write", expiresAt: "2027-01-15T08:00:00.000Z", remote: "x" },
+    };
+    asked.length = 0;
+    await writeFile(argvLog, "");
+    const run = await fill(origin);
+    expect(run.code, run.stderr).toBe(0);
+    expect(asked[0]?.authorization).toBe("Bearer app-credential");
+    const argv = await readFile(argvLog, "utf8");
+    expect(argv).toContain("/artifacts/repos/docs-1/credentials");
+    expect(argv).not.toContain("app-credential");
+  });
+
+  test("no snippet on the page passes PITHY_APP_TOKEN as a command-line argument", async () => {
+    const page = await readFile(PAGE, "utf8");
+    expect(page).not.toMatch(/-H\s+"Authorization: Bearer \$\{?PITHY_APP_TOKEN/);
   });
 
   test("a refused mint shows the code and message from its error body, and git asks nobody for a username", async () => {

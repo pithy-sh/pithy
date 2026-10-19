@@ -3,7 +3,7 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
-import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, NotFoundError, UpstreamError } from "@pithy-sh/core/src/error/pithyError";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { validate } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
@@ -161,8 +161,8 @@ export function registerArtifactsRoutes(options: ArtifactsRoutesOptions): (app: 
 
     /**
      * Create a repository for an owner: name it, create it, revoke the token Cloudflare hands back with it, and
-     * record it. The display name is checked first so a duplicate costs no repository; a race past that check is
-     * caught by the unique index, and the repository just created is deleted again.
+     * record it. The display name is checked first so a duplicate costs no repository. A failed revoke, or a race past
+     * that check caught by the unique index, deletes the repository just created again.
      */
     async function create(
       c: Context<PithyHonoEnv>,
@@ -190,9 +190,6 @@ export function registerArtifactsRoutes(options: ArtifactsRoutesOptions): (app: 
       const created = await callArtifacts(`create repository ${name}`, () =>
         binding.create(name, body.description === undefined ? undefined : { description: body.description }),
       );
-      // **Cloudflare answers a create with a token: write scope, a day's life.** That is a long-lived credential this
-      // capability never issues, so it is revoked before anybody can have read it.
-      await withRepo(binding, name, (repo) => repo.revokeToken(created.token));
       const at = new Date();
       const row: ArtifactsRepoRecord = {
         name,
@@ -203,7 +200,17 @@ export function registerArtifactsRoutes(options: ArtifactsRoutesOptions): (app: 
         createdAt: at,
         updatedAt: at,
       };
+      // **Cloudflare answers a create with a token: write scope, a day's life.** That is a long-lived credential this
+      // capability never issues, so it is revoked before anybody can have read it. A revoke that fails, or answers
+      // that it revoked nothing, deletes the repository again: with no row, nothing could ever reach it to try again.
       try {
+        const revoked = await withRepo(binding, name, (repo) => repo.revokeToken(created.token));
+        if (!revoked) {
+          throw new UpstreamError({
+            message: "Cloudflare Artifacts could not complete the request.",
+            detail: `revoke the create token of repository ${name}: the binding answered false`,
+          });
+        }
         await store.insertRepo(row);
       } catch (error) {
         await callArtifacts(`delete repository ${name}`, () => binding.delete(name));

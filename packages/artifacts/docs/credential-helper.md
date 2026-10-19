@@ -41,8 +41,8 @@ done
 repo=$(basename "$path" .git)
 
 # The status goes on a line of its own after the body, so a refusal's body can be read too.
-response=$(curl -sS -X POST -w '\n%{http_code}' \
-  -H "Authorization: Bearer ${PITHY_APP_TOKEN}" \
+# The header reaches curl on stdin, never in its argv, where any local user can read it. printf is a shell builtin.
+response=$(printf 'Authorization: Bearer %s\n' "$PITHY_APP_TOKEN" | curl -sS -X POST -w '\n%{http_code}' -H @- \
   "${PITHY_APP_URL}/artifacts/repos/${repo}/credentials") || refuse "could not reach ${PITHY_APP_URL}."
 status=$(printf '%s' "$response" | tail -n 1)
 body=$(printf '%s' "$response" | sed '$d')
@@ -86,9 +86,11 @@ The bearer form, `git -c http.extraHeader="Authorization: Bearer $TOKEN"`, is Cl
 ```sh
 export PITHY_APP_URL=https://app.example.com
 export PITHY_APP_TOKEN=...   # your app's credential for this person
-git clone "$(curl -fsS -X POST -H "Authorization: Bearer $PITHY_APP_TOKEN" \
+git clone "$(printf 'Authorization: Bearer %s\n' "$PITHY_APP_TOKEN" | curl -fsS -X POST -H @- \
   "$PITHY_APP_URL/artifacts/repos/<name>/credentials" | sed -n 's/.*"remote":"\([^"]*\)".*/\1/p')"
 ```
+
+The app's credential goes to curl on stdin, as `-H @-`, and never on its command line. A process's arguments are readable by every user on the machine, through `ps` or `/proc/<pid>/cmdline`, and this credential is the one that mints write tokens. `-H @-` needs curl 7.55 or later.
 
 Every fetch and push after that asks the helper, and the helper mints. A person with a `read` grant gets a read token, and a push is refused by Cloudflare. A person whose grant you removed is refused at the mint, and pushes with the token they hold until it expires.
 

@@ -249,6 +249,28 @@ describe("creating a repository", () => {
     expect(tokens[0]?.state).toBe("revoked");
   });
 
+  for (const [failure, revoke] of [
+    ["throws", async () => Promise.reject(artifactsError("INTERNAL"))],
+    ["answers false", async () => false],
+  ] as const) {
+    test(`deletes the repository again when revoking its create token ${failure}`, async () => {
+      const app = worker();
+      const get = namespace.binding.get;
+      namespace.binding.get = async (name) => ({ ...(await get(name)), revokeToken: revoke });
+      const res = await call(app, "/artifacts/repos", "alice", {
+        method: "POST",
+        body: JSON.stringify({ displayName: "docs" }),
+      });
+      expect(res.status).toBe(502);
+      expect(((await res.json()) as { error: { code: string } }).error.code).toBe("core/upstream_failed");
+      expect(namespace.repos.size).toBe(0);
+      namespace.binding.get = get;
+      const listed = await conforming(await call(app, "/artifacts/repos", "alice"), RepoList);
+      expect(listed.repos).toHaveLength(0);
+      expect(output.join("\n")).not.toMatch(/art_v1_/);
+    });
+  }
+
   test("refuses a supplied name unless the Worker takes one, and then refuses one that breaks the rule", async () => {
     const closed = await call(worker(), "/artifacts/repos", "alice", {
       method: "POST",
