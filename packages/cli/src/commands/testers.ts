@@ -29,7 +29,7 @@ import { capabilityNotComposed } from "../capabilities/notComposed";
 import { loadTesters, testersAuth } from "../capabilities/testersLoader";
 import { CloudflareTestersProvisioner, loadTestersProvisioning } from "../capabilities/testersProvisioner";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
-import { cloudflareClients } from "../cloudflare/clients";
+import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { commandCredentials } from "../cloudflare/commandCredentials";
 import { withContract } from "../contract/commandContract";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
@@ -466,6 +466,7 @@ async function buildProvisioner(projectDir: string, worker?: string) {
     appReadiness,
     provisioner: new CloudflareTestersProvisioner({
       cf,
+      workflows: await cloudflareWorkflows({ accountId, apiToken }),
       projectDir,
       project,
       account,
@@ -852,7 +853,10 @@ const provision = withContract(
 
 const deprovision = withContract(
   defineCommand({
-    meta: { name: "deprovision", description: "Delete the daily-pass worker. The roster and its history stay." },
+    meta: {
+      name: "deprovision",
+      description: "Delete the daily-pass worker and its Workflow. The roster and its history stay.",
+    },
     args: {
       json: { type: "boolean", default: false, description: "Machine-readable output" },
       env: {

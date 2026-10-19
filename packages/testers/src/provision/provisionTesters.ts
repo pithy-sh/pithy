@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
+import { hostWorkflowsFor } from "@pithy-sh/core/src/workflow/host";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
-import { TESTERS_CAPABILITY } from "../workflows/specs";
+import { TESTERS_CAPABILITY, testersWorkflowRegistry } from "../workflows/specs";
 
 /**
  * The provisioning orchestration for the testers capability — the live counterpart to
@@ -48,6 +49,17 @@ export function testersWorkerName(project: string, env: ManagedEnvironment): str
 }
 
 /**
+ * The Workflows the daily-pass worker is deployed with in one environment — `<project>-<env>-testers-daily`.
+ * Derived from the specs by the call `resolveTestersConfig` deploys with, so teardown deletes the names
+ * provision created and no others (#789). Deleting a Worker does not delete the Workflows registered against it.
+ */
+export function testersWorkflowNames(project: string, env: ManagedEnvironment): string[] {
+  return hostWorkflowsFor(testersWorkflowRegistry, { project, capability: TESTERS_CAPABILITY, env }).workflows.map(
+    (workflow) => workflow.name,
+  );
+}
+
+/**
  * The live Cloudflare/wrangler seam. Each step must be idempotent.
  *
  * Narrow on purpose: everything a fake needs to stand in for is an account check and a deploy, which is
@@ -62,6 +74,11 @@ export interface TestersProvisioner {
 
 /** The live seam for taking a deployed host back down. */
 export interface TestersDeprovisioner {
+  /**
+   * Delete this environment's daily Workflows, by {@link testersWorkflowNames}. Absent is success. Deleting the
+   * worker leaves them registered, so they go first (#789).
+   */
+  deleteWorkflows(env: ManagedEnvironment): Promise<void>;
   /** Delete this environment's daily-pass worker. Absent is success — teardown is idempotent. */
   deleteWorker(env: ManagedEnvironment): Promise<void>;
 }
@@ -97,7 +114,10 @@ export async function provisionTesters(
   return results;
 }
 
-/** Take every environment's host back down. Idempotent: a worker that is already gone is success. */
+/**
+ * Take every environment's host back down: its Workflows, then its worker. Idempotent: a Workflow or a worker
+ * that is already gone is success.
+ */
 export async function deprovisionTesters(
   deprovisioner: TestersDeprovisioner,
   project: string,
@@ -105,6 +125,7 @@ export async function deprovisionTesters(
 ): Promise<TestersProvisionResult[]> {
   const results: TestersProvisionResult[] = [];
   for (const env of environments) {
+    await deprovisioner.deleteWorkflows(env);
     await deprovisioner.deleteWorker(env);
     results.push({ env, worker: testersWorkerName(project, env) });
   }

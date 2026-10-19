@@ -3,10 +3,11 @@
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { TestersConfig } from "@pithy-sh/testers/src/config/config";
-import { testersWorkerName } from "@pithy-sh/testers/src/provision/provisionTesters";
+import { deprovisionTesters, testersWorkerName } from "@pithy-sh/testers/src/provision/provisionTesters";
 import { describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import { KIT_ROOT } from "../test-utils/kitRoot";
+import { declaredWorkflowNames, workflowsHolding } from "../test-utils/workflows";
 import { CloudflareTestersProvisioner } from "./testersProvisioner";
 
 /** The project every provisioned name leads with — `requireProjectName`'s answer, never a guess. */
@@ -35,8 +36,9 @@ function fakeCf() {
   return { cf, getWorker, deleteWorker, accountSubdomain };
 }
 
-function provisioner(cf: CloudflareClients, events: CliAuditEvent[] = []) {
+function provisioner(cf: CloudflareClients, events: CliAuditEvent[] = [], workflows = workflowsHolding().workflows) {
   return new CloudflareTestersProvisioner({
+    workflows,
     projectDir: KIT_ROOT,
     project: PROJECT,
     cf,
@@ -124,6 +126,7 @@ describe("the audit is optional", () => {
     getWorker.mockResolvedValue({ id: testersWorkerName(PROJECT, "staging") });
 
     const bare = new CloudflareTestersProvisioner({
+      workflows: workflowsHolding().workflows,
       projectDir: KIT_ROOT,
       project: PROJECT,
       cf,
@@ -154,6 +157,7 @@ describe("teardown refuses an unconfirmed account", () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     getWorker.mockResolvedValue(null);
     const stranger = new CloudflareTestersProvisioner({
+      workflows: workflowsHolding().workflows,
       projectDir: KIT_ROOT,
       project: PROJECT,
       cf,
@@ -173,6 +177,7 @@ describe("teardown refuses an unconfirmed account", () => {
   test("does not even ask — an answer it could not believe is not worth the round trip", async () => {
     const { cf, getWorker } = fakeCf();
     const stranger = new CloudflareTestersProvisioner({
+      workflows: workflowsHolding().workflows,
       projectDir: KIT_ROOT,
       project: PROJECT,
       cf,
@@ -192,6 +197,7 @@ describe("teardown refuses an unconfirmed account", () => {
     getWorker.mockResolvedValue(null);
     const events: CliAuditEvent[] = [];
     const stranger = new CloudflareTestersProvisioner({
+      workflows: workflowsHolding().workflows,
       projectDir: KIT_ROOT,
       project: PROJECT,
       cf,
@@ -212,5 +218,71 @@ describe("teardown refuses an unconfirmed account", () => {
     getWorker.mockResolvedValue({ id: testersWorkerName(PROJECT, "prod") });
     await provisioner(cf).deleteWorker("prod");
     expect(deleteWorker).toHaveBeenCalledWith(testersWorkerName(PROJECT, "prod"));
+  });
+});
+
+/**
+ * **Every Workflow the committed template declares goes with the worker (#789).** Deleting a Worker leaves the
+ * Workflows registered against it, and `pithy testers deprovision` once did exactly that. The names are read from
+ * the template's own `workflows` block, not from any namer, so a Workflow added there and nowhere else fails this.
+ */
+describe("pithy testers deprovision deletes its Workflows", () => {
+  const WORKER = "@pithy-sh/testers/src/workflows/worker";
+
+  test("a teardown deletes every Workflow the template declares for that environment, and no other", async () => {
+    const declared = await declaredWorkflowNames(WORKER, PROJECT, "staging");
+    expect(declared.length).toBeGreaterThan(0);
+    // Production's, and another project's in the same account, are not this teardown's.
+    const others = [
+      ...(await declaredWorkflowNames(WORKER, PROJECT, "prod")),
+      ...(await declaredWorkflowNames(WORKER, "other", "staging")),
+    ];
+    const { workflows, held } = workflowsHolding([...declared, ...others]);
+    const events: CliAuditEvent[] = [];
+    const { cf, getWorker } = fakeCf();
+    getWorker.mockResolvedValue(null);
+
+    await deprovisionTesters(provisioner(cf, events, workflows), PROJECT, ["staging"]);
+    expect([...held]).toEqual(others);
+    expect(events.filter((event) => event.resourceType === "cf_workflow").map((event) => event.resourceId)).toEqual(
+      declared,
+    );
+  });
+
+  test("a second run, or one after a hand deletion, exits cleanly and deletes nothing", async () => {
+    const declared = await declaredWorkflowNames(WORKER, PROJECT, "staging");
+    // One deleted by hand already; the rest go on the first run, and nothing is left for the second.
+    const { workflows, held } = workflowsHolding(declared.slice(1));
+    const events: CliAuditEvent[] = [];
+    const { cf, getWorker } = fakeCf();
+    getWorker.mockResolvedValue(null);
+    const testers = provisioner(cf, events, workflows);
+
+    await deprovisionTesters(testers, PROJECT, ["staging"]);
+    expect(held.size).toBe(0);
+    events.length = 0;
+    await expect(deprovisionTesters(testers, PROJECT, ["staging"])).resolves.toBeDefined();
+    expect(events).toEqual([]);
+  });
+
+  test("refuses an unconfirmed account before it deletes a Workflow", async () => {
+    const declared = await declaredWorkflowNames(WORKER, PROJECT, "prod");
+    const { workflows, held } = workflowsHolding(declared);
+    const stranger = new CloudflareTestersProvisioner({
+      workflows,
+      projectDir: KIT_ROOT,
+      project: PROJECT,
+      cf: fakeCf().cf,
+      account: { accountId: "acct-stranger", confirmation: "ambient" },
+      apiToken: "token",
+      testersConfig: TestersConfig.parse({ baseUrl: "https://api.example.test" }),
+      email: undefined,
+      resolveEnv: async () => ({ appDatabaseId: "app-db", suppressionDatabaseId: "sup-db" }),
+    });
+
+    await expect(stranger.deleteWorkflows("prod")).rejects.toThrow(
+      "Nothing states that Cloudflare account acct-stranger is this project's. Nothing was changed.",
+    );
+    expect([...held]).toEqual(declared);
   });
 });
