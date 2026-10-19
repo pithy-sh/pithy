@@ -25,9 +25,10 @@ import { NEUTRAL_PROVIDER_REFUSAL } from "../http/providerRefusal";
  *   The mitigating fact is that it requires a provider-signed, audience-bound assertion of the address,
  *   so it is not an address an attacker picks — which is why the claim above says *the redirect
  *   callback* and not *provider sign-in*.
- * - **A plugin that calls `handleOAuthUserInfo` without going through `provider.getUserInfo`.**
- *   `plugins/one-tap/index.mjs:45-70` builds the user info straight from a verified Google id token;
- *   `plugins/oauth-proxy/index.mjs:110` lifts it out of an encrypted proxy payload. The kit composes
+ * - **A plugin that calls `handleOAuthUserInfo` outside the redirect callback.** `plugins/one-tap/index.mjs:64`
+ *   resolves a verified Google id token through Google's own `getUserInfo` with no OAuth state, which
+ *   this gate passes through, or builds the user info itself when Google is not configured;
+ *   `plugins/oauth-proxy/index.mjs:127` lifts it out of an encrypted proxy payload. The kit composes
  *   neither. `./refusalTransport` is where a composed plugin is ruled on.
  * - **An adopter plugin that replaces `ctx.socialProviders` in its own `init`.** Kit plugins run first
  *   by contract (`./auth.ts` composes them ahead of the adopter's), so the wrap is installed before
@@ -47,8 +48,8 @@ import { NEUTRAL_PROVIDER_REFUSAL } from "../http/providerRefusal";
  * | 4 | Not attached, no account at that address | Refused |
  *
  * Rows 3 and 4 differ only in whether a row exists at an address **the caller chose**, and Better Auth
- * answers them with two different codes — `account_not_linked` (`oauth2/link-account.mjs:86`, returned
- * only inside `if (dbUser)`) and `signup_disabled` (`:202`, the `else` of that same branch). Both reach
+ * answers them with two different codes — `account_not_linked` (`oauth2/link-account.mjs:142`, returned
+ * only inside `if (dbUser)`) and `signup_disabled` (`:257`, the `else` of that same branch). Both reach
  * the browser as `?error=<code>`. That is an account-enumeration oracle needing one provider account,
  * none on the target, and no page render.
  *
@@ -58,7 +59,7 @@ import { NEUTRAL_PROVIDER_REFUSAL } from "../http/providerRefusal";
  * another, and the last keyed on a value `callbackURL` supplies, so it rewrote *successful* sign-ins.
  * By the time a response exists the fact that distinguished the two cases is gone and what is left is
  * partly the caller's. `getUserInfo` is the last seam that holds the fact itself: `callback.mjs:120`
- * calls it, `:220` calls `handleOAuthUserInfo`, and **nothing runs in between** — so a refusal thrown
+ * calls it, `:172` calls `handleOAuthUserInfo`, and **nothing between them reads a user row** — so a refusal thrown
  * here means neither of those two lines is ever reached and there is no pair left to collapse.
  *
  * ## Why a wrapper, and not a `getUserInfo` supplied in the config block
@@ -134,8 +135,8 @@ type UserInfoResult = Awaited<ReturnType<OAuthProvider["getUserInfo"]>>;
  * than asserted:** `providerSignInGate.workers.test.ts` drives a refusal the dependency still emits
  * (`email_not_found`) beside one this gate emits and requires the two `Location` headers to differ in
  * nothing but the code. `ctx.redirect(url)` is itself only `new APIError("FOUND", undefined, headers)`
- * with `location` set (`better-call/dist/context.mjs:60`), and better-auth's router passes a `FOUND`
- * straight through its `onError` to `toResponse` (`api/index.mjs:192`), so this is the same object the
+ * with `location` set (`better-call/dist/context.mjs:62`), and better-auth's router passes a `FOUND`
+ * straight through its `onError` to `toResponse` (`api/index.mjs:196`), so this is the same object the
  * dependency would have thrown — built without the endpoint context `getUserInfo` is not handed.
  *
  * The value being appended to is the OAuth state's own `errorURL`, which is where `redirectOnError`
@@ -165,12 +166,13 @@ function refusalWithoutRedirect(): APIError {
 /**
  * Is this provider identity already attached to some account here? Row 1.
  *
- * **Keyed on `(providerId, accountId)`, which is wider than Better Auth's `(issuer, accountId)`, and
- * wider is the safe direction.** Deriving the issuer means copying `createOAuthAccountIssuer` —
- * `local:oauth:${encodeAccountIssuerProviderId(id)}` — from a package the kit does not depend on, and a
- * second copy of a dependency's decision is the defect class this repo has been bitten by four times
- * (#106, #108, #109, #113). A false match here passes the attempt through and lets Better Auth decide,
- * which is today's behavior; a false *miss* is what would be dangerous, and widening cannot cause one.
+ * **Keyed on `(providerId, accountId)`, which is Better Auth's own account key.** 1.7.0–1.7.2 keyed an
+ * account on `(issuer, accountId)` instead, and this gate read the wider pair rather than copy how Better
+ * Auth derived an issuer. 1.7.3 reverted to the 1.6 model (better-auth/better-auth#11153), and the lookup
+ * the callback makes is now `findAccountOwnerByKey({ providerId, accountId })` (`link-account.mjs:80`), so
+ * the two ask the same question of the same columns (#787). A false match here would pass the attempt
+ * through and let Better Auth decide, which is the safe direction; a false *miss* is what would be
+ * dangerous, and an identical key cannot cause one.
  *
  * It reads no address and no verified flag, which is what keeps an `allowDifferentEmails` link signing in.
  *
@@ -214,13 +216,13 @@ async function gateProviderSignIn(args: {
 }): Promise<void> {
   const { ctx, provider, token, result, deps } = args;
 
-  // No OAuth state: `/link-social` and `/account-info` with an id token (`api/routes/account.mjs:174`,
-  // `:609`), which never generate one, and `/sign-in/social`'s own id-token branch, which returns before
+  // No OAuth state: `/link-social` and `/account-info` with an id token (`api/routes/account.mjs:172`,
+  // `:604`), which never generate one, and `/sign-in/social`'s own id-token branch, which returns before
   // `generateState`. The first two must be untouched — linking from inside the account is a different
   // flow with both sides already proven — and the third is the uncovered path named in the reach section.
   //
   // **`getOAuthState()` throws where no request state was established**, which is every caller reaching
-  // a provider object by hand rather than through an endpoint (`to-auth-endpoints.mjs:50` wraps them
+  // a provider object by hand rather than through an endpoint (`to-auth-endpoints.mjs:52` wraps them
   // all, `auth.api.*` included). Deliberately not caught: a missing store cannot be a callback today,
   // and swallowing it would turn a dependency that stopped establishing one into a silent pass-through
   // instead of a loud failure. There is no such caller in this kit.
@@ -234,7 +236,7 @@ async function gateProviderSignIn(args: {
   // Verified, load-bearing, and planted against — the gate keys on this field.
   if (state.link !== undefined && state.link !== null) return;
 
-  // No address at all. Better Auth answers `email_not_found` from `callback.mjs:205`, which is the same
+  // No address at all. Better Auth answers `email_not_found` from `callback.mjs:168`, which is the same
   // string on both sides of the fork, so there is nothing here to collapse and nothing to decide. The
   // kit's own GitHub resolver fails closed to exactly this shape (`./githubUserInfo.ts`).
   const email = result.user.email;
@@ -245,7 +247,7 @@ async function gateProviderSignIn(args: {
 
   const local = await ctx.internalAdapter.findUserByEmail(email);
 
-  // Row 2, as the two halves of `link-account.mjs:83` — read from the dependency's own resolved values
+  // Row 2, as the two halves of `link-account.mjs:139` — read from the dependency's own resolved values
   // rather than restated. `emailVerified` here is the **effective** flag: this is the return of the
   // provider's own `getUserInfo`, so `mapProfileToUser` has already run and Facebook's forced `true` is
   // already in it.
@@ -268,10 +270,10 @@ async function gateProviderSignIn(args: {
   // every first provider sign-up into a refusal. Three ways the refusal is certain:
   //
   // - **A local row exists.** Better Auth never creates a user when one matched, and row 2 has just
-  //   failed, so `link-account.mjs:86` is where that attempt ends.
+  //   failed, so `link-account.mjs:142` is where that attempt ends.
   // - **Sign-up is disabled for this provider** — `provider.options.disableSignUp`, which is the kit's
   //   own `signUpOption()` output (`./auth.ts`) read back off the object rather than restated.
-  //   `callback.mjs:229` also ORs in `disableImplicitSignUp && !requestSignUp`; ignoring that half is
+  //   `callback.mjs:181` also ORs in `disableImplicitSignUp && !requestSignUp`; ignoring that half is
   //   deliberate, since the kit never sets it and ignoring it can only cause a pass-through.
   // - **The address is not verified**, which the kit's own `user.create.before` hook refuses anyway.
   const certain = local !== null || provider.options?.disableSignUp === true || result.user.emailVerified !== true;
