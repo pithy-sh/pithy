@@ -4,7 +4,12 @@
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { describe, expect, test, vi } from "vitest";
 import type { ManagedEnvironment } from "../scope";
-import { secretsRotateWorkflowName, secretsWriteWorkflowName, WorkflowSecretDispatcher } from "./dispatcher";
+import {
+  managerWorkflowNames,
+  secretsRotateWorkflowName,
+  secretsWriteWorkflowName,
+  WorkflowSecretDispatcher,
+} from "./dispatcher";
 
 /**
  * The dispatcher's job is name resolution and payload shape — the transport belongs to
@@ -408,5 +413,15 @@ describe("WorkflowSecretDispatcher.verifyStore", () => {
     await expect(new WorkflowSecretDispatcher(client, "acme").verifyStore({ env: "prod" })).rejects.toThrow(
       /no usable account of its store/,
     );
+  });
+});
+
+describe("managerWorkflowNames", () => {
+  test("names every Workflow an environment's manager is deployed with (#789)", () => {
+    expect(managerWorkflowNames("acme", "staging")).toEqual([
+      "acme-staging-secrets-write",
+      "acme-staging-secrets-rotate",
+      "acme-staging-secrets-rotate-value",
+    ]);
   });
 });

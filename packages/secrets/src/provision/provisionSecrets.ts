@@ -179,6 +179,11 @@ export interface SecretsDeprovisioner {
    * Read-only, and empty when the database is absent or holds nothing retained.
    */
   countRetained(env: ManagedEnvironment): Promise<RetainedRows[]>;
+  /**
+   * Delete the env's manager Workflows, by `managerWorkflowNames`. Idempotent (a Workflow already gone is a
+   * no-op). Deleting the manager leaves them registered, so they go first (#789).
+   */
+  deleteWorkflows(env: ManagedEnvironment): Promise<void>;
   /** Delete the env's manager worker. Idempotent (a missing worker is a no-op). */
   deleteManager(env: ManagedEnvironment): Promise<void>;
   /**
@@ -230,8 +235,8 @@ export interface DeprovisionResult {
  * 2. Count the vault and refuse unless the operator counted the same (`@pithy-sh/core`'s
  *    `assertRetainedAgreed`, #588's guard spent here). Before the manager goes: a refusal after it would leave
  *    an environment holding a vault and nothing to rotate it.
- * 3. Delete the manager Worker (it binds the other resources), then — only when `deleteKeys` is set — the
- *    master key, then the D1.
+ * 3. Delete the manager's Workflows (#789), then the manager Worker (it binds the other resources), then — only
+ *    when `deleteKeys` is set — the master key, then the D1.
  * 4. Delete this environment's runtime token. It is per environment, so another environment's manager keeps
  *    rotating on its own.
  */
@@ -243,6 +248,7 @@ export async function deprovisionSecrets(
   const env = deprovisionTarget(target);
   assertRetainedAgreed(await deprovisioner.countRetained(env), options.destroyRetained, "anything was deleted");
 
+  await deprovisioner.deleteWorkflows(env);
   await deprovisioner.deleteManager(env);
   if (options.deleteKeys) await deprovisioner.deleteMasterKey(env);
   await deprovisioner.deleteDatabase(env);
