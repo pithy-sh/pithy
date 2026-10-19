@@ -240,15 +240,15 @@ That is a real cost and it is worth stating the alternative rather than implying
 
 ### Unattended rotation
 
-A secret can say how often it rotates: `rotateEveryDays` on its registry entry. For years that was an expectation — doctor and the status read called the secret overdue, and nothing replaced it. Now it is also the period. Each environment's secrets manager checks it every night at 03:00 UTC, and rotates every secret whose period has passed, by itself.
+A secret can say how often it rotates: `rotateEveryDays` on its registry entry. Until now that was an expectation — doctor and the status read called the secret overdue, and nothing replaced it. Now it is also the period. Each environment's secrets manager checks it every night at 03:00 UTC, and rotates every secret whose period has passed, by itself. The manager never reads `pithy.config.ts`, so it learns the schedule when it is deployed: `pithy secrets provision` and `pithy deploy` stamp it, and a period you add or change takes effect on the next deploy.
 
 **What the cron does follows the entry's `rotation`, and nothing else.**
 
 - **`local`** rotates. The kit minted the value, so it mints another, through the same `rotateSecretValue` `pithy secrets rotate` calls.
 - **`provider`** rotates only with a rotator attached to the entry. A rotator is code, and the manager is a prebuilt Worker that never loads `pithy.config.ts`, so today a `provider` secret is reported overdue and left alone.
-- **`manual`** never rotates. It is reported overdue, the way it always was.
+- **`manual`** never rotates. It is reported overdue, the way it always was. So is an entry that declares no `rotation` at all: nobody has said how it is replaced.
 
-**A secret the cron rotates must be able to survive it.** `defineSecretRegistry` refuses, where the author is: a period on a `rotatable: false` entry, a keyspace, or the master key; a period with no overlap; an overlap shorter than its declared minimum, or as long as the period; and a `global` secret in D1, which is a sealed copy in every vault that one manager cannot reach. A `global` secret in the Secrets Store is one entry, and only the last declared environment's manager rotates it. Staging's never does, whatever its clock says.
+**A secret the cron rotates must be able to survive it.** `defineSecretRegistry` refuses, where the author is: a period on a `rotatable: false` entry, a keyspace, or the master key; a period with no overlap; an overlap shorter than its declared minimum, or as long as the period; a `local` secret minted from a structure the cron cannot produce; and a `global` secret in D1, which is a sealed copy in every vault that one manager cannot reach. An overlap on a `rotatable: false` entry is refused whether it rotates or not: a secret that keeps one version has nothing to overlap. A `global` secret in the Secrets Store is one entry, and only the last declared environment's manager rotates it. Staging's never does, whatever its clock says.
 
 ```ts
 "partner-webhook-secret": {
