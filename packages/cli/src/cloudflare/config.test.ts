@@ -688,20 +688,96 @@ describe("a bound profile's session", () => {
     });
   });
 
-  test("the account's other keys come from a file about the same account, or one that names none", async () => {
+  /** `<config>/cloudflare.<profile>.json` — the bound profile's own file (#788). */
+  async function profileConfig(values: Record<string, unknown>, profile = "pithy"): Promise<void> {
+    await writeFile(join(dir, `cloudflare.${profile}.json`), JSON.stringify(values, null, 2), { mode: 0o600 });
+  }
+
+  test("nothing is read from cloudflare.json, whatever it holds (#788)", async () => {
     const cwd = await signedIn();
-    await config({ CLOUDFLARE_ACCOUNT_ID: "acct-session", SECRETS_STORE_ID: "store" });
-    expect(resolveCloudflare(here(cwd)).vars.SECRETS_STORE_ID).toBe("store");
-    await config({ SECRETS_STORE_ID: "store-unnamed" });
-    expect(resolveCloudflare(here(cwd)).vars.SECRETS_STORE_ID).toBe("store-unnamed");
+    // The incident: a file naming no account, holding only a store id, applied to a session for another.
+    await config({ SECRETS_STORE_ID: "store-unnamed", R2_CREDENTIALS: "r2-unnamed" });
+    let resolved = resolveCloudflare(here(cwd));
+    expect(resolved.vars.SECRETS_STORE_ID).toBeUndefined();
+    expect(resolved.vars.R2_CREDENTIALS).toBeUndefined();
+    // Nor a file that names the session's own account: under a profile, that file is not this one.
+    await config({ CLOUDFLARE_ACCOUNT_ID: "acct-session", SECRETS_STORE_ID: "store", R2_CREDENTIALS: "r2" });
+    resolved = resolveCloudflare(here(cwd));
+    expect(resolved.vars.SECRETS_STORE_ID).toBeUndefined();
+    expect(resolved.vars.R2_CREDENTIALS).toBeUndefined();
+    expect(resolved.path).toBe(join(dir, "cloudflare.pithy.json"));
   });
 
-  test("a store id dropped as another account's gives way to one exported for this run", async () => {
+  test("the store id and R2 credentials come from the profile's own file", async () => {
     const cwd = await signedIn();
-    await config({ CLOUDFLARE_ACCOUNT_ID: "acct-file", SECRETS_STORE_ID: "other-accounts-store" });
-    expect(resolveCloudflare(here(cwd, { SECRETS_STORE_ID: "exported-store" })).vars.SECRETS_STORE_ID).toBe(
-      "exported-store",
-    );
+    await config({ SECRETS_STORE_ID: "store-unnamed" });
+    await profileConfig({ SECRETS_STORE_ID: "store-pithy", R2_CREDENTIALS: "r2-pithy" });
+    const resolved = resolveCloudflare(here(cwd));
+    expect(resolved.vars).toMatchObject({ SECRETS_STORE_ID: "store-pithy", R2_CREDENTIALS: "r2-pithy" });
+    expect(resolved.path).toBe(join(dir, "cloudflare.pithy.json"));
+    expect(resolved.accountKeySources).toEqual({ SECRETS_STORE_ID: "file", R2_CREDENTIALS: "file" });
+  });
+
+  test("the profile's file, not the one the project's account name selects", async () => {
+    const cwd = await signedIn();
+    await writeFile(join(dir, "cloudflare.leed.json"), JSON.stringify({ SECRETS_STORE_ID: "store-leed" }));
+    await profileConfig({ SECRETS_STORE_ID: "store-pithy" });
+    const resolved = resolveCloudflare({ ...here(cwd), account: { accountName: "leed" } });
+    expect(resolved.vars.SECRETS_STORE_ID).toBe("store-pithy");
+    expect(resolved.accountName).toBe("leed");
+    expect(resolved.path).toBe(join(dir, "cloudflare.pithy.json"));
+  });
+
+  test("an exported value fills what the profile's file does not set, and never outranks it", async () => {
+    const cwd = await signedIn();
+    await config({ SECRETS_STORE_ID: "store-unnamed" });
+    const exported = { SECRETS_STORE_ID: "exported-store", R2_CREDENTIALS: "exported-r2" };
+    let resolved = resolveCloudflare(here(cwd, exported));
+    expect(resolved.vars).toMatchObject(exported);
+    expect(resolved.accountKeySources).toEqual({ SECRETS_STORE_ID: "environment", R2_CREDENTIALS: "environment" });
+    await profileConfig({ SECRETS_STORE_ID: "store-pithy" });
+    resolved = resolveCloudflare(here(cwd, exported));
+    expect(resolved.vars).toMatchObject({ SECRETS_STORE_ID: "store-pithy", R2_CREDENTIALS: "exported-r2" });
+    expect(resolved.accountKeySources).toEqual({ SECRETS_STORE_ID: "file", R2_CREDENTIALS: "environment" });
+    // Offline refuses the overlay here as everywhere.
+    expect(resolveCloudflare(here(cwd, { ...exported, PITHY_OFFLINE: "1" })).accountKeySources).toEqual({
+      SECRETS_STORE_ID: "file",
+      R2_CREDENTIALS: null,
+    });
+  });
+
+  test("a store id in a profile file naming another account is dropped, and an export takes its place", async () => {
+    const cwd = await signedIn();
+    await profileConfig({ CLOUDFLARE_ACCOUNT_ID: "acct-file", SECRETS_STORE_ID: "other-accounts-store" });
+    const dropped = resolveCloudflare(here(cwd));
+    expect(dropped.vars.SECRETS_STORE_ID).toBeUndefined();
+    // Dropped is not absent: the file holds one, and the report must say why it went unused.
+    expect(dropped.accountKeySources).toEqual({ SECRETS_STORE_ID: "other-account", R2_CREDENTIALS: null });
+    const resolved = resolveCloudflare(here(cwd, { SECRETS_STORE_ID: "exported-store" }));
+    expect(resolved.vars.SECRETS_STORE_ID).toBe("exported-store");
+    expect(resolved.accountKeySources.SECRETS_STORE_ID).toBe("environment");
+  });
+
+  test("bound and signed out, the profile's file still answers and cloudflare.json still does not", async () => {
+    const project = join(dir, "signed-out");
+    await mkdir(project, { recursive: true });
+    await bindProfile(project, "pithy", { env: { PITHY_CONFIG_DIR: dir } });
+    await config({ CLOUDFLARE_API_TOKEN: "file-token", SECRETS_STORE_ID: "store-unnamed" });
+    await profileConfig({ SECRETS_STORE_ID: "store-pithy" });
+    const resolved = resolveCloudflare(here(project, { PITHY_OFFLINE: "1" }));
+    expect(resolved.vars).toEqual({ SECRETS_STORE_ID: "store-pithy" });
+    // Half a pair in cloudflare.json and half in the environment is not a split: that file is not read.
+    expect(cloudflareCredentialSplit(here(project, { CLOUDFLARE_ACCOUNT_ID: "acct-env" }))).toBeNull();
+  });
+
+  test("with nothing bound, the account keys are sourced to cloudflare.json and the environment", async () => {
+    await config({ SECRETS_STORE_ID: "store" });
+    const elsewhere = join(dir, "unbound");
+    await mkdir(elsewhere, { recursive: true });
+    expect(resolveCloudflare(here(elsewhere, { R2_CREDENTIALS: "r2" })).accountKeySources).toEqual({
+      SECRETS_STORE_ID: "file",
+      R2_CREDENTIALS: "environment",
+    });
   });
 
   test("a pair a pithy exported to its own child for this profile is not a conflict, even after a renewal", async () => {

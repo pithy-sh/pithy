@@ -2513,6 +2513,7 @@ describe("dev vars", () => {
       devJsonSecrets: [],
       devConfigPath: "/home/u/.config/pithy/acme/dev.json",
       mintedTokensPath: "/home/u/.config/pithy/acme/tokens.json",
+      cloudflare: { path: "/home/u/.config/pithy/cloudflare.json", profile: null },
       unresolvable: [],
       ...over,
     });
@@ -3148,6 +3149,7 @@ describe("a Worker nobody could ask, in the report (#208)", () => {
         devJsonSecrets: [],
         devConfigPath: "/home/u/.config/pithy/acme/dev.json",
         mintedTokensPath: "/home/u/.config/pithy/acme/tokens.json",
+        cloudflare: { path: "/home/u/.config/pithy/cloudflare.json", profile: null },
         unresolvable: broken,
       }),
       checkDevSecrets: async () => ({

@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CfSecretsStore } from "@pithy-sh/cloudflare/src/secrets/secretsStores";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { type CloudflareConfigOptions, cloudflareEnv } from "./config";
+import { bindProfile } from "./session/bindings";
+import { writeSession } from "./session/store";
 import { ensureSecretsStoreId } from "./storeId";
 
 /**
@@ -237,5 +239,168 @@ describe("ensureSecretsStoreId, for a project that names its account", () => {
     // Nothing was asked of Cloudflare and nothing was written: the credentials are not this project's.
     expect(listStores).not.toHaveBeenCalled();
     expect(JSON.parse(await readFile(join(dir, "cloudflare.json"), "utf8")).SECRETS_STORE_ID).toBeUndefined();
+  });
+});
+
+/**
+ * Under a bound profile the store id is the profile's, so it is written where the profile reads it:
+ * `cloudflare.<profile>.json`, never `cloudflare.json` (#788). Written anywhere else, the next read would
+ * not find what was just recorded.
+ */
+describe("ensureSecretsStoreId, under a bound profile", () => {
+  /** A project directory bound to profile `work`, signed in to `acct-1` (or `accountId`). */
+  async function signedIn(env: Record<string, string> = {}, accountId = "acct-1"): Promise<CloudflareConfigOptions> {
+    const project = join(dir, "project");
+    await mkdir(project, { recursive: true });
+    await bindProfile(project, "work", { env: { PITHY_CONFIG_DIR: dir } });
+    await writeSession(
+      {
+        profile: "work",
+        accountId,
+        accountName: "Work",
+        email: null,
+        accessToken: "session-token",
+        refreshToken: null,
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        scope: "s",
+      },
+      { env: { PITHY_CONFIG_DIR: dir } },
+    );
+    return { ...paths(env), cwd: project };
+  }
+
+  test("writes cloudflare.<profile>.json, says so, and leaves cloudflare.json untouched", async () => {
+    const options = await signedIn();
+    const before = `${JSON.stringify({ CLOUDFLARE_ACCOUNT_ID: "other-acct", CLOUDFLARE_API_TOKEN: "other-tok" })}\n`;
+    await writeFile(join(dir, "cloudflare.json"), before, { mode: 0o600 });
+    const listStores = vi.fn(async () => [store("store-work", "default")]);
+
+    const notes = await ensureSecretsStoreId({ again: "`pithy add secrets`", paths: options, listStores });
+
+    expect(listStores).toHaveBeenCalledWith({ accountId: "acct-1", apiToken: "session-token" });
+    expect(notes.join(" ")).toContain(join(dir, "cloudflare.work.json"));
+    expect(JSON.parse(await readFile(join(dir, "cloudflare.work.json"), "utf8"))).toEqual({
+      CLOUDFLARE_ACCOUNT_ID: "acct-1",
+      SECRETS_STORE_ID: "store-work",
+    });
+    expect(((await stat(join(dir, "cloudflare.work.json"))).mode & 0o777).toString(8)).toBe("600");
+    expect(await readFile(join(dir, "cloudflare.json"), "utf8")).toBe(before);
+    // And the next read finds it.
+    expect(cloudflareEnv(options).SECRETS_STORE_ID).toBe("store-work");
+  });
+
+  test("a store id in cloudflare.json is not this profile's, so it neither counts as recorded nor is touched", async () => {
+    const options = await signedIn();
+    await config({ SECRETS_STORE_ID: "someone-elses-store" });
+
+    await ensureSecretsStoreId({
+      again: "`pithy add secrets`",
+      paths: options,
+      listStores: async () => [store("store-work", "default")],
+    });
+
+    expect(JSON.parse(await readFile(join(dir, "cloudflare.work.json"), "utf8")).SECRETS_STORE_ID).toBe("store-work");
+    expect(JSON.parse(await readFile(join(dir, "cloudflare.json"), "utf8"))).toEqual({
+      SECRETS_STORE_ID: "someone-elses-store",
+    });
+  });
+
+  test("a sentence that sends the operator to a file names the profile's file", async () => {
+    const options = await signedIn();
+    const notes = await ensureSecretsStoreId({
+      again: "`pithy add secrets`",
+      paths: options,
+      listStores: async () => [store("a", "one"), store("b", "two")],
+    });
+    expect(notes.join(" ")).toContain(join(dir, "cloudflare.work.json"));
+    expect(notes.join(" ")).not.toContain(join(dir, "cloudflare.json"));
+  });
+
+  test("an exported store id is not a recorded one, so the account's store is still written to the profile's file", async () => {
+    const options = await signedIn({ SECRETS_STORE_ID: "store-work" });
+
+    const notes = await ensureSecretsStoreId({
+      again: "`pithy add secrets`",
+      paths: options,
+      listStores: async () => [store("store-work", "default")],
+    });
+
+    expect(notes.join(" ")).toContain("Recorded SECRETS_STORE_ID");
+    expect(JSON.parse(await readFile(join(dir, "cloudflare.work.json"), "utf8")).SECRETS_STORE_ID).toBe("store-work");
+  });
+
+  test("an exported store id the account disagrees with is named as the export, and nothing is written", async () => {
+    const options = await signedIn({ SECRETS_STORE_ID: "store-stale" });
+
+    const notes = await ensureSecretsStoreId({
+      again: "`pithy add secrets`",
+      paths: options,
+      listStores: async () => [store("store-work", "default")],
+    });
+
+    const said = notes.join(" ");
+    expect(said).toContain("store-stale");
+    expect(said).toContain("exported");
+    expect(said).not.toContain("fix it in");
+    await expect(readFile(join(dir, "cloudflare.work.json"), "utf8")).rejects.toThrow();
+  });
+
+  test("an exported store id is no reason to stay silent when the lookup fails", async () => {
+    const options = await signedIn({ SECRETS_STORE_ID: "store-work" });
+
+    const notes = await ensureSecretsStoreId({
+      again: "`pithy add secrets`",
+      paths: options,
+      listStores: async () => {
+        throw new Error("offline");
+      },
+    });
+
+    const said = notes.join(" ");
+    expect(said).toContain("Could not reach Cloudflare");
+    expect(said).toContain(join(dir, "cloudflare.work.json"));
+    await expect(readFile(join(dir, "cloudflare.work.json"), "utf8")).rejects.toThrow();
+  });
+
+  test("an exported store id is no reason to stay silent when the account has no store", async () => {
+    const options = await signedIn({ SECRETS_STORE_ID: "store-work" });
+
+    const notes = await ensureSecretsStoreId({
+      again: "`pithy add secrets`",
+      paths: options,
+      listStores: async () => [],
+    });
+
+    expect(notes.join(" ")).toContain("no Secrets Store");
+    await expect(readFile(join(dir, "cloudflare.work.json"), "utf8")).rejects.toThrow();
+  });
+
+  test("the account it records is written beside the store id, so a profile re-signed to another account drops it", async () => {
+    const options = await signedIn();
+    await ensureSecretsStoreId({
+      again: "`pithy add secrets`",
+      paths: options,
+      listStores: async () => [store("store-work", "default")],
+    });
+
+    const resigned = await signedIn({}, "acct-2");
+    expect(cloudflareEnv(resigned).CLOUDFLARE_ACCOUNT_ID).toBe("acct-2");
+    expect(cloudflareEnv(resigned).SECRETS_STORE_ID).toBeUndefined();
+  });
+
+  test("a profile file about another account is neither overwritten nor merged into, and the sentence names both", async () => {
+    const options = await signedIn();
+    const before = `${JSON.stringify({ CLOUDFLARE_ACCOUNT_ID: "acct-other", SECRETS_STORE_ID: "store-other" })}\n`;
+    await writeFile(join(dir, "cloudflare.work.json"), before, { mode: 0o600 });
+    const listStores = vi.fn(async () => [store("store-work", "default")]);
+
+    const notes = await ensureSecretsStoreId({ again: "`pithy add secrets`", paths: options, listStores });
+
+    expect(await readFile(join(dir, "cloudflare.work.json"), "utf8")).toBe(before);
+    const said = notes.join(" ");
+    expect(said).toContain("acct-other");
+    expect(said).toContain("acct-1");
+    expect(said).toContain(join(dir, "cloudflare.work.json"));
+    expect(said).toContain("not recorded");
   });
 });
