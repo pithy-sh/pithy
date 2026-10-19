@@ -120,7 +120,7 @@ describe("what the browser is allowed to open a checkout for", () => {
     // fields are absent from the declaration Paddle.js is reached through, so a screen writing
     // `Checkout.open({ items, customData })` against `PaddleJs` does not compile.
     //
-    // **Enforced by `tsc -p tsconfig.client.json`, not by Vitest.** A `expectTypeOf` assertion is a type
+    // **Enforced by `bun check -p tsconfig.client.json`, not by Vitest.** A `expectTypeOf` assertion is a type
     // error and Vitest does not typecheck, so this case is green either way when run alone. The program
     // that fails is the browser one — which is also the program an adopter compiles these files in.
     expectTypeOf<PaddleCheckoutOpen>().not.toHaveProperty("items");

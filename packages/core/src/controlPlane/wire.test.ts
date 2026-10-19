@@ -10,7 +10,7 @@ import {
   workerBuildChanged,
 } from "./wire";
 
-// `import.meta.glob` is a vite/vitest feature; declared so plain `tsc` typecheck accepts it, exactly as
+// `import.meta.glob` is a vite/vitest feature; declared so the typecheck accepts it, exactly as
 // `worker-safety.test.ts` does. Reading the sources this way rather than through `node:fs` is what keeps
 // `@cloudflare/workers-types` core's only ambient type dependency — the property that test relies on.
 declare global {

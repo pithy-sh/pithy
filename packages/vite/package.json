@@ -26,7 +26,7 @@
   "scripts": {
     "generate": "bun scripts/generateClientEnv.ts",
     "build": "bun run generate && tsdown && tsc -p tsconfig.build.json && bun ../../tooling/build/src/stampDeclarations.ts",
-    "typecheck": "tsc -p tsconfig.json",
+    "typecheck": "bun check -p tsconfig.json",
     "test": "vitest run",
     "test:node": "vitest run --project=node",
     "clean": "rm -rf dist .turbo",
