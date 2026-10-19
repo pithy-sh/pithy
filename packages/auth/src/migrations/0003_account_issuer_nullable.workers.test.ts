@@ -73,17 +73,17 @@ async function seedAccount(id: string, issuer: string | null, accountId = `${id}
 }
 
 /**
- * `env.DB`, except that the first statement matching `statement` throws instead of running. That is a
- * run that died there: everything before it applied, nothing after it, and no transaction to undo either.
+ * `env.DB`, except that every statement matching `statement` fails when it runs. That is a run that died
+ * there: everything sent before it applied, and whatever shared its round trip is rolled back with it.
+ * The failure is at execution, not at `prepare`, so a statement queued into a `d1.batch()` fails inside
+ * the batch, after the statements ahead of it in that batch have run.
  */
 function dyingAt(statement: RegExp): D1Database {
   return new Proxy(env.DB, {
     get(target, property) {
       if (property === "prepare") {
-        return (query: string) => {
-          if (statement.test(query.trim())) throw new Error(`killed before: ${query}`);
-          return target.prepare(query);
-        };
+        return (query: string) =>
+          target.prepare(statement.test(query.trim()) ? "select * from pithy_killed_here" : query);
       }
       const value = Reflect.get(target, property, target);
       return typeof value === "function" ? value.bind(target) : value;
@@ -218,6 +218,78 @@ describe("auth_0003_account_issuer_nullable", () => {
     expect(await accountIndexes()).toEqual(["pithy_auth_accounts_user_id_idx"]);
     expect(await accounts()).toEqual(before);
     expect(await issuerNotNull()).toBe(0);
+  });
+
+  test("a run that dies at the rename leaves the original table whole for the retry", async () => {
+    // The drop and the rename share one batch, so a rename that fails takes the drop back with it. Were
+    // they separate round trips, the retry would find no accounts table and every row in `_next`.
+    await runMigrations(env.DB, BEFORE);
+    await seedAccount("a1", "https://accounts.google.com");
+    const before = await accounts();
+
+    await expect(
+      runMigrations(dyingAt(/^alter table "pithy_auth_accounts_next" rename to "pithy_auth_accounts"$/), ALL),
+    ).rejects.toThrow();
+    expect(await accounts()).toEqual(before);
+    expect(await issuerNotNull()).toBe(1);
+    expect(await accountIndexes()).toContain("pithy_auth_accounts_user_id_idx");
+
+    await runMigrations(env.DB, ALL);
+
+    expect(await accountIndexes()).toEqual(["pithy_auth_accounts_user_id_idx"]);
+    expect(await accounts()).toEqual(before);
+    expect(await issuerNotNull()).toBe(0);
+  });
+
+  test("a run that dies recreating an index loses no index, the kit's or a plugin's", async () => {
+    // The recreates share the drop's batch too. Were they separate, the retry would read the indexes off
+    // the renamed table, find none, recreate none and record Success. SQLite stores each index's DDL with
+    // `CREATE INDEX` upper-cased, hence the `i`.
+    await runMigrations(env.DB, BEFORE);
+    await env.DB.prepare("alter table pithy_auth_accounts add column plugin_tenant text").run();
+    await env.DB.prepare(
+      "create index pithy_auth_accounts_plugin_tenant_idx on pithy_auth_accounts (plugin_tenant)",
+    ).run();
+    await seedAccount("a1", "https://accounts.google.com");
+    const before = await accounts();
+
+    await expect(runMigrations(dyingAt(/^create index "pithy_auth_accounts_user_id_idx"/i), ALL)).rejects.toThrow();
+    expect(await accounts()).toEqual(before);
+    expect(await accountIndexes()).toEqual([
+      "pithy_auth_accounts_plugin_tenant_idx",
+      "pithy_auth_accounts_user_id_idx",
+    ]);
+
+    await runMigrations(env.DB, ALL);
+
+    expect(await accountIndexes()).toEqual([
+      "pithy_auth_accounts_plugin_tenant_idx",
+      "pithy_auth_accounts_user_id_idx",
+    ]);
+    expect(await accounts()).toEqual(before);
+    expect(await issuerNotNull()).toBe(0);
+  });
+
+  test("a down that dies before the unique index loses neither the table nor its NOT NULL", async () => {
+    await runMigrations(env.DB, ALL);
+    await seedAccount("a1", "https://accounts.google.com");
+    const before = await accounts();
+
+    await expect(
+      rollbackMigration(dyingAt(/^create unique index "pithy_auth_accounts_issuer_account_id_idx"/), ALL),
+    ).rejects.toThrow();
+    expect(await accounts()).toEqual(before);
+    expect(await issuerNotNull()).toBe(0);
+    expect(await accountIndexes()).toEqual(["pithy_auth_accounts_user_id_idx"]);
+
+    await rollbackMigration(env.DB, ALL);
+
+    expect(await issuerNotNull()).toBe(1);
+    expect(await accountIndexes()).toEqual([
+      "pithy_auth_accounts_issuer_account_id_idx",
+      "pithy_auth_accounts_user_id_idx",
+    ]);
+    expect(await accounts()).toEqual(before);
   });
 
   test("down restores NOT NULL and the unique index, and keeps every row", async () => {

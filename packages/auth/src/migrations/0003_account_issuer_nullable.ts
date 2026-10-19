@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
-import { type Kysely, sql } from "kysely";
+import { type CompiledQuery, type Kysely, sql } from "kysely";
 import type { Migration } from "kysely/migration";
 
 /**
@@ -32,10 +32,16 @@ import type { Migration } from "kysely/migration";
  * the columns come from `pragma_table_info` and the indexes from `sqlite_master`, and only `issuer`'s
  * constraint and the one index are changed.
  *
- * `down` is the tested inverse: the same rebuild with `NOT NULL` back, then the unique index. It refuses
- * before it touches anything when a row has no `issuer`, since the constraint cannot hold over that row,
- * or when two rows share an `(issuer, accountId)`, since the index cannot. D1 has no transactional DDL, so
- * a refusal has to come before the first statement rather than roll back after it.
+ * **The swap is one round trip.** The migration runner queues schema statements and sends a run of them as
+ * one `d1.batch()`, which D1 applies as one transaction. A raw `sql` template is never queued: it flushes
+ * the queue and runs alone. So the index drops, the table drop, the rename and every index recreate are
+ * built as schema statements, back to back, and either all of them apply or none does. Separate, a run that
+ * died after the drop would leave auth with no accounts table, and one that died after the rename would
+ * leave it with no indexes and a retry that records Success over the loss.
+ *
+ * `down` is the tested inverse: the same rebuild with `NOT NULL` back, then the unique index, in the same
+ * batch. It refuses before it touches anything when a row has no `issuer`, since the constraint cannot hold
+ * over that row, or when two rows share an `(issuer, accountId)`, since the index cannot.
  */
 
 const ACCOUNTS = "pithy_auth_accounts";
@@ -105,10 +111,10 @@ async function rebuild(db: Kysely<unknown>, issuerNotNull: boolean): Promise<voi
     });
   }
 
-  // A rebuild an earlier run left half-done. D1 has no transactional DDL, so a run that died between the
-  // create and the drop leaves this behind beside an intact table, indexes included, and the retry would
-  // fail on it. The checks above have just read the real table whole, so nothing here is the only copy
-  // of anything.
+  // A rebuild an earlier run left half-done. The create and the copy below are raw `sql` and each its own
+  // round trip, so a run that died after either leaves this behind beside an intact table, indexes
+  // included, and the retry would fail on it. The checks above have just read the real table whole, so
+  // nothing here is the only copy of anything.
   await sql`drop table if exists ${sql.id(ACCOUNTS_NEXT)}`.execute(db);
 
   // First, as Better Auth's upgrade guide orders it. `ifExists`, because `down` runs this rebuild too and
@@ -122,14 +128,34 @@ async function rebuild(db: Kysely<unknown>, issuerNotNull: boolean): Promise<voi
   const names = sql.join(columns.map((column) => sql.id(column.name)));
   await sql`insert into ${sql.id(ACCOUNTS_NEXT)} (${names}) select ${names} from ${sql.id(ACCOUNTS)}`.execute(db);
 
-  // `drop table` takes the indexes with it, and nothing drops them one by one first. A retry reads the
-  // indexes off the live table, so an index dropped ahead of a run that then died is lost for good. This
-  // way the original keeps every index until the statement that removes the table. One gap is left: a
-  // run that dies after the rename and before the recreate below leaves the table without them.
-  await sql`drop table ${sql.id(ACCOUNTS)}`.execute(db);
-  await sql`alter table ${sql.id(ACCOUNTS_NEXT)} rename to ${sql.id(ACCOUNTS)}`.execute(db);
-  // The DDL SQLite kept for each, verbatim. It names the table by the name the rebuilt one now has.
-  for (const index of indexes) await sql.raw(index.sql).execute(db);
+  // From here to the end of the migration body, every statement is a schema statement, so the runner sends
+  // them as one batch: each index drop, the table drop, the rename, each index recreate, and in `down` the
+  // unique index after them. A failure anywhere in it rolls all of it back, and the retry finds the
+  // original table whole, its indexes on it. Nothing in this stretch may be a raw `sql` template, which
+  // would split the batch.
+  //
+  // Each index is dropped by name before the table, as every `down` in the kit drops what it created, and
+  // recreated after the rename. Inside the one batch that costs nothing: the original keeps every index
+  // unless the whole batch applies. The index names are SQLite's own, so they skip the `CamelCasePlugin`.
+  // The table names go through it, so they are written camelCase, as `0001_init` writes them.
+  for (const index of indexes) await db.withoutPlugins().schema.dropIndex(index.name).execute();
+  await db.schema.dropTable("pithyAuthAccounts").execute();
+  await db.schema.alterTable("pithyAuthAccountsNext").renameTo("pithyAuthAccounts").execute();
+  for (const index of indexes) await db.executeQuery(recreateIndex(db, index));
+}
+
+/**
+ * One index's recreate, as a schema statement carrying the DDL SQLite kept for it, verbatim.
+ *
+ * Verbatim, because a plugin's index can be partial, on an expression, or collated, and rebuilding it from
+ * a builder would mean parsing that back out of its DDL. The DDL names the table by the name the rebuilt
+ * one has once renamed. The statement is a `create index` node with that text as its SQL, which is exactly
+ * what it is, and the node is what lets the runner queue it into the batch the drop and rename are in. The
+ * runner reads only the node's kind, so the builder's column is a placeholder that never reaches SQLite.
+ */
+function recreateIndex(db: Kysely<unknown>, index: { name: string; sql: string }): CompiledQuery {
+  const node = db.withoutPlugins().schema.createIndex(index.name).on(ACCOUNTS).column("id").compile();
+  return { ...node, sql: index.sql };
 }
 
 export const auth_0003_account_issuer_nullable: Migration = {
