@@ -20,6 +20,13 @@ set -eu
 # git calls `get` for a credential, and `store` or `erase` afterwards. Only `get` has work to do.
 [ "${1:-}" = "get" ] || exit 0
 
+# Say why on stderr, then answer quit=1: git asks no other helper and prompts nobody, and the operation fails.
+refuse() {
+  printf 'git-credential-pithy: %s\n' "$1" >&2
+  printf 'quit=1\n'
+  exit 0
+}
+
 path=""
 while IFS= read -r line && [ -n "$line" ]; do
   case "$line" in
@@ -27,16 +34,29 @@ while IFS= read -r line && [ -n "$line" ]; do
   esac
 done
 
+[ -n "${PITHY_APP_URL:-}" ] && [ -n "${PITHY_APP_TOKEN:-}" ] || refuse "set PITHY_APP_URL and PITHY_APP_TOKEN."
+
 # The remote is .../git/<namespace>/<repo>.git, so the repository is the last segment.
+[ -n "$path" ] || refuse "git sent no repository path. Set credential.useHttpPath true."
 repo=$(basename "$path" .git)
-[ -n "$repo" ] || exit 1
 
-response=$(curl -fsS -X POST \
+# The status goes on a line of its own after the body, so a refusal's body can be read too.
+response=$(curl -sS -X POST -w '\n%{http_code}' \
   -H "Authorization: Bearer ${PITHY_APP_TOKEN}" \
-  "${PITHY_APP_URL}/artifacts/repos/${repo}/credentials")
+  "${PITHY_APP_URL}/artifacts/repos/${repo}/credentials") || refuse "could not reach ${PITHY_APP_URL}."
+status=$(printf '%s' "$response" | tail -n 1)
+body=$(printf '%s' "$response" | sed '$d')
 
-token=$(printf '%s' "$response" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
-[ -n "$token" ] || exit 1
+# One string field of the JSON body. A refusal is {"error":{"code":"...","message":"..."}}.
+field() { printf '%s' "$body" | sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p" | head -n 1; }
+
+case "$status" in
+  2??) ;;
+  *) refuse "the mint was refused, ${status} $(field code): $(field message)" ;;
+esac
+
+token=$(field token)
+[ -n "$token" ] || refuse "the mint answered ${status} with no token."
 
 # The token ends `?expires=<unix seconds>`. git 2.41 and later read password_expiry_utc and come back after it.
 printf 'username=x\npassword=%s\npassword_expiry_utc=%s\n' "$token" "${token##*expires=}"
@@ -54,6 +74,8 @@ git config --global credential.https://<ACCOUNT_ID>.artifacts.cloudflare.net.use
 ## Which git
 
 The helper answers with the token as the HTTP Basic password. Cloudflare documents that form: the token goes in the password slot, and the username is ignored, so any non-empty one will do ([Artifacts · Git protocol](https://developers.cloudflare.com/artifacts/api/git-protocol/)). Basic is the scheme every git's credential protocol speaks, so this needs no particular git.
+
+A refused mint stops git where it is. The helper prints the mint's `code` and `message` on stderr, as `git-credential-pithy: the mint was refused, 404 artifacts/not_found: …`, and answers `quit=1`, so git consults no other helper and asks nobody for a username. git honors `quit` from 2.3. An app it cannot reach, and an answer with no token, are refused the same way.
 
 `password_expiry_utc` is read by git 2.41 and later. An older git ignores it, which costs nothing: it asks the helper again on the next operation either way, and the helper mints again.
 
