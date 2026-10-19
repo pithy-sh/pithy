@@ -520,7 +520,7 @@ jobs:
           echo "### Docs for $(git rev-list --count "${since}..${UNTIL}") commit(s), ${since:0:7}..${UNTIL:0:7}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Schedule
-        uses: Leed-AI/schedule-release@v1
+        uses: leed-ai/schedule-release@v1
         with:
           audience: leed-cms:681cf409-312c-4122-aa59-0af1d52b00be
           since: ${{ steps.range.outputs.since }}
