@@ -415,7 +415,6 @@ describe("GET /auth/admin/users/:userId", () => {
       .values({
         id: "acct-1",
         accountId: "google-sub",
-        issuer: "https://accounts.google.com",
         providerId: "google",
         userId: "u-1",
         accessToken: OAUTH_ACCESS_TOKEN,
@@ -453,7 +452,6 @@ describe("GET /auth/admin/users/:userId", () => {
       .values({
         id: "acct-1",
         accountId: "google-sub",
-        issuer: "https://accounts.google.com",
         providerId: "google",
         userId: "u-1",
         accessToken: OAUTH_ACCESS_TOKEN,
@@ -714,7 +712,6 @@ describe("the exported response schemas against the live routes", () => {
       .values({
         id: "acct-1",
         accountId: "google-sub",
-        issuer: "https://accounts.google.com",
         providerId: "google",
         userId: "u-1",
         accessToken: OAUTH_ACCESS_TOKEN,

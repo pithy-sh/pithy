@@ -6,13 +6,18 @@ import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry"
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { getSchema } from "better-auth/db";
 import type { MigrationProvider } from "kysely/migration";
-import { beforeEach, expect, test } from "vitest";
-import { AUTH_MIGRATION_ORDER } from "./0001_init";
+import { beforeEach, describe, expect, test } from "vitest";
+import { authDatabase } from "../data/tables";
+import { makeAuth } from "../instance/auth";
+import { NO_SOCIAL_PROVIDERS } from "../instance/providers";
+import { type ActualColumn, schemaDrift } from "../test-utils/schemaDrift";
+import { AUTH_MIGRATION_ORDER, auth_0001_init } from "./0001_init";
+import { auth_0002_session_authenticated_at } from "./0002_session_authenticated_at";
 import { authSchemaOptions } from "./pluginTables";
 import { AUTH_MIGRATIONS } from "./set";
 
 /**
- * Every column Better Auth declares for the kit's own tables exists in the shipped migration chain (#451).
+ * The shipped migration chain holds exactly what Better Auth writes to the kit's own tables (#451, #787).
  *
  * **This is the gate that was missing, and its absence cost a silent break.** `@pithy-sh/auth` declared
  * `better-auth: ^1.6.29` while `1.7.1` was published, so an adopter installing the package resolved a
@@ -30,8 +35,17 @@ import { AUTH_MIGRATIONS } from "./set";
  * hits. A Zod object agreeing with Better Auth while the DDL lags is exactly the failure above: `Jwks`
  * would have been right and the insert would still have thrown.
  *
- * Better Auth's snake_case field names come from `CamelCasePlugin` on our side, so both halves are
- * compared in the database's own vocabulary.
+ * **And the reverse, which #787 is the price of.** A `NOT NULL` column with no default that Better Auth
+ * never writes breaks every insert into its table just as surely. 1.7.3 stopped writing
+ * `pithy_auth_accounts.issuer`, `0001_init` still required it, and every email OTP sign-in answered 500
+ * while this test, then one direction only, stayed green. `../test-utils/schemaDrift` holds both halves.
+ *
+ * **Then Better Auth is asked itself.** Since 1.7.3 it compares the same two things at initialization.
+ * The kit turns that runtime check off, because it would run on every request (`../instance/auth.ts`),
+ * so this runs it here instead, through the same instance the capability builds.
+ *
+ * Both run at whatever version is installed: the lockfile's in the `Tests` job, and the newest the range
+ * admits in `Auth at the newest Better Auth`.
  */
 
 const SET = {
@@ -52,21 +66,60 @@ const ALL_TABLES = [
   "pithy_auth_verifications",
 ];
 
-function provider(): MigrationProvider {
-  const registry = createMigrationRegistry([SET]);
+function provider(
+  migrations: typeof SET.migrations | Partial<typeof SET.migrations> = SET.migrations,
+): MigrationProvider {
+  const registry = createMigrationRegistry([{ ...SET, migrations: migrations as typeof SET.migrations }]);
   const found = registry.app;
   if (!found) throw new Error('expected a provider for database "app"');
   return found;
 }
 
-/** camelCase → snake_case, the one transformation `CamelCasePlugin` applies to an identifier. */
-function snake(name: string): string {
-  return name.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+/** Every column of every `pithy_auth_*` table, as SQLite reports it. */
+async function actualTables(): Promise<Record<string, ActualColumn[]>> {
+  const tables: Record<string, ActualColumn[]> = {};
+  for (const table of ALL_TABLES) {
+    const rows = await env.DB.prepare(`select name, "notnull", dflt_value from pragma_table_info('${table}')`).all<{
+      name: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>();
+    if (rows.results.length === 0) continue;
+    tables[table] = rows.results.map((row) => ({
+      name: row.name,
+      notNull: row.notnull === 1,
+      hasDefault: row.dflt_value !== null,
+    }));
+  }
+  return tables;
 }
 
-async function columnsOf(table: string): Promise<string[]> {
-  const rows = await env.DB.prepare(`select name from pragma_table_info('${table}')`).all<{ name: string }>();
-  return rows.results.map((row) => row.name);
+/** The kit's own instance, over this database, as `getAuthInstance` builds it bar the request. */
+function kitInstance() {
+  return makeAuth({
+    db: authDatabase(env.DB),
+    secret: "test-secret-please-rotate-0000000000",
+    baseURL: "http://localhost",
+    basePath: "/auth",
+    trustedOrigins: ["http://localhost"],
+    ...NO_SOCIAL_PROVIDERS,
+    sendEmail: async () => ({ delivery: "queued" }),
+    sessionExpiresIn: 604800,
+    sessionUpdateAge: 86400,
+    verificationExpiresIn: 300,
+    otpLength: 6,
+    disableSignUp: false,
+    providerSignUp: { google: true, apple: true, facebook: true, github: true },
+    emit: async () => undefined,
+    plugins: [],
+  });
+}
+
+/** Better Auth's own schema check, run explicitly. Resolves when it finds nothing. */
+async function betterAuthsCheck(): Promise<void> {
+  const ctx = await kitInstance().$context;
+  if (!ctx.explicitSchemaCheck) throw new Error("this Better Auth offers no schema check for the kysely adapter");
+  await ctx.explicitSchemaCheck();
 }
 
 beforeEach(async () => {
@@ -75,35 +128,46 @@ beforeEach(async () => {
   }
 });
 
-test("every column better-auth declares for the kit's tables exists in 0001_init", async () => {
-  await runMigrations(env.DB, provider());
+describe("the migration chain against what Better Auth writes", () => {
+  test("every column better-auth declares exists, and every column it never writes accepts its absence", async () => {
+    await runMigrations(env.DB, provider());
 
-  // The kit's own composition, which is what `authSchemaOptions([])` means: `bearer`, `jwt`,
-  // `magic-link` and `emailOTP` — the four `kitPlugins` fixes, and no adopter plugin.
-  const declared = getSchema(authSchemaOptions([]));
-  expect(
-    Object.keys(declared).length,
-    "better-auth declared no models at all; the baseline is not being built",
-  ).toBeGreaterThan(0);
+    // The kit's own composition, which is what `authSchemaOptions([])` means: `bearer`, `jwt`,
+    // `magic-link` and `emailOTP` — the four `kitPlugins` fixes, and no adopter plugin.
+    const declared = getSchema(authSchemaOptions([]));
+    expect(
+      Object.keys(declared).length,
+      "better-auth declared no models at all; the baseline is not being built",
+    ).toBeGreaterThan(0);
 
-  const missing: string[] = [];
-  for (const [model, spec] of Object.entries(declared)) {
-    const table = snake(model);
-    const present = new Set(await columnsOf(table));
-    // A model Better Auth declares and this migration creates no table for at all is its own failure,
-    // and a louder one — report it as such rather than as eight missing columns.
-    if (present.size === 0) {
-      missing.push(`${table}: no such table`);
-      continue;
-    }
-    for (const [field, definition] of Object.entries(spec.fields)) {
-      const column = snake((definition as { fieldName?: string }).fieldName ?? field);
-      if (!present.has(column)) missing.push(`${table}.${column}`);
-    }
-  }
+    expect(
+      schemaDrift(declared, await actualTables()),
+      "the auth tables and better-auth disagree — add a migration, and match the Zod object in data/betterAuth.ts (#451, #787)",
+    ).toEqual([]);
+  });
 
-  expect(
-    missing,
-    "better-auth declares a column 0001_init does not create — amend the migration and the Zod object in data/betterAuth.ts to match (#451)",
-  ).toEqual([]);
+  test("the chain before 0003 is the drift #787 shipped, and the reverse half names it", async () => {
+    // The gate has to be able to fail. This is the schema every Worker held on 1.7.1, read at the version
+    // installed now, and the one finding is the column that broke sign-in.
+    await runMigrations(
+      env.DB,
+      provider({ "0001_init": auth_0001_init, "0002_session_authenticated_at": auth_0002_session_authenticated_at }),
+    );
+    expect(schemaDrift(getSchema(authSchemaOptions([])), await actualTables())).toEqual([
+      "pithy_auth_accounts.issuer: required, and Better Auth never writes it",
+    ]);
+  });
+
+  test("Better Auth's own initialization check finds no mismatch on the kit's tables", async () => {
+    await runMigrations(env.DB, provider());
+    await expect(betterAuthsCheck()).resolves.toBeUndefined();
+  });
+
+  test("Better Auth's own check refuses the chain before 0003, naming issuer", async () => {
+    await runMigrations(
+      env.DB,
+      provider({ "0001_init": auth_0001_init, "0002_session_authenticated_at": auth_0002_session_authenticated_at }),
+    );
+    await expect(betterAuthsCheck()).rejects.toThrow(/pithy_auth_accounts\.issuer/);
+  });
 });

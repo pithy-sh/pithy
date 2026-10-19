@@ -10,7 +10,7 @@ import { AUTH_MIGRATION_ORDER } from "./0001_init";
 import { AUTH_MIGRATIONS } from "./set";
 
 /**
- * The auth set as `pithy migrate` composes it — **both** migrations, in order.
+ * The auth set as `pithy migrate` composes it — **every** migration, in order.
  *
  * The whole point of a `0002` is that it runs against a database `0001` already shaped, so a test that
  * exercised it alone would be testing something no adopter will ever run.
@@ -65,8 +65,10 @@ describe("auth_0002_session_authenticated_at", () => {
 
   test("down removes it again, leaving 0001's own columns untouched", async () => {
     // Every migration's `down` is tested, and this one has a specific trap: a careless inverse that
-    // rebuilt the table would drop `family_id` and `device_id` with it.
+    // rebuilt the table would drop `family_id` and `device_id` with it. `0003` sits above it in the chain,
+    // so it comes down first.
     await runMigrations(env.DB, provider());
+    await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());
     const columns = await sessionColumns();
     expect(columns).not.toContain("authenticated_at");

@@ -73,11 +73,13 @@ beforeEach(async () => {
 /**
  * Step back to, and including, the plugin's own migration.
  *
- * The kit's `0002_session_authenticated_at` sorts after a generated `0002_plugin_*` key, so it is the tip
- * and one `rollbackMigration` undoes it rather than the plugin's. These cases are about what a *plugin's*
- * down does, so they step past the kit's first and assert on the step they are about.
+ * The kit's `0002_session_authenticated_at` and `0003_account_issuer_nullable` sort after a generated
+ * `0002_plugin_*` key, so they are the tip and a `rollbackMigration` undoes them before the plugin's.
+ * These cases are about what a *plugin's* down does, so they step past the kit's first and assert on the
+ * step they are about.
  */
 async function rollbackToPlugin(p: MigrationProvider): Promise<Awaited<ReturnType<typeof rollbackMigration>>> {
+  await rollbackMigration(env.DB, p);
   await rollbackMigration(env.DB, p);
   return await rollbackMigration(env.DB, p);
 }
@@ -93,6 +95,7 @@ describe("a plugin's tables through pithy migrate", () => {
       // and deterministic, which is what the ledger needs. See `0002_session_authenticated_at.ts`.
       ["0300_auth_0002_plugin_organization", "Success"],
       ["0300_auth_0002_session_authenticated_at", "Success"],
+      ["0300_auth_0003_account_issuer_nullable", "Success"],
     ]);
     expect(await tables()).toEqual([...KIT_TABLES, "invitation", "member", "organization"].sort());
     // The half that is not a table: the plugin writes the active organization onto the session.
@@ -137,7 +140,7 @@ describe("a plugin's tables through pithy migrate", () => {
       ["0300_auth_0002_plugin_organization", "Down", "Success"],
     ]);
     expect(await tables()).toEqual(KIT_TABLES);
-    // Two steps were taken, so two columns are gone: the plugin's and the kit's own tip. What the case is
+    // Three steps were taken, so two columns are gone: the plugin's and `0002`'s. `0003` changed no column. What the case is
     // about is that each `down` removed exactly its own — nothing `0001` created is disturbed.
     expect(await columns("pithy_auth_sessions")).toEqual(
       before.filter((c) => c !== "active_organization_id" && c !== "authenticated_at"),
@@ -174,9 +177,10 @@ describe("a plugin's tables through pithy migrate", () => {
       "0300_auth_0002_plugin_admin",
       "0300_auth_0002_plugin_organization",
       "0300_auth_0002_session_authenticated_at",
+      "0300_auth_0003_account_issuer_nullable",
     ]);
 
-    // Two steps back: past the kit's own tip, then the organization plugin's. `admin`'s stays applied,
+    // Three steps back: past the kit's own two, then the organization plugin's. `admin`'s stays applied,
     // which is the point — one step back must not unwind a plugin nobody asked about.
     await rollbackToPlugin(p);
     expect(await tables()).toEqual(KIT_TABLES);

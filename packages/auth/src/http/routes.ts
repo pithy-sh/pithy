@@ -280,7 +280,7 @@ async function handleBetterAuth(c: Ctx, wiring: AuthWiring): Promise<Response> {
   const instance = await getAuthInstance(c, wiring);
 
   // **The first of the two guards on the refusal redirect (#625).** `errorCallbackURL` is the caller's
-  // string and `redirectOnError` concatenates it without parsing, so the shape handed *in* decides
+  // string and `redirectOnError` builds the redirect on it, so the shape handed *in* decides
   // whether the collapse below is reading a query at all. `./errorCallbackUrl` normalizes it to something
   // the kit produced, or refuses it — and carries the argument for why guarding the input is not the same
   // job as reading the output, and why both stay.

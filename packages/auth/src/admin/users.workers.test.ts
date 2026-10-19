@@ -12,8 +12,7 @@ import { beforeEach, describe, expect, test } from "vitest";
 import { Session, User } from "../data/betterAuth";
 import { Device } from "../data/device";
 import { type AuthDatabase, type AuthTables, authDatabase } from "../data/tables";
-import { auth_0001_init } from "../migrations/0001_init";
-import { auth_0002_session_authenticated_at } from "../migrations/0002_session_authenticated_at";
+import { AUTH_MIGRATIONS } from "../migrations/set";
 import {
   findSessionById,
   getUser,
@@ -132,10 +131,9 @@ beforeEach(async () => {
   ]) {
     await env.DB.exec(`DROP TABLE IF EXISTS ${table}`);
   }
-  await auth_0001_init.up(untyped);
-  // The chain, not just its head: this suite inserts session rows, and a column the code writes must
-  // exist. See `migrations/set.ts` for why five harnesses each had this wrong.
-  await auth_0002_session_authenticated_at.up(untyped);
+  // The chain, not just its head: this suite inserts session and account rows, and a column the code
+  // writes must exist. See `migrations/set.ts` for why five harnesses each had this wrong.
+  for (const migration of Object.values(AUTH_MIGRATIONS)) await migration.up(untyped);
 });
 
 describe("listUsers", () => {
@@ -235,7 +233,6 @@ describe("getUser and userProviders", () => {
       .values({
         id: "acct-1",
         accountId: "google-sub-1",
-        issuer: "https://accounts.google.com",
         providerId: "google",
         userId: "u-1",
         accessToken: "ya29.super-secret",

@@ -14,7 +14,7 @@ The plugin is good software. It is more featureful than this capability in sever
 
 What follows is one argument about one property: **what a membership is worth when it is transitively a credential to somebody else's data.** In the dashboard, a membership reaches connections to customers' production Workers. In a coaching academy, it reaches minors' contact details. Where that is the stake, six answers have to come out a particular way, and the plugin answers them differently — not carelessly, and mostly for defensible reasons of its own.
 
-Every claim below is checked against `better-auth@1.7.1`, the version this kit pins, and names the file it came from. A later release can make any of them untrue. The right response to that is to check, not to re-derive.
+Every claim below is checked against `better-auth@1.7.11`, the floor this kit requires, and names the file it came from. It was first written against 1.7.1. Between the two, the plugin's server files changed only in refactors that keep their behavior. A later release can make any of them untrue. The right response to that is to check, not to re-derive.
 
 ## 1. Tenancy is not identity
 

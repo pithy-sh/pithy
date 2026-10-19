@@ -18,7 +18,7 @@ import { collapseProviderRefusal, NEUTRAL_PROVIDER_REFUSAL, PROVIDER_REFUSAL_ROS
  * kit's own `APIError` sites anywhere in this package — and requires every code any of them can put on
  * that redirect to carry a written verdict.
  *
- * **Both `APIError` scans are directory-wide, and the reach is the whole point.** `callback.mjs:239`
+ * **Both `APIError` scans are directory-wide, and the reach is the whole point.** `callback.mjs:192`
  * catches *anything* `handleOAuthUserInfo` throws and re-emits an `APIError`'s `code` as `?error=` and its
  * `message` as `?error_description=`. "Anything" includes a databaseHook, a plugin hook, and every helper
  * either of those reaches — so a scan pointed at one file names a class it cannot catch. An earlier draft
@@ -99,7 +99,7 @@ function producers(): readonly Producer[] {
     },
     {
       what: "better-auth `result.error` literals (dist/oauth2/link-account.mjs)",
-      // Spelled as prose and underscored on the way out, at `callback.mjs:245`.
+      // Spelled as prose and underscored on the way out, at `callback.mjs:197`.
       codes: [
         ...matches(linkAccount, /error: "([a-z ]+)"/g, (raw) => raw.split(" ").join("_")),
         ...matches(linkAccount, /redirectOnError\([^)]*?"([a-z_]+)"/g),
@@ -108,7 +108,9 @@ function producers(): readonly Producer[] {
     },
     {
       what: "better-auth redirects built inline (dist/api/routes/callback.mjs)",
-      codes: matches(callback, /error=([a-z_]+)/g),
+      // `new URLSearchParams({ error: "…" })` since 1.7.3. The `?error=…` template literal 1.7.1 built
+      // is matched too, so the floor still means something on either side of the bump.
+      codes: matches(callback, /error(?:=|: ")([a-z_]+)/g),
       floor: 2,
     },
     {
@@ -188,6 +190,20 @@ describe("collapsing rewrites the one header and touches nothing else", () => {
     // accepted them silently keeps them instead — and the state cookie is expired by this very response.
     const collapsed = collapseProviderRefusal(CALLBACK, redirect("https://app.example/sign-in?error=signup_disabled"));
     expect(collapsed?.response.headers.getSetCookie()).toHaveLength(2);
+  });
+
+  test("a sign-in that failed to attach the provider to a matched row collapses (#787)", () => {
+    // `unable_to_link_account` is not only the link flow's. `handleOAuthUserInfo` returns it inside
+    // `if (dbUser)` when the account write fails, so on the social callback it answers "a row matched",
+    // and `unable_to_create_user` is its other half.
+    const collapsed = collapseProviderRefusal(
+      CALLBACK,
+      redirect("https://app.example/sign-in?error=unable_to_link_account"),
+    );
+    expect(collapsed?.reason).toBe("unable_to_link_account");
+    expect(collapsed?.response.headers.get("location")).toBe(
+      `https://app.example/sign-in?error=${NEUTRAL_PROVIDER_REFUSAL}`,
+    );
   });
 
   test("a rostered code that travels is left exactly as it was", () => {

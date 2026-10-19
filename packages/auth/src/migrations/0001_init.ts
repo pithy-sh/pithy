@@ -82,12 +82,11 @@ export const auth_0001_init: Migration = {
     await db.schema
       .createTable("pithyAuthAccounts")
       .addColumn("id", "text", (c) => c.primaryKey())
-      // `issuer` is 1.7's account identity, and it is `required: true` in Better Auth's own model
-      // (#451). An account is the pair `(issuer, accountId)` now rather than `(providerId, accountId)`,
-      // because a provider id is ours to name and an issuer is the identity provider's own — two
-      // providers configured against one directory could otherwise mint the same `accountId` and land
-      // on different rows. `local:credential` for a password, the discovery URL for an OIDC provider,
-      // `local:oauth:<id>` for an OAuth provider that publishes none.
+      // `issuer` was Better Auth 1.7.0–1.7.2's account identity, `required: true` in its model then
+      // (#451), with an account the pair `(issuer, accountId)`. 1.7.3 reverted to the 1.6 model, which
+      // identifies an account by `(providerId, accountId)` and never writes this column
+      // (better-auth/better-auth#11153). This `NOT NULL` is history: `0003_account_issuer_nullable`
+      // relaxes it and drops the index below, and the column stays only to keep what 1.7.1 wrote (#787).
       .addColumn("issuer", "text", (c) => c.notNull())
       .addColumn("accountId", "text", (c) => c.notNull())
       .addColumn("providerId", "text", (c) => c.notNull())
@@ -168,10 +167,9 @@ export const auth_0001_init: Migration = {
     await db.schema.createIndex("pithyAuthSessionsUserIdIdx").on("pithyAuthSessions").column("userId").execute();
     await db.schema.createIndex("pithyAuthSessionsDeviceIdIdx").on("pithyAuthSessions").column("deviceId").execute();
     await db.schema.createIndex("pithyAuthAccountsUserIdIdx").on("pithyAuthAccounts").column("userId").execute();
-    // The identity 1.7 looks an account up by, and unique because the pair *is* the identity: two rows
-    // sharing it are two records of one account at one provider, which is the account-confusion state
-    // Better Auth's own 1.7 upgrade guide has adopters audit for before adding this (#451). Declared
-    // here rather than backfilled, because nothing is published and no row predates it.
+    // The identity 1.7.0–1.7.2 looked an account up by, unique because the pair was the identity (#451).
+    // 1.7.3 looks an account up by `(providerId, accountId)` again, and `0003_account_issuer_nullable`
+    // drops this index first, as Better Auth's 1.7 upgrade guide orders it (#787).
     await db.schema
       .createIndex("pithyAuthAccountsIssuerAccountIdIdx")
       .on("pithyAuthAccounts")

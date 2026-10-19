@@ -216,7 +216,11 @@ test("pithy add auth --with-prerequisites composes secrets, email and auth, and 
   const applied = result.databases.flatMap((database) => database.results.map((entry) => entry.migrationName));
   // Auth's whole chain, not just its head — a second kit migration landed with #558 and this list is
   // every migration the add applied, so it grows with the capability.
-  expect(applied).toEqual(["0300_auth_0001_init", "0300_auth_0002_session_authenticated_at"]);
+  expect(applied).toEqual([
+    "0300_auth_0001_init",
+    "0300_auth_0002_session_authenticated_at",
+    "0300_auth_0003_account_issuer_nullable",
+  ]);
   expect(result.databases.every((database) => database.results.every((entry) => entry.status === "Success"))).toBe(
     true,
   );

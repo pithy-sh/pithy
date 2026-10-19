@@ -18,22 +18,28 @@ import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyEr
  * | 1 | `…?error=access_denied` | read the *first* `error`, which the caller had planted |
  * | 2 | `…/sign-in#x` | the appended `error=` landed inside the fragment; `searchParams` saw nothing |
  *
- * The third shape is the diagnosis rather than another entry. `better-auth`'s `redirectOnError`
- * (`dist/api/routes/callback.mjs:78`) is string concatenation that never parses:
+ * The third shape is the diagnosis rather than another entry. At 1.7.1, `better-auth`'s `redirectOnError`
+ * (`dist/api/routes/callback.mjs:78`) was string concatenation that never parsed:
  *
  * ```js
  * const url = `${baseURL}${baseURL.includes("?") ? "&" : "?"}${params.toString()}`;
  * ```
  *
  * and `baseURL` there is `errorURL`, which `oauth2/state.mjs:27` stored as the caller's raw string. So the
- * collapse parses the output of a concatenation performed without regard to URL structure, and **every
- * input shape where concatenation and parsing disagree is a new bypass.** `#x` was the third; a fourth
- * exists for as long as the caller chooses the string being concatenated. Patching the parser again finds
- * it later, from a report, rather than now.
+ * collapse parsed the output of a construction the caller steered, and **every input shape where that
+ * construction and parsing disagree is a new bypass.** `#x` was the third; a fourth exists for as long as
+ * the caller chooses the string being built on. Patching the parser again finds it later, from a report,
+ * rather than now.
+ *
+ * At 1.7.11 the line is `appendQueryParams(baseURL, params)`, from `@better-auth/core`'s
+ * `dist/utils/url.mjs:40`. It parses the input, sets the query before any fragment, and throws on a `//`
+ * or `/\` input. That closes the fragment shape inside the dependency and leaves the planted `error`
+ * open, since the existing query is kept as text. The guard does not lean on either fact. The argument
+ * above is about who chooses the string, and that has not changed.
  *
  * ## The invariant this module holds
  *
- * By the time `redirectOnError` concatenates, `errorURL` is **a URL the kit produced**:
+ * By the time `redirectOnError` appends to it, `errorURL` is **a URL the kit produced**:
  *
  * - no fragment — not a populated one, and not a bare trailing `#` either, which has an empty
  *   `URL.hash` and still swallows everything appended after it;
@@ -41,7 +47,7 @@ import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyEr
  * - a `?` in it **iff** it carries a query, so appending `?k=v` or `&k=v` — whichever the dependency
  *   picks — yields exactly one readable query either way.
  *
- * Then the concatenation is predictable by construction, and the collapse is reading a string this
+ * Then the append is predictable by construction, under raw concatenation or a parse, and the collapse is reading a string this
  * capability wrote rather than one an attacker composed.
  *
  * ## Refused, never quietly rewritten
@@ -64,7 +70,7 @@ import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyEr
  *
  * Every request through `handleBetterAuth` carrying an `errorCallbackURL` is guarded — `/sign-in/social`,
  * `/link-social`, `/sign-in/magic-link`. Deciding *per route* which of the dependency's code paths parse
- * the value and which concatenate it is exactly the out-guessing above, and it is a claim that goes stale
+ * the value and which build on it raw is exactly the out-guessing above, and it is a claim that goes stale
  * on the next bump. One field, one rule. (An adopter whose error screen is a hash route passes it as a
  * query parameter instead; the kit's own templates already do.)
  *
@@ -181,13 +187,15 @@ function refuse(value: string, why: string): never {
 export function normalizeErrorCallbackURL(value: string, requestUrl: string): string {
   if (value === "") {
     // Better Auth skips its own origin check on a falsy value (`errorCallbackURL && validateURL(…)`) and
-    // then stores it with `??`, not `||` — so `""` survives as the error URL and the redirect becomes a
-    // bare `?error=<code>` resolved against the callback's own path. There is no URL to produce from it.
+    // then stores it with `??`, not `||` — so `""` survives as the error URL. At 1.7.1 the redirect became
+    // a bare `?error=<code>` resolved against the callback's own path; at 1.7.11 the append's parse
+    // throws on it. There is no URL to produce from it either way.
     refuse(value, "it is empty");
   }
   // **The raw string, not `URL.hash`.** `http://host/sign-in#` parses with an empty hash and is still the
-  // bypass: the dependency concatenates the string it was given, so `…#` + `?error=x` puts the code
-  // inside a fragment that `URL` then reports as `#?error=x`. Any `#` at all disqualifies the value; one
+  // bypass under raw concatenation, which is what 1.7.1 did: `…#` + `?error=x` puts the code inside a
+  // fragment that `URL` then reports as `#?error=x`. 1.7.11 parses first, and this check does not
+  // rely on it. Any `#` at all disqualifies the value; one
   // that is meant literally survives as `%23`, which is not a fragment and is not this check's business.
   if (value.includes("#")) {
     refuse(value, "it carries a fragment, and an `error` appended after a `#` is never read as a query");

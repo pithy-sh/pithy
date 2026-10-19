@@ -13,20 +13,44 @@ import { guardErrorCallbackURL, normalizeErrorCallbackURL } from "./errorCallbac
  * line each, because the defect this guard closes *is* a shape nobody enumerated — two rounds of
  * output-side repair were each bypassed by an input nobody had written down.
  *
- * **The concatenation is modeled here and nowhere else.** `redirectOnError` is one line
- * (`better-auth/dist/api/routes/callback.mjs:78`); `appendLikeBetterAuth` reproduces it so the cases can
- * assert the *consequence* of a normalized value rather than restate the rule that produced it. The guard
- * itself does not contain this model, deliberately — a guard that reasons about what a dependency will do
- * with a string is the thing #625's third round exists to stop relying on.
+ * **The append is modeled here and nowhere else.** `redirectOnError`
+ * (`better-auth/dist/api/routes/callback.mjs:78`) hands the value to `@better-auth/core`'s
+ * `appendQueryParams` (`dist/utils/url.mjs:40`). `appendLikeBetterAuth` reproduces that function as
+ * 1.7.11 ships it, so the cases can assert the *consequence* of a normalized value rather than restate
+ * the rule that produced it. The guard itself does not contain this model, deliberately — a guard that
+ * reasons about what a dependency will do with a string is the thing #625's third round exists to stop
+ * relying on.
  */
 
 /** The callback this Worker is answering. A root-relative input resolves against it for parsing. */
 const REQUEST = "https://auth.example/auth/sign-in/social";
 
-/** `redirectOnError`, verbatim. Not imported — the dependency does not export it. */
+/** The origin `appendQueryParams` resolves a root-relative input against, and strips off again. */
+const URL_REFERENCE_ORIGIN = "https://better-auth.invalid";
+
+/**
+ * `redirectOnError` at 1.7.11, verbatim: `appendQueryParams(errorURL, new URLSearchParams({ error }))`.
+ * Copied, not imported: `@better-auth/core` is not a dependency of this package, only of `better-auth`.
+ *
+ * It parses. The query is set on the parsed URL, so it lands before any fragment, and a `//` or `/\`
+ * input throws rather than redirecting. 1.7.1 concatenated the raw string instead, and the fragment
+ * bypass of #625 lived in that difference.
+ */
 function appendLikeBetterAuth(errorURL: string, code: string): string {
   const params = new URLSearchParams({ error: code });
-  return `${errorURL}${errorURL.includes("?") ? "&" : "?"}${params.toString()}`;
+  const relative = errorURL.startsWith("/");
+  if (errorURL.startsWith("//") || errorURL.startsWith("/\\")) {
+    throw new TypeError("Expected an absolute or root-relative URL");
+  }
+  const parsed = relative ? new URL(errorURL, URL_REFERENCE_ORIGIN) : new URL(errorURL);
+  if (relative && parsed.origin !== URL_REFERENCE_ORIGIN) {
+    throw new TypeError("Expected an absolute or root-relative URL");
+  }
+  const query = params.toString();
+  if (!query) return errorURL;
+  const separator = parsed.search.endsWith("&") ? "" : "&";
+  parsed.search = parsed.search ? `${parsed.search}${separator}${query}` : query;
+  return relative ? parsed.href.slice(parsed.origin.length) : parsed.href;
 }
 
 /** What a browser would read out of that concatenation, which is the only thing the attack is about. */
@@ -133,7 +157,7 @@ describe("a value the guard refuses is one the refusal cannot be appended to", (
       why: "neither an absolute URL nor a root-relative path",
     },
     {
-      label: "an empty string, which Better Auth stores and then concatenates onto nothing",
+      label: "an empty string, which Better Auth stores and its append then fails to parse",
       value: "",
       why: "empty",
     },
@@ -171,29 +195,38 @@ describe("a value the guard refuses is one the refusal cannot be appended to", (
 /**
  * The half the roster cannot see, spelled out.
  *
- * Each of these is a value `redirectOnError` would have concatenated into something
- * `collapseProviderRefusal` reads wrongly — either as no `error` at all, or as one the caller chose. They
- * are asserted here as facts about the *dependency's* behavior rather than about the guard, so a bump
- * that changes it turns this red and the argument for the guard gets re-read instead of assumed.
+ * Each of these is a refused value, handed to the dependency's append as the installed version ships it.
+ * They are asserted here as facts about the *dependency's* behavior rather than about the guard, so a
+ * bump that changes it turns this red and the argument for the guard gets re-read instead of assumed.
+ *
+ * At 1.7.1 the append was raw concatenation, and a fragment hid the code from every query parser: the
+ * collapse returned early, the true code traveled, and no audit row was written. 1.7.11 parses first, so
+ * that shape now reads. The guard refuses it anyway. Its claim is about values the kit produced, and it
+ * does not lean on the dependency having fixed the shape it was built against.
  */
-describe("what the refused shapes would have done, had they reached the concatenation", () => {
-  test("a fragment hides the appended code from every query parser", () => {
+describe("what the refused shapes do once they reach the dependency's append", () => {
+  test("a fragment no longer hides the appended code: the query lands before it", () => {
     const location = appendLikeBetterAuth("https://app.example/sign-in#x", "account_not_linked");
-    expect(location).toBe("https://app.example/sign-in#x?error=account_not_linked");
-    // Nothing in the query. This is exactly why the output-side collapse returned early and let the true
-    // code travel — and why no audit row was written for it either.
-    expect(errorsIn(location)).toEqual([]);
-    expect(new URL(location).hash).toBe("#x?error=account_not_linked");
+    expect(location).toBe("https://app.example/sign-in?error=account_not_linked#x");
+    expect(errorsIn(location)).toEqual(["account_not_linked"]);
+    expect(new URL(location).hash).toBe("#x");
   });
 
-  test("a bare `#` does the same, though its hash reads as empty before the append", () => {
+  test("a bare `#` is kept, and the code before it reads", () => {
     expect(new URL("https://app.example/sign-in#").hash).toBe("");
-    expect(errorsIn(appendLikeBetterAuth("https://app.example/sign-in#", "signup_disabled"))).toEqual([]);
+    const location = appendLikeBetterAuth("https://app.example/sign-in#", "signup_disabled");
+    expect(location).toBe("https://app.example/sign-in?error=signup_disabled#");
+    expect(errorsIn(location)).toEqual(["signup_disabled"]);
   });
 
-  test("a planted `error` puts the caller's value first, where `get` reads it", () => {
+  test("a planted `error` still puts the caller's value first, where `get` reads it", () => {
+    // The shape the parse did not close. The existing query is kept as text and the code is appended.
     const location = appendLikeBetterAuth("https://app.example/sign-in?error=access_denied", "account_not_linked");
     expect(new URL(location).searchParams.get("error")).toBe("access_denied");
+  });
+
+  test("a protocol-relative value throws inside the callback instead of redirecting", () => {
+    expect(() => appendLikeBetterAuth("//evil.example/x", "account_not_linked")).toThrow(TypeError);
   });
 });
 

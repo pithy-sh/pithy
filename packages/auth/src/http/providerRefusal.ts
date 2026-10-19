@@ -40,11 +40,11 @@
  *
  * | Code | Emitted only when |
  * | --- | --- |
- * | `account_not_linked` | a user row **did** match (`better-auth/dist/oauth2/link-account.mjs:86`) |
- * | `signup_disabled` | **no** row matched (`:202`) |
+ * | `account_not_linked` | a user row **did** match (`better-auth/dist/oauth2/link-account.mjs:142`) |
+ * | `signup_disabled` | **no** row matched (`:257`) |
  *
  * Both leave through one line — `redirectOnError(result.error.split(" ").join("_"))`,
- * `dist/api/routes/callback.mjs:245` — so from outside the Worker they are one question with two
+ * `dist/api/routes/callback.mjs:197` — so from outside the Worker they are one question with two
  * answers. Press the provider button, read the `Location` header, repeat: an account-enumeration oracle
  * needing one GitHub account, no account on the target, and no page render. It works against the
  * configuration the kit's own security guidance recommends (`allowSignUp: false`, #554), so the
@@ -75,9 +75,10 @@
  * ## This module is the second line of defense, not the only one
  *
  * It reads the `Location` a refused callback answered with — which is the output of
- * `redirectOnError`'s raw string concatenation (`callback.mjs:78`), performed on a value the caller
- * supplied. It was walked around twice that way, and the second bypass was the diagnosis: **every input
- * shape where that concatenation and this parsing disagree is another one**, so patching the parsing
+ * `redirectOnError` (`callback.mjs:78`), built on a value the caller supplied. 1.7.1 concatenated it raw;
+ * 1.7.11 parses it with `new URL` in `@better-auth/core`'s `appendQueryParams`, which sets the query
+ * before any fragment and throws on a `//` or `/\` input. It was walked around twice on 1.7.1, and the second bypass
+ * was the diagnosis: **every input shape where that construction and this parsing disagree is another one**, so patching the parsing
  * again only moves the report later. `./errorCallbackUrl` therefore guards the value on the way *in*,
  * and by the time this module runs the string being parsed is one the kit produced.
  *
@@ -123,7 +124,7 @@ interface RefusalVerdict {
  * `providerRefusal.test.ts` reads Better Auth's own `OAUTH_CALLBACK_ERROR_CODES`, scans the
  * `result.error` literals out of `link-account.mjs`, and scans the `new APIError(…, { code })` sites in
  * both codebases — `better-auth`'s on the callback's path and the kit's across this whole package,
- * because `callback.mjs:239` re-emits *anything* thrown inside `handleOAuthUserInfo` as `?error=`. Every
+ * because `callback.mjs:192` re-emits *anything* thrown inside `handleOAuthUserInfo` as `?error=`. Every
  * code any of them can produce must appear here. A dependency bump that adds one turns that red, and
  * somebody writes a verdict for it. So the roster records a *review*, and the review cannot silently fall
  * behind the thing it reviews.
@@ -140,11 +141,11 @@ const PROVIDER_REFUSAL_VERDICTS: Readonly<Record<string, RefusalVerdict>> = {
   // ── Decided by the user table. These are the defect. ───────────────────────────────────────────
   account_not_linked: {
     collapse: true,
-    why: "link-account.mjs:86 — returned only inside `if (dbUser)`, so it is literally the statement that a row matched.",
+    why: "link-account.mjs:142 — returned only inside `if (dbUser)`, so it is literally the statement that a row matched.",
   },
   signup_disabled: {
     collapse: true,
-    why: "link-account.mjs:202 — the `else` of that same branch, so it is literally the statement that none did.",
+    why: "link-account.mjs:257 — the `else` of that same branch, so it is literally the statement that none did.",
   },
   EMAIL_NOT_VERIFIED: {
     collapse: true,
@@ -152,15 +153,20 @@ const PROVIDER_REFUSAL_VERDICTS: Readonly<Record<string, RefusalVerdict>> = {
   },
   unable_to_create_user: {
     collapse: true,
-    why: "link-account.mjs:254 — the create path only, so it sits on the no-row side exactly as `signup_disabled` does. A fault rather than a refusal, and still an answer to the question being asked.",
+    why: "link-account.mjs:301/308 — the create path only, so it sits on the no-row side exactly as `signup_disabled` does. A fault rather than a refusal, and still an answer to the question being asked.",
   },
   INVALID_PROFILE_FIELD: {
     collapse: true,
-    why: "The kit's `user.update.before` hook, and **the branch it sits on was read wrong the first time.** `if (dbUser) {` opens at link-account.mjs:77 and the `if (!linkedAccount) {…} else {…}` pair sits *inside* it, so the ownership argument that carries `unable_to_update_account` does not reach here: the `updateUser` that can carry a provider's `name`/`image` is the `overrideUserInfo` write at :185, which runs after **either** sub-branch — including the one that has just linked an account that did not exist a line earlier. What every path to it does share is `if (dbUser)`: a matched row. The other side of that branch calls `createUser`, where the kit's `user.create.before` **sanitizes** the same two fields instead of refusing them. So a hostile provider display name answers `?error=INVALID_PROFILE_FIELD` against an address that has a row and a completed sign-in against one that does not, which is the oracle with a different name on it.",
+    why: "The kit's `user.update.before` hook, and **the branch it sits on was read wrong the first time.** `if (dbUser) {` opens at link-account.mjs:133 and the `if (!linkedAccount) {…} else {…}` pair sits *inside* it, so the ownership argument that carries `unable_to_update_account` does not reach here: the `updateUser` writes that can carry a provider's `name`/`image` are the `overrideUserInfo` write at :238, which runs after **either** sub-branch, and since 1.7.3 the `updateUserInfoOnLink` write at :189 on the branch that has just linked an account that did not exist a line earlier. What every path to it does share is `if (dbUser)`: a matched row. The other side of that branch calls `createUser`, where the kit's `user.create.before` **sanitizes** the same two fields instead of refusing them. So a hostile provider display name answers `?error=INVALID_PROFILE_FIELD` against an address that has a row and a completed sign-in against one that does not, which is the oracle with a different name on it.",
   },
   validation_context_missing: {
     collapse: true,
-    why: "internal-adapter.mjs:160 — raised when `getCurrentAuthContext()` fails inside `createUser`, and `createUser` is the no-row side. `updateUser` runs no such check (internal-adapter.mjs:599), so this code cannot be observed against an address that has a row: it is `signup_disabled`'s shape reached through the adopter's `validateUserInfo` option rather than through the sign-up policy.",
+    why: "internal-adapter.mjs:160 — raised when `getCurrentAuthContext()` fails inside `createUser`, and `createUser` is the no-row side. `updateUser` runs no such check (internal-adapter.mjs:616), so this code cannot be observed against an address that has a row: it is `signup_disabled`'s shape reached through the adopter's `validateUserInfo` option rather than through the sign-up policy.",
+  },
+
+  unable_to_link_account: {
+    collapse: true,
+    why: "Two producers, and the verdict follows the one that reads our rows. `linkOAuthAccount` (link-account.mjs:45/68) answers it on `/link-social`, where the caller is signed in as the user being changed. But `handleOAuthUserInfo` answers it too, inside `if (dbUser)` when the account write fails (:171/:184), so on the social callback it says a row matched, and `unable_to_create_user` is its other half. Collapsing costs the signed-in linker a specific code for a fault. Letting it travel would cost the oracle. Corrected in #787; the earlier verdict read only the link flow.",
   },
 
   // ── The caller's own request, or the provider's. Nothing to do with our rows. ──────────────────
@@ -174,7 +180,7 @@ const PROVIDER_REFUSAL_VERDICTS: Readonly<Record<string, RefusalVerdict>> = {
   },
   invalid_callback_request: {
     collapse: false,
-    why: "callback.mjs:55 — the callback's own query or body would not parse. Raised before `parseState`, so nothing had been read from anywhere yet.",
+    why: "callback.mjs:54 — the callback's own query or body would not parse. Raised before `parseState`, so nothing had been read from anywhere yet.",
   },
   oauth_provider_not_found: {
     collapse: false,
@@ -206,15 +212,15 @@ const PROVIDER_REFUSAL_VERDICTS: Readonly<Record<string, RefusalVerdict>> = {
   },
   email_not_verified: {
     collapse: false,
-    why: "Better Auth's lower-case code, from `requireEmailVerification` (link-account.mjs:263) — which the kit does not set. Reachable for a registering and a returning user alike, so it names no row either way. Not to be confused with the kit's upper-case `EMAIL_NOT_VERIFIED` above; the two are different strings from different places and only one of them is the oracle.",
+    why: "Better Auth's lower-case code, from `requireEmailVerification` (link-account.mjs:317) — which the kit does not set. Reachable for a registering and a returning user alike, so it names no row either way. Not to be confused with the kit's upper-case `EMAIL_NOT_VERIFIED` above; the two are different strings from different places and only one of them is the oracle.",
   },
   unable_to_create_session: {
     collapse: false,
-    why: "link-account.mjs:269 — after the user is resolved, so it is reached from both sides of the branch equally.",
+    why: "link-account.mjs:324 — after the user is resolved, so it is reached from both sides of the branch equally.",
   },
   state_not_found: {
     collapse: false,
-    why: "The request carried no state to parse. Raised at state.mjs:90, before any lookup.",
+    why: "The request carried no state to parse. Raised at state.mjs:93, before any lookup.",
   },
   state_mismatch: {
     collapse: false,
@@ -238,7 +244,7 @@ const PROVIDER_REFUSAL_VERDICTS: Readonly<Record<string, RefusalVerdict>> = {
   },
   account_hook_binding_conflict: {
     collapse: false,
-    why: "link-account.mjs:120/176/237 — a hook moved the account binding out from under the write that had just been made. Raised on the link path, the sign-in path *and* the create path, so it is reached from both sides of `if (dbUser)` equally and names neither.",
+    why: "link-account.mjs:175/231/291 — a hook moved the account binding out from under the write that had just been made. Raised on the link path, the sign-in path *and* the create path, so it is reached from both sides of `if (dbUser)` equally and names neither.",
   },
   validation_source_missing: {
     collapse: false,
@@ -246,14 +252,10 @@ const PROVIDER_REFUSAL_VERDICTS: Readonly<Record<string, RefusalVerdict>> = {
   },
   validation_failed: {
     collapse: false,
-    why: "validate-user-info.mjs:34 — the adopter's own `validateUserInfo` callback threw, and Better Auth fails closed. Called on the link path (link-account.mjs:92), the sign-in path (:137) and the create path (internal-adapter.mjs:164), so it is reachable whether or not a row matched. What that callback *returns* is the adopter's own code and travels off-roster, which is the same decision as for the provider's own `error` values.",
+    why: "validate-user-info.mjs:34 — the adopter's own `validateUserInfo` callback threw, and Better Auth fails closed. Called on the link path (link-account.mjs:24 and :148), the sign-in path (:192) and the create path (internal-adapter.mjs:164), so it is reachable whether or not a row matched. What that callback *returns* is the adopter's own code and travels off-roster, which is the same decision as for the provider's own `error` values.",
   },
 
   // ── The link flow. The caller already holds a session for the account in question. ─────────────
-  unable_to_link_account: {
-    collapse: false,
-    why: "callback.mjs:173/198, inside `if (link)` — reachable only on `/link-social`, where the caller is signed in as the user being changed. Telling somebody about their own account is not enumeration.",
-  },
   email_does_not_match: {
     collapse: false,
     why: "The link flow, and the address compared against is the signed-in caller's own. The caller's account, as above.",
@@ -264,7 +266,7 @@ const PROVIDER_REFUSAL_VERDICTS: Readonly<Record<string, RefusalVerdict>> = {
   },
   unable_to_update_account: {
     collapse: false,
-    why: "link-account.mjs:172, inside `if (linkedAccount)` — reaching it requires an account row already binding this provider identity to this user, and the caller proved control of that identity at the provider to get here. Ownership, not a matched row. (This is the argument `INVALID_PROFILE_FIELD` was wrongly given: that code's write sits outside this branch.)",
+    why: "link-account.mjs:227, inside `if (linkedAccount)` — reaching it requires an account row already binding this provider identity to this user, and the caller proved control of that identity at the provider to get here. Ownership, not a matched row. (This is the argument `INVALID_PROFILE_FIELD` was wrongly given: that code's write sits outside this branch.)",
   },
 
   // ── The account-selection flow, which the social callback never enters. ────────────────────────
@@ -274,23 +276,19 @@ const PROVIDER_REFUSAL_VERDICTS: Readonly<Record<string, RefusalVerdict>> = {
   // verdict a reader can check, where silence is not.
   account_ownership_conflict: {
     collapse: false,
-    why: "link-account.mjs:38, inside `if (opts.selectedUser && …)`. The lookup it reports on is keyed by the *provider* identity the caller has just proved control of, not by an address handed over — and the social callback passes no `selectedUser`, so this never reaches that redirect at all.",
-  },
-  account_provider_conflict: {
-    collapse: false,
-    why: "link-account.mjs:42, guarded by `requireExactAccountBinding`, which is `opts.selectedUser || opts.requireExactAccountBinding` — neither of which `callback.mjs` passes. Keyed by the caller's own provider identity, as above.",
+    why: "link-account.mjs:97, inside `if (opts.selectedUser && …)`. The lookup it reports on is keyed by the *provider* identity the caller has just proved control of, not by an address handed over — and the social callback passes no `selectedUser`, so this never reaches that redirect at all.",
   },
   user_not_found: {
     collapse: false,
-    why: "link-account.mjs:54 — `findUserById(opts.selectedUser.userId)`, so it answers about a user id the caller was already handed, on a flow the social callback does not enter. It reads a row by id, never by a provider-resolved address.",
+    why: "link-account.mjs:109 — `findUserById(opts.selectedUser.userId)`, so it answers about a user id the caller was already handed, on a flow the social callback does not enter. It reads a row by id, never by a provider-resolved address.",
   },
   user_hook_selection_conflict: {
     collapse: false,
-    why: "link-account.mjs:195, inside `if (opts.selectedUser …)`. A hook returned a different user than the one the caller picked from a list they had already been shown, and the social callback never picks one.",
+    why: "link-account.mjs:249, inside `if (opts.selectedUser …)`. A hook returned a different user than the one the caller picked from a list they had already been shown, and the social callback never picks one.",
   },
   session_hook_user_conflict: {
     collapse: false,
-    why: "link-account.mjs:275 — after the user is resolved and the session minted, under the same `requireExactAccountBinding` gate. Reached from both sides of `if (dbUser)` when it is reached at all, which on the social callback is never.",
+    why: "link-account.mjs:328 — after the user is resolved and the session minted, under the same `requireExactAccountBinding` gate. Reached from both sides of `if (dbUser)` when it is reached at all, which on the social callback is never.",
   },
 };
 
@@ -344,7 +342,7 @@ export interface CollapsedRefusal {
  *
  * - **It need not be absolute.** `api/middlewares/origin-check.mjs` passes `allowRelativePaths: true`,
  *   `matchesOriginPattern` admits `/path?query`, `oauth2/state.mjs` stores the value as a bare
- *   `z.string().optional()`, and `redirectOnError` concatenates it raw. So a relative `Location` is a
+ *   `z.string().optional()`, and `redirectOnError` keeps it root-relative. So a relative `Location` is a
  *   supported answer, and returning `undefined` to one sent the true code to the browser and wrote no
  *   audit row.
  * - **`error` need not be the only one.** `redirectOnError` *appends* `&error=<code>`. An
