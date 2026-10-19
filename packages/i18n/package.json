@@ -27,7 +27,7 @@
   },
   "scripts": {
     "build": "tsdown && tsc -p tsconfig.build.json && bun ../../tooling/build/src/stampDeclarations.ts",
-    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.browser.json",
+    "typecheck": "bun check -p tsconfig.json && bun check -p tsconfig.browser.json",
     "test": "vitest run",
     "test:node": "vitest run --project=node --project=dom",
     "test:workers": "vitest run --project=workers",

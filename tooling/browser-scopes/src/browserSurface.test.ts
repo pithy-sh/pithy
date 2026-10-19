@@ -29,7 +29,7 @@ import { responseModules, schemaModules, scopeHomes, specifierFor } from "./surf
  *   because §HTTP makes it one — one response module and one request-schema module per capability, and
  *   no judgment about which files count.
  * - **The structural half.** No module of any family pulls in a package a browser build cannot have.
- *   `tsc` under `types: []` refuses whatever fails in a browser's ambient environment; this refuses what
+ *   the typecheck under `types: []` refuses whatever fails in a browser's ambient environment; this refuses what
  *   compiles fine and is the server data layer anyway — a named import of `@cloudflare/workers-types`, a
  *   reference directive, `kysely`, `kysely-d1`. Neither half is hypothetical: `@pithy-sh/secrets` failed
  *   the second while compiling green, because its wire shapes imported a *type* out of a Kysely reader.
@@ -43,7 +43,7 @@ import { responseModules, schemaModules, scopeHomes, specifierFor } from "./surf
  *   are read off disk.
  * - **Every source file is in a program.** One level below that: a `src/*.ts` no project's `include`
  *   reaches is compiled by nothing. Vitest transpiles a test file without typechecking it, so such a
- *   module runs, passes, and is never held to `tsc` at all — and the `include` lists here are
+ *   module runs, passes, and is never held to the typecheck at all — and the `include` lists here are
  *   hand-written, because this package's sources are split across a Node-typed program and four DOM-only
  *   ones and `src/**` would hand a browser fixture the ambient types a browser lacks. Derived from the
  *   tree on one side and from `tsc --listFilesOnly` on the other, so neither the list nor the walk is
@@ -91,7 +91,7 @@ import { responseModules, schemaModules, scopeHomes, specifierFor } from "./surf
  * - **`tsconfig.probe.json`** pulls in `@cloudflare/workers-types`, `hono`, `kysely`, `kysely-d1` and
  *   `zod`, and for that program it is the point rather than a finding. `probe.ts` imports
  *   `capability.ts` on purpose, to keep three of #315's four errors reproducible. Its subject is what a
- *   browser's `lib` refuses, which is `tsc`'s half.
+ *   browser's `lib` refuses, which is the typecheck's half.
  * - **`vitest.config.ts`**, which sits beside `src` rather than in it and is therefore outside the
  *   `rootDir` every project here declares. No package in this repository typechecks its own vitest
  *   config; that is a repository-wide decision and not this gate's subject. The subject is `src`.
@@ -229,7 +229,7 @@ describe("every module a browser may import is reachable from a browser program"
   });
 
   it("pulls in nothing a browser build cannot have", () => {
-    // What `tsc` cannot answer on its own. The DOM-only compile catches a reached module naming a
+    // What the typecheck cannot answer on its own. The DOM-only compile catches a reached module naming a
     // Workers global off the global scope; this catches one that imports the same types by name — which
     // compiles everywhere and is server code all the same — and one that injects them with a reference
     // directive, which `types: []` has no power to refuse. Both arrive here the same way: as a file in
@@ -255,7 +255,7 @@ describe("every module a browser may import is reachable from a browser program"
   });
 
   it("compiles every browser program this package declares", () => {
-    // The gate on the gates. A fixture and its `tsconfig.*.json` are half of the rule — the half `tsc`
+    // The gate on the gates. A fixture and its `tsconfig.*.json` are half of the rule — the half the typecheck
     // owns, and the half `--listFilesOnly` deliberately skips — so a program the `typecheck` script does
     // not name is a fixture nobody ever compiles. That is not a weaker gate; it is a file that looks like
     // one. Both sides are read off disk: the projects from the directory, the invocations from the
@@ -266,7 +266,9 @@ describe("every module a browser may import is reachable from a browser program"
     const manifest = JSON.parse(readFileSync(join(PACKAGE_DIR, "package.json"), "utf8")) as {
       scripts: { typecheck: string };
     };
-    const invoked = [...manifest.scripts.typecheck.matchAll(/tsc -p (\S+)/g)].map(([, project]) => project).sort();
+    const invoked = [...manifest.scripts.typecheck.matchAll(/bun check -p (\S+)/g)]
+      .map(([, project]) => project)
+      .sort();
     expect(invoked).toEqual(declared);
   });
 
@@ -274,7 +276,7 @@ describe("every module a browser may import is reachable from a browser program"
     // One level below the assertion above, and the hole it leaves. That one binds the `typecheck` script
     // to the projects on disk; nothing bound a project's `include` to the source on disk. So a new
     // `src/*.ts` that nobody adds to a list is compiled by no program at all — vitest transpiles a test
-    // file without typechecking it, so the module runs, passes, and is never held to `tsc`.
+    // file without typechecking it, so the module runs, passes, and is never held to the typecheck.
     //
     // The lists are hand-written here for a reason, which is why the hole is real rather than a style
     // choice: `src/schemas.ts` and `src/responses.ts` belong to DOM-only programs, and a `src/**/*.ts` in

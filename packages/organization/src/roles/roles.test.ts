@@ -299,7 +299,7 @@ describe("the literal types flow through", () => {
 
   test("a power nobody declared does not compile", () => {
     // Never called — the assertions are the compiler's, and calling them would exercise the runtime
-    // instead. `tsc` runs over this file in `bun run typecheck`, so an `@ts-expect-error` that stopped
+    // instead. `bun check` runs over this file in `bun run typecheck`, so an `@ts-expect-error` that stopped
     // being an error fails the build there.
     function pinned(): void {
       // @ts-expect-error — `billing:refund` is not in this catalog's power set.

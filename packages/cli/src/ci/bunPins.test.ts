@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -77,5 +78,35 @@ describe("the Bun pin", () => {
       "1.4.2",
       "1.3.14",
     ]);
+  });
+});
+
+/**
+ * **A `check` script takes `bun check` (#784).**
+ *
+ * Bun runs a package's own script before its built-in command, so `bun check -p tsconfig.json` in a
+ * manifest that also declares `"check"` runs that script with `-p tsconfig.json` appended, and never
+ * type-checks. Measured on 1.4.2 and on 1.4.3 alike. A `check` script that exits 0 turns that
+ * workspace's `typecheck` into a pass over nothing, and nothing else in the build would say so. So no
+ * manifest whose `typecheck` runs `bun check` may declare one.
+ */
+describe("bun check is the type checker", () => {
+  const manifests = execFileSync("git", ["ls-files", "*package.json"], { cwd: REPO_ROOT, encoding: "utf8" })
+    .split("\n")
+    .filter(Boolean)
+    .map((path) => ({
+      path,
+      scripts: (JSON.parse(readFileSync(resolve(REPO_ROOT, path), "utf8")) as { scripts?: Record<string, string> })
+        .scripts,
+    }))
+    .filter(({ scripts }) => /(^|&& )bun check /.test(scripts?.typecheck ?? ""));
+
+  // The floor: a pattern that stopped matching would let the assertion below pass on nothing.
+  test("finds the workspaces that type-check with it", () => {
+    expect(manifests.length).toBeGreaterThan(20);
+  });
+
+  test("no workspace that runs it declares a check script", () => {
+    expect(manifests.filter(({ scripts }) => scripts?.check !== undefined).map(({ path }) => path)).toEqual([]);
   });
 });

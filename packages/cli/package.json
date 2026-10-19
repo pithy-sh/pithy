@@ -35,7 +35,7 @@
     "postpack": "bun scripts/vendorTemplate.ts --clean",
     "pack:verify": "bun scripts/verifyPack.ts",
     "build": "tsdown && tsc -p tsconfig.build.json && bun ../../tooling/build/src/stampDeclarations.ts",
-    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.contract.json && tsc -p scripts/tsconfig.json && tsc -p tsconfig.ciScripts.json",
+    "typecheck": "bun check -p tsconfig.json && bun check -p tsconfig.contract.json && bun check -p scripts/tsconfig.json && bun check -p tsconfig.ciScripts.json",
     "test": "vitest run",
     "test:node": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",

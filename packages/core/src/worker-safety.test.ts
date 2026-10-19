@@ -4,7 +4,7 @@
 import { describe, expect, test } from "vitest";
 import { blankComments } from "./text/comments";
 
-// `import.meta.glob` is a vite/vitest feature; declare it so plain `tsc` typecheck accepts it.
+// `import.meta.glob` is a vite/vitest feature; declare it so the typecheck accepts it.
 declare global {
   interface ImportMeta {
     glob(patterns: string[], options: { eager: true; query: "?raw"; import: "default" }): Record<string, string>;

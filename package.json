@@ -3,9 +3,9 @@
   "private": true,
   "license": "MIT",
   "type": "module",
-  "packageManager": "bun@1.4.2",
+  "packageManager": "bun@1.4.3",
   "engines": {
-    "bun": ">=1.4.0"
+    "bun": ">=1.4.3"
   },
   "workspaces": [
     "packages/*",
@@ -18,7 +18,7 @@
     "test:node": "turbo run test:node --continue=always",
     "test:workers": "turbo run test:workers --concurrency=50% --continue=always",
     "test:integration": "turbo run test:integration --concurrency=50% --continue=always",
-    "typecheck": "turbo run typecheck --continue=always",
+    "typecheck": "bun scripts/bunFloor.ts && turbo run typecheck --continue=always",
     "lint": "biome check .",
     "format": "biome format --write .",
     "clean": "turbo run clean",

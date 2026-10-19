@@ -86,7 +86,7 @@ const TASKS = ["typecheck", "test", "test:node"] as const;
 const PROGRAMS: readonly string[] = [
   ...(
     JSON.parse(readFileSync(join(PACKAGE_DIR, "package.json"), "utf8")) as { scripts: { typecheck: string } }
-  ).scripts.typecheck.matchAll(/tsc -p (\S+)/g),
+  ).scripts.typecheck.matchAll(/bun check -p (\S+)/g),
 ].map(([, project]) => project as string);
 
 /** What one project's program opened, as `tsc` reports it. A failing compile still lists its files. */

@@ -9,7 +9,7 @@
 | Choice | Version | Reason |
 |---|---|---|
 | Node.js | 22+ LTS (minimum) | Current LTS at launch; native ESM, native `fetch`, native `--experimental-strip-types` available, `node:util` parseArgs. Declared in `package.json` `engines.node`. |
-| Bun | 1.4 or later (optional for end users) | Pithy is built and tested with Bun 1.4.2; published packages also run cleanly on Node 22 so adoption isn't gated behind a Bun install. On an older Bun, upgrade Bun to 1.4.2. |
+| Bun | 1.4 or later (optional for end users) | Pithy is built and tested with Bun 1.4.3; published packages also run cleanly on Node 22 so adoption isn't gated behind a Bun install. On an older Bun, upgrade Bun to 1.4.3. |
 | TypeScript | 7.0+ ready (5.x supported during migration) | TypeScript 7.0 stable shipped January 2026 with the Go-based compiler. Pithy targets TS 7 features and `tsgo` from day one. |
 | Module system | ESM only | Modern; no dual-bundle complexity; CLIs especially benefit from going ESM-only. |
 
@@ -23,7 +23,7 @@ Pithy is built with Bun (it's faster, simpler, and runs TypeScript natively with
 
 Concretely:
 
-- **Internal scripts** (build, test, lint, release) assume Bun. The repo's `package.json` declares `"packageManager": "bun@1.4.2"`.
+- **Internal scripts** (build, test, lint, release) assume Bun. The repo's `package.json` declares `"packageManager": "bun@1.4.3"`. Bun does not enforce `engines.bun`, so the root `typecheck` runs `scripts/bunFloor.ts` first and refuses a Bun below `>=1.4.3` by name, rather than letting every workspace answer `Script not found "check"`.
 - **Published packages** in `@pithy-sh/*` are pure ESM with no Bun-specific runtime calls. They run on Node 22+, Bun, Deno (with npm: specifiers), and Cloudflare Workers.
 - **Users install via** their preferred package manager. The CLI detects which one (see `CLI.md` Section 5.3) and suggests the matching upgrade command.
 
@@ -37,6 +37,8 @@ TypeScript 7.0 (Project Corsa) shipped stable in January 2026, written in Go, wi
 - Going TS-7-native now avoids a migration later
 
 Caveat: TS 7's emit pipeline is still completing as of mid-2026 (decorators not yet supported, downlevel-emit incomplete). Pithy doesn't use decorators and targets ES2022+ output, so this isn't a blocker.
+
+**The kit's own typecheck runs `bun check`, not `tsc`.** Every workspace's `typecheck` script is `bun check -p <config>`, one per program. Measured over the whole typecheck, it is 2.4x to 2.7x faster than `tsc`, with identical diagnostics on all 38 programs (#784). `bun check` emits nothing, so `build` still runs `tsc -p tsconfig.build.json` for the declarations. The starter keeps `tsc -b`, because an adopter's project is never gated behind a Bun install. `bun check` arrived in Bun 1.4.3; an older Bun reads it as `bun run check`, which is why the floor above is checked before it runs.
 
 ---
 
@@ -415,8 +417,8 @@ The repo declares Bun as the canonical manager:
 ```json
 // package.json
 {
-  "packageManager": "bun@1.4.2",
-  "engines": { "node": ">=22.0.0", "bun": ">=1.4.0" }
+  "packageManager": "bun@1.4.3",
+  "engines": { "node": ">=22.0.0", "bun": ">=1.4.3" }
 }
 ```
 
@@ -865,10 +867,10 @@ Configure the root `package.json`:
 
 ```json
 {
-  "packageManager": "bun@1.4.2",
+  "packageManager": "bun@1.4.3",
   "engines": {
     "node": ">=22.0.0",
-    "bun": ">=1.4.0"
+    "bun": ">=1.4.3"
   },
   "workspaces": ["apps/*", "packages/*"],
   "scripts": {

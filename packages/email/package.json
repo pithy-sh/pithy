@@ -27,7 +27,7 @@
   "scripts": {
     "precompile": "bun scripts/precompile.ts",
     "build": "bun run precompile && tsdown && tsc -p tsconfig.build.json && bun ../../tooling/build/src/stampDeclarations.ts",
-    "typecheck": "tsc -p tsconfig.json",
+    "typecheck": "bun check -p tsconfig.json",
     "test": "bun run precompile && vitest run",
     "test:node": "bun run precompile && vitest run --project=node",
     "test:workers": "bun run precompile && vitest run --project=workers",
