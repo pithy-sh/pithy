@@ -198,7 +198,7 @@ The screens are real files in **`@pithy-sh/ui-react`**, a template library the C
 
 That is a deliberate boundary, and it is about growth. A framework's templates need that framework's toolchain to be checked: React wants `react`, `@types/react` and a `jsx: react-jsx` program, and Svelte would want an entirely different one. Keeping them in the CLI would make the CLI carry every framework's devDependencies and every framework's tsconfig purely to typecheck files it only ever copies. Each framework therefore brings its own library — `@pithy-sh/ui-react` today, `@pithy-sh/ui-<framework>` as others land — while the stub contract that drives them stays in the CLI.
 
-It also means the screens are ordinary source: `tsc` typechecks them and Biome lints them, in the layout they will have once copied. A template that does not compile fails CI here, rather than in your project.
+It also means the screens are ordinary source: the kit's typecheck checks them and Biome lints them, in the layout they will have once copied. A template that does not compile fails CI here, rather than in your project.
 
 The tree mirrors the scaffolded layout one-to-one, and which files a given invocation writes is chosen by a named group in the library's manifest rather than by directory. `base` is written always; `auth` rides on the auth capability, `payments` on the payments one, and `organization` on the tenancy one. The groups stack rather than choose — a Worker composing both gets both screen sets, because they name disjoint files over one layout. That is what a later screen set costs too: a new group naming new files in the same tree, with no path moved, no import changed, and no change to the stub contract.
 
