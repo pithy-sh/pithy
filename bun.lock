@@ -17,6 +17,35 @@
         "turbo": "^2.10.10",
       },
     },
+    "packages/artifacts": {
+      "name": "@pithy-sh/artifacts",
+      "version": "0.0.0",
+      "dependencies": {
+        "@cloudflare/workers-types": "^5.20260729.1",
+        "@hono/zod-validator": "^0.9.0",
+      },
+      "devDependencies": {
+        "@cloudflare/vitest-plugin": "^1.4.2",
+        "@pithy-sh/core": "workspace:*",
+        "@pithy-sh/tsconfig": "workspace:*",
+        "@types/node": "^22.15.0",
+        "@vitest/coverage-v8": "^4.1.0",
+        "hono": "^4.13.2",
+        "kysely": "^0.29.0",
+        "kysely-d1": "^0.4.0",
+        "tsdown": "^0.23.0",
+        "typescript": "^7.0.2",
+        "vitest": "^4.1.0",
+        "wrangler": "^4.151.0",
+        "zod": "^4.4.0",
+      },
+      "peerDependencies": {
+        "@pithy-sh/core": "^0.10.0",
+        "hono": "^4.13.2",
+        "kysely": "^0.29.0",
+        "zod": "^4.4.0",
+      },
+    },
     "packages/audit": {
       "name": "@pithy-sh/audit",
       "version": "0.3.0",
@@ -112,6 +141,7 @@
       },
       "devDependencies": {
         "@lydell/node-pty": "1.2.0-beta.15",
+        "@pithy-sh/artifacts": "workspace:*",
         "@pithy-sh/audit": "workspace:*",
         "@pithy-sh/auth": "workspace:*",
         "@pithy-sh/i18n": "workspace:*",
@@ -806,6 +836,7 @@
       "name": "@pithy-sh/browser-scopes",
       "version": "0.0.0",
       "devDependencies": {
+        "@pithy-sh/artifacts": "workspace:*",
         "@pithy-sh/audit": "workspace:*",
         "@pithy-sh/auth": "workspace:*",
         "@pithy-sh/cli": "workspace:*",
@@ -1232,6 +1263,8 @@
     "@oxc-project/types": ["@oxc-project/types@0.148.0", "", {}, "sha512-Nm4s/jB+4FpFsPhWGEC4h7rzksesmtnMXomo6rCMcg/b8zLQuOziRgkCS1fxDCXOlJB/6Q8oABOZ/OP6RIPj9A=="],
 
     "@paddle/paddle-js": ["@paddle/paddle-js@1.6.4", "", {}, "sha512-ncfnS6I8mCX6krZ3Sgz2iAYivGmhdI81yt9mT6prtPj4Ipd9J3M12LCJRUFL4FB7BYeeuV04c33RSEnbZUBCaA=="],
+
+    "@pithy-sh/artifacts": ["@pithy-sh/artifacts@workspace:packages/artifacts"],
 
     "@pithy-sh/audit": ["@pithy-sh/audit@workspace:packages/audit"],
 
