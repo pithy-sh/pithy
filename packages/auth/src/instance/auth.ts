@@ -25,6 +25,7 @@ import {
   type SocialProviderId,
   unavailableProviderFor,
 } from "./providers";
+import { betterAuthSecrets, type SessionSecretVersions } from "./sessionSecrets";
 
 /**
  * Build the `socialProviders` block from whichever provider credentials were resolved. Exported so the
@@ -206,8 +207,15 @@ export interface AuthInstanceDeps<Plugins extends readonly BetterAuthPlugin[] = 
   extends ResolvedProviders {
   /** The shared Kysely over the `pithy_auth_*` tables (carries `CamelCasePlugin`). */
   db: AuthDatabase;
-  /** The Better-Auth signing/encryption secret, sourced from `@pithy-sh/secrets`. */
+  /** The Better-Auth signing/encryption secret, sourced from `@pithy-sh/secrets` — the current version. */
   secret: string;
+  /**
+   * Every retained version of the session secret, when the caller resolved them (#602). Given, Better Auth
+   * gets the whole version set — newest first — so a value sealed under the previous version still opens
+   * through a rotation's overlap; see `./sessionSecrets.ts`. Absent, it gets `secret` alone, which is what an
+   * instance built outside a request (a seed, a test) has always had.
+   */
+  sessionSecrets?: SessionSecretVersions;
   /** The public base URL of this environment's auth worker (no trailing slash). */
   baseURL: string;
   /** The mount path; must equal the Hono route the handler is mounted under. */
@@ -314,7 +322,7 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
     appName: "Pithy",
     baseURL: deps.baseURL,
     basePath: deps.basePath,
-    secret: deps.secret,
+    ...(deps.sessionSecrets === undefined ? { secret: deps.secret } : betterAuthSecrets(deps.sessionSecrets)),
     telemetry: { enabled: false },
     trustedOrigins: deps.trustedOrigins,
     database: { db: deps.db, type: "sqlite", transaction: false },

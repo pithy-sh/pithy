@@ -9,12 +9,15 @@ import {
   AUTH_FACEBOOK_CREDENTIALS,
   AUTH_GITHUB_CREDENTIALS,
   AUTH_GOOGLE_CREDENTIALS,
+  AUTH_JWKS_DEPENDENT,
   AUTH_SESSION_SECRET,
   authSecretsRegistry,
+  authSecretsRegistryFor,
   FacebookOAuthCredentials,
   GithubOAuthCredentials,
   GoogleOAuthCredentials,
   inapplicableProviderSecrets,
+  sessionSecretOverlapDays,
 } from "./secrets";
 
 /**
@@ -120,5 +123,43 @@ describe("auth().inapplicableSecrets", () => {
     const composed = auth({ baseURL: "https://example.com", google: { enabled: true } });
     expect(composed.inapplicableSecrets?.[AUTH_GOOGLE_CREDENTIALS]).toBeUndefined();
     expect(composed.inapplicableSecrets?.[AUTH_APPLE_CREDENTIALS]).toBe("auth() does not enable the apple provider");
+  });
+});
+
+describe("the session secret's unattended rotation (#602)", () => {
+  const WEEK = 60 * 60 * 24 * 7;
+
+  test("its overlap is the session lifetime, rounded up to whole days, and that lifetime is also its floor", () => {
+    expect(sessionSecretOverlapDays(WEEK)).toBe(7);
+    expect(sessionSecretOverlapDays(WEEK + 1)).toBe(8);
+    expect(sessionSecretOverlapDays(60)).toBe(1);
+    const registry = authSecretsRegistryFor({ sessionExpiresIn: 30 * 86_400 });
+    expect(registry[AUTH_SESSION_SECRET].overlap).toEqual({
+      days: 30,
+      minimumDays: 30,
+      reencrypt: [AUTH_JWKS_DEPENDENT],
+    });
+  });
+
+  test("the kit turns nothing on: no period unless the adopter asks for one", () => {
+    expect(authSecretsRegistryFor({ sessionExpiresIn: WEEK })[AUTH_SESSION_SECRET].rotateEveryDays).toBeUndefined();
+    expect(authSecretsRegistry[AUTH_SESSION_SECRET]).not.toHaveProperty("rotateEveryDays");
+    expect(auth({ baseURL: "https://api.example.com" }).secretRegistry?.[AUTH_SESSION_SECRET]).not.toHaveProperty(
+      "rotateEveryDays",
+    );
+  });
+
+  test("auth({ sessionSecretRotateEveryDays }) is the period the secrets manager rotates it on", () => {
+    const capability = auth({ baseURL: "https://api.example.com", sessionSecretRotateEveryDays: 90 });
+    expect(capability.secretRegistry?.[AUTH_SESSION_SECRET]).toMatchObject({
+      rotateEveryDays: 90,
+      overlap: { days: 7, minimumDays: 7, reencrypt: [AUTH_JWKS_DEPENDENT] },
+    });
+  });
+
+  test("a period no longer than the session lifetime is refused at auth(), naming the secret", () => {
+    expect(() => auth({ baseURL: "https://api.example.com", sessionSecretRotateEveryDays: 7 })).toThrow(
+      /auth-session-secret/,
+    );
   });
 });
