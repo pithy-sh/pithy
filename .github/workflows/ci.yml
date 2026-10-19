@@ -535,6 +535,55 @@ jobs:
       - name: The same, at every declared floor
         run: bun run clean-room -- --floors
 
+  # `@pithy-sh/auth` at the newest Better Auth its range admits, beside the lockfile's (#787).
+  #
+  # The `Tests` job runs auth at the version `bun.lock` holds, and an adopter does not get that one: a fresh
+  # install resolves the newest version `packages/auth/package.json` admits. The two drifted apart once,
+  # and every sign-in on a fresh install answered 500 while every suite here was green. Better Auth 1.7.3
+  # stopped writing `pithy_auth_accounts.issuer` in a patch release, and the lockfile still held 1.7.1.
+  # This job moves `better-auth` and `@better-auth/i18n` to the top of the range and runs the auth suites
+  # there, so a release that breaks the kit turns this red with the version named.
+  #
+  # The nightly is where it matters most, since a new Better Auth needs no pull request here to break
+  # anything. A pull request runs it when `plan` says auth is affected, which a lockfile change always does.
+  auth-newest:
+    name: Auth at the newest Better Auth
+    needs: plan
+    if: needs.plan.outputs.any == 'true' && contains(needs.plan.outputs.dirs, 'packages/auth')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+
+      - name: Install
+        run: bun install
+
+      # `bun update` resolves within the declared range, never past it, and writes the result into this
+      # runner's copy of the lockfile. Nothing is committed from here.
+      - name: Move Better Auth to the top of its range
+        working-directory: packages/auth
+        run: |
+          set -euo pipefail
+          locked="$(jq -r .version node_modules/better-auth/package.json)"
+          range="$(jq -r '.dependencies["better-auth"]' package.json)"
+          bun update better-auth @better-auth/i18n
+          newest="$(jq -r .version node_modules/better-auth/package.json)"
+          i18n="$(jq -r .version node_modules/@better-auth/i18n/package.json)"
+          echo "better-auth ${range}: ${locked} locked, ${newest} newest. @better-auth/i18n ${i18n}."
+          echo "### Auth at better-auth ${newest} (locked ${locked}, range ${range})" >> "$GITHUB_STEP_SUMMARY"
+
+      # Through turbo, so the auth suites get the builds they depend on, exactly as the `Tests` job does.
+      - name: Auth suites
+        run: bunx turbo run test:node test:workers --filter=@pithy-sh/auth --concurrency=2 --continue=always
+
   # The Claude Code plugins (#719): the marketplace at `.claude-plugin/marketplace.json` and every plugin
   # under `agent-plugins/claude/`, through Claude Code's own validator. `--strict` turns a warning into a
   # failure — an unrecognized field, missing metadata — the things the runtime tolerates and a user then
@@ -699,7 +748,7 @@ jobs:
   # `.github/rulesets/main.json`, and `packages/cli/src/ci/mainRuleset.test.ts` holds both files to it.
   ci:
     name: CI
-    needs: [plan, verify, test, test-node, clean-room, windows, plugins, unity-client, workflows]
+    needs: [plan, verify, test, test-node, clean-room, auth-newest, windows, plugins, unity-client, workflows]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 15
