@@ -52,6 +52,12 @@ export const emailSigningRegistry = defineSecretRegistry({
     // the entry when it is absent and never replaces one — and `local` to replace.
     origin: { kind: "minted", recipe: { kind: "random", bytes: 32, encoding: "base64url" } },
     rotation: { kind: "local" },
+    // **A rotation keeps the previous key for as long as a link lives (#602).** A link is minted into mail
+    // nobody can recall and stays valid for `LINK_TTL_DAYS` — 90 by default — so a key retired sooner breaks
+    // an unsubscribe that was valid when it was sent. A host that raises `LINK_TTL_DAYS` wants a longer
+    // overlap than this, declared in the project's own registry. Nothing is sealed under this key at rest:
+    // it signs, and a signature expires with its link.
+    overlap: { days: 90, minimumDays: 90 },
   },
 });
 
