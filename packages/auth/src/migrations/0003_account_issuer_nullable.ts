@@ -106,8 +106,9 @@ async function rebuild(db: Kysely<unknown>, issuerNotNull: boolean): Promise<voi
   }
 
   // A rebuild an earlier run left half-done. D1 has no transactional DDL, so a run that died between the
-  // create and the drop leaves this behind beside an intact table, and the retry would fail on it. The
-  // checks above have just read the real table whole, so nothing here is the only copy of anything.
+  // create and the drop leaves this behind beside an intact table, indexes included, and the retry would
+  // fail on it. The checks above have just read the real table whole, so nothing here is the only copy
+  // of anything.
   await sql`drop table if exists ${sql.id(ACCOUNTS_NEXT)}`.execute(db);
 
   // First, as Better Auth's upgrade guide orders it. `ifExists`, because `down` runs this rebuild too and
@@ -121,9 +122,10 @@ async function rebuild(db: Kysely<unknown>, issuerNotNull: boolean): Promise<voi
   const names = sql.join(columns.map((column) => sql.id(column.name)));
   await sql`insert into ${sql.id(ACCOUNTS_NEXT)} (${names}) select ${names} from ${sql.id(ACCOUNTS)}`.execute(db);
 
-  // Each index by name first: the names are the ones the rebuilt table takes, and `drop table` would
-  // take them anyway. Explicit, so the order of what happens is the order it reads.
-  for (const index of indexes) await sql`drop index ${sql.id(index.name)}`.execute(db);
+  // `drop table` takes the indexes with it, and nothing drops them one by one first. A retry reads the
+  // indexes off the live table, so an index dropped ahead of a run that then died is lost for good. This
+  // way the original keeps every index until the statement that removes the table. One gap is left: a
+  // run that dies after the rename and before the recreate below leaves the table without them.
   await sql`drop table ${sql.id(ACCOUNTS)}`.execute(db);
   await sql`alter table ${sql.id(ACCOUNTS_NEXT)} rename to ${sql.id(ACCOUNTS)}`.execute(db);
   // The DDL SQLite kept for each, verbatim. It names the table by the name the rebuilt one now has.

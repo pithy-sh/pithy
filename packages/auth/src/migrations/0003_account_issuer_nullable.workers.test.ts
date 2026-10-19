@@ -72,6 +72,25 @@ async function seedAccount(id: string, issuer: string | null, accountId = `${id}
     .run();
 }
 
+/**
+ * `env.DB`, except that the first statement matching `statement` throws instead of running. That is a
+ * run that died there: everything before it applied, nothing after it, and no transaction to undo either.
+ */
+function dyingAt(statement: RegExp): D1Database {
+  return new Proxy(env.DB, {
+    get(target, property) {
+      if (property === "prepare") {
+        return (query: string) => {
+          if (statement.test(query.trim())) throw new Error(`killed before: ${query}`);
+          return target.prepare(query);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
 async function accounts(): Promise<Record<string, unknown>[]> {
   const rows = await env.DB.prepare("select * from pithy_auth_accounts order by id").all<Record<string, unknown>>();
   return rows.results;
@@ -180,6 +199,23 @@ describe("auth_0003_account_issuer_nullable", () => {
 
     await runMigrations(env.DB, ALL);
 
+    expect(await accounts()).toEqual(before);
+    expect(await issuerNotNull()).toBe(0);
+  });
+
+  test("a run that dies just before the old table is dropped leaves its indexes for the retry", async () => {
+    // The retry reads the indexes off the live table, so whatever the dead run removed from it is gone
+    // for good. Killed at the last statement before `drop table`, the original must still carry them.
+    await runMigrations(env.DB, BEFORE);
+    await seedAccount("a1", "https://accounts.google.com");
+    const before = await accounts();
+
+    await expect(runMigrations(dyingAt(/^drop table "pithy_auth_accounts"$/), ALL)).rejects.toThrow();
+    expect(await accountIndexes()).toContain("pithy_auth_accounts_user_id_idx");
+
+    await runMigrations(env.DB, ALL);
+
+    expect(await accountIndexes()).toEqual(["pithy_auth_accounts_user_id_idx"]);
     expect(await accounts()).toEqual(before);
     expect(await issuerNotNull()).toBe(0);
   });

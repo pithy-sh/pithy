@@ -76,7 +76,8 @@
  *
  * It reads the `Location` a refused callback answered with — which is the output of
  * `redirectOnError` (`callback.mjs:78`), built on a value the caller supplied. 1.7.1 concatenated it raw;
- * 1.7.3 and later go through `URLSearchParams`. It was walked around twice on 1.7.1, and the second bypass
+ * 1.7.11 parses it with `new URL` in `@better-auth/core`'s `appendQueryParams`, which sets the query
+ * before any fragment and throws on a `//` or `/\` input. It was walked around twice on 1.7.1, and the second bypass
  * was the diagnosis: **every input shape where that construction and this parsing disagree is another one**, so patching the parsing
  * again only moves the report later. `./errorCallbackUrl` therefore guards the value on the way *in*,
  * and by the time this module runs the string being parsed is one the kit produced.
@@ -341,7 +342,7 @@ export interface CollapsedRefusal {
  *
  * - **It need not be absolute.** `api/middlewares/origin-check.mjs` passes `allowRelativePaths: true`,
  *   `matchesOriginPattern` admits `/path?query`, `oauth2/state.mjs` stores the value as a bare
- *   `z.string().optional()`, and `redirectOnError` concatenates it raw. So a relative `Location` is a
+ *   `z.string().optional()`, and `redirectOnError` keeps it root-relative. So a relative `Location` is a
  *   supported answer, and returning `undefined` to one sent the true code to the browser and wrote no
  *   audit row.
  * - **`error` need not be the only one.** `redirectOnError` *appends* `&error=<code>`. An
