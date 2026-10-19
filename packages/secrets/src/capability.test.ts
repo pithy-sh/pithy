@@ -21,10 +21,14 @@ function cap() {
 }
 
 describe("secrets capability", () => {
-  test("contributes a dedicated SECRETS database with both tables", () => {
+  test("contributes a dedicated SECRETS database with its three tables", () => {
     const db = cap().databases?.secrets;
     expect(db?.binding).toBe("SECRETS");
-    expect(Object.keys(db?.tables ?? {}).sort()).toEqual(["pithySecretsRotations", "pithySecretsSystemSecrets"]);
+    expect(Object.keys(db?.tables ?? {}).sort()).toEqual([
+      "pithySecretsRotations",
+      "pithySecretsSystemSecrets",
+      "pithySecretsTables",
+    ]);
   });
 
   // Table keys are camelCase (CamelCasePlugin emits the snake_case `pithy_secrets_` SQL);
@@ -41,9 +45,9 @@ describe("secrets capability", () => {
     expect(byName.SECRETS_ENCRYPTION_KEYS).toBe("secret");
   });
 
-  test("ships the 0001_init migration at its declared order", () => {
+  test("ships its chain — 0001_init, then the appended 0002_tables — at its declared order", () => {
     const db = cap().databases?.secrets;
-    expect(Object.keys(db?.migrations ?? {})).toEqual(["0001_init"]);
+    expect(Object.keys(db?.migrations ?? {})).toEqual(["0001_init", "0002_tables"]);
     expect(db?.migrationOrder).toBe(100);
   });
 

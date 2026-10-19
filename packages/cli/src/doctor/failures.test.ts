@@ -818,6 +818,7 @@ describe("every finding in every block carries fix", () => {
     "extensions.extensions[]": "an extension a Worker composes",
     "settings.checked[]": "a pair the settings check ran for",
     "settings.unchecked[]": "a pair whose check could not run, which established nothing",
+    "secretTables.declared[]": "a declared secret table: its name, keys and secret names",
   };
 
   /**
@@ -937,6 +938,14 @@ describe("every finding in every block carries fix", () => {
         state: "drifted",
         declared: ["staging", "prod"],
         drift: [{ worker: "api", env: "qa", kind: "undeclared", resources: [] }],
+      }),
+      checkSecretTables: async () => ({
+        state: "findings",
+        declared: [{ worker: "api", table: "customer", keys: ["userId"], secrets: ["KEY"] }],
+        environments: [
+          { env: "dev", state: "read", newestKeyVersion: 2, behind: 3, notMigrated: [] },
+          { env: "staging", state: "read", newestKeyVersion: null, behind: 0, notMigrated: ["customer"] },
+        ],
       }),
       checkTurnstileSitekeys: async () => ({
         state: "findings",

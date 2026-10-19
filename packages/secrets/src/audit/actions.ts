@@ -47,6 +47,19 @@ export const SecretsAuditActions = {
   memberRotated: "secrets/member_rotated",
   /** An application removed a keyspace member and every version of it. */
   memberRemoved: "secrets/member_removed",
+  /**
+   * An application stored one owner's secret in a declared table — created it, or replaced it (`mode` says
+   * which). The four table actions are the member actions' counterparts, for the same reason: somebody's key
+   * to somebody's system now exists, or no longer does. Their metadata names the table, the secret and the
+   * owner keys, and never anything about a value.
+   */
+  tableSecretWritten: "secrets/table_secret_written",
+  /** An application added a version to one owner's secret in a declared table, keeping the prior one valid. */
+  tableSecretRotated: "secrets/table_secret_rotated",
+  /** An application removed one owner's secret from a declared table. */
+  tableSecretRemoved: "secrets/table_secret_removed",
+  /** An application removed every row matching an owner — a tenant offboarding, or a user deletion. */
+  tableOwnerRemoved: "secrets/table_owner_removed",
 } as const;
 
 /** One of the secrets capability's audit actions. */

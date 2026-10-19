@@ -1491,6 +1491,28 @@ export const COMMANDS = {
     },
     "groups": []
   },
+  "secrets tables": {
+    "positionals": [],
+    "flags": {
+      "--env": {
+        "type": "string",
+        "required": false,
+        "repeatable": false,
+        "default": "dev"
+      },
+      "--worker": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
   "secrets update": {
     "positionals": [
       {

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { D1Database } from "@cloudflare/workers-types";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import {
@@ -78,6 +79,11 @@ export interface RetainedDatabase {
   name: string;
   /** The capability's migration set for this database, carrying its retained declaration. */
   provider: MigrationProvider;
+  /**
+   * Retained tables the provider cannot declare, read from the database itself — a vault's declared secret
+   * tables, whose migrations are the adopter's (#524). Counted beside the declared ones, never instead of them.
+   */
+  alsoRetained?: (d1: D1Database) => Promise<readonly string[]>;
 }
 
 /** Refuse a provider that declares nothing retained: counting it would find nothing and let the delete through. */
@@ -92,7 +98,17 @@ async function requireDeclared(database: RetainedDatabase): Promise<void> {
 /** The retained rows `database` holds, named by its database name. Read-only. */
 export async function countDatabaseRetained(database: RetainedDatabase): Promise<RetainedRows[]> {
   await requireDeclared(database);
-  return countRetainedRows(database.cf.d1(database.databaseId), await database.provider.getMigrations(), database.name);
+  const d1 = database.cf.d1(database.databaseId);
+  const counted = await countRetainedRows(d1, await database.provider.getMigrations(), database.name);
+  for (const table of (await database.alsoRetained?.(d1)) ?? []) {
+    if (counted.some((entry) => entry.table === table)) continue;
+    // The name was read from a registry the reader held to the declaration's rules, and the reader has
+    // matched it against `sqlite_master` — quoting it is belt, not braces.
+    const row = await d1.prepare(`select count(*) as n from "${table}"`).first<{ n: number }>();
+    const rows = row?.n ?? 0;
+    if (rows > 0) counted.push({ binding: database.name, table, rows });
+  }
+  return counted;
 }
 
 /**

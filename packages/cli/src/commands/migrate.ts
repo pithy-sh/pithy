@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { callerOf } from "@pithy-sh/core/src/cli/command";
+import { type Caller, callerOf, rerunRemedy } from "@pithy-sh/core/src/cli/command";
+import { PersonRequiredError } from "@pithy-sh/core/src/error/pithyError";
 import { generatedMigrationGroup } from "@pithy-sh/core/src/migrations/groups";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
@@ -15,11 +16,13 @@ import {
   migratedBeforeFailure,
   migrateProject,
   planMigrateProject,
+  resolveWorkerScopes,
   type WorkerMigrationRun,
 } from "../migrations/run";
 import { DRY_RUN_ARG, emptyPlan, type Plan, PlanKey, planText } from "../plan/plan";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
+import { formatGeneratedReport, GeneratedMigration, generateSecretTableMigrations } from "../secretTables/generate";
 import { canceled } from "../terminal/exitClass";
 import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -164,6 +167,48 @@ export function formatMigratePlan(plan: Plan, options: MigrateRender): string {
 }
 
 /**
+ * Render a run that wrote declared-table migrations and stopped (#524): what changed, what it wrote, and the
+ * instruction to review before running again — or the `--json` line carrying the same, with `workers` empty
+ * because nothing was applied. Under `--dry-run`, what it would write.
+ */
+export function formatMigrateGenerated(
+  generated: readonly GeneratedMigration[],
+  options: MigrateRender & { dryRun: boolean },
+): string {
+  if (options.json) {
+    return `${formatJsonLine({
+      command: "migrate",
+      project: options.project,
+      env: options.env,
+      rollback: false,
+      group: options.group,
+      dryRun: options.dryRun,
+      workers: [],
+      generatedMigrations: generated,
+    })}\n`;
+  }
+  // No `Done.` either way: under `--dry-run` nothing was written, and otherwise nothing was applied — the run
+  // ends on `generatedNotApplied`.
+  return formatGeneratedReport(generated, options.dryRun);
+}
+
+/**
+ * The refusal a run that wrote declared-table migrations ends with (#524): it applied nothing, so it must not
+ * exit as though it had. `core/person_required`, because the next step is reading the file — an agent stops
+ * and asks rather than running `migrate` again over a migration nobody has read.
+ */
+export function generatedNotApplied(
+  caller: Caller<"migrate">,
+  productionEnvironments: readonly string[] | undefined,
+): PersonRequiredError {
+  const again = rerunRemedy(caller, productionEnvironments ? { productionEnvironments } : {});
+  return new PersonRequiredError({
+    message: "Secret-table migrations written. Nothing was applied.",
+    action: `Review and commit what it wrote. ${again.say((line) => `Then run ${line} to apply it.`)}`,
+  });
+}
+
+/**
  * Ask a terminal for the rollback phrase — never under `--json`, never without a TTY, and never for `dev`,
  * which needs none. The prompt says what the command does, and **which group it is about to reverse**,
  * before asking anyone to agree to it (#694). With no group named it says so rather than naming one: the
@@ -245,6 +290,12 @@ const MigratePayload = z
       .describe("Every database the run never opened. Present only when `interrupted`."),
     interrupted: z.literal(true).optional().describe("Present only on a run that failed partway."),
     dryRun: z.boolean().describe("Whether this was `--dry-run`. Nothing was applied or reversed when it is `true`."),
+    generatedMigrations: z
+      .array(GeneratedMigration)
+      .optional()
+      .describe(
+        "Declared secret-table migrations this run wrote — or under `--dry-run` would write — and then stopped before applying anything. Present only when it wrote one; run `pithy migrate` again to apply them.",
+      ),
     plan: PlanKey,
   })
   .describe("What `pithy migrate` applied or reversed, or under `--dry-run` would.");
@@ -305,6 +356,28 @@ export default withContract(
           ...(group !== undefined ? { group } : {}),
         };
         const destroyRetained = parseDestroyRetained(args["destroy-retained"]);
+        // A declared secret table's migration is written, never applied, in the pass that generates it (#524):
+        // the file is the adopter's to read first. So a forward run diffs the declarations before anything
+        // else and stops once it has written one. Composition is only read here; a Worker that will not
+        // compose is left for the run below to report in its own words.
+        if (!args.rollback) {
+          const workers = await resolveWorkerScopes({
+            projectDir,
+            env,
+            ...(args.worker !== undefined ? { worker: args.worker } : {}),
+          }).catch(() => null);
+          if (workers !== null) {
+            const { generated } = await generateSecretTableMigrations({ projectDir, env, workers, write: !dryRun });
+            if (generated.length > 0) {
+              process.stdout.write(formatMigrateGenerated(generated, { ...render, dryRun }));
+              if (dryRun) return;
+              // Written and not applied is not a success: `pithy migrate && pithy deploy` would deploy over a
+              // schema missing what the file adds, and a file written in a CI checkout is in no chain at all.
+              // Reading it is a person's step, so the run ends as one (exit 5) — on every environment.
+              throw generatedNotApplied(callerOf("migrate", args), config.seed?.productionEnvironments);
+            }
+          }
+        }
         const scope = {
           projectDir,
           project,

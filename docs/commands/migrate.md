@@ -47,6 +47,32 @@ The group lives in `pithy_migrations_groups`, beside the ledger and the owner st
 
 **The ledger has to match the declaration, in both directions.** Before anything is written, every database in the run is read back: a migration this project declares and the database has not applied is what the run applies, and a migration the database has applied that **nothing declares any more** is refused by name. That second state is what deleting a migration file leaves behind, and Kysely treats it as a corrupted chain — so nothing can migrate until the two agree. No migration is broken there, so the remedy is not "fix the migration": on `dev` it is to delete `.wrangler/state` and run again, and on a deployed environment it is to restore the migration or remove its `pithy_migrations` row, because that database has real rows in it. `pithy doctor` reports the same state before you reach for `migrate`.
 
+### Declared secret tables: it writes the migration, and stops
+
+A Worker that declares secret tables (`defineSecretTable`, composed through `secretTablesDatabase` — see [`pithy secrets`](./secrets.md#per-owner-secrets-declared-tables)) gets their migrations written for it. **Before anything is applied**, a forward run diffs each declaration against the chain that Worker composes. A table the chain has never seen, or one that gained a key, gained a secret name or lost one, gets the next migration written into `apps/<worker>/migrations/secrets/`, and that directory's `index.ts` is rewritten from the listing. A secret name removed from the declaration leaves the table's registration, printed as `- secret  NAME`; rows already holding it stay as they are. Then the run stops, whichever of these it wrote:
+
+```
+$ pithy migrate --env dev
+Declaration changed: customer
+  + key     teamId
+
+Wrote apps/api/migrations/secrets/0002_customer_team_id.ts
+Review it, then run migrate again.
+
+Secret-table migrations written. Nothing was applied.
+Review and commit what it wrote. Then run `pithy migrate --env dev` to apply it.
+```
+
+**It writes and never applies in the same pass.** The file is yours to read before it runs, and running `pithy migrate` again applies it. **So the run ends `core/person_required`, exit 5, on every environment, and never with `Done.`**: nothing was applied, and `pithy migrate --env prod && pithy deploy --env prod` must not go on to deploy over a schema missing what the file adds. In CI that is the point — a file written in a CI checkout is in no deployed chain, so the job stops and a person commits it. Under `--json` the report is still the stdout line, with `generatedMigrations`, and the refusal is the stderr line. `--dry-run` writes nothing and exits 0. A declaration that matches its chain writes nothing and migrates normally, so running twice writes one file, not two. The chain stays append-only: the next change is a new file, never an edit to one that has shipped. A generated file is an ordinary migration once written. A hand-written one in the same directory — default-exporting its migration under the same `NNNN_slug.ts` naming — runs only once you import it in `index.ts` and add it to `secretTableMigrations` yourself. From then on it stays in the index and counts toward the next number. Dropped in without that, it is the second refusal below.
+
+Three things are refused before anything is written, each naming what to change:
+
+- **A key column removed or renamed.** A rename reads as a removal beside an addition, and a migration that drops a column holding somebody's key is a data loss you author on purpose. The refusal names the key.
+- **A migration file in `migrations/secrets/` that the Worker's config does not compose** — written, and `secretTableMigrations` never passed to `secretTablesDatabase`, or written by hand and never added to `index.ts`. Diffing against a chain missing it would write it again. The refusal names the file, and which of the two to fix.
+- **One table declared by two Workers.** One Worker owns a table's migrations; another reads it with `.table(T)`, which needs the declaration alone.
+
+`--dry-run` says which files it would write and writes none. `--rollback` never generates.
+
 ### Rolling back
 
 **A rollback names the group it reverses, and `pithy migrate --rollback` on its own reverses nothing.** It refuses, names the group on top, says what reversing it would undo, and prints the command that does it:
@@ -75,7 +101,7 @@ That is the breaking change, and it is the point: a rollback used to step back o
 
 **`--group` composes with the narrowing.** `--rollback --group <v> --binding DB` reverses that group's portion of one database and leaves the rest of the group applied. It is also the way to reverse what *can* come down when the group reaches a database another environment binds.
 
-**Retained tables refuse.** Some tables hold rows that exist nowhere else — the secrets vault (`pithy_secrets_system_secrets`, `pithy_secrets_rotations`) and the email suppression list (`pithy_email_suppressions`). Their capability declares them retained. Before anything moves, a rollback counts every retained table in the databases the group reverses, and if one holds rows it refuses, naming each table and the total:
+**Retained tables refuse.** Some tables hold rows that exist nowhere else — the secrets vault (`pithy_secrets_system_secrets`, `pithy_secrets_rotations`, and every [declared secret table](#declared-secret-tables-it-writes-the-migration-and-stops)) and the email suppression list (`pithy_email_suppressions`). Their capability declares them retained. Before anything moves, a rollback counts every retained table in the databases the group reverses, and if one holds rows it refuses, naming each table and the total:
 
 ```
 $ pithy migrate --rollback --group 2026.10.3-1
@@ -121,6 +147,7 @@ One line on stdout, whose `workers` array groups the run exactly as the human ou
 | `…results[].status` | string | `"Success"`, `"Error"`, or `"NotExecuted"` — the last meaning an earlier migration failed first. |
 | `workers[].databases[].sharedWith` | string[], optional | The other Workers bound to this same physical D1. Present **only** when the database is shared. |
 | `workers[].databases[].boundBy` | string[], optional | The other environments whose stanzas bind this same database. Present **only** on a rollback that kept it for that reason; its `results` is empty. |
+| `generatedMigrations` | object[], optional | Present **only** on a run that wrote declared secret-table migrations and stopped — or, under `--dry-run`, would write them. Each entry names the `worker`, the `table`, the `change` (`create` or `alter`), the `file` relative to the project root, and the `addedKeys`, `addedSecrets` and `removedSecrets`. `workers` is empty beside it, because nothing was applied. |
 | `plan` | object | Present only under `--dry-run`: `plan.migrations` names each migration the run would apply (`up`) or reverse (`down`), with its environment, Worker, database and binding, in the shape every `--dry-run` shares (`docs/CLI.md` §1.2). |
 
 ### A run that died partway

@@ -3,20 +3,22 @@
 
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { D1Database } from "@cloudflare/workers-types";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { TokenPermission } from "@pithy-sh/cloudflare/src/tokens/accountTokensManager";
 import type { PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
 import { RUNTIME_PROFILE } from "@pithy-sh/cloudflare/src/tokens/runtime";
 import { commandName } from "@pithy-sh/core/src/cli/command";
+import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { InternalError, UpstreamError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { RetainedBudget, type RetainedRows } from "@pithy-sh/core/src/migrations/retained";
-import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import { readMigrationLedger, runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { encodeVersionedValue, initialVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
-import { secretsRetainedTables } from "@pithy-sh/secrets/src/data/tables";
+import { secretsRetainedTables, secretsTables } from "@pithy-sh/secrets/src/data/tables";
 import { SECRETS_RUNTIME_PERMISSIONS } from "@pithy-sh/secrets/src/manager/managerRegistry";
-import { secrets_0001_init } from "@pithy-sh/secrets/src/migrations/0001_init";
+import { secretsMigrations } from "@pithy-sh/secrets/src/migrations/secretsMigrations";
 import {
   initialMasterKeyConfig,
   masterKeySecretName,
@@ -30,9 +32,11 @@ import {
   managerWorkerName,
   resolveManagerConfig,
 } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
+import { registeredSecretTables } from "@pithy-sh/secrets/src/rotation/tableRotation";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
+import { snakeCase } from "@pithy-sh/secrets/src/tables/defineSecretTable";
 import { parse } from "comment-json";
-import type { MigrationProvider } from "kysely/migration";
+import type { Migration, MigrationProvider } from "kysely/migration";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { kitSource } from "../project/kitSource";
@@ -51,13 +55,52 @@ export function secretsMigrationProvider(): MigrationProvider {
       database: "secrets",
       namespace: "secrets",
       order: 100,
-      migrations: { "0001_init": secrets_0001_init },
+      migrations: { ...secretsMigrations },
       retained: secretsRetainedTables,
     },
   ]);
   const provider = registry.secrets;
   if (!provider) throw new Error("missing secrets migration provider");
   return provider;
+}
+
+/**
+ * The SQL names of every declared secret table the vault registers (#524) — retained like the system table,
+ * and invisible to the provider above, because the migrations that create them are the adopter's and this
+ * process never loads them. Read from `pithy_secrets_tables`, the same registry the rotation sweeps.
+ */
+export async function registeredVaultTables(d1: D1Database): Promise<string[]> {
+  const tables = await registeredSecretTables(createDatabase(d1, secretsTables));
+  return tables.map((table) => snakeCase(table.identifier));
+}
+
+/**
+ * The provisioner's migration set, able to run against a vault whose ledger also holds an adopter's
+ * migrations (#524).
+ *
+ * A declared secret table's migrations are composed by the adopter's app capability into this same database,
+ * and the provisioner never loads them. Kysely refuses a whole chain over one applied migration its provider
+ * does not carry, so a re-provision after `pithy migrate` created a table would fail on the ledger alone. Each
+ * applied migration outside the `secrets` namespace is carried as a stand-in that is already applied and so
+ * never runs; an unknown one *inside* the namespace is not, because that is the ledger genuinely disagreeing
+ * with the kit, and Kysely's refusal is the right answer to it.
+ */
+export async function vaultMigrationProvider(d1: D1Database): Promise<MigrationProvider> {
+  const provider = secretsMigrationProvider();
+  const { undeclared } = await readMigrationLedger(d1, provider);
+  const foreign = undeclared.filter((name) => !/^\d{4}_secrets_/.test(name));
+  if (foreign.length === 0) return provider;
+  const standIn: Migration = {
+    up: async () => {
+      throw new InternalError({ detail: "an applied neighbor's stand-in was asked to run" });
+    },
+  };
+  return {
+    getMigrations: async () => ({
+      ...(await provider.getMigrations()),
+      ...Object.fromEntries(foreign.map((name) => [name, standIn])),
+    }),
+  };
 }
 
 /** The injected deploy step — resolve the manager's wrangler config and shell out to wrangler. */
@@ -315,7 +358,8 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
 
   /** Run the secrets migrations against the env's D1 over REST (idempotent — applied ones are skipped). */
   async migrate(_env: ManagedEnvironment, databaseId: string): Promise<void> {
-    await runMigrations(this.#cf.d1(databaseId), secretsMigrationProvider());
+    const d1 = this.#cf.d1(databaseId);
+    await runMigrations(d1, await vaultMigrationProvider(d1));
   }
 
   /** Deploy the prebuilt manager worker for the environment. */
@@ -452,7 +496,15 @@ export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
       what: `the ${name} database`,
       find: () => this.#cf.d1Provisioner().findDatabaseByName(name),
     });
-    return db ? { cf: this.#cf, databaseId: db.uuid, name, provider: secretsMigrationProvider() } : null;
+    return db
+      ? {
+          cf: this.#cf,
+          databaseId: db.uuid,
+          name,
+          provider: secretsMigrationProvider(),
+          alsoRetained: registeredVaultTables,
+        }
+      : null;
   }
 
   /** The vault's retained rows, named by the database — empty when the database is absent. Read-only. */

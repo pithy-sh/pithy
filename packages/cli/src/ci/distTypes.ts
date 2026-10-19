@@ -194,9 +194,10 @@ export const SIDES: readonly Side[] = ["input", "output"];
  * one-line edit here, in the same commit, and any other movement is the walk having lost the tree.
  * Measured on 2026-09-09, and moved on 2026-09-13: `@pithy-sh/organization` is the seventeenth package
  * and brings five tables — organizations, memberships, invitations, ownership nominations, and the
- * per-session acting selection.
+ * per-session acting selection. Moved on 2026-10-18: `@pithy-sh/secrets` brings `pithy_secrets_tables`,
+ * the registry of declared secret tables the at-rest rotation sweeps.
  */
-export const CENSUS = { tables: 51, packages: 17 };
+export const CENSUS = { tables: 52, packages: 17 };
 
 /**
  * Where the generated programs are written — **outside the checkout, and that is forced**.

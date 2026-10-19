@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { SecretRotation } from "./secretRotations";
+import { SecretTableRegistration } from "./secretTables";
 import { SystemSecret } from "./systemSecrets";
 
 /**
@@ -12,6 +13,7 @@ import { SystemSecret } from "./systemSecrets";
 export const secretsTables = {
   pithySecretsSystemSecrets: SystemSecret,
   pithySecretsRotations: SecretRotation,
+  pithySecretsTables: SecretTableRegistration,
 };
 export type SecretsTables = typeof secretsTables;
 

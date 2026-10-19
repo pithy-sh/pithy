@@ -6,6 +6,7 @@ import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretsStoreEnv } from "./env/bindings";
 import { refuseUnbindableStoreSecrets, type SecretRegistry, type SecretRegistryEntry } from "./registry";
 import { d1KeyedIO, type SecretsAccessor, secretsStore } from "./secretsStore";
+import { d1TableIO } from "./tables/tableAccessor";
 
 /**
  * The shared, per-invocation secrets accessor. Within one worker invocation many capabilities each
@@ -182,7 +183,7 @@ export async function sharedSecretsStore<R extends SecretRegistry>(
   // The combined accessor is cached across requests; a keyspace read or write is not cached at all,
   // and runs real I/O. Bind it to *this* invocation's env so a member is never fetched — or sealed —
   // through the binding of whichever earlier request happened to fill the cache.
-  return combined.subset(registry, d1KeyedIO(env));
+  return combined.subset(registry, d1KeyedIO(env), d1TableIO(env));
 }
 
 /**

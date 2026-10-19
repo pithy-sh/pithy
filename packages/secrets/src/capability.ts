@@ -10,7 +10,7 @@ import { MASTER_KEY_BINDING } from "./env/masterKeyBinding";
 import { secretsAdminRoutes } from "./http/guards";
 import { registerSecretsRoutes, SECRETS_DEFAULT_BASE_PATH } from "./http/routes";
 import { SECRETS_RUNTIME_PERMISSIONS } from "./manager/managerRegistry";
-import { secrets_0001_init } from "./migrations/0001_init";
+import { secretsMigrations } from "./migrations/secretsMigrations";
 import { supersededManagerToken } from "./provision/supersededToken";
 import { defineSecretRegistry, type SecretRegistry, type SecretRegistryEntry } from "./registry";
 import {
@@ -178,11 +178,12 @@ export function secrets(config: SecretsConfig): SecretsCapability {
         binding: "SECRETS",
         tables: secretsTables,
         migrationOrder: SECRETS_MIGRATION_ORDER,
-        migrations: { "0001_init": secrets_0001_init },
+        migrations: { ...secretsMigrations },
         // The vault. A sealed credential Google or Paddle issued exists here and in their console, nowhere
-        // else, and rotation history is the only record of when a key last moved. `0001_init` is this
-        // database's whole history, so its `down` is a rollback's first casualty: declared retained, no
-        // `down` runs here while either table holds rows unless the operator counts them (#588).
+        // else, and rotation history is the only record of when a key last moved. Declared retained, so no
+        // `down` runs here while either table holds rows unless the operator counts them (#588). The
+        // registry `0002_tables` adds is not: every row in it is written by a declared table's own
+        // migration, which sorts after it and is reversed before it.
         retained: secretsRetainedTables,
       },
     },

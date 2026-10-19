@@ -1619,6 +1619,52 @@ export async function readProjectLedger(options: MigrationFanOutOptions): Promis
   }
 }
 
+/** One database a read reached: the Workers that bind it, and what the read answered. */
+export interface DatabaseRead<T> {
+  /** The database name — a capability's `databases` key. */
+  database: string;
+  /** The D1 binding. */
+  binding: string;
+  /** Every Worker in scope that binds it, in report order. */
+  workers: string[];
+  /** What `read` answered for it. */
+  value: T;
+}
+
+/**
+ * Read every database in scope named `database` — read-only, applying and claiming nothing — through the same
+ * fan-out, grouping and driver {@link migrateProject} uses, so it reaches exactly the D1 a migrate would: the
+ * local Miniflare store for `dev`, the remote database over REST otherwise. A database two Workers share is
+ * read once.
+ *
+ * The seam behind `pithy secrets tables` and `pithy doctor`'s `Secret tables:` line (#524), which read row
+ * counts out of the vault and never a value. What `read` throws is the caller's to handle.
+ */
+export async function readProjectDatabases<T>(
+  options: MigrationFanOutOptions,
+  database: string,
+  read: (d1: D1Database) => Promise<T>,
+): Promise<DatabaseRead<T>[]> {
+  const context = await contextFor(options);
+  const groups = (await scopedGroups(context)).filter((group) => group.database === database);
+  if (groups.length === 0) return [];
+  const driver = await driverFor(context, groups);
+  try {
+    const reads: DatabaseRead<T>[] = [];
+    for (const group of groups) {
+      reads.push({
+        database: group.database,
+        binding: group.binding,
+        workers: group.entries.map((entry) => entry.worker),
+        value: await read(driver.database(group)),
+      });
+    }
+    return reads;
+  } finally {
+    await driver.dispose();
+  }
+}
+
 /**
  * The databases a migration for `env` would reach **that have no database to reach** — the ones this
  * Worker set migrates, bound in `env`'s stanza with no real `database_id`, or with no `env` stanza at all.

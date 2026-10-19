@@ -80,16 +80,30 @@ import { editDevSecrets } from "../devSecrets/edit";
 import { resolveDevSecretsFile } from "../devSecrets/location";
 import { mergedSecretRegistry, resolveDevSecretsTargets } from "../devSecrets/targets";
 import { DESTROY_RETAINED_DESCRIPTION, parseDestroyRetained } from "../migrations/confirm";
+import { resolveWorkerScopes } from "../migrations/run";
 import { DRY_RUN_ARG, PlanKey } from "../plan/plan";
 import { resolveWorkerSetFor } from "../project/composeFor";
 import { loadProject, projectCloudflareAccount, projectEnvironments, requireProjectName } from "../project/config";
-import { requireManagedEnvironment, requireTeardownEnvironment, TEARDOWN_ENV_ARG } from "../project/environment";
+import {
+  ENV_ARG,
+  requireEnvironment,
+  requireManagedEnvironment,
+  requireTeardownEnvironment,
+  TEARDOWN_ENV_ARG,
+} from "../project/environment";
 import { confineTeardown } from "../project/teardown";
 import { type ResolvedWorker, resolveWorkers } from "../project/workerScope";
 import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
 import { removedStoreEntryNote } from "../provision/secretEntryRemedy";
 import { cloudflareSecretsStore } from "../provision/store";
 import { applySecretBindings } from "../provision/wranglerEnv";
+import {
+  declaredTablesOf,
+  readVaultTables,
+  SecretTablesReport,
+  secretTablesLines,
+  secretTablesReport,
+} from "../secretTables/report";
 import { canceled } from "../terminal/exitClass";
 import { mayDraw } from "../terminal/inputMode";
 import {
@@ -710,6 +724,14 @@ const SecretsDeprovisionPayload = z
   .describe("What `pithy secrets deprovision` removed.");
 
 /** Every managed subcommand reaches the project's managers through Cloudflare. */
+/** `pithy secrets tables --json`. */
+const SecretsTablesPayload = SecretTablesReport.extend({
+  command: z.literal("secrets tables").describe('`"secrets tables"`.'),
+  env: z.string().describe("The environment read."),
+}).describe(
+  "Every declared secret table in one environment: keys, secret names, row counts and key versions. Never a value, never an owner.",
+);
+
 const MANAGED = { output: "document", schemaVersion: 1, needsNetwork: true } as const;
 
 const create = withContract(
@@ -1363,7 +1385,59 @@ const deprovision = withContract(
   },
 );
 
+/**
+ * `pithy secrets tables` — the declared secret tables (`defineSecretTable`) one environment's vault holds: each
+ * table's keys, its secret names, how many rows hold each, and which master-key version sealed them (#524).
+ *
+ * Read-only, and it reads no value and no owner. These rows are runtime data an application writes, so no
+ * command creates, reads or deletes one — a customer's plaintext does not belong on an operator's screen.
+ * What the operator does need is the key-version spread: a rotation that stopped partway across a customer
+ * table shows here as rows still on the previous key.
+ */
+const tables = withContract(
+  defineCommand({
+    meta: { name: "tables", description: "List the declared secret tables and their key versions" },
+    args: {
+      env: ENV_ARG,
+      worker: { type: "string", description: "Read one worker's declarations instead of every worker in apps/" },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const env = requireEnvironment(args.env);
+        const projectDir = process.cwd();
+        const account = await projectCloudflareAccount(projectDir);
+        const workers = await resolveWorkerScopes({
+          projectDir,
+          env,
+          ...(args.worker !== undefined ? { worker: args.worker } : {}),
+        });
+        const declared = declaredTablesOf(workers);
+        // Nothing declared reads nothing: a project with no table needs no account to say so.
+        const vault =
+          declared.length === 0
+            ? { newestKeyVersion: null, tables: [] }
+            : await readVaultTables({ projectDir, env, account, workers });
+        const report = secretTablesReport(declared, vault);
+        if (args.json) {
+          process.stdout.write(
+            `${formatJsonLine({
+              command: "secrets tables",
+              env,
+              newestKeyVersion: report.newestKeyVersion,
+              behind: report.behind,
+              tables: report.tables,
+            })}\n`,
+          );
+          return;
+        }
+        process.stdout.write(`${secretTablesLines(report, env).join("\n")}\n\n${formatDone()}\n`);
+      }),
+  }),
+  { ...MANAGED, payload: SecretsTablesPayload, mutates: false, idempotent: true },
+);
+
 export default defineCommand({
   meta: { name: "secrets", description: "Manage encrypted secrets" },
-  subCommands: { create, update, rotate, rm, ls, edit, verify, provision, deprovision },
+  subCommands: { create, update, rotate, rm, ls, tables, edit, verify, provision, deprovision },
 });
