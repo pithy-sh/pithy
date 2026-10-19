@@ -155,3 +155,36 @@ describe("pithy doctor, under an account token", () => {
     expect(describeCloudflareAccess(access)).toMatch(/audit rows name the token, not a person/);
   });
 });
+
+/**
+ * **Under a session, the report names the file each account key came from (#788).** The store id that
+ * sent provisioning to another account's store came from a file the session had nothing to do with, and
+ * the line said only where the *pair* came from.
+ */
+describe("pithy doctor names where a session's account keys came from", () => {
+  test("the store id from the profile's own file, R2 credentials from the environment", async () => {
+    await signedIn();
+    await writeFile(join(dir, "cloudflare.json"), JSON.stringify({ SECRETS_STORE_ID: "someone-elses" }));
+    await writeFile(join(dir, "cloudflare.pithy.json"), JSON.stringify({ SECRETS_STORE_ID: "store-pithy" }));
+    const access = await checkCloudflareAccess(here({ R2_CREDENTIALS: "r2" }));
+    expect(access.state).toBe("ok");
+    expect(access.configPath).toBe(join(dir, "cloudflare.pithy.json"));
+    expect(access.accountKeySources).toEqual({ SECRETS_STORE_ID: "file", R2_CREDENTIALS: "environment" });
+    const line = describeCloudflareAccess(access);
+    expect(line).toContain(`SECRETS_STORE_ID from ${join(dir, "cloudflare.pithy.json")}`);
+    expect(line).toContain("R2_CREDENTIALS from the environment");
+    expect(line).not.toContain(join(dir, "cloudflare.json"));
+    // Abbreviated against home, as every other path in the report is.
+    expect(describeCloudflareAccess(access, dir)).toContain("SECRETS_STORE_ID from ~/cloudflare.pithy.json");
+  });
+
+  test("a store id nothing supplies names the file the profile reads it from", async () => {
+    await signedIn();
+    await writeFile(join(dir, "cloudflare.json"), JSON.stringify({ SECRETS_STORE_ID: "someone-elses" }));
+    const access = await checkCloudflareAccess(here());
+    const line = describeCloudflareAccess(access);
+    expect(line).toContain(`no SECRETS_STORE_ID in ${join(dir, "cloudflare.pithy.json")}`);
+    // R2 credentials are absent on most accounts, so absence says nothing.
+    expect(line).not.toContain("R2_CREDENTIALS");
+  });
+});

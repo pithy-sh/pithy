@@ -1713,8 +1713,9 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   // `terminal/nextSteps.ts`). One shape on every command that can carry it.
   next: ["add", "deploy", "provision", "setup", "ui", "upgrade"],
   // What a run had to say beyond its result, one sentence each: what `add` finished off-config, what each
-  // `setup` step reported (#764). Both a `string[]`, in order.
-  notes: ["add", "setup"],
+  // `setup` step reported (#764), what `cloudflare connect`'s store id lookup found (#788). All a
+  // `string[]`, in order.
+  notes: ["add", "cloudflare", "setup"],
   packageManager: ["add", "ui"],
   // A file path in `secrets edit`, and the command path `pithy schema <command>` was asked about. Both a
   // string, and both where the answer is: the file to open, the command the document describes.

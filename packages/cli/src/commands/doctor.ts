@@ -3586,6 +3586,8 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
       // Which profile is bound here and who signed in to it, and which kind of credential is in force (#759).
       session: report.cloudflare.session ?? null,
       credentialKind: report.cloudflare.credentialKind ?? null,
+      // Where the store id and R2 credentials came from: `configPath`, the environment, or nowhere (#788).
+      accountKeySources: report.cloudflare.accountKeySources ?? null,
       detail: describeCloudflareAccess(report.cloudflare),
     },
     // `null` alongside a `null` project: one fact, one shape, both keys agreeing that there is no project
@@ -4096,6 +4098,20 @@ const DoctorPayload = z
           .nullable()
           .optional()
           .describe("`session`, `account-token` or `user-token` — whether an audit row can name a person."),
+        accountKeySources: z
+          .object({
+            SECRETS_STORE_ID: z
+              .string()
+              .nullable()
+              .describe("`file` (the `configPath` file), `environment`, or `null` when nothing set it."),
+            R2_CREDENTIALS: z
+              .string()
+              .nullable()
+              .describe("`file` (the `configPath` file), `environment`, or `null` when nothing set it."),
+          })
+          .nullable()
+          .optional()
+          .describe("Where each account key came from, beside the pair. A bound profile reads its own file."),
         detail: z.string().describe("The sentence."),
       })
       .describe("Cloudflare access."),

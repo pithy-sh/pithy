@@ -150,7 +150,9 @@
         "$.boundTo": "string",
         "$.scopes": "array",
         "$.scopes[]": "string",
-        "$.expiresAt": "string"
+        "$.expiresAt": "string",
+        "$.notes": "array",
+        "$.notes[]": "string"
       }
     },
     "cloudflare disconnect": {
@@ -752,6 +754,9 @@
         "$.cloudflare.session.email": "null | string",
         "$.cloudflare.session.path": "string",
         "$.cloudflare.credentialKind": "null | string?",
+        "$.cloudflare.accountKeySources": "null | object?",
+        "$.cloudflare.accountKeySources.SECRETS_STORE_ID": "null | string",
+        "$.cloudflare.accountKeySources.R2_CREDENTIALS": "null | string",
         "$.cloudflare.detail": "string",
         "$.projectName": "null | object",
         "$.projectName.state": "string",

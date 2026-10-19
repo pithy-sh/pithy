@@ -6,6 +6,7 @@ import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { PithyError, PreconditionFailedError, UpstreamError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import { z } from "zod";
+import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { bindProfile, boundProfileSync, setDefaultProfile, unbindApplying } from "../cloudflare/session/bindings";
 import { chooseSessionAccount, type SessionAccount, type SignInIo, signIn } from "../cloudflare/session/connect";
 import { replaceSession } from "../cloudflare/session/refresh";
@@ -49,12 +50,41 @@ async function defaultProfile(cwd: string): Promise<string> {
   return "default";
 }
 
+/** The project's account selection, when there is a project here and it names one. */
+async function projectAccount(cwd: string): Promise<CloudflareAccountSelection | null> {
+  try {
+    return loadProjectCloudflare(await loadProject(cwd)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** The project's pinned account id, when there is a project and it pins one. */
 async function pinnedAccount(cwd: string): Promise<string | undefined> {
+  return (await projectAccount(cwd))?.accountId;
+}
+
+/**
+ * **Record the account's Secrets Store id in the profile's own file, after sign-in (#788)**, so a new
+ * profile needs no hand-made `cloudflare.<profile>.json`.
+ *
+ * The same lookup `pithy add secrets` makes, with its rules: one store per account, never overwriting a
+ * recorded id, and refusing to choose between two. Run after the binding, so it resolves through the session
+ * just made and writes the file that session reads. Nothing here can fail the sign-in — the session is
+ * already written, and a store id is a convenience on top of it — so even a throw is a sentence. R2
+ * credentials are not looked up: Cloudflare shows the secret once.
+ */
+async function recordStoreId(cwd: string, profile: string): Promise<string[]> {
+  const again = pithyCommand("cloudflare connect", { flags: { "--profile": profile } });
   try {
-    return loadProjectCloudflare(await loadProject(cwd))?.accountId;
-  } catch {
-    return undefined;
+    const { ensureSecretsStoreId } = await import("../cloudflare/storeId");
+    return await ensureSecretsStoreId({ paths: { account: await projectAccount(cwd), cwd }, again });
+  } catch (error) {
+    const reason = error instanceof PithyError ? ` ${error.payload.message}` : "";
+    const { cloudflareProfileConfigPath } = await import("../cloudflare/config");
+    return [
+      `SECRETS_STORE_ID was not recorded.${reason} Run ${again} again, or set it in ${cloudflareProfileConfigPath(profile)}.`,
+    ];
   }
 }
 
@@ -100,6 +130,11 @@ const ConnectPayload = z
       .describe("The directory the profile is now bound to. A repository is keyed by its main checkout."),
     scopes: z.array(z.string()).describe("The scopes granted, derived from what this project's tokens carry."),
     expiresAt: z.string().describe("When the access token expires, ISO-8601. It renews without a browser."),
+    notes: z
+      .array(z.string().describe("One sentence."))
+      .describe(
+        "What recording the account's Secrets Store id in the profile's file had to say. Empty when it was already recorded.",
+      ),
   })
   .describe("A signed-in Cloudflare session, bound to this directory.");
 
@@ -163,6 +198,7 @@ const connect = withContract(
           scope: grant.scope,
         });
         const boundTo = await bindProfile(cwd, profile);
+        const notes = await recordStoreId(cwd, profile);
 
         if (args.json) {
           process.stdout.write(
@@ -174,6 +210,7 @@ const connect = withContract(
               boundTo,
               scopes: grant.scope.split(/\s+/).filter(Boolean),
               expiresAt: grant.expiresAt.toISOString(),
+              notes,
             })}\n`,
           );
           return;
@@ -182,6 +219,7 @@ const connect = withContract(
           `Signed in to Cloudflare${user.email ? ` as ${user.email}` : ""}, on account ${account.name} (${account.id}).\n`,
         );
         process.stdout.write(`Profile ${profile} is bound to ${boundTo}.\n`);
+        for (const note of notes) process.stdout.write(`${note}\n`);
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),

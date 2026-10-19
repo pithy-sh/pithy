@@ -6,6 +6,9 @@ import { CLOUDFLARE_CREDENTIAL_KEYS } from "@pithy-sh/cloudflare/src/env/devVars
 import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { cloudflareClients } from "../cloudflare/clients";
 import {
+  ACCOUNT_RESOURCE_KEYS,
+  type CloudflareAccountKey,
+  type CloudflareAccountKeySource,
   type CloudflareAccountMismatch,
   type CloudflareConfigOptions,
   type CloudflareCredentialSource,
@@ -136,6 +139,12 @@ export interface CloudflareAccess {
    * is a person; an account token is a name somebody gave a token, and the report says so (#759).
    */
   credentialKind?: CloudflareCredentialKind | null;
+  /**
+   * Where `SECRETS_STORE_ID` and `R2_CREDENTIALS` came from — {@link configPath}, the environment, or
+   * nowhere (#788). Set under a bound profile: there the pair is the session's and these are not, so the
+   * line names them.
+   */
+  accountKeySources?: Record<CloudflareAccountKey, CloudflareAccountKeySource> | null;
 }
 
 /** The credential's kind, from what resolved it — a session — or else from the token's own prefix. */
@@ -209,6 +218,9 @@ export async function checkCloudflareAccess(options: CloudflareConfigOptions): P
     credentialSource: resolution.credentialSource,
     session: bound === null ? null : { profile: bound.profile, via: bound.via, email: bound.email, path: bound.path },
     credentialKind: credentialKindOf(resolution.credentialSource === "session", vars.CLOUDFLARE_API_TOKEN),
+    // Under a bound profile only, where the pair and the account keys come from different places. Unbound,
+    // the file and the overlay supply both, and the line already says which.
+    accountKeySources: bound === null ? undefined : resolution.accountKeySources,
   };
 
   // Before the credentials are even counted, and long before any of them are used: credentials for an
@@ -381,15 +393,32 @@ function signIn(access: CloudflareAccess): string {
  */
 function credentialOrigin(access: CloudflareAccess, home: string | undefined): string {
   if (access.credentialKind === "session" && access.session) {
-    const sessionFile = access.session.path;
-    const shown = home && sessionFile.startsWith(`${home}/`) ? `~${sessionFile.slice(home.length)}` : sessionFile;
-    return `from the session in ${shown}`;
+    const shown = (file: string) => (home && file.startsWith(`${home}/`) ? `~${file.slice(home.length)}` : file);
+    return [`from the session in ${shown(access.session.path)}`, ...accountKeyOrigins(access, shown)].join("; ");
   }
   const path = configPath(access, home);
   if (access.state === "not_checked" || access.state === "probe_failed")
     return `credentials would resolve from ${path}`;
   if (access.credentialSource === "environment") return `credentials from the environment, not ${path}`;
   return `from ${path}`;
+}
+
+/**
+ * Where a session's account keys came from, one clause each (#788). The pair is the session's; the store id
+ * and R2 credentials are read from the profile's own file and then the environment, and a store id read
+ * from a file nobody meant is a fault no other line names. A missing store id names the file it belongs in.
+ * Missing R2 credentials say nothing: most accounts have none.
+ */
+function accountKeyOrigins(access: CloudflareAccess, shown: (file: string) => string): string[] {
+  const sources = access.accountKeySources;
+  if (!sources || !access.configPath) return [];
+  const file = shown(access.configPath);
+  return ACCOUNT_RESOURCE_KEYS.flatMap((key) => {
+    const source = sources[key];
+    if (source === "file") return [`${key} from ${file}`];
+    if (source === "environment") return [`${key} from the environment`];
+    return key === "SECRETS_STORE_ID" ? [`no ${key} in ${file}`] : [];
+  });
 }
 
 /**

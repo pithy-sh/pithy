@@ -39,7 +39,11 @@ The account is discovered, not typed: the project's `cloudflare.accountId` decid
 
 The session is written to `<config>/session.<profile>.json`, mode `0600`. The profile is bound to this directory in `<config>/profiles.json`, mode `0664`, which holds directory names and nothing secret. A repository is bound by its main checkout, so its worktrees use the same session. Both files live in the config directory, never in a checkout.
 
-**A profile bound to a directory is used by every command run there**, and it wins over `<config>/cloudflare.json`. An exported `CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_ACCOUNT_ID` that differs from the session is refused, naming both, rather than quietly preferring either. A directory nothing is bound to resolves credentials exactly as before, so CI is unaffected. Under a session, the store id and R2 credentials come from `cloudflare.json` only when that file is about the same account, or names none.
+**A profile bound to a directory is used by every command run there**, and it wins over `<config>/cloudflare.json`. An exported `CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_ACCOUNT_ID` that differs from the session is refused, naming both, rather than quietly preferring either. A directory nothing is bound to resolves credentials exactly as before, so CI is unaffected.
+
+**A profile reads its own file: `<config>/cloudflare.<profile>.json`.** The session supplies the pair. The Secrets Store id and R2 credentials come from that file, then from an exported `SECRETS_STORE_ID` or `R2_CREDENTIALS`. Under a profile, `cloudflare.json` is never read, whatever it holds, and nor is the file the project's `cloudflare.accountName` selects. That file is for a directory with no profile bound. A profile file that names a different `CLOUDFLARE_ACCOUNT_ID` from the session's has its store id and R2 credentials dropped, and an exported value takes their place. `pithy doctor` names the file each key came from.
+
+**`connect` records the store id for you.** After sign-in it looks up the account's Secrets Store and writes `SECRETS_STORE_ID` into `cloudflare.<profile>.json`, mode `0600`, so a new profile needs no hand-made file. Cloudflare permits one store per account, so this is a lookup, not a choice. It never overwrites a recorded id: one the account disagrees with is named and left alone. Two stores are named and neither is chosen. An account with no store, a lookup that fails, or a file it cannot write is a sentence, and the sign-in stands. `pithy add secrets` records the id into the same file under a profile. R2 credentials are not looked up, because Cloudflare shows the secret once: write them into the file by hand, or export them.
 
 The access token lasts an hour and renews without a browser. Every command renews it first when it has less than five minutes left, under a lock, so two `pithy` processes never renew one profile at once. A session that cannot be renewed is refused at the first command that needs Cloudflare, with the `connect` that fixes it. A command that needs no Cloudflare call never stops over it. Offline (`PITHY_OFFLINE`) nothing is renewed and nothing is refused for it: an expired session resolves the token it has, and a profile bound but signed out resolves no credentials.
 
@@ -63,6 +67,7 @@ One line on stdout. A failure is one `{"error": …}` line on stderr and a non-z
 | `boundTo` | string | The directory the profile is bound to — a repository's main checkout. |
 | `scopes` | string[] | The permissions granted. |
 | `expiresAt` | string | When the access token expires, ISO-8601. It renews without a browser. |
+| `notes` | string[] | What recording the account's store id in `cloudflare.<profile>.json` had to say. Empty when it was already recorded. |
 
 ### `cloudflare disconnect`
 
