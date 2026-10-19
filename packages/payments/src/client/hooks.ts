@@ -3,7 +3,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  type AllowancesView,
   type EntitlementView,
+  getAllowances,
   getEntitlements,
   openBillingPortal,
   openStoreSubscriptions,
@@ -141,6 +143,48 @@ export function useEntitlement(key: string, options?: PaymentsClientOptions): Us
   useEffect(refresh, [refresh]);
 
   return { entitled, loading, readFailure, refresh };
+}
+
+/** What {@link useAllowances} gives a paywall screen. */
+export interface UseAllowances {
+  /** The caller's resolved quotas and features, or null until a read has landed. Never guessed. */
+  allowances: AllowancesView | null;
+  /** Whether a read is in flight. */
+  loading: boolean;
+  /** Why the last read could not be made, or null. `allowances` keeps its last answer while this is set. */
+  readFailure: PaymentsFailure | null;
+  /** Re-read. Call it after a purchase or an upgrade completes. */
+  refresh: () => void;
+}
+
+/**
+ * What the caller's holder may have — "3 of 10 seats", "SSO included" — for a screen to show.
+ *
+ * **Null until it knows, never zero.** A paywall that rendered `0 of 0` from a read still in flight would tell
+ * a paying customer they have nothing. And it is a UX affordance, never a boundary: the server's `quota()` and
+ * the kit's meters are what refuse.
+ */
+export function useAllowances(options?: PaymentsClientOptions): UseAllowances {
+  const [allowances, setAllowances] = useState<AllowancesView | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [readFailure, setReadFailure] = useState<PaymentsFailure | null>(null);
+  const latest = useLatest(options);
+  const live = useLive();
+  const basePath = options?.basePath;
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    void getAllowances({ ...latest.current, basePath }).then((result) => {
+      if (!live.current) return;
+      if (result.ok) setAllowances(result.value);
+      setReadFailure(result.ok ? null : result.failure);
+      setLoading(false);
+    });
+  }, [basePath, latest, live]);
+
+  useEffect(refresh, [refresh]);
+
+  return { allowances, loading, readFailure, refresh };
 }
 
 /** What {@link useSubscription} gives a subscription screen. */

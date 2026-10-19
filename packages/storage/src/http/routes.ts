@@ -16,6 +16,7 @@ import type { Kysely } from "kysely";
 import type { StorageConfig } from "../config/config";
 import { STORAGE_OBJECTS_TABLE, storageDatabase } from "../data/tables";
 import { objectStore } from "../object/store";
+import { storageCeiling } from "../quota/ceiling";
 import { STORAGE_R2_SECRET } from "../secret/registry";
 import { requireAuth } from "./guard";
 import {
@@ -184,7 +185,20 @@ function defaultResolveDeps(
       // entropy is the only thing standing between a link and anyone guessing one.
       newToken: () => shareToken(),
       now: () => new Date(),
+      // The ceiling from the `storageBytes` meter where the entitlement provider enforces one — the
+      // caller's plan, or what was pinned for them — and the configured `bytesPerOwner` where it does not.
+      // Read once per request, and only by a write that needs it.
+      quotaLimit: memoized(() => storageCeiling(c, config)),
     };
+  };
+}
+
+/** One computation per request, however many writes ask for it. */
+function memoized<T>(compute: () => Promise<T>): () => Promise<T> {
+  let pending: Promise<T> | undefined;
+  return () => {
+    pending ??= compute();
+    return pending;
   };
 }
 

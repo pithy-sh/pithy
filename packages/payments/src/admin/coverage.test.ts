@@ -42,6 +42,7 @@ import { PAYMENTS_TABLE_DISCLOSURE } from "./coverage";
 const CATALOG = {
   billingSubject: "user" as const,
   rails: { apple: true },
+  entitlements: { pro: { name: "Pro" } },
   products: {
     pro_monthly: {
       type: "subscription" as const,

@@ -413,6 +413,8 @@ An entitlement belongs to somebody, so declaring one implies the session guard: 
 
 **It is a UX affordance, never a security boundary.** The server check is the boundary — every paid route declares `requireEntitlement()`, and no answer in the browser changes that. The guard exists so a visitor without `pro` lands on the paywall instead of watching a screen fill with 403s. Its failure direction follows from that: with payments not composed at all, the guard renders rather than blocks, exactly as the session guard does with no auth capability.
 
+**So are the quotas and features.** `virtual:pithy/payments` carries what each tier buys — `entitlements[key].quotas` and `.features`, and the `defaults` floor — so a paywall can lay tiers side by side, and `useAllowances()` reads what the caller's own holder resolves to off `GET /payments/entitlements`: "3 of 10 seats", "SSO included". Neither is enforcement. The server's `quota(c, name)`, the kit's meters and your own route's count are what refuse the eleventh seat; a number in the browser only decides what a screen says. It starts `null`, never zero — a paywall that rendered `0 of 0` while the read was in flight would tell a paying customer they have nothing.
+
 ## Web auth: cookies, one origin, CSRF
 
 The scaffolded client uses **cookie sessions**, and it can because the SPA and the API share an origin. The browser sends the session cookie on same-origin requests with no header work, no token juggling, and no refresh logic in your UI.

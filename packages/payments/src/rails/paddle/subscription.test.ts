@@ -740,6 +740,16 @@ describe("changePaddlePlan", () => {
     });
   });
 
+  test("a quantity-billed subscription keeps its seat count through an unrelated plan change", async () => {
+    // A reported product (#561) lives on a subscription whose recurring line carries a quantity above one. A
+    // plan change must write that line back exactly as it is — the reported count arrives as a separate
+    // one-time charge, and nothing about it may reach the items array.
+    const seats = subscriptionOn(SOLO, "600", { items: [line(SOLO, "600", { quantity: 12 })] });
+    const transport = paddle({ subscription: seats, prices: PRICES, update: subscriptionOn(TEAM, "11000") });
+    await changePaddlePlan({ purchase: purchase(), providerProductId: TEAM }, options(transport));
+    expect(writes(transport)[0]?.body?.items).toEqual([{ price_id: TEAM, quantity: 12 }]);
+  });
+
   test("a downgrade defers the credit to the next billing period", async () => {
     const transport = paddle({
       subscription: subscriptionOn(TEAM, "11000"),

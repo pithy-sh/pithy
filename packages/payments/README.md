@@ -2,7 +2,7 @@
 
 Three payment rails — Apple, Google, Stripe — resolving to one cross-rail entitlement, in your own Worker and your own D1.
 
-Buy Pro on iOS, be entitled on the web. That resolution is the whole product, and it is the same one **[RevenueCat](https://www.revenuecat.com)** built a very good business on — their SDKs, their store-quirk coverage and their dashboards are genuinely ahead of this package. The honest difference is not the feature list. It is **where the purchase history lives**: RevenueCat is a hosted data plane holding your customers' transactions, and this is five tables in a D1 you own, written by a Worker you deploy.
+Buy Pro on iOS, be entitled on the web. That resolution is the whole product, and it is the same one **[RevenueCat](https://www.revenuecat.com)** built a very good business on — their SDKs, their store-quirk coverage and their dashboards are genuinely ahead of this package. The honest difference is not the feature list. It is **where the purchase history lives**: RevenueCat is a hosted data plane holding your customers' transactions, and this is ten tables in a D1 you own, written by a Worker you deploy.
 
 ```sh
 pithy add payments
@@ -38,11 +38,16 @@ _Everything else is on the site. `pithy.sh/docs` is canonical — new prose goes
 | `GET /payments/admin/discounts` | The discount codes this project has issued | control-plane: `payments:discounts:read` |
 | `POST /payments/entitlements/grant` | Comp or repair an entitlement | control-plane: `payments:entitlements:grant` |
 | `POST /payments/entitlements/revoke` | Take one back | control-plane: `payments:entitlements:revoke` |
-| `GET /payments/admin/catalog` | What this project sells, and the keys it comps by hand | control-plane: `payments:catalog:read` |
+| `POST /payments/entitlements/overrides` | Pin a negotiated quota or feature for one subject — a merge by name, version-checked, with a reason | control-plane: `payments:overrides:set` |
+| `POST /payments/entitlements/overrides/unrestricted` | Grant one subject the whole product, or take it back | control-plane: `payments:overrides:unrestricted` |
+| `POST /payments/entitlements/overrides/clear` | Unpin names for one subject, or clear its override | control-plane: `payments:overrides:clear` |
+| `GET /payments/admin/catalog` | What this project sells, what each entitlement buys, and the keys it comps by hand | control-plane: `payments:catalog:read` |
 | `GET /payments/admin/purchases` | The purchase log, paged | control-plane: `payments:purchases:read` |
 | `GET /payments/admin/subscriptions` | The purchases that renew | control-plane: `payments:subscriptions:read` |
 | `GET /payments/admin/entitlements` | The entitlement model, paged | control-plane: `payments:entitlements:read` |
-| `GET /payments/admin/entitlements/:subjectType/:subjectId` | One subject's entitlements | control-plane: `payments:entitlements:read` |
+| `GET /payments/admin/entitlements/:subjectType/:subjectId` | One subject's entitlements, override and resolved allowances | control-plane: `payments:entitlements:read` |
+| `GET /payments/admin/overrides` | Every subject's override, and who is unrestricted | control-plane: `payments:entitlements:read` |
+| `GET /payments/admin/usage-runs` | The usage-reporting passes this deployment has run | control-plane: `payments:usage:read` |
 | `GET /payments/admin/reconcile-runs` | The reconciliation passes this deployment has run | control-plane: `payments:reconcile:read` |
 | `POST /payments/admin/reconcile-runs` | Start a pass now, rather than waiting for the nightly one | control-plane: `payments:reconcile:run` |
 
@@ -134,6 +139,8 @@ The read that ships before the four verbs beside it. A capability that can cance
 | `nextBilledAt` | When the next charge falls due, or null when none is going to. **Null is neither canceled nor broken** |
 | `scheduledChange` | The change waiting to land, or null. `action` is `cancel`, `pause` or `resume`; `effectiveAt` is when it happens; `resumesAt` is when a paused subscription comes back, or null |
 | `nextEvent` | What happens next and when, already resolved — `{ "kind": "renews" \| "ends" \| "pauses" \| "resumes", "at": "…" }`, or `{ "kind": "unknown", "at": null }` |
+| `reportedQuantity` | For a product billed by a reported quantity, the last count sent to the store, or null when none has been. Absent from a Worker that predates reported billing |
+| `reportedAt` | When that count was sent, ISO-8601, or null |
 
 **Render `nextEvent`, not `status`.** The subscription above is one somebody canceled. Paddle reports it as `active`, with no cancellation date and a blank next billing date (recorded against the sandbox, 2026-08-28): two of the three say the subscription is fine and the third says nothing at all. The day it ends exists only on `scheduledChange.effectiveAt`. A screen that reads the status tells a customer who canceled that they will be billed again, and `nextEvent` is that precedence resolved on the server so no client has to rediscover it.
 

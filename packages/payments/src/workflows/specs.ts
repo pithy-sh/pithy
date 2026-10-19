@@ -141,3 +141,37 @@ export const paymentsWorkflowRegistry: WorkflowRegistry = Object.fromEntries(
     return [key, { key, capability: PAYMENTS_CAPABILITY, job, spec }];
   }),
 );
+
+/**
+ * What one usage-reporting run should cover. Nothing: a cron passes no input, and the pass covers every
+ * quantity-billed product. The object exists so a dispatch is validated like every other.
+ */
+export const PaymentsUsageParams = z
+  .object({})
+  .describe("One usage-reporting run. No parameters: a cron passes none, and the pass covers every reported product.");
+export type PaymentsUsageParams = z.infer<typeof PaymentsUsageParams>;
+
+/**
+ * The usage-reporting pass — a Workflow **the adopter's own Worker hosts**, unlike reconciliation.
+ *
+ * **Why not the payments host.** The pass calls `resolveQuantity`, which is the adopter's function and lives
+ * only in the Worker whose `pithy.config.ts` passed it. The prebuilt host parses a config from a var and has
+ * no adopter code at all. So the class is exported from the app Worker's own entry — the same five lines as
+ * any app-declared Workflow, calling `reportPaymentsUsage` in `workflows/usage.ts` — and the body finds the
+ * composed capability, and the resolver on it, the way a Workflow that sends mail finds the composed email
+ * capability.
+ *
+ * Hourly, so a `daily-peak` day is sampled through the day and every period's report — under either
+ * cadence — lands in its last day whatever hour the period ends at. Contributed by `payments()` only when the catalog sells a
+ * reported product; a project that bills nothing by quantity binds nothing for it.
+ */
+export const paymentsUsageWorkflows = {
+  usage: {
+    binding: "PAYMENTS_USAGE",
+    // No `className`, deliberately: the class is the adopter's — five lines in their own entry, calling
+    // `reportPaymentsUsage` — so its `workflows` entry is one they write, and no host derives it.
+    params: PaymentsUsageParams,
+    schedule: "15 * * * *",
+    optional: true,
+  },
+} as const satisfies WorkflowSpecMap;

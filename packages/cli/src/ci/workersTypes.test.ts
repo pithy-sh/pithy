@@ -140,7 +140,7 @@ const IMPORTERS: Record<string, number> = {
   "packages/media": 7,
   "packages/multiplayer": 5,
   "packages/organization": 7,
-  "packages/payments": 14,
+  "packages/payments": 18,
   "packages/rating": 2,
   "packages/secrets": 5,
   "packages/storage": 6,

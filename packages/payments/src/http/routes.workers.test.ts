@@ -36,6 +36,7 @@ import { PAYMENTS_PURCHASES_TABLE, paymentsDatabase } from "../data/tables";
 import type { PaymentsSubjectSeam } from "../entitlement/subjectSeam";
 import { ledgerAccountId } from "../grants/ledgerSeam";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
+import { payments_0002_allowances } from "../migrations/0002_allowances";
 import { linkProviderAccount } from "../projection/owner";
 import { projectPurchase } from "../projection/writer";
 import {
@@ -127,6 +128,10 @@ const TABLES = [
   "pithy_payments_webhook_events",
   "pithy_payments_reconcile_runs",
   "pithy_payments_sync_cursors",
+  "pithy_payments_overrides",
+  "pithy_payments_meter_counters",
+  "pithy_payments_usage_reports",
+  "pithy_payments_usage_runs",
 ];
 
 /**
@@ -171,6 +176,7 @@ const CATALOG: PaymentsConfigInput = {
   // Required, and every catalog in this file states it: what a project bills is a decision, and
   // `PaymentsConfig` has no default for it. These fixtures bill people, so every row lands as `user:<id>`.
   billingSubject: "user",
+  entitlements: { ads_removed: { name: "ads_removed" }, pro: { name: "pro" }, team: { name: "team" } },
   rails: { apple: true, google: true, stripe: true },
   stripe: STRIPE_RETURN_URLS,
   products: {
@@ -332,6 +338,7 @@ beforeEach(async () => {
   for (const table of [...TABLES, ...LEDGER_TABLES]) await env.DB.exec(`DROP TABLE IF EXISTS ${table}`);
   const migrationDb = createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
   await payments_0001_purchases.up(migrationDb);
+  await payments_0002_allowances.up(migrationDb);
   await ledger_0001_accounts.up(migrationDb);
   emitted = [];
   stripeCalls = [];
@@ -1100,11 +1107,15 @@ describe("GET /payments/entitlements", () => {
       body: { rail: "apple", receipt: await receipt() },
     });
     expect(await (await request(app, "GET", "/payments/entitlements", { user: "ada" })).json()).toEqual({
+      quotas: {},
+      features: {},
       entitlements: [
         { key: "pro", granted: true, expiresAt: new Date(didRenew.transaction.expiresDate).toISOString() },
       ],
     });
     expect(await (await request(app, "GET", "/payments/entitlements", { user: "grace" })).json()).toEqual({
+      quotas: {},
+      features: {},
       entitlements: [],
     });
   });
@@ -1127,6 +1138,8 @@ describe("GET /payments/entitlements", () => {
       })
       .execute();
     expect(await (await request(makeApp(), "GET", "/payments/entitlements", { user: "ada" })).json()).toEqual({
+      quotas: {},
+      features: {},
       entitlements: [{ key: "pro", granted: false, expiresAt: new Date(NOW.getTime() - 1).toISOString() }],
     });
   });
@@ -1778,6 +1791,7 @@ describe("POST /payments/webhooks/google", () => {
     const app = makeApp(
       {
         billingSubject: "user",
+        entitlements: { ads_removed: { name: "ads_removed" }, pro: { name: "pro" }, team: { name: "team" } },
         rails: { apple: true },
         products: {
           pro_monthly: {
@@ -2127,6 +2141,7 @@ describe("POST /payments/webhooks/stripe", () => {
   test("a rail that is off in config is a 404 before any signature work", async () => {
     const app = makeApp({
       billingSubject: "user",
+      entitlements: { ads_removed: { name: "ads_removed" }, pro: { name: "pro" }, team: { name: "team" } },
       rails: { apple: true },
       products: {
         pro_monthly: {
@@ -2257,6 +2272,7 @@ describe("POST /payments/checkout", () => {
     const noStripe = makeApp(
       {
         billingSubject: "user",
+        entitlements: { ads_removed: { name: "ads_removed" }, pro: { name: "pro" }, team: { name: "team" } },
         rails: { apple: true },
         products: {
           pro_monthly: {
@@ -2482,6 +2498,8 @@ describe("one entitlement across two rails", () => {
     expect(held).toHaveLength(1);
     expect(held[0]).toMatchObject({ entitlement: "pro", active: 1 });
     expect(await (await request(app, "GET", "/payments/entitlements", { user: "ada" })).json()).toEqual({
+      quotas: {},
+      features: {},
       entitlements: [{ key: "pro", granted: true, expiresAt: new Date("2026-02-01T00:00:00Z").toISOString() }],
     });
   });
@@ -2670,6 +2688,7 @@ describe("ledger fulfillment", () => {
 describe("a Worker composing payments() beside ledger()", () => {
   const COIN_SHOP: PaymentsConfigInput = {
     billingSubject: "user",
+    entitlements: { ads_removed: { name: "ads_removed" }, pro: { name: "pro" }, team: { name: "team" } },
     rails: { lemonSqueezy: true },
     lemonSqueezy: { successUrl: "https://acme.example/thanks" },
     products: {
@@ -2897,7 +2916,7 @@ describe("POST /payments/entitlements/grant", () => {
   test("a key the adopter declared grantable without a sale is granted", async () => {
     // The explicit escape. An adopter may gate on something comped by hand and never sold — and that has
     // to be *declared*, not achieved by nobody checking.
-    const app = makeApp({ ...CATALOG, manualEntitlements: ["founder"] });
+    const app = makeApp({ ...CATALOG, entitlements: { ...CATALOG.entitlements, founder: { name: "Founder" } } });
     const response = await request(app, "POST", path, {
       ...granting,
       body: { ...user("grace"), entitlement: "founder" },
@@ -2907,7 +2926,7 @@ describe("POST /payments/entitlements/grant", () => {
   });
 
   test("declaring one key opens that key and no other", async () => {
-    const app = makeApp({ ...CATALOG, manualEntitlements: ["founder"] });
+    const app = makeApp({ ...CATALOG, entitlements: { ...CATALOG.entitlements, founder: { name: "Founder" } } });
     const response = await request(app, "POST", path, {
       ...granting,
       body: { ...user("grace"), entitlement: "foudner" },
@@ -2943,7 +2962,11 @@ describe("POST /payments/entitlements/grant", () => {
     const app = makeApp();
     await request(app, "POST", path, { ...granting, body });
     const response = await request(app, "GET", "/payments/entitlements", { user: "grace" });
-    expect(await response.json()).toEqual({ entitlements: [{ key: "pro", granted: true, expiresAt: null }] });
+    expect(await response.json()).toEqual({
+      quotas: {},
+      features: {},
+      entitlements: [{ key: "pro", granted: true, expiresAt: null }],
+    });
   });
 });
 
@@ -2991,7 +3014,11 @@ describe("POST /payments/entitlements/revoke", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ entitlement: { key: "pro", granted: false, expiresAt: null } });
     const read = await request(app, "GET", "/payments/entitlements", { user: "ada" });
-    expect(await read.json()).toEqual({ entitlements: [{ key: "pro", granted: false, expiresAt: null }] });
+    expect(await read.json()).toEqual({
+      quotas: {},
+      features: {},
+      entitlements: [{ key: "pro", granted: false, expiresAt: null }],
+    });
 
     const recorded = emitted.find((event) => event.action === PaymentsAuditActions.entitlementRevoked);
     expect(recorded?.severity).toBe("warning");
@@ -3082,6 +3109,8 @@ describe("billingSubject: organization", () => {
     // whole point: no row was rewritten when he joined, and none will be when he leaves.
     const colleague = await request(composed, "GET", "/payments/entitlements", { user: "grace", organization: "acme" });
     expect(await colleague.json()).toEqual({
+      quotas: {},
+      features: {},
       entitlements: [
         { key: "pro", granted: true, expiresAt: new Date(didRenew.transaction.expiresDate).toISOString() },
       ],
@@ -3089,7 +3118,7 @@ describe("billingSubject: organization", () => {
 
     // And somebody at another company holds nothing, however signed in they are.
     const stranger = await request(composed, "GET", "/payments/entitlements", { user: "ada", organization: "other" });
-    expect(await stranger.json()).toEqual({ entitlements: [] });
+    expect(await stranger.json()).toEqual({ quotas: {}, features: {}, entitlements: [] });
   });
 
   test("the person is the actor and the company is the holder, and the trail says both", async () => {
@@ -3140,7 +3169,7 @@ describe("billingSubject: organization", () => {
     // than an error.
     const entitled = await request(composed, "GET", "/payments/entitlements", { user: "ada" });
     expect(entitled.status).toBe(200);
-    expect(await entitled.json()).toEqual({ entitlements: [] });
+    expect(await entitled.json()).toEqual({ quotas: {}, features: {}, entitlements: [] });
     const pricing = await request(composed, "GET", "/payments/pricing", { user: "ada" });
     expect(pricing.status).toBe(200);
     expect(await pricing.json()).toEqual({ pricing: null, quotedFrom: null });
@@ -3159,6 +3188,8 @@ describe("billingSubject: organization", () => {
     expect(write.status).toBe(403);
     expect(await errorCode(write)).toBe("payments/subject_unresolved");
     expect(await (await request(composed, "GET", "/payments/entitlements", { user: "ada" })).json()).toEqual({
+      quotas: {},
+      features: {},
       entitlements: [],
     });
   });
@@ -3289,6 +3320,7 @@ describe("the exported response schemas against the live routes", () => {
  */
 const PADDLE_CATALOG: PaymentsConfigInput = {
   billingSubject: "user",
+  entitlements: { ads_removed: { name: "ads_removed" }, pro: { name: "pro" }, team: { name: "team" } },
   rails: { paddle: true },
   paddle: {
     clientToken: "test_1234567890abcdefghij",
@@ -4289,6 +4321,7 @@ describe("POST /payments/portal — Paddle", () => {
  */
 const LEMON_CATALOG: PaymentsConfigInput = {
   billingSubject: "user",
+  entitlements: { ads_removed: { name: "ads_removed" }, pro: { name: "pro" }, team: { name: "team" } },
   rails: { lemonSqueezy: true },
   lemonSqueezy: { successUrl: "https://acme.example/thanks" },
   products: {
@@ -5334,6 +5367,9 @@ describe("the subscription lifecycle routes", () => {
           nextBilledAt: null,
           scheduledChange: { action: "cancel", effectiveAt: "2026-09-15T11:42:21.789Z", resumesAt: null },
           nextEvent: { kind: "ends", at: "2026-09-15T11:42:21.789Z" },
+          // A flat-priced product has never had a count reported, and this Worker can say so.
+          reportedQuantity: null,
+          reportedAt: null,
         },
       });
     });

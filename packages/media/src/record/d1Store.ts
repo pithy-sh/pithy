@@ -29,15 +29,46 @@ export function d1RecordStore(db: MediaDatabase, schema: z.ZodObject): RecordSto
   const table = db.selectFrom(MEDIA_ASSETS_TABLE);
 
   return {
-    async create(record) {
+    async create(record, options) {
       const row = encode(record);
-      // Kysely writes every runtime key on the object, so extension columns are inserted too; the cast
-      // narrows the compile-time type to the base table without dropping those keys at runtime.
-      await db
+      const limit = options?.limit;
+      if (limit === undefined || record.ownerId === null) {
+        // Kysely writes every runtime key on the object, so extension columns are inserted too; the cast
+        // narrows the compile-time type to the base table without dropping those keys at runtime.
+        await db
+          .insertInto(MEDIA_ASSETS_TABLE)
+          .values(row as never)
+          .execute();
+        return decode(row);
+      }
+      // The count and the insert are one statement — `INSERT … SELECT … WHERE (SELECT count(*) …) < limit` —
+      // for the reason `@pithy-sh/storage`'s byte quota is: D1 has no interactive transaction, and two
+      // statements are two moments a concurrent create walks between. Zero rows returned is the refusal.
+      const columns = Object.keys(row);
+      const values = db
+        .selectNoFrom((eb) => columns.map((column) => eb.val(row[column]).as(column)))
+        .where((eb) =>
+          eb(
+            eb
+              .selectFrom(MEDIA_ASSETS_TABLE)
+              .select((inner) => inner.fn.countAll<number>().as("held"))
+              // An organization's allowance is the organization's: every member's records count against it.
+              .where(
+                options?.organizationId === undefined ? "ownerId" : "organizationId",
+                "=",
+                options?.organizationId ?? (record.ownerId as string),
+              ),
+            "<",
+            limit,
+          ),
+        );
+      const inserted = await db
         .insertInto(MEDIA_ASSETS_TABLE)
-        .values(row as never)
-        .execute();
-      return decode(row);
+        .columns(columns as never)
+        .expression(values as never)
+        .returning("id")
+        .executeTakeFirst();
+      return inserted === undefined ? null : decode(row);
     },
 
     async get(id) {

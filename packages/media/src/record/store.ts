@@ -42,8 +42,15 @@ export interface RecordPage {
  * each record's tenant so its lookups are one scoped index read.
  */
 export interface RecordStore {
-  /** Persist a new record. Returns the stored, re-validated record. */
-  create(record: MediaRecord): Promise<MediaRecord>;
+  /**
+   * Persist a new record. Returns the stored, re-validated record.
+   *
+   * With `limit`, the record is written **only if** its owner holds fewer than that many records — or, with
+   * `organizationId`, only if that organization does, whoever holds them — the count and the insert one
+   * statement, so a burst of concurrent creates cannot walk past the limit — and `null` is returned when it
+   * does not fit. A record with no owner is never limited.
+   */
+  create(record: MediaRecord, options?: { limit: number; organizationId?: string }): Promise<MediaRecord | null>;
   /** Read a record by id, or null on a miss. The caller decides whether the reader may see it. */
   get(id: string): Promise<MediaRecord | null>;
   /** Merge `changes` over the current record, validate, and write it back. Throws if the id is unknown. */

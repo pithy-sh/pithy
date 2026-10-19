@@ -6,6 +6,7 @@ import { authPeer } from "@pithy-sh/auth/src/peer";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { PaymentsConfig } from "@pithy-sh/payments/src/config/config";
 import { payments_0001_purchases } from "@pithy-sh/payments/src/migrations/0001_purchases";
+import { payments_0002_allowances } from "@pithy-sh/payments/src/migrations/0002_allowances";
 import { paymentsPeer } from "@pithy-sh/payments/src/peer";
 import { projectPurchase } from "@pithy-sh/payments/src/projection/writer";
 import type { Kysely } from "kysely";
@@ -26,6 +27,7 @@ const PEERS: SenderPeers = { auth: authPeer, payments: paymentsPeer };
 
 const CONFIG = PaymentsConfig.parse({
   billingSubject: "user",
+  entitlements: { pro: { name: "pro" } },
   rails: { apple: true },
   products: {
     pro_monthly: {
@@ -63,6 +65,7 @@ beforeEach(async () => {
     .bind(NOW.toISOString(), NOW.toISOString())
     .run();
   await payments_0001_purchases.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
+  await payments_0002_allowances.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
   await projectPurchase(
     env.DB,
     {

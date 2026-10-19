@@ -272,8 +272,12 @@ describe("the management read schemas", () => {
     // parsing alone would pass a projection that had grown one.
     const config = PaymentsConfig.parse({
       billingSubject: "user",
+      entitlements: {
+        pro: { name: "Pro", quotas: { seats: 10 }, features: { sso: true }, overrideMax: { seats: 100 } },
+        founder: { name: "Founder" },
+      },
+      defaults: { quotas: { seats: 1 } },
       rails: { apple: true },
-      manualEntitlements: ["founder"],
       products: {
         pro_monthly: {
           type: "subscription",
@@ -383,11 +387,12 @@ describe("the subscription lifecycle responses", () => {
     };
   }
 
-  test("the view is the standing, plus exactly the two facts the wire adds", () => {
+  test("the view is the standing, plus exactly the four facts the wire adds", () => {
     // A field added to `SubscriptionStanding` fails here until somebody decides whether a customer reading
-    // their own subscription should see it. That decision is the point; silence is not.
+    // their own subscription should see it. That decision is the point; silence is not. The last reported
+    // count and its date (#561) are the subscription's own usage rows, read beside the standing.
     expect(Object.keys(PaymentsSubscriptionView.shape).sort()).toEqual(
-      [...Object.keys(SubscriptionStanding.shape), "productId", "nextEvent"].sort(),
+      [...Object.keys(SubscriptionStanding.shape), "productId", "nextEvent", "reportedQuantity", "reportedAt"].sort(),
     );
   });
 
@@ -662,5 +667,73 @@ describe("the refund report", () => {
     // hold a status no rail can answer with.
     expect(PaymentsRefundOutcome.safeParse({ outcome: "requested", status: "refunded" }).success).toBe(false);
     expect(PaymentsRefundOutcome.safeParse({ outcome: "cancelled" }).success).toBe(false);
+  });
+});
+
+/**
+ * The version boundary (#450, #561): every field this release added to a response is `.optional()` beside
+ * `.nullable()`, so a dashboard on this release still parses a Worker that predates it — and a Worker on this
+ * release still projects every one of them, so the reader is relaxed and the producer is not.
+ */
+describe("the fields #561 added cross the version boundary", () => {
+  test("a subject read from a Worker that predates overrides and declarations still parses", () => {
+    const older = {
+      subjectType: "organization",
+      subjectId: "acme",
+      entitlements: [
+        {
+          subjectType: "organization",
+          subjectId: "acme",
+          key: "pro",
+          granted: true,
+          expiresAt: null,
+          manual: false,
+          source: "p1",
+        },
+      ],
+    };
+    expect(PaymentsAdminSubjectEntitlementsResponse.parse(older)).toEqual(older);
+  });
+
+  test("a purchase, a subscription and an entitlements read from an older Worker still parse", () => {
+    const entitlements = { entitlements: [{ key: "pro", granted: true, expiresAt: null }] };
+    expect(PaymentsEntitlementsResponse.parse(entitlements)).toEqual(entitlements);
+    const subscription = {
+      productId: "pro_monthly",
+      status: "active",
+      currency: "usd",
+      currentPeriodEndsAt: null,
+      nextBilledAt: null,
+      scheduledChange: null,
+      nextEvent: { kind: "unknown", at: null },
+    };
+    expect(PaymentsSubscriptionView.parse(subscription)).toEqual(subscription);
+  });
+
+  test("every added field is optional and nullable where null means something, and this release still sends it", () => {
+    const added: [z.ZodObject, string][] = [
+      [PaymentsSubscriptionView, "reportedQuantity"],
+      [PaymentsSubscriptionView, "reportedAt"],
+      [PaymentsAdminPurchaseView, "quantity"],
+      [PaymentsAdminPurchaseView, "reportedQuantity"],
+      [PaymentsAdminPurchaseView, "reportedAt"],
+      [PaymentsAdminSubjectEntitlementsResponse, "override"],
+    ];
+    for (const [schema, key] of added) {
+      const field = schema.shape[key] as z.ZodType;
+      expect(field.safeParse(undefined).success, key).toBe(true);
+      expect(field.safeParse(null).success, key).toBe(true);
+    }
+    const optional: [z.ZodObject, string][] = [
+      [PaymentsAdminSubjectEntitlementsResponse, "unrestricted"],
+      [PaymentsAdminSubjectEntitlementsResponse, "overrideVersion"],
+      [PaymentsAdminSubjectEntitlementsResponse, "allowances"],
+      [PaymentsAdminEntitlementView, "unrestricted"],
+      [PaymentsEntitlementsResponse, "quotas"],
+      [PaymentsEntitlementsResponse, "features"],
+    ];
+    for (const [schema, key] of optional) {
+      expect((schema.shape[key] as z.ZodType).safeParse(undefined).success, key).toBe(true);
+    }
   });
 });

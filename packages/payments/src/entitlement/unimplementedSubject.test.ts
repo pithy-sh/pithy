@@ -28,6 +28,7 @@ const CATALOG = {
     cancelUrl: "https://acme.example/pricing",
     portalReturnUrl: "https://acme.example/account",
   },
+  entitlements: { pro: { name: "Pro" } },
   products: {
     pro_monthly: {
       type: "subscription" as const,

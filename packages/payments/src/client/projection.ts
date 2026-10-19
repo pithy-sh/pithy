@@ -40,6 +40,24 @@ export type PaymentsClientProduct = {
   };
 };
 
+/** Numbered allowances and switches, as a browser reads them. */
+export type PaymentsClientAllowances = {
+  /** Quotas by name: a whole number, or null for unlimited. */
+  quotas: Record<string, number | null>;
+  /** Features by name. */
+  features: Record<string, boolean>;
+};
+
+/** One declared entitlement key, browser-safe: what it is called and what it buys. */
+export type PaymentsClientEntitlement = {
+  /** The tier's display name — `Growth`. Not translated: it is a product name. */
+  name: string;
+  /** Quotas by name: a whole number, or null for unlimited. */
+  quotas: Record<string, number | null>;
+  /** Features by name. */
+  features: Record<string, boolean>;
+};
+
 /**
  * What a browser may know about this project's payments — the shape of `virtual:pithy/payments`.
  *
@@ -130,4 +148,17 @@ export type PaymentsClientProjection =
        * purchase fulfills beyond its entitlements, stay server-side.
        */
       products: PaymentsClientProduct[];
+      /**
+       * What each entitlement key buys, keyed by the key — its display name, its quotas (a whole number,
+       * or null for unlimited) and its features — so a paywall can lay tiers side by side. What the
+       * caller's own holder resolves to is `GET {basePath}/entitlements`. A UX affordance, never a
+       * security boundary: the server enforces every number here. The ceilings an operator's override is
+       * bounded by stay server-side.
+       */
+      entitlements: {
+        /** One declared key, by the key. */
+        [key: string]: PaymentsClientEntitlement;
+      };
+      /** What a caller holding no key gets — the free floor — or null when none is declared. */
+      defaults: PaymentsClientAllowances | null;
     };

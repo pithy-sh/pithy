@@ -14,6 +14,7 @@ import { PaymentsAuditActions } from "../audit/actions";
 import { PaymentsConfig } from "../config/config";
 import type { PaymentsSubject } from "../data/subject";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
+import { payments_0002_allowances } from "../migrations/0002_allowances";
 import type { ProviderEventInput } from "../projection/event";
 import { type PurchaseProjection, projectPurchase } from "../projection/writer";
 import { fulfillPurchase } from "./apply";
@@ -37,6 +38,7 @@ const ADA: PaymentsSubject = { subjectType: "user", subjectId: "ada" };
 
 const CONFIG = PaymentsConfig.parse({
   billingSubject: "user",
+  entitlements: { ads_removed: { name: "ads_removed" } },
   rails: { apple: true },
   products: {
     coins_100: {
@@ -68,6 +70,10 @@ const PAYMENTS_TABLES = [
   "pithy_payments_webhook_events",
   "pithy_payments_reconcile_runs",
   "pithy_payments_sync_cursors",
+  "pithy_payments_overrides",
+  "pithy_payments_meter_counters",
+  "pithy_payments_usage_reports",
+  "pithy_payments_usage_runs",
 ];
 const LEDGER_TABLES = ["pithy_ledger_accounts", "pithy_ledger_transactions", "pithy_ledger_holds"];
 
@@ -78,6 +84,7 @@ beforeEach(async () => {
   for (const table of [...PAYMENTS_TABLES, ...LEDGER_TABLES]) await env.DB.exec(`DROP TABLE IF EXISTS ${table}`);
   const db = createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
   await payments_0001_purchases.up(db);
+  await payments_0002_allowances.up(db);
   await ledger_0001_accounts.up(db);
   emitted = [];
 });

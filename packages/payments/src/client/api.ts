@@ -542,6 +542,50 @@ function isEntitlementsBody(value: unknown): value is { entitlements: Entitlemen
   return isRecord(value) && isArrayOf(value.entitlements, isEntitlementView);
 }
 
+/**
+ * What the caller's holder may have, as `GET /payments/entitlements` resolves it: every declared quota (a
+ * whole number, or null for unlimited) and every declared feature. **A UX affordance, never a security
+ * boundary** — a paywall shows "3 of 10 seats", and the server is what refuses the eleventh.
+ */
+export interface AllowancesView {
+  /** Quotas by name. `null` is unlimited. */
+  quotas: Readonly<Record<string, number | null>>;
+  /** Features by name. */
+  features: Readonly<Record<string, boolean>>;
+}
+
+/** Whether a value is a map whose every value passes `guard`. */
+function isMapOf<T>(value: unknown, guard: (item: unknown) => item is T): value is Record<string, T> {
+  return isRecord(value) && Object.values(value).every(guard);
+}
+
+/** A quota on the wire: a whole number from 0, or null. */
+function isQuota(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isInteger(value) && value >= 0);
+}
+
+/** A feature on the wire. */
+function isSwitch(value: unknown): value is boolean {
+  return typeof value === "boolean";
+}
+
+/** Whether a value is the entitlements envelope from a Worker that resolves allowances. */
+function isAllowancesBody(value: unknown): value is AllowancesView {
+  return isRecord(value) && isMapOf(value.quotas, isQuota) && isMapOf(value.features, isSwitch);
+}
+
+/**
+ * The caller's resolved allowances. The client-side reading of `quota(c, name)` and `feature(c, name)`, for a
+ * paywall screen — never the enforcement, which the server does.
+ *
+ * A Worker that predates declarations answers no allowances, and that is a failure here rather than an empty
+ * map: an empty map reads as *zero of everything*, and a screen would tell a paying customer they have none.
+ */
+export async function getAllowances(options?: PaymentsClientOptions): Promise<PaymentsResult<AllowancesView>> {
+  const result = await callPayments("/entitlements", {}, options, isAllowancesBody);
+  return result.ok ? { ok: true, value: { quotas: result.value.quotas, features: result.value.features } } : result;
+}
+
 /** Whether a value is the purchase envelope both write routes' single-purchase form returns. */
 function isPurchaseBody(value: unknown): value is { purchase: PurchaseView; entitlements: EntitlementView[] } {
   return isRecord(value) && isPurchaseView(value.purchase) && isArrayOf(value.entitlements, isEntitlementView);

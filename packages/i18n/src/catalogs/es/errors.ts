@@ -180,6 +180,8 @@ export const esErrors: MessageCatalog = {
   "payments/discount_invalid": "Ese código de descuento no es válido.",
   "payments/entitlement_not_in_catalog": "Ese derecho de acceso no está en el catálogo.",
   "payments/subject_unresolved": "No se ha podido determinar en nombre de quién actúas.",
+  "payments/override_stale": "Esa asignación ha cambiado desde que la leíste. Vuelve a cargarla.",
+  "payments/quota_exceeded": "Has agotado el límite de tu plan para este periodo.",
   "payments/reconcile_not_provisioned": "La conciliación no está configurada en este despliegue.",
 
   // Control plane. The caller here is a management client, never an end user — the words stay caller-facing

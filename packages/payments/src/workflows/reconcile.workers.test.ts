@@ -15,6 +15,7 @@ import type { PaymentsPurchase } from "../data/purchase";
 import type { PaymentsRail } from "../data/rail";
 import { PaymentsProviderUnavailableError, PaymentsVerificationFailedError } from "../error/errors";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
+import { payments_0002_allowances } from "../migrations/0002_allowances";
 import type { ProviderEventInput } from "../projection/event";
 import { projectPurchase } from "../projection/writer";
 import type { PaymentsRailProvider, UnboundProviderEvent } from "../rails/contract";
@@ -43,6 +44,7 @@ const CONFIG = PaymentsConfig.parse({
   // purchase; the organization case has its own tests, because the property they prove is that the two
   // kinds do not reach each other.
   billingSubject: "user",
+  entitlements: { ads_removed: { name: "ads_removed" }, pro: { name: "pro" } },
   rails: { apple: true, google: true, stripe: true },
   stripe: {
     successUrl: "https://acme.example/thanks",
@@ -74,11 +76,16 @@ const TABLES = [
   "pithy_payments_webhook_events",
   "pithy_payments_reconcile_runs",
   "pithy_payments_sync_cursors",
+  "pithy_payments_overrides",
+  "pithy_payments_meter_counters",
+  "pithy_payments_usage_reports",
+  "pithy_payments_usage_runs",
 ];
 
 beforeEach(async () => {
   for (const table of TABLES) await env.DB.exec(`DROP TABLE IF EXISTS ${table}`);
   await payments_0001_purchases.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
+  await payments_0002_allowances.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
 });
 
 /** Seed one purchase through the real writer, so the row under test is one the projection actually produces. */
@@ -819,6 +826,7 @@ describe("reconcilePayments — superseded rows", () => {
 describe("reconcilePayments — the default fulfillment path", () => {
   const COINS = PaymentsConfig.parse({
     billingSubject: "user",
+    entitlements: { ads_removed: { name: "ads_removed" }, pro: { name: "pro" } },
     rails: { apple: true },
     products: {
       pro_monthly: {

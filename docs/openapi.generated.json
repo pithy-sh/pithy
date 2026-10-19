@@ -15264,7 +15264,7 @@
                         "enabled": {
                           "type": "boolean",
                           "const": false,
-                          "description": "This project defines nothing — no product is configured and no key was declared grantable, so there is no entitlement a comp control could offer and no grant that would succeed."
+                          "description": "This project defines nothing — no product is configured and no key is declared, so there is no entitlement a comp control could offer and no grant that would succeed."
                         }
                       },
                       "required": [
@@ -15325,7 +15325,130 @@
                           "items": {
                             "type": "string"
                           },
-                          "description": "Entitlement keys the adopter declared grantable with no product behind them. Offered beside the products because a comp control that omitted them would refuse the grants it then submitted."
+                          "description": "The comp-only keys — declared, and sold by no product. Offered beside the products because a comp control that omitted them would refuse the grants it then submitted. Kept under its first name so a client reading an older Worker and a newer one reads one field."
+                        },
+                        "entitlements": {
+                          "description": "Every declared key and what it buys, in the order the adopter wrote them. Absent from a Worker that predates declarations. What an override editor is built from: every editable name, and whether it is a number or a switch.",
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "string",
+                                "description": "The entitlement key — what gating code names, and what a comp grants."
+                              },
+                              "name": {
+                                "type": "string",
+                                "description": "The tier's display name, as the adopter wrote it — `Growth`."
+                              },
+                              "quotas": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "A whole number from 0, or null for unlimited."
+                                },
+                                "description": "What this key allows, by quota name. A whole number, or null for unlimited."
+                              },
+                              "features": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {
+                                  "type": "boolean",
+                                  "description": "Whether the switch is on."
+                                },
+                                "description": "Its switches, by name."
+                              },
+                              "overrideMax": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991,
+                                  "description": "The ceiling."
+                                },
+                                "description": "Per quota, the largest number an override may set. A quota absent here accepts any whole number. `unrestricted` is never bounded by it."
+                              },
+                              "sold": {
+                                "type": "boolean",
+                                "description": "Whether a product in this catalog grants the key. False is comp-only: grantable by hand, sold by nothing."
+                              }
+                            },
+                            "required": [
+                              "key",
+                              "name",
+                              "quotas",
+                              "features",
+                              "overrideMax",
+                              "sold"
+                            ],
+                            "description": "One declared entitlement key: its name, its quotas, its features, and the ceilings on overriding them."
+                          }
+                        },
+                        "defaults": {
+                          "description": "The free floor, or null when none is declared. Absent from a Worker that predates declarations.",
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "quotas": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {
+                                    "anyOf": [
+                                      {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "A whole number from 0, or null for unlimited."
+                                  },
+                                  "description": "What a subject holding no key gets, by quota name."
+                                },
+                                "features": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {
+                                    "type": "boolean",
+                                    "description": "Whether the switch is on."
+                                  },
+                                  "description": "The switches a subject holding no key gets."
+                                }
+                              },
+                              "required": [
+                                "quotas",
+                                "features"
+                              ],
+                              "description": "What a caller holding no key gets — the free floor."
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -15474,6 +15597,45 @@
                       "items": {
                         "type": "object",
                         "properties": {
+                          "quantity": {
+                            "description": "How many were bought, as the store stated it, or null where it did not. Absent from a Worker that predates the column.",
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "reportedQuantity": {
+                            "description": "For a quantity-billed subscription, the last count reported to the store, or null when none has been. Absent from a Worker that predates reported billing.",
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "reportedAt": {
+                            "description": "When that count was reported, ISO-8601, or null. Absent from a Worker that predates reported billing.",
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "id": {
                             "type": "string",
                             "description": "The purchase's UUID — its stable identifier on this Worker."
@@ -15766,6 +15928,45 @@
                       "items": {
                         "type": "object",
                         "properties": {
+                          "quantity": {
+                            "description": "How many were bought, as the store stated it, or null where it did not. Absent from a Worker that predates the column.",
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "reportedQuantity": {
+                            "description": "For a quantity-billed subscription, the last count reported to the store, or null when none has been. Absent from a Worker that predates reported billing.",
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "reportedAt": {
+                            "description": "When that count was reported, ISO-8601, or null. Absent from a Worker that predates reported billing.",
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "id": {
                             "type": "string",
                             "description": "The purchase's UUID — its stable identifier on this Worker."
@@ -16095,6 +16296,10 @@
                               "string",
                               "null"
                             ]
+                          },
+                          "unrestricted": {
+                            "description": "Whether this row's subject is `unrestricted` — every quota unlimited and every feature on, whatever it holds. On every row, because a privilege this large must not be inferable only from a row nobody opens. Absent from a Worker that predates overrides.",
+                            "type": "boolean"
                           }
                         },
                         "required": [
@@ -16123,6 +16328,209 @@
                     "nextCursor"
                   ],
                   "description": "A page of the entitlement model, across every subject."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "payments:entitlements:read"
+        ]
+      }
+    },
+    "/payments/admin/overrides": {
+      "get": {
+        "tags": [
+          "payments"
+        ],
+        "operationId": "getPaymentsAdminOverrides",
+        "summary": "Read every subject's override, page by page.",
+        "parameters": [
+          {
+            "name": "subjectType",
+            "in": "query",
+            "required": false,
+            "description": "Which kind of holder to narrow to. Send it with `subjectId` or send neither.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "user",
+                "organization"
+              ]
+            }
+          },
+          {
+            "name": "subjectId",
+            "in": "query",
+            "required": false,
+            "description": "Which holder to narrow to. Send it with `subjectType` or send neither: an id alone names whichever user or organization happens to carry it.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 180
+            }
+          },
+          {
+            "name": "unrestricted",
+            "in": "query",
+            "required": false,
+            "description": "`true` lists only the subjects that are `unrestricted` — the largest grant the kit has.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Where to resume, from the previous page's `nextCursor`. Opaque; a malformed one is a first page.",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many rows to return, from 1 to 100. Defaults to a page a dashboard can render.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of every subject's override — the negotiated numbers, and who is unrestricted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "overrides": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "subjectType": {
+                            "type": "string",
+                            "enum": [
+                              "user",
+                              "organization"
+                            ],
+                            "description": "Whether `subjectId` names a user or an organization."
+                          },
+                          "subjectId": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 180,
+                            "description": "The subject the override shades."
+                          },
+                          "override": {
+                            "type": "object",
+                            "properties": {
+                              "version": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991,
+                                "description": "The version a set must send back. A set naming an older one is refused as stale."
+                              },
+                              "unrestricted": {
+                                "type": "boolean",
+                                "description": "Whether every quota is unlimited and every feature on, except the pins, for every name present and future."
+                              },
+                              "quotas": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "A whole number from 0, or null for unlimited."
+                                },
+                                "description": "The pinned quotas."
+                              },
+                              "features": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {
+                                  "type": "boolean",
+                                  "description": "Whether the switch is on."
+                                },
+                                "description": "The pinned features."
+                              },
+                              "reason": {
+                                "type": "string",
+                                "description": "The reason the last write gave."
+                              },
+                              "updatedAt": {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                "description": "When it last changed, ISO-8601."
+                              }
+                            },
+                            "required": [
+                              "version",
+                              "unrestricted",
+                              "quotas",
+                              "features",
+                              "reason",
+                              "updatedAt"
+                            ],
+                            "description": "One subject's override: its version, its mode, its pins, and why."
+                          }
+                        },
+                        "required": [
+                          "subjectType",
+                          "subjectId",
+                          "override"
+                        ],
+                        "description": "One subject's override, as the listing pages it."
+                      },
+                      "description": "The page, most recently changed first."
+                    },
+                    "nextCursor": {
+                      "description": "Where the next page resumes. Null at the end of the list. Opaque — pass it back verbatim.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "overrides",
+                    "nextCursor"
+                  ],
+                  "description": "A page of every subject's override — the negotiated numbers, and who is unrestricted."
                 }
               }
             }
@@ -16249,6 +16657,10 @@
                               "string",
                               "null"
                             ]
+                          },
+                          "unrestricted": {
+                            "description": "Whether this row's subject is `unrestricted` — every quota unlimited and every feature on, whatever it holds. On every row, because a privilege this large must not be inferable only from a row nobody opens. Absent from a Worker that predates overrides.",
+                            "type": "boolean"
                           }
                         },
                         "required": [
@@ -16263,6 +16675,265 @@
                         "description": "One entitlement as a management client sees it: whose it is, whether it grants, and why."
                       },
                       "description": "Every entitlement this subject holds, by key. Empty when it holds none."
+                    },
+                    "unrestricted": {
+                      "description": "Whether the subject is `unrestricted`. Absent from a Worker that predates overrides.",
+                      "type": "boolean"
+                    },
+                    "overrideVersion": {
+                      "description": "The version an override write for this subject must name — 0 when it has none. Absent from a Worker that predates overrides.",
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "override": {
+                      "description": "The subject's override, or null when it has none. Absent from a Worker that predates overrides.",
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "version": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991,
+                              "description": "The version a set must send back. A set naming an older one is refused as stale."
+                            },
+                            "unrestricted": {
+                              "type": "boolean",
+                              "description": "Whether every quota is unlimited and every feature on, except the pins, for every name present and future."
+                            },
+                            "quotas": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "A whole number from 0, or null for unlimited."
+                              },
+                              "description": "The pinned quotas."
+                            },
+                            "features": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {
+                                "type": "boolean",
+                                "description": "Whether the switch is on."
+                              },
+                              "description": "The pinned features."
+                            },
+                            "reason": {
+                              "type": "string",
+                              "description": "The reason the last write gave."
+                            },
+                            "updatedAt": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                              "description": "When it last changed, ISO-8601."
+                            }
+                          },
+                          "required": [
+                            "version",
+                            "unrestricted",
+                            "quotas",
+                            "features",
+                            "reason",
+                            "updatedAt"
+                          ],
+                          "description": "One subject's override: its version, its mode, its pins, and why."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "allowances": {
+                      "description": "Every declared quota and feature, resolved for this subject now — effective, provenance, inherited. Absent from a Worker that predates declarations.",
+                      "type": "object",
+                      "properties": {
+                        "quotas": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "description": "The quota name."
+                              },
+                              "effective": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "What applies now. A whole number, or null for unlimited."
+                              },
+                              "source": {
+                                "type": "string",
+                                "enum": [
+                                  "unrestricted",
+                                  "override",
+                                  "plan",
+                                  "default",
+                                  "none"
+                                ],
+                                "description": "Where the value came from: the subject's `unrestricted` override, a pin on its override, a key it holds (`key` names it), the free floor, or `none` — nothing declared spoke to it, so it is 0 or false."
+                              },
+                              "key": {
+                                "description": "The entitlement key that supplied `effective`, when `source` is `plan`.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "inherited": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "What it would be with the override removed — the plan's own number, to show beside a pin and to revert to."
+                              },
+                              "inheritedSource": {
+                                "type": "string",
+                                "enum": [
+                                  "unrestricted",
+                                  "override",
+                                  "plan",
+                                  "default",
+                                  "none"
+                                ],
+                                "description": "Where `inherited` came from."
+                              },
+                              "inheritedKey": {
+                                "description": "The key that supplied `inherited`, when it is a plan's.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "overrideMax": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "The largest number an override may set here for this subject, or null for no ceiling."
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "effective",
+                              "source",
+                              "key",
+                              "inherited",
+                              "inheritedSource",
+                              "inheritedKey",
+                              "overrideMax"
+                            ],
+                            "description": "One quota for one subject: effective, provenance, and inherited."
+                          },
+                          "description": "Every declared quota, by name."
+                        },
+                        "features": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "description": "The feature name."
+                              },
+                              "effective": {
+                                "type": "boolean",
+                                "description": "Whether it is on now."
+                              },
+                              "source": {
+                                "type": "string",
+                                "enum": [
+                                  "unrestricted",
+                                  "override",
+                                  "plan",
+                                  "default",
+                                  "none"
+                                ],
+                                "description": "Where the value came from: the subject's `unrestricted` override, a pin on its override, a key it holds (`key` names it), the free floor, or `none` — nothing declared spoke to it, so it is 0 or false."
+                              },
+                              "key": {
+                                "description": "The entitlement key that supplied `effective`, when `source` is `plan`.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "inherited": {
+                                "type": "boolean",
+                                "description": "Whether it would be on with the override removed."
+                              },
+                              "inheritedSource": {
+                                "type": "string",
+                                "enum": [
+                                  "unrestricted",
+                                  "override",
+                                  "plan",
+                                  "default",
+                                  "none"
+                                ],
+                                "description": "Where `inherited` came from."
+                              },
+                              "inheritedKey": {
+                                "description": "The key that supplied `inherited`, when it is a plan's.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "effective",
+                              "source",
+                              "key",
+                              "inherited",
+                              "inheritedSource",
+                              "inheritedKey"
+                            ],
+                            "description": "One feature for one subject: effective, provenance, and inherited."
+                          },
+                          "description": "Every declared feature, by name."
+                        }
+                      },
+                      "required": [
+                        "quotas",
+                        "features"
+                      ]
                     }
                   },
                   "required": [
@@ -16563,6 +17234,206 @@
         ]
       }
     },
+    "/payments/admin/usage-runs": {
+      "get": {
+        "tags": [
+          "payments"
+        ],
+        "operationId": "getPaymentsAdminUsageRuns",
+        "summary": "Read the usage-reporting passes this deployment has run.",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Where to resume, from the previous page's `nextCursor`. Opaque; a malformed one is a first page.",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many rows to return, from 1 to 100. Defaults to a page a dashboard can render.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of the usage-reporting run log.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "runs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The run's id."
+                          },
+                          "startedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the pass began, ISO-8601."
+                          },
+                          "finishedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When it finished, ISO-8601."
+                          },
+                          "scanned": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Subscriptions examined."
+                          },
+                          "reported": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Periods a store accepted."
+                          },
+                          "sampled": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Daily-peak samples taken for a day still open."
+                          },
+                          "alreadyReported": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Periods already reported, so nothing was sent."
+                          },
+                          "skipped": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Subjects whose resolver answered nothing. Never reported as zero."
+                          },
+                          "invalid": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Subjects whose resolver answered a number that may not be billed. Never clamped."
+                          },
+                          "failed": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Subjects whose resolver threw, or whose report a store refused."
+                          },
+                          "findings": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "subjectType": {
+                                  "type": "string",
+                                  "enum": [
+                                    "user",
+                                    "organization"
+                                  ],
+                                  "description": "Whether `subjectId` names a user or an organization."
+                                },
+                                "subjectId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 180,
+                                  "description": "The subject."
+                                },
+                                "productId": {
+                                  "type": "string",
+                                  "description": "The product whose count was not reported."
+                                },
+                                "reason": {
+                                  "type": "string",
+                                  "enum": [
+                                    "unanswered",
+                                    "not_integer",
+                                    "negative",
+                                    "below_min",
+                                    "above_max",
+                                    "resolver_failed",
+                                    "report_failed"
+                                  ],
+                                  "description": "Why: the resolver answered nothing, a non-integer, a negative, a count outside min or max, or threw — or the store refused the report."
+                                }
+                              },
+                              "required": [
+                                "subjectType",
+                                "subjectId",
+                                "productId",
+                                "reason"
+                              ],
+                              "description": "One subject a usage run did not report."
+                            },
+                            "description": "The subjects not reported and why, up to a hundred. The counts are whole either way."
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "startedAt",
+                          "finishedAt",
+                          "scanned",
+                          "reported",
+                          "sampled",
+                          "alreadyReported",
+                          "skipped",
+                          "invalid",
+                          "failed",
+                          "findings"
+                        ],
+                        "description": "One usage-reporting pass: when it ran, its tally, and who it did not report."
+                      },
+                      "description": "The page, most recently started first."
+                    },
+                    "nextCursor": {
+                      "description": "Where the next page resumes. Null at the end of the list. Opaque — pass it back verbatim.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "runs",
+                    "nextCursor"
+                  ],
+                  "description": "A page of the usage-reporting run log."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "payments:usage:read"
+        ]
+      }
+    },
     "/payments/purchases": {
       "post": {
         "tags": [
@@ -16796,7 +17667,7 @@
         "summary": "Read the caller's own entitlements.",
         "responses": {
           "200": {
-            "description": "Every entitlement the caller holds.",
+            "description": "Every entitlement the caller holds, and the allowances they resolve to.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16837,12 +17708,43 @@
                         "description": "One entitlement: the key, whether it grants right now, and when it lapses."
                       },
                       "description": "The caller's entitlements, resolved now."
+                    },
+                    "quotas": {
+                      "description": "Every declared quota, resolved for the caller's holder now — what `quota(c, name)` answers on the server, for a paywall screen to show. A UX affordance, never a security boundary: the server enforces. Absent from a Worker that predates declarations.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "A whole number, or null for unlimited."
+                      }
+                    },
+                    "features": {
+                      "description": "Every declared feature, resolved for the caller's holder now. A UX affordance, never a security boundary. Absent from a Worker that predates declarations.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "boolean",
+                        "description": "Whether it is on."
+                      }
                     }
                   },
                   "required": [
                     "entitlements"
                   ],
-                  "description": "Every entitlement the caller holds."
+                  "description": "Every entitlement the caller holds, and the allowances they resolve to."
                 }
               }
             }
@@ -18241,6 +19143,32 @@
                                 }
                               ],
                               "description": "What happens next and when, already resolved — the scheduled change ahead of the billing date. The sentence a screen prints."
+                            },
+                            "reportedQuantity": {
+                              "description": "For a quantity-billed product, the last count reported to the store — null when nothing has been reported yet. Absent from a Worker that predates reported billing.",
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "reportedAt": {
+                              "description": "When that count was reported, ISO-8601, or null when nothing has been. Absent from a Worker that predates reported billing.",
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             }
                           },
                           "required": [
@@ -19167,6 +20095,32 @@
                             }
                           ],
                           "description": "What happens next and when, already resolved — the scheduled change ahead of the billing date. The sentence a screen prints."
+                        },
+                        "reportedQuantity": {
+                          "description": "For a quantity-billed product, the last count reported to the store — null when nothing has been reported yet. Absent from a Worker that predates reported billing.",
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "reportedAt": {
+                          "description": "When that count was reported, ISO-8601, or null when nothing has been. Absent from a Worker that predates reported billing.",
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -19398,6 +20352,32 @@
                             }
                           ],
                           "description": "What happens next and when, already resolved — the scheduled change ahead of the billing date. The sentence a screen prints."
+                        },
+                        "reportedQuantity": {
+                          "description": "For a quantity-billed product, the last count reported to the store — null when nothing has been reported yet. Absent from a Worker that predates reported billing.",
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "reportedAt": {
+                          "description": "When that count was reported, ISO-8601, or null when nothing has been. Absent from a Worker that predates reported billing.",
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -19604,6 +20584,32 @@
                             }
                           ],
                           "description": "What happens next and when, already resolved — the scheduled change ahead of the billing date. The sentence a screen prints."
+                        },
+                        "reportedQuantity": {
+                          "description": "For a quantity-billed product, the last count reported to the store — null when nothing has been reported yet. Absent from a Worker that predates reported billing.",
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "reportedAt": {
+                          "description": "When that count was reported, ISO-8601, or null when nothing has been. Absent from a Worker that predates reported billing.",
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -20143,7 +21149,7 @@
                     "minLength": 1,
                     "maxLength": 64,
                     "pattern": "^[a-z][a-z0-9_]*$",
-                    "description": "The entitlement key to grant, as gating code names it. Not a store SKU. It must be one this project defines — a key some product grants, or one the adopter declared in `manualEntitlements` — and anything else is a 400 naming the key. Comping a key nothing sells is still the durable case; declaring it is how a project says so."
+                    "description": "The entitlement key to grant, as gating code names it. Not a store SKU. It must be one the `entitlements` map declares, and anything else is a 400 naming the key. Comping a key nothing sells is still the durable case; declaring it with no product behind it is how a project says so."
                   },
                   "expiresAt": {
                     "description": "When the grant lapses, as an ISO 8601 timestamp. Omit for a comp that never ends. A past timestamp writes a row that grants nothing, which is a slower way of revoking.",
@@ -20344,6 +21350,624 @@
         ],
         "x-pithy-scopes": [
           "payments:entitlements:revoke"
+        ]
+      }
+    },
+    "/payments/entitlements/overrides": {
+      "post": {
+        "tags": [
+          "payments"
+        ],
+        "operationId": "postPaymentsEntitlementsOverrides",
+        "summary": "Pin quotas and features for one subject.",
+        "requestBody": {
+          "required": true,
+          "description": "A control-plane request to pin quotas and features for one subject. A merge by name, version-checked, with a reason.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "subjectType": {
+                    "type": "string",
+                    "enum": [
+                      "user",
+                      "organization"
+                    ],
+                    "description": "Which kind of holder the override is for. Named, never assumed — and refused when it is not the kind this project bills."
+                  },
+                  "subjectId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 180,
+                    "description": "The subject whose allowances this shades."
+                  },
+                  "version": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": "The override version the caller read — `0` when the subject had none. A write naming a version behind the row is refused with `payments/override_stale` and changes nothing."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why — a contract, a goodwill credit, a migration. Required, and recorded verbatim on the audit event."
+                  },
+                  "quotas": {
+                    "description": "Quotas to pin, by name — a whole number from 0, or null for unlimited. Merged: a name absent here keeps whatever it had.",
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[a-z][A-Za-z0-9_]*$",
+                      "description": "A quota or feature name — `emails`, `seats`, `auditExport`. An identifier gating code reads, never display copy, and never translated."
+                    },
+                    "additionalProperties": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "How many of a thing this grants: a whole number from 0, or null for unlimited."
+                    }
+                  },
+                  "features": {
+                    "description": "Features to pin, by name. Merged: a name absent here keeps whatever it had.",
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[a-z][A-Za-z0-9_]*$",
+                      "description": "A quota or feature name — `emails`, `seats`, `auditExport`. An identifier gating code reads, never display copy, and never translated."
+                    },
+                    "additionalProperties": {
+                      "type": "boolean",
+                      "description": "Whether the switch is on."
+                    }
+                  }
+                },
+                "required": [
+                  "subjectType",
+                  "subjectId",
+                  "version",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "A control-plane request to pin quotas and features for one subject. A merge by name, version-checked, with a reason."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "An override write's result: the subject, its override now, and the version to write against next.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "subjectType": {
+                      "type": "string",
+                      "enum": [
+                        "user",
+                        "organization"
+                      ],
+                      "description": "Which kind of holder, echoed."
+                    },
+                    "subjectId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 180,
+                      "description": "The subject, echoed."
+                    },
+                    "override": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "version": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991,
+                              "description": "The version a set must send back. A set naming an older one is refused as stale."
+                            },
+                            "unrestricted": {
+                              "type": "boolean",
+                              "description": "Whether every quota is unlimited and every feature on, except the pins, for every name present and future."
+                            },
+                            "quotas": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "A whole number from 0, or null for unlimited."
+                              },
+                              "description": "The pinned quotas."
+                            },
+                            "features": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {
+                                "type": "boolean",
+                                "description": "Whether the switch is on."
+                              },
+                              "description": "The pinned features."
+                            },
+                            "reason": {
+                              "type": "string",
+                              "description": "The reason the last write gave."
+                            },
+                            "updatedAt": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                              "description": "When it last changed, ISO-8601."
+                            }
+                          },
+                          "required": [
+                            "version",
+                            "unrestricted",
+                            "quotas",
+                            "features",
+                            "reason",
+                            "updatedAt"
+                          ],
+                          "description": "One subject's override: its version, its mode, its pins, and why."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The override after the write, or null when the subject now has none — a whole clear, or a clear of nothing."
+                    },
+                    "version": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "The version the next write must name. 0 when the subject has never had an override; a cleared one keeps its version, so a stale writer stays stale."
+                    }
+                  },
+                  "required": [
+                    "subjectType",
+                    "subjectId",
+                    "override",
+                    "version"
+                  ],
+                  "description": "An override write's result: the subject, its override now, and the version to write against next."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "payments:overrides:set"
+        ]
+      }
+    },
+    "/payments/entitlements/overrides/unrestricted": {
+      "post": {
+        "tags": [
+          "payments"
+        ],
+        "operationId": "postPaymentsEntitlementsOverridesUnrestricted",
+        "summary": "Turn unrestricted on or off for one subject.",
+        "requestBody": {
+          "required": true,
+          "description": "A control-plane request to turn `unrestricted` on or off for one subject. Its own route, behind its own scope.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "subjectType": {
+                    "type": "string",
+                    "enum": [
+                      "user",
+                      "organization"
+                    ],
+                    "description": "Which kind of holder the override is for. Named, never assumed — and refused when it is not the kind this project bills."
+                  },
+                  "subjectId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 180,
+                    "description": "The subject whose allowances this shades."
+                  },
+                  "version": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": "The override version the caller read — `0` when the subject had none. A write naming a version behind the row is refused with `payments/override_stale` and changes nothing."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why — a contract, a goodwill credit, a migration. Required, and recorded verbatim on the audit event."
+                  },
+                  "unrestricted": {
+                    "type": "boolean",
+                    "description": "True grants every quota unlimited and every feature on, for every name declared now and later, except the names the override pins. False takes it back and leaves the pins."
+                  }
+                },
+                "required": [
+                  "subjectType",
+                  "subjectId",
+                  "version",
+                  "reason",
+                  "unrestricted"
+                ],
+                "additionalProperties": false,
+                "description": "A control-plane request to turn `unrestricted` on or off for one subject. Its own route, behind its own scope."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "An override write's result: the subject, its override now, and the version to write against next.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "subjectType": {
+                      "type": "string",
+                      "enum": [
+                        "user",
+                        "organization"
+                      ],
+                      "description": "Which kind of holder, echoed."
+                    },
+                    "subjectId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 180,
+                      "description": "The subject, echoed."
+                    },
+                    "override": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "version": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991,
+                              "description": "The version a set must send back. A set naming an older one is refused as stale."
+                            },
+                            "unrestricted": {
+                              "type": "boolean",
+                              "description": "Whether every quota is unlimited and every feature on, except the pins, for every name present and future."
+                            },
+                            "quotas": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "A whole number from 0, or null for unlimited."
+                              },
+                              "description": "The pinned quotas."
+                            },
+                            "features": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {
+                                "type": "boolean",
+                                "description": "Whether the switch is on."
+                              },
+                              "description": "The pinned features."
+                            },
+                            "reason": {
+                              "type": "string",
+                              "description": "The reason the last write gave."
+                            },
+                            "updatedAt": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                              "description": "When it last changed, ISO-8601."
+                            }
+                          },
+                          "required": [
+                            "version",
+                            "unrestricted",
+                            "quotas",
+                            "features",
+                            "reason",
+                            "updatedAt"
+                          ],
+                          "description": "One subject's override: its version, its mode, its pins, and why."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The override after the write, or null when the subject now has none — a whole clear, or a clear of nothing."
+                    },
+                    "version": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "The version the next write must name. 0 when the subject has never had an override; a cleared one keeps its version, so a stale writer stays stale."
+                    }
+                  },
+                  "required": [
+                    "subjectType",
+                    "subjectId",
+                    "override",
+                    "version"
+                  ],
+                  "description": "An override write's result: the subject, its override now, and the version to write against next."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "payments:overrides:unrestricted"
+        ]
+      }
+    },
+    "/payments/entitlements/overrides/clear": {
+      "post": {
+        "tags": [
+          "payments"
+        ],
+        "operationId": "postPaymentsEntitlementsOverridesClear",
+        "summary": "Unpin allowances for one subject, or clear its override.",
+        "requestBody": {
+          "required": true,
+          "description": "A control-plane request to unpin names, or — naming neither list — to clear the subject's override entirely, `unrestricted` included. Idempotent: clearing nothing answers 200. A clear never resets the version.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "subjectType": {
+                    "type": "string",
+                    "enum": [
+                      "user",
+                      "organization"
+                    ],
+                    "description": "Which kind of holder the override is for. Named, never assumed — and refused when it is not the kind this project bills."
+                  },
+                  "subjectId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 180,
+                    "description": "The subject whose allowances this shades."
+                  },
+                  "version": {
+                    "description": "The override version the caller read. Optional: sent, a clear behind the row is refused as stale; omitted, the clear is not checked, which is safe because a clear can only move a subject back toward its plan — unpinning a name on an unrestricted subject is refused.",
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "reason": {
+                    "description": "Why, when the caller says. Recorded on the audit event.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  },
+                  "quotas": {
+                    "description": "Quota pins to remove. Each resolves from the plan again. Refused on an unrestricted subject, where it would resolve to unlimited.",
+                    "maxItems": 100,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[a-z][A-Za-z0-9_]*$",
+                      "description": "A quota or feature name — `emails`, `seats`, `auditExport`. An identifier gating code reads, never display copy, and never translated."
+                    }
+                  },
+                  "features": {
+                    "description": "Feature pins to remove. Each resolves from the plan again. Refused on an unrestricted subject, where it would resolve to on.",
+                    "maxItems": 100,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[a-z][A-Za-z0-9_]*$",
+                      "description": "A quota or feature name — `emails`, `seats`, `auditExport`. An identifier gating code reads, never display copy, and never translated."
+                    }
+                  }
+                },
+                "required": [
+                  "subjectType",
+                  "subjectId"
+                ],
+                "additionalProperties": false,
+                "description": "A control-plane request to unpin names, or — naming neither list — to clear the subject's override entirely, `unrestricted` included. Idempotent: clearing nothing answers 200. A clear never resets the version."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "An override write's result: the subject, its override now, and the version to write against next.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "subjectType": {
+                      "type": "string",
+                      "enum": [
+                        "user",
+                        "organization"
+                      ],
+                      "description": "Which kind of holder, echoed."
+                    },
+                    "subjectId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 180,
+                      "description": "The subject, echoed."
+                    },
+                    "override": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "version": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991,
+                              "description": "The version a set must send back. A set naming an older one is refused as stale."
+                            },
+                            "unrestricted": {
+                              "type": "boolean",
+                              "description": "Whether every quota is unlimited and every feature on, except the pins, for every name present and future."
+                            },
+                            "quotas": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "A whole number from 0, or null for unlimited."
+                              },
+                              "description": "The pinned quotas."
+                            },
+                            "features": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {
+                                "type": "boolean",
+                                "description": "Whether the switch is on."
+                              },
+                              "description": "The pinned features."
+                            },
+                            "reason": {
+                              "type": "string",
+                              "description": "The reason the last write gave."
+                            },
+                            "updatedAt": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                              "description": "When it last changed, ISO-8601."
+                            }
+                          },
+                          "required": [
+                            "version",
+                            "unrestricted",
+                            "quotas",
+                            "features",
+                            "reason",
+                            "updatedAt"
+                          ],
+                          "description": "One subject's override: its version, its mode, its pins, and why."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The override after the write, or null when the subject now has none — a whole clear, or a clear of nothing."
+                    },
+                    "version": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "The version the next write must name. 0 when the subject has never had an override; a cleared one keeps its version, so a stale writer stays stale."
+                    }
+                  },
+                  "required": [
+                    "subjectType",
+                    "subjectId",
+                    "override",
+                    "version"
+                  ],
+                  "description": "An override write's result: the subject, its override now, and the version to write against next."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "payments:overrides:clear"
         ]
       }
     },

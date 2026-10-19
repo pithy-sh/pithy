@@ -4,6 +4,7 @@
 import { describe, expect, test } from "vitest";
 import { PAYMENTS_RAILS } from "../data/rail";
 import {
+  compOnlyEntitlements,
   entitlementsForProduct,
   grantableEntitlements,
   PaymentsConfig,
@@ -24,7 +25,10 @@ import {
  * rail, a SKU, or a grant, and would say nothing new by restating the subject. The tests that *are*
  * about the subject write it out.
  */
-const BILLING_SUBJECT = { billingSubject: "user" } as const;
+const BILLING_SUBJECT = {
+  billingSubject: "user",
+  entitlements: { pro: { name: "Pro" }, ads_removed: { name: "Remove ads" }, team: { name: "Team" } },
+} as const;
 
 /** Where Stripe's hosted pages return to. Required whenever the Stripe rail is on. */
 const STRIPE_RETURN_URLS = {
@@ -466,14 +470,14 @@ describe("catalog lookups", () => {
     expect(entitlementsForProduct(config, "nope")).toEqual([]);
   });
 
-  test("the grantable set is what the catalog sells plus what the adopter declared", () => {
-    // The set a manual grant is checked against (#300). Deduplicated across products, because two
-    // products granting one key is the whole point of the catalog's shape.
-    expect([...grantableEntitlements(config)].sort()).toEqual(["ads_removed", "pro"]);
-    const withDeclared = PaymentsConfig.parse({
+  test("the grantable set is every declared key — sold or comp-only", () => {
+    // The set a manual grant is checked against (#300). A key is declared once, however many products
+    // mention it, and a declared key no product sells is comp-only.
+    expect([...grantableEntitlements(config)].sort()).toEqual(["ads_removed", "pro", "team"]);
+    const withCompOnly = PaymentsConfig.parse({
       ...BILLING_SUBJECT,
       rails: { apple: true },
-      manualEntitlements: ["founder", "pro"],
+      entitlements: { pro: { name: "Pro" }, founder: { name: "Founder" } },
       products: {
         pro_monthly: {
           type: "subscription",
@@ -483,22 +487,191 @@ describe("catalog lookups", () => {
         },
       },
     });
-    expect([...grantableEntitlements(withDeclared)].sort()).toEqual(["founder", "pro"]);
+    expect([...grantableEntitlements(withCompOnly)].sort()).toEqual(["founder", "pro"]);
+    expect(compOnlyEntitlements(withCompOnly)).toEqual(["founder"]);
   });
 
   test("a project selling nothing and declaring nothing defines no key at all", () => {
     // Empty is a real answer, not a missing one: every grant against it is refused, because there is no
     // vocabulary to grant in. The same statement the catalog read makes as `{ enabled: false }`.
-    expect(grantableEntitlements(PaymentsConfig.parse({ ...BILLING_SUBJECT })).size).toBe(0);
+    expect(grantableEntitlements(PaymentsConfig.parse({ billingSubject: "user" })).size).toBe(0);
   });
 
-  test("a declared manual key must still be a well-formed entitlement key", () => {
-    // The escape widens *which* keys are legal, never what a key may look like — gating code names these.
-    expect(() => PaymentsConfig.parse({ ...BILLING_SUBJECT, manualEntitlements: ["Founder Tier!"] })).toThrow();
+  test("a declared key must still be a well-formed entitlement key", () => {
+    // The declaration widens *which* keys are legal, never what a key may look like — gating code names these.
+    expect(() =>
+      PaymentsConfig.parse({ ...BILLING_SUBJECT, entitlements: { "Founder Tier!": { name: "Founder" } } }),
+    ).toThrow();
   });
 
   test("reports which rails are enabled", () => {
     expect(railEnabled(config, "apple")).toBe(true);
     expect(railEnabled(PaymentsConfig.parse({ ...BILLING_SUBJECT, products: {} }), "apple")).toBe(false);
+  });
+});
+
+describe("entitlement declarations", () => {
+  const sold = {
+    type: "subscription",
+    name: "Growth monthly",
+    entitlements: ["growth"],
+    apple: { productId: "com.acme.growth.monthly" },
+  } as const;
+
+  test("a key a product mentions but nothing declares is refused, naming the product and the key", () => {
+    const result = PaymentsConfig.safeParse({
+      billingSubject: "user",
+      rails: { apple: true },
+      products: { growth_monthly: sold },
+    });
+    expect(result.success).toBe(false);
+    const issue = result.error?.issues[0];
+    expect(issue?.path).toEqual(["products", "growth_monthly", "entitlements"]);
+    expect(issue?.message).toContain('"growth_monthly"');
+    expect(issue?.message).toContain('"growth"');
+  });
+
+  test("a key declared and sold by nothing is legal — it is comp-only", () => {
+    const config = PaymentsConfig.parse({
+      billingSubject: "user",
+      entitlements: { enterprise: { name: "Enterprise", quotas: { emails: null } } },
+    });
+    expect(compOnlyEntitlements(config)).toEqual(["enterprise"]);
+  });
+
+  test("a declared key a product mentions is both grantable and sold", () => {
+    const config = PaymentsConfig.parse({
+      billingSubject: "user",
+      rails: { apple: true },
+      entitlements: { growth: { name: "Growth" } },
+      products: { growth_monthly: sold },
+    });
+    expect(grantableEntitlements(config).has("growth")).toBe(true);
+    expect(compOnlyEntitlements(config)).toEqual([]);
+  });
+
+  test("`manualEntitlements` is refused at parse, and the message names the declaration to write instead", () => {
+    // A silent ignore would drop a comp-only key and nobody would see it.
+    const result = PaymentsConfig.safeParse({ billingSubject: "user", manualEntitlements: ["founder"] });
+    expect(result.success).toBe(false);
+    const issue = result.error?.issues[0];
+    expect(issue?.path).toEqual(["manualEntitlements"]);
+    expect(issue?.message).toContain("`entitlements`");
+  });
+
+  test("a quota that is not a whole number from 0 or null is refused, and the path names the key and the name", () => {
+    for (const bad of [2.5, -1, "500"]) {
+      const result = PaymentsConfig.safeParse({
+        billingSubject: "user",
+        entitlements: { growth: { name: "Growth", quotas: { emails: bad } } },
+      });
+      expect(result.success).toBe(false);
+      expect(result.error?.issues[0]?.path).toEqual(["entitlements", "growth", "quotas", "emails"]);
+    }
+  });
+
+  test("an overrideMax naming an undeclared quota, or below the plan's value, is refused at parse", () => {
+    const undeclared = PaymentsConfig.safeParse({
+      billingSubject: "user",
+      entitlements: { growth: { name: "Growth", quotas: { emails: 5000 }, overrideMax: { seats: 10 } } },
+    });
+    expect(undeclared.error?.issues[0]?.path).toEqual(["entitlements", "growth", "overrideMax", "seats"]);
+    const below = PaymentsConfig.safeParse({
+      billingSubject: "user",
+      entitlements: { growth: { name: "Growth", quotas: { emails: 5000 }, overrideMax: { emails: 100 } } },
+    });
+    expect(below.error?.issues[0]?.message).toContain("below the 5000");
+  });
+
+  test("defaults are optional, and parse when given", () => {
+    expect(PaymentsConfig.parse({ billingSubject: "user" }).defaults).toBeUndefined();
+    expect(
+      PaymentsConfig.parse({ billingSubject: "user", defaults: { quotas: { emails: 50 } } }).defaults?.quotas,
+    ).toEqual({ emails: 50 });
+  });
+});
+
+describe("reported billing", () => {
+  const STRIPE = {
+    successUrl: "https://academy.example/thanks",
+    cancelUrl: "https://academy.example/pricing",
+    portalReturnUrl: "https://academy.example/account",
+  };
+  const reported = (billing: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+    billingSubject: "organization" as const,
+    rails: { stripe: true, apple: true },
+    stripe: STRIPE,
+    entitlements: { pro: { name: "Pro" } },
+    products: {
+      academy_seats: {
+        type: "subscription",
+        name: "Academy",
+        entitlements: ["pro"],
+        stripe: { priceId: "price_seats" },
+        apple: { productId: "com.academy.seats" },
+        billing: { kind: "reported", unit: "student", max: 500, ...billing },
+        ...extra,
+      },
+    },
+  });
+
+  test("cadence defaults to period-end, and min to 0", () => {
+    const config = PaymentsConfig.parse(reported({ rails: ["stripe"], stripe: { meterEventName: "students" } }));
+    expect(config.products.academy_seats?.billing).toMatchObject({ cadence: "period-end", min: 0 });
+  });
+
+  test("an existing catalog with no billing block parses exactly as before", () => {
+    const config = PaymentsConfig.parse(catalog());
+    expect(Object.values(config.products).every((product) => product.billing === undefined)).toBe(true);
+  });
+
+  test.each([["apple"], ["google"]])(
+    "a reported product listing %s is refused, naming the rail and the product",
+    (rail) => {
+      const result = PaymentsConfig.safeParse(
+        reported({ rails: ["stripe", rail], stripe: { meterEventName: "students" } }),
+      );
+      expect(result.success).toBe(false);
+      const message = result.error?.issues.map((issue) => issue.message).join("\n") ?? "";
+      expect(message).toContain('"academy_seats"');
+      expect(message).toContain(rail);
+    },
+  );
+
+  test("Lemon Squeezy is refused with the reason it is deferred", () => {
+    const result = PaymentsConfig.safeParse(
+      reported({ rails: ["stripe", "lemonSqueezy"], stripe: { meterEventName: "students" } }),
+    );
+    expect(result.error?.issues.map((issue) => issue.message).join("\n")).toContain("subscription item");
+  });
+
+  test("a rail the product is not sold on, a missing meter, a missing price, or min above max is refused", () => {
+    const paddle = PaymentsConfig.safeParse(reported({ rails: ["paddle"], paddle: { priceId: "pri_unit" } }));
+    expect(paddle.error?.issues.map((issue) => issue.message).join("\n")).toContain("is not sold there");
+    const meterless = PaymentsConfig.safeParse(reported({ rails: ["stripe"] }));
+    expect(meterless.error?.issues.map((issue) => issue.message).join("\n")).toContain("meterEventName");
+    const inverted = PaymentsConfig.safeParse(
+      reported({ rails: ["stripe"], stripe: { meterEventName: "students" }, min: 10, max: 5 }),
+    );
+    expect(inverted.error?.issues.map((issue) => issue.message).join("\n")).toContain("must not exceed");
+  });
+
+  test("only a subscription can report a quantity", () => {
+    const result = PaymentsConfig.safeParse(
+      reported({ rails: ["stripe"], stripe: { meterEventName: "students" } }, { type: "non_consumable" }),
+    );
+    expect(result.error?.issues.map((issue) => issue.message).join("\n")).toContain("only a subscription");
+  });
+
+  test("an enforced meter with no quota of its name is refused — it would refuse everyone", () => {
+    const result = PaymentsConfig.safeParse({ billingSubject: "user", meters: { emails: { enforce: true } } });
+    expect(result.error?.issues[0]?.path).toEqual(["meters", "emails"]);
+    expect(
+      PaymentsConfig.safeParse({
+        billingSubject: "user",
+        meters: { emails: { enforce: true } },
+        defaults: { quotas: { emails: 50 } },
+      }).success,
+    ).toBe(true);
   });
 });

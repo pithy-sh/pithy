@@ -28,13 +28,14 @@ function encodeRow(
   ownerId: string | null,
   size: number | null,
   status: StorageObjectStatus,
+  organizationId: string | null = null,
 ): StorageObjectRow {
   return StorageObject.encode({
     id,
     key: `obj/${id}`,
     path: `${id}.bin`,
     ownerId,
-    organizationId: null,
+    organizationId,
     contentType: "application/octet-stream",
     size,
     visibility: "private",
@@ -52,10 +53,11 @@ async function insert(
   ownerId: string | null,
   size: number | null,
   status: StorageObjectStatus,
+  organizationId: string | null = null,
 ): Promise<void> {
   await db
     .insertInto(STORAGE_OBJECTS_TABLE)
-    .values(encodeRow(id, ownerId, size, status))
+    .values(encodeRow(id, ownerId, size, status, organizationId))
     .execute();
 }
 
@@ -334,5 +336,107 @@ describe("updateSettlingQuota", () => {
     const { record, overshoot } = settle(90 * MIB);
     await updateSettlingQuota({ db, ownerId: "ada", limitBytes, additionalBytes: overshoot, record });
     expect(await usedBytes(db, "ada")).toBe(90 * MIB);
+  });
+});
+
+describe("an organization's ceiling", () => {
+  const limitBytes = 100 * MIB;
+
+  test("usedBytes sums every member's rows held for the organization, and only those", async () => {
+    await insert(uuid(1), "ada", 30 * MIB, "stored", "org-a");
+    await insert(uuid(2), "grace", 20 * MIB, "pending", "org-a");
+    await insert(uuid(3), "grace", 50 * MIB, "stored", "org-b");
+    await insert(uuid(4), "ada", 40 * MIB, "stored");
+
+    expect(await usedBytes(db, "ada", "org-a")).toBe(50 * MIB);
+    expect(await usedBytes(db, "ada")).toBe(70 * MIB);
+  });
+
+  test("a reservation counts a colleague's bytes against the organization's one allowance", async () => {
+    // Ada holds nothing for org-a herself, so a per-owner sum would pass. The organization holds 70 MiB.
+    await insert(uuid(1), "grace", 70 * MIB, "stored", "org-a");
+    const reservation = {
+      db,
+      ownerId: "ada",
+      organizationId: "org-a",
+      limitBytes,
+      additionalBytes: 40 * MIB,
+      record: encodeRow(uuid(2), "ada", 40 * MIB, "pending", "org-a"),
+    };
+    await expect(insertReservingQuota(reservation)).rejects.toMatchObject({
+      payload: { code: "storage/quota_exceeded" },
+    });
+    expect(await usedBytes(db, "ada", "org-a")).toBe(70 * MIB);
+  });
+
+  test("a completion settles against the organization's sum, not the uploader's own", async () => {
+    // Ada's own bytes in org-a are her 30 MiB reservation, so a per-owner settlement at 50 MiB would pass.
+    // Grace's 60 MiB in the same organization puts the overshoot past the plan's 100 MiB.
+    await insert(uuid(1), "grace", 60 * MIB, "stored", "org-a");
+    await insert(uuid(2), "ada", 30 * MIB, "pending", "org-a");
+    const settlement = {
+      db,
+      ownerId: "ada",
+      organizationId: "org-a",
+      limitBytes,
+      additionalBytes: 20 * MIB,
+      record: encodeRow(uuid(2), "ada", 50 * MIB, "stored", "org-a"),
+    };
+    await expect(updateSettlingQuota(settlement)).rejects.toMatchObject({
+      payload: { code: "storage/quota_exceeded" },
+    });
+    const row = await db
+      .selectFrom(STORAGE_OBJECTS_TABLE)
+      .selectAll()
+      .where("id", "=", uuid(2))
+      .executeTakeFirstOrThrow();
+    expect(row.status).toBe("pending");
+
+    // The same overshoot within what the organization has left settles.
+    await updateSettlingQuota({
+      ...settlement,
+      additionalBytes: 10 * MIB,
+      record: encodeRow(uuid(2), "ada", 40 * MIB, "stored", "org-a"),
+    });
+    expect(await usedBytes(db, "ada", "org-a")).toBe(100 * MIB);
+  });
+});
+
+describe("a metered ceiling", () => {
+  const limitBytes = 100 * MIB;
+  const planRefusal = { payload: { code: "payments/quota_exceeded", status: 402, params: { meter: "storageBytes" } } };
+
+  test("the pre-check, the reservation and the settlement all refuse in the plan's words, at 402", async () => {
+    await insert(uuid(1), "ada", 90 * MIB, "stored");
+    await expect(
+      assertWithinQuota({ db, ownerId: "ada", limitBytes, metered: true, additionalBytes: 20 * MIB }),
+    ).rejects.toMatchObject(planRefusal);
+    await expect(
+      insertReservingQuota({
+        db,
+        ownerId: "ada",
+        limitBytes,
+        metered: true,
+        additionalBytes: 20 * MIB,
+        record: encodeRow(uuid(2), "ada", 20 * MIB, "pending"),
+      }),
+    ).rejects.toMatchObject(planRefusal);
+    await insert(uuid(3), "ada", 10 * MIB, "pending");
+    await expect(
+      updateSettlingQuota({
+        db,
+        ownerId: "ada",
+        limitBytes,
+        metered: true,
+        additionalBytes: 5 * MIB,
+        record: encodeRow(uuid(3), "ada", 15 * MIB, "stored"),
+      }),
+    ).rejects.toMatchObject(planRefusal);
+  });
+
+  test("a negative declared size is still the client's mistake, not the plan's", async () => {
+    await expect(
+      assertWithinQuota({ db, ownerId: "ada", limitBytes, metered: true, additionalBytes: -1 }),
+    ).rejects.toMatchObject({ payload: { code: "storage/quota_exceeded" } });
   });
 });

@@ -369,6 +369,12 @@ export interface CheckoutSessionInput {
   /** Whether this buys a recurring subscription or a one-off. Decides the hosted flow the store presents. */
   subscription: boolean;
   /**
+   * Whether the product bills by a reported quantity (`billing.kind: "reported"`). Such a price is metered on
+   * Stripe, and Stripe refuses a line quantity on a metered price — so the line goes out with none, and the
+   * count arrives later as reported usage. Absent is a flat-priced product.
+   */
+  reported?: boolean;
+  /**
    * The subject the purchase is for — the authenticated caller, or the organization the project bills on
    * their behalf, as the configured subject seam resolved it.
    *

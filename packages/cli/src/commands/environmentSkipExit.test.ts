@@ -264,6 +264,7 @@ function projectWorkers(dir: string): unknown[] {
         testersCapability(),
         paymentsCapability({
           billingSubject: "user",
+          entitlements: { pro: { name: "pro" } },
           rails: { lemonSqueezy: true },
           lemonSqueezy: { successUrl: "https://app.acme.test/thanks" },
           products: {

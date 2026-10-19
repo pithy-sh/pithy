@@ -7,6 +7,7 @@ import { accessCaller, type PermissionHook } from "@pithy-sh/core/src/access/acc
 import { UsageQuery, UsageResponse, usageRollup } from "@pithy-sh/core/src/access/usage";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
+import { meterLimit } from "@pithy-sh/core/src/entitlement/allowance";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { validate } from "@pithy-sh/core/src/http/validation";
@@ -130,6 +131,12 @@ function defaultResolveDeps(
       ...(permission ? { permission } : {}),
       env: c.env,
       signer: () => resolveDeliverySigner(env),
+      // The `mediaItems` ceiling where the entitlement provider enforces it, with the organization it covers;
+      // undefined where it does not.
+      itemLimit: async () => {
+        const ceiling = await meterLimit(c, "mediaItems");
+        return ceiling.enforced ? { limit: ceiling.limit, tenant: ceiling.tenant } : undefined;
+      },
     };
   };
 }

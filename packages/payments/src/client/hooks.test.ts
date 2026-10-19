@@ -10,6 +10,7 @@ import { PADDLE_FRAME_HEIGHT, PADDLE_FRAME_STYLE, PADDLE_NO_CONTAINER } from "./
 import { GB, US_NEW_YORK } from "./fixtures/pricePreview";
 import {
   type UsePricePreview,
+  useAllowances,
   useCheckout,
   useEntitlement,
   usePaddle,
@@ -140,6 +141,32 @@ async function settle(): Promise<void> {
     await Promise.resolve();
   });
 }
+
+describe("useAllowances", () => {
+  const ALLOWED = { entitlements: [], quotas: { seats: 10 }, features: { sso: true } };
+
+  test("starts with nothing — never zero of everything — and loading", async () => {
+    const held = await render(() => useAllowances({ fetch: queue([[200, ALLOWED]]) }));
+    expect(held.history[0]).toMatchObject({ allowances: null, loading: true });
+  });
+
+  test("holds the resolved allowances once the read lands", async () => {
+    const held = await render(() => useAllowances({ fetch: queue([[200, ALLOWED]]) }));
+    await settle();
+    expect(held.current).toMatchObject({
+      allowances: { quotas: { seats: 10 }, features: { sso: true } },
+      loading: false,
+    });
+  });
+
+  test("an unreachable worker leaves allowances null and says why", async () => {
+    const dead: PaymentsFetch = () => Promise.reject(new Error("offline"));
+    const held = await render(() => useAllowances({ fetch: dead }));
+    await settle();
+    expect(held.current.allowances).toBeNull();
+    expect(held.current.readFailure).not.toBeNull();
+  });
+});
 
 describe("useEntitlement", () => {
   test("starts not entitled and loading — a paywall fails closed while the read is in flight", async () => {

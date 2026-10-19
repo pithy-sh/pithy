@@ -2,11 +2,18 @@
 // SPDX-License-Identifier: MIT
 
 import type { PithyMiddleware } from "@pithy-sh/core/src/capability/capability";
-import type { Entitlement, EntitlementHolder, EntitlementResolver } from "@pithy-sh/core/src/entitlement/entitlement";
+import type {
+  Entitlement,
+  EntitlementHolder,
+  EntitlementResolver,
+  MeterLimit,
+} from "@pithy-sh/core/src/entitlement/entitlement";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { encodeSubjectReference, type PaymentsSubject } from "../data/subject";
 import type { PaymentsDatabase } from "../data/tables";
 import { resolveEntitlements } from "../projection/resolve";
+import { requireDeclaredFeature, requireDeclaredQuota, resolveFeature, resolveQuota } from "./allowance";
+import { allowanceInputFor, meterLimitFor, type PaymentsAllowances } from "./meter";
 import { type PaymentsSubjectSeam, resolvePaymentsSubject } from "./subjectSeam";
 
 /**
@@ -81,7 +88,11 @@ export function createPaymentsEntitlementResolver(
  * neither is a composition problem, and reporting `null` here would send an operator looking for a missing
  * capability.
  */
-export function installEntitlementResolver(database: string, seam: PaymentsSubjectSeam): PithyMiddleware {
+export function installEntitlementResolver(
+  database: string,
+  seam: PaymentsSubjectSeam,
+  allowances: PaymentsAllowances = { declarations: { entitlements: {} }, meters: {} },
+): PithyMiddleware {
   return (app) => {
     app.use("*", async (c, next) => {
       // **One resolution per request, shared by `list()` and `holder()`.** The seam is the adopter's and
@@ -93,8 +104,38 @@ export function installEntitlementResolver(database: string, seam: PaymentsSubje
         resolving ??= resolvePaymentsSubject(c, seam);
         return resolving;
       };
+      /** The database, or the wiring fault — checked only once a read actually needs one. */
+      const appDatabase = (): PaymentsDatabase => {
+        const db = (c.var.db as Record<string, PaymentsDatabase>)[database];
+        if (!db) {
+          throw new InternalError({
+            message: "Payments is not configured.",
+            action: "Bind a D1 database named DB in wrangler.jsonc.",
+            detail: `No \`${database}\` database on c.var.db; payments cannot resolve allowances.`,
+          });
+        }
+        return db;
+      };
       c.set("entitlements", {
         provider: PAYMENTS_ENTITLEMENT_PROVIDER,
+        // **The name is checked before anything is read**, so a typo is a hard failure on every request
+        // rather than only on the ones that reach D1 — and never a 0 or an unlimited.
+        quota: async (name: string): Promise<number | null> => {
+          requireDeclaredQuota(allowances.declarations, name);
+          const subject = await subjectOnce();
+          const input = await allowanceInputFor(subject && appDatabase(), allowances.declarations, subject, new Date());
+          return resolveQuota(input, name).effective.value;
+        },
+        feature: async (name: string): Promise<boolean> => {
+          requireDeclaredFeature(allowances.declarations, name);
+          const subject = await subjectOnce();
+          const input = await allowanceInputFor(subject && appDatabase(), allowances.declarations, subject, new Date());
+          return resolveFeature(input, name).effective.value;
+        },
+        meterLimit: async (meter: string): Promise<MeterLimit> => {
+          const subject = await subjectOnce();
+          return meterLimitFor(appDatabase(), allowances, subject, meter, new Date());
+        },
         // Who the read answered for, for the log and the trail alone. `undefined` is a real answer and a
         // different one from "holds nothing": it is a caller acting for no organization, which is what
         // lets core's denial say so instead of reporting an empty list twice over.

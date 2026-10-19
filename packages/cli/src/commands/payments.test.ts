@@ -137,6 +137,7 @@ async function succeed(name: string, args: Record<string, unknown>): Promise<Rec
 function lemonSqueezyWorker(): ResolvedWorker[] {
   const capability = paymentsCapability({
     billingSubject: "user",
+    entitlements: { pro: { name: "pro" } },
     rails: { lemonSqueezy: true },
     lemonSqueezy: { successUrl: "https://app.example.com/thanks" },
     products: {

@@ -11,7 +11,7 @@ import {
   readablePredicate,
 } from "@pithy-sh/core/src/access/access";
 import { resolveVisibility } from "@pithy-sh/core/src/access/visibility";
-import { fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { fromZodError, InternalError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { z } from "zod";
 import type { MediaConfig } from "../config/config";
 import type { StorageBackend } from "../data/enums";
@@ -95,6 +95,13 @@ export interface HandlerDeps {
   env: Record<string, unknown>;
   /** The delivery signer, resolved only when a signed URL is minted. */
   signer: () => Promise<DeliverySigner>;
+  /**
+   * How many media items may be held — the `mediaItems` quota where the entitlement provider enforces that
+   * meter, `limit: null` for unlimited — and the organization the number covers, or `tenant: null` when it is
+   * the caller's own. Undefined where nothing limits it. Absent is undefined: a project composing no
+   * provider, or leaving the meter advisory, uploads as it always did.
+   */
+  itemLimit?: () => Promise<{ limit: number | null; tenant: string | null } | undefined>;
 }
 
 /** The response to an upload-init: where to upload and the record's coordinates. */
@@ -180,6 +187,33 @@ function signsAtCloudflare(record: Pick<MediaRecord, "storageBackend">): boolean
 }
 
 /**
+ * The limit a create is written under, or undefined for none: an unlimited or absent ceiling limits nothing,
+ * and a record with no owner is never limited.
+ *
+ * **A ceiling that covers an organization covers only that organization's records**, so a record about to be
+ * held for a different one — or for none — would sit outside the very count it is checked against, and never
+ * count. That is refused before anything is minted: the billing subject and the organization in force
+ * disagree, which is wiring for the adopter to fix, and under-counting has no recovery.
+ */
+function itemCeiling(
+  resolved: { limit: number | null; tenant: string | null } | undefined,
+  ownerId: string | null,
+  organizationId: string | null,
+): { limit: number; organizationId?: string } | undefined {
+  if (resolved === undefined || resolved.limit === null || ownerId === null) return undefined;
+  if (resolved.tenant === null) return { limit: resolved.limit };
+  if (organizationId !== resolved.tenant) {
+    throw new InternalError({
+      message: "This media cannot be counted against the plan it is billed to, so nothing was written.",
+      action:
+        "Make the payments subject resolver and the organization in force agree — both should answer the organization the caller acts for.",
+      detail: `The mediaItems ceiling covers organization ${resolved.tenant}; the record would be held for ${organizationId ?? "no organization"}.`,
+    });
+  }
+  return { limit: resolved.limit, organizationId: resolved.tenant };
+}
+
+/**
  * Upload-init: mint a direct-upload URL, create a `pending` record (with the client-computed sha256/phash
  * and any extension fields), and return where to upload. The bytes go straight to the backend — never
  * through the Worker.
@@ -208,6 +242,7 @@ export async function createMedia(deps: HandlerDeps, input: CreateMediaInput): P
     });
   }
   const signed = visibility !== "public";
+  const ceiling = itemCeiling(await deps.itemLimit?.(), deps.caller.userId, organizationId);
   const id = deps.newId();
   const target = await deps.storage.mintUpload({
     type: input.type,
@@ -247,7 +282,19 @@ export async function createMedia(deps: HandlerDeps, input: CreateMediaInput): P
     createdAt: now,
     updatedAt: now,
   } as MediaRecord);
-  await deps.store.create(record);
+  const created = await deps.store.create(record, ceiling);
+  if (created === null) {
+    // The plan's allowance, refused in the provider's own words: the remedy is a bigger tier or a pinned
+    // number, and a 402 says so. The minted upload slot is left to expire unused — nothing points at it.
+    throw new PithyError({
+      code: "payments/quota_exceeded",
+      status: 402,
+      message: "This plan's allowance is used up for this period.",
+      action: "Upgrade the plan, or pin a larger mediaItems allowance for this subject from the control plane.",
+      params: { meter: "mediaItems", limit: ceiling?.limit ?? 0 },
+      detail: `${ceiling?.organizationId ?? deps.caller.userId ?? "anonymous"} holds ${ceiling?.limit} media items, the mediaItems quota.`,
+    });
+  }
   return { id, uploadUrl: target.uploadUrl, storageBackend: target.storageBackend, storageKey: target.storageKey };
 }
 

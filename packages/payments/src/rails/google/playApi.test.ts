@@ -439,6 +439,7 @@ describe("playProductEvent", () => {
         originalTransactionId: null,
         amountMinor: null,
         currency: null,
+        quantity: 1,
         providerEventAt: NOW,
         payload: playProduct,
       },

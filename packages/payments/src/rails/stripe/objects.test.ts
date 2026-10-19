@@ -100,6 +100,21 @@ describe("stripeSubscriptionStatus", () => {
 });
 
 describe("mapStripeSubscription", () => {
+  test("states the item's quantity, and states nothing for a metered item that carries none (#561)", () => {
+    const base = clone(subscriptionCreated).data.object as { items: { data: Record<string, unknown>[] } };
+    const item = base.items.data[0] ?? {};
+    const seats = mapStripeSubscription(
+      subscription({ items: { object: "list", data: [{ ...item, quantity: 12 }] } }),
+      EVENT_AT,
+    );
+    expect(seats.event?.quantity).toBe(12);
+    const metered = { ...item };
+    delete metered.quantity;
+    expect(
+      mapStripeSubscription(subscription({ items: { object: "list", data: [metered] } }), EVENT_AT).event?.quantity,
+    ).toBeNull();
+  });
+
   test("keys the row on the invoice, and the family on the subscription", () => {
     // The invoice changes every billing period, so each period is its own purchase row — which is what makes a
     // `grants` clause fire per period, as it does for an Apple or Google renewal. The subscription id is the

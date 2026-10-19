@@ -8,6 +8,7 @@ import {
   PAYMENTS_PURCHASES_READ_SCOPE,
   PAYMENTS_RECONCILE_READ_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
+  PAYMENTS_USAGE_READ_SCOPE,
 } from "../http/scopes";
 
 /**
@@ -104,4 +105,31 @@ export const PAYMENTS_TABLE_DISCLOSURE: Record<keyof PaymentsTables, PaymentsDis
     withheld:
       "A sweep's resume token is internal bookkeeping, not a fact about a customer. Reading it answers nothing a management client asks, and the write it invites would silently skip every event between two cursor values.",
   },
+  /**
+   * One subject's override, read on the subject's entitlement read — the version a set must send back, the
+   * pins, and whether the subject is `unrestricted`. Read where the entitlements are because the two answer
+   * one question together: what this subject may have, and why. `unrestricted` also surfaces on the
+   * entitlement listing, because a privilege this size must not be inferable only from a row nobody opens.
+   */
+  pithyPaymentsOverrides: { reads: [PAYMENTS_ENTITLEMENTS_READ_SCOPE] },
+  /**
+   * Withheld. A counter exists to refuse a write at a limit and for no other purpose, and the subject read
+   * already says what the limit is. A page of every subject's usage is a page of every customer's activity,
+   * and nothing a management client does needs it.
+   */
+  pithyPaymentsMeterCounters: {
+    withheld:
+      "A meter counts to refuse at a limit and for nothing else. The limit is on the subject's entitlement read; a page of every subject's usage is a page of every customer's activity, which no pane needs.",
+  },
+  /**
+   * The last count reported for a subscription, on the subscription read — what a quantity-billed customer
+   * was billed for, and when it was sent.
+   */
+  pithyPaymentsUsageReports: { reads: [PAYMENTS_SUBSCRIPTIONS_READ_SCOPE] },
+  /**
+   * The usage-reporting run log, on its own scope — the reporting pass's health, as the reconcile run log is
+   * reconciliation's. Unlike that log it names subjects, in the findings an operator acts on, so it is not
+   * the health monitor's scope: it is granted to whoever answers "why was this customer not billed".
+   */
+  pithyPaymentsUsageRuns: { reads: [PAYMENTS_USAGE_READ_SCOPE] },
 };

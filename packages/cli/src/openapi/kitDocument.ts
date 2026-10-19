@@ -188,6 +188,7 @@ export const KIT_COMPOSITION: Readonly<Record<string, () => Capability>> = {
   payments: () =>
     payments({
       billingSubject: "user",
+      entitlements: { pro: { name: "Pro" } },
       rails: { apple: true, google: true, stripe: true },
       stripe: {
         successUrl: `${ORIGIN}/thanks?session={CHECKOUT_SESSION_ID}`,

@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, test } from "vitest";
 import { PaymentsConfig, type PaymentsConfigInput } from "../config/config";
 import { paymentsDatabase } from "../data/tables";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
+import { payments_0002_allowances } from "../migrations/0002_allowances";
 import type { PaddleHttpFetch, PaddleHttpRequest } from "../rails/paddle/api";
 import { accountReferenceProof } from "../rails/paddle/objects";
 import type { PaymentsPaddleCredentials } from "../secret/registry";
@@ -30,6 +31,10 @@ const TABLES = [
   "pithy_payments_webhook_events",
   "pithy_payments_reconcile_runs",
   "pithy_payments_sync_cursors",
+  "pithy_payments_overrides",
+  "pithy_payments_meter_counters",
+  "pithy_payments_usage_reports",
+  "pithy_payments_usage_runs",
 ];
 
 const CREDENTIALS: PaymentsPaddleCredentials = {
@@ -46,6 +51,7 @@ const CATALOG: PaymentsConfigInput = {
   // Required now. `user` for most of this file; the organization case rebuilds the config, because the pair
   // a sweep writes comes off the event's own proven reference and not off this key.
   billingSubject: "user",
+  entitlements: { pro: { name: "pro" } },
   rails: { paddle: true },
   paddle: {
     clientToken: "test_1234567890abcdefghij",
@@ -68,6 +74,7 @@ let seq = 0;
 beforeEach(async () => {
   for (const table of TABLES) await env.DB.exec(`DROP TABLE IF EXISTS ${table}`);
   await payments_0001_purchases.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
+  await payments_0002_allowances.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
   seq = 0;
 });
 
@@ -386,6 +393,7 @@ describe("sweepPaddle", () => {
       deps(transport, {
         config: PaymentsConfig.parse({
           billingSubject: "user",
+          entitlements: { pro: { name: "pro" } },
           rails: { stripe: true },
           stripe: {
             successUrl: "https://acme.example/thanks",

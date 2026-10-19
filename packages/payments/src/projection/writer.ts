@@ -188,6 +188,7 @@ export async function projectPurchase(
     originalTransactionId: event.originalTransactionId,
     amountMinor: event.amountMinor,
     currency: event.currency,
+    quantity: event.quantity,
     providerEventAt: event.providerEventAt,
     payload: event.payload,
     createdAt: existing?.createdAt ?? now,
@@ -400,6 +401,9 @@ function upsertPurchase(db: PaymentsDatabase, row: PaymentsPurchaseRow) {
             originalTransactionId: row.originalTransactionId,
             amountMinor: row.amountMinor,
             currency: row.currency,
+            // The newest event's statement, under the same monotonic rule as every column beside it — so a
+            // client submission, a webhook and a reconciliation pass converge on one quantity.
+            quantity: row.quantity,
             providerEventAt: row.providerEventAt,
             payload: row.payload,
             updatedAt: row.updatedAt,

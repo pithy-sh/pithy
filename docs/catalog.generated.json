@@ -1779,6 +1779,14 @@
       "remedy": "Fix the call"
     },
     {
+      "code": "payments/override_stale",
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
+    },
+    {
       "code": "payments/product_not_found",
       "status": 404,
       "exitClass": "precondition",
@@ -1793,6 +1801,14 @@
       "exit": 4,
       "retryable": true,
       "remedy": "Retry with backoff"
+    },
+    {
+      "code": "payments/quota_exceeded",
+      "status": 402,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "payments/rail_not_configured",

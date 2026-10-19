@@ -224,6 +224,31 @@ declare module "virtual:pithy/payments" {
             paddle: string | null;
           };
         }[];
+        /**
+         * What each entitlement key buys, keyed by the key — its display name, its quotas (a whole number,
+         * or null for unlimited) and its features — so a paywall can lay tiers side by side. What the
+         * caller's own holder resolves to is `GET {basePath}/entitlements`. A UX affordance, never a
+         * security boundary: the server enforces every number here. The ceilings an operator's override is
+         * bounded by stay server-side.
+         */
+        entitlements: {
+          /** One declared key, by the key. */
+          [key: string]: {
+            /** The tier's display name — `Growth`. Not translated: it is a product name. */
+            name: string;
+            /** Quotas by name: a whole number, or null for unlimited. */
+            quotas: Record<string, number | null>;
+            /** Features by name. */
+            features: Record<string, boolean>;
+          };
+        };
+        /** What a caller holding no key gets — the free floor — or null when none is declared. */
+        defaults: {
+          /** Quotas by name: a whole number, or null for unlimited. */
+          quotas: Record<string, number | null>;
+          /** Features by name. */
+          features: Record<string, boolean>;
+        } | null;
       };
   export default config;
 }

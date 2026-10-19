@@ -229,6 +229,7 @@ describe("materializeHostConfigs", () => {
 describe("a local host handed the peers the project composes", () => {
   const GRANTING = {
     billingSubject: "user" as const,
+    entitlements: { pro: { name: "pro" } },
     rails: { apple: true },
     products: {
       coins_100: {

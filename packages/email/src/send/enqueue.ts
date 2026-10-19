@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { normalizeAddress } from "@pithy-sh/core/src/address/address";
+import type { MeterCharge, MeterSubject } from "@pithy-sh/core/src/entitlement/meter";
 import { isLocale } from "@pithy-sh/core/src/i18n/locale";
 import type { EmailJob } from "../data/emailJob";
 import { EmailJob as EmailJobSchema } from "../data/emailJob";
@@ -121,6 +122,16 @@ export interface EnqueueInput {
   inReplyTo?: string;
   /** The `References` chain, angle-bracketed and space-separated. Built by the caller from the parent. */
   references?: string;
+  /**
+   * Who this message is sent on behalf of, for the `emails` meter — the holder pair `@pithy-sh/payments`
+   * bills, `{ subjectType: "organization", subjectId }`.
+   *
+   * **Omit it and nothing is counted**, which is right for every message the kit sends on its own account: a
+   * magic link to somebody who has not signed up is not a tenant's usage. Name it on mail a customer's plan
+   * pays for — a campaign, a notification their workspace triggers — and, where the meter is enforced, an
+   * enqueue past the period's quota throws `payments/quota_exceeded` and writes no job.
+   */
+  subject?: MeterSubject;
 }
 
 /** Dependencies enqueue needs: the database, the from identity, optional send-Workflow binding, time, ids. */
@@ -149,6 +160,11 @@ export interface EnqueueDeps {
    * goes could not be consulted yet, which is strictly worse than queueing it.
    */
   suppressionDb?: EmailSuppressionDatabase;
+  /**
+   * Charge one email against the `emails` meter, or refuse — the composed provider's seam, closed over this
+   * request's env. Absent when no provider is composed, and then nothing is counted.
+   */
+  meter?: (charge: MeterCharge) => Promise<void>;
   now: Date;
   /** Generate a job id (a UUID in production). */
   newId: () => string;
@@ -308,6 +324,18 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
    * exist.
    */
   const batchId = sender ? (deps.newBatchId ?? mintBatchId)() : null;
+
+  /**
+   * Charge the `emails` meter **before the row exists**, so a refusal writes no job — and only for a message
+   * that is going to be sent. A withheld recipient costs the customer nothing, and a message the kit sends
+   * on nobody's account names no subject and is never counted.
+   *
+   * Before the insert rather than after it, and the cost is the right way round: an insert that fails after
+   * a charge over-counts by one, and over-counting briefly is recoverable where under-counting is not.
+   */
+  if (!blocked && input.subject !== undefined && deps.meter !== undefined) {
+    await deps.meter({ subject: input.subject, meter: "emails", amount: 1, now: deps.now });
+  }
 
   const marketing = template.category === "marketing";
   const job: EmailJob = {

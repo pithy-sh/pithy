@@ -22,6 +22,7 @@ import { payments } from "../capability";
 import type { PaymentsConfigInput } from "../config/config";
 import type { PaymentsSubjectType } from "../data/subject";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
+import { payments_0002_allowances } from "../migrations/0002_allowances";
 import { projectPurchase } from "../projection/writer";
 import { PAYMENTS_BILLING_SUBJECT } from "./manifestConfig";
 import {
@@ -103,6 +104,7 @@ function composedFor(billingSubject: PaymentsSubjectType): ReturnType<typeof cre
         // default would make it an accident. The advertised per-subject read carries both halves whichever
         // mode a project bills in — the path is the pair.
         billingSubject,
+        entitlements: { coins: { name: "coins" }, pro: { name: "pro" } },
         rails: { apple: true },
         products: PRODUCTS,
         ...(billingSubject === "organization"
@@ -286,6 +288,7 @@ async function seed(): Promise<void> {
 const PAYMENTS_CATALOG = payments({
   basePath: BASE_PATH,
   billingSubject: "user",
+  entitlements: { coins: { name: "coins" }, pro: { name: "pro" } },
   rails: { apple: true },
   products: {
     pro_monthly: {
@@ -308,6 +311,10 @@ beforeEach(async () => {
     "pithy_payments_webhook_events",
     "pithy_payments_reconcile_runs",
     "pithy_payments_sync_cursors",
+    "pithy_payments_overrides",
+    "pithy_payments_meter_counters",
+    "pithy_payments_usage_reports",
+    "pithy_payments_usage_runs",
     "pithy_payments_provider_accounts",
     "pithy_payments_entitlements",
     "pithy_payments_purchases",
@@ -321,6 +328,7 @@ beforeEach(async () => {
   await controlplane_0002_management_origin.up(db);
   await controlplane_0003_connection_principal.up(db);
   await payments_0001_purchases.up(db);
+  await payments_0002_allowances.up(db);
 });
 
 describe("what a management client discovers about payments", () => {
@@ -335,6 +343,8 @@ describe("what a management client discovers about payments", () => {
       "/billing/admin/entitlements/:subjectType/:subjectId",
       "/billing/admin/discounts",
       "/billing/admin/reconcile-runs",
+      "/billing/admin/usage-runs",
+      "/billing/admin/overrides",
     ]);
   });
 

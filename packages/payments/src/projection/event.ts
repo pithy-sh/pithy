@@ -85,6 +85,15 @@ export const ProviderEvent = z
       .nullable()
       .default(null)
       .describe("The ISO currency of `amountMinor`, or null when the rail did not report one."),
+    quantity: z
+      .number()
+      .int()
+      .positive()
+      .nullable()
+      .default(null)
+      .describe(
+        "How many were bought, as the store states it, or null where it does not say. Never invented: a rail that reads no quantity leaves this null rather than writing 1.",
+      ),
     providerEventAt: z
       .date()
       .describe(

@@ -11,6 +11,7 @@ import {
   readablePredicate,
 } from "@pithy-sh/core/src/access/access";
 import { resolveVisibility } from "@pithy-sh/core/src/access/visibility";
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { StorageConfig } from "../config/config";
 import { StorageShare } from "../data/share";
 import { StorageObject } from "../data/storageObject";
@@ -26,7 +27,8 @@ import { deriveObjectKey } from "../object/key";
 import { collectParts, needsMultipart, planMultipart } from "../object/multipart";
 import type { ObjectStore } from "../object/store";
 import type { UploadedPart } from "../object/uploadedPart";
-import { assertWithinQuota, insertReservingQuota, updateSettlingQuota } from "../quota/quota";
+import type { StorageCeiling } from "../quota/ceiling";
+import { assertWithinQuota, insertReservingQuota, type QuotaCheck, updateSettlingQuota } from "../quota/quota";
 import type {
   CompleteUploadInput,
   CopyObjectInput,
@@ -91,6 +93,48 @@ export interface HandlerDeps {
   newToken: () => string;
   /** The current time. */
   now: () => Date;
+  /**
+   * The byte ceiling for this request's writes, and whose bytes it covers.
+   *
+   * Absent means the configured `quota.bytesPerOwner`, per owner, which is what a project composing no
+   * entitlement provider has always had. The default resolver fills it from the `storageBytes` meter when the
+   * provider enforces one, so a plan's quota — or a subject's pinned one, or `unrestricted` — becomes the
+   * ceiling, summed across the organization when the plan is an organization's, and an advisory meter leaves
+   * the configured number in force.
+   */
+  quotaLimit?: () => Promise<StorageCeiling>;
+}
+
+/**
+ * The quota a write of a row held for `ownerId` in `organizationId` is checked against: the ceiling, and
+ * whose bytes it sums. The resolved ceiling where the request has one, the configured one otherwise.
+ *
+ * **A ceiling that covers an organization covers only that organization's rows**, so a row about to be held
+ * for a different one — or for none — would sit outside the very sum it is checked against, and never count.
+ * That is refused rather than written: it means the billing subject and the organization in force disagree,
+ * which is wiring for the adopter to fix, and under-counting has no recovery.
+ */
+async function quotaFor(
+  deps: HandlerDeps,
+  ownerId: string | null,
+  organizationId: string | null,
+): Promise<Pick<QuotaCheck, "ownerId" | "organizationId" | "limitBytes" | "metered">> {
+  const ceiling = deps.quotaLimit
+    ? await deps.quotaLimit()
+    : { limitBytes: deps.config.quota.bytesPerOwner, tenant: null, metered: false };
+  const { metered } = ceiling;
+  if (ceiling.tenant === null || ceiling.limitBytes === null || ownerId === null) {
+    return { ownerId, limitBytes: ceiling.limitBytes, metered };
+  }
+  if (organizationId !== ceiling.tenant) {
+    throw new InternalError({
+      message: "This file cannot be counted against the plan it is billed to, so nothing was written.",
+      action:
+        "Make the payments subject resolver and the organization in force agree — both should answer the organization the caller acts for.",
+      detail: `The storageBytes ceiling covers organization ${ceiling.tenant}; the file would be held for ${organizationId ?? "no organization"}.`,
+    });
+  }
+  return { ownerId, organizationId: ceiling.tenant, limitBytes: ceiling.limitBytes, metered };
 }
 
 /** The client-facing shape of a stored file. Deliberately without `key` and `uploadId`. */
@@ -252,8 +296,7 @@ export async function initUpload(deps: HandlerDeps, input: CreateUploadInput): P
 
   await assertWithinQuota({
     db: deps.db,
-    ownerId: deps.caller.userId,
-    limitBytes: deps.config.quota.bytesPerOwner,
+    ...(await quotaFor(deps, deps.caller.userId, organizationId)),
     additionalBytes: input.size,
   });
 
@@ -297,8 +340,7 @@ export async function initUpload(deps: HandlerDeps, input: CreateUploadInput): P
   try {
     await insertReservingQuota({
       db: deps.db,
-      ownerId: deps.caller.userId,
-      limitBytes: deps.config.quota.bytesPerOwner,
+      ...(await quotaFor(deps, deps.caller.userId, organizationId)),
       additionalBytes: input.size,
       record: StorageObject.encode(object),
     });
@@ -384,11 +426,13 @@ export async function completeUpload(
   // deletion of bytes the owner was, at reservation time, granted.
   if (overshoot <= 0) return view(await saveObject(deps, settled), deps.caller);
 
+  // Resolved before the settlement's `try`: a ceiling that cannot be read, or that covers another
+  // organization, refuses this request — it is not a verdict on the bytes, so it must not discard them.
+  const quota = await quotaFor(deps, object.ownerId, object.organizationId);
   try {
     await updateSettlingQuota({
       db: deps.db,
-      ownerId: object.ownerId,
-      limitBytes: deps.config.quota.bytesPerOwner,
+      ...quota,
       additionalBytes: overshoot,
       record: StorageObject.encode(settled),
     });
@@ -641,14 +685,13 @@ export async function copyObject(deps: HandlerDeps, id: string, input: CopyObjec
   const source = await loadWritable(deps, id);
   assertStored(source);
 
+  const organizationId = deps.caller.acting?.organizationId ?? null;
   await assertWithinQuota({
     db: deps.db,
-    ownerId: deps.caller.userId,
-    limitBytes: deps.config.quota.bytesPerOwner,
+    ...(await quotaFor(deps, deps.caller.userId, organizationId)),
     additionalBytes: source.size ?? 0,
   });
 
-  const organizationId = deps.caller.acting?.organizationId ?? null;
   // A copy starts private even when the source was public. Republishing is a decision, and a copy made to
   // take a private working copy of your own public file should not re-publish it by default. Where the policy
   // allows no private file, it starts at the policy's default instead. Either way the level goes through the
@@ -680,8 +723,7 @@ export async function copyObject(deps: HandlerDeps, id: string, input: CopyObjec
     // owner, and concurrent copies of one 1 GiB file against a 1 GiB quota must not all pass.
     await insertReservingQuota({
       db: deps.db,
-      ownerId: deps.caller.userId,
-      limitBytes: deps.config.quota.bytesPerOwner,
+      ...(await quotaFor(deps, deps.caller.userId, organizationId)),
       additionalBytes: source.size ?? 0,
       record: StorageObject.encode(copy),
     });

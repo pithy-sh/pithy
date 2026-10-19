@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { sql } from "kysely";
 import type { StorageObjectRow, StorageObjectStatus } from "../data/storageObject";
 import { STORAGE_OBJECTS_TABLE, type StorageDatabase } from "../data/tables";
@@ -44,6 +45,10 @@ import { StorageQuotaExceededError } from "../error/errors";
  *
  * A `null` limit is unlimited and skips the query entirely. A `null` owner (a system object) has no
  * quota — there is no principal to bill it to.
+ *
+ * **Whose bytes are summed is the ceiling's to say.** A configured `bytesPerOwner` is per owner. An
+ * organization's plan is the organization's, so a check carrying `organizationId` sums every row held for
+ * that organization, whoever uploaded it — counted per member, the plan's number would be per member.
  */
 
 /** What a quota check needs. */
@@ -52,8 +57,19 @@ export interface QuotaCheck {
   db: StorageDatabase;
   /** The owner the bytes are billed to. Null is a system object, which no quota applies to. */
   ownerId: string | null;
-  /** The configured per-owner ceiling in bytes. Null is unlimited. */
+  /**
+   * The organization the ceiling covers, when it is an organization's. Set, the sum is every row held for it
+   * rather than the owner's alone. The row being written must be held for it too, or it would never count.
+   */
+  organizationId?: string;
+  /** The ceiling in bytes — the configured `bytesPerOwner`, or a plan's. Null is unlimited. */
   limitBytes: number | null;
+  /**
+   * Whether `limitBytes` is an enforced `storageBytes` meter's. True, a refusal is the plan's own —
+   * `payments/quota_exceeded` at 402, as the `emails` and `mediaItems` meters refuse — because the remedy
+   * is a bigger tier or a pinned number, not a config edit. Absent or false, it is `storage/quota_exceeded`.
+   */
+  metered?: boolean;
   /** The bytes this upload declares — what the pending row is about to reserve. */
   additionalBytes: number;
 }
@@ -84,17 +100,24 @@ export interface QuotaSettlement extends QuotaCheck {
  */
 export const QUOTA_COUNTED_STATUSES: readonly StorageObjectStatus[] = ["pending", "stored"];
 
+/** The column and value a sum is keyed on: the organization's rows where the ceiling is one's, the owner's otherwise. */
+function heldBy(ownerId: string, organizationId: string | undefined): ["ownerId" | "organizationId", string] {
+  return organizationId === undefined ? ["ownerId", ownerId] : ["organizationId", organizationId];
+}
+
 /**
- * Bytes an owner currently holds: every `pending` reservation plus every `stored` object. `failed`
- * rows are excluded — they hold no bytes and reserve nothing.
+ * Bytes an owner currently holds — or, with `organizationId`, every byte held for that organization:
+ * every `pending` reservation plus every `stored` object. `failed` rows are excluded — they hold no bytes
+ * and reserve nothing.
  */
-export async function usedBytes(db: StorageDatabase, ownerId: string): Promise<number> {
+export async function usedBytes(db: StorageDatabase, ownerId: string, organizationId?: string): Promise<number> {
+  const [column, holder] = heldBy(ownerId, organizationId);
   const row = await db
     .selectFrom(STORAGE_OBJECTS_TABLE)
     // `size` is nullable (a caller may not declare one), and SUM over no rows is NULL — coalesce both
     // to zero here rather than letting a null leak into arithmetic.
     .select(sql<number>`coalesce(sum(size), 0)`.as("used"))
-    .where("ownerId", "=", ownerId)
+    .where(column, "=", holder)
     .where("status", "in", [...QUOTA_COUNTED_STATUSES])
     .executeTakeFirst();
   return Number(row?.used ?? 0);
@@ -111,7 +134,25 @@ function assertDeclaredSize(additionalBytes: number): void {
 }
 
 /**
- * Throw `storage/quota_exceeded` when this upload would put the owner over their limit. The
+ * The refusal for a write past `check`'s ceiling: the plan's where the ceiling is a meter's, storage's own
+ * where it is the configured `bytesPerOwner`. `detail` is throw-site context and never crosses the wire.
+ */
+function quotaRefusal(check: QuotaCheck, detail: string): PithyError {
+  if (!check.metered) return new StorageQuotaExceededError({ detail });
+  return new PithyError({
+    code: "payments/quota_exceeded",
+    status: 402,
+    message: "This plan's storage allowance is used up.",
+    action:
+      "Delete something first, upgrade the plan, or pin a larger storageBytes allowance for this subject from the control plane.",
+    params: { meter: "storageBytes", limit: check.limitBytes ?? 0 },
+    detail,
+  });
+}
+
+/**
+ * Throw `storage/quota_exceeded` when this upload would put the owner over their limit — or
+ * `payments/quota_exceeded` when the limit is a metered plan's ({@link QuotaCheck.metered}). The
  * comparison is `used + additional > limit`, so an upload landing exactly on the limit is allowed —
  * a quota is a ceiling you may reach, not one you must stay under.
  *
@@ -124,17 +165,18 @@ export async function assertWithinQuota(check: QuotaCheck): Promise<void> {
   if (check.limitBytes === null || check.ownerId === null) return;
   assertDeclaredSize(check.additionalBytes);
 
-  const used = await usedBytes(check.db, check.ownerId);
+  const used = await usedBytes(check.db, check.ownerId, check.organizationId);
   if (used + check.additionalBytes > check.limitBytes) {
-    throw new StorageQuotaExceededError({
-      detail: `owner would hold ${used + check.additionalBytes} bytes against a limit of ${check.limitBytes}`,
-    });
+    throw quotaRefusal(
+      check,
+      `owner would hold ${used + check.additionalBytes} bytes against a limit of ${check.limitBytes}`,
+    );
   }
 }
 
 /**
  * Insert a storage row **only if** it fits inside the owner's quota, and throw
- * `storage/quota_exceeded` when it does not.
+ * `storage/quota_exceeded` (or a metered plan's `payments/quota_exceeded`) when it does not.
  *
  * The sum and the write are one statement — `INSERT … SELECT <values> WHERE (SELECT sum(size) …) <=
  * limit - additional` — because two statements cannot be made to hold a reservation without a
@@ -152,6 +194,7 @@ export async function insertReservingQuota(reservation: QuotaReservation): Promi
     return;
   }
   assertDeclaredSize(additionalBytes);
+  const [column, holder] = heldBy(ownerId, reservation.organizationId);
 
   // The column list is read off the encoded record rather than spelled out, so a new column on
   // `StorageObject` is carried here without an edit — and stays camelCase, which `CamelCasePlugin`
@@ -166,7 +209,7 @@ export async function insertReservingQuota(reservation: QuotaReservation): Promi
         eb
           .selectFrom(STORAGE_OBJECTS_TABLE)
           .select(sql<number>`coalesce(sum(size), 0)`.as("used"))
-          .where("ownerId", "=", ownerId)
+          .where(column, "=", holder)
           .where("status", "in", [...QUOTA_COUNTED_STATUSES]),
         "<=",
         limitBytes - additionalBytes,
@@ -181,15 +224,13 @@ export async function insertReservingQuota(reservation: QuotaReservation): Promi
     .executeTakeFirst();
 
   if (!inserted) {
-    throw new StorageQuotaExceededError({
-      detail: `reservation of ${additionalBytes} bytes lost against a limit of ${limitBytes}`,
-    });
+    throw quotaRefusal(reservation, `reservation of ${additionalBytes} bytes lost against a limit of ${limitBytes}`);
   }
 }
 
 /**
  * Rewrite one row **only if** the bytes it newly claims still fit inside the owner's quota, and throw
- * `storage/quota_exceeded` when they do not.
+ * `storage/quota_exceeded` (or a metered plan's `payments/quota_exceeded`) when they do not.
  *
  * This is {@link insertReservingQuota}'s other half, and it exists for the identical reason. A
  * completion measures what R2 actually holds against what the pending row reserved, and the difference
@@ -212,6 +253,7 @@ export async function updateSettlingQuota(settlement: QuotaSettlement): Promise<
     return;
   }
   assertDeclaredSize(additionalBytes);
+  const [column, holder] = heldBy(ownerId, settlement.organizationId);
 
   const updated = await db
     .updateTable(STORAGE_OBJECTS_TABLE)
@@ -224,7 +266,7 @@ export async function updateSettlingQuota(settlement: QuotaSettlement): Promise<
         eb
           .selectFrom(STORAGE_OBJECTS_TABLE)
           .select(sql<number>`coalesce(sum(size), 0)`.as("used"))
-          .where("ownerId", "=", ownerId)
+          .where(column, "=", holder)
           .where("status", "in", [...QUOTA_COUNTED_STATUSES]),
         "<=",
         limitBytes - additionalBytes,
@@ -234,8 +276,9 @@ export async function updateSettlingQuota(settlement: QuotaSettlement): Promise<
     .executeTakeFirst();
 
   if (!updated) {
-    throw new StorageQuotaExceededError({
-      detail: `settlement of ${additionalBytes} further bytes lost against a limit of ${limitBytes}`,
-    });
+    throw quotaRefusal(
+      settlement,
+      `settlement of ${additionalBytes} further bytes lost against a limit of ${limitBytes}`,
+    );
   }
 }

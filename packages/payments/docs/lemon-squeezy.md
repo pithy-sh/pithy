@@ -22,6 +22,7 @@ payments({
   lemonSqueezy: {
     successUrl: `${PUBLIC_ORIGIN}/thanks`,
   },
+  entitlements: { pro: { name: "Pro" } },
   products: {
     pro_monthly: {
       type: "subscription",

@@ -208,6 +208,19 @@ export const PaymentsAuditActions = {
    * indistinguishable from the 04:00 cron, which is exactly the question somebody reading the trail is asking.
    */
   reconcileRunStarted: "payments/reconcile_run_started",
+  /**
+   * A management client pinned allowances for one subject, or turned `unrestricted` on or off. The first
+   * runtime-writable input to an entitlement decision, so every write is recorded with the subject, the
+   * mode, the before and the after — and the **reason**, verbatim, because six months later the only
+   * question anybody asks about an override is why.
+   */
+  overrideSet: "payments/override_set",
+  /** A management client unpinned allowances for one subject, or cleared its override. */
+  overrideCleared: "payments/override_cleared",
+  /**
+   * A management client read the usage-reporting run log. Counts and filters only, as every management read.
+   */
+  usageRunsRead: "payments/usage_runs_read",
 } as const;
 
 /** One of the payments audit action codes. */

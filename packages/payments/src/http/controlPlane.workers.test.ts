@@ -22,8 +22,11 @@ import { recordReconcileRun } from "../data/reconcileRun";
 import type { PaymentsSubject } from "../data/subject";
 import { grantEntitlement } from "../entitlement/manual";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
+import { payments_0002_allowances } from "../migrations/0002_allowances";
 import { projectPurchase } from "../projection/writer";
 import {
+  PaymentsAdminCatalogDefaults,
+  PaymentsAdminCatalogEntitlement,
   PaymentsAdminCatalogProduct,
   PaymentsAdminCatalogResponse,
   PaymentsAdminEntitlementsResponse,
@@ -72,6 +75,7 @@ const CONFIG = PaymentsConfig.parse({
   // Required. Every fixture here bills people, so the subject a row is keyed on is `user:<id>` — and the
   // organization cases below exist to prove the *other* half of the pair is genuinely part of the address.
   billingSubject: "user",
+  entitlements: { coins: { name: "coins" }, pro: { name: "pro" } },
   rails: { apple: true },
   products: {
     pro_monthly: {
@@ -237,6 +241,10 @@ beforeEach(async () => {
     "pithy_payments_webhook_events",
     "pithy_payments_reconcile_runs",
     "pithy_payments_sync_cursors",
+    "pithy_payments_overrides",
+    "pithy_payments_meter_counters",
+    "pithy_payments_usage_reports",
+    "pithy_payments_usage_runs",
     "pithy_payments_provider_accounts",
     "pithy_payments_entitlements",
     "pithy_payments_purchases",
@@ -245,6 +253,7 @@ beforeEach(async () => {
   }
   const db = createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
   await payments_0001_purchases.up(db);
+  await payments_0002_allowances.up(db);
   emitted = [];
 });
 
@@ -273,13 +282,25 @@ beforeEach(async () => {
  */
 const SENTINEL_CATALOG = PaymentsConfig.parse({
   billingSubject: "user",
+  // What each key buys crosses — configuration, not customer data — so an override editor can be built from
+  // the response alone. `founder` is declared and sold by nothing: comp-only.
+  entitlements: {
+    coins: { name: "Coins" },
+    pro: {
+      name: "Pro tier",
+      quotas: { seats: 10, emails: null },
+      features: { sso: true },
+      overrideMax: { seats: 250 },
+    },
+    founder: { name: "Founder", features: { sso: true } },
+  },
+  defaults: { quotas: { seats: 1, emails: 50 }, features: { sso: false } },
   rails: { apple: true, google: true, stripe: true },
   stripe: {
     successUrl: "https://sentinel.example/thanks?session={CHECKOUT_SESSION_ID}",
     cancelUrl: "https://sentinel.example/pricing",
     portalReturnUrl: "https://sentinel.example/account",
   },
-  manualEntitlements: ["founder"],
   products: {
     pro_monthly: {
       type: "subscription",
@@ -301,12 +322,32 @@ const SENTINEL_CATALOG = PaymentsConfig.parse({
 });
 
 /**
- * Every key the catalog response is permitted to carry. Seven: the envelope's three, and a product's four.
+ * Every key the catalog response is permitted to carry. The envelope's five, a product's four, a
+ * declaration's six — and the names a declaration's maps are keyed by, which are the adopter's own
+ * vocabulary and so are listed from the sentinel by hand.
  *
  * Written out, on purpose, and never read off `PaymentsAdminCatalogResponse` — see the note above
  * `SENTINEL_CATALOG` for the failure that cost.
  */
-const PUBLISHED_CATALOG_KEYS = ["enabled", "products", "manualEntitlements", "id", "type", "name", "entitlements"];
+const PUBLISHED_CATALOG_KEYS = [
+  "enabled",
+  "products",
+  "manualEntitlements",
+  "entitlements",
+  "defaults",
+  "id",
+  "type",
+  "name",
+  "key",
+  "quotas",
+  "features",
+  "overrideMax",
+  "sold",
+  // The sentinel's own allowance names, as the maps are keyed.
+  "seats",
+  "emails",
+  "sso",
+];
 
 describe("GET /payments/admin/catalog", () => {
   test("answers a connection holding the scope, and the body is what the schema says it is", async () => {
@@ -325,6 +366,8 @@ describe("GET /payments/admin/catalog", () => {
       { id: "coins_100", type: "consumable", name: "100 Coins", entitlements: ["coins"] },
     ]);
     expect(body.manualEntitlements).toEqual([]);
+    expect(body.entitlements?.map((entry) => entry.key)).toEqual(["coins", "pro"]);
+    expect(body.defaults).toBeNull();
   });
 
   test("nothing but the published facts can cross it, whatever a field is called", async () => {
@@ -337,10 +380,17 @@ describe("GET /payments/admin/catalog", () => {
     // The published facts, plus the one leaf that is envelope rather than fact: the `true` of `enabled`.
     // `true`, `false` and `null` belong to every JSON document's vocabulary, so this half can never police
     // a boolean or a null on its own. The key half is what does, which is why there are two of them.
-    const published: (string | number | boolean | null)[] = [true, ...SENTINEL_CATALOG.manualEntitlements];
+    // `true` and `false` both: a feature is a switch, and the floor turns one off.
+    const published: (string | number | boolean | null)[] = [true, false];
     for (const [id, product] of Object.entries(SENTINEL_CATALOG.products)) {
       published.push(id, product.type, product.name, ...product.entitlements);
     }
+    // Every declaration's facts: its key, its name, and its numbers. Configuration, never customer data.
+    for (const [key, declaration] of Object.entries(SENTINEL_CATALOG.entitlements)) {
+      published.push(key, declaration.name, ...Object.values(declaration.quotas));
+      published.push(...Object.values(declaration.overrideMax ?? {}));
+    }
+    published.push(...Object.values(SENTINEL_CATALOG.defaults?.quotas ?? {}));
     const escaped = unpublishedIn(raw, { leaves: published, keys: PUBLISHED_CATALOG_KEYS });
     expect(
       escaped,
@@ -351,7 +401,19 @@ describe("GET /payments/admin/catalog", () => {
   test("the response schema declares nothing the hand-written key list does not name", () => {
     // The second place a widening fails, and the earlier one: it fails on the schema edit, before any view
     // has been written to fill the new field. The list polices the schema; the schema never polices itself.
-    const declared = ["enabled", "products", "manualEntitlements", ...Object.keys(PaymentsAdminCatalogProduct.shape)];
+    const declared = [
+      "enabled",
+      "products",
+      "manualEntitlements",
+      "entitlements",
+      "defaults",
+      ...Object.keys(PaymentsAdminCatalogProduct.shape),
+      ...Object.keys(PaymentsAdminCatalogEntitlement.shape),
+      ...Object.keys(PaymentsAdminCatalogDefaults.shape),
+      "seats",
+      "emails",
+      "sso",
+    ];
     expect(declared.filter((key) => !PUBLISHED_CATALOG_KEYS.includes(key))).toEqual([]);
     // And in the other direction, so a field removed from the schema does not leave a permission behind it.
     expect(PUBLISHED_CATALOG_KEYS.filter((key) => !declared.includes(key))).toEqual([]);
@@ -398,6 +460,64 @@ describe("GET /payments/admin/catalog", () => {
       ).json(),
     );
     expect(body.enabled && body.manualEntitlements).toEqual(["founder"]);
+  });
+
+  test("a management client can tell, from the catalog alone, every editable name and whether it is a number or a switch", async () => {
+    // What an override editor is built from. A quota is a key in some declaration's `quotas` or the floor's;
+    // a feature is a key in a `features` map. The response is the only input — no second read, no config.
+    const body = PaymentsAdminCatalogResponse.parse(
+      await (
+        await call(
+          makeApp([PAYMENTS_CATALOG_READ_SCOPE], SENTINEL_CATALOG),
+          "/payments/admin/catalog",
+          PAYMENTS_CATALOG_READ_SCOPE,
+        )
+      ).json(),
+    );
+    if (!body.enabled) throw new Error("unreachable");
+    const numbers = new Set<string>();
+    const switches = new Set<string>();
+    for (const entry of [...(body.entitlements ?? []), ...(body.defaults ? [body.defaults] : [])]) {
+      for (const name of Object.keys(entry.quotas)) numbers.add(name);
+      for (const name of Object.keys(entry.features)) switches.add(name);
+    }
+    expect([...numbers].sort()).toEqual(["emails", "seats"]);
+    expect([...switches]).toEqual(["sso"]);
+    // The plan's value and the ceiling a pin may reach, per key.
+    const pro = body.entitlements?.find((entry) => entry.key === "pro");
+    expect(pro).toEqual({
+      key: "pro",
+      name: "Pro tier",
+      quotas: { seats: 10, emails: null },
+      features: { sso: true },
+      overrideMax: { seats: 250 },
+      sold: true,
+    });
+    expect(body.entitlements?.find((entry) => entry.key === "founder")?.sold).toBe(false);
+    expect(body.defaults).toEqual({ quotas: { seats: 1, emails: 50 }, features: { sso: false } });
+  });
+
+  test("a project with declarations and no products still answers enabled, with nothing to sell", async () => {
+    const declaredOnly = PaymentsConfig.parse({
+      billingSubject: "user",
+      entitlements: { enterprise: { name: "Enterprise", quotas: { seats: null } } },
+    });
+    const body = PaymentsAdminCatalogResponse.parse(
+      await (
+        await call(
+          makeApp([PAYMENTS_CATALOG_READ_SCOPE], declaredOnly),
+          "/payments/admin/catalog",
+          PAYMENTS_CATALOG_READ_SCOPE,
+        )
+      ).json(),
+    );
+    expect(body).toMatchObject({ enabled: true, products: [], manualEntitlements: ["enterprise"] });
+  });
+
+  test("a response from a Worker that predates declarations still parses", () => {
+    // The version boundary: a dashboard on this release reading a customer's older Worker.
+    const older = { enabled: true, products: [], manualEntitlements: ["founder"] };
+    expect(PaymentsAdminCatalogResponse.parse(older)).toEqual(older);
   });
 
   test("a project that defines nothing answers { enabled: false }, not an empty list", async () => {
@@ -510,6 +630,10 @@ const PUBLISHED_PURCHASE_KEYS = [
   "revokedAt",
   "resumesAt",
   "updatedAt",
+  // How many the store said were bought, and — on the subscription read — the last count reported (#561).
+  "quantity",
+  "reportedQuantity",
+  "reportedAt",
 ];
 
 /** Every key the two entitlement reads may carry. Ten: two envelopes' four, and an entitlement's seven. */
@@ -523,6 +647,8 @@ const PUBLISHED_ENTITLEMENT_KEYS = [
   "expiresAt",
   "manual",
   "source",
+  // Whether the row's holder is `unrestricted` — on every row, because the largest grant must be visible (#561).
+  "unrestricted",
 ];
 
 describe("GET /payments/admin/purchases", () => {

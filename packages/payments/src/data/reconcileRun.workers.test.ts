@@ -6,6 +6,7 @@ import { createDatabase } from "@pithy-sh/core/src/data/db";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
+import { payments_0002_allowances } from "../migrations/0002_allowances";
 import { PaymentsReconcileRun, RECONCILE_RUN_RETENTION_DAYS, recordReconcileRun } from "./reconcileRun";
 
 /**
@@ -27,11 +28,16 @@ const TABLES = [
   "pithy_payments_webhook_events",
   "pithy_payments_reconcile_runs",
   "pithy_payments_sync_cursors",
+  "pithy_payments_overrides",
+  "pithy_payments_meter_counters",
+  "pithy_payments_usage_reports",
+  "pithy_payments_usage_runs",
 ];
 
 beforeEach(async () => {
   for (const table of TABLES) await env.DB.exec(`DROP TABLE IF EXISTS ${table}`);
   await payments_0001_purchases.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
+  await payments_0002_allowances.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
 });
 
 const CLEAN = {

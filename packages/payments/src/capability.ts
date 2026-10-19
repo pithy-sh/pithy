@@ -8,13 +8,15 @@ import {
   defineCapability,
 } from "@pithy-sh/core/src/capability/capability";
 import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
+import type { UsageMeter } from "@pithy-sh/core/src/entitlement/meter";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { KvNamespaceSpecMap } from "@pithy-sh/core/src/kv/namespaces";
 import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
 import type { Migration } from "kysely/migration";
-import type { PaymentsClientProduct, PaymentsClientProjection } from "./client/projection";
-import { PaymentsConfig, type PaymentsConfigInput } from "./config/config";
+import type { PaymentsClientEntitlement, PaymentsClientProduct, PaymentsClientProjection } from "./client/projection";
+import { PaymentsConfig, type PaymentsConfigInput, reportedProducts } from "./config/config";
 import { paymentsTables } from "./data/tables";
+import { type PaymentsAllowances, paymentsUsageMeter } from "./entitlement/meter";
 import { installEntitlementResolver } from "./entitlement/resolver";
 import type { PaymentsSubjectResolver, PaymentsSubjectSeam } from "./entitlement/subjectSeam";
 import { requireImplementedSubject } from "./entitlement/unimplementedSubject";
@@ -23,12 +25,14 @@ import { paymentsManifestConfig } from "./http/manifestConfig";
 import { registerPaymentsRoutes } from "./http/routes";
 import { paymentsAdminRoutes } from "./http/scopes";
 import { payments_0001_purchases } from "./migrations/0001_purchases";
+import { payments_0002_allowances } from "./migrations/0002_allowances";
 import { type PaymentsPeer, paymentsPeer } from "./peer";
 import { paymentsInapplicableSecrets, paymentsSecretBranches } from "./secret/branches";
 import { paymentsSecretsRegistry } from "./secret/registry";
 import { paymentsExampleSeed } from "./seeds/example";
+import type { PaymentsQuantityResolver } from "./usage/pass";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
-import { paymentsWorkflows } from "./workflows/specs";
+import { paymentsUsageWorkflows, paymentsWorkflows } from "./workflows/specs";
 
 /**
  * Where payments' migrations sort in the app database. Unique per database; the registry composes keys
@@ -66,6 +70,14 @@ export type PaymentsOptions = PaymentsConfigInput & {
    * it is optional and the authenticated caller is the answer.
    */
   resolveSubject?: PaymentsSubjectResolver;
+  /**
+   * How many of a quantity-billed product's units one subject has — students, coaches, seats. Required
+   * when any product declares `billing: { kind: "reported" }`, and refused at boot without one. Called by the
+   * usage-reporting pass on a schedule, with the env and no request; never by payments for anything else, and
+   * payments never counts members itself. Rides here rather than in config for the reason `resolveSubject`
+   * does: a function does not survive the config's round trip through JSON. See `usage/pass.ts`.
+   */
+  resolveQuantity?: PaymentsQuantityResolver;
 };
 
 /**
@@ -209,6 +221,26 @@ function requireResolvableSubject(config: PaymentsConfig, resolveSubject: Paymen
 }
 
 /**
+ * Refuse a catalog that bills by a reported quantity and gives payments nothing to ask.
+ *
+ * The same shape as {@link requireResolvableSubject}, and the same reasoning: the fault is total and the
+ * evidence is in hand. A quantity-billed subscription with no resolver is a subscription that bills nothing
+ * for what the customer is using, every period, and nothing anywhere fails — the store simply never hears a
+ * number. So it is refused here, naming every product it would happen to.
+ */
+function requireQuantityResolver(config: PaymentsConfig, resolveQuantity: PaymentsQuantityResolver | undefined): void {
+  if (resolveQuantity !== undefined) return;
+  const reported = reportedProducts(config);
+  if (reported.length === 0) return;
+  throw new ValidationError({
+    message: `This catalog bills ${products(reported)} by a reported quantity, and nothing can say how many.`,
+    action:
+      "Pass `resolveQuantity` to `payments(...)` in this Worker's pithy.config.ts, or drop `billing` from those products.",
+    detail: `Products with \`billing.kind: "reported"\`: ${reported.map((entry) => entry.id).join(", ")}. Payments never counts members itself, so without a resolver no count is ever reported and the store bills nothing.`,
+  });
+}
+
+/**
  * What a browser may know about this project's payments — the `virtual:pithy/payments` module.
  *
  * The list is short and each entry earns its place. **Enabled rails**, so a paywall can show an Apple-only
@@ -288,12 +320,30 @@ function clientProjection(config: PaymentsConfig, environment: string): Payments
     // Catalog order, not sorted: the order an adopter wrote their products in is the order a paywall
     // should list them, and it is stable for a given config either way.
     products,
+    // What each tier buys, so a paywall can compare them. The names, the numbers and the switches — and
+    // not `overrideMax`, which bounds an operator and tells a buyer nothing.
+    entitlements: Object.fromEntries(
+      Object.entries(config.entitlements).map(([key, declaration]): [string, PaymentsClientEntitlement] => [
+        key,
+        { name: declaration.name, quotas: { ...declaration.quotas }, features: { ...declaration.features } },
+      ]),
+    ),
+    defaults:
+      config.defaults === undefined
+        ? null
+        : { quotas: { ...config.defaults.quotas }, features: { ...config.defaults.features } },
   };
 }
 
+/**
+ * The Workflows payments contributes: reconciliation always, usage reporting when the catalog sells a reported
+ * product.
+ */
+type PaymentsWorkflowSpecs = typeof paymentsWorkflows & Partial<typeof paymentsUsageWorkflows>;
+
 /** The payments capability, with its resolved catalog attached for other tooling to read. */
 export interface PaymentsCapability
-  extends Capability<DatabaseSpecMap, KvNamespaceSpecMap, "payments", typeof paymentsWorkflows> {
+  extends Capability<DatabaseSpecMap, KvNamespaceSpecMap, "payments", PaymentsWorkflowSpecs> {
   /** The resolved catalog. */
   paymentsConfig: PaymentsConfig;
   /**
@@ -302,6 +352,19 @@ export interface PaymentsCapability
    * payments bundles it (#645). See `peer.ts`.
    */
   paymentsPeer: PaymentsPeer;
+  /**
+   * The meter `@pithy-sh/email` charges at enqueue — found structurally through core's
+   * `composedUsageMeter`, so email imports nothing from this package. Charges nothing for a meter this
+   * config leaves advisory. See `entitlement/meter.ts`.
+   */
+  usageMeter: UsageMeter;
+  /**
+   * What the usage-reporting Workflow reads off the composition: the adopter's `resolveQuantity`, when the
+   * catalog bills by a reported quantity, and undefined otherwise. On the capability rather than in the
+   * config, so it is never serialized and never reaches a browser. `reportPaymentsUsage` in
+   * `workflows/usage.ts` reads it.
+   */
+  paymentsUsage: { resolveQuantity: PaymentsQuantityResolver } | undefined;
 }
 
 /**
@@ -335,13 +398,14 @@ export function payments(options: PaymentsOptions): PaymentsCapability {
   // whose whole hazard is being serialized by accident. Separated here, the config that reaches
   // `JSON.stringify` in `provision/resolvePaymentsConfig.ts` provably holds no function, because no function
   // was ever in it.
-  const { resolveSubject, ...catalog } = options;
+  const { resolveSubject, resolveQuantity, ...catalog } = options;
 
   // Parse the catalog at assembly — a product naming a disabled rail, a duplicate provider SKU, or a
   // ledger grant on a non-consumable fails on deploy, not on the first webhook. `billingSubject` is required
   // and has no default: what a project bills is a decision, and a default would make it an accident.
   const resolved = PaymentsConfig.parse(catalog);
   requireResolvableSubject(resolved, resolveSubject);
+  requireQuantityResolver(resolved, resolveQuantity);
 
   // The one seam, built once. Both halves come from different places by construction (see
   // {@link PaymentsOptions}), and every asker — the entitlement gate through the middleware, the routes
@@ -357,13 +421,22 @@ export function payments(options: PaymentsOptions): PaymentsCapability {
     ...(resolveSubject ? { resolveSubject } : {}),
   };
 
+  // The declarations and the meters, once — the gate's readers, the routes, and the meter `@pithy-sh/email`
+  // charges all read this object, so they cannot disagree about what a name means.
+  const allowances: PaymentsAllowances = { declarations: resolved, meters: resolved.meters };
+
   // The optional peers, filled once by `compose` — which runs after this factory, so the routes are handed
   // the slot and read it per request rather than being handed a value that does not exist yet.
   const peers: { ledger: PaymentsLedgerPeer | undefined } = { ledger: undefined };
 
   const migrations: Record<string, Migration> = {
     "0001_purchases": payments_0001_purchases,
+    "0002_allowances": payments_0002_allowances,
   };
+  // Usage reporting only where something is billed by a reported quantity: a project that sells none binds
+  // nothing for it, and its `pithy doctor` has nothing to report about a Workflow it does not have.
+  const workflows: PaymentsWorkflowSpecs =
+    reportedProducts(resolved).length > 0 ? { ...paymentsWorkflows, ...paymentsUsageWorkflows } : paymentsWorkflows;
   const requiredBindings: BindingSpecInput[] = [
     // The app database — all four pithy_payments_* tables live here.
     { type: "d1", name: "DB" },
@@ -371,7 +444,7 @@ export function payments(options: PaymentsOptions): PaymentsCapability {
     // declaration, so a binding rename cannot leave the two disagreeing. `optional` because the binding
     // exists only once `pithy payments provision` has deployed the host, and an unprovisioned project must
     // still verify receipts, accept webhooks, and resolve entitlements.
-    ...workflowBindings(paymentsWorkflows),
+    ...workflowBindings(workflows),
   ];
 
   const capability = defineCapability({
@@ -395,7 +468,7 @@ export function payments(options: PaymentsOptions): PaymentsCapability {
     inapplicableSecrets: paymentsInapplicableSecrets(resolved.rails),
     // The one durable job: the nightly reconciliation pass. Declared here so `createBackend` derives its
     // binding and types `c.var.workflows.trigger("payments/reconcile", …)` precisely.
-    workflows: paymentsWorkflows,
+    workflows,
     // The one thing this capability cannot check on its own: whether the ledger it credits agrees the
     // currency exists. See `checkLedgerGrants` for why the failure is otherwise invisible. And the one place
     // the ledger reaches payments at all: found among the composed capabilities, never imported (#645).
@@ -422,7 +495,7 @@ export function payments(options: PaymentsOptions): PaymentsCapability {
     },
     // Replaces core's fail-closed `noEntitlementProvider` with the D1-backed resolver, over the seam that
     // says who to resolve for.
-    middleware: [installEntitlementResolver(PAYMENTS_DATABASE_NAME, subject)],
+    middleware: [installEntitlementResolver(PAYMENTS_DATABASE_NAME, subject, allowances)],
     // The management surface, described for `GET /control-plane/manifest`. Built from the resolved
     // `basePath` rather than the default, so an adopter who mounted payments at `/billing` gets a
     // manifest naming `/billing/entitlements/grant` — the whole point of describing rather than
@@ -438,7 +511,12 @@ export function payments(options: PaymentsOptions): PaymentsCapability {
     seeds: [paymentsExampleSeed],
   });
 
-  return Object.assign(capability, { paymentsConfig: resolved, paymentsPeer });
+  return Object.assign(capability, {
+    paymentsConfig: resolved,
+    paymentsPeer,
+    usageMeter: paymentsUsageMeter(allowances, "DB"),
+    paymentsUsage: resolveQuantity === undefined ? undefined : { resolveQuantity },
+  });
 }
 
 /** Whether a capability is the payments capability — carries its resolved catalog. */
