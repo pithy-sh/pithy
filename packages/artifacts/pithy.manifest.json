@@ -27,7 +27,7 @@
     {
       "key": "tokenTtlSeconds",
       "default": 900,
-      "describe": "How long a minted git token lives, in seconds: 60 to 3600. This is the revocation window: with no token record, it is how long a revoked person keeps pushing."
+      "describe": "How long a minted git token lives, in seconds: 60 to 3600. This is the revocation window: with no token record, it is how long a revoked person keeps pushing, unless the owner revokes every token."
     },
     {
       "key": "acceptRepoName",

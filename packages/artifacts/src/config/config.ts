@@ -32,7 +32,7 @@ export const ArtifactsConfig = z
       .max(MAX_TOKEN_TTL_SECONDS)
       .default(900)
       .describe(
-        "How long a minted git token lives, in seconds: 60 to 3600, default 900. **This is the revocation window.** There is no token record, so after a grant is removed this is how long a revoked person keeps pushing. A git client re-mints per operation, so a short life costs nothing.",
+        "How long a minted git token lives, in seconds: 60 to 3600, default 900. **This is the revocation window.** There is no token record, so after a grant is removed this is how long a revoked person keeps pushing, unless the owner revokes every token on the repository. A git client re-mints per operation, so a short life costs nothing.",
       ),
     managePower: z
       .string()

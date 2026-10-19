@@ -4,7 +4,7 @@ A git client needs a token for every clone, fetch and push. The tokens this capa
 
 ## Why the token is short
 
-There is no token table. A token minted for somebody keeps working until it expires, whatever happens to their grant afterwards, so its life is the revocation window. The long-lived credential is your app's own — a session, a bearer token from `@pithy-sh/auth`, an API key if you compose Better Auth's `apiKey()` plugin — and you revoke that in `auth`. The Artifacts token is a short derivative of it. This capability never issues anything longer.
+There is no token table. A token minted for somebody keeps working until it expires, whatever happens to their grant afterwards, so its life is the revocation window. The one way to end it sooner is the break-glass: `DELETE /artifacts/repos/<name>/credentials`, which only the owner may call, revokes every live token on the repository at once. Every git client holding one is refused on its next request and must mint again, and a person whose grant is gone cannot. The long-lived credential is your app's own — a session, a bearer token from `@pithy-sh/auth`, an API key if you compose Better Auth's `apiKey()` plugin — and you revoke that in `auth`. The Artifacts token is a short derivative of it. This capability never issues anything longer.
 
 ## The helper
 
@@ -92,7 +92,7 @@ git clone "$(printf 'Authorization: Bearer %s\n' "$PITHY_APP_TOKEN" | curl -fsS 
 
 The app's credential goes to curl on stdin, as `-H @-`, and never on its command line. A process's arguments are readable by every user on the machine, through `ps` or `/proc/<pid>/cmdline`, and this credential is the one that mints write tokens. `-H @-` needs curl 7.55 or later.
 
-Every fetch and push after that asks the helper, and the helper mints. A person with a `read` grant gets a read token, and a push is refused by Cloudflare. A person whose grant you removed is refused at the mint, and pushes with the token they hold until it expires.
+Every fetch and push after that asks the helper, and the helper mints. A person with a `read` grant gets a read token, and a push is refused by Cloudflare. A person whose grant you removed is refused at the mint, and pushes with the token they hold until it expires. To stop them now, remove the grant and then revoke every token: `DELETE /artifacts/repos/<name>/credentials`. Everybody else's helper mints again on their next operation, and theirs is refused.
 
 ## Verify it
 
@@ -103,3 +103,4 @@ Run this against a live repository before you hand the helper to anybody, with `
 3. Wait past the token's expiry.
 4. Commit again and push. git asks the helper, the helper mints, and the push lands.
 5. Remove the person's grant. Push again: refused at the mint, with `artifacts/not_found`.
+6. Mint with a second person's grant and push, then call `DELETE /artifacts/repos/<name>/credentials` as the owner. That person's next push asks the helper for a fresh token and lands, which is the break-glass costing them nothing.
