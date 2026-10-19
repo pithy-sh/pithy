@@ -86,6 +86,8 @@ A capability that owns Workflows ships a Worker of its own — `<project>-<env>-
 
 **It deploys the configuration your project composes.** A kit Worker's config is resolved from the composed capability in `apps/<name>/pithy.config.ts` — your `media({ visibility })`, your `vector({ indexes })`, your email theme — so `pithy deploy --env <env> --kit` and `pithy <capability> provision` resolve the same Worker to the same bytes. That is what makes `pithy deploy --env <env> --kit --force` a safe way to re-upload one without re-running a full provisioning pass.
 
+**It stamps the secrets manager's rotation schedule.** The manager is prebuilt and never reads `pithy.config.ts`, so the deploy is how it learns which secrets rotate on their own. Every `rotateEveryDays` the composed capabilities declare goes into its config, with the last declared environment as the one whose manager rotates a `global` secret — the same stamp `pithy secrets provision` writes. The schedule is part of the hashed config, so a period you add or change redeploys the manager on the next run. A feature's manager runs no cron and gets no schedule. See [`pithy secrets`](./secrets.md#unattended-rotation).
+
 **The adopter's Workers are never gated.** Your code is the thing that changed, and no stamp can see a bundle. `--force` is refused beside `--apps` for that reason rather than accepted and ignored.
 
 **Deploy never migrates.** With `--env`, it takes a best-effort count of unapplied migrations for that environment and warns when the schema is behind. A config it cannot load or a database it cannot reach yields no warning rather than a failed deploy. Promote the schema with `pithy migrate` first, then ship.

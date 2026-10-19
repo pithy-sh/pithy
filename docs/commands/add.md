@@ -54,13 +54,19 @@ Composing something nobody asked for is not a thing to do behind an adopter's ba
 
 **Wire that Worker.** `apps/<name>/pithy.config.ts` gains the import and the registration call; `apps/<name>/wrangler.jsonc` gains the manifest's required bindings, in every environment stanza the file declares, plus any Durable Object class migrations; and the module that Worker's `main` names gains an `export { <Class> } from "…";` for every Durable Object class it now binds. Handler source stays in the package. Only the thin registration lands in your repo.
 
-Every binding whose entry `add` can complete offline is written: `d1_databases`, `kv_namespaces`, `r2_buckets`, `ai`, `durable_objects`, `ratelimits`, and `workflows`. Two are worth a sentence each.
+Every binding whose entry `add` can complete offline is written: `d1_databases`, `kv_namespaces`, `r2_buckets`, `ai`, `durable_objects`, `ratelimits`, `workflows`, `queues.producers` and `send_email`, plus seven kinds the kit writes and never provisions — `hyperdrive`, `browser`, `images`, `analytics_engine_datasets`, `pipelines`, `mtls_certificates` and `dispatch_namespaces`. A few are worth a sentence each.
 
 A **rate limiter** is a policy, not a resource — nothing exists behind it in your account. It is written at **100 requests per 60 seconds, per client IP**, which is a flood guard rather than a product rule. Tune it in `wrangler.jsonc`; `add` never rewrites an entry you have changed. Cloudflare accepts a `period` of `10` or `60` and nothing else.
 
 A **Durable Object** is two halves, and only one of them is config. The `durable_objects.bindings` entry names a `class_name`, and wrangler resolves that name against the module `main` names — a Worker whose entry does not export the class is refused at deploy with *Your Worker depends on the following Durable Objects, which are not exported in your entrypoint file*. So `add` writes the export too, under a comment saying what the block is. Delete a line from it and the Worker stops deploying; `pithy remove` takes it back out. A class the entry already exports, however you wrote it, is left alone.
 
 A **Workflow** entry names the capability's host Worker across scripts — `<project>-<env>-<capability>-<job>` running in `<project>-<env>-<capability>` — so it is complete before that host exists, and `wrangler dev` binds it either way. The host itself is deployed by `pithy <capability> provision`, which `notes` says.
+
+A **queue** producer names the queue `pithy provision` creates, under the same rule: `<project>-<env>-<binding>` ([NAMING.md](../NAMING.md)). So the entry is complete before the queue exists.
+
+A **`send_email`** entry carries the binding name and nothing else. Where an environment's mail may go — `destination_address`, `allowed_destination_addresses` — is yours to state, per environment.
+
+The **seven written-only kinds** take a binding name and, where wrangler requires one, the account-level resource the binding declares as `target`: a Hyperdrive config's `id`, a pipeline's `stream`, an mTLS `certificate_id`, a dispatch `namespace`, and optionally an Analytics Engine `dataset`. Pithy writes the entry. You create the resource. `browser` and `images` are one per Worker, like `ai`, so one already bound under another name is left alone and reported.
 
 What is left out is left out because wrangler would refuse the file: a `vectorize` entry needs the `index_name` provisioning mints, and a `secret` has no array in `wrangler.jsonc` at all. Those come back in `notes`.
 

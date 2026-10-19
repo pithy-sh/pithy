@@ -137,7 +137,7 @@ The phrase **names its environment**, so a phrase authorizing a `staging` reset 
 
 ```
 $ pithy seed --env staging --redo --dry-run
-Would reset secrets (SECRETS): 1 migration. Retained: pithy_secrets_rotations, pithy_secrets_system_secrets.
+Would reset secrets (SECRETS): 3 migrations. Retained: pithy_secrets_rotations, pithy_secrets_system_secrets.
 Kept emailSuppressions (EMAIL_SUPPRESSIONS): prod binds it too.
 Nothing to seed for staging.
 Dry run. Nothing written.

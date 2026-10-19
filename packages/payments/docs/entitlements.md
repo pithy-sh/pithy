@@ -133,7 +133,7 @@ Three control-plane writes, three scopes:
 
 **The reads.** `GET {base}/admin/entitlements/:subjectType/:subjectId` projects, per declared name, what applies now, where it came from — `unrestricted`, `override`, `plan` with the key, `default`, or `none` — and what it would be with the override removed. That last one is what a pane shows beside a pin and reverts to. `GET {base}/admin/overrides` pages every override, filterable to `unrestricted=true`. Every entitlement row says whether its holder is unrestricted, and `pithy doctor` names every unrestricted subject in every environment.
 
-**The catalog read is the editor's input.** `GET {base}/admin/catalog` projects each declared key's name, quotas, features and `overrideMax`, plus the floor — every editable name, and whether it is a number or a switch, from one response.
+**The catalog read is the editor's input.** `GET {base}/admin/catalog` projects each declared key's name, quotas, features and `overrideMax`, plus the floor — every editable name, and whether it is a number or a switch, from one response. Its `manualEntitlements` field is the comp-only keys — declared, and sold by no product. It is not the config key of that name, which is gone; the field keeps its first name so a client reads an older Worker and a newer one the same way.
 
 ## Part three — the kit counts what it owns
 

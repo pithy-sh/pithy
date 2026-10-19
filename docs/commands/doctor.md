@@ -120,6 +120,8 @@ Project health:
 
 A database that could not be read is **not** `0 pending`. It is the one thing a count cannot say, and saying it wrongly is a green line about a schema nobody compared.
 
+The **`bindings`** line reads the Worker's own app as well as what it composes. An app declares the bindings it needs in `requiredBindings` ([CLI.md](../CLI.md#declaring-a-binding-on-your-own-app)) and has no manifest, so its bindings are read from the composed app. One the app declares and a stanza lacks is named here like any other, and fails the exit: it is the binding the Worker would refuse to boot on. `pithy upgrade` writes it.
+
 The **`bindings`** line covers both halves of a binding, not only the half that is config. A Durable Object is declared twice — a `durable_objects.bindings` entry naming a `class_name`, and an `export { <Class> } from "…";` on the module the Worker's `main` names, which is what wrangler resolves that name against. A project carrying the first and not the second is refused at deploy, so the class is named here and `pithy upgrade` writes it:
 
 ```
@@ -536,9 +538,10 @@ The read is the status read the control plane publishes: a name, an instant and 
 
 A **`Payments allowances:`** block appears in a verbose report whenever a Worker composes payments. It names each kit meter, whether it is enforced, and whether a quota of its name is declared, then every deployed environment's `unrestricted` subjects by name.
 
-- **A meter**: `api: emails meter enforced; a emails quota is declared.` A meter is advisory until `meters.<name>.enforce` turns it on, and a declared quota left advisory reads as a limit and binds nothing.
+- **A meter**: `api: storageBytes meter enforced; a storageBytes quota is declared.`, or `api: mediaItems meter advisory; no mediaItems quota is declared.` A meter is advisory until `meters.<name>.enforce` turns it on, and a declared quota left advisory reads as a limit and binds nothing.
+- **Nobody holds the whole product**: `prod: no subject is unrestricted.`
 - **Who holds the whole product**: `prod: unrestricted — organization:acme. Every quota unlimited and every feature on, for every name declared now or later.` `unrestricted` is the largest grant the kit has and the only one whose reach grows by itself, so it is never left to a row nobody opens.
-- **A read that did not happen**: `prod: skipped — offline, so no override was read.`, `prod: not provisioned — env.prod has no DB database_id, so no override was read.`, or `prod: could not be read, so who is unrestricted is unknown.`
+- **A read that did not happen**: `prod: skipped — offline, so no override was read.`, `prod: skipped — no Cloudflare credentials, so no override was read.`, `prod: not provisioned — env.prod has no DB database_id, so no override was read.`, `prod: could not be read, so who is unrestricted is unknown.`, or `prod: pithy.config.ts did not compose for prod, so no override was read.`
 
 One `SELECT` on `pithy_payments_overrides` per deployed environment whose composition includes payments. A project that composes no payments reaches no database and prints nothing. An unrestricted subject keeps the report verbose; nothing here **fails the exit** — an Enterprise contract and your own account are legitimate grants. It is in `--json` as `paymentsAllowances`.
 
