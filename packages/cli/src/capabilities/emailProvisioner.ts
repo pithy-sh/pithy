@@ -22,7 +22,6 @@ import {
 } from "@pithy-sh/email/src/provision/provisionEmail";
 import {
   type EmailWorkerWranglerTemplate,
-  emailLinkSigningKeySecretName,
   emailWorkflowNames,
   resolveEmailConfig,
 } from "@pithy-sh/email/src/provision/resolveEmailConfig";
@@ -316,8 +315,6 @@ export interface CloudflareEmailDeprovisionerOptions {
   cf: CloudflareClients;
   /** The account's Workflows client — the send and schedule Workflows are deleted through it, by name (#789). */
   workflows: Pick<CloudflareWorkflowsClient, "deleteWorkflow">;
-  /** The CF Secrets Store id holding each environment's link-signing key (#789). */
-  storeId: string;
   /** The project name, from `requireProjectName` — teardown finds resources by no other key. */
   project: string;
   /**
@@ -345,7 +342,6 @@ export interface CloudflareEmailDeprovisionerOptions {
 export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
   readonly #cf: CloudflareClients;
   readonly #workflows: Pick<CloudflareWorkflowsClient, "deleteWorkflow">;
-  readonly #storeId: string;
   readonly #project: string;
   readonly #account: ConfirmedAccount;
   readonly #audit: CliAuditEmit;
@@ -354,7 +350,6 @@ export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
   constructor(options: CloudflareEmailDeprovisionerOptions) {
     this.#cf = options.cf;
     this.#workflows = options.workflows;
-    this.#storeId = options.storeId;
     this.#project = options.project;
     this.#account = options.account;
     this.#audit = options.audit ?? (async () => {});
@@ -422,32 +417,6 @@ export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
         resourceId: name,
       });
     }
-  }
-
-  /**
-   * Delete the env's link-signing key entry if it is present (#789). The name carries the project and the
-   * environment, so this reaches no other environment's key and no other project's. Settled on a confirmed
-   * account, like every lookup here.
-   */
-  async deleteLinkSigningKey(env: ManagedEnvironment): Promise<void> {
-    const name = emailLinkSigningKeySecretName(this.#project, env);
-    const store = this.#cf.secrets(this.#storeId);
-    const present = await findOnConfirmedAccount({
-      ...this.#account,
-      what: `the ${name} Secrets Store entry`,
-      find: async () => ((await store.exists(name)) ? name : null),
-    });
-    if (present === null) return;
-    await store.deleteSecret(name);
-    await this.#audit({
-      environment: env,
-      action: "email/secret_removed",
-      outcome: "success",
-      severity: "warning",
-      resourceType: "secret",
-      resourceId: name,
-      metadata: { name, kind: "link_signing_key" },
-    });
   }
 
   /**

@@ -39,9 +39,6 @@ const state = vi.hoisted(() => {
     async deleteWorker(env: string) {
       calls.push(`deleteWorker:${env}`);
     }
-    async deleteLinkSigningKey(env: string) {
-      calls.push(`deleteLinkSigningKey:${env}`);
-    }
     async deleteBucket(env?: string) {
       calls.push(env === undefined ? "deleteBucket" : `deleteBucket:${env}`);
     }
@@ -152,7 +149,6 @@ const RECKLESS: Record<string, Orchestrator> = {
     for (const env of declaredOf(target)) {
       await deprovisioner.deleteWorkflows(env);
       await deprovisioner.deleteWorker(env);
-      await deprovisioner.deleteLinkSigningKey(env);
     }
   },
   storage: async (d, target) => {
@@ -301,9 +297,6 @@ const RULES: [
   ["email", { suppression: false }, "deleteWorkflows", "staging", "made"],
   ["email", { suppression: false }, "deleteWorker", "prod", "refused"],
   ["email", { suppression: false }, "deleteWorker", "staging", "made"],
-  // The link-signing key is one environment's too (#789).
-  ["email", { suppression: false }, "deleteLinkSigningKey", "prod", "refused"],
-  ["email", { suppression: false }, "deleteLinkSigningKey", "staging", "made"],
   ["email", { suppression: false }, "deleteSuppressionDatabase", undefined, "refused"],
   ["email", { suppression: true, "destroy-retained": "0" }, "deleteSuppressionDatabase", undefined, "made"],
   // storage: the worker is one environment's; so is the bucket, and only when asked.
@@ -388,12 +381,7 @@ describe("the current orchestrators run unchanged through the confinement", () =
     );
     state.orchestrator = deprovisionEmail as Orchestrator;
     expect(await deprovision("email", { env: "prod", suppression: true, "destroy-retained": "0" })).toBeUndefined();
-    expect(state.calls).toEqual([
-      "deleteWorkflows:prod",
-      "deleteWorker:prod",
-      "deleteLinkSigningKey:prod",
-      "deleteSuppressionDatabase",
-    ]);
+    expect(state.calls).toEqual(["deleteWorkflows:prod", "deleteWorker:prod", "deleteSuppressionDatabase"]);
     await expectConforms("email deprovision", printed.out);
   });
 

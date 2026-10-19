@@ -7,7 +7,6 @@ import { catalogsFromEnv } from "../templates/messages";
 import { defaultTheme } from "../templates/theme";
 import {
   type EmailWorkerWranglerTemplate,
-  emailLinkSigningKeySecretName,
   emailWorkflowNames,
   MAX_WORKER_VAR_BYTES,
   resolveEmailConfig,
@@ -316,14 +315,7 @@ describe("the words the host is deployed with", () => {
 });
 
 describe("what email teardown deletes, by the names provision used (#789)", () => {
-  const withKey: EmailWorkerWranglerTemplate = {
-    ...template,
-    secrets_store_secrets: [
-      ...template.secrets_store_secrets,
-      { binding: "EMAIL_LINK_SIGNING_KEY", store_id: "<filled>", secret_name: "<filled>" },
-    ],
-  };
-  const resolved = resolveEmailConfig(withKey, {
+  const resolved = resolveEmailConfig(template, {
     project: "acme",
     env: "staging",
     appDatabaseId: "app-123",
@@ -337,12 +329,5 @@ describe("what email teardown deletes, by the names provision used (#789)", () =
   test("emailWorkflowNames is every Workflow the resolved host declares", () => {
     expect(emailWorkflowNames("acme", "staging")).toEqual(["acme-staging-email-send", "acme-staging-email-schedule"]);
     expect(emailWorkflowNames("acme", "staging")).toEqual(resolved.workflows.map((workflow) => workflow.name));
-  });
-
-  test("emailLinkSigningKeySecretName is the entry the resolved host binds its link-signing key from", () => {
-    expect(emailLinkSigningKeySecretName("acme", "staging")).toBe("acme-staging-email-link-signing-key");
-    expect(resolved.secrets_store_secrets?.map((entry) => entry.secret_name)).toContain(
-      emailLinkSigningKeySecretName("acme", "staging"),
-    );
   });
 });

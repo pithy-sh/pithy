@@ -405,7 +405,8 @@ const deprovision = withContract(
   defineCommand({
     meta: {
       name: "deprovision",
-      description: "Remove one environment's email worker (and, with the last, optionally the suppression DB)",
+      description:
+        "Remove one environment's email worker and its Workflows (and, with the last, optionally the suppression DB)",
     },
     args: {
       // No default (#591): a bare `deprovision` removed every declared environment's email worker, production's
@@ -433,16 +434,15 @@ const deprovision = withContract(
         // is the one that deletes.
         const declared = loadProjectEnvironments(config);
         const env = requireTeardownEnvironment(args.env, declared);
-        const { account, accountId, apiToken, storeId } = commandCredentials(
-          await projectCloudflareAccount(projectDir),
-          { projectDir, why: "the email worker binds its link-signing key from it" },
-        );
+        const { account, accountId, apiToken } = commandCredentials(await projectCloudflareAccount(projectDir), {
+          projectDir,
+          why: "the email worker binds its link-signing key from it",
+        });
         const cf = await cloudflareClients({ accountId, apiToken });
         const deprovisioner = new CloudflareEmailDeprovisioner({
           account,
           cf,
           workflows: await cloudflareWorkflows({ accountId, apiToken }),
-          storeId,
           project,
           audit: await buildAudit(projectDir, accountId, apiToken),
           // The operator's number, spent at the delete — the floor under the count `deprovisionEmail` demands (#591).
@@ -462,7 +462,6 @@ const deprovision = withContract(
             hasWorker: "read",
             deleteWorkflows: "environment",
             deleteWorker: "environment",
-            deleteLinkSigningKey: "environment",
             deleteSuppressionDatabase: args.suppression
               ? { what: "the suppression list", flag: "--suppression" }
               : "refused",

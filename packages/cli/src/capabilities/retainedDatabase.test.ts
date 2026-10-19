@@ -216,7 +216,6 @@ describe("the email teardown counts the suppression list before it deletes it", 
     const { cf, deleteDatabase } = accountWith(suppressionDatabaseName(PROJECT), db);
     const deprovisioner = new CloudflareEmailDeprovisioner({
       workflows: workflowsHolding().workflows,
-      storeId: "store-1",
       account: pinned,
       cf,
       project: PROJECT,

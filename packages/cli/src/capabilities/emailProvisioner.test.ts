@@ -9,7 +9,6 @@ import {
   emailWorkerName,
   suppressionDatabaseName,
 } from "@pithy-sh/email/src/provision/provisionEmail";
-import { emailLinkSigningKeySecretName } from "@pithy-sh/email/src/provision/resolveEmailConfig";
 import type { EmailTheme } from "@pithy-sh/email/src/templates/theme";
 import { describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
@@ -34,7 +33,7 @@ function fakeCf() {
   const getWorker = vi.fn();
   const deleteWorker = vi.fn();
   const ensureWorkerRoute = vi.fn();
-  /** The Secrets Store entries the account holds — what `deleteLinkSigningKey` reads and deletes from (#789). */
+  /** The Secrets Store entries the account holds — which email teardown must never read or delete (#596). */
   const entries = new Set<string>();
   const exists = vi.fn(async (name: string) => entries.has(name));
   const deleteSecret = vi.fn(async (name: string) => void entries.delete(name));
@@ -181,7 +180,6 @@ describe("CloudflareEmailDeprovisioner", () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     const deprovisioner = new CloudflareEmailDeprovisioner({
       workflows: workflowsHolding().workflows,
-      storeId: "store-1",
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
@@ -201,7 +199,6 @@ describe("CloudflareEmailDeprovisioner", () => {
     const events: CliAuditEvent[] = [];
     const deprovisioner = new CloudflareEmailDeprovisioner({
       workflows: workflowsHolding().workflows,
-      storeId: "store-1",
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
@@ -232,7 +229,6 @@ describe("CloudflareEmailDeprovisioner", () => {
     const events: CliAuditEvent[] = [];
     const deprovisioner = new CloudflareEmailDeprovisioner({
       workflows: workflowsHolding().workflows,
-      storeId: "store-1",
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
@@ -275,7 +271,6 @@ describe("teardown refuses an unconfirmed account", () => {
     getWorker.mockResolvedValue(null);
     const stranger = new CloudflareEmailDeprovisioner({
       workflows: workflowsHolding().workflows,
-      storeId: "store-1",
       cf,
       project: PROJECT,
       account: { accountId: "acct-stranger", confirmation: "ambient" },
@@ -329,7 +324,6 @@ describe("pithy email deprovision deletes its Workflows", () => {
     const deprovisioner = new CloudflareEmailDeprovisioner({
       account: { accountId: "acct-1", confirmation: "pinned" },
       project: PROJECT,
-      storeId: "store-1",
       cf: fakeCf().cf,
       workflows,
       audit: async (event) => void events.push(event),
@@ -350,7 +344,6 @@ describe("pithy email deprovision deletes its Workflows", () => {
     const deprovisioner = new CloudflareEmailDeprovisioner({
       account: { accountId: "acct-1", confirmation: "pinned" },
       project: PROJECT,
-      storeId: "store-1",
       cf: fakeCf().cf,
       workflows,
       audit: async (event) => void events.push(event),
@@ -366,58 +359,29 @@ describe("pithy email deprovision deletes its Workflows", () => {
   });
 });
 
-describe("pithy email deprovision deletes the link-signing key (#789)", () => {
-  test("deletes this environment's entry, audits it, and leaves every other", async () => {
-    const { cf, entries, deleteSecret } = fakeCf();
-    const staging = emailLinkSigningKeySecretName(PROJECT, "staging");
-    const others = [emailLinkSigningKeySecretName(PROJECT, "prod"), emailLinkSigningKeySecretName("other", "staging")];
-    for (const name of [staging, ...others]) entries.add(name);
+/**
+ * **Email teardown never reaches the link-signing key (#596).** `pithy secrets provision` creates that entry and
+ * binds it into the app Worker, which is still deployed after email goes. Deleting it would break every link
+ * already sent and the app Worker's next deploy, so the key outlives this teardown as it outlives the vault.
+ */
+describe("pithy email deprovision leaves the link-signing key", () => {
+  test("a teardown reads and deletes no Secrets Store entry", async () => {
+    const { cf, entries, exists, deleteSecret } = fakeCf();
+    const keys = ["acme-staging-email-link-signing-key", "acme-prod-email-link-signing-key"];
+    for (const name of keys) entries.add(name);
     const events: CliAuditEvent[] = [];
     const deprovisioner = new CloudflareEmailDeprovisioner({
       account: { accountId: "acct-1", confirmation: "pinned" },
       project: PROJECT,
-      storeId: "store-1",
       cf,
       workflows: workflowsHolding().workflows,
       audit: async (event) => void events.push(event),
     });
 
     await deprovisionEmail(deprovisioner, { environment: "staging", declared: DEFAULT_ENVIRONMENTS });
-    expect(staging).toBe("acme-staging-email-link-signing-key");
-    expect(deleteSecret).toHaveBeenCalledExactlyOnceWith(staging);
-    expect([...entries]).toEqual(others);
-    expect(events).toEqual([
-      {
-        environment: "staging",
-        action: "email/secret_removed",
-        outcome: "success",
-        severity: "warning",
-        resourceType: "secret",
-        resourceId: staging,
-        metadata: { name: staging, kind: "link_signing_key" },
-      },
-    ]);
-
-    // Gone, so a second run deletes nothing and records nothing.
-    events.length = 0;
-    await deprovisionEmail(deprovisioner, { environment: "staging", declared: DEFAULT_ENVIRONMENTS });
-    expect(deleteSecret).toHaveBeenCalledTimes(1);
-    expect(events).toEqual([]);
-  });
-
-  test("refuses an unconfirmed account before it reads the store", async () => {
-    const { cf, exists, deleteSecret } = fakeCf();
-    const stranger = new CloudflareEmailDeprovisioner({
-      account: { accountId: "acct-stranger", confirmation: "ambient" },
-      project: PROJECT,
-      storeId: "store-1",
-      cf,
-      workflows: workflowsHolding().workflows,
-    });
-    await expect(stranger.deleteLinkSigningKey("staging")).rejects.toThrow(
-      "Nothing states that Cloudflare account acct-stranger is this project's. Nothing was changed.",
-    );
     expect(exists).not.toHaveBeenCalled();
     expect(deleteSecret).not.toHaveBeenCalled();
+    expect([...entries]).toEqual(keys);
+    expect(events.filter((event) => event.resourceType === "secret")).toEqual([]);
   });
 });
