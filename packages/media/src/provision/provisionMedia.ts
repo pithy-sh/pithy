@@ -4,6 +4,7 @@
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames, type ScopedNames } from "@pithy-sh/core/src/naming/resourceNames";
+import { hostWorkflowsFor } from "@pithy-sh/core/src/workflow/host";
 import {
   type DeprovisionTarget,
   deprovisionTarget,
@@ -11,7 +12,7 @@ import {
   managedEnvironments,
 } from "@pithy-sh/secrets/src/scope";
 import { MediaConfig } from "../config/config";
-import { MEDIA_CAPABILITY } from "../workflows/specs";
+import { MEDIA_CAPABILITY, mediaWorkflowRegistry } from "../workflows/specs";
 
 /**
  * The provisioning orchestration for the media capability — the live counterpart to `pithy add media`'s
@@ -94,6 +95,18 @@ export function mediaBucketName(project: string, env: ManagedEnvironment): strin
  */
 export function mediaWorkerName(project: string, env: ManagedEnvironment): string {
   return mediaNames(project, env).worker(MEDIA_CAPABILITY);
+}
+
+/**
+ * The enrichment Workflows the media worker is deployed with in one environment —
+ * `<project>-<env>-media-<job>`, one per spec. Derived by the call `resolveMediaConfig` deploys with, so
+ * teardown deletes the names provision created and no others (#789). Deleting a Worker does not delete the
+ * Workflows registered against it.
+ */
+export function mediaWorkflowNames(project: string, env: ManagedEnvironment): string[] {
+  return hostWorkflowsFor(mediaWorkflowRegistry, { project, capability: MEDIA_CAPABILITY, env }).workflows.map(
+    (workflow) => workflow.name,
+  );
 }
 
 /** The provisioned resources every environment's worker and secret are wired to. */
@@ -224,6 +237,11 @@ function resourcesFor(resources: Map<ManagedEnvironment, MediaResources>, env: M
 
 /** The teardown seam — the inverse of {@link MediaProvisioner}. Every step idempotent (a missing resource is a no-op). */
 export interface MediaDeprovisioner {
+  /**
+   * Delete the env's enrichment Workflows, by {@link mediaWorkflowNames}. Idempotent (a Workflow already
+   * gone is a no-op). Deleting the worker leaves them registered, so they go first (#789).
+   */
+  deleteWorkflows(env: ManagedEnvironment): Promise<void>;
   /** Delete the env's media worker. Idempotent (a missing worker is a no-op). */
   deleteWorker(env: ManagedEnvironment): Promise<void>;
   /**
@@ -249,7 +267,7 @@ export interface MediaDeprovisionOptions {
 
 /**
  * Tear down **one named environment's** media infrastructure, reversing {@link provisionMedia} for it: its
- * worker first (it binds the bucket), then — only when `deleteStorage` is set — its bucket, objects and
+ * Workflows, then its worker (it binds the bucket), then — only when `deleteStorage` is set — its bucket, objects and
  * all. Stored media is preserved unless explicitly requested.
  * Idempotent end to end.
  *
@@ -264,6 +282,7 @@ export async function deprovisionMedia(
   options: MediaDeprovisionOptions = {},
 ): Promise<{ env: ManagedEnvironment }> {
   const env = deprovisionTarget(target);
+  await deprovisioner.deleteWorkflows(env);
   await deprovisioner.deleteWorker(env);
   if (options.deleteStorage) {
     await deprovisioner.deleteBucket(env);
