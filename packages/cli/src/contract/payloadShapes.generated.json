@@ -584,7 +584,7 @@
       }
     },
     "doctor": {
-      "schemaVersion": 2,
+      "schemaVersion": 3,
       "payload": {
         "$": "object",
         "$.cli": "object",
@@ -800,6 +800,13 @@
         "$.selfBinding.missing[].fix": "null | string",
         "$.selfBinding.missing[]{}": "unknown",
         "$.selfBinding{}": "unknown",
+        "$.serviceBindings": "null | object",
+        "$.serviceBindings.state": "string",
+        "$.serviceBindings.faults": "array",
+        "$.serviceBindings.faults[]": "object",
+        "$.serviceBindings.faults[].fix": "null | string",
+        "$.serviceBindings.faults[]{}": "unknown",
+        "$.serviceBindings{}": "unknown",
         "$.environments": "null | object",
         "$.environments.state": "string",
         "$.environments.declared": "array",
@@ -831,6 +838,18 @@
         "$.supportSearchTriggers.detail": "array",
         "$.supportSearchTriggers.detail[]": "string",
         "$.supportSearchTriggers{}": "unknown",
+        "$.secretTables": "null | object",
+        "$.secretTables.state": "string",
+        "$.secretTables.declared": "array",
+        "$.secretTables.declared[]": "object",
+        "$.secretTables.declared[]{}": "unknown",
+        "$.secretTables.environments": "array",
+        "$.secretTables.environments[]": "object",
+        "$.secretTables.environments[].fix": "null | string",
+        "$.secretTables.environments[]{}": "unknown",
+        "$.secretTables.detail": "array",
+        "$.secretTables.detail[]": "string",
+        "$.secretTables{}": "unknown",
         "$.paymentsAllowances": "null | object",
         "$.paymentsAllowances.state": "string",
         "$.paymentsAllowances.meters": "array",
@@ -950,7 +969,7 @@
         "$.node": "string",
         "$.failures": "array",
         "$.failures[]": "object",
-        "$.failures[].check": "\"cloudflare\" | \"devPreferences\" | \"environmentConfigs\" | \"environments\" | \"featureRatelimitIds\" | \"origins\" | \"project\" | \"projectName\" | \"selfBinding\" | \"settings\" | \"supportSearchTriggers\" | \"workerNames\" | \"workflows\"",
+        "$.failures[].check": "\"cloudflare\" | \"devPreferences\" | \"environmentConfigs\" | \"environments\" | \"featureRatelimitIds\" | \"origins\" | \"project\" | \"projectName\" | \"selfBinding\" | \"serviceBindings\" | \"settings\" | \"supportSearchTriggers\" | \"workerNames\" | \"workflows\"",
         "$.failures[].detail": "string",
         "$.failures[].fix": "null | string"
       }
@@ -1239,6 +1258,18 @@
         "$.unreached[].database": "string",
         "$.interrupted": "true?",
         "$.dryRun": "boolean",
+        "$.generatedMigrations": "array?",
+        "$.generatedMigrations[]": "object",
+        "$.generatedMigrations[].worker": "string",
+        "$.generatedMigrations[].table": "string",
+        "$.generatedMigrations[].change": "\"alter\" | \"create\"",
+        "$.generatedMigrations[].file": "string",
+        "$.generatedMigrations[].addedKeys": "array",
+        "$.generatedMigrations[].addedKeys[]": "string",
+        "$.generatedMigrations[].addedSecrets": "array",
+        "$.generatedMigrations[].addedSecrets[]": "string",
+        "$.generatedMigrations[].removedSecrets": "array",
+        "$.generatedMigrations[].removedSecrets[]": "string",
         "$.plan": "object?",
         "$.plan.files": "array",
         "$.plan.files[]": "object",
@@ -1820,6 +1851,29 @@
         "$.plan.data[].action": "\"repair\" | \"reset\" | \"reupload\" | \"skip\" | \"upload\" | \"write\"",
         "$.plan.notes": "array",
         "$.plan.notes[]": "string"
+      }
+    },
+    "secrets tables": {
+      "schemaVersion": 1,
+      "payload": {
+        "$": "object",
+        "$.newestKeyVersion": "integer | null",
+        "$.behind": "integer",
+        "$.tables": "array",
+        "$.tables[]": "object",
+        "$.tables[].table": "string",
+        "$.tables[].worker": "null | string",
+        "$.tables[].keys": "array",
+        "$.tables[].keys[]": "string",
+        "$.tables[].state": "\"migrated\" | \"not-migrated\" | \"undeclared\"",
+        "$.tables[].secrets": "array",
+        "$.tables[].secrets[]": "object",
+        "$.tables[].secrets[].name": "string",
+        "$.tables[].secrets[].rows": "integer",
+        "$.tables[].secrets[].keyVersions": "object",
+        "$.tables[].secrets[].keyVersions{}": "integer",
+        "$.command": "\"secrets tables\"",
+        "$.env": "string"
       }
     },
     "secrets update": {
@@ -2756,6 +2810,18 @@
         "$.domains.prod.zone": "string"
       }
     },
+    "worker bind": {
+      "schemaVersion": 1,
+      "payload": {
+        "$": "object",
+        "$.command": "\"worker.bind\"",
+        "$.from": "string",
+        "$.to": "null | string",
+        "$.binding": "string",
+        "$.kind": "\"app\" | \"kit\" | null",
+        "$.changed": "boolean"
+      }
+    },
     "worker list": {
       "schemaVersion": 1,
       "payload": {
@@ -2809,6 +2875,8 @@
         "$.orphaned[]": "string",
         "$.accountChecked": "boolean",
         "$.reconciled": "boolean",
+        "$.rebound": "array",
+        "$.rebound[]": "string",
         "$.plan": "object?",
         "$.plan.files": "array",
         "$.plan.files[]": "object",
@@ -2875,7 +2943,27 @@
         "$.runs[].workflows[].class_name": "string",
         "$.runs[].crons": "array",
         "$.runs[].crons[]": "string",
-        "$.runs[].changed": "boolean"
+        "$.runs[].changed": "boolean",
+        "$.serviceRuns": "array",
+        "$.serviceRuns[]": "object",
+        "$.serviceRuns[].env": "string",
+        "$.serviceRuns[].services": "array",
+        "$.serviceRuns[].services[]": "object",
+        "$.serviceRuns[].services[].binding": "string",
+        "$.serviceRuns[].services[].service": "string",
+        "$.serviceRuns[].changed": "boolean"
+      }
+    },
+    "worker unbind": {
+      "schemaVersion": 1,
+      "payload": {
+        "$": "object",
+        "$.command": "\"worker.unbind\"",
+        "$.from": "string",
+        "$.to": "null | string",
+        "$.binding": "string",
+        "$.kind": "\"app\" | \"kit\" | null",
+        "$.changed": "boolean"
       }
     }
   }
