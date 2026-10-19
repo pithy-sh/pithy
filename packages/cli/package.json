@@ -61,6 +61,7 @@
   },
   "devDependencies": {
     "@lydell/node-pty": "1.2.0-beta.15",
+    "@pithy-sh/artifacts": "workspace:*",
     "@pithy-sh/audit": "workspace:*",
     "@pithy-sh/auth": "workspace:*",
     "@pithy-sh/i18n": "workspace:*",

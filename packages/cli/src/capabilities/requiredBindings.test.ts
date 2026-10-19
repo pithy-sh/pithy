@@ -83,6 +83,7 @@ const MANIFESTS = shippedManifests();
  * manifest fails here once, and the fix is to add its name.
  */
 const SHIPPED_MANIFESTS = [
+  "artifacts",
   "audit",
   "auth",
   "core",
@@ -365,6 +366,8 @@ describe("what pithy add claims to write, it writes", () => {
         return list("ratelimits").some((entry) => entry.name === binding.name);
       case "workflow":
         return list("workflows").some((entry) => entry.binding === binding.name);
+      case "artifacts":
+        return list("artifacts").some((entry) => entry.binding === binding.name && typeof entry.namespace === "string");
       default:
         return false;
     }

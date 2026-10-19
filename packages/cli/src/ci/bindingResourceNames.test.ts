@@ -144,6 +144,7 @@ const DECLARED: readonly Declared[] = [
   },
   { capability: "media", binding: "DB", kind: "d1", namer: null, why: "the app database" },
   { capability: "organization", binding: "DB", kind: "d1", namer: null, why: "the app database" },
+  { capability: "artifacts", binding: "DB", kind: "d1", namer: null, why: "the app database" },
   {
     capability: "media",
     binding: "MEDIA_BUCKET",

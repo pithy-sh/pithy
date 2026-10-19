@@ -67,6 +67,7 @@ const SWEEP = `import.meta.${"glob("}`;
  * surfaces exactly and proves its pattern can match.
  */
 const GUARDED = [
+  "artifacts/src/schema-descriptions.test.ts",
   "audit/src/schema-descriptions.test.ts",
   "auth/src/schema-descriptions.test.ts",
   "cloudflare/src/schema-descriptions.test.ts",

@@ -71,6 +71,7 @@ const DECLARED: ReadonlyArray<{ constant: string; database: string }> = [
   { constant: "CONTROLPLANE_MIGRATION_ORDER", database: "app" },
   { constant: "SUPPORT_MIGRATION_ORDER", database: "app" },
   { constant: "ORGANIZATION_MIGRATION_ORDER", database: "app" },
+  { constant: "ARTIFACTS_MIGRATION_ORDER", database: "app" },
   // Its own durable database, shared by every environment — so it does not compete with `app`.
   { constant: "EMAIL_SUPPRESSIONS_MIGRATION_ORDER", database: "emailSuppressions" },
   // The secrets manager's own database, likewise separate.

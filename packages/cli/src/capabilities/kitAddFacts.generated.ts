@@ -6,6 +6,10 @@
 
 /** Each kit capability's prerequisites and required options, by name. */
 export const KIT_ADD_FACTS = {
+  "artifacts": {
+    "peerCapabilities": [],
+    "requiredOptions": []
+  },
   "audit": {
     "peerCapabilities": [],
     "requiredOptions": []

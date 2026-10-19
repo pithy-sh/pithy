@@ -127,9 +127,11 @@ const DECLARED_ONLY: Record<string, string> = {
  * which read the vault's table registry before a teardown, and `secrets`' `tables/tableStore.ts`; and by
  * unattended rotation (#602): `auth`'s `instance/jwksReencryption.ts`, which records in the secrets D1 that the
  * JWKS keys have moved under the session secret's newest version. A file added or removed moves a count, which
- * is the point: the number is a second reader of the same change.
+ * is the point: the number is a second reader of the same change. `artifacts` (#673) joined with two:
+ * `data/tables.ts` and `binding/artifacts.test.ts`.
  */
 const IMPORTERS: Record<string, number> = {
+  "packages/artifacts": 2,
   "packages/audit": 2,
   "packages/auth": 6,
   "packages/cli": 15,
@@ -541,10 +543,10 @@ describe("the Workers types are declared the way they are used", () => {
     ).toBeDefined();
     stated.push({ where: scaffold, range: literal });
 
-    // Twenty-one workspace manifests, the starter Worker `pithy init` copies, and the scaffolder literal.
+    // Twenty-two workspace manifests, the starter Worker `pithy init` copies, and the scaffolder literal.
     // Pinned rather than floored: a walk that read nothing would satisfy any floor, and a declaration
     // landing or leaving is a change whose author should confirm the number rather than inherit it.
-    expect(stated.length, "the set of declarations moved — count them, then say so here").toBe(23);
+    expect(stated.length, "the set of declarations moved — count them, then say so here").toBe(24);
     expect(
       stated.filter((entry) => entry.range !== RANGE),
       "these state a different range. Two versions of an ambient global type in one adopter's program are duplicate-identifier errors, so all of them dedupe to one copy or none of them do",
