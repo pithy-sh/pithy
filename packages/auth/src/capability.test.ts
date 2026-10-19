@@ -49,9 +49,13 @@ describe("auth capability", () => {
     for (const name of tables) expect(name.startsWith("pithyAuth")).toBe(true);
   });
 
-  test("ships both migrations in one namespace, at the one declared order", () => {
+  test("ships every migration in one namespace, at the one declared order", () => {
     const db = build().databases?.app;
-    expect(Object.keys(db?.migrations ?? {})).toEqual(["0001_init", "0002_session_authenticated_at"]);
+    expect(Object.keys(db?.migrations ?? {})).toEqual([
+      "0001_init",
+      "0002_session_authenticated_at",
+      "0003_account_issuer_nullable",
+    ]);
     // A second migration never gets a second order. Renumbering would rename `0300_auth_0001_init`, and
     // Kysely would then read every applied auth migration as unapplied and run it again.
     expect(db?.migrationOrder).toBe(AUTH_MIGRATION_ORDER);
@@ -132,7 +136,11 @@ describe("auth capability", () => {
 describe("additional Better Auth plugins", () => {
   test("a project that adds none is byte-identical to before — the kit's own chain, no extensions", () => {
     const cap = build();
-    expect(Object.keys(cap.databases?.app?.migrations ?? {})).toEqual(["0001_init", "0002_session_authenticated_at"]);
+    expect(Object.keys(cap.databases?.app?.migrations ?? {})).toEqual([
+      "0001_init",
+      "0002_session_authenticated_at",
+      "0003_account_issuer_nullable",
+    ]);
     expect(cap.extensions).toEqual([]);
   });
 
@@ -141,6 +149,7 @@ describe("additional Better Auth plugins", () => {
     expect(Object.keys(cap.databases?.app?.migrations ?? {})).toEqual([
       "0001_init",
       "0002_session_authenticated_at",
+      "0003_account_issuer_nullable",
       "0002_plugin_organization",
     ]);
   });

@@ -248,7 +248,6 @@ async function victimWithAccount(emit: AuditEmit): Promise<{ userId: string; acc
     userId: String(user.id),
     providerId: "google",
     accountId: "google-sub-victim",
-    issuer: "https://accounts.google.com",
   });
   return { userId: String(user.id), accountId: account.id };
 }
@@ -289,7 +288,6 @@ async function createAccountRow(
     userId: string;
     providerId: string;
     accountId: string;
-    issuer: string;
     sensitive?: boolean;
   },
 ): Promise<{ id: string }> {
@@ -298,7 +296,6 @@ async function createAccountRow(
     userId: row.userId,
     providerId: row.providerId,
     accountId: row.accountId,
-    issuer: row.issuer,
     ...(row.sensitive ? SENSITIVE_COLUMNS : {}),
   });
   if (!created) throw new Error("account row not created");
@@ -398,7 +395,6 @@ describe("the provider-link trail", () => {
       userId,
       providerId: "google",
       accountId: "google-sub-1",
-      issuer: "https://accounts.google.com",
     });
 
     expect(await accountRows()).toHaveLength(1);
@@ -430,7 +426,6 @@ describe("the provider-link trail", () => {
       userId: String(user.id),
       providerId: "google",
       accountId: "google-sub-first",
-      issuer: "https://accounts.google.com",
     });
 
     expect(events.filter((e) => e.action === "auth/oauth_linked")).toHaveLength(1);
@@ -450,7 +445,6 @@ describe("the provider-link trail", () => {
       userId,
       providerId: "credential",
       accountId: userId,
-      issuer: "local:credential",
     });
 
     expect(await accountRows()).toHaveLength(1);
@@ -464,7 +458,6 @@ describe("the provider-link trail", () => {
       userId,
       providerId: "google",
       accountId: "google-sub-1",
-      issuer: "https://accounts.google.com",
     });
 
     const res = await buildApp(emit).request(
@@ -502,7 +495,6 @@ describe("the provider-link trail", () => {
       userId,
       providerId: "google",
       accountId: "google-sub-1",
-      issuer: "https://accounts.google.com",
       sensitive: true,
     });
 
@@ -544,7 +536,6 @@ describe("who the trail says did it", () => {
       userId,
       providerId: "google",
       accountId: "google-sub-1",
-      issuer: "https://accounts.google.com",
     });
 
     const res = await buildApp(emit).request(
@@ -584,7 +575,6 @@ describe("who the trail says did it", () => {
       userId,
       providerId: "google",
       accountId: "google-sub-1",
-      issuer: "https://accounts.google.com",
     });
     events.length = 0;
 
@@ -684,7 +674,6 @@ describe("who the trail says did it", () => {
       userId,
       providerId: "google",
       accountId: "google-sub-1",
-      issuer: "https://accounts.google.com",
     });
     events.length = 0;
 
@@ -834,7 +823,6 @@ describe("a delete.after is not evidence that this caller removed anything", () 
       userId,
       providerId: "google",
       accountId: "google-sub-race",
-      issuer: "https://accounts.google.com",
     });
     events.length = 0;
 

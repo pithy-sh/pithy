@@ -327,8 +327,18 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
     trustedOrigins: deps.trustedOrigins,
     database: { db: deps.db, type: "sqlite", transaction: false },
     advanced: {
-      // WebCrypto UUID ids for every model — anti-enumeration, Workers-safe.
-      database: { generateId: () => crypto.randomUUID() },
+      database: {
+        // WebCrypto UUID ids for every model — anti-enumeration, Workers-safe.
+        generateId: () => crypto.randomUUID(),
+        // **Off at runtime, and checked in CI instead (#787).** Better Auth 1.7.3 compares its schema with
+        // the database when an instance initializes and refuses requests on a mismatch. Its verdict is
+        // cached per instance, and this instance is built per request (`../http/resolve.ts`), so the check
+        // would run on every request: eight more D1 statements on top of the five an authenticated request
+        // costs, measured by `http/scopes.workers.test.ts`. The kit owns these tables through its own
+        // migrations, and `migrations/betterAuthSchemaDrift.workers.test.ts` runs Better Auth's own check
+        // against them at the lockfile's version and at the newest the range admits.
+        validateSchema: false,
+      },
     },
     // Better Auth's errors bubble out of `handler` so the Hono boundary maps them to PithyError.
     //

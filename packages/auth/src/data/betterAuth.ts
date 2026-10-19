@@ -103,8 +103,9 @@ export const Account = z
     id: z.string().describe("Primary key. A random/UUID text id."),
     issuer: z
       .string()
+      .nullable()
       .describe(
-        "Who asserted this identity, as the identity provider names itself: an OIDC issuer URL (`https://accounts.google.com`), `local:oauth:<id>` for an OAuth provider that publishes none, or `local:credential` for a password. With `accountId` it is the account's identity and carries a unique index — a provider slug is a name this project chose, so two providers pointed at one directory could assert the same `accountId` and land on two rows.",
+        "A relic of Better Auth 1.7.0–1.7.2, which identified an account by `(issuer, accountId)` and wrote who asserted the identity here: an OIDC issuer URL, `local:oauth:<id>`, or `local:credential`. 1.7.3 went back to `(providerId, accountId)` and writes nothing here, so a row created since is null. Kept, with the values a Worker migrated under 1.7.1 holds, and read by nothing (#787).",
       ),
     accountId: z.string().describe("The provider's stable id for this user (e.g. the Google `sub` claim)."),
     providerId: z
