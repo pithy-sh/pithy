@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { d1SeedGroup, defineSeed, kvSeedGroup } from "@pithy-sh/core/src/seed/seed";
+import { secretsMigrations } from "@pithy-sh/secrets/src/migrations/secretsMigrations";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { ResetPreviewEntry } from "../migrations/run";
@@ -330,7 +331,8 @@ describe("docs/commands/seed.md — Resetting data", () => {
           {
             database: "secrets",
             binding: "SECRETS",
-            migrations: 1,
+            // The secrets database's real count, so the transcript cannot keep a number the package moved past.
+            migrations: Object.keys(secretsMigrations).length,
             retained: ["pithy_secrets_rotations", "pithy_secrets_system_secrets"],
           },
           {

@@ -56,6 +56,8 @@ Over every composed capability, not only the ones with a missing binding — a p
 
 **Installed is not composed.** The manifests are installed once at the project root and shared by every Worker, so they describe every capability installed anywhere in the project — not what this Worker is made of. A plan is scoped to the Worker's own composed set. A capability another Worker added contributes nothing here; anything else would put a foreign capability's bindings, and its Durable Object class migrations, on a script that never declared them.
 
+**The Worker's own app is checked too.** An app declares the bindings it needs in `requiredBindings`, like any capability ([CLI.md](../CLI.md#declaring-a-binding-on-your-own-app)), and the Worker refuses to boot without them. It has no manifest, so its bindings are read from the composed app instead, and reported under the app's name in `perCapability`, beside the capabilities. An apply writes them into every stanza, the same way. The app's entry never carries config keys or entry exports: its options are your own source. It is never declined either, because deleting the declaration is the decline. Its Workflows are left out here, since `app.workflows` writes the app's same-script entries.
+
 **A malformed manifest is named, not skipped in silence.** Faults are project-wide — one install, one `node_modules` — so they are reported once, above the Workers. A capability with a fault appears in no other line of the report: its manifest could not be read, so it contributes no drift and the run reconciles around the hole.
 
 A dry run resolves no project name and proposes none, so nothing can be written. An apply resolves the name from the root `pithy.config.ts`, because a capability wired by `upgrade` must get the same `<project>-<env>-<binding>` resource name it would have got from `add`. With `--migrate`, the name is required and checked first, so a nameless project fails having written nothing rather than mid-fan-out.
@@ -215,7 +217,7 @@ Every *other* Worker still reports in full. A run that loses four Workers' repor
 | `perCapability[].missingBindings` | array | Required bindings absent from one or more environments' `wrangler.jsonc` stanzas |
 | `perCapability[].missingBindings[].env` | string | The environment missing the binding — `dev` for the top-level stanza, else the `env.<name>` key |
 | `perCapability[].missingBindings[].name` | string | The Worker env binding name the capability requires, e.g. `DB`, `SESSIONS` |
-| `perCapability[].missingBindings[].type` | string | The kind of Cloudflare resource: `d1`, `kv`, `r2`, `ai`, `vectorize`, `queue`, `ratelimit`, `email`, `secret`, `workflow`, `service`, `durable_object` |
+| `perCapability[].missingBindings[].type` | string | The kind of Cloudflare resource: `d1`, `kv`, `r2`, `ai`, `vectorize`, `queue`, `ratelimit`, `email`, `secret`, `workflow`, `service`, `durable_object`, `hyperdrive`, `browser`, `images`, `analytics_engine_datasets`, `pipelines`, `mtls_certificates`, `dispatch_namespaces` |
 | `perCapability[].missingConfigKeys` | array | Manifest config options not yet present in this capability's `pithy.config.ts` registration |
 | `perCapability[].missingConfigKeys[].key` | string | The option name to add to the registration call |
 | `perCapability[].missingConfigKeys[].default` | JSON value | The manifest default rendered as the option's value — a scalar, or a worked example you replace |
