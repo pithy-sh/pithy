@@ -148,7 +148,7 @@ Pass both --r2-access-key-id and --r2-secret-access-key.
 
 ```
 No R2 S3 credentials were supplied.
-Pass --r2-access-key-id and --r2-secret-access-key, or set R2_CREDENTIALS in .dev.vars. Create the pair under R2 → Manage API tokens; Cloudflare has no API for minting one.
+Pass --r2-access-key-id and --r2-secret-access-key, or set R2_CREDENTIALS in the account config. Create the pair under R2 → Manage API tokens; Cloudflare has no API for minting one.
 ```
 
 A malformed `R2_CREDENTIALS` is its own refusal — `R2_CREDENTIALS is not valid JSON.` or `R2_CREDENTIALS is not a valid access-key/secret-key pair.` — rather than a SigV4 fault later.

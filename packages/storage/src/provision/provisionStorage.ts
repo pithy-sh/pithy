@@ -35,7 +35,7 @@ import { STORAGE_CAPABILITY, storageWorkflowRegistry } from "../workflows/specs"
  * bucket, create-then-update for the secret, and a deploy that overwrites. Re-running is a no-op.
  *
  * **What it does not do.** Cloudflare exposes no API for minting an R2 S3 access-key pair, so nothing
- * here mints one. The pair is supplied by the operator — flags, or `R2_CREDENTIALS` in `.dev.vars` —
+ * here mints one. The pair is supplied by the operator — flags, or `R2_CREDENTIALS` in the account config —
  * and written into the secret as given. That is a real limitation, and the manifest says so rather
  * than promising a mint that does not happen.
  */

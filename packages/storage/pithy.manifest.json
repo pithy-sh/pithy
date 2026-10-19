@@ -43,7 +43,7 @@
     "Bind a D1 database named DB in wrangler.jsonc — the same app database your other capabilities use.",
     "Run `pithy migrate` to create pithy_storage_objects and pithy_storage_shares.",
     "Run `pithy storage provision` to create the per-environment R2 buckets, write the credentials secret, and deploy the sweep worker. `pithy add` writes bindings and touches no Cloudflare account; provisioning is the separate, explicit step.",
-    "Supply an R2 S3 access-key pair to that command with --r2-access-key-id and --r2-secret-access-key, or set R2_CREDENTIALS in .dev.vars. Cloudflare exposes no API for minting one, so it cannot be created for you — make the pair under R2 -> Manage API tokens.",
+    "Supply an R2 S3 access-key pair to that command with --r2-access-key-id and --r2-secret-access-key, or set R2_CREDENTIALS in the account config. Cloudflare exposes no API for minting one, so it cannot be created for you — make the pair under R2 -> Manage API tokens.",
     "Add `@pithy-sh/secrets` if it is not already installed. The R2 credentials are read through it, so storage will not compose without it.",
     "Add `@pithy-sh/auth` if it is not already installed. Every write reads the authenticated user from the AuthContext seam; with no auth capability composed those routes deny, which is the right default but not a useful one. Add `@pithy-sh/organization` to scope files to teams, and give some role `storage:manage` so an organization can clean up after somebody who left.",
     "Share a file with one person, or put one on legal hold, with `storage({ permission })` — a hook asked on every read and write that answers `allow`, `deny` or `default`. Revocable share links are unchanged by it."
