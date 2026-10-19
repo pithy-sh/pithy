@@ -4,6 +4,7 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
 import type { EmailEnqueueEnv } from "@pithy-sh/email/src/capability";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import type { Context } from "hono";
@@ -11,13 +12,14 @@ import type { AuthWiring } from "../capability";
 import { authDatabase } from "../data/tables";
 import { makeSendAuthEmail, type ResolveRecipientLocale } from "../email/send";
 import { type AuthInstance, makeAuth } from "../instance/auth";
+import { ensureJwksSealedUnderCurrent } from "../instance/jwksReencryption";
 import { resolveProvider } from "../instance/providers";
 import {
   resolveAppleCredentials,
   resolveFacebookCredentials,
   resolveGithubCredentials,
   resolveGoogleCredentials,
-  resolveSessionSecret,
+  resolveSessionSecrets,
 } from "../instance/secrets";
 import { baseURLResolver } from "./baseUrl";
 
@@ -103,8 +105,8 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
   //
   // A held failure belongs to its own secret (#170), so an unreadable provider credential does not
   // disturb the session secret's own read, and a *disabled* provider never calls `.get()` at all.
-  const [secret, google, apple, facebook, github] = await Promise.all([
-    resolveSessionSecret(env),
+  const [sessionSecrets, google, apple, facebook, github] = await Promise.all([
+    resolveSessionSecrets(env),
     resolveProvider(cfg.google.enabled, () => resolveGoogleCredentials(env)),
     resolveProvider(cfg.apple.enabled, () => resolveAppleCredentials(env)),
     resolveProvider(cfg.facebook.enabled, () => resolveFacebookCredentials(env)),
@@ -112,6 +114,27 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
   ]);
   const expiresMinutes = Math.max(1, Math.round(cfg.verificationExpiresIn / 60));
   const d1 = resolveDb(c.env, cfg.database);
+  // The current version signs; every retained one opens (#602). A version set with no current entry is a
+  // corrupt envelope, and the store's own reader has already refused that — this narrows it for the type.
+  const secret = sessionSecrets.versions[sessionSecrets.currentVersion];
+  if (secret === undefined) {
+    throw new InternalError({
+      message: "Authentication is misconfigured.",
+      detail: "auth-session-secret resolved with no value at its current version",
+    });
+  }
+  // Mid-rotation, move the JWKS keys under the current version before the old one is retired, and record this
+  // database as a holder either way. Once per version per isolate, never fatal — see
+  // `../instance/jwksReencryption.ts`.
+  await ensureJwksSealedUnderCurrent({
+    db: authDatabase(d1),
+    holder: cfg.database,
+    secrets: env.SECRETS,
+    versions: sessionSecrets,
+    // Read off the context when a backend seeded one, as `createBackend` always does; a hand-built app in a
+    // test may not have, and a re-encryption that cannot say what it did must not break the request.
+    log: (c.get("log") ?? createWorkerLogger({ name: "auth" })).child("auth"),
+  });
   const listener = wiring.onSessionRevoked;
   return makeAuth({
     db: authDatabase(d1),
@@ -120,6 +143,7 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
     // has none.
     ...(listener ? { onSessionRevoked: (session: { id: string; userId: string }) => listener(session, d1) } : {}),
     secret,
+    sessionSecrets,
     // Never `cfg.baseURL` directly. The instance derives the session cookie's name, the OAuth callback
     // URLs, and the magic-link URL from whatever base URL it is handed, so in a `dev` composition every
     // one of those has to name the address this run is actually serving on — not the production origin

@@ -47,6 +47,8 @@ const entry: SecretRegistryEntry = {
   rotatable: true,
   valueType: "text",
   rotateEveryDays: 30,
+  // A secret the cron would rotate by itself declares how long the previous version keeps verifying (#602).
+  overlap: { days: 7, minimumDays: 7 },
   devValue: "random",
   origin: { kind: "minted", recipe: { kind: "random", bytes: 32, encoding: "base64url" } },
   rotation: { kind: "local" },

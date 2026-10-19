@@ -21,7 +21,7 @@ import { createRateLimitMiddleware } from "./http/rateLimit";
 import { createAuthRoutes } from "./http/routes";
 import type { GithubUserInfoResolver } from "./instance/githubUserInfo";
 import { AuthPlugin, assertAdditivePlugins } from "./instance/plugins";
-import { authSecretsRegistry, inapplicableProviderSecrets } from "./instance/secrets";
+import { authSecretsRegistryFor, inapplicableProviderSecrets } from "./instance/secrets";
 import { AUTH_MIGRATION_ORDER } from "./migrations/0001_init";
 import { authPluginPlan } from "./migrations/pluginTables";
 import { AUTH_MIGRATIONS } from "./migrations/set";
@@ -107,6 +107,14 @@ export const AuthConfig = z
       .int()
       .default(60 * 60 * 24)
       .describe("How often (seconds) an active session's expiry slides forward. Defaults to 1 day."),
+    sessionSecretRotateEveryDays: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        "How often, in days, the secrets manager rotates `auth-session-secret` by itself. Unset by default, so nothing rotates it unattended. The previous version keeps verifying for the session lifetime, so nobody is signed out, and is retired once the JWKS keys sealed under it are re-encrypted. Must be longer than `sessionExpiresIn`.",
+      ),
     verificationExpiresIn: z
       .number()
       .int()
@@ -341,7 +349,9 @@ export function auth(options: AuthOptions): AuthCapability {
     // Whether anything will ever put a string in `AuthContext.scopes` — only when the adopter supplied a
     // resolver. `pithy doctor` reads it against every composed capability's `scopeGates` (#560).
     providesScopes: resolveScopes !== undefined,
-    secretRegistry: authSecretsRegistry,
+    // Built from the config, so the session secret's overlap is this composition's session lifetime and its
+    // period is the one the adopter asked for, if any (#602).
+    secretRegistry: authSecretsRegistryFor(resolved),
     // And which of those four credentials this composition cannot reach (#541). A provider that is off
     // has no code path that reads its pair, so `pithy doctor` listing it as outstanding re-raised a
     // settled question on every run. Declared rather than inferred: the config key and the secret name

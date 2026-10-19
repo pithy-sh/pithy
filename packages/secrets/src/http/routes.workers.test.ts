@@ -17,6 +17,7 @@ import { secrets } from "../capability";
 import { secretsTables } from "../data/tables";
 import { secrets_0001_init } from "../migrations/0001_init";
 import { defineSecretRegistry } from "../registry";
+import { rotationFailureText } from "../rotation/rotationLedger";
 import { SECRETS_ROTATE_SCOPE, SECRETS_STATUS_READ_SCOPE } from "./guards";
 import {
   type SecretRotateResponse,
@@ -126,6 +127,22 @@ const PUBLISHED_STATUS_KEYS = [
   // `<keyspace>/<key>` name embedding a tenant identifier can reach it. It carries no reason, because why
   // a row is malformed is a question about the database and not an answer for a client.
   "unreadable",
+  // #602. The newest closed attempt, when it failed: `at`, an ISO instant, and `reason`, a member of
+  // `RotationFailure` or null. The reason is read back off the fixed sentence a code wrote; the column's
+  // text is never what crosses, and a sentence nothing here composed — `FAILURE_TEXT` below — reads as null.
+  "lastFailure",
+  "at",
+  "reason",
+];
+
+/** The failure codes a status read may publish (#602). Written out, so a new code is a line somebody adds here. */
+const FAILURE_CODES = [
+  "roll-failed",
+  "not-recorded",
+  "not-rotated",
+  "at-rest-incomplete",
+  "at-rest-unconfirmed",
+  "not-retired",
 ];
 
 /** Every key `GET {base}/admin/status/:name/rotations` may carry. Seven. Written out, for the same reason. */
@@ -140,6 +157,8 @@ const PUBLISHED_ROTATIONS_KEYS = [
   // #387. How many rows of this page would not decode — a count, so that a client can say the history is
   // incomplete rather than render a short list as a whole one. A number is the only thing it can be.
   "unreadable",
+  // #602. Why a failed attempt failed, as a member of `RotationFailure` or null — never the row's text.
+  "failure",
 ];
 
 /**
@@ -412,6 +431,31 @@ describe("GET {base}/admin/status", () => {
     expect(link?.overdue).toBeNull();
   });
 
+  test("a failed automatic rotation reports when and why, as a code, and never its text (#602)", async () => {
+    // The seeded failure is free text no code wrote, so it crosses as a failure with no reason.
+    let body = (await (await call(harness(), "/secrets/admin/status")).json()) as SecretsStatusResponse;
+    expect(body.secrets.find((secret) => secret.name === "auth-signing-key")?.lastFailure).toEqual({
+      at: FAILED_AT,
+      reason: null,
+    });
+    // A failure the cron wrote names its code.
+    await env.SECRETS.prepare(
+      "insert into pithy_secrets_rotations (name, started_at, completed_at, status, \"trigger\", rotated_by, error_message) values ('session-key', ?, ?, 'failed', 'cron', 'value-session-key', ?)",
+    )
+      .bind(FAILED_AT_MS, FAILED_AT_MS, rotationFailureText("not-recorded"))
+      .run();
+    body = (await (await call(harness(), "/secrets/admin/status")).json()) as SecretsStatusResponse;
+    expect(body.secrets.find((secret) => secret.name === "session-key")?.lastFailure).toEqual({
+      at: FAILED_AT,
+      reason: "not-recorded",
+    });
+    expect(body.secrets.find((secret) => secret.name === "unwritten-token")?.lastFailure).toBeNull();
+    const history = (await (
+      await call(harness(), "/secrets/admin/status/session-key/rotations")
+    ).json()) as SecretRotationsResponse;
+    expect(history.rotations[0]?.failure).toBe("not-recorded");
+  });
+
   test("each secret says how it rotates — the kind, the issuer, and the page — or says nothing", async () => {
     // The read #372 exists for. Before it, `rotation.kind` reached no remote client at all, so a
     // dashboard's only conservative reading was to give every secret an instruction and none of them a
@@ -474,6 +518,9 @@ describe("GET {base}/admin/status", () => {
       "manual",
       "gitlab",
       "https://gitlab.example/tokens",
+      // #602: when the newest closed attempt failed, as an ISO instant, and why as a code.
+      FAILED_AT,
+      ...FAILURE_CODES,
     ];
     const escaped = unpublishedIn(raw, { leaves: published, keys: PUBLISHED_STATUS_KEYS });
     expect(escaped, `The secrets status read published this:\n  ${escaped.join("\n  ")}`).toEqual([]);
@@ -513,7 +560,14 @@ describe("GET {base}/admin/status", () => {
     const nested = SecretRotation.options.flatMap((member) => Object.keys(member.shape));
     // The envelope's own keys are read too, not typed out — `#387` added `unreadable` beside `secrets`,
     // and an envelope field is exactly as capable of carrying something as a row field is.
-    const declared = [...Object.keys(SecretsStatusResponse.shape), ...Object.keys(SecretStatusView.shape), ...nested];
+    // `lastFailure` nests too (#602), and is read off the same way for the same reason.
+    const failure = Object.keys(SecretStatusView.shape.lastFailure.unwrap().unwrap().shape);
+    const declared = [
+      ...Object.keys(SecretsStatusResponse.shape),
+      ...Object.keys(SecretStatusView.shape),
+      ...nested,
+      ...failure,
+    ];
     expect(declared.filter((key) => !PUBLISHED_STATUS_KEYS.includes(key))).toEqual([]);
     // And in the other direction, so a field removed from the schema leaves no permission behind it.
     expect(PUBLISHED_STATUS_KEYS.filter((key) => !declared.includes(key))).toEqual([]);
@@ -550,6 +604,7 @@ describe("GET {base}/admin/status/:name/rotations", () => {
     expect(body.rotations.map((rotation) => rotation.trigger)).toEqual(["cron", "baseline"]);
     expect(Object.keys(body.rotations[0] ?? {}).sort()).toEqual([
       "completedAt",
+      "failure",
       "rotatedBy",
       "startedAt",
       "status",
@@ -580,6 +635,8 @@ describe("GET {base}/admin/status/:name/rotations", () => {
       null,
       // #387's count, zero on a history whose rows all decode.
       0,
+      // #602's codes. The seeded failure is `FAILURE_TEXT`, which no code wrote, so it crosses as null.
+      ...FAILURE_CODES,
     ];
     const escaped = unpublishedIn(raw, { leaves: published, keys: PUBLISHED_ROTATIONS_KEYS });
     expect(escaped, `The rotation history published this:\n  ${escaped.join("\n  ")}`).toEqual([]);

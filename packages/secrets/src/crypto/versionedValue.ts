@@ -9,14 +9,15 @@ import { SecretCryptoError } from "../error/errors";
  * `{ currentVersion, versions }` envelope, JSON-encoded, then sealed in one AES-256-GCM
  * envelope. The shape mirrors `EncryptionConfig`'s `{ currentVersion, keys }`: an explicit
  * pointer to the current version (so we never sort stringified-integer keys, where `"10" < "2"`)
- * plus every still-valid version. A new secret is a one-entry envelope; a value rotation (a
- * deferred feature) appends the next version and repoints `currentVersion`. Values are strings —
+ * plus every still-valid version. A new secret is a one-entry envelope; a value rotation adds the
+ * next version ({@link stagedValue}) and, a cache lifetime later, repoints `currentVersion` at it
+ * ({@link promotedValue}). So a version newer than the current one is a successor waiting to be promoted. Values are strings —
  * a `json` secret stores its serialized form, parsed at the read seam. This is the *value*
  * version, distinct from the envelope's encryption-key version (see `envelope.ts`).
  *
- * Future: when a version is rotated out, it can carry a pruning TTL so a retired version is
- * removed from the store after its grace window. That is modeled as a parallel `retiredAt` map
- * (version → ISO timestamp), keeping `versions` itself string→string. Deferred with value rotation.
+ * A version is retired by removing it, after its overlap, by the rotation that replaced it (#602) —
+ * see {@link retireVersions}. Nothing about a version records when it will go: the rotation Workflow
+ * holds that clock, so the envelope stays `version → value` and nothing else.
  */
 export const VersionedValue = z
   .object({
@@ -39,6 +40,59 @@ export function initialVersionedValue(value: string): VersionedValue {
 export function appendVersion(value: VersionedValue, next: string): VersionedValue {
   const version = String(highestVersion(value) + 1);
   return { currentVersion: version, versions: { ...value.versions, [version]: next } };
+}
+
+/** One rotation's successor added to an envelope: the new envelope, the version it is under, and the ones beside it. */
+export interface StagedValue {
+  /** The envelope with the successor added. Its current version is the one it had before. */
+  value: VersionedValue;
+  /** The version key the successor was stored under. */
+  version: string;
+  /** Every other version still in the envelope, current included — what the rotation retires after its overlap. */
+  prior: string[];
+}
+
+/**
+ * Add `next` beside the current version **without making it current**, unless the envelope already holds it.
+ *
+ * **Two writes, because readers cache (#602).** A Worker reads a secret through a per-isolate cache that may
+ * be an hour old. Had the successor become current in the write that added it, one isolate would sign under
+ * it while another, still holding the envelope from before, had no key to verify the signature. Added first
+ * and promoted a cache lifetime later ({@link promotedValue}), every isolate already holds the successor as a
+ * verifying key by the time any of them signs under it.
+ *
+ * Idempotent on the value, and that is the property a retried store needs: the rotation produces its
+ * successor once and writes the same string on every attempt, so an attempt that landed and lost its answer
+ * finds the value already there and adds nothing — the prior version list would otherwise name the
+ * successor as something to retire.
+ */
+export function stagedValue(value: VersionedValue, next: string): StagedValue {
+  const existing = Object.entries(value.versions).find(([, held]) => held === next)?.[0];
+  const version = existing ?? String(highestVersion(value) + 1);
+  const staged = existing === undefined ? { ...value, versions: { ...value.versions, [version]: next } } : value;
+  return { value: staged, version, prior: Object.keys(staged.versions).filter((key) => key !== version) };
+}
+
+/**
+ * Make `version` current, keeping every other version. `null` when the envelope no longer holds it — an
+ * `update` replaced the envelope while the successor waited, and there is nothing of this rotation left.
+ */
+export function promotedValue(value: VersionedValue, version: string): VersionedValue | null {
+  if (value.versions[version] === undefined) return null;
+  return { currentVersion: version, versions: value.versions };
+}
+
+/**
+ * Remove `retired` from the envelope. **The current version is never removed**, whatever is asked, and a
+ * version already gone is not an error — a retirement retried after it landed finds nothing left to do.
+ */
+export function retireVersions(value: VersionedValue, retired: readonly string[]): VersionedValue {
+  const versions = Object.fromEntries(
+    Object.entries(value.versions).filter(
+      ([version]) => version === value.currentVersion || !retired.includes(version),
+    ),
+  );
+  return { currentVersion: value.currentVersion, versions };
 }
 
 /** The highest existing version number — used only to pick the next on append (never to find "current"). */

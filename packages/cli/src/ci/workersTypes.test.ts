@@ -124,12 +124,14 @@ const DECLARED_ONLY: Record<string, string> = {
  * control plane (#730): `vector`'s `admin/health.ts`, which reads the corpus off `DB`; by #560: `auth`'s
  * `test-utils/scopedBackend.ts`, the fixture that composes a real auth for the scope gates; and by declared
  * secret tables (#524): `cli`'s `capabilities/retainedDatabase.ts` and `capabilities/secretsProvisioner.ts`,
- * which read the vault's table registry before a teardown, and `secrets`' `tables/tableStore.ts`. A file
- * added or removed moves a count, which is the point: the number is a second reader of the same change.
+ * which read the vault's table registry before a teardown, and `secrets`' `tables/tableStore.ts`; and by
+ * unattended rotation (#602): `auth`'s `instance/jwksReencryption.ts`, which records in the secrets D1 that the
+ * JWKS keys have moved under the session secret's newest version. A file added or removed moves a count, which
+ * is the point: the number is a second reader of the same change.
  */
 const IMPORTERS: Record<string, number> = {
   "packages/audit": 2,
-  "packages/auth": 5,
+  "packages/auth": 6,
   "packages/cli": 15,
   "packages/cloudflare": 2,
   "packages/core": 16,

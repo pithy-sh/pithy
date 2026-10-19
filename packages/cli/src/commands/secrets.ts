@@ -21,6 +21,7 @@ import { secretBindingName } from "@pithy-sh/secrets/src/env/bindingName";
 import { SECRETS_RUNTIME_PERMISSIONS } from "@pithy-sh/secrets/src/manager/managerRegistry";
 import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { SecretBackend, type SecretRegistry, type SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
+import { stampedRotations } from "@pithy-sh/secrets/src/rotation/rotationSchedule";
 import { canonicalGlobalEnvironment, type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { z } from "zod";
@@ -1167,7 +1168,25 @@ const provision = withContract(
           account,
           project,
           storeId,
-          deploy: buildManagerDeploy({ accountId, apiToken, cf, project, projectDir }),
+          deploy: buildManagerDeploy({
+            accountId,
+            apiToken,
+            cf,
+            project,
+            projectDir,
+            // What each manager's cron rotates on its own, from the project's merged registry (#602).
+            schedule: async () => {
+              const [{ registry }, declared] = await Promise.all([
+                mergedProjectSecrets(projectDir),
+                projectEnvironments(projectDir),
+              ]);
+              const globalEnvironment = canonicalGlobalEnvironment(declared);
+              return {
+                valueRotations: stampedRotations(registry),
+                ...(globalEnvironment === undefined ? {} : { globalEnvironment }),
+              };
+            },
+          }),
           audit: await buildAudit(projectDir, "dev"),
           // The `runtime` profile as each environment composes it (#728): one token, carrying every
           // composed capability's needs, minted exactly as `pithy token mint runtime` would mint it.

@@ -4,6 +4,7 @@
 import type { Migration } from "kysely/migration";
 import { secrets_0001_init } from "./0001_init";
 import { secrets_0002_tables } from "./0002_tables";
+import { secrets_0003_reencryptions } from "./0003_reencryptions";
 
 /**
  * The `secrets` database's migration chain, in one place — the capability composes it and the CLI's
@@ -15,4 +16,5 @@ import { secrets_0002_tables } from "./0002_tables";
 export const secretsMigrations: Readonly<Record<string, Migration>> = {
   "0001_init": secrets_0001_init,
   "0002_tables": secrets_0002_tables,
+  "0003_reencryptions": secrets_0003_reencryptions,
 };

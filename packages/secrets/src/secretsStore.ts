@@ -340,9 +340,10 @@ export class SecretsAccessor<R extends SecretRegistry> {
    * keyspace must be declared `rotatable`, which is where that axis stops being forward-looking
    * metadata — a keyspace that says it does not accumulate versions is not quietly made to.
    *
-   * **Versions accumulate, and nothing prunes them yet.** Retiring a version after a grace window is
-   * the deferred half of value rotation (`crypto/versionedValue`), so every rotation makes the
-   * member's envelope larger and every read of it decrypts and parses the lot. That is fine for a
+   * **A keyspace member's versions accumulate, and nothing prunes them.** The manager's unattended
+   * rotation retires a named secret's previous version after its overlap (#602), and never touches a
+   * keyspace — its members belong to the application — so every rotation here makes the member's
+   * envelope larger and every read of it decrypts and parses the lot. That is fine for a
    * credential rotated quarterly and wrong for one rotated hourly. Until pruning lands, a caller with
    * a fast cadence collapses the member with `putKeyed(..., { replace: true })` once the retired key
    * is genuinely dead.

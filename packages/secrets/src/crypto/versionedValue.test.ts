@@ -9,6 +9,9 @@ import {
   decodeVersionedValue,
   encodeVersionedValue,
   initialVersionedValue,
+  promotedValue,
+  retireVersions,
+  stagedValue,
 } from "./versionedValue";
 
 describe("versioned value serde", () => {
@@ -43,5 +46,39 @@ describe("versioned value serde", () => {
 
   test("currentValue throws when the pointer is dangling", () => {
     expect(() => currentValue({ currentVersion: "3", versions: { "1": "a" } })).toThrow(SecretCryptoError);
+  });
+});
+
+describe("a rotation's versions (#602)", () => {
+  test("stagedValue adds the successor beside the current version and leaves current where it was", () => {
+    const staged = stagedValue({ currentVersion: "2", versions: { "1": "a", "2": "b" } }, "c");
+    expect(staged).toEqual({
+      value: { currentVersion: "2", versions: { "1": "a", "2": "b", "3": "c" } },
+      version: "3",
+      prior: ["1", "2"],
+    });
+  });
+
+  test("stagedValue is idempotent on the value: a store retried with the same successor adds nothing", () => {
+    const once = stagedValue(initialVersionedValue("a"), "b");
+    const twice = stagedValue(once.value, "b");
+    expect(twice).toEqual(once);
+  });
+
+  test("promotedValue makes a staged version current, and answers null for a version the envelope lacks", () => {
+    const staged = stagedValue(initialVersionedValue("a"), "b");
+    expect(promotedValue(staged.value, "2")).toEqual({ currentVersion: "2", versions: { "1": "a", "2": "b" } });
+    expect(promotedValue(initialVersionedValue("z"), "2")).toBeNull();
+  });
+
+  test("retireVersions drops the named versions and keeps the current one whatever it is asked", () => {
+    const value = { currentVersion: "3", versions: { "1": "a", "2": "b", "3": "c" } };
+    expect(retireVersions(value, ["1", "2"])).toEqual({ currentVersion: "3", versions: { "3": "c" } });
+    expect(retireVersions(value, ["3"])).toEqual(value);
+  });
+
+  test("retireVersions is idempotent: a version already gone is not an error", () => {
+    const value = { currentVersion: "3", versions: { "3": "c" } };
+    expect(retireVersions(value, ["1"])).toEqual(value);
   });
 });

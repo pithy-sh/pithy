@@ -16,6 +16,8 @@ import { resolvePaymentsConfig } from "@pithy-sh/payments/src/provision/resolveP
 import { secrets } from "@pithy-sh/secrets/src/capability";
 import type { ManagerWranglerTemplate } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import { resolveManagerConfig } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
+import { stampedRotations } from "@pithy-sh/secrets/src/rotation/rotationSchedule";
+import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { storage } from "@pithy-sh/storage/src/capability";
 import { storageBucketName } from "@pithy-sh/storage/src/provision/provisionStorage";
 import { resolveStorageConfig } from "@pithy-sh/storage/src/provision/resolveStorageConfig";
@@ -66,6 +68,9 @@ const PROJECT = "acme";
 /** The environment resolved for. A deployed one, deliberately: this is the path `pithy dev` is not. */
 const ENV = "prod";
 
+/** The project's declared environments, least production first: `prod`, last, owns global secrets. */
+const ENVIRONMENTS = ["staging", "prod"];
+
 /** The app Worker's origin for that environment. */
 const BASE_URL = "https://api.acme.example";
 
@@ -105,7 +110,22 @@ const COMPOSED = {
   support: support({ inboundAddresses: ["help@support.acme.example"] }),
   testers: testers({ snapshotHourUtc: 9, activeWithinDays: 7 }),
   vector: vector({ indexes: { notes: { model: "@cf/baai/bge-base-en-v1.5", dimensions: 768 } } }),
-  secrets: secrets({ registry: {} }),
+  // A secret on a period, so the schedule both paths stamp into the manager is not an empty list (#602).
+  secrets: secrets({
+    registry: {
+      "app-session-secret": {
+        backend: "d1",
+        scope: "environment",
+        rotatable: true,
+        valueType: "text",
+        devValue: "random",
+        origin: { kind: "minted", recipe: { kind: "random", bytes: 32, encoding: "base64url" } },
+        rotation: { kind: "local" },
+        rotateEveryDays: 90,
+        overlap: { days: 7, minimumDays: 7 },
+      },
+    },
+  }),
 } satisfies Record<string, Capability>;
 
 /** Read a capability's committed template the way both paths read it: through the module graph. */
@@ -126,6 +146,7 @@ function deployContext(capability: Capability, siblings: readonly Capability[] =
     databaseId: (binding) => DATABASE_IDS[binding] ?? `missing-${binding}`,
     storeId: () => STORE_ID,
     accountId: () => ACCOUNT_ID,
+    environments: ENVIRONMENTS,
     capability,
     siblings,
   };
@@ -223,7 +244,8 @@ const VIA_PROVISION: Record<keyof typeof COMPOSED, () => Promise<WorkflowHostTem
       ),
       config: COMPOSED.vector.vectorConfig,
     }),
-  // `secretsProvisioner.ts:265`.
+  // `secretsProvisioner.ts`'s `buildManagerDeploy`, with the schedule `pithy secrets provision` hands it: the
+  // project's merged registry and its last declared environment (#602).
   secrets: async () =>
     resolveManagerConfig(await template<ManagerWranglerTemplate>("@pithy-sh/secrets/src/manager/worker"), {
       project: PROJECT,
@@ -231,6 +253,8 @@ const VIA_PROVISION: Record<keyof typeof COMPOSED, () => Promise<WorkflowHostTem
       databaseId: DATABASE_IDS.SECRETS as string,
       storeId: STORE_ID,
       accountId: ACCOUNT_ID,
+      valueRotations: stampedRotations(aggregateSecretRegistries(Object.values(COMPOSED))),
+      globalEnvironment: "prod",
     }),
 };
 

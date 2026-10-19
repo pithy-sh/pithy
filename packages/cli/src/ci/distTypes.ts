@@ -198,9 +198,11 @@ export const SIDES: readonly Side[] = ["input", "output"];
  * the registry of declared secret tables the at-rest rotation sweeps. Moved on 2026-10-18: `@pithy-sh/payments`
  * brings `pithy_payments_overrides`, `pithy_payments_meter_counters`, `pithy_payments_usage_reports` and
  * `pithy_payments_usage_runs` — the allowance overrides, the kit meters' per-period use, and the usage
- * reporting to the provider.
+ * reporting to the provider. Moved again the same day (#602): `@pithy-sh/secrets` brings
+ * `pithy_secrets_reencryptions`, where a Worker records that the values it seals under a secret have moved
+ * to its newest version — what a value rotation's retirement waits for.
  */
-export const CENSUS = { tables: 56, packages: 17 };
+export const CENSUS = { tables: 57, packages: 17 };
 
 /**
  * Where the generated programs are written — **outside the checkout, and that is forced**.

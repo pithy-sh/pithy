@@ -140,6 +140,11 @@ export interface DeployKitOptions {
   /** The environment being deployed. Required: a kit Worker is per environment, always. */
   env: string;
   /**
+   * The project's declared environments, least production first. The secrets manager is stamped with the
+   * last as the one environment that rotates a `global` secret (#602); absent, none does.
+   */
+  environments?: readonly string[];
+  /**
    * The project's `seed.productionEnvironments`, beyond `prod`: a skip naming a provision for one of them names it
    * as a person's decision, never a command to run (#711).
    */
@@ -565,6 +570,7 @@ async function deployOneKitWorker(input: {
       // the same config `pithy <capability> provision` does rather than schema defaults (#537).
       capability: host.composed,
       siblings: host.siblings,
+      ...(options.environments === undefined ? {} : { environments: options.environments }),
       ...(options.feature ? { feature: options.feature } : {}),
     });
   } catch (error) {

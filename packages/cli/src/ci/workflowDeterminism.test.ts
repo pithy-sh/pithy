@@ -71,6 +71,7 @@ const SHIPPED_WORKFLOWS = [
   "packages/media/src/workflows/worker.ts#MediaVideoTranscribeWorkflow",
   "packages/payments/src/workflows/worker.ts#PaymentsReconcileWorkflow",
   "packages/secrets/src/manager/worker.ts#AtRestKeyRotationWorkflow",
+  "packages/secrets/src/manager/worker.ts#SecretValueRotationWorkflow",
   "packages/secrets/src/manager/worker.ts#SecretsWriteWorkflow",
   "packages/storage/src/workflows/worker.ts#StorageSweepWorkflow",
   "packages/support/src/workflows/worker.ts#SupportClassifyWorkflow",
@@ -96,6 +97,10 @@ const SHIPPED_DELEGATES = [
   // meets the kit's half here: one step, and the clock the pass reads is a thunk handed into it.
   "packages/payments/src/workflows/usage.ts#reportPaymentsUsage",
   "packages/secrets/src/manager/rotationWorkflow.ts#runRotationWorkflow",
+  // #602. The value rotation's body and its manager-side shell. The body sleeps out a secret's overlap and
+  // then checks once a day for its dependents to re-encrypt, each check its own step — so a clock read
+  // outside one would be read again on every resume, days apart.
+  "packages/secrets/src/manager/valueRotationWorkflow.ts#runValueRotationWorkflow",
   // #647. The at-rest rotation's two read-back helpers. Each is handed the step runner because each is a
   // *sequence* of steps rather than one: the binding confirm sleeps between separate `step.do` reads, so the
   // wait is journalled and survives the instance being evicted during it. That shape is precisely what this
@@ -104,6 +109,7 @@ const SHIPPED_DELEGATES = [
   "packages/secrets/src/rotation/atRestKeyRotation.ts#confirmedThroughBinding",
   "packages/secrets/src/rotation/atRestKeyRotation.ts#confirmedThroughStamp",
   "packages/secrets/src/rotation/atRestKeyRotation.ts#runAtRestKeyRotation",
+  "packages/secrets/src/rotation/valueRotation.ts#runValueRotation",
   "packages/testers/src/workflows/pass.ts#runDurableDailyPass",
   "packages/vector/src/workflows/reprocess.ts#reprocessIndex",
 ];

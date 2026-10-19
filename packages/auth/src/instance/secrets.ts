@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { z } from "zod";
+import type { SessionSecretVersions } from "./sessionSecrets";
 
 /**
  * The secrets `@pithy-sh/auth` reads, declared as a minimal registry. The secret name is the join key:
@@ -30,6 +32,41 @@ export const AUTH_GOOGLE_CREDENTIALS = "auth-google-credentials";
 export const AUTH_APPLE_CREDENTIALS = "auth-apple-credentials";
 export const AUTH_FACEBOOK_CREDENTIALS = "auth-facebook-credentials";
 export const AUTH_GITHUB_CREDENTIALS = "auth-github-credentials";
+
+/**
+ * The JWKS private keys, as `auth-session-secret`'s overlap names them (#602).
+ *
+ * Better Auth encrypts every key in `pithy_auth_jwks` under the session secret, and a key never expires —
+ * so retiring the version one is sealed under would leave a signing key nothing can open. The session
+ * secret's registry entry names this dependent, `instance/jwksReencryption.ts` moves the keys under the
+ * newest version and records it, and the secrets manager retires nothing until it has.
+ */
+export const AUTH_JWKS_DEPENDENT = "auth-jwks";
+
+/**
+ * The Better Auth plugins that seal rows of their own under the session secret, by id.
+ *
+ * `two-factor` seals every TOTP secret with `symmetricEncrypt({ key: ctx.context.secretConfig })`, and its
+ * backup codes the same way under `storeBackupCodes: "encrypted"` (`plugins/two-factor/index.mjs`,
+ * `backup-codes/index.mjs`). Neither expires. Nothing in the kit re-encrypts them, so an unattended rotation
+ * beside one is refused at `auth()` rather than allowed to retire the version they are sealed under.
+ */
+export const SESSION_SECRET_SEALING_PLUGINS: readonly string[] = ["two-factor"];
+
+/** Seconds in a day. */
+const DAY_SECONDS = 86_400;
+
+/**
+ * How many days a replaced session secret keeps verifying: the session's own lifetime, rounded up.
+ *
+ * **That is the whole of the overlap's argument.** A session in use is re-signed on its next request
+ * (`http/credentialResign.ts`), and its expiry slides forward on use — so a session that goes the whole
+ * overlap without one request has expired by the time the overlap ends. Any shorter, and a session used
+ * yesterday is signed out when the old version retires.
+ */
+export function sessionSecretOverlapDays(sessionExpiresIn: number): number {
+  return Math.max(1, Math.ceil(sessionExpiresIn / DAY_SECONDS));
+}
 
 /** The Google OAuth credential pair, stored as one typed JSON secret. */
 export const GoogleOAuthCredentials = z
@@ -135,6 +172,9 @@ export const authSecretsRegistry = defineSecretRegistry({
     // a session signature, so the kit both makes it and replaces it.
     origin: { kind: "minted", recipe: { kind: "random", bytes: 32, encoding: "base64url" } },
     rotation: { kind: "local" },
+    // The default session lifetime's overlap, and the JWKS keys sealed under it (#602). `auth()` declares
+    // its own from the configured `sessionExpiresIn`; this is what a module reading the secret sees.
+    overlap: { days: 7, minimumDays: 7, reencrypt: [AUTH_JWKS_DEPENDENT] },
   },
   // The four below are `obtained` and rotate `manual`, and each names the page rather than the product.
   // An adopter searching Google's console for which of four credential types "client secret" means is the
@@ -178,6 +218,49 @@ export const authSecretsRegistry = defineSecretRegistry({
 });
 
 /**
+ * **The registry `auth()` contributes, from its own configuration (#602).**
+ *
+ * The session secret's overlap follows the configured session lifetime — {@link sessionSecretOverlapDays} —
+ * and it is both the overlap and its floor: an adopter who lengthens sessions lengthens the overlap with
+ * them, rather than holding a seven-day overlap against a thirty-day session. `rotateEveryDays` is
+ * `sessionSecretRotateEveryDays`, and only an adopter sets it: the kit turns no unattended rotation on.
+ *
+ * Checked by `defineSecretRegistry` like every registry, so a period no longer than the session lifetime is
+ * refused here, at `auth()`, naming the secret — rather than at a 03:00 cron that could only skip it.
+ *
+ * **A period is refused beside a plugin that seals rows under the session secret** —
+ * {@link SESSION_SECRET_SEALING_PLUGINS}. Only the JWKS keys are moved before a retirement; a plugin's own
+ * sealed rows would be left under the retired version, and nothing could open them again.
+ */
+export function authSecretsRegistryFor(config: {
+  sessionExpiresIn: number;
+  sessionSecretRotateEveryDays?: number;
+  plugins?: readonly { id: string }[];
+}) {
+  if (config.sessionSecretRotateEveryDays !== undefined) {
+    const sealing = (config.plugins ?? []).find((plugin) => SESSION_SECRET_SEALING_PLUGINS.includes(plugin.id));
+    if (sealing !== undefined) {
+      throw new ValidationError({
+        message: `${AUTH_SESSION_SECRET} cannot rotate unattended while the Better Auth "${sealing.id}" plugin is composed.`,
+        action: `Remove sessionSecretRotateEveryDays from auth({ ... }), or remove ${sealing.id}() from auth({ plugins: [...] }). ${sealing.id}() seals its secrets under ${AUTH_SESSION_SECRET}, and a rotation retires the version they are sealed under with nothing to move them first.`,
+        detail: `sessionSecretRotateEveryDays set with plugin "${sealing.id}", which seals rows under ${AUTH_SESSION_SECRET}`,
+      });
+    }
+  }
+  const days = sessionSecretOverlapDays(config.sessionExpiresIn);
+  return defineSecretRegistry({
+    ...authSecretsRegistry,
+    [AUTH_SESSION_SECRET]: {
+      ...authSecretsRegistry[AUTH_SESSION_SECRET],
+      overlap: { days, minimumDays: days, reencrypt: [AUTH_JWKS_DEPENDENT] },
+      ...(config.sessionSecretRotateEveryDays === undefined
+        ? {}
+        : { rotateEveryDays: config.sessionSecretRotateEveryDays }),
+    },
+  });
+}
+
+/**
  * Which provider a credential belongs to — the join the CLI must never make by spelling (#541).
  *
  * `auth-apple-credentials` and the `apple` config key look like each other and that is a coincidence:
@@ -217,10 +300,20 @@ export function inapplicableProviderSecrets(providers: AuthProviderToggles): Rec
   return declared;
 }
 
-/** Resolve the Better Auth session secret for this invocation. */
+/** Resolve the Better Auth session secret for this invocation — the current version alone. */
 export async function resolveSessionSecret(env: SecretsStoreEnv): Promise<string> {
   const secrets = await sharedSecretsStore(env, authSecretsRegistry);
   return secrets.get(AUTH_SESSION_SECRET);
+}
+
+/**
+ * Resolve every retained version of the session secret (#602) — what an instance needs to open values sealed
+ * under the previous version, and what a credential signed under it is verified against. One read through
+ * the same cached accessor as {@link resolveSessionSecret}.
+ */
+export async function resolveSessionSecrets(env: SecretsStoreEnv): Promise<SessionSecretVersions> {
+  const secrets = await sharedSecretsStore(env, authSecretsRegistry);
+  return secrets.getVersions(AUTH_SESSION_SECRET);
 }
 
 /** Resolve the Google OAuth credential pair for this invocation (only call when Google is enabled). */

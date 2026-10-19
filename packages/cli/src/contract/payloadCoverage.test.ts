@@ -122,6 +122,8 @@ const OPEN_SUBTREES = [
   "doctor: $.project|0.health.workers[]|0.migrations.environments[]",
   "doctor: $.secretBindings|0",
   "doctor: $.secretBindings|0.missing[]",
+  "doctor: $.secretRotations|0",
+  "doctor: $.secretRotations|0.environments[]",
   "doctor: $.secretTables|0",
   "doctor: $.secretTables|0.declared[]",
   "doctor: $.secretTables|0.environments[]",
