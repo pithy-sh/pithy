@@ -38,6 +38,22 @@ export interface DeployPrivacyOptions {
 }
 
 /**
+ * The fix a refusal names, by why the gate is off. `pithy privacy enable` writes the rule only where it was never
+ * stated, so it is the fix for that cause alone: a rule a person turned down, or a linter they disabled, is
+ * theirs to change back, and naming `enable` there would name a command that writes nothing.
+ */
+function fixFor(gate: Extract<ConsoleGateReading, { state: "off" }>, classes: readonly string[]): string {
+  switch (gate.cause) {
+    case "unstated":
+      return `Set ${NO_CONSOLE_RULE} to "error" in ${gate.file}, or run ${pithyCommand("privacy enable", { flags: { "--class": classes[0] as string } })} to write it.`;
+    case "lowered":
+      return `Set ${NO_CONSOLE_RULE} to "error", allowing no method, for the Worker source in ${gate.file}, where it was turned down on purpose. Pithy does not override that.`;
+    case "disabled":
+      return `Turn the linter back on for the Worker source in ${gate.file}, and keep ${NO_CONSOLE_RULE} at "error" there. Pithy does not override that.`;
+  }
+}
+
+/**
  * Decide the gate for a deploy, and refuse when it is off. Read once, before any Worker is built: the refusal is
  * the project's, not a Worker's, so it is one error rather than a failed row per Worker.
  */
@@ -51,7 +67,7 @@ export async function deployPrivacy(options: DeployPrivacyOptions): Promise<Depl
   if (gate.state === "off") {
     throw new PreconditionFailedError({
       message: `This project declares ${classes.join(", ")}, and console is open: ${gate.reason}`,
-      action: `Set ${NO_CONSOLE_RULE} to "error" in ${gate.file}, or run ${pithyCommand("privacy enable", { flags: { "--class": classes[0] as string } })} to write it. A console.log bypasses every privacy gate.`,
+      action: `${fixFor(gate, classes)} A console.log bypasses every privacy gate.`,
       detail: `console gate off (${gate.cause}) in ${gate.file}`,
     });
   }

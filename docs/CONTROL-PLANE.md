@@ -278,7 +278,7 @@ The seam's own manifest entry carries two counts behind the same scope, so a cli
 
 ### Privacy
 
-`GET /control-plane/privacy` answers which of this Worker's stored fields are private, and which class each is (#132). Every D1 table and KV store the composed capabilities declare is walked, and each schema holding a marked field is listed: its capability, `storage` (`d1` or `kv`), the database or namespace it lives in, its name, and `fields[]` — each `{ path, class }`. A KV field's path leads with the part of the entry it is in: `key.email`, `value.token`, `metadata.ip`.
+`GET /control-plane/privacy` answers which of this Worker's stored fields are private, and which class each is (#132). Every D1 table and KV store the composed capabilities declare is walked, and each schema holding a marked field is listed: its capability, `storage` (`d1` or `kv`), the database or namespace it lives in, its name, and `fields[]` — each `{ path, class }`. A KV field's path leads with the part of the entry it is in: `key.email`, `value.token`, `metadata.ip`, `value[].email` for an array value.
 
 **It is derived from the running code, not stamped.** The schemas are already in the deployed bundle — they are the table definitions — and the walk runs on the first read and is cached for the isolate. Unmark a `phi()` field and it leaves this report on the next deploy, with no build step and no person in between. A Worker whose control plane is never called never walks. The whole kit, twenty capabilities and sixty schemas, walks in 3 to 8 ms, once.
 

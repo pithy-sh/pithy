@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
@@ -15,6 +15,8 @@ const NOW = new Date("2026-10-20T12:00:00.000Z");
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "pithy-deploy-gate-"));
+  await mkdir(join(dir, "apps/app/src"), { recursive: true });
+  await writeFile(join(dir, "apps/app/src/index.ts"), "");
 });
 
 afterEach(async () => {
@@ -26,20 +28,40 @@ async function biome(config: unknown): Promise<void> {
 }
 
 describe("deployPrivacy", () => {
-  test("refuses when a class is declared and the rule is off, naming the file, the rule and the fix", async () => {
-    await biome({ linter: { rules: { suspicious: { noConsole: "off" } } } });
-    let refused: unknown;
+  /** The refusal a deploy of a `pii` project raises against the Biome config `biome(config)` wrote. */
+  async function refusal(): Promise<PithyError["payload"]> {
     try {
       await deployPrivacy({ projectDir: dir, config: { privacy: { classes: ["pii"] } }, now: () => NOW });
     } catch (error) {
-      refused = error;
+      expect(error).toBeInstanceOf(PithyError);
+      return (error as PithyError).payload;
     }
-    expect(refused).toBeInstanceOf(PithyError);
-    const payload = (refused as PithyError).payload;
+    throw new Error("deployPrivacy did not refuse");
+  }
+
+  test("refuses when a class is declared and the rule is never stated, naming the file, the rule and enable", async () => {
+    await biome({ linter: { rules: { preset: "recommended" } } });
+    const payload = await refusal();
     expect(payload.code).toBe("core/precondition_failed");
     expect(payload.message).toContain("biome.jsonc");
     expect(payload.message).toContain("suspicious/noConsole");
     expect(payload.action).toContain("pithy privacy enable");
+  });
+
+  test("a rule a person turned down names the edit, not `pithy privacy enable`, which will not override it", async () => {
+    await biome({ linter: { rules: { suspicious: { noConsole: "off" } } } });
+    const payload = await refusal();
+    expect(payload.message).toContain("suspicious/noConsole");
+    expect(payload.action).not.toContain("privacy enable");
+    expect(payload.action).toContain('"error"');
+    expect(payload.action).toContain("biome.jsonc");
+  });
+
+  test("a disabled linter names turning it back on, not `pithy privacy enable`", async () => {
+    await biome({ linter: { enabled: false, rules: { suspicious: { noConsole: "error" } } } });
+    const payload = await refusal();
+    expect(payload.action).not.toContain("privacy enable");
+    expect(payload.action).toContain("linter");
   });
 
   test("passes when the rule is on, and attests the classes and the gate", async () => {

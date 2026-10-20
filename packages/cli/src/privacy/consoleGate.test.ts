@@ -11,6 +11,8 @@ let dir: string;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "pithy-console-gate-"));
+  await mkdir(join(dir, "apps/app/src"), { recursive: true });
+  await writeFile(join(dir, "apps/app/src/index.ts"), "");
 });
 
 afterEach(async () => {
@@ -65,13 +67,39 @@ describe("consoleGateOf", () => {
     expect(gate.state).toBe("unverifiable");
   });
 
-  test("an `extends` with the rule stated locally is still enforced", () => {
-    expect(
-      consoleGateOf(
-        { extends: ["./shared.jsonc"], linter: { rules: { suspicious: { noConsole: "error" } } } },
-        "biome.jsonc",
-      ).state,
-    ).toBe("enforced");
+  test("an `extends` is unverifiable even with the rule stated locally, because its overrides still apply", () => {
+    const gate = consoleGateOf(
+      { extends: ["./shared.jsonc"], linter: { rules: { suspicious: { noConsole: "error" } } } },
+      "biome.jsonc",
+    );
+    expect(gate.state).toBe("unverifiable");
+    expect(gate.state === "unverifiable" && gate.reason).toContain("extends");
+  });
+
+  test("an `extends` with the rule turned down locally is still off", () => {
+    const gate = consoleGateOf(
+      { extends: ["./shared.jsonc"], linter: { rules: { suspicious: { noConsole: "warn" } } } },
+      "biome.jsonc",
+    );
+    expect(gate).toMatchObject({ state: "off", cause: "lowered" });
+  });
+
+  test("reads a group set as a string as the rule's level, the way Biome does", () => {
+    const warned = consoleGateOf(
+      {
+        linter: { rules: { suspicious: { noConsole: "error" } } },
+        overrides: [{ includes: ["**"], linter: { rules: { suspicious: "warn" } } }],
+      },
+      "biome.jsonc",
+    );
+    expect(warned).toMatchObject({ state: "off", cause: "lowered" });
+    expect(warned.state === "off" && warned.reason).toContain("warn");
+    // `on` is each rule at its default severity, and noConsole's default is a warning (Biome 2.5.8).
+    expect(consoleGateOf({ linter: { rules: { suspicious: "on" } } }, "biome.jsonc")).toMatchObject({
+      state: "off",
+      cause: "lowered",
+    });
+    expect(consoleGateOf({ linter: { rules: { suspicious: "error" } } }, "biome.jsonc").state).toBe("enforced");
   });
 });
 
@@ -124,6 +152,40 @@ describe("readConsoleGate", () => {
       '{\n  // the gate\n  "linter": { "rules": { "suspicious": { "noConsole": "error" } } }\n}\n',
     );
     expect(await readConsoleGate(dir)).toEqual({ state: "enforced", file: "biome.jsonc" });
+  });
+
+  test("is unverifiable, never enforced, when there is no Worker source to read the rule for", async () => {
+    await rm(join(dir, "apps"), { recursive: true });
+    await writeFile(join(dir, "biome.jsonc"), JSON.stringify({ overrides: [NO_CONSOLE_OVERRIDE] }));
+    const gate = await readConsoleGate(dir);
+    expect(gate).toMatchObject({ state: "unverifiable", file: "biome.jsonc" });
+    expect(gate.state === "unverifiable" && gate.reason).toContain("apps/*/src");
+  });
+
+  test("reads Worker source in every language Biome lints, not only `.ts`", async () => {
+    await rm(join(dir, "apps"), { recursive: true });
+    await mkdir(join(dir, "apps/app/src"), { recursive: true });
+    await writeFile(join(dir, "apps/app/src/index.tsx"), 'console.log("x");\n');
+    await writeFile(join(dir, "apps/app/src/index.test.tsx"), "");
+    const tsOnly = { includes: ["**/apps/*/src/**/*.ts"], linter: { rules: { suspicious: { noConsole: "error" } } } };
+    await writeFile(join(dir, "biome.jsonc"), JSON.stringify({ overrides: [tsOnly] }));
+    const gate = await readConsoleGate(dir);
+    expect(gate).toMatchObject({ state: "off", cause: "unstated" });
+    expect(gate.state === "off" && gate.reason).toContain("apps/app/src/index.tsx");
+    for (const extension of ["js", "jsx", "mjs", "cjs", "mts", "cts"]) {
+      await writeFile(join(dir, `apps/app/src/more.${extension}`), "");
+    }
+    await writeFile(join(dir, "biome.jsonc"), JSON.stringify({ overrides: [NO_CONSOLE_OVERRIDE] }));
+    expect((await readConsoleGate(dir)).state).toBe("enforced");
+  });
+
+  test("is unverifiable for a nested Biome config directly under apps/, which governs every Worker", async () => {
+    await writeFile(join(dir, "biome.jsonc"), JSON.stringify({ overrides: [NO_CONSOLE_OVERRIDE] }));
+    await writeFile(
+      join(dir, "apps/biome.json"),
+      JSON.stringify({ root: false, extends: "//", linter: { rules: { suspicious: { noConsole: "off" } } } }),
+    );
+    expect(await readConsoleGate(dir)).toMatchObject({ state: "unverifiable", file: "apps/biome.json" });
   });
 
   test("reads biome.json too", async () => {

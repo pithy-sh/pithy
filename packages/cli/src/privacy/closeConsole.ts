@@ -10,9 +10,9 @@ import { type ConsoleGateReading, NO_CONSOLE_OVERRIDE, readConsoleGate } from ".
 /**
  * **Close `console` in a project's Worker source: the Biome half of `pithy privacy enable`** (#132).
  *
- * It writes one thing — an `overrides` entry setting `suspicious/noConsole` to `error` on `apps/*\/src/**\/*.ts`
- * ({@link NO_CONSOLE_OVERRIDE}) — and only into a config where the rule is **not stated at all**. Three cases
- * write nothing, each on purpose:
+ * It writes one thing — an `overrides` entry setting `suspicious/noConsole` to `error` on every linted file
+ * under `apps/*\/src` ({@link NO_CONSOLE_OVERRIDE}) — and only into a config where the rule is **not stated at
+ * all**. Three cases write nothing, each on purpose:
  *
  * - **Already enforced.** A re-run is a no-op.
  * - **Stated and turned down** — `warn`, `off`, an override lowering it, the linter disabled. That is the
