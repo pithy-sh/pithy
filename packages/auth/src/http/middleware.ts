@@ -7,9 +7,12 @@ import { AuthContext } from "@pithy-sh/core/src/http/authContext";
 import { isLocale } from "@pithy-sh/core/src/i18n/locale";
 import type { Context, MiddlewareHandler } from "hono";
 import type { AuthWiring, ScopeResolver, ScopeResolverSession } from "../capability";
+import { authDatabase } from "../data/tables";
 import type { AuthInstance } from "../instance/auth";
+import { lifecycleRefusalFor, noteRefusal, noticedRefusal } from "../lifecycle/enforce";
+import { LifecycleColumns } from "../lifecycle/state";
 import { withResignedCredentials } from "./credentialResign";
-import { getAuthInstance } from "./resolve";
+import { getAuthInstance, resolveDb } from "./resolve";
 
 /**
  * The session-resolution middleware: it fills core's `AuthContext` seam (`c.var.auth`) for every
@@ -93,6 +96,24 @@ async function resolveSession(c: Context<PithyHonoEnv>, wiring: AuthWiring, inst
   try {
     const session = await instance.api.getSession({ headers });
     if (session) {
+      // **A suspended or deleted account gets no `AuthContext` at all** (#620). Read off the user Better
+      // Auth just loaded, which carries the four columns, so an account in good standing costs nothing
+      // here. Leaving `auth` null is what makes every `requireAuth()` in the kit refuse it — the copies
+      // other capabilities carry included, since each one only asks whether `auth` was filled. This
+      // capability's own guard raises the refusal itself, with its code; see `requireAuth` below.
+      //
+      // A column that will not decode throws into the catch below and leaves the request anonymous:
+      // closed, for the one account whose row is wrong.
+      const refusal = await lifecycleRefusalFor(
+        authDatabase(resolveDb(c.env, wiring.config.database)),
+        session.user.id,
+        LifecycleColumns.parse(session.user),
+        new Date(),
+      );
+      if (refusal) {
+        noteRefusal(c, refusal);
+        return;
+      }
       // Before the context is built, so a resolver sees the request exactly as it arrived and the
       // context is published once, whole. Per request and never cached: the answer is about this
       // request's caller, and a cached one is a revocation that has not taken effect (#560).
@@ -131,10 +152,17 @@ async function resolveSession(c: Context<PithyHonoEnv>, wiring: AuthWiring, inst
 /**
  * The gate other capabilities stack on a protected route. Rejects a request whose `AuthContext` was
  * not filled (no valid credential) with a `PithyError` `auth/invalid_token` (401).
+ *
+ * **A genuine credential for an account that may not act is refused with what happened to it** —
+ * `auth/account_suspended` or `auth/account_deleted`, 403 — rather than the 401, because signing in again
+ * cannot help and a client that read it as an expired token would loop. The verdict is the session
+ * middleware's, remembered for this request; this guard only raises it.
  */
 export function requireAuth(): MiddlewareHandler<PithyHonoEnv> {
   return async (c, next) => {
     if (!c.var.auth) {
+      const refusal = noticedRefusal(c);
+      if (refusal) throw refusal;
       throw new UnauthorizedError({
         message: "Authentication required.",
         action: "Sign in and retry with a valid session or bearer token.",

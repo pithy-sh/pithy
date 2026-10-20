@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
+import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { type BetterAuthPlugin, betterAuth } from "better-auth";
 import { APIError, createAuthMiddleware } from "better-auth/api";
 import { emitAfterRequest, emitProviderAccountChanged, emitProviderUnavailable } from "../audit/emit";
@@ -16,6 +17,7 @@ import { KIT_SESSION_FIELDS, KIT_USER_FIELDS } from "../data/kitFields";
 import type { AuthDatabase } from "../data/tables";
 import { parseDeviceMeta, registerDevice } from "../device/registry";
 import { PROVIDER_CHANGE_FRESH_AGE_SECONDS } from "../http/providerFreshness";
+import { lifecycleRefusalFor } from "../lifecycle/enforce";
 import { refuseUnsafeProfile, sanitizeProfile } from "../profile/profile";
 import { defaultGithubUserInfo, type GithubUserInfoResolver } from "./githubUserInfo";
 import { microsoftProfileToUser } from "./microsoftEmail";
@@ -168,10 +170,37 @@ function refuseUnsafeProfileFields(user: { name?: unknown; image?: unknown }): v
   throw new APIError("BAD_REQUEST", { code: "INVALID_PROFILE_FIELD", message: refusal.message });
 }
 
-/** The endpoint context a database hook is handed, narrowed to the two things attribution needs. */
+/** The endpoint context a database hook is handed, narrowed to what attribution and refusal need. */
 interface HookContext {
   headers?: Headers;
   context?: { session?: { user?: { id?: string } } | null };
+  /** The endpoint path this write was reached from, e.g. `/callback/google`. Absent outside an endpoint. */
+  path?: string;
+}
+
+/**
+ * Refuse a session for an account that may not act, in the shape the endpoint creating it can answer.
+ *
+ * **On the social callback, an `APIError` carrying the kit's code**, because that endpoint answers a refusal
+ * by redirecting to the caller's `errorCallbackURL` with `?error=<code>` — but only for an `APIError`
+ * (`callback.mjs:192`). A `PithyError` would escape it and leave a browser mid-OAuth on a bare 403 body
+ * instead of back on the adopter's screen. The code is the same string either way, and the reason travels as
+ * `error_description`, which is where Better Auth puts a refusal's message.
+ *
+ * **Everywhere else, the `PithyError` itself**, which `handleBetterAuth` renders through the one error
+ * envelope — or, on the magic-link verify redirect, turns into the same `?error=` redirect.
+ */
+function refuseSession(refusal: PithyError, ctx: HookContext | null | undefined): never {
+  if (ctx?.path?.startsWith("/callback/")) {
+    // Spelled out per code rather than copied off the payload, so `providerRefusal.test.ts` — which reads
+    // every `APIError` code in this package off the source — sees both and holds each to a verdict.
+    const message = refusal.payload.message;
+    if (refusal.payload.code === "auth/account_deleted") {
+      throw new APIError("FORBIDDEN", { code: "auth/account_deleted", message });
+    }
+    throw new APIError("FORBIDDEN", { code: "auth/account_suspended", message });
+  }
+  throw refusal;
 }
 
 /**
@@ -488,6 +517,13 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
            * `deviceId` by override for the same reason.
            */
           before: async (session, ctx) => {
+            // **No session for an account that may not act (#620).** Every sign-in and every token
+            // refresh creates its session here — magic link, OTP, each social callback, `/token/rotate` —
+            // so this one check is what makes a suspension hold at every door, and the reason it is not
+            // written once per endpoint. The row is read rather than trusted from the caller: nothing
+            // that arrives with a sign-in may say whether its own account is suspended.
+            const refusal = await lifecycleRefusalFor(deps.db, session.userId, null, new Date());
+            if (refusal) refuseSession(refusal, ctx);
             // **`undefined` and `null` are different answers here, and collapsing them is a hole.**
             // Absent means nobody supplied one, which is a sign-in: stamp it. Present-and-null is a
             // rotation of a session written before the column existed, and it must stay null so the gate

@@ -46,7 +46,7 @@ describe("auth capability", () => {
   // table must be namespaced under the capability so it can't clash with an adopter's.
   test("every provided table is namespaced under pithyAuth (the pithy_auth_ prefix)", () => {
     const tables = Object.keys(build().databases?.app?.tables ?? {});
-    expect(tables.length).toBe(8);
+    expect(tables.length).toBe(9);
     for (const name of tables) expect(name.startsWith("pithyAuth")).toBe(true);
   });
 
@@ -56,6 +56,7 @@ describe("auth capability", () => {
       "0001_init",
       "0002_session_authenticated_at",
       "0003_account_issuer_nullable",
+      "0004_user_lifecycle",
     ]);
     // A second migration never gets a second order. Renumbering would rename `0300_auth_0001_init`, and
     // Kysely would then read every applied auth migration as unapplied and run it again.
@@ -150,6 +151,7 @@ describe("additional Better Auth plugins", () => {
       "0001_init",
       "0002_session_authenticated_at",
       "0003_account_issuer_nullable",
+      "0004_user_lifecycle",
     ]);
     expect(cap.extensions).toEqual([]);
   });
@@ -160,6 +162,7 @@ describe("additional Better Auth plugins", () => {
       "0001_init",
       "0002_session_authenticated_at",
       "0003_account_issuer_nullable",
+      "0004_user_lifecycle",
       "0002_plugin_organization",
     ]);
   });

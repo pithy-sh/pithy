@@ -61,6 +61,7 @@ const ALL_TABLES = [
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",
   "pithy_auth_rotated_tokens",
+  "pithy_auth_user_lifecycle",
   "pithy_auth_sessions",
   "pithy_auth_users",
   "pithy_auth_verifications",
@@ -148,12 +149,17 @@ describe("the migration chain against what Better Auth writes", () => {
 
   test("the chain before 0003 is the drift #787 shipped, and the reverse half names it", async () => {
     // The gate has to be able to fail. This is the schema every Worker held on 1.7.1, read at the version
-    // installed now, and the one finding is the column that broke sign-in.
+    // installed now: the column that broke sign-in, and — in the other direction — the four lifecycle
+    // columns `0004` adds, which the kit's declaration names and a chain that old cannot hold (#620).
     await runMigrations(
       env.DB,
       provider({ "0001_init": auth_0001_init, "0002_session_authenticated_at": auth_0002_session_authenticated_at }),
     );
     expect(schemaDrift(getSchema(authSchemaOptions([])), await actualTables())).toEqual([
+      "pithy_auth_users.suspended_at: missing",
+      "pithy_auth_users.suspended_until: missing",
+      "pithy_auth_users.deleted_at: missing",
+      "pithy_auth_users.purge_after: missing",
       "pithy_auth_accounts.issuer: required, and Better Auth never writes it",
     ]);
   });

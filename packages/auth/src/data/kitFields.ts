@@ -30,6 +30,32 @@ import { Locale } from "@pithy-sh/core/src/i18n/locale";
  */
 
 /**
+ * The account-lifecycle columns on `pithy_auth_users` (#620): whether this account is suspended or
+ * deleted, and until when.
+ *
+ * **Declared here so a session read already carries them.** Better Auth returns every declared field on
+ * the user it resolves for a session, so the middleware that fills `AuthContext` reads the account's state
+ * off the row it has already loaded — enforcement costs no query and no join. Left out of this object, the
+ * columns would exist and every session would read as unrestricted.
+ *
+ * **`input: false` on all four, and that is the security property.** An account's state is something done
+ * *to* it — by an operator, or by its owner through the kit's own deletion route — never a field its
+ * holder may write. With `input: true`, one `updateUser({ suspendedAt: null })` would lift a suspension.
+ *
+ * **`type: "number"`, not `"date"`.** Only the kit writes these, through its own Kysely, in the house
+ * ms-epoch convention (`../data/betterAuth.ts` says why they differ from their neighbours). `"date"` would
+ * have Better Auth convert what it hands back, and a `"date"` that the adapter believes is ISO text while
+ * the column holds an integer is a column that reads back as the wrong thing. As a number it arrives
+ * exactly as stored, and `SQLiteDate` decodes it.
+ */
+const LIFECYCLE_FIELDS = {
+  suspendedAt: { type: "number", required: false, input: false },
+  suspendedUntil: { type: "number", required: false, input: false },
+  deletedAt: { type: "number", required: false, input: false },
+  purgeAfter: { type: "number", required: false, input: false },
+} as const;
+
+/**
  * The extra `pithy_auth_users` columns.
  *
  * **`locale` is `input: true`, deliberately, and that is the whole point of the column.** Every other
@@ -54,6 +80,7 @@ import { Locale } from "@pithy-sh/core/src/i18n/locale";
  */
 export const KIT_USER_FIELDS = {
   locale: { type: "string", required: false, input: true, validator: { input: Locale.nullable() } },
+  ...LIFECYCLE_FIELDS,
 } as const;
 
 /**

@@ -14,6 +14,8 @@ import { correlation, emitDenied, emitDeviceRevoked, emitTokenRefresh, emitToken
 import type { AuthWiring } from "../capability";
 import { authDatabase } from "../data/tables";
 import { deleteDevice, deviceSessionTokens, listDevices } from "../device/registry";
+import { noticedRefusal } from "../lifecycle/enforce";
+import { isLifecycleRefusal } from "../lifecycle/state";
 import { PROFILE_IMAGE_PATH } from "../profile/profile";
 import {
   consumeSession,
@@ -25,6 +27,7 @@ import {
 import { registerAuthAdminRoutes } from "./adminRoutes";
 import { guardErrorCallbackURL } from "./errorCallbackUrl";
 import { apiErrorToPithy } from "./errors";
+import { admitsRefusedAccount, lifecycleRedirect } from "./lifecycleGate";
 import { requireAuth } from "./middleware";
 import { requireFreshAuthentication } from "./providerFreshness";
 import { collapseProviderRefusal } from "./providerRefusal";
@@ -279,6 +282,15 @@ async function auditRefusal(c: Ctx, response: Response): Promise<void> {
 async function handleBetterAuth(c: Ctx, wiring: AuthWiring): Promise<Response> {
   const instance = await getAuthInstance(c, wiring);
 
+  // **A suspended or deleted account does not reach Better Auth as itself (#620).** The session middleware
+  // has already refused it an `AuthContext`, but Better Auth resolves its own session on these endpoints and
+  // would happily mint a `/token` for it. So its verdict is applied here too, on every endpoint that acts as
+  // the credential's holder — and not on the ones that end a session or start a new one. `./lifecycleGate`
+  // says which, and why a stale cookie must not stop somebody else signing in.
+  const pathname = new URL(c.req.raw.url).pathname;
+  const refusal = noticedRefusal(c);
+  if (refusal && !admitsRefusedAccount(pathname.slice(wiring.config.basePath.length))) throw refusal;
+
   // **The first of the two guards on the refusal redirect (#625).** `errorCallbackURL` is the caller's
   // string and `redirectOnError` builds the redirect on it, so the shape handed *in* decides
   // whether the collapse below is reading a query at all. `./errorCallbackUrl` normalizes it to something
@@ -290,7 +302,26 @@ async function handleBetterAuth(c: Ctx, wiring: AuthWiring): Promise<Response> {
   try {
     response = await instance.handler(request);
   } catch (error) {
-    throw apiErrorToPithy(error);
+    const pithy = apiErrorToPithy(error);
+    // A sign-in refused because the account is suspended or deleted: the session hook threw it, so it
+    // arrives here rather than as a Better Auth response, and is recorded here for the same reason.
+    if (isLifecycleRefusal(pithy)) {
+      if (isSignInAttempt(pathname)) {
+        await emitDenied(c.var.emit, { ...correlation(c.req.raw.headers), detail: pithy.payload.code });
+      }
+      // A magic link is a browser navigation, so the refusal goes back to the screen the link named rather
+      // than stranding the reader on this origin's 403. OTP and every JSON caller get the envelope.
+      if (c.req.method === "GET" && pathname === `${wiring.config.basePath}/magic-link/verify`) {
+        const redirect = lifecycleRedirect(
+          new URL(request.url),
+          wiring.config.baseURL,
+          wiring.config.trustedOrigins,
+          pithy,
+        );
+        if (redirect) return redirect;
+      }
+    }
+    throw pithy;
   }
 
   // **The enumeration oracle on the social callback, closed here because here is the only place both
@@ -389,6 +420,12 @@ async function rotateToken(c: Ctx, wiring: AuthWiring): Promise<Response> {
       action: "Present a valid session or bearer token to rotate.",
     });
   }
+
+  // An account that may not act gets no successor (#620). `session.create.before` would refuse the mint below
+  // anyway; refusing here, from the middleware's verdict, is what keeps the presented token unspent and the
+  // successor never written, so a reinstated account's device still holds a credential that works.
+  const refusal = noticedRefusal(c);
+  if (refusal) throw refusal;
 
   const ip = headers.get("cf-connecting-ip") ?? undefined;
   const userAgent = headers.get("user-agent") ?? undefined;
