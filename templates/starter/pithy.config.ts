@@ -62,6 +62,15 @@ const config = {
   // requires the type-to-confirm phrase, not just --yes. A safety rule no single
   // Worker should be able to quietly omit.
   // seed: { includeExamples: false, productionEnvironments: ["live"] },
+
+  // The privacy classes this project handles: secret, pii, phi, pci, or one
+  // you registered with definePrivacyClass. A field is marked in its schema —
+  // pii(z.string()) — and a marked value no longer compiles into a log, an
+  // audit record or an error detail. Declaring a class closes `console`:
+  // `pithy deploy` refuses while Biome's suspicious/noConsole is off. The
+  // control plane reports what you declared beside what the code holds.
+  // `pithy privacy enable` writes this key and the rule.
+  // privacy: { classes: ["pii"] },
 };
 
 export default config;
