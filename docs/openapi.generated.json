@@ -212,6 +212,157 @@
                         "null"
                       ]
                     },
+                    "versionCreatedAt": {
+                      "description": "When the version answering this call was uploaded, ISO-8601, from the same `CF_VERSION_METADATA` binding as `version` — or null where the binding is absent. The id alone cannot tell a deploy from a rollback: a rollback reactivates an existing version, so the id returns to one already seen while this moves backwards. Relayed, never interpreted. Absent from a Worker older than #132.",
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "privacy": {
+                      "description": "What this project declares about privacy and what its running code holds: classes and counts, never field names (`GET /control-plane/privacy` has those, behind `privacy:read`). Present on every Worker from #132, `declared` explicitly empty when nothing was declared; absent from an older Worker.",
+                      "type": "object",
+                      "properties": {
+                        "declared": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "description": "A class name."
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "The classes the project declared, as attested by the last `pithy deploy`. Empty when it declared none; null when no attestation reached this Worker."
+                        },
+                        "observed": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "description": "A class name."
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Every class with at least one marked field in this Worker's storage schemas, derived at runtime. Null when the project declared no class, because nothing was walked."
+                        },
+                        "counts": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Marked fields per observed class. A class with none is absent rather than zero. Null when nothing was walked."
+                        },
+                        "observedNotDeclared": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "description": "A class name."
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Classes the code holds that the project never declared — a posture change nobody escalated. Null when nothing was walked."
+                        },
+                        "declaredNotObserved": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "description": "A class name."
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Classes declared with no marked field behind them — an unfinished migration. Null when nothing was walked."
+                        },
+                        "consoleGate": {
+                          "type": "string",
+                          "enum": [
+                            "enforced",
+                            "unverifiable",
+                            "not_required",
+                            "unattested"
+                          ],
+                          "description": "The console gate, as last attested."
+                        },
+                        "consoleGateReason": {
+                          "description": "Why the gate is `unverifiable`, in one sentence. Null otherwise.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "attestedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the attestation was written, ISO-8601, or null when there is none. A version created long after it is a build the attestation does not describe."
+                        },
+                        "sources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "d1",
+                              "kv"
+                            ],
+                            "description": "A storage kind: `d1` tables, or `kv` stores."
+                          },
+                          "description": "The storage the observed classes were derived from. Anything not listed was not walked; empty when nothing was."
+                        }
+                      },
+                      "required": [
+                        "declared",
+                        "observed",
+                        "counts",
+                        "observedNotDeclared",
+                        "declaredNotObserved",
+                        "consoleGate",
+                        "consoleGateReason",
+                        "attestedAt",
+                        "sources"
+                      ]
+                    },
                     "capabilities": {
                       "type": "array",
                       "items": {
@@ -1356,6 +1507,258 @@
         ],
         "x-pithy-scopes": [
           "migrations:read"
+        ]
+      }
+    },
+    "/control-plane/privacy": {
+      "get": {
+        "tags": [
+          "controlplane"
+        ],
+        "operationId": "getControlPlanePrivacy",
+        "summary": "Report every stored field marked with a privacy class.",
+        "description": "Every D1 table and KV store this Worker composed that holds a privacy-marked field, with each field's path, its class and where it is stored, beside the declared-and-observed posture. Derived at runtime from the deployed schemas. Read-only.",
+        "responses": {
+          "200": {
+            "description": "Every schema this Worker stores that holds a marked field, each field's path and class, and where it lives.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "environment": {
+                      "type": "string",
+                      "description": "The environment this Worker answers for."
+                    },
+                    "posture": {
+                      "type": "object",
+                      "properties": {
+                        "declared": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "description": "A class name."
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "The classes the project declared, as attested by the last `pithy deploy`. Empty when it declared none; null when no attestation reached this Worker."
+                        },
+                        "observed": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "description": "A class name."
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Every class with at least one marked field in this Worker's storage schemas, derived at runtime. Null when the project declared no class, because nothing was walked."
+                        },
+                        "counts": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Marked fields per observed class. A class with none is absent rather than zero. Null when nothing was walked."
+                        },
+                        "observedNotDeclared": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "description": "A class name."
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Classes the code holds that the project never declared — a posture change nobody escalated. Null when nothing was walked."
+                        },
+                        "declaredNotObserved": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "description": "A class name."
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Classes declared with no marked field behind them — an unfinished migration. Null when nothing was walked."
+                        },
+                        "consoleGate": {
+                          "type": "string",
+                          "enum": [
+                            "enforced",
+                            "unverifiable",
+                            "not_required",
+                            "unattested"
+                          ],
+                          "description": "The console gate, as last attested."
+                        },
+                        "consoleGateReason": {
+                          "description": "Why the gate is `unverifiable`, in one sentence. Null otherwise.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "attestedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the attestation was written, ISO-8601, or null when there is none. A version created long after it is a build the attestation does not describe."
+                        },
+                        "sources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "d1",
+                              "kv"
+                            ],
+                            "description": "A storage kind: `d1` tables, or `kv` stores."
+                          },
+                          "description": "The storage the observed classes were derived from. Anything not listed was not walked; empty when nothing was."
+                        }
+                      },
+                      "required": [
+                        "declared",
+                        "observed",
+                        "counts",
+                        "observedNotDeclared",
+                        "declaredNotObserved",
+                        "consoleGate",
+                        "consoleGateReason",
+                        "attestedAt",
+                        "sources"
+                      ],
+                      "description": "The declared and observed classes, the delta, and the console gate."
+                    },
+                    "schemasWalked": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "How many storage schemas were walked, marked or not, across the sources `posture.sources` names."
+                    },
+                    "schemas": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "capability": {
+                            "type": "string",
+                            "description": "The capability that declared the schema, as the manifest's `capabilities[]` names it."
+                          },
+                          "storage": {
+                            "type": "string",
+                            "enum": [
+                              "d1",
+                              "kv"
+                            ],
+                            "description": "Where it is stored: a `d1` table or a `kv` store."
+                          },
+                          "container": {
+                            "type": "string",
+                            "description": "The D1 database name or the KV namespace name it lives in."
+                          },
+                          "name": {
+                            "type": "string",
+                            "description": "The table name, or the KV store name."
+                          },
+                          "fields": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "path": {
+                                  "type": "string",
+                                  "description": "Where the field sits. A D1 column path (`email`, `profile.phone` inside a JSON column), or a KV entry's part first (`key.email`, `value.token`, `metadata.ip`, or `value` for a whole marked value). An array element is `[]`, a record's value `*`."
+                                },
+                                "class": {
+                                  "type": "string",
+                                  "description": "The privacy class it is marked with: `secret`, `pii`, `phi`, `pci`, or an adopter's own."
+                                }
+                              },
+                              "required": [
+                                "path",
+                                "class"
+                              ],
+                              "description": "One marked field and its class."
+                            },
+                            "description": "Every marked field in it, in schema order."
+                          }
+                        },
+                        "required": [
+                          "capability",
+                          "storage",
+                          "container",
+                          "name",
+                          "fields"
+                        ],
+                        "description": "One storage schema and the marked fields it holds."
+                      },
+                      "description": "Every schema holding a marked field, in composition order. A schema with none is not listed."
+                    }
+                  },
+                  "required": [
+                    "environment",
+                    "posture",
+                    "schemasWalked",
+                    "schemas"
+                  ],
+                  "description": "Every schema this Worker stores that holds a marked field, each field's path and class, and where it lives."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "privacy:read"
         ]
       }
     },

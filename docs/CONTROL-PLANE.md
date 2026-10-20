@@ -251,6 +251,7 @@ Denials are audited too. `denied` is a first-class outcome, and this is the surf
 | `POST /control-plane/keys` | `keys:rotate` | Register a new public key. **Authenticated with the key it replaces** |
 | `POST /control-plane/keys/:keyId/expire` | `keys:rotate` | Expire a superseded key, naming the proven successor |
 | `GET /control-plane/migrations` | `migrations:read` | Where each database this Worker binds stands: applied, pending, undeclared, and the run that last moved it |
+| `GET /control-plane/privacy` | `privacy:read` | Every stored schema holding a privacy-marked field: each field's path, its class, and where it lives |
 
 ### Migration state
 
@@ -274,6 +275,16 @@ Denials are audited too. `denied` is a first-class outcome, and this is the surf
 The seam's own manifest entry carries two counts behind the same scope, so a client sees *this environment is behind* on the read it already makes (§14). `pendingMigrations` declares `nominal: { atMost: 0 }`. `undeclaredMigrations` declares none, for the reason above: graded, it would report a corrupted chain on a shared database that is fine. Both are totals across every bound database, and one database that cannot be read makes both unavailable rather than a partial total.
 
 `migrations:read` is a read — every route requiring it is a `GET` — so `pithy dashboard connect` grants it by default. A connection made before it existed does not hold it, and an `--update` without `--scope` leaves the grant as it is. [`pithy dashboard connect --update --scope migrations:read`](commands/dashboard.md), with every scope the connection already holds passed beside it, adds it. So does `--update --scope all`.
+
+### Privacy
+
+`GET /control-plane/privacy` answers which of this Worker's stored fields are private, and which class each is (#132). Every D1 table and KV store the composed capabilities declare is walked, and each schema holding a marked field is listed: its capability, `storage` (`d1` or `kv`), the database or namespace it lives in, its name, and `fields[]` — each `{ path, class }`. A KV field's path leads with the part of the entry it is in: `key.email`, `value.token`, `metadata.ip`.
+
+**It is derived from the running code, not stamped.** The schemas are already in the deployed bundle — they are the table definitions — and the walk runs on the first read and is cached for the isolate. Unmark a `phi()` field and it leaves this report on the next deploy, with no build step and no person in between. A Worker whose control plane is never called never walks. The whole kit, twenty capabilities and sixty schemas, walks in 3 to 8 ms, once.
+
+**Its own scope**, because field names are the kind of thing you may reasonably withhold from a client that has no business seeing them. `privacy:read` is a read, so `pithy dashboard connect` preselects it, and it is separately grantable: a connection granted `manifest:read` alone sees the posture headline below and no field names.
+
+The manifest carries the headline as `privacy`: declared classes, observed classes, a count per class, both deltas, the console gate, and which sources were walked. What `declared` means, why it is an attestation, and how stale one can be is [`docs/PRIVACY.md`](PRIVACY.md).
 
 ---
 
@@ -492,6 +503,8 @@ Measured on a real account, 2026-08-10, which is what turned that from a reading
 **So the third row above is not reachable on today's platform, and it stays anyway.** A total comparison is the correct shape: a rule that enumerates which fields are allowed to move is wrong the day the platform moves a different one, and it is wrong silently, as "nothing changed". It costs one branch. Do not read it as rollback detection.
 
 **Nothing inside a Worker can observe a deployment.** That is a boundary of what the runtime exposes, not a gap in this seam, and no header could close it — the only in-Worker signal anyone could synthesize is isolate boot time, which changes on every cold start and would report a redeploy dozens of times a day. A client that needs to know a deployment changed reads Cloudflare's deployments API, in the customer's own account.
+
+**The manifest body carries the creation time too, as `versionCreatedAt` beside `version`** (#132), from the same binding and with the same rule: relayed, never interpreted, and `null` where the binding is absent. It is there for a client that reads the body and not the headers — and for the comparison `docs/PRIVACY.md` describes, where a privacy attestation much older than the version it rides on is a build the attestation does not describe.
 
 The `tag` the binding also carries stays off the wire. It is adopter-authored free text, this header crosses a trust boundary, and neither question a client asks is answered by it.
 
