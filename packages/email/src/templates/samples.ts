@@ -36,6 +36,10 @@ export const samplePayloads: Record<string, unknown> = {
     optOutLabel: "No thanks, take me off this list",
   },
   passwordChanged: { name: "Sam", when: "just now", supportUrl: "https://example.com/support" },
+  accountSuspended: { name: "Sam", reason: "A payment is under review.", until: "1 November 2026" },
+  accountReinstated: { name: "Sam" },
+  deletionScheduled: { name: "Sam", purgeOn: "19 November 2026", restoreUrl: "https://example.com/account/restore" },
+  deletionComplete: { name: "Sam", purgedOn: "19 November 2026" },
   // `warning` rather than `info`: a sample is what somebody looks at to decide whether the severity is
   // legible, and the middle level is the one that has to earn its place between the other two.
   operationalNotice: {

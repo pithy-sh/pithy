@@ -100,6 +100,42 @@ export const EMAIL_ES: MessageCatalog = {
   "email/password_changed.text_body":
     "Las credenciales de tu cuenta cambiaron el {when}. Si no fuiste tú, contacta con soporte:",
 
+  // --- The account lifecycle ---
+  "email/account_suspended.subject": "Tu cuenta de {app} está suspendida",
+  "email/account_suspended.heading": "Tu cuenta está suspendida",
+  "email/account_suspended.body":
+    "tu cuenta de {app} está suspendida. No puedes iniciar sesión hasta que se levante la suspensión.",
+  "email/account_suspended.text_body":
+    "Tu cuenta de {app} está suspendida. No puedes iniciar sesión hasta que se levante la suspensión.",
+  "email/account_suspended.reason": "El motivo indicado: {reason}",
+  "email/account_suspended.until": "Termina el {until}.",
+  "email/account_suspended.contact": "Si crees que es un error, responde a este correo.",
+  "email/account_suspended.text_contact": "Si crees que es un error, responde a este correo.",
+
+  "email/account_reinstated.subject": "Tu cuenta de {app} vuelve a estar activa",
+  "email/account_reinstated.heading": "Tu cuenta vuelve a estar activa",
+  "email/account_reinstated.body":
+    "se ha levantado la suspensión de tu cuenta de {app}. Ya puedes volver a iniciar sesión.",
+  "email/account_reinstated.text_body":
+    "Se ha levantado la suspensión de tu cuenta de {app}. Ya puedes volver a iniciar sesión.",
+
+  "email/deletion_scheduled.subject": "Tu cuenta de {app} se ha eliminado",
+  "email/deletion_scheduled.heading": "Tu cuenta se ha eliminado",
+  "email/deletion_scheduled.body": "tu cuenta de {app} se ha eliminado y ya no puedes iniciar sesión.",
+  "email/deletion_scheduled.text_body": "Tu cuenta de {app} se ha eliminado y ya no puedes iniciar sesión.",
+  "email/deletion_scheduled.purge": "Tus datos se borrarán el {purgeOn}. Hasta entonces, la cuenta se puede recuperar.",
+  "email/deletion_scheduled.cta": "Recuperar mi cuenta",
+  "email/deletion_scheduled.text_restore": "Recupérala:",
+  "email/deletion_scheduled.contact": "Si no lo pediste tú, responde a este correo antes del {purgeOn}.",
+  "email/deletion_scheduled.text_contact": "Si no lo pediste tú, responde a este correo antes del {purgeOn}.",
+
+  "email/deletion_complete.subject": "Tus datos de {app} se han borrado",
+  "email/deletion_complete.heading": "Tus datos se han borrado",
+  "email/deletion_complete.body": "tu cuenta de {app} y sus datos se borraron el {purgedOn}. No se puede deshacer.",
+  "email/deletion_complete.text_body":
+    "Tu cuenta de {app} y sus datos se borraron el {purgedOn}. No se puede deshacer.",
+  "email/deletion_complete.last": "Es el último correo que recibirá esta cuenta.",
+
   // --- leadCapture ---
   "email/lead_capture.subject": "Tu descarga: {asset}",
   "email/lead_capture.heading": "Tu descarga está lista",

@@ -217,6 +217,55 @@ const PasswordChangedPayload = z
   })
   .describe("Inputs for the account-credential-changed security notice.");
 
+/**
+ * The four account-lifecycle notices `@pithy-sh/auth` sends (#620). Every date arrives already written for
+ * the reader — `1 November 2026` — because the sender knows the recipient's locale and this template does
+ * not, which is the convention `when` set for `securityAlert`.
+ */
+const AccountSuspendedPayload = z
+  .object({
+    name: z.string().optional().describe("The recipient's name, for a personal greeting. Optional."),
+    reason: z
+      .string()
+      .optional()
+      .describe(
+        "Why the account was suspended, in the operator's words. Rendered escaped, as every payload value is. Omitted when none was given.",
+      ),
+    until: z
+      .string()
+      .optional()
+      .describe("When the suspension ends by itself, written for the reader. Omitted for one with no end."),
+  })
+  .describe("Inputs for the notice that an account was suspended.");
+
+const AccountReinstatedPayload = z
+  .object({
+    name: z.string().optional().describe("The recipient's name, for a personal greeting. Optional."),
+  })
+  .describe("Inputs for the notice that a suspension was lifted.");
+
+const DeletionScheduledPayload = z
+  .object({
+    name: z.string().optional().describe("The recipient's name, for a personal greeting. Optional."),
+    purgeOn: z
+      .string()
+      .describe("The date the account's data will be erased, written for the reader. Until then it can be restored."),
+    restoreUrl: z
+      .string()
+      .optional()
+      .describe(
+        "Where the account's owner can restore it inside the window. Tracked when click tracking is on. Omitted when the project offers no self-service restore.",
+      ),
+  })
+  .describe("Inputs for the notice that an account was deleted and will be erased.");
+
+const DeletionCompletePayload = z
+  .object({
+    name: z.string().optional().describe("The recipient's name, for a personal greeting. Optional."),
+    purgedOn: z.string().describe("The date the account's data was erased, written for the reader."),
+  })
+  .describe("Inputs for the notice that an account's data was erased — sent before the address is.");
+
 /** One labeled fact in an operational notice — what makes the notice specific rather than a mood. */
 const OperationalNoticeFact = z
   .object({
@@ -462,6 +511,62 @@ export const templates: Record<string, EmailTemplate> = {
     ),
     text: `${greeting}\n\n{{t "email/password_changed.text_body" when=when}} {{supportUrl}}`,
     links: [{ path: "supportUrl", label: "password-support" }],
+  },
+  // The account lifecycle (#620). Transactional in both axes: a person who unsubscribed from a newsletter has
+  // not asked to stop being told their account is shut, and an unsubscribe that reached these would leave
+  // somebody locked out with no word of why. Each closes on who to answer — a reply, which reaches the
+  // adopter's own sending address — because the screen a locked-out person sees cannot name a person.
+  accountSuspended: {
+    id: "accountSuspended",
+    category: "transactional",
+    kind: "transactional",
+    width: "narrow",
+    payload: AccountSuspendedPayload,
+    subject: `{{t "email/account_suspended.subject" app=theme.appName}}`,
+    html: layout(
+      `${heading('{{t "email/account_suspended.heading"}}')}<p style="margin:0 0 8px">${greeting} {{t "email/account_suspended.body" app=theme.appName}}</p>{{#if reason}}<p style="margin:0 0 8px">{{t "email/account_suspended.reason" reason=reason}}</p>{{/if}}{{#if until}}<p style="margin:0 0 8px">{{t "email/account_suspended.until" until=until}}</p>{{/if}}<p class="t-subtle" style="margin:16px 0 0; font-size:13px; color:{{theme.light.textSubtle}}">{{t "email/account_suspended.contact"}}</p>`,
+    ),
+    text: `${greeting}\n\n{{t "email/account_suspended.text_body" app=theme.appName}}{{#if reason}}\n\n{{t "email/account_suspended.reason" reason=reason}}{{/if}}{{#if until}}\n\n{{t "email/account_suspended.until" until=until}}{{/if}}\n\n{{t "email/account_suspended.text_contact"}}`,
+    links: [],
+  },
+  accountReinstated: {
+    id: "accountReinstated",
+    category: "transactional",
+    kind: "transactional",
+    width: "narrow",
+    payload: AccountReinstatedPayload,
+    subject: `{{t "email/account_reinstated.subject" app=theme.appName}}`,
+    html: layout(
+      `${heading('{{t "email/account_reinstated.heading"}}')}<p style="margin:0 0 8px">${greeting} {{t "email/account_reinstated.body" app=theme.appName}}</p>`,
+    ),
+    text: `${greeting}\n\n{{t "email/account_reinstated.text_body" app=theme.appName}}`,
+    links: [],
+  },
+  deletionScheduled: {
+    id: "deletionScheduled",
+    category: "transactional",
+    kind: "transactional",
+    width: "narrow",
+    payload: DeletionScheduledPayload,
+    subject: `{{t "email/deletion_scheduled.subject" app=theme.appName}}`,
+    html: layout(
+      `${heading('{{t "email/deletion_scheduled.heading"}}')}<p style="margin:0 0 8px">${greeting} {{t "email/deletion_scheduled.body" app=theme.appName}}</p><p style="margin:0 0 8px">{{t "email/deletion_scheduled.purge" purgeOn=purgeOn}}</p>{{#if restoreUrl}}${button("restoreUrl", '{{t "email/deletion_scheduled.cta"}}')}{{/if}}<p class="t-subtle" style="margin:16px 0 0; font-size:13px; color:{{theme.light.textSubtle}}">{{t "email/deletion_scheduled.contact" purgeOn=purgeOn}}</p>`,
+    ),
+    text: `${greeting}\n\n{{t "email/deletion_scheduled.text_body" app=theme.appName}}\n\n{{t "email/deletion_scheduled.purge" purgeOn=purgeOn}}{{#if restoreUrl}}\n\n{{t "email/deletion_scheduled.text_restore"}} {{restoreUrl}}{{/if}}\n\n{{t "email/deletion_scheduled.text_contact" purgeOn=purgeOn}}`,
+    links: [{ path: "restoreUrl", label: "deletion-restore" }],
+  },
+  deletionComplete: {
+    id: "deletionComplete",
+    category: "transactional",
+    kind: "transactional",
+    width: "narrow",
+    payload: DeletionCompletePayload,
+    subject: `{{t "email/deletion_complete.subject" app=theme.appName}}`,
+    html: layout(
+      `${heading('{{t "email/deletion_complete.heading"}}')}<p style="margin:0 0 8px">${greeting} {{t "email/deletion_complete.body" app=theme.appName purgedOn=purgedOn}}</p><p class="t-subtle" style="margin:16px 0 0; font-size:13px; color:{{theme.light.textSubtle}}">{{t "email/deletion_complete.last"}}</p>`,
+    ),
+    text: `${greeting}\n\n{{t "email/deletion_complete.text_body" app=theme.appName purgedOn=purgedOn}}\n\n{{t "email/deletion_complete.last"}}`,
+    links: [],
   },
   operationalNotice: {
     id: "operationalNotice",
