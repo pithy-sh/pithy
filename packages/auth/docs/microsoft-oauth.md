@@ -113,7 +113,13 @@ auth({
 **All three values travel as one typed JSON secret.** The client id, client secret and tenant are stored together — through `@pithy-sh/secrets`, never committed, never an env literal — as `auth-microsoft-credentials`. The tenant rides with them because it means nothing apart from the registration it belongs to:
 
 ```
-pithy secrets create auth-microsoft-credentials --json '{"clientId":"<application-client-id>","clientSecret":"<client-secret-value>","tenantId":"<directory-tenant-id-or-common>"}'
+pithy secrets create auth-microsoft-credentials --env <env>
+```
+
+At a terminal it asks for the value, masked. An agent or a script pipes the JSON document in on stdin instead. `--json` only shapes the output, and the value is never read from a flag:
+
+```
+printf '%s' '{"clientId":"<application-client-id>","clientSecret":"<client-secret-value>","tenantId":"<directory-tenant-id-or-common>"}' | pithy secrets create auth-microsoft-credentials --env <env>
 ```
 
 Enable Microsoft in config with `auth({ microsoft: { enabled: true } })` — no credential values in the config.

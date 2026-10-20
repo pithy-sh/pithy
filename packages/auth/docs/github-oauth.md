@@ -65,7 +65,13 @@ auth({
 **Both credentials travel as one typed JSON secret.** The client id and client secret are stored together — through `@pithy-sh/secrets`, never committed, never an env literal — as `auth-github-credentials`:
 
 ```
-pithy secrets create auth-github-credentials --json '{"clientId":"<your-client-id>","clientSecret":"<your-client-secret>"}'
+pithy secrets create auth-github-credentials --env <env>
+```
+
+At a terminal it asks for the value, masked. An agent or a script pipes the JSON document in on stdin instead. `--json` only shapes the output, and the value is never read from a flag:
+
+```
+printf '%s' '{"clientId":"<your-client-id>","clientSecret":"<your-client-secret>"}' | pithy secrets create auth-github-credentials --env <env>
 ```
 
 Enable GitHub in config with `auth({ github: { enabled: true } })` — no credential values in the config.
