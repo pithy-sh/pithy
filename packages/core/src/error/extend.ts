@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { MessageParams } from "../i18n/catalog";
+import type { UnmarkedString } from "../privacy/types";
 import type { ErrorPayload, KitErrorDomain } from "./payload";
 import { ExtendedErrorPayload } from "./payload";
 import { InternalError } from "./pithyError";
@@ -98,8 +99,8 @@ export function defineErrorPayload<const Code extends `${string}/${string}`>(
     message: string;
     /** Operator remediation hint. Becomes the CLI action line. Never sent to a client. */
     action?: string;
-    /** Internal context for logs + audit. NEVER serialized to clients — the HTTP codec strips it. */
-    detail?: string;
+    /** Internal context for logs + audit. NEVER serialized to clients — the HTTP codec strips it. Never a marked value (#132). */
+    detail?: UnmarkedString;
     /**
      * Values a translating client interpolates into its own wording for this code. Client-facing:
      * these cross the boundary with `message`, unlike `action` and `detail`.

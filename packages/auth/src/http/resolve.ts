@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
@@ -187,7 +188,7 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
     ...(wiring.resolveGithubUserInfo ? { resolveGithubUserInfo: wiring.resolveGithubUserInfo } : {}),
     // Read the emit seam lazily so a later-composed audit capability is honored regardless of the
     // capability order (the instance may be built before audit's middleware runs).
-    emit: (event) => c.var.emit(event),
+    emit: (event: AuditEventInput) => c.var.emit(event),
     // This request's own headers, for the refusal rows `../instance/providerSignInGate` writes from
     // inside `getUserInfo`, where no request is in scope to read them from.
     requestHeaders: c.req.raw.headers,

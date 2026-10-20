@@ -59,7 +59,7 @@ const recorder = defineCapability({
   middleware: [
     (app) => {
       app.use("*", async (c, next) => {
-        c.set("emit", async (event) => {
+        c.set("emit", async (event: AuditEventInput) => {
           recorded.push(event);
         });
         await next();

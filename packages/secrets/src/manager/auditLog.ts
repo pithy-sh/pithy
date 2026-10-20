@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { AuditSeverity } from "@pithy-sh/core/src/audit/auditEvent";
+import type { AuditEventInput, AuditSeverity } from "@pithy-sh/core/src/audit/auditEvent";
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import type { LogLevel } from "@pithy-sh/core/src/logger/record";
@@ -23,7 +23,9 @@ const AUDIT_LEVEL: Record<AuditSeverity, LogLevel> = { info: "info", warning: "w
  * schema's own rule — never a secret in metadata — is the one these events were written against.
  */
 export function logAuditEmit(log: Logger): AuditEmit {
-  return async (event) => {
+  // Annotated, not inferred: `AuditEmit` is generic over `metadata` so an emit site carrying a marked value
+  // fails to compile (#132), and an event that reached here already passed that gate.
+  return async (event: AuditEventInput) => {
     log[AUDIT_LEVEL[event.severity ?? "info"]]("audit event, no recorder composed", { ...event });
   };
 }

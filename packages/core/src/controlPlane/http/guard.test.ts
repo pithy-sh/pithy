@@ -242,7 +242,7 @@ describe("requireControlPlane", () => {
         c.set("auth", null);
         c.set("controlPlane", null);
         c.set("controlPlaneVerifier", verifier());
-        c.set("emit", async (event) => {
+        c.set("emit", async (event: AuditEventInput) => {
           events.push(event);
         });
         await next();

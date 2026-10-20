@@ -3,6 +3,7 @@
 
 import type { z } from "zod";
 import type { MessageParams } from "../i18n/catalog";
+import type { UnmarkedString } from "../privacy/types";
 import type { ValidationIssue } from "./payload";
 import { ErrorPayload } from "./payload";
 
@@ -18,7 +19,13 @@ import { ErrorPayload } from "./payload";
 export class PithyError extends Error {
   readonly payload: ErrorPayload;
 
-  constructor(payload: ErrorPayload, options?: { cause?: unknown }) {
+  /**
+   * `detail` is an {@link UnmarkedString} here and on every subclass's arguments (#132): a value marked with a
+   * privacy class is refused at compile time, because `detail` rides into every log line and audit row that
+   * carries this error. A template literal is a plain `string`, so interpolation is not caught — see
+   * `privacy/types.ts` for exactly what is.
+   */
+  constructor(payload: ErrorPayload & { detail?: UnmarkedString | undefined }, options?: { cause?: unknown }) {
     const parsed = ErrorPayload.parse(payload);
     super(parsed.message, options);
     this.payload = parsed;
@@ -32,8 +39,8 @@ interface ErrorArgs {
   message?: string;
   /** A remediation hint (CLI action line). */
   action?: string;
-  /** Internal context for logs + audit. Never serialized to clients. */
-  detail?: string;
+  /** Internal context for logs + audit. Never serialized to clients, and never a privacy-marked value (#132). */
+  detail?: UnmarkedString;
   /**
    * Values a translating client interpolates into its own wording for this code. Client-facing, so —
    * unlike `action` and `detail` — these cross the boundary with `message`. The `code` is the catalog

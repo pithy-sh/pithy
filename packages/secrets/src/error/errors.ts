@@ -3,6 +3,7 @@
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
+import type { UnmarkedString } from "@pithy-sh/core/src/privacy/types";
 
 /**
  * `@pithy-sh/secrets` throw sugar. The `secrets/*` codes live in core's closed `KitErrorPayload`
@@ -19,7 +20,7 @@ interface SecretErrorArgs {
   /** A remediation hint (CLI action line). */
   action?: string;
   /** Internal context for logs + audit. Never serialized to clients. */
-  detail?: string;
+  detail?: UnmarkedString;
   /**
    * Values a translating client interpolates into its own wording for this code. Client-facing, so —
    * unlike `action` and `detail` — these cross the boundary with `message`.
