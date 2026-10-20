@@ -1,5 +1,17 @@
 # @pithy-sh/vector
 
+## 0.4.0
+
+### Minor Changes
+
+- [#777](https://github.com/pithy-sh/pithy/pull/777) [`cf97464`](https://github.com/pithy-sh/pithy/commit/cf9746407260974ad7a433460ce0b83b911fdaca) Thanks [@kingmesal](https://github.com/kingmesal)! - Vector indexes are now readable over the control plane — what exists, how much is in it, and whether anything is still embedded under an old model.
+
+### Patch Changes
+
+- [#766](https://github.com/pithy-sh/pithy/pull/766) [`ae158a1`](https://github.com/pithy-sh/pithy/commit/ae158a1e3103577de9f9e3fb55d7727b4851ef54) Thanks [@kingmesal](https://github.com/kingmesal)! - A Worker in a bad state still answers its control plane. A capability declares a readiness guard, and the management surface is exempt from it, so `ping`, the manifest and other capabilities' admin routes keep answering on a Worker whose vector index has drifted. Every other route still refuses with a 500 `vector/metadata_index_drift`. Nothing reports the drift over the control plane yet.
+- Updated dependencies [[`27d8d53`](https://github.com/pithy-sh/pithy/commit/27d8d5376b755f91496df325815f3239716e4de7), [`68bc375`](https://github.com/pithy-sh/pithy/commit/68bc3754d340acfd495fb8bd28466c27fd5ed1ba), [`5a8fc16`](https://github.com/pithy-sh/pithy/commit/5a8fc166fdfdc0c8a7b157a9b7f76fab2fcee7e6), [`dcb2d74`](https://github.com/pithy-sh/pithy/commit/dcb2d74b58a0ec7a6ca706b2608839d10d686862), [`f0a13c6`](https://github.com/pithy-sh/pithy/commit/f0a13c65956bf8f58e91c7751362bbcd5c57db04), [`6978c6d`](https://github.com/pithy-sh/pithy/commit/6978c6d10dc231a6f0b9fe114902433bc209f031), [`8b9c185`](https://github.com/pithy-sh/pithy/commit/8b9c185a6a9ca6f4a0cbfcdb89632cd0091fc65e), [`1c9c17d`](https://github.com/pithy-sh/pithy/commit/1c9c17d41cb1661cb86b5ad392bad70f5d786caf), [`fc5ccac`](https://github.com/pithy-sh/pithy/commit/fc5ccac1e8d19689216c8b97db9624bd0e5b6203), [`ae158a1`](https://github.com/pithy-sh/pithy/commit/ae158a1e3103577de9f9e3fb55d7727b4851ef54), [`61a99b9`](https://github.com/pithy-sh/pithy/commit/61a99b9457abaf150a4b0603b1ce597d1a72f489), [`e75c46c`](https://github.com/pithy-sh/pithy/commit/e75c46c5cea94b8f9175a68b5027324ba89a8155), [`1f6517f`](https://github.com/pithy-sh/pithy/commit/1f6517f82c431a61edbe05c46ebb2397fd529dd6), [`1fd60e4`](https://github.com/pithy-sh/pithy/commit/1fd60e43b8dc6947e1e12551981924725894f303), [`30c0c5a`](https://github.com/pithy-sh/pithy/commit/30c0c5ab52e89c535f4dd92d64a66320850480b8), [`e79ccba`](https://github.com/pithy-sh/pithy/commit/e79ccbab8a85dc3b51d0ffd13a082563aa548c9b)]:
+  - @pithy-sh/core@0.11.0
+
 ## 0.3.0
 
 ### Minor Changes

@@ -1,5 +1,24 @@
 # @pithy-sh/auth
 
+## 0.9.0
+
+### Minor Changes
+
+- [#778](https://github.com/pithy-sh/pithy/pull/778) [`68bc375`](https://github.com/pithy-sh/pithy/commit/68bc3754d340acfd495fb8bd28466c27fd5ed1ba) Thanks [@kingmesal](https://github.com/kingmesal)! - Server-authoritative writes work. Supply `resolveScopes` and the leaderboard, rating and ledger gates finally have something to check — they have refused every caller since they shipped. Reach the seam over a service binding and there is no credential to steal; over mTLS and the edge refuses a caller without a certificate; anywhere else with a short-lived token bound to your own origin.
+
+- [#783](https://github.com/pithy-sh/pithy/pull/783) [`61a99b9`](https://github.com/pithy-sh/pithy/commit/61a99b9457abaf150a4b0603b1ce597d1a72f489) Thanks [@kingmesal](https://github.com/kingmesal)! - A secret that declares how often it rotates now rotates on that schedule, and retires its old version only once nothing still needs it.
+
+### Patch Changes
+
+- [#793](https://github.com/pithy-sh/pithy/pull/793) [`b7877ad`](https://github.com/pithy-sh/pithy/commit/b7877ad4ea39c579f775c53a77b08b3c333c5594) Thanks [@kingmesal](https://github.com/kingmesal)! - Sign-in works again on the Better Auth a fresh install resolves, and the kit now requires Better Auth 1.7.11, past a critical account-takeover fix. A new migration relaxes the account `issuer` column that Better Auth 1.7.3 stopped writing. Magic Links and OAuth sign-ins started before the upgrade must be restarted. A social sign-in that fails to attach the provider to an existing account now redirects with `provider_sign_in_refused`, like the other refusals the user table decides.
+  
+  Security: The kit's `better-auth` range admitted versions with GHSA-965c-763c-88jm, a critical flaw that let anyone who knew a user's email sign in as them through Magic Link on any deployment with a social provider configured. Separately, `unable_to_link_account` reached the browser on the social callback only when an account already existed at the address, so a failed account write answered the same question the collapsed codes do. It is collapsed now.
+- Updated dependencies [[`27d8d53`](https://github.com/pithy-sh/pithy/commit/27d8d5376b755f91496df325815f3239716e4de7), [`68bc375`](https://github.com/pithy-sh/pithy/commit/68bc3754d340acfd495fb8bd28466c27fd5ed1ba), [`5a8fc16`](https://github.com/pithy-sh/pithy/commit/5a8fc166fdfdc0c8a7b157a9b7f76fab2fcee7e6), [`e7f84b3`](https://github.com/pithy-sh/pithy/commit/e7f84b35d35c2cab5fbd9429e23bbf9ca6fd3bf7), [`dcb2d74`](https://github.com/pithy-sh/pithy/commit/dcb2d74b58a0ec7a6ca706b2608839d10d686862), [`f0a13c6`](https://github.com/pithy-sh/pithy/commit/f0a13c65956bf8f58e91c7751362bbcd5c57db04), [`6978c6d`](https://github.com/pithy-sh/pithy/commit/6978c6d10dc231a6f0b9fe114902433bc209f031), [`8b9c185`](https://github.com/pithy-sh/pithy/commit/8b9c185a6a9ca6f4a0cbfcdb89632cd0091fc65e), [`1c9c17d`](https://github.com/pithy-sh/pithy/commit/1c9c17d41cb1661cb86b5ad392bad70f5d786caf), [`fc5ccac`](https://github.com/pithy-sh/pithy/commit/fc5ccac1e8d19689216c8b97db9624bd0e5b6203), [`ae158a1`](https://github.com/pithy-sh/pithy/commit/ae158a1e3103577de9f9e3fb55d7727b4851ef54), [`61a99b9`](https://github.com/pithy-sh/pithy/commit/61a99b9457abaf150a4b0603b1ce597d1a72f489), [`e75c46c`](https://github.com/pithy-sh/pithy/commit/e75c46c5cea94b8f9175a68b5027324ba89a8155), [`1f6517f`](https://github.com/pithy-sh/pithy/commit/1f6517f82c431a61edbe05c46ebb2397fd529dd6), [`1fd60e4`](https://github.com/pithy-sh/pithy/commit/1fd60e43b8dc6947e1e12551981924725894f303), [`30c0c5a`](https://github.com/pithy-sh/pithy/commit/30c0c5ab52e89c535f4dd92d64a66320850480b8), [`e79ccba`](https://github.com/pithy-sh/pithy/commit/e79ccbab8a85dc3b51d0ffd13a082563aa548c9b)]:
+  - @pithy-sh/core@0.11.0
+  - @pithy-sh/email@0.5.0
+  - @pithy-sh/secrets@0.5.0
+  - @pithy-sh/turnstile@0.5.0
+
 ## 0.8.0
 
 ### Minor Changes

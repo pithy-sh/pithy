@@ -1,5 +1,18 @@
 # @pithy-sh/payments
 
+## 0.5.0
+
+### Minor Changes
+
+- [#781](https://github.com/pithy-sh/pithy/pull/781) [`8b9c185`](https://github.com/pithy-sh/pithy/commit/8b9c185a6a9ca6f4a0cbfcdb89632cd0091fc65e) Thanks [@kingmesal](https://github.com/kingmesal)! - Name your tiers and say what they buy. Declare each entitlement once — display name, numbered quotas, boolean features — and read an allowance with `quota()` without knowing which plan the caller is on. Shade any number for one customer from the control plane without taking them off their plan, with a reason on the record and a ceiling you set, or grant one subject the whole product with `unrestricted`, which keeps meaning everything as you add more. The kit counts and refuses what it already stores: emails, bytes, media. Or bill by a count your code owns — payments reports it to the store each period, or each day at its peak, and never tries to count your members for you.
+
+### Patch Changes
+
+- Updated dependencies [[`27d8d53`](https://github.com/pithy-sh/pithy/commit/27d8d5376b755f91496df325815f3239716e4de7), [`68bc375`](https://github.com/pithy-sh/pithy/commit/68bc3754d340acfd495fb8bd28466c27fd5ed1ba), [`5a8fc16`](https://github.com/pithy-sh/pithy/commit/5a8fc166fdfdc0c8a7b157a9b7f76fab2fcee7e6), [`e7f84b3`](https://github.com/pithy-sh/pithy/commit/e7f84b35d35c2cab5fbd9429e23bbf9ca6fd3bf7), [`dcb2d74`](https://github.com/pithy-sh/pithy/commit/dcb2d74b58a0ec7a6ca706b2608839d10d686862), [`f0a13c6`](https://github.com/pithy-sh/pithy/commit/f0a13c65956bf8f58e91c7751362bbcd5c57db04), [`6978c6d`](https://github.com/pithy-sh/pithy/commit/6978c6d10dc231a6f0b9fe114902433bc209f031), [`8b9c185`](https://github.com/pithy-sh/pithy/commit/8b9c185a6a9ca6f4a0cbfcdb89632cd0091fc65e), [`1c9c17d`](https://github.com/pithy-sh/pithy/commit/1c9c17d41cb1661cb86b5ad392bad70f5d786caf), [`fc5ccac`](https://github.com/pithy-sh/pithy/commit/fc5ccac1e8d19689216c8b97db9624bd0e5b6203), [`ae158a1`](https://github.com/pithy-sh/pithy/commit/ae158a1e3103577de9f9e3fb55d7727b4851ef54), [`61a99b9`](https://github.com/pithy-sh/pithy/commit/61a99b9457abaf150a4b0603b1ce597d1a72f489), [`e75c46c`](https://github.com/pithy-sh/pithy/commit/e75c46c5cea94b8f9175a68b5027324ba89a8155), [`1f6517f`](https://github.com/pithy-sh/pithy/commit/1f6517f82c431a61edbe05c46ebb2397fd529dd6), [`1fd60e4`](https://github.com/pithy-sh/pithy/commit/1fd60e43b8dc6947e1e12551981924725894f303), [`30c0c5a`](https://github.com/pithy-sh/pithy/commit/30c0c5ab52e89c535f4dd92d64a66320850480b8), [`e79ccba`](https://github.com/pithy-sh/pithy/commit/e79ccbab8a85dc3b51d0ffd13a082563aa548c9b)]:
+  - @pithy-sh/core@0.11.0
+  - @pithy-sh/ledger@0.4.0
+  - @pithy-sh/secrets@0.5.0
+
 ## 0.4.0
 
 ### Minor Changes

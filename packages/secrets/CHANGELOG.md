@@ -1,5 +1,24 @@
 # @pithy-sh/secrets
 
+## 0.5.0
+
+### Minor Changes
+
+- [#774](https://github.com/pithy-sh/pithy/pull/774) [`6978c6d`](https://github.com/pithy-sh/pithy/commit/6978c6d10dc231a6f0b9fe114902433bc209f031) Thanks [@kingmesal](https://github.com/kingmesal)! - Media now reports what was actually served — images delivered and minutes of video watched, per asset — read from Cloudflare's own analytics and joined to the assets you already have. A deployed application now holds one Cloudflare API token, `runtime`, minted with exactly what its capabilities call. **Breaking:** the secrets manager's own token and media's hand-made Images and Stream token are replaced by it; mint `runtime`, deploy, then revoke the old ones.
+  
+  Security: No exposure is fixed, and one is widened. A deployed application holds one minted token in place of two or three, one of which an operator built by hand with whatever permissions they picked, and its R2 bundles no longer carry the bootstrap token. That is fewer credentials, not less privilege per Worker: `runtime` is the union of every composed capability's `runtimePermissions`, and every Worker it is bound into holds all of it. With secrets composed, the internet-facing app Worker and the media host now hold Secrets Store Write over the account's flat store, production's master key included; before, only the manager did. The owner accepted that design. `docs/TOKENS.md` states it. A feature's Workers bind no runtime token, so branch code never holds it.
+
+- [#783](https://github.com/pithy-sh/pithy/pull/783) [`61a99b9`](https://github.com/pithy-sh/pithy/commit/61a99b9457abaf150a4b0603b1ce597d1a72f489) Thanks [@kingmesal](https://github.com/kingmesal)! - A secret that declares how often it rotates now rotates on that schedule, and retires its old version only once nothing still needs it.
+
+- [#780](https://github.com/pithy-sh/pithy/pull/780) [`e75c46c`](https://github.com/pithy-sh/pithy/commit/e75c46c5cea94b8f9175a68b5027324ba89a8155) Thanks [@kingmesal](https://github.com/kingmesal)! - Declare your own secrets table. Typed owner columns, the same encryption, the same rotation — and offboarding a tenant is one call.
+
+### Patch Changes
+
+- [#792](https://github.com/pithy-sh/pithy/pull/792) [`e7f84b3`](https://github.com/pithy-sh/pithy/commit/e7f84b35d35c2cab5fbd9429e23bbf9ca6fd3bf7) Thanks [@kingmesal](https://github.com/kingmesal)! - Deprovisioning email, secrets, support, storage, media or testers now deletes the Workflows it provisioned instead of leaving them in the account.
+- Updated dependencies [[`27d8d53`](https://github.com/pithy-sh/pithy/commit/27d8d5376b755f91496df325815f3239716e4de7), [`68bc375`](https://github.com/pithy-sh/pithy/commit/68bc3754d340acfd495fb8bd28466c27fd5ed1ba), [`5a8fc16`](https://github.com/pithy-sh/pithy/commit/5a8fc166fdfdc0c8a7b157a9b7f76fab2fcee7e6), [`dcb2d74`](https://github.com/pithy-sh/pithy/commit/dcb2d74b58a0ec7a6ca706b2608839d10d686862), [`f0a13c6`](https://github.com/pithy-sh/pithy/commit/f0a13c65956bf8f58e91c7751362bbcd5c57db04), [`6978c6d`](https://github.com/pithy-sh/pithy/commit/6978c6d10dc231a6f0b9fe114902433bc209f031), [`8b9c185`](https://github.com/pithy-sh/pithy/commit/8b9c185a6a9ca6f4a0cbfcdb89632cd0091fc65e), [`1c9c17d`](https://github.com/pithy-sh/pithy/commit/1c9c17d41cb1661cb86b5ad392bad70f5d786caf), [`fc5ccac`](https://github.com/pithy-sh/pithy/commit/fc5ccac1e8d19689216c8b97db9624bd0e5b6203), [`ae158a1`](https://github.com/pithy-sh/pithy/commit/ae158a1e3103577de9f9e3fb55d7727b4851ef54), [`61a99b9`](https://github.com/pithy-sh/pithy/commit/61a99b9457abaf150a4b0603b1ce597d1a72f489), [`e75c46c`](https://github.com/pithy-sh/pithy/commit/e75c46c5cea94b8f9175a68b5027324ba89a8155), [`1f6517f`](https://github.com/pithy-sh/pithy/commit/1f6517f82c431a61edbe05c46ebb2397fd529dd6), [`1fd60e4`](https://github.com/pithy-sh/pithy/commit/1fd60e43b8dc6947e1e12551981924725894f303), [`30c0c5a`](https://github.com/pithy-sh/pithy/commit/30c0c5ab52e89c535f4dd92d64a66320850480b8), [`e79ccba`](https://github.com/pithy-sh/pithy/commit/e79ccbab8a85dc3b51d0ffd13a082563aa548c9b)]:
+  - @pithy-sh/cloudflare@0.6.0
+  - @pithy-sh/core@0.11.0
+
 ## 0.4.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # @pithy-sh/ui-react
 
+## 0.3.3
+
+### Patch Changes
+
+- [#781](https://github.com/pithy-sh/pithy/pull/781) [`8b9c185`](https://github.com/pithy-sh/pithy/commit/8b9c185a6a9ca6f4a0cbfcdb89632cd0091fc65e) Thanks [@kingmesal](https://github.com/kingmesal)! - Name your tiers and say what they buy. Declare each entitlement once — display name, numbered quotas, boolean features — and read an allowance with `quota()` without knowing which plan the caller is on. Shade any number for one customer from the control plane without taking them off their plan, with a reason on the record and a ceiling you set, or grant one subject the whole product with `unrestricted`, which keeps meaning everything as you add more. The kit counts and refuses what it already stores: emails, bytes, media. Or bill by a count your code owns — payments reports it to the store each period, or each day at its peak, and never tries to count your members for you.
+
 ## 0.3.2
 
 ### Patch Changes
