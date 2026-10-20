@@ -57,7 +57,7 @@ There is no `--worker` on any other subcommand. Every one reads the **project's*
 
 The registry is the definition. `pithy secrets` never invents a name — a secret must be declared by a capability the Worker composes, and an undeclared one is refused before anything is sent. Every capability's declarations count, not just the secrets capability's own: `auth`'s session secret and OAuth credentials, `email`'s link signing key and `payments`' provider credentials are all declared by the capability that reads them, and all of them are yours to create here.
 
-**`ls` lists the secrets your configuration actually uses.** A capability declares its secrets whether or not you use them — `auth` declares four OAuth credentials whichever providers you enabled, `support` declares its R2 credentials whether or not anything will ever write to the bucket — and the ones your configuration will never read are **not listed**. This is a checklist of what to go and set, and a project running Google and GitHub has two OAuth credentials to think about, not four.
+**`ls` lists the secrets your configuration actually uses.** A capability declares its secrets whether or not you use them — `auth` declares five OAuth credentials whichever providers you enabled, `support` declares its R2 credentials whether or not anything will ever write to the bucket — and the ones your configuration will never read are **not listed**. This is a checklist of what to go and set, and a project running Google and GitHub has two OAuth credentials to think about, not five.
 
 ```
 auth-github-credentials     d1 · environment

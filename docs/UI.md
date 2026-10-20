@@ -346,7 +346,7 @@ Two rules if you add a provider:
 - **Never hand-draw a mark.** A wrong-shaped official logo on a credentials page is what a phishing page looks like. If you cannot source accurate path data, ship that button with no mark — label-only buttons render correctly.
 - **Font Awesome's `brands/google` is a monochrome single-path G.** It is the obvious thing to reach for, it is in the package most projects already have, and it is the wrong asset for a sign-in button: Google's guidelines require the four-color mark there. The same goes for any other icon set's "google" glyph.
 
-Apple and Google additionally specify the *button*, not only the mark — background, corner radius, minimum size, wording. Pithy's `.auth__provider` is a generic secondary button and makes no claim to satisfy either. Read their guidelines before you enable those providers in production.
+Apple, Google and Microsoft additionally specify the *button*, not only the mark — background, corner radius, minimum size, wording. Pithy's `.auth__provider` is a generic secondary button and makes no claim to satisfy any of them. Read their guidelines before you enable those providers in production.
 
 ## Social providers
 
