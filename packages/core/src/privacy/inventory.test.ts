@@ -5,7 +5,8 @@ import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { type Capability, defineCapability } from "../capability/capability";
 import { phi, pii, secret } from "./classes";
-import { lazyPrivacyInventory, PRIVACY_SOURCES, privacyInventory } from "./inventory";
+import { lazyPrivacyInventory, privacyInventory } from "./inventory";
+import { PRIVACY_SOURCES } from "./report";
 
 const Patients = z
   .object({

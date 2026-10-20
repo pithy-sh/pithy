@@ -4,8 +4,8 @@
 import type { Context } from "hono";
 import type { PithyHonoEnv } from "../../capability/capability";
 import { causeMessage } from "../../error/cause";
-import type { PrivacyInventory } from "../../privacy/inventory";
 import { privacyAttestation, privacyPosture } from "../../privacy/posture";
+import type { PrivacyInventory } from "../../privacy/report";
 import { workerVersionMetadata } from "../../worker/identity";
 import { ControlPlaneAuditActions, safeEmit } from "../audit/actions";
 import type { ControlPlaneConfig } from "../config/config";

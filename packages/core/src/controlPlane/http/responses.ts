@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
-import { PRIVACY_SOURCES } from "../../privacy/inventory";
 import { PrivacyPosture } from "../../privacy/posture";
+import { PRIVACY_SOURCES } from "../../privacy/report";
 import { ConnectionPrincipal, ConnectionPurpose, ControlPlaneActorKind, Ed25519PublicJwk } from "../data/connection";
 
 /**

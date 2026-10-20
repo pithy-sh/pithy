@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import type { PrivacyInventory } from "./inventory";
 import { PRIVACY_ATTESTATION_VAR, type PrivacyAttestation, privacyAttestation, privacyPosture } from "./posture";
+import type { PrivacyInventory } from "./report";
 
 const inventory: PrivacyInventory = {
   sources: ["d1", "kv"],

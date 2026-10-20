@@ -5,6 +5,7 @@ import type { z } from "zod";
 import type { Capability } from "../capability/capability";
 import { BUILT_IN_PRIVACY_CLASSES } from "./classes";
 import { classifyPrivacy, type PrivacyField } from "./classify";
+import { PRIVACY_SOURCES, type PrivacyInventory, type PrivacyInventorySchema } from "./report";
 
 /**
  * **What this Worker holds, derived from the code that is running** (#132).
@@ -41,40 +42,6 @@ import { classifyPrivacy, type PrivacyField } from "./classify";
  * Nothing until it is read. {@link lazyPrivacyInventory} walks on first read and caches for the isolate, so a
  * Worker whose control plane is never called never walks.
  */
-
-/** The storage the inventory walks, in the order it reports them. */
-export const PRIVACY_SOURCES = ["d1", "kv"] as const;
-
-/** One storage kind the inventory walks. */
-export type PrivacySource = (typeof PRIVACY_SOURCES)[number];
-
-/** One schema holding at least one marked field. */
-export interface PrivacyInventorySchema {
-  /** The capability that declared it. */
-  capability: string;
-  /** Where it is stored. */
-  storage: PrivacySource;
-  /** The D1 database name or the KV namespace name it lives in. */
-  container: string;
-  /** The table name or the KV store name. */
-  name: string;
-  /** Every marked field in it, with its class. */
-  fields: PrivacyField[];
-}
-
-/** Everything one Worker's storage schemas say about privacy. */
-export interface PrivacyInventory {
-  /** The storage kinds walked. Anything not listed was not. */
-  sources: PrivacySource[];
-  /** How many schemas were walked, marked or not. */
-  schemasWalked: number;
-  /** Every schema that holds a marked field, in composition order. */
-  schemas: PrivacyInventorySchema[];
-  /** Marked fields per class. A class with none is absent rather than zero. */
-  counts: Record<string, number>;
-  /** Every class with at least one marked field: the built-ins in their fixed order, then the rest by name. */
-  observed: string[];
-}
 
 /** The marked fields of a KV store: its key segments, value and metadata, each under its own prefix. */
 function kvFields(store: { key: z.ZodType; value: z.ZodType; metadata?: z.ZodType }): PrivacyField[] {

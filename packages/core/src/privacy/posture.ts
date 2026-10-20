@@ -3,7 +3,7 @@
 
 import { z } from "zod";
 import { PrivacyClassName } from "./classes";
-import { PRIVACY_SOURCES, type PrivacyInventory } from "./inventory";
+import { PRIVACY_SOURCES, type PrivacyInventory } from "./report";
 
 /**
  * **What a project declares about privacy, and what its running code holds — side by side** (#132).
