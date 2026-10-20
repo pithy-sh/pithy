@@ -26,6 +26,7 @@ import type { SeedSet } from "../seed/seed";
 import type { WorkflowSpecMap } from "../workflow/spec";
 import { BindingSpec, type BindingSpecInput } from "./bindings";
 import type { ClientProjection, ClientProjectionContext } from "./client";
+import { assertPurgeContributions, type PurgeContribution } from "./purge";
 import type { CapabilitySettings } from "./settings";
 
 /** Hono `Variables` every capability's routes are typed against. `createBackend` seeds these per request. */
@@ -659,6 +660,17 @@ export interface Capability<
    */
   extensions?: readonly CapabilityExtension[];
   /**
+   * How this capability erases one subject's rows when that subject is purged — see `./purge.ts`. Omit it
+   * when this capability holds nothing keyed to a person, which is the ordinary case.
+   *
+   * **The purge Workflow runs each composed contribution as its own step**, named for this capability, so a
+   * failure retries this capability alone and the steps that finished are not re-run. That is why there is
+   * at most one per subject here, and why `erase` must succeed when there is nothing left to erase.
+   * `defineCapability` refuses a contribution for a subject the kit does not know. An adopter declares one
+   * on their own `app` capability for their own tables, with the same types.
+   */
+  purge?: readonly PurgeContribution[];
+  /**
    * The role powers this capability's own routes gate on, through the acting-organization seam —
    * `media:manage`, `storage:manage`. Omit it when a capability asks no power, which is the normal case.
    *
@@ -700,6 +712,9 @@ export function defineCapability<
   for (const spec of Object.values(input.databases ?? {})) {
     if (spec.migrations && spec.retained) declareRetained(spec.migrations, spec.retained);
   }
+  // A purge contribution no purge could run — a subject the kit does not know, or two for one — is refused
+  // where it is written, naming the capability, rather than on the day somebody is erased.
+  if (input.purge) assertPurgeContributions(input.name, input.purge);
   return {
     ...input,
     requiredBindings: input.requiredBindings.map((binding) => BindingSpec.parse(binding)),

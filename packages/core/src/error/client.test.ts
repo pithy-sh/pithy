@@ -65,6 +65,31 @@ describe("clientError — the one projection toward a client", () => {
     });
   });
 
+  test.each(["auth/account_suspended", "auth/account_deleted"] as const)(
+    "%s tells a client the state and the reason, and nothing else",
+    (code) => {
+      // The lifecycle refusals are the two codes a locked-out person's screen is rendered from, so what
+      // crosses is exactly what that screen needs: which state, the operator's stated reason as the
+      // message, and the end of a suspension as a param. Who suspended them, and from where, does not.
+      const wire = clientError(
+        ErrorPayload.parse({
+          code,
+          status: 403,
+          message: "Chargeback under review.",
+          params: { suspendedUntil: "2026-11-01T00:00:00.000Z" },
+          action: OPERATOR_REMEDY,
+          detail: "suspended by connection 4f2a from 203.0.113.9",
+        }),
+      );
+      expect(wire).toEqual({
+        code,
+        status: 403,
+        message: "Chargeback under review.",
+        params: { suspendedUntil: "2026-11-01T00:00:00.000Z" },
+      });
+    },
+  );
+
   test("what a client does need survives — the public fields are untouched", () => {
     expect(clientError(new NotFoundError({ message: "No such session.", action: OPERATOR_REMEDY }).payload)).toEqual({
       code: "core/not_found",
