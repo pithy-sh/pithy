@@ -24,6 +24,8 @@ const SRC = join(import.meta.dirname, "..");
 const NOT_SETTINGS: Record<string, string> = {
   PITHY_ALLOW_REAL_CONFIG_DIR: "A test-only escape hatch from the config-directory guard. Nothing ships setting it.",
   PITHY_DEPLOY_STAMP: "A var the CLI writes into a deployed Worker, read by the Worker rather than by the CLI.",
+  PITHY_PRIVACY:
+    "The privacy attestation `pithy deploy` writes into each Worker it ships (#132), read by the Worker rather than by the CLI.",
 };
 
 /** Every `"PITHY_…"` literal in the CLI's shipped source. */

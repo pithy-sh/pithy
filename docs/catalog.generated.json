@@ -543,6 +543,25 @@
       ]
     },
     {
+      "path": "privacy",
+      "flags": []
+    },
+    {
+      "path": "privacy enable",
+      "flags": [
+        "--class",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
+      "path": "privacy scan",
+      "flags": [
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
       "path": "provision",
       "flags": [
         "--env",

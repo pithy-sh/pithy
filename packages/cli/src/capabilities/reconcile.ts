@@ -849,7 +849,7 @@ export type RegistrationLocation =
     };
 
 /** From a `{`, the index of its matching `}` — string- and comment-aware so braces in strings/comments don't miscount. */
-function matchBrace(source: string, openIndex: number): number {
+export function matchBrace(source: string, openIndex: number): number {
   let depth = 0;
   let inString = false;
   let quote = "";

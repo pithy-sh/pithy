@@ -1,0 +1,81 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
+import { PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
+import { PRIVACY_ATTESTATION_VAR, type PrivacyAttestation } from "@pithy-sh/core/src/privacy/posture";
+import { loadProjectPrivacy, type ProjectConfig } from "../project/config";
+import { type ConsoleGateReading, NO_CONSOLE_RULE, readConsoleGate } from "./consoleGate";
+
+/**
+ * **The `pithy deploy` console gate, and the attestation every deploy writes** (#132).
+ *
+ * The only hard failure the privacy work adds: a project that declared a class, whose Biome config is readable
+ * and has `suspicious/noConsole` off, does not deploy — file named, rule named, fix named. Everything else
+ * deploys: no class declared (the gate does not apply, whatever the rule says), the rule on, or no Biome config
+ * Pithy can read, which is said out loud on the run and carried into the manifest as `unverifiable`.
+ *
+ * Every deploy then writes what it found into the Worker as {@link PRIVACY_ATTESTATION_VAR}, on wrangler's argv —
+ * a project that declared nothing included, so its manifest says so explicitly rather than saying nothing.
+ */
+
+/** What a deploy attests, and the gate reading behind it (`null` when no class is declared, so none was read). */
+export interface DeployPrivacy {
+  /** The attestation written into every Worker this deploy ships. */
+  attestation: PrivacyAttestation;
+  /** The console gate as read, or `null` when nothing is declared. */
+  gate: ConsoleGateReading | null;
+}
+
+/** What {@link deployPrivacy} takes. */
+export interface DeployPrivacyOptions {
+  /** The project root. */
+  projectDir: string;
+  /** The loaded root config. */
+  config: ProjectConfig;
+  /** The clock. */
+  now?: () => Date;
+}
+
+/**
+ * Decide the gate for a deploy, and refuse when it is off. Read once, before any Worker is built: the refusal is
+ * the project's, not a Worker's, so it is one error rather than a failed row per Worker.
+ */
+export async function deployPrivacy(options: DeployPrivacyOptions): Promise<DeployPrivacy> {
+  const classes = loadProjectPrivacy(options.config);
+  const attestedAt = (options.now ?? (() => new Date()))().toISOString();
+  if (classes.length === 0) {
+    return { attestation: { classes: [], consoleGate: "not_required", reason: null, attestedAt }, gate: null };
+  }
+  const gate = await readConsoleGate(options.projectDir);
+  if (gate.state === "off") {
+    throw new PreconditionFailedError({
+      message: `This project declares ${classes.join(", ")}, and console is open: ${gate.reason}`,
+      action: `Set ${NO_CONSOLE_RULE} to "error" in ${gate.file}, or run ${pithyCommand("privacy enable", { flags: { "--class": classes[0] as string } })} to write it. A console.log bypasses every privacy gate.`,
+      detail: `console gate off (${gate.cause}) in ${gate.file}`,
+    });
+  }
+  return {
+    attestation: {
+      classes,
+      consoleGate: gate.state,
+      reason: gate.state === "unverifiable" ? gate.reason : null,
+      attestedAt,
+    },
+    gate,
+  };
+}
+
+/**
+ * The argv that carries the attestation into a Worker. wrangler splits a `--var` on its first colon and joins the
+ * rest back (`collectKeyValues`, wrangler 4.151.0), so a JSON value survives whole.
+ */
+export function privacyVarArgs(attestation: PrivacyAttestation): string[] {
+  return ["--var", `${PRIVACY_ATTESTATION_VAR}:${JSON.stringify(attestation)}`];
+}
+
+/** The line a deploy prints when the gate cannot be read, or `undefined` when there is nothing to say. */
+export function unverifiableGateLine(privacy: DeployPrivacy): string | undefined {
+  if (privacy.attestation.consoleGate !== "unverifiable") return undefined;
+  return `Console gate unverifiable. ${privacy.attestation.reason ?? ""} Deploying anyway; the control plane reports it as unverified.`;
+}

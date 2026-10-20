@@ -193,6 +193,37 @@ describe("deployProject", () => {
     ]);
   });
 
+  test("carries the privacy attestation into every Worker as one --var, after the deploy's own switches (#132)", async () => {
+    await writeWorker("api", "pithy-api");
+    const calls: string[][] = [];
+    const privacy = {
+      classes: ["pii"],
+      consoleGate: "enforced" as const,
+      reason: null,
+      attestedAt: "2026-10-20T12:00:00.000Z",
+    };
+    await deployProject({
+      account: null,
+      projectDir: dir,
+      env: "prod",
+      privacy,
+      runDeploy: async (target, args) => {
+        calls.push(args);
+        return wranglerOutput(target.name, "ver-1");
+      },
+    });
+    expect(calls).toEqual([
+      [
+        "deploy",
+        "--env",
+        "prod",
+        "--experimental-provision=false",
+        "--var",
+        `PITHY_PRIVACY:${JSON.stringify(privacy)}`,
+      ],
+    ]);
+  });
+
   /**
    * **A binding's target ships before the Worker that binds it (#617).** Cloudflare refuses an upload whose
    * service binding names a script that does not exist yet, so on a first deploy the order is the difference

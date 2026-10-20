@@ -518,6 +518,9 @@ export default withContract(
             );
           }
         }
+        // The other half of the same question (#132): an audit trail records who touched what, and a privacy
+        // declaration says what there is to touch. Offered, never required, and only to a person.
+        if (interactive && result.capability === "audit") await (await import("./privacy")).offerPrivacy(projectDir);
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),

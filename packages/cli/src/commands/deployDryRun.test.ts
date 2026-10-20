@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
@@ -127,10 +127,15 @@ describe("pithy deploy --env staging --dry-run", () => {
       "1 migration unapplied for staging: 1000_app_0001_things. Deploy does not migrate — run pithy migrate --env staging.",
     ]);
     // Pithy's plan first, then wrangler — and every wrangler it ran was a dry run.
+    // The privacy attestation rides on the same argv as the real deploy's (#132): a project declaring nothing
+    // attests exactly that, so its manifest can say so rather than read as never attested.
     expect(observed.order).toEqual([
       "migrations",
-      "wrangler deploy --env staging --experimental-provision=false --dry-run",
+      expect.stringMatching(
+        /^wrangler deploy --env staging --experimental-provision=false --var PITHY_PRIVACY:\{"classes":\[\],"consoleGate":"not_required",.*\} --dry-run$/,
+      ),
     ]);
+    expect(payload.privacy).toEqual({ declared: [], consoleGate: "not_required", reason: null });
     expect(process.exitCode).toBeUndefined();
     expect(await snapshotTree(dir)).toEqual(before);
     expect(account.writes).toEqual([]);
@@ -210,7 +215,79 @@ describe("pithy deploy --env staging --dry-run", () => {
     expect(JSON.parse(written.join(""))).toMatchObject({ dryRun: false });
     expect(JSON.parse(written.join(""))).not.toHaveProperty("plan");
     expect(observed.order.filter((entry) => entry.startsWith("wrangler"))).toEqual([
-      "wrangler deploy --env staging --experimental-provision=false",
+      expect.stringMatching(
+        /^wrangler deploy --env staging --experimental-provision=false --var PITHY_PRIVACY:\{.*\}$/,
+      ),
     ]);
+  });
+});
+
+/**
+ * **The console gate, through the real command (#132).** A scaffolded project lints with the starter's
+ * `biome.jsonc`, which states no `suspicious/noConsole` — so declaring a class closes nothing until
+ * `pithy privacy enable` writes the rule, and deploy refuses in between. Asked under `--dry-run`, because the
+ * refusal is the deploy's own and a dry run makes it exactly as the deploy would.
+ */
+describe("pithy deploy and the console gate", () => {
+  /** Declare classes in the scaffolded root config, by hand, the way an adopter might. */
+  async function declare(classes: string[]): Promise<void> {
+    const path = join(dir, "pithy.config.ts");
+    const text = await readFile(path, "utf8");
+    await writeFile(
+      path,
+      text.replace('name: "acme",', `name: "acme",\n  privacy: { classes: ${JSON.stringify(classes)} },`),
+    );
+  }
+
+  test("refuses when a class is declared and the rule is off, naming the file, the rule and the fix", async () => {
+    await declare(["pii"]);
+    const err: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((() => true) as never);
+    vi.spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => err.push(String(chunk)) > 0) as never);
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("exited");
+    }) as never);
+    await runCommand(await commandAt("deploy"), {
+      rawArgs: ["--env", "staging", "--apps", "--dry-run", "--json"],
+    }).catch(() => undefined);
+    const error = JSON.parse(err.join("").trimEnd()).error;
+    expect(error.code).toBe("core/precondition_failed");
+    expect(error.message).toContain("biome.jsonc");
+    expect(error.message).toContain("suspicious/noConsole");
+    expect(error.action).toContain("pithy privacy enable");
+    expect(exit).toHaveBeenCalledWith(EXIT.precondition);
+    expect(observed.order.filter((entry) => entry.startsWith("wrangler"))).toEqual([]);
+  });
+
+  test("passes once `pithy privacy enable` has closed console, and attests enforced", async () => {
+    await runCaptured("privacy enable", ["--class", "pii", "--class", "phi", "--json"]);
+    process.exitCode = undefined;
+    const written = await runCaptured("deploy", ["--env", "staging", "--apps", "--dry-run", "--json"]);
+    expect(JSON.parse(written.join("")).privacy).toEqual({
+      declared: ["pii", "phi"],
+      consoleGate: "enforced",
+      reason: null,
+    });
+    expect(observed.order.find((entry) => entry.startsWith("wrangler"))).toContain(
+      '"classes":["pii","phi"],"consoleGate":"enforced"',
+    );
+  });
+
+  test("with no Biome config, deploys and attests unverifiable with the reason, never enforced", async () => {
+    await declare(["phi"]);
+    await rm(join(dir, "biome.jsonc"));
+    const written = await runCaptured("deploy", ["--env", "staging", "--apps", "--dry-run", "--json"]);
+    const payload = JSON.parse(written.join(""));
+    expect(payload.privacy).toMatchObject({ declared: ["phi"], consoleGate: "unverifiable" });
+    expect(payload.privacy.reason).toContain("No biome.json or biome.jsonc");
+    expect(observed.order.find((entry) => entry.startsWith("wrangler"))).toContain('"consoleGate":"unverifiable"');
+  });
+
+  test("a project with no declared class deploys whether the rule is on or off", async () => {
+    const off = JSON.parse(
+      (await runCaptured("deploy", ["--env", "staging", "--apps", "--dry-run", "--json"])).join(""),
+    );
+    expect(off.privacy).toEqual({ declared: [], consoleGate: "not_required", reason: null });
+    expect(off.error).toBeUndefined();
   });
 });

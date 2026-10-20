@@ -5,10 +5,12 @@ import { basename } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { InternalError, messageOf, NotFoundError, PithyError } from "@pithy-sh/core/src/error/pithyError";
+import type { PrivacyAttestation } from "@pithy-sh/core/src/privacy/posture";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { inShadow } from "../plan/shadow";
 import { execCommand } from "../platform/command";
+import { privacyVarArgs } from "../privacy/deployGate";
 import { isSourceEnvironment, wranglerConfigPath } from "../provision/featureConfig";
 import { EXIT, exitCodeOf } from "../terminal/exitClass";
 import { settleStep, startStep } from "../terminal/progress";
@@ -125,6 +127,13 @@ export interface DeployProjectOptions {
    * build's output nor the bundle is written here.
    */
   dryRun?: boolean;
+  /**
+   * **What this deploy attests about privacy (#132)**, from `deployPrivacy` — the declared classes and the
+   * console gate's verdict. Carried into every Worker as the `PITHY_PRIVACY` var on wrangler's argv, which a
+   * raw `wrangler deploy` does not repeat, so a Worker shipped around this command reads as unattested rather
+   * than as whatever was last true. Omitted, no var is passed.
+   */
+  privacy?: PrivacyAttestation;
 }
 
 /** The switch that makes `wrangler deploy` bundle and validate, and upload nothing. */
@@ -522,7 +531,10 @@ async function deployWorkers(
   // **And it creates nothing (#589).** wrangler's default for a deploy is to create any resource a binding
   // names and it cannot find, so a stanza with a `database_name` and no id made a database. Provisioning
   // is `pithy provision`'s reviewed step; see `NO_PROVISION_ARG` for why the argv is the only place to say so.
-  const args = stanza ? ["deploy", "--env", stanza, NO_PROVISION_ARG] : ["deploy", NO_PROVISION_ARG];
+  const args = [
+    ...(stanza ? ["deploy", "--env", stanza, NO_PROVISION_ARG] : ["deploy", NO_PROVISION_ARG]),
+    ...(options.privacy ? privacyVarArgs(options.privacy) : []),
+  ];
   const audit = options.audit ?? (async () => {});
   const probe = options.verifyDeploy ?? ((probeOptions) => verifyDeployedVersion(probeOptions));
   const severity = deploySeverity(options.env);

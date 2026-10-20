@@ -900,6 +900,7 @@ COMMANDS
           ui    Scaffold and wire a front end served by one of the project's Workers
      upgrade    Reconcile each worker's installed capabilities with its pithy.config.ts and wrangler.jsonc
     contract    Write each worker's OpenAPI and AsyncAPI documents
+     privacy    Declare privacy classes and find unmarked fields
 
   Develop
        setup    Make this checkout ready to develop: install, secrets, migrate, ports, seed

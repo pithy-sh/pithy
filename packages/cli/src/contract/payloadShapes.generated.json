@@ -374,6 +374,11 @@
         "$.kitProblems": "array | null",
         "$.kitProblems[]": "string",
         "$.dryRun": "boolean",
+        "$.privacy": "null | object?",
+        "$.privacy.declared": "array",
+        "$.privacy.declared[]": "string",
+        "$.privacy.consoleGate": "\"enforced\" | \"not_required\" | \"unverifiable\"",
+        "$.privacy.reason": "null | string",
         "$.plan": "object?",
         "$.plan.files": "array",
         "$.plan.files[]": "object",
@@ -1397,6 +1402,46 @@
         "$.plan.data[].action": "\"repair\" | \"reset\" | \"reupload\" | \"skip\" | \"upload\" | \"write\"",
         "$.plan.notes": "array",
         "$.plan.notes[]": "string"
+      }
+    },
+    "privacy enable": {
+      "schemaVersion": 1,
+      "payload": {
+        "$": "object",
+        "$.command": "\"privacy enable\"",
+        "$.classes": "array",
+        "$.classes[]": "string",
+        "$.configChanged": "boolean",
+        "$.biomeChanged": "boolean",
+        "$.consoleGate": "object",
+        "$.consoleGate.state": "\"enforced\" | \"off\" | \"unverifiable\"",
+        "$.consoleGate.file": "null | string",
+        "$.consoleGate.reason": "null | string"
+      }
+    },
+    "privacy scan": {
+      "schemaVersion": 1,
+      "payload": {
+        "$": "object",
+        "$.command": "\"privacy scan\"",
+        "$.findings": "array",
+        "$.findings[]": "object",
+        "$.findings[].worker": "string",
+        "$.findings[].capability": "string",
+        "$.findings[].owner": "\"app\" | \"kit\"",
+        "$.findings[].storage": "\"d1\" | \"kv\"",
+        "$.findings[].container": "string",
+        "$.findings[].schema": "string",
+        "$.findings[].path": "string",
+        "$.findings[].status": "\"candidate\" | \"covered\"",
+        "$.findings[].class": "string",
+        "$.findings[].marker": "null | string",
+        "$.candidates": "integer",
+        "$.covered": "integer",
+        "$.unreadable": "array",
+        "$.unreadable[]": "object",
+        "$.unreadable[].worker": "string",
+        "$.unreadable[].reason": "string"
       }
     },
     "provision": {
