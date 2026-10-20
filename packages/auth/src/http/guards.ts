@@ -29,7 +29,7 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
  * every legitimate management call, permanently, and **no credential could fix it** — there is no user
  * to sign in as. `controlPlaneIsolation.workers.test.ts` pins both directions of that separation.
  *
- * ## Five scopes, because these are five different blast radii
+ * ## Eight scopes, because these are eight different blast radii
  *
  * The temptation is one `auth:admin` flag, and on this capability it is the most dangerous version of
  * that mistake. **Reading a user is a privacy operation; revoking their sessions is an availability
@@ -93,8 +93,33 @@ export const AUTH_USERS_LOGOUT_SCOPE: ControlPlaneScope = "auth:users:logout";
 export const AUTH_DEVICES_REVOKE_SCOPE: ControlPlaneScope = "auth:devices:revoke";
 
 /**
+ * Suspend an account and reinstate it (#620, the routes in #621). Ending somebody's access is an availability
+ * operation on one person, and reversible — which is what separates it from deleting them, and why it is
+ * granted apart from both reading them and erasing them.
+ */
+export const AUTH_USERS_SUSPEND_SCOPE: ControlPlaneScope = "auth:users:suspend";
+
+/**
+ * Delete an account, restore one inside its purge window, and start a purge (#620, the routes in #622). The
+ * one scope on this surface whose worst case cannot be undone: once the window closes, the person's rows are
+ * gone from every capability that held them.
+ */
+export const AUTH_USERS_DELETE_SCOPE: ControlPlaneScope = "auth:users:delete";
+
+/**
+ * Export everything the kit holds about one account — the answer to an access request (#620, the route in
+ * #622). A disclosure, and a far larger one than reading the user: it carries every capability's rows about
+ * them, so it is granted on its own and audited as one.
+ */
+export const AUTH_USERS_EXPORT_SCOPE: ControlPlaneScope = "auth:users:export";
+
+/**
  * Every control-plane scope auth defines — what `pithy dashboard connect` offers for this capability,
  * and the list a manifest or a doc quotes rather than re-typing.
+ *
+ * **The three lifecycle scopes are declared before the routes that require them.** The suspend, delete and
+ * export routes land in #621 and #622; declaring the vocabulary here, once, is what lets those issues build on
+ * one name each rather than three issues each choosing their own.
  */
 export const AUTH_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
   AUTH_USERS_READ_SCOPE,
@@ -102,6 +127,9 @@ export const AUTH_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
   AUTH_SESSIONS_REVOKE_SCOPE,
   AUTH_USERS_LOGOUT_SCOPE,
   AUTH_DEVICES_REVOKE_SCOPE,
+  AUTH_USERS_SUSPEND_SCOPE,
+  AUTH_USERS_DELETE_SCOPE,
+  AUTH_USERS_EXPORT_SCOPE,
 ];
 
 /**

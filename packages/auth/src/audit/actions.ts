@@ -150,6 +150,29 @@ export const AuthAuditActions = {
   adminUserSessionsRevoked: "auth/admin_user_sessions_revoked",
   /** One of a user's devices was signed out and its registration dropped, from the management surface. */
   adminDeviceRevoked: "auth/admin_device_revoked",
+
+  /**
+   * The account lifecycle (#620). Each is written by the transition in `../lifecycle/transitions.ts`, beside
+   * the `pithy_auth_user_lifecycle` row that records the same fact — the trail answers "who, from where", the
+   * table answers "what happened to this account". The admin ones carry `actorType: "control-plane"`; the
+   * self-service deletion carries the account's own holder, and the purge `system`.
+   *
+   * The dashboard's own `customer/user_suspended` and `customer/user_restored` are the client side of the
+   * same events, recorded where the operator pressed the button.
+   */
+
+  /** An account was suspended from the management surface. Carries the reason and any end date. */
+  adminUserSuspended: "auth/admin_user_suspended",
+  /** A suspended account was reinstated from the management surface. */
+  adminUserReinstated: "auth/admin_user_reinstated",
+  /** An account was deleted from the management surface, with its purge window starting now. */
+  adminUserSoftDeleted: "auth/admin_user_soft_deleted",
+  /** A deleted account was restored inside its purge window, from the management surface. */
+  adminUserRestored: "auth/admin_user_restored",
+  /** A deleted account's data was erased. Recorded once, when the last purge step has run. */
+  adminUserPurged: "auth/admin_user_purged",
+  /** The account's own holder deleted their account. Always a soft deletion, on the configured window. */
+  userSelfDeleted: "auth/user_self_deleted",
 } as const;
 
 /** One of the auth audit action codes. */

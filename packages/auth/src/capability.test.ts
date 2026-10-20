@@ -395,3 +395,63 @@ describe("pithy.manifest.json", () => {
     expect(manifest.devSecrets).toEqual([{ name: AUTH_SESSION_SECRET, devValue: "random" }]);
   });
 });
+
+describe("the account lifecycle config (#620)", () => {
+  test("retention defaults to a 30-day purge window when nothing says otherwise", () => {
+    expect(build().authConfig.retention).toEqual({ purgeAfterDays: 30 });
+    expect(AuthConfig.parse({ baseURL: "https://api.example.com" }).retention.purgeAfterDays).toBe(30);
+  });
+
+  test("retention.purgeAfterDays takes a positive integer", () => {
+    expect(build({ retention: { purgeAfterDays: 7 } }).authConfig.retention.purgeAfterDays).toBe(7);
+    for (const purgeAfterDays of [0, -1, 1.5]) {
+      expect(() => build({ retention: { purgeAfterDays } }), String(purgeAfterDays)).toThrow();
+    }
+  });
+
+  test("all four lifecycle emails send by default, and each can be switched off on its own", () => {
+    expect(build().authConfig.lifecycleEmails).toEqual({
+      accountSuspended: true,
+      accountReinstated: true,
+      deletionScheduled: true,
+      deletionComplete: true,
+    });
+    expect(build({ lifecycleEmails: { accountSuspended: false } }).authConfig.lifecycleEmails).toEqual({
+      accountSuspended: false,
+      accountReinstated: true,
+      deletionScheduled: true,
+      deletionComplete: true,
+    });
+  });
+
+  test("both keys describe themselves, like every other config key", () => {
+    expect(AuthConfig.shape.retention.description).toBeTruthy();
+    expect(AuthConfig.shape.lifecycleEmails.description).toBeTruthy();
+  });
+
+  test("the four hooks are behavior, not config: kept off the parse and handed to the wiring", () => {
+    const calls: string[] = [];
+    const cap = auth({
+      baseURL: "https://api.example.com",
+      onUserSuspended: () => {
+        calls.push("suspended");
+      },
+      onUserReinstated: () => {
+        calls.push("reinstated");
+      },
+      onUserDeleted: () => {
+        calls.push("deleted");
+      },
+      onUserPurged: () => {
+        calls.push("purged");
+      },
+    });
+    expect(Object.keys(cap.authConfig)).not.toContain("onUserSuspended");
+    expect(Object.keys(cap.lifecycleHooks).sort()).toEqual([
+      "onUserDeleted",
+      "onUserPurged",
+      "onUserReinstated",
+      "onUserSuspended",
+    ]);
+  });
+});

@@ -17,8 +17,11 @@ import {
   AUTH_DEVICES_READ_SCOPE,
   AUTH_DEVICES_REVOKE_SCOPE,
   AUTH_SESSIONS_REVOKE_SCOPE,
+  AUTH_USERS_DELETE_SCOPE,
+  AUTH_USERS_EXPORT_SCOPE,
   AUTH_USERS_LOGOUT_SCOPE,
   AUTH_USERS_READ_SCOPE,
+  AUTH_USERS_SUSPEND_SCOPE,
   authAdminRoutes,
 } from "./guards";
 import { createAuthRoutes } from "./routes";
@@ -224,9 +227,25 @@ describe("the control-plane admin surface", () => {
         AUTH_SESSIONS_REVOKE_SCOPE,
         AUTH_USERS_LOGOUT_SCOPE,
         AUTH_DEVICES_REVOKE_SCOPE,
+        AUTH_USERS_SUSPEND_SCOPE,
+        AUTH_USERS_DELETE_SCOPE,
+        AUTH_USERS_EXPORT_SCOPE,
       ]).size,
-    ).toBe(5);
-    expect(AUTH_CONTROL_PLANE_SCOPES).toHaveLength(5);
+    ).toBe(8);
+    expect(AUTH_CONTROL_PLANE_SCOPES).toHaveLength(8);
+  });
+
+  test("reading a user, ending their access and erasing them are three different grants (#620)", () => {
+    // The lifecycle's three, each its own blast radius: `export` hands over everything the kit holds about
+    // one person, `suspend` takes their access away and gives it back, and `delete` starts the clock on
+    // erasing them. A support tool that looks people up holds none of them by holding `auth:users:read`.
+    expect(AUTH_USERS_SUSPEND_SCOPE).toBe("auth:users:suspend");
+    expect(AUTH_USERS_DELETE_SCOPE).toBe("auth:users:delete");
+    expect(AUTH_USERS_EXPORT_SCOPE).toBe("auth:users:export");
+    for (const scope of [AUTH_USERS_SUSPEND_SCOPE, AUTH_USERS_DELETE_SCOPE, AUTH_USERS_EXPORT_SCOPE]) {
+      expect(AUTH_CONTROL_PLANE_SCOPES).toContain(scope);
+      expect(scope).not.toBe(AUTH_USERS_READ_SCOPE);
+    }
   });
 
   test("nothing on this surface is named for impersonation", () => {

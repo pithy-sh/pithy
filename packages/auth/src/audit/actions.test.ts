@@ -13,3 +13,16 @@ describe("AuthAuditActions", () => {
     }
   });
 });
+
+describe("the account lifecycle actions (#620)", () => {
+  test("all six are declared, under the names the lifecycle issues build on", () => {
+    expect(AuthAuditActions).toMatchObject({
+      adminUserSuspended: "auth/admin_user_suspended",
+      adminUserReinstated: "auth/admin_user_reinstated",
+      adminUserSoftDeleted: "auth/admin_user_soft_deleted",
+      adminUserRestored: "auth/admin_user_restored",
+      adminUserPurged: "auth/admin_user_purged",
+      userSelfDeleted: "auth/user_self_deleted",
+    });
+  });
+});
