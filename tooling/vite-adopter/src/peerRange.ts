@@ -36,7 +36,8 @@ import { defineConfig as defineConfig8, type Plugin as Plugin8, type PluginOptio
  * that is both in-range and unadvised gives up almost nothing and ends it. `6.4.3` was already exactly
  * that, which is why it never appeared in an alert while the two floors carried twelve between them.
  *
- * The numbers move only when a new advisory raises a major's patched floor. This one pins a copy of each
+ * The numbers move only when a new advisory raises a major's patched floor. GHSA-698v-4r3x-3vcv raised
+ * all three at once (#798), which is why the pins are `6.4.4`, `7.3.7` and `8.1.6`. This one pins a copy of each
  * major in the declared peer range; `@pithy-sh/vite` next door resolves `^8.0.16`. TypeScript follows the realpath of a symlinked
  * package, so `plugin.ts` compiles here against the kit's Vite exactly as it does in the kit, while the
  * lines below are checked against three others. That is the adopter's install, reproduced.
