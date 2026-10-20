@@ -32,9 +32,9 @@ describe("the purge contribution on the Capability contract", () => {
   test("one declared for a subject the kit does not know is refused at define time, naming it", () => {
     // A typo'd subject would otherwise be a contribution no purge ever asks for — rows nobody erases,
     // with a declaration in the source saying they are.
-    const unknown = { ...recording([]), subject: "organisation" } as unknown as PurgeContribution;
+    const unknown = { ...recording([]), subject: "users" } as unknown as PurgeContribution;
     expect(() => defineCapability({ name: "media", requiredBindings: [], purge: [unknown] })).toThrow(PithyError);
-    expect(() => defineCapability({ name: "media", requiredBindings: [], purge: [unknown] })).toThrow(/organisation/);
+    expect(() => defineCapability({ name: "media", requiredBindings: [], purge: [unknown] })).toThrow(/"users"/);
   });
 
   test("two for the same subject from one capability are refused — one capability is one step", () => {

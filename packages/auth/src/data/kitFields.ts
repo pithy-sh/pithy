@@ -43,7 +43,7 @@ import { Locale } from "@pithy-sh/core/src/i18n/locale";
  * holder may write. With `input: true`, one `updateUser({ suspendedAt: null })` would lift a suspension.
  *
  * **`type: "number"`, not `"date"`.** Only the kit writes these, through its own Kysely, in the house
- * ms-epoch convention (`../data/betterAuth.ts` says why they differ from their neighbours). `"date"` would
+ * ms-epoch convention (`../data/betterAuth.ts` says why they differ from their neighbors). `"date"` would
  * have Better Auth convert what it hands back, and a `"date"` that the adapter believes is ISO text while
  * the column holds an integer is a column that reads back as the wrong thing. As a number it arrives
  * exactly as stored, and `SQLiteDate` decodes it.

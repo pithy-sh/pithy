@@ -291,7 +291,12 @@ describe("pithy ui", () => {
 
     const second = await runUiAdd({ ...options(WITH_AUTH), auth: true });
     expect(second.created.sort()).toEqual([
+      // Where a suspended or deleted account lands, and where somebody acting for a suspended
+      // organization does (#620).
+      "src/routes/pithy/account-deleted.tsx",
+      "src/routes/pithy/account-suspended.tsx",
       "src/routes/pithy/callback.tsx",
+      "src/routes/pithy/organization-suspended.tsx",
       "src/routes/pithy/otp.tsx",
       // The seeded gate over the callback contract backfills with the screens it protects (#393).
       "src/routes/pithy/sign-in.test.tsx",

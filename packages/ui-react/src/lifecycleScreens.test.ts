@@ -36,8 +36,8 @@ describe("the lifecycle screens ship with auth", () => {
   });
 
   test.each(SCREENS)("%s draws only with classes pithy-screens.css defines, so both themes hold", async (path) => {
-    // The stylesheet declares every colour token it reads for light and again under
-    // `prefers-color-scheme: dark` (palette.test.ts). A class nothing defines, or a colour written into
+    // The stylesheet declares every color token it reads for light and again under
+    // `prefers-color-scheme: dark` (palette.test.ts). A class nothing defines, or a color written into
     // the screen, is the way a screen is legible in one scheme and not the other.
     const source = blankComments(await readFile(join(TEMPLATE_DIR, path), "utf8"));
     expect(source).not.toMatch(/\bstyle=\{/);

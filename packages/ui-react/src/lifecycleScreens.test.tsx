@@ -11,14 +11,14 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 /**
  * The three lifecycle screens (#620), rendered: account suspended, account deleted, organization
  * suspended. Copied into an adopter's repository by the auth group, so each has to stand up there on its
- * own — its own English, the shared stylesheet's classes and nothing else, in both colour schemes, and no
+ * own — its own English, the shared stylesheet's classes and nothing else, in both color schemes, and no
  * address of Pithy's anywhere in it. `lifecycleScreens.test.ts` beside this holds the source-text half,
  * which needs a file system a rendering program does not have.
  */
 
 /**
  * The classes these screens draw with. `lifecycleScreens.test.ts` holds every one of them to being defined
- * in `pithy-screens.css`, which declares each colour token for light and again for dark.
+ * in `pithy-screens.css`, which declares each color token for light and again for dark.
  */
 const LIFECYCLE_SCREEN_CLASSES: ReadonlySet<string> = new Set(["screen", "muted", "stack", "secondary"]);
 
@@ -88,7 +88,7 @@ describe.each(Object.entries(SCREENS))("%s", (_path, load) => {
     expect(container.textContent).not.toMatch(/\b(auth|organization)\/[a-z_.]+/);
   });
 
-  test("renders in both themes: only the shared stylesheet's classes, and no colour of its own", async () => {
+  test("renders in both themes: only the shared stylesheet's classes, and no color of its own", async () => {
     // The two schemes are the stylesheet's: every token it reads is declared for light and redeclared
     // under `prefers-color-scheme: dark` (palette.test.ts holds that half). A screen keeps both only by
     // drawing with those classes and nothing else — an inline style or a class nothing defines is the

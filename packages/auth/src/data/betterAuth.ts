@@ -53,7 +53,7 @@ export const User = z
       "When the user record was last updated. ISO-8601 text in SQLite; a `Date` in app code.",
     ),
     // The four lifecycle columns (#620). **Ms-epoch through `SQLiteDate`, not ISO text like their
-    // neighbours**, and the difference is who writes them: Better Auth writes every other date on this
+    // neighbors**, and the difference is who writes them: Better Auth writes every other date on this
     // table, and never these — they are `input: false` and only the kit's lifecycle transitions set
     // them, through the kit's own Kysely. So they take the house convention, and `../data/kitFields.ts`
     // declares them `type: "number"` so Better Auth hands back exactly what is stored.
