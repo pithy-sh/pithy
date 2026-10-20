@@ -18,6 +18,7 @@ import { parseDeviceMeta, registerDevice } from "../device/registry";
 import { PROVIDER_CHANGE_FRESH_AGE_SECONDS } from "../http/providerFreshness";
 import { refuseUnsafeProfile, sanitizeProfile } from "../profile/profile";
 import { defaultGithubUserInfo, type GithubUserInfoResolver } from "./githubUserInfo";
+import { microsoftProfileToUser } from "./microsoftEmail";
 import { kitPlugins } from "./plugins";
 import {
   providerUnavailable,
@@ -105,8 +106,38 @@ export function socialProviders(deps: AuthInstanceDeps): Record<string, unknown>
       ...signUpOption(deps.providerSignUp.github),
     };
   }
+  if (deps.microsoft.state === "ready") {
+    // Entra ID cannot vouch for an email it did not verify: work and school tokens carry no
+    // `email_verified`, and `email` is a directory attribute a tenant admin sets to anything. So
+    // Microsoft stays out of `trustedProviders`, and `mapProfileToUser` decides the flag from the two
+    // claims Microsoft computes and a tenant cannot write — `./microsoftEmail.ts` has the rule. It is
+    // spread over Better Auth's own default, which reads claims a tenant can influence.
+    const microsoft = deps.microsoft.credentials;
+    providers.microsoft = {
+      clientId: microsoft.clientId,
+      clientSecret: microsoft.clientSecret,
+      tenantId: microsoft.tenantId,
+      // The stock resolver fetches a Graph photo and stores it as `data:image/jpeg;base64, …` — a space
+      // after the comma, which `../profile/profile.ts` refuses, so the create hook would drop every one.
+      // A third-party fetch per sign-in for a value that is always discarded is not worth making.
+      disableProfilePhoto: true,
+      mapProfileToUser: microsoftProfileToUser,
+      ...signUpOption(deps.providerSignUp.microsoft),
+    };
+  }
   return Object.keys(providers).length > 0 ? providers : undefined;
 }
+
+/**
+ * The providers whose email links into an existing account on the strength of their name alone.
+ *
+ * Google and Apple, and nobody else, permanently. Facebook's verified flag is asserted in its block with
+ * a reason; GitHub's comes from its emails API; Microsoft's is decided per sign-in by
+ * `./microsoftEmail.ts`, because Entra ID cannot vouch for an email it did not verify. Adding a provider
+ * here would skip the verified half of the linking gate for it — `./providerSignInGate.ts` reads the same
+ * list off the context.
+ */
+export const TRUSTED_PROVIDERS: readonly string[] = ["google", "apple"];
 
 /**
  * The seeding guard: a new account may be created only for an email a provider has **verified**.
@@ -614,7 +645,7 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
       accountLinking: {
         enabled: true,
         // Link a social sign-in to an existing magic-link user when the verified emails match.
-        trustedProviders: ["google", "apple"],
+        trustedProviders: [...TRUSTED_PROVIDERS],
         /**
          * **A signed-in user may attach a provider whose email differs from their account's.**
          *

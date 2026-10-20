@@ -1,6 +1,6 @@
 # @pithy-sh/auth
 
-Passwordless auth for Cloudflare. Magic link, email OTP, Google, Apple. Mobile and web, both first-class. Built on Better Auth. No email and password, ever.
+Passwordless auth for Cloudflare. Magic link, email OTP, Google, Apple, Facebook, GitHub, Microsoft. Mobile and web, both first-class. Built on Better Auth. No email and password, ever.
 
 This capability fills core's identity seams. It mints sessions, issues short-lived JWT access tokens, registers devices, and validates every request — so other capabilities just call `requireAuth()`.
 
@@ -55,6 +55,8 @@ Pressing a provider button while signed out is not a claim on an address. It is 
 **Rows 3 and 4 answer identically**, and that is a security property rather than a rough edge. They differ only in whether an account exists at an address the caller chose, and telling a stranger which one they hit is an account-enumeration oracle: one provider account, none on the target, unlimited queries. The decision is made in `src/instance/providerSignInGate.ts`, before Better Auth branches, so the two codes that used to answer it are never produced. The true reason goes to the audit trail, where an operator can read it and a browser cannot.
 
 So: **do not "improve" this by matching more addresses, and do not make the refusal more helpful.** An address is not a credential — a provider hands over whatever primary happens to be set, chosen years ago for unrelated reasons — and every sentence that separates "you have no account here" from "you have one and this provider is not attached to it" is the oracle back. The remedy for a refused sign-in is the same either way: sign in with a magic link, then connect the provider from the account. Linking from inside the account is a different flow with both sides already proven, and it is deliberately unconstrained by the address.
+
+**Microsoft reaches row 3 more than any other provider, on purpose.** Entra ID cannot vouch for an email it did not verify: its `email` is a directory attribute a tenant admin sets to anything. So a Microsoft address is verified only by the `xms_edov` claim, the personal-accounts tenant, or — connecting from inside the account — matching the address the account already holds. `src/instance/microsoftEmail.ts` is the rule and `docs/microsoft-oauth.md` is the setup.
 
 ## Server-authoritative writes
 

@@ -247,7 +247,7 @@ async function signIn(): Promise<{ token: string; userId: string }> {
     verificationExpiresIn: 300,
     otpLength: 6,
     disableSignUp: false,
-    providerSignUp: { google: true, apple: true, facebook: true, github: true },
+    providerSignUp: { google: true, apple: true, facebook: true, github: true, microsoft: true },
     emit: async () => {},
     plugins: [],
   });

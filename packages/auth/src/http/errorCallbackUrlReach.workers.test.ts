@@ -160,7 +160,7 @@ function instance(): ReturnType<typeof makeAuth<[BetterAuthPlugin]>> {
     verificationExpiresIn: 300,
     otpLength: 6,
     disableSignUp: false,
-    providerSignUp: { google: true, apple: true, facebook: true, github: true },
+    providerSignUp: { google: true, apple: true, facebook: true, github: true, microsoft: true },
     emit: async () => {},
     plugins: [reachProbe],
   };

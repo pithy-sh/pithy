@@ -51,7 +51,7 @@ function instanceWithMailbox() {
     verificationExpiresIn: 300,
     otpLength: 6,
     disableSignUp: false,
-    providerSignUp: { google: true, apple: true, facebook: true, github: true },
+    providerSignUp: { google: true, apple: true, facebook: true, github: true, microsoft: true },
     emit: async (event) => {
       events.push({ action: event.action, outcome: event.outcome });
     },
@@ -80,7 +80,7 @@ function instanceWatchingRevocations() {
     verificationExpiresIn: 300,
     otpLength: 6,
     disableSignUp: false,
-    providerSignUp: { google: true, apple: true, facebook: true, github: true },
+    providerSignUp: { google: true, apple: true, facebook: true, github: true, microsoft: true },
     emit: async () => {},
     onSessionRevoked: async (session) => void revoked.push(session),
     plugins: [],
@@ -262,7 +262,7 @@ describe("social providers and account linking, via instance.options", () => {
       verificationExpiresIn: 300,
       otpLength: 6,
       disableSignUp: false,
-      providerSignUp: { google: true, apple: true, facebook: true, github: true },
+      providerSignUp: { google: true, apple: true, facebook: true, github: true, microsoft: true },
       emit: async () => {},
       plugins: [],
       ...NO_SOCIAL_PROVIDERS,

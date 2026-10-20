@@ -15,12 +15,13 @@ import { magicLink } from "better-auth/plugins/magic-link";
 import { organization } from "better-auth/plugins/organization";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
-import { type AuthCapability, type AuthConfigInput, auth, isAuthCapability } from "./capability";
+import { type AuthCapability, AuthConfig, type AuthConfigInput, auth, isAuthCapability } from "./capability";
 import {
   AUTH_APPLE_CREDENTIALS,
   AUTH_FACEBOOK_CREDENTIALS,
   AUTH_GITHUB_CREDENTIALS,
   AUTH_GOOGLE_CREDENTIALS,
+  AUTH_MICROSOFT_CREDENTIALS,
   AUTH_SESSION_SECRET,
   authSecretsRegistry,
 } from "./instance/secrets";
@@ -103,6 +104,15 @@ describe("auth capability", () => {
     expect(cap.authConfig.apple.enabled).toBe(false);
     expect(cap.authConfig.facebook.enabled).toBe(false);
     expect(cap.authConfig.github.enabled).toBe(false);
+    expect(cap.authConfig.microsoft.enabled).toBe(false);
+  });
+
+  test("microsoft is a toggle like the other four: off, may sign up, and described", () => {
+    const cap = build();
+    expect(cap.authConfig.microsoft).toEqual({ enabled: false, allowSignUp: true });
+    expect(AuthConfig.shape.microsoft.description).toMatch(/auth-microsoft-credentials/);
+    expect(AuthConfig.shape.microsoft.description).toMatch(/docs\/microsoft-oauth\.md/);
+    expect(build({ microsoft: { enabled: true } }).authConfig.microsoft.enabled).toBe(true);
   });
 
   test("a provider may create accounts by default, and each toggle says so independently", () => {
@@ -243,10 +253,10 @@ describe("auth client projection", () => {
     expect(projection).toEqual({
       enabled: true,
       basePath: "/auth",
-      providers: { google: false, apple: false, facebook: false, github: false },
+      providers: { google: false, apple: false, facebook: false, github: false, microsoft: false },
       // Per provider, beside the global one: a project may let email create accounts while a provider
       // may not, and a screen with only `signUpEnabled` promises what that provider refuses (#559).
-      providerSignUp: { google: true, apple: true, facebook: true, github: true },
+      providerSignUp: { google: true, apple: true, facebook: true, github: true, microsoft: true },
       otpLength: 6,
       signUpEnabled: true,
     });
@@ -254,7 +264,13 @@ describe("auth client projection", () => {
 
   test("a provider's sign-up policy reaches the browser, so the promise can be scoped", () => {
     const projection = resolveClientProjection(build({ github: { enabled: true, allowSignUp: false } }), context);
-    expect(projection.providerSignUp).toEqual({ google: true, apple: true, facebook: true, github: false });
+    expect(projection.providerSignUp).toEqual({
+      google: true,
+      apple: true,
+      facebook: true,
+      github: false,
+      microsoft: true,
+    });
   });
 
   test("no deployment or sensitive config value reaches the bundle", () => {
@@ -288,7 +304,10 @@ describe("auth client projection", () => {
   test("a provider toggle flips exactly one boolean", () => {
     const off = resolveClientProjection(build(), context);
     const on = resolveClientProjection(build({ google: { enabled: true } }), context);
-    expect(on).toEqual({ ...off, providers: { google: true, apple: false, facebook: false, github: false } });
+    expect(on).toEqual({
+      ...off,
+      providers: { google: true, apple: false, facebook: false, github: false, microsoft: false },
+    });
   });
 
   test("disableSignUp projects as signUpEnabled: false", () => {
@@ -359,6 +378,7 @@ describe("pithy.manifest.json", () => {
       AUTH_APPLE_CREDENTIALS,
       AUTH_FACEBOOK_CREDENTIALS,
       AUTH_GITHUB_CREDENTIALS,
+      AUTH_MICROSOFT_CREDENTIALS,
     ]);
     for (const secret of obtained) {
       expect(secret.rotation.kind).toBe("manual");
@@ -366,7 +386,7 @@ describe("pithy.manifest.json", () => {
     }
   });
 
-  test("mints only the session secret — the four OAuth pairs are registered with a provider", () => {
+  test("mints only the session secret — the five OAuth credentials are registered with a provider", () => {
     // A generated Google client secret authenticates against nothing. It would replace a loud gap
     // with a quiet one.
     expect(manifest.devSecrets).toEqual([{ name: AUTH_SESSION_SECRET, devValue: "random" }]);

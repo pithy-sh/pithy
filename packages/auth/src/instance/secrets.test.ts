@@ -13,6 +13,7 @@ import {
   AUTH_GITHUB_CREDENTIALS,
   AUTH_GOOGLE_CREDENTIALS,
   AUTH_JWKS_DEPENDENT,
+  AUTH_MICROSOFT_CREDENTIALS,
   AUTH_SESSION_SECRET,
   authSecretsRegistry,
   authSecretsRegistryFor,
@@ -20,6 +21,7 @@ import {
   GithubOAuthCredentials,
   GoogleOAuthCredentials,
   inapplicableProviderSecrets,
+  MicrosoftOAuthCredentials,
   sessionSecretOverlapDays,
 } from "./secrets";
 
@@ -50,6 +52,26 @@ describe("provider credential codecs", () => {
     expect(GithubOAuthCredentials.parse(value)).toEqual(value);
   });
 
+  test("Microsoft credentials round-trip, tenant and all", () => {
+    const value = { clientId: "m-id", clientSecret: "m-secret", tenantId: "common" };
+    expect(MicrosoftOAuthCredentials.parse(value)).toEqual(value);
+  });
+
+  test("Microsoft credentials without a tenant are rejected, and so is an empty one", () => {
+    // Better Auth reads `options.tenantId || "common"`, so an empty string would not fail — it would
+    // quietly widen a single-tenant app to every Entra tenant and every personal account.
+    expect(() => MicrosoftOAuthCredentials.parse({ clientId: "m-id", clientSecret: "m-secret" })).toThrow();
+    expect(() =>
+      MicrosoftOAuthCredentials.parse({ clientId: "m-id", clientSecret: "m-secret", tenantId: "" }),
+    ).toThrow();
+  });
+
+  test("every Microsoft credential field says what it is", () => {
+    for (const [key, field] of Object.entries(MicrosoftOAuthCredentials.shape)) {
+      expect(field.description, key).toBeTruthy();
+    }
+  });
+
   test("a credential missing its secret is rejected at the boundary", () => {
     expect(() => FacebookOAuthCredentials.parse({ clientId: "f-id" })).toThrow();
     expect(() => GithubOAuthCredentials.parse({ clientId: "h-id" })).toThrow();
@@ -74,8 +96,13 @@ describe("inapplicableProviderSecrets", () => {
       apple: { enabled: false },
       facebook: { enabled: false },
       github: { enabled: true },
+      microsoft: { enabled: false },
     });
-    expect(Object.keys(off).sort()).toEqual([AUTH_APPLE_CREDENTIALS, AUTH_FACEBOOK_CREDENTIALS]);
+    expect(Object.keys(off).sort()).toEqual([
+      AUTH_APPLE_CREDENTIALS,
+      AUTH_FACEBOOK_CREDENTIALS,
+      AUTH_MICROSOFT_CREDENTIALS,
+    ]);
     expect(off[AUTH_APPLE_CREDENTIALS]).toBe("auth() does not enable the apple provider");
   });
 
@@ -86,10 +113,17 @@ describe("inapplicableProviderSecrets", () => {
       apple: { enabled: false },
       facebook: { enabled: false },
       github: { enabled: false },
+      microsoft: { enabled: false },
     });
     expect(Object.keys(all)).not.toContain(AUTH_SESSION_SECRET);
     expect(Object.keys(all).sort()).toEqual(
-      [AUTH_APPLE_CREDENTIALS, AUTH_FACEBOOK_CREDENTIALS, AUTH_GITHUB_CREDENTIALS, AUTH_GOOGLE_CREDENTIALS].sort(),
+      [
+        AUTH_APPLE_CREDENTIALS,
+        AUTH_FACEBOOK_CREDENTIALS,
+        AUTH_GITHUB_CREDENTIALS,
+        AUTH_GOOGLE_CREDENTIALS,
+        AUTH_MICROSOFT_CREDENTIALS,
+      ].sort(),
     );
   });
 
@@ -101,6 +135,7 @@ describe("inapplicableProviderSecrets", () => {
         apple: { enabled: true },
         facebook: { enabled: true },
         github: { enabled: true },
+        microsoft: { enabled: true },
       }),
     ).toEqual({});
   });
@@ -115,6 +150,7 @@ describe("inapplicableProviderSecrets", () => {
       apple: { enabled: false },
       facebook: { enabled: false },
       github: { enabled: false },
+      microsoft: { enabled: false },
     });
     for (const name of Object.keys(all)) expect(Object.keys(authSecretsRegistry)).toContain(name);
   });
@@ -126,6 +162,9 @@ describe("auth().inapplicableSecrets", () => {
     const composed = auth({ baseURL: "https://example.com", google: { enabled: true } });
     expect(composed.inapplicableSecrets?.[AUTH_GOOGLE_CREDENTIALS]).toBeUndefined();
     expect(composed.inapplicableSecrets?.[AUTH_APPLE_CREDENTIALS]).toBe("auth() does not enable the apple provider");
+    expect(composed.inapplicableSecrets?.[AUTH_MICROSOFT_CREDENTIALS]).toBe(
+      "auth() does not enable the microsoft provider",
+    );
   });
 });
 

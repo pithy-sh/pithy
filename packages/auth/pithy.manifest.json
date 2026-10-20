@@ -72,9 +72,22 @@
         "issuer": "github",
         "documentation": "https://github.com/settings/developers"
       }
+    },
+    {
+      "name": "auth-microsoft-credentials",
+      "origin": {
+        "kind": "obtained",
+        "issuer": "microsoft",
+        "documentation": "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
+      },
+      "rotation": {
+        "kind": "manual",
+        "issuer": "microsoft",
+        "documentation": "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
+      }
     }
   ],
-  "whenToEnable": "Sign-in for your app — passwordless, mobile and web both first-class. Magic link, email OTP, and social sign-in with Google, Apple, Facebook, and GitHub. A successful sign-in mints a long-lived refresh session and short-lived JWT access tokens that verify locally with no database hit. It fills core's identity seams, so every other capability just calls `requireAuth()`. This is the keystone capability; add it first.",
+  "whenToEnable": "Sign-in for your app — passwordless, mobile and web both first-class. Magic link, email OTP, and social sign-in with Google, Apple, Facebook, GitHub, and Microsoft. A successful sign-in mints a long-lived refresh session and short-lived JWT access tokens that verify locally with no database hit. It fills core's identity seams, so every other capability just calls `requireAuth()`. This is the keystone capability; add it first.",
   "scaffold": [
     "Create the session signing secret: `pithy secrets create auth-session-secret`.",
     "Add the `AUTH_RATE_LIMITER` Workers Rate Limiting binding to each wrangler.jsonc env — the coarse per-IP edge guard on the auth routes. For example: `\"ratelimits\": [{ \"name\": \"AUTH_RATE_LIMITER\", \"namespace_id\": \"1001\", \"simple\": { \"limit\": 60, \"period\": 60 } }]`. This is tier 1; Better Auth's per-action limiter (tier 2) is built in.",
@@ -85,6 +98,7 @@
     "Apple (optional): set `apple: { enabled: true }`, then `pithy secrets create auth-apple-credentials` with the typed JSON `{ clientId, clientSecret, appBundleIdentifier? }`. See the package's docs/apple-signin.md.",
     "Facebook (optional): set `facebook: { enabled: true }`, then `pithy secrets create auth-facebook-credentials` with the typed JSON `{ clientId, clientSecret }`. See the package's docs/facebook-oauth.md.",
     "GitHub (optional): set `github: { enabled: true }`, then `pithy secrets create auth-github-credentials` with the typed JSON `{ clientId, clientSecret }`. See the package's docs/github-oauth.md.",
+    "Microsoft (optional): set `microsoft: { enabled: true }`, then `pithy secrets create auth-microsoft-credentials` with the typed JSON `{ clientId, clientSecret, tenantId }`. Add the `xms_edov` optional claim to the ID token in the app registration, or every work and school address is verified by magic link before it links. See the package's docs/microsoft-oauth.md.",
     "Looking a user up and signing them out from a dashboard is a `control-plane` surface, not an admin user, so the routes under /auth/admin are reached with a signed management credential rather than a session. Add `controlplane()` to this Worker and run `pithy dashboard connect`, then grant the connection only what its tooling needs: `auth:users:read` to find people, `auth:devices:read` to walk the device registry, `auth:sessions:revoke` to kill one stolen session, `auth:users:logout` to sign somebody out everywhere, `auth:devices:revoke` for a phone reported lost. Five scopes and not one admin flag — a support tool that looks people up must not also be able to sign the customer base out, and an incident-response tool that kills a session has no business reading every address in the user table. With the seam not composed every /auth/admin route answers `controlplane/not_connected`, and no app session opens any of them whatever it carries. There is deliberately no impersonation: signing in as a user produces a credential indistinguishable from theirs, so it is excluded until it has its own design and security review."
   ],
   "configOptions": [
@@ -97,7 +111,7 @@
       "key": "baseURL",
       "default": "https://api.example.com",
       "constant": "publicOrigin",
-      "describe": "The public origin of this Worker where it is deployed, no trailing slash. OAuth callbacks, JWKS and magic-link URLs are built from it, so it must be reachable. A `dev` composition ignores it and serves on `http://<the host the request arrived at>` — local dev has no TLS and its port is assigned per run, so it is the one address nobody can write down. Set `trustedOrigins` and the social providers (`google`, `apple`, `facebook`, `github`) by hand — see the scaffold steps below."
+      "describe": "The public origin of this Worker where it is deployed, no trailing slash. OAuth callbacks, JWKS and magic-link URLs are built from it, so it must be reachable. A `dev` composition ignores it and serves on `http://<the host the request arrived at>` — local dev has no TLS and its port is assigned per run, so it is the one address nobody can write down. Set `trustedOrigins` and the social providers (`google`, `apple`, `facebook`, `github`, `microsoft`) by hand — see the scaffold steps below."
     },
     {
       "key": "disableSignUp",

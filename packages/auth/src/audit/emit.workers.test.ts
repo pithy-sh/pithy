@@ -221,6 +221,7 @@ function instance<const Plugins extends readonly BetterAuthPlugin[]>(
     apple: { state: "disabled" },
     facebook: { state: "disabled" },
     github: { state: "disabled" },
+    microsoft: { state: "disabled" },
     sendEmail: async (m) => {
       mailbox.push(m.template === "otp" ? { template: "otp", code: m.code } : { template: m.template });
       return { delivery: "queued" };
@@ -230,7 +231,7 @@ function instance<const Plugins extends readonly BetterAuthPlugin[]>(
     verificationExpiresIn: 300,
     otpLength: 6,
     disableSignUp: false,
-    providerSignUp: { google: true, apple: true, facebook: true, github: true },
+    providerSignUp: { google: true, apple: true, facebook: true, github: true, microsoft: true },
     emit,
     plugins,
   });

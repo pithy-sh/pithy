@@ -93,7 +93,7 @@ function instance(secret = SECRET) {
     verificationExpiresIn: 300,
     otpLength: 6,
     disableSignUp: false,
-    providerSignUp: { google: true, apple: true, facebook: true, github: true },
+    providerSignUp: { google: true, apple: true, facebook: true, github: true, microsoft: true },
     emit: async () => {},
     plugins: [],
   });
