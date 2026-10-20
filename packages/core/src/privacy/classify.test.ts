@@ -118,6 +118,22 @@ describe("classifyPrivacy", () => {
     expect(classifyPrivacy(z.object({ root: Node }).describe("t"))).toEqual([]);
   });
 
+  test("names a marked catchall by `*`", () => {
+    expect(classifyPrivacy(z.object({ id: z.string() }).catchall(pii(z.string())))).toEqual([
+      { path: "*", class: "pii" },
+    ]);
+  });
+
+  test("returns on a recursive schema written with a getter", () => {
+    const Category = z.object({
+      label: pii(z.string()),
+      get children() {
+        return z.array(Category);
+      },
+    });
+    expect(classifyPrivacy(Category)).toEqual([{ path: "label", class: "pii" }]);
+  });
+
   test("classifies an adopter-registered class like a built-in", () => {
     const genetic = definePrivacyClass({ name: "genetic_classify" });
     expect(classifyPrivacy(z.object({ marker: genetic(z.string()) }).describe("x"))).toEqual([

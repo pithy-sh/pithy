@@ -18,8 +18,9 @@ import { PRIVACY_META_KEY } from "./classes";
  *
  * ## What a path looks like
  *
- * Object keys join with `.`, an array element is `[]`, a tuple position is `[i]`, a record's value is `*`:
- * `address.line1`, `devices[].token`, `pair[1]`, `notes.*`. A marked root is the empty path.
+ * Object keys join with `.`, an array element is `[]`, a tuple position is `[i]`, a record's value and an
+ * object's catchall are `*`: `address.line1`, `devices[].token`, `pair[1]`, `notes.*`. A marked root is the
+ * empty path.
  *
  * ## What the walk steps into, and what it does not
  *
@@ -29,7 +30,9 @@ import { PRIVACY_META_KEY } from "./classes";
  *
  * **A lazy schema is not followed.** It is how a recursive schema is written, and following its getter is how a
  * walk over one never returns. A marker that lives only behind a `z.lazy` is therefore not classified, and the
- * inventory says which sources it walked rather than implying it walked everything.
+ * inventory says which sources it walked rather than implying it walked everything. `redact` does follow one,
+ * because it walks a value, and a value ends. A recursive object written with a getter is walked once per
+ * branch: reaching the same object again inside itself stops there.
  *
  * **A marked node is not descended into.** `phi(z.object({ … }))` makes the whole value PHI, and `redact` masks
  * it whole; listing its inner fields as well would describe a masking that does not happen.
@@ -54,6 +57,7 @@ interface Def {
   items?: z.ZodType[];
   rest?: z.ZodType | null;
   valueType?: z.ZodType;
+  catchall?: z.ZodType;
   in?: z.ZodType;
   out?: z.ZodType;
 }
@@ -106,55 +110,82 @@ function join(path: string, key: string): string {
   return path === "" ? key : `${path}.${key}`;
 }
 
-/** Walk one node, appending each marked path it holds. */
-function walk(schema: z.ZodType, path: string, out: PrivacyField[]): void {
+/**
+ * What a walk reports. `marked` is called once per marked path. `unmarkedKey`, when given, is called for each
+ * object key whose schema carries no marker, before the walk steps into it — the hook `pithy privacy scan` reads
+ * a field's name through, so the scan and the inventory walk one tree the same way.
+ */
+export interface PrivacyVisitor {
+  marked(path: string, className: string): void;
+  unmarkedKey?(path: string, key: string): void;
+}
+
+/** Walk one node, reporting each marked path it holds. `open` is the objects on the current branch. */
+function walk(schema: z.ZodType, path: string, visitor: PrivacyVisitor, open: Set<z.ZodType>): void {
   const marked = privacyOf(schema);
   if (marked !== null) {
-    out.push({ path, class: marked });
+    visitor.marked(path, marked);
     return;
   }
   let node: z.ZodType = schema;
   for (let inner = unwrapOnce(node); inner; inner = unwrapOnce(node)) node = inner;
   const def = defOf(node);
   switch (def.type) {
-    case "object":
-      for (const [key, field] of Object.entries((node as z.ZodObject).shape))
-        walk(field as z.ZodType, join(path, key), out);
+    case "object": {
+      // A recursive object written with a getter reaches itself again; the second visit has nothing new to say.
+      if (open.has(node)) return;
+      open.add(node);
+      for (const [key, field] of Object.entries((node as z.ZodObject).shape) as [string, z.ZodType][]) {
+        const fieldPath = join(path, key);
+        if (privacyOf(field) === null) visitor.unmarkedKey?.(fieldPath, key);
+        walk(field, fieldPath, visitor, open);
+      }
+      if (def.catchall) walk(def.catchall, join(path, "*"), visitor, open);
+      open.delete(node);
       return;
+    }
     case "array":
-      if (def.element) walk(def.element, `${path}[]`, out);
+      if (def.element) walk(def.element, `${path}[]`, visitor, open);
       return;
     case "set":
-      if (def.valueType) walk(def.valueType, `${path}[]`, out);
+      if (def.valueType) walk(def.valueType, `${path}[]`, visitor, open);
       return;
     case "tuple":
-      for (const [index, item] of (def.items ?? []).entries()) walk(item, `${path}[${index}]`, out);
-      if (def.rest) walk(def.rest, `${path}[]`, out);
+      for (const [index, item] of (def.items ?? []).entries()) walk(item, `${path}[${index}]`, visitor, open);
+      if (def.rest) walk(def.rest, `${path}[]`, visitor, open);
       return;
     case "record":
     case "map":
-      if (def.valueType) walk(def.valueType, join(path, "*"), out);
+      if (def.valueType) walk(def.valueType, join(path, "*"), visitor, open);
       return;
     case "union":
-      for (const option of def.options ?? []) walk(option, path, out);
+      for (const option of def.options ?? []) walk(option, path, visitor, open);
       return;
     case "intersection":
-      if (def.left) walk(def.left, path, out);
-      if (def.right) walk(def.right, path, out);
+      if (def.left) walk(def.left, path, visitor, open);
+      if (def.right) walk(def.right, path, visitor, open);
       return;
     case "pipe":
       // A codec's app side is what the field holds; a plain pipe may carry a marker on either side.
       if (node instanceof z.ZodCodec) {
-        if (def.out) walk(def.out, path, out);
+        if (def.out) walk(def.out, path, visitor, open);
         return;
       }
-      if (def.in) walk(def.in, path, out);
-      if (def.out) walk(def.out, path, out);
+      if (def.in) walk(def.in, path, visitor, open);
+      if (def.out) walk(def.out, path, visitor, open);
       return;
     default:
       // A leaf, a lazy schema, or a kind with no schema inside it. See the module note on `lazy`.
       return;
   }
+}
+
+/**
+ * Walk a schema tree the way {@link classifyPrivacy} does, from `path`, and report to `visitor`. Exported so a
+ * second reader of the tree — the CLI's scan — cannot walk it differently.
+ */
+export function walkPrivacy(schema: z.ZodType, visitor: PrivacyVisitor, path = ""): void {
+  walk(schema, path, visitor, new Set());
 }
 
 /** Classifications already computed, by schema. A schema is immutable, so its answer never changes. */
@@ -169,7 +200,7 @@ export function classifyPrivacy(schema: z.ZodType): PrivacyField[] {
   const cached = classified.get(schema);
   if (cached) return [...cached];
   const found: PrivacyField[] = [];
-  walk(schema, "", found);
+  walkPrivacy(schema, { marked: (path, className) => found.push({ path, class: className }) });
   const seen = new Set<string>();
   const unique = found.filter((field) => {
     const key = `${field.path}\u0000${field.class}`;

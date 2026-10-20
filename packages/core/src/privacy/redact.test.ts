@@ -137,6 +137,36 @@ describe("redact", () => {
     expect(redact(Odd, { value: "x" })).toEqual({ value: "[unregistered_redact]" });
   });
 
+  test("follows a lazy schema, so a recursive one is masked at every depth", () => {
+    interface Node {
+      name: string;
+      diag: string;
+      children: Node[];
+    }
+    const Node: z.ZodType<Node> = z.lazy(() =>
+      z.object({ name: z.string(), diag: phi(z.string()), children: z.array(Node) }),
+    );
+    const Tree = z.object({ root: Node }).describe("A tree.");
+    const tree = { root: { name: "n", diag: "flu", children: [{ name: "m", diag: "cold", children: [] }] } };
+    expect(redact(Tree, tree as never)).toEqual({
+      root: { name: "n", diag: "[phi]", children: [{ name: "m", diag: "[phi]", children: [] }] },
+    });
+  });
+
+  test("masks a key an object's catchall marks", () => {
+    const Bag = z.object({ id: z.string() }).catchall(pii(z.string())).describe("A bag.");
+    expect(redact(Bag, Bag.parse({ id: "1", e: "a@b.c" }))).toEqual({ id: "1", e: "[pii]" });
+  });
+
+  test("applies every union option the value parses as, so a looser option cannot let a marked key through", () => {
+    const Basic = z.object({ id: z.string() });
+    const Full = z.object({ id: z.string(), email: pii(z.string()) });
+    const U = z.union([Basic, Full]).describe("Either.");
+    expect(redact(U, { id: "u1", email: "a@b.c" } as never)).toEqual({ id: "u1", email: "[pii]" });
+    const Prim = z.union([z.string(), pii(z.number())]).describe("A string or a marked number.");
+    expect(redact(Prim, "plain")).toBe("plain");
+  });
+
   test("keeps a key the schema does not name, as it was", () => {
     expect(redact(User, { ...ada, extra: 1 } as typeof ada)).toEqual({
       id: "u_1",

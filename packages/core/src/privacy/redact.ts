@@ -25,11 +25,15 @@ import type { Redacted } from "./types";
  *
  * **The app shape** — what `Schema.parse(row)` returns — not the SQLite row. A codec field marked as a whole is
  * masked whole; a JSON column is walked on its parsed side. `null` and `undefined` stay as they are, because an
- * absent value discloses nothing. A key the schema does not name is kept as it was: the schema is the only
- * thing that can say a field is private, and a parsed object holds no such key anyway.
+ * absent value discloses nothing. A key the schema does not name is redacted by the object's catchall when it
+ * has one, and otherwise kept as it was: the schema is the only thing that can say a field is private, and a
+ * parsed object holds no such key anyway. **A lazy schema is followed**, so a recursive one is masked at every
+ * depth: the walk ends where the value does.
  *
- * **A union** is redacted by the first option the value parses as. When none does, every option's markers are
- * applied, so a key any option marks is masked — the conservative reading of a value the schema cannot place.
+ * **A union** is redacted by every option the value parses as, one after another, so a key any of them marks is
+ * masked. Taking only the first would let a looser object option — one that parses by stripping the key a
+ * stricter option marks — copy that key through. When no option parses, every option's markers are applied: the
+ * conservative reading of a value the schema cannot place.
  *
  * It never mutates its argument, and it never throws on a value that does not match the schema: it masks what it
  * can name and copies the rest.
@@ -46,6 +50,8 @@ interface Def {
   items?: z.ZodType[];
   rest?: z.ZodType | null;
   valueType?: z.ZodType;
+  catchall?: z.ZodType;
+  getter?: () => z.ZodType;
   in?: z.ZodType;
   out?: z.ZodType;
 }
@@ -94,7 +100,7 @@ function redactValue(schema: z.ZodType, value: unknown): unknown {
       const shape = (node as z.ZodObject).shape as Record<string, z.ZodType>;
       const out: Record<string, unknown> = {};
       for (const [key, field] of Object.entries(value)) {
-        const fieldSchema = shape[key];
+        const fieldSchema = Object.hasOwn(shape, key) ? shape[key] : def.catchall;
         out[key] = fieldSchema ? redactValue(fieldSchema, field) : field;
       }
       return out;
@@ -125,10 +131,12 @@ function redactValue(schema: z.ZodType, value: unknown): unknown {
         ? new Map([...value].map(([key, item]) => [key, redactValue(def.valueType as z.ZodType, item)]))
         : value;
     case "union": {
+      // Every option the value parses as, not the first: a looser object option parses a value by stripping the
+      // key a stricter one marks, and redacting by it alone would copy that key through.
       const options = def.options ?? [];
-      const matched = options.find((option) => option.safeParse(value).success);
-      if (matched) return redactValue(matched, value);
-      return options.reduce<unknown>((current, option) => redactValue(option, current), value);
+      const matched = options.filter((option) => option.safeParse(value).success);
+      const applied = matched.length > 0 ? matched : options;
+      return applied.reduce<unknown>((current, option) => redactValue(option, current), value);
     }
     case "intersection": {
       const left = def.left ? redactValue(def.left, value) : value;
@@ -141,6 +149,9 @@ function redactValue(schema: z.ZodType, value: unknown): unknown {
       const target = def.out && defOf(def.out).type !== "transform" ? def.out : def.in;
       return target ? redactValue(target, value) : value;
     }
+    case "lazy":
+      // A lazy schema is how a recursive one is written. Following it here ends, because the value does.
+      return def.getter ? redactValue(def.getter(), value) : value;
     default:
       return value;
   }
