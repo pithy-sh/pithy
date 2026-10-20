@@ -59,6 +59,8 @@ declare module "virtual:pithy/auth" {
           facebook: boolean;
           /** Whether Sign in with GitHub is offered. */
           github: boolean;
+          /** Whether Sign in with Microsoft is offered. */
+          microsoft: boolean;
         };
         /**
          * Whether each offered provider may create an account, from its `allowSignUp` toggle.
@@ -81,6 +83,8 @@ declare module "virtual:pithy/auth" {
           facebook: boolean;
           /** Whether a GitHub sign-in may create an account. */
           github: boolean;
+          /** Whether a Microsoft sign-in may create an account. */
+          microsoft: boolean;
         };
         /** How many digits an email OTP carries. */
         otpLength: number;

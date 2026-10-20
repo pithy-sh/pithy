@@ -23,7 +23,7 @@ export const authConfig = authModule.enabled
   : {
       enabled: false as const,
       basePath: "/auth",
-      providers: { google: false, apple: false, facebook: false, github: false },
+      providers: { google: false, apple: false, facebook: false, github: false, microsoft: false },
       otpLength: 6,
       signUpEnabled: true,
     };

@@ -176,7 +176,7 @@ export interface SignInScreenProps {
  * about Font Awesome below). What you are responsible for is checking your use against the terms
  * linked beside each mark before you ship.
  *
- * **The rules are opposite from one provider to the next, and that is why these are four components
+ * **The rules are opposite from one provider to the next, and that is why these are five components
  * rather than one parameterised `<Mark provider="…" />`.** A shared abstraction would have to encode
  * "unless it is Google" somewhere, and the first tidy-up would lose it. The rule lives beside the
  * asset it governs. Keep it there.
@@ -304,6 +304,28 @@ function FacebookMark(): ReactNode {
 }
 
 /**
+ * Microsoft's four-square logo, at the geometry and colours of the asset Microsoft publishes for this
+ * button — `ms-symbollockup_mssymbol_19.svg`, four `rect`s on a `0 0 21 21` grid, copied as published.
+ *
+ * **Fixed colours, like Google's.** Microsoft's guidelines say "DON'T alter the Microsoft logo", so the
+ * four fills are literals and answer no theme. They also pair the logo with the words: "Sign in with
+ * Microsoft", or "Sign in" where space is short. This screen's `aria-label` says "Continue with
+ * Microsoft"; if you change `.auth__provider` copy, check it against the same page.
+ *
+ * Terms: https://learn.microsoft.com/en-us/entra/identity-platform/howto-add-branding-in-apps
+ */
+function MicrosoftMark(): ReactNode {
+  return (
+    <svg className="auth__mark" width="16" height="16" viewBox="0 0 21 21" aria-hidden="true">
+      <rect x="1" y="1" width="9" height="9" fill="#f25022" />
+      <rect x="1" y="11" width="9" height="9" fill="#00a4ef" />
+      <rect x="11" y="1" width="9" height="9" fill="#7fba00" />
+      <rect x="11" y="11" width="9" height="9" fill="#ffb900" />
+    </svg>
+  );
+}
+
+/**
  * The providers `virtual:pithy/auth` can name, in the order they render, each with its mark.
  *
  * Only the ones enabled in `pithy.config.ts` appear at all — there is no CLI flag for this and never
@@ -315,6 +337,7 @@ const SOCIAL: readonly { id: string; label: string; mark: ReactNode }[] = [
   { id: "github", label: "GitHub", mark: <GithubMark /> },
   { id: "apple", label: "Apple", mark: <AppleMark /> },
   { id: "facebook", label: "Facebook", mark: <FacebookMark /> },
+  { id: "microsoft", label: "Microsoft", mark: <MicrosoftMark /> },
 ];
 
 /**
