@@ -201,6 +201,7 @@ describe("what the walk cannot follow is reported, not skipped", () => {
     "a re-export of a primitive": 'export { execFile } from "node:child_process";\n',
     "Bun's global as a value": 'const runtime = Bun;\nexport function install() {\n  runtime.spawn(["npm"]);\n}\n',
     "a relative module whose specifier is interpolated":
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: this is a fixture's source text, and the `${name}` in it is the template literal the sweep must see.
       "export async function install(name: string) {\n  (await import(`../${name}`)).install();\n}\n",
     "a relative module whose specifier is concatenated":
       'export async function install(name: string) {\n  (await import("../" + name)).install();\n}\n',

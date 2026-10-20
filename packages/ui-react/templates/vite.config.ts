@@ -45,6 +45,7 @@ export default defineConfig({
     // takes the whole config with it — and quoting it instead does not survive, because Biome's
     // `quoteProperties: "asNeeded"` strips redundant quotes on the next `format`, restoring the error.
     // A computed key is the one spelling that is both valid and stable under the formatter.
+    // biome-ignore lint/complexity/useLiteralKeys: the comment above says why a literal key breaks.
     ["worker___PITHY_WORKER__"]: {
       optimizeDeps: {
         rolldownOptions: { output: { advancedChunks: { groups: [{ name: "pithy-deps", test: /.*/ }] } } },

@@ -247,7 +247,7 @@ jobs:
       # in @changesets/cli. Trusted publishing needs npm 11.5.1+ and Node 22.14+, so both are pinned
       # here rather than left to whatever the runner image happens to ship.
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
@@ -332,7 +332,7 @@ jobs:
       # release looks wrong. On a dry run they are the whole output.
       - name: Upload the release records
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-records
           path: .release/
