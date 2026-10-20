@@ -45,6 +45,7 @@ export const SCOPED_SECRETS: SecretFixture<typeof SCOPED_REGISTRY> = {
   "auth-apple-credentials": { clientId: "a", clientSecret: "a" },
   "auth-facebook-credentials": { clientId: "f", clientSecret: "f" },
   "auth-github-credentials": { clientId: "h", clientSecret: "h" },
+  "auth-microsoft-credentials": { clientId: "m", clientSecret: "m", tenantId: "common" },
   "email-link-signing-key": "dev-link-signing-key",
 };
 
@@ -121,7 +122,7 @@ export async function signInScoped(
     verificationExpiresIn: 300,
     otpLength: 6,
     disableSignUp: false,
-    providerSignUp: { google: true, apple: true, facebook: true, github: true },
+    providerSignUp: { google: true, apple: true, facebook: true, github: true, microsoft: true },
     emit: async () => {},
     plugins: [],
   });

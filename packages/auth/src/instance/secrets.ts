@@ -26,12 +26,16 @@ import type { SessionSecretVersions } from "./sessionSecrets";
  *   Read only when the provider is enabled; rotated in the Meta app dashboard, not on our schedule.
  * - `auth-github-credentials` — the GitHub OAuth app client id and secret, as a typed JSON value.
  *   Read only when the provider is enabled; rotated in GitHub Developer settings, not on our schedule.
+ * - `auth-microsoft-credentials` — the Microsoft Entra ID app registration's client id, client secret,
+ *   and tenant, as a typed JSON value. The tenant rides inside because it means nothing apart from the
+ *   registration it belongs to. Rotatable: an Entra client secret expires (24 months at most).
  */
 export const AUTH_SESSION_SECRET = "auth-session-secret";
 export const AUTH_GOOGLE_CREDENTIALS = "auth-google-credentials";
 export const AUTH_APPLE_CREDENTIALS = "auth-apple-credentials";
 export const AUTH_FACEBOOK_CREDENTIALS = "auth-facebook-credentials";
 export const AUTH_GITHUB_CREDENTIALS = "auth-github-credentials";
+export const AUTH_MICROSOFT_CREDENTIALS = "auth-microsoft-credentials";
 
 /**
  * The JWKS private keys, as `auth-session-secret`'s overlap names them (#602).
@@ -146,17 +150,51 @@ export const GithubOAuthCredentials = z
 export type GithubOAuthCredentials = z.infer<typeof GithubOAuthCredentials>;
 
 /**
+ * The Microsoft Entra ID credentials, stored as one typed JSON secret.
+ *
+ * **`tenantId` is required and may not be empty.** Better Auth builds its endpoints from
+ * `options.tenantId || "common"`, so an empty string would not fail: it would quietly open a
+ * single-tenant app to every Entra tenant and every personal account.
+ */
+export const MicrosoftOAuthCredentials = z
+  .object({
+    clientId: z
+      .string()
+      .meta({ multiline: false })
+      .describe(
+        "The Application (client) ID of the Entra ID app registration for this environment. Not secret on its own, but stored with the secret so the set is atomic.",
+      ),
+    clientSecret: z
+      .string()
+      .meta({ multiline: false })
+      .describe(
+        "A client secret value from the same app registration. Expires (24 months at most), so rotate it on schedule. Never committed, never an env literal.",
+      ),
+    tenantId: z
+      .string()
+      .min(1)
+      .meta({ multiline: false })
+      .describe(
+        "Who may sign in: a directory (tenant) ID for one organization, `organizations` for any work or school account, `consumers` for personal accounts only, or `common` for both.",
+      ),
+  })
+  .describe("A Microsoft Entra ID credential set (`clientId` + `clientSecret` + `tenantId`) for one environment.");
+export type MicrosoftOAuthCredentials = z.infer<typeof MicrosoftOAuthCredentials>;
+
+/**
  * Where a human goes for each OAuth credential pair, and where the same human rotates it.
  *
  * **The settings page, not the product homepage.** The point is to end a search, not to start one — and
- * these four are the case with no command and no possible one, so the link is the entire remedy the kit
- * can offer. Named constants because origin and rotation are the same page for all four, and two copies
+ * these five are the case with no command and no possible one, so the link is the entire remedy the kit
+ * can offer. Named constants because origin and rotation are the same page for all five, and two copies
  * of a URL is one that goes stale.
  */
 const GOOGLE_CREDENTIALS_PAGE = "https://console.cloud.google.com/apis/credentials";
 const APPLE_KEYS_PAGE = "https://developer.apple.com/account/resources/authkeys/list";
 const FACEBOOK_APPS_PAGE = "https://developers.facebook.com/apps/";
 const GITHUB_OAUTH_APPS_PAGE = "https://github.com/settings/developers";
+const MICROSOFT_APP_REGISTRATIONS_PAGE =
+  "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade";
 
 export const authSecretsRegistry = defineSecretRegistry({
   // `devValue` is the whole difference between an app that runs after `pithy add auth` and one that
@@ -176,7 +214,7 @@ export const authSecretsRegistry = defineSecretRegistry({
     // its own from the configured `sessionExpiresIn`; this is what a module reading the secret sees.
     overlap: { days: 7, minimumDays: 7, reencrypt: [AUTH_JWKS_DEPENDENT] },
   },
-  // The four below are `obtained` and rotate `manual`, and each names the page rather than the product.
+  // The five below are `obtained` and rotate `manual`, and each names the page rather than the product.
   // An adopter searching Google's console for which of four credential types "client secret" means is the
   // gap this closes — and nothing will ever mint one, so saying where is the whole of what the kit can do.
   [AUTH_GOOGLE_CREDENTIALS]: {
@@ -214,6 +252,15 @@ export const authSecretsRegistry = defineSecretRegistry({
     schema: GithubOAuthCredentials,
     origin: { kind: "obtained", issuer: "github", documentation: GITHUB_OAUTH_APPS_PAGE },
     rotation: { kind: "manual", issuer: "github", documentation: GITHUB_OAUTH_APPS_PAGE },
+  },
+  [AUTH_MICROSOFT_CREDENTIALS]: {
+    backend: "d1",
+    scope: "environment",
+    rotatable: true,
+    valueType: "json",
+    schema: MicrosoftOAuthCredentials,
+    origin: { kind: "obtained", issuer: "microsoft", documentation: MICROSOFT_APP_REGISTRATIONS_PAGE },
+    rotation: { kind: "manual", issuer: "microsoft", documentation: MICROSOFT_APP_REGISTRATIONS_PAGE },
   },
 });
 
@@ -272,15 +319,16 @@ const PROVIDER_CREDENTIALS = [
   ["apple", AUTH_APPLE_CREDENTIALS],
   ["facebook", AUTH_FACEBOOK_CREDENTIALS],
   ["github", AUTH_GITHUB_CREDENTIALS],
+  ["microsoft", AUTH_MICROSOFT_CREDENTIALS],
 ] as const;
 
-/** The four toggles this reads off the resolved `AuthConfig` — nothing else about it is its business. */
+/** The five toggles this reads off the resolved `AuthConfig` — nothing else about it is its business. */
 export type AuthProviderToggles = Record<(typeof PROVIDER_CREDENTIALS)[number][0], { enabled: boolean }>;
 
 /**
  * **The provider credentials this composition cannot reach**, as the `inapplicableSecrets` contribution.
  *
- * Auth declares four credentials whether or not a project runs four providers, so a project on Google
+ * Auth declares five credentials whether or not a project runs five providers, so a project on Google
  * and GitHub carries two secrets nothing will ever read. `pithy doctor` asked for them every run under
  * *"fine to leave until you need it"* — softening, not silence, and "until you need it" is wrong about a
  * provider the configuration has not enabled.
@@ -338,4 +386,10 @@ export async function resolveFacebookCredentials(env: SecretsStoreEnv): Promise<
 export async function resolveGithubCredentials(env: SecretsStoreEnv): Promise<GithubOAuthCredentials> {
   const secrets = await sharedSecretsStore(env, authSecretsRegistry);
   return secrets.get(AUTH_GITHUB_CREDENTIALS);
+}
+
+/** Resolve the Microsoft Entra ID credentials for this invocation (only call when Microsoft is enabled). */
+export async function resolveMicrosoftCredentials(env: SecretsStoreEnv): Promise<MicrosoftOAuthCredentials> {
+  const secrets = await sharedSecretsStore(env, authSecretsRegistry);
+  return secrets.get(AUTH_MICROSOFT_CREDENTIALS);
 }

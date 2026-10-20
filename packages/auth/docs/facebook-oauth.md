@@ -59,7 +59,13 @@ auth({
 **Both credentials travel as one typed JSON secret.** The app id and app secret are stored together — through `@pithy-sh/secrets`, never committed, never an env literal — as `auth-facebook-credentials`:
 
 ```
-pithy secrets create auth-facebook-credentials --json '{"clientId":"<your-app-id>","clientSecret":"<your-app-secret>"}'
+pithy secrets create auth-facebook-credentials --env <env>
+```
+
+At a terminal it asks for the value, masked. An agent or a script pipes the JSON document in on stdin instead. `--json` only shapes the output, and the value is never read from a flag:
+
+```
+printf '%s' '{"clientId":"<your-app-id>","clientSecret":"<your-app-secret>"}' | pithy secrets create auth-facebook-credentials --env <env>
 ```
 
 Enable Facebook in config with `auth({ facebook: { enabled: true } })` — no credential values in the config.

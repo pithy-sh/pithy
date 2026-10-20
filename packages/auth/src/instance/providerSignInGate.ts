@@ -65,14 +65,15 @@ import { NEUTRAL_PROVIDER_REFUSAL } from "../http/providerRefusal";
  * ## Why a wrapper, and not a `getUserInfo` supplied in the config block
  *
  * `options.getUserInfo` short-circuits each provider's own resolver on its first line
- * (`social-providers/google.mjs:118`, `facebook.mjs:93`, `apple.mjs:62`, `github.mjs:65`), so supplying
- * one means reimplementing the profile fetch it replaced — Google's id-token decode, Facebook's
- * access-token-owner check. `./githubUserInfo.ts` already records what that costs: replacing GitHub's
- * resolver silently dropped `name` and `image`, which had to be re-derived. Wrapping calls the
- * dependency's own resolver and reads its result, so nothing is reimplemented and nothing reconstructed.
+ * (`social-providers/google.mjs:118`, `facebook.mjs:93`, `apple.mjs:62`, `github.mjs:65`,
+ * `microsoft-entra-id.mjs:99`), so supplying one means reimplementing the profile fetch it replaced —
+ * Google's id-token decode, Facebook's access-token-owner check. `./githubUserInfo.ts` already records
+ * what that costs: replacing GitHub's resolver silently dropped `name` and `image`, which had to be
+ * re-derived. Wrapping calls the dependency's own resolver and reads its result, so nothing is
+ * reimplemented and nothing reconstructed.
  *
  * **And it is the wrapping that makes the predicate read the right flag.** `mapProfileToUser` is applied
- * *inside* each provider's own `getUserInfo` — every one of the four spreads `...userMap` over the
+ * *inside* each provider's own `getUserInfo` — every one of the five spreads `...userMap` over the
  * `emailVerified` it computed — so the value this module reads is by construction the **effective** flag.
  * Facebook is the trap that makes this load-bearing: it sits outside `trustedProviders` like GitHub, but
  * `./auth.ts` asserts its address as verified with a documented reason, and its OAuth response carries no

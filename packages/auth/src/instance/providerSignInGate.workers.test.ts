@@ -21,6 +21,7 @@ import { createRateLimitMiddleware } from "../http/rateLimit";
 import { createAuthRoutes } from "../http/routes";
 import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
 import { AUTH_MIGRATIONS } from "../migrations/set";
+import { MICROSOFT_PERSONAL_ACCOUNTS_TENANT_ID } from "./microsoftEmail";
 import { PROVIDER_SIGN_IN_REFUSAL_REASONS } from "./providerSignInGate";
 import { authSecretsRegistry } from "./secrets";
 
@@ -47,9 +48,9 @@ import { authSecretsRegistry } from "./secrets";
  *   access-token-owner check against `debug_token`, GitHub's `/user` + `/user/emails` pair all run for
  *   real, which is what makes the effective `emailVerified` this suite reads the effective one.
  *
- * **All four the kit serves, and not a list of two.** The gate wraps whatever is on `ctx.socialProviders`,
- * so the claim "every provider" is only worth what it is driven against — google, apple, facebook and
- * github, each through its own resolver, each with its own account subject and issuer.
+ * **All five the kit serves, and not a list of two.** The gate wraps whatever is on `ctx.socialProviders`,
+ * so the claim "every provider" is only worth what it is driven against — google, apple, facebook, github
+ * and microsoft, each through its own resolver, each with its own account subject and issuer.
  *
  * **Facebook is the case that would not survive a shortcut.** Its `/me` profile carries no
  * `email_verified` field at all — the stub omits it deliberately, because Facebook's really does — so a
@@ -80,6 +81,7 @@ const SECRETS: SecretFixture<typeof authSecretsRegistry> = {
   "auth-facebook-credentials": { clientId: "facebook-client", clientSecret: "facebook-secret" },
   "auth-github-credentials": { clientId: "github-client", clientSecret: "github-secret" },
   "auth-apple-credentials": { clientId: "apple-client", clientSecret: "apple-secret" },
+  "auth-microsoft-credentials": { clientId: "microsoft-client", clientSecret: "microsoft-secret", tenantId: "common" },
 };
 
 /** Where a sign-in lands, and where a refusal lands. Distinct, so a redirect says which happened. */
@@ -115,7 +117,7 @@ interface ProviderUnderTest {
    * Whether an unverified address at this provider can reach row 3 at all — the issue's own matrix, as
    * an executable claim rather than a table in prose.
    *
-   * `false` for three of the four, for two different reasons. **Google and Apple** are in
+   * `false` for three of the five, for two different reasons. **Google and Apple** are in
    * `trustedProviders` (`./auth.ts`), which short-circuits the verified half of the linking gate.
    * **Facebook** is not, and behaves as though it were: `mapProfileToUser` forces `emailVerified: true`
    * with the reason written beside it, because its OAuth response carries no such claim and its Graph
@@ -130,6 +132,44 @@ interface ProviderUnderTest {
 /** base64url of a JSON value, for the unsigned id token Google's resolver decodes (it never verifies it). */
 function b64url(value: unknown): string {
   return btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** A work tenant's id: what any Entra directory, hostile or not, signs its users in under. */
+const WORK_TENANT = "72f988bf-86f1-41af-91ab-2d7cd011db47";
+
+/**
+ * Microsoft, with the ID token's claims open to the case.
+ *
+ * `identity.verified` is spoken through `xms_edov`, the one claim of a work token that says the tenant
+ * owns the address's domain — so `verified: false` is the shape every tenant without the optional claim
+ * produces, and the shape a hostile admin produces for somebody else's address.
+ */
+function microsoftWith(claims: (identity: Identity) => Record<string, unknown> = () => ({})): ProviderUnderTest {
+  return {
+    id: "microsoft",
+    reachesRowThree: true,
+    routes: (identity) => [
+      {
+        prefix: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        body: {
+          access_token: "eyJ.microsoft.test",
+          token_type: "Bearer",
+          id_token: [
+            b64url({ alg: "RS256", kid: "k" }),
+            b64url({
+              oid: identity.subject,
+              tid: WORK_TENANT,
+              email: identity.address,
+              name: "Someone",
+              ...(identity.verified ? { xms_edov: true } : {}),
+              ...claims(identity),
+            }),
+            "not-a-signature",
+          ].join("."),
+        },
+      },
+    ],
+  };
 }
 
 const PROVIDERS: readonly ProviderUnderTest[] = [
@@ -224,6 +264,9 @@ const PROVIDERS: readonly ProviderUnderTest[] = [
       },
     ],
   },
+  // Not trusted, and reaching row 3 for real: an Entra address is verified only by `xms_edov` or the
+  // personal-accounts tenant, so an unverified one is what most work tokens are.
+  microsoftWith(),
 ];
 
 function appEnv(): Record<string, unknown> {
@@ -235,7 +278,7 @@ function appEnv(): Record<string, unknown> {
 
 /** What a suite run varies about the app it builds. Everything else is the capability's own default. */
 interface AppOptions {
-  /** The per-provider sign-up policy, applied to all three. `true` is the kit's default. */
+  /** The per-provider sign-up policy, applied to every provider. `true` is the kit's default. */
   allowSignUp?: boolean;
   /**
    * An adopter's own GitHub resolver, or `undefined` for the kit's.
@@ -259,6 +302,7 @@ function buildWiring(options: AppOptions): AuthWiring {
       apple: toggle,
       facebook: toggle,
       github: toggle,
+      microsoft: toggle,
       plugins: [],
     }),
     resolveGithubUserInfo: options.githubUserInfo,
@@ -420,6 +464,60 @@ function deniedReason(outcome: Outcome): unknown {
   return (denial?.metadata as { reason?: unknown } | undefined)?.reason;
 }
 
+/**
+ * A session the way a reader gets one: ask for a code, read it out of the enqueued job, post it back.
+ *
+ * It is also the challenge's first half. An email OTP proves the address exactly as a magic link does,
+ * and it creates the account when there is none, so it is the one helper both flows below need.
+ */
+async function otpSession(app: App, address: string): Promise<string> {
+  const sent = await app.request("/auth/email-otp/send-verification-otp", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "http://localhost" },
+    body: JSON.stringify({ email: address, type: "sign-in" }),
+  });
+  expect(sent.status).toBe(200);
+  const job = await env.DB.prepare(
+    "select payload from pithy_email_jobs where to_address = ? and template = 'otp' order by rowid desc limit 1",
+  )
+    .bind(address)
+    .first<{ payload: string }>();
+  const code = (JSON.parse(job?.payload ?? "{}") as { code?: string }).code;
+  expect(typeof code).toBe("string");
+
+  const signedIn = await app.request("/auth/sign-in/email-otp", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "http://localhost" },
+    body: JSON.stringify({ email: address, otp: code }),
+  });
+  expect(signedIn.status).toBe(200);
+  return cookieHeader(signedIn);
+}
+
+/** Connect a provider from inside the account `session` belongs to, and answer where the callback sent it. */
+async function linkFromInside(
+  app: App,
+  session: string,
+  provider: ProviderUnderTest,
+  identity: Identity,
+): Promise<string | null> {
+  stubProvider(provider, identity);
+  const started = await app.request("/auth/link-social", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "http://localhost", cookie: session },
+    body: JSON.stringify({ provider: provider.id, callbackURL: CALLBACK_URL, errorCallbackURL: ERROR_CALLBACK }),
+  });
+  expect(started.status).toBe(200);
+  const authorize = (await started.json<{ url?: string }>()).url ?? "";
+  const state = new URL(authorize).searchParams.get("state") ?? "";
+
+  const linked = await app.request(`/auth/callback/${provider.id}?code=the-code&state=${encodeURIComponent(state)}`, {
+    redirect: "manual",
+    headers: { cookie: [session, cookieHeader(started)].filter(Boolean).join("; ") },
+  });
+  return linked.headers.get("location");
+}
+
 beforeEach(async () => {
   for (const table of [...TABLES, "pithy_migrations", "pithy_migrations_lock"]) {
     await env.DB.prepare(`drop table if exists ${table}`).run();
@@ -532,7 +630,7 @@ describe("github, an attached identity whose address the provider will not vouch
 /**
  * The issue's provider matrix, asserted rather than restated.
  *
- * Three of the four cannot reach row 3, and it matters that they cannot: if one of them *did*, the
+ * Three of the five cannot reach row 3, and it matters that they cannot: if one of them *did*, the
  * predicate would have to refuse a sign-in that works today. Google and Apple are trusted, so the
  * verified half of the linking gate is short-circuited; Facebook is not trusted and behaves as though it
  * were, because `./auth.ts` forces the flag through `mapProfileToUser`. Either way the answer is a
@@ -761,49 +859,19 @@ describe("linking from inside the account", () => {
     if (!github) throw new Error("expected the github provider descriptor");
     await seedUser(ADDRESS);
 
-    // A session the way a reader gets one: ask for a code, read it out of the enqueued job, post it back.
-    const sent = await app.request("/auth/email-otp/send-verification-otp", {
-      method: "POST",
-      headers: { "content-type": "application/json", origin: "http://localhost" },
-      body: JSON.stringify({ email: ADDRESS, type: "sign-in" }),
-    });
-    expect(sent.status).toBe(200);
-    const job = await env.DB.prepare(
-      "select payload from pithy_email_jobs where to_address = ? and template = 'otp' order by rowid desc limit 1",
-    )
-      .bind(ADDRESS)
-      .first<{ payload: string }>();
-    const code = (JSON.parse(job?.payload ?? "{}") as { code?: string }).code;
-    expect(typeof code).toBe("string");
-
-    const signedIn = await app.request("/auth/sign-in/email-otp", {
-      method: "POST",
-      headers: { "content-type": "application/json", origin: "http://localhost" },
-      body: JSON.stringify({ email: ADDRESS, otp: code }),
-    });
-    expect(signedIn.status).toBe(200);
-    const session = cookieHeader(signedIn);
+    const session = await otpSession(app, ADDRESS);
 
     // Now link a GitHub identity whose address is somebody else's entirely. Verified at GitHub, because
     // that is the boundary `./githubUserInfo.ts` holds on *both* flows — the address is irrelevant here,
     // the flag is not, and Better Auth's own `if (link)` branch refuses an untrusted provider that did
     // not vouch for one (`callback.mjs:164`). What this case is about is the address.
-    stubProvider(github, { subject: "subject-link", address: "other@example.test", verified: true });
-    const started = await app.request("/auth/link-social", {
-      method: "POST",
-      headers: { "content-type": "application/json", origin: "http://localhost", cookie: session },
-      body: JSON.stringify({ provider: "github", callbackURL: CALLBACK_URL }),
-    });
-    expect(started.status).toBe(200);
-    const authorize = (await started.json<{ url?: string }>()).url ?? "";
-    const state = new URL(authorize).searchParams.get("state") ?? "";
-
-    const linked = await app.request(`/auth/callback/github?code=the-code&state=${encodeURIComponent(state)}`, {
-      redirect: "manual",
-      headers: { cookie: [session, cookieHeader(started)].filter(Boolean).join("; ") },
+    const location = await linkFromInside(app, session, github, {
+      subject: "subject-link",
+      address: "other@example.test",
+      verified: true,
     });
 
-    expect(linked.headers.get("location")).toBe(CALLBACK_URL);
+    expect(location).toBe(CALLBACK_URL);
     expect(await accountsFor("github")).toEqual([
       { user_id: "user-member@example.test-v", account_id: "subject-link" },
     ]);
@@ -864,5 +932,140 @@ describe("a local row the provider cannot vouch for is not something the kit's o
     expect(outcome.location).toBe(`${ERROR_CALLBACK}?error=${NEUTRAL_PROVIDER_REFUSAL}`);
     const users = await env.DB.prepare("select count(*) as n from pithy_auth_users").first<{ n: number }>();
     expect(users?.n).toBe(0);
+  });
+});
+
+/**
+ * Microsoft's verify-to-link challenge, end to end (#262).
+ *
+ * Entra ID cannot vouch for an email it did not verify, so a Microsoft address is unverified unless the
+ * token carries `xms_edov: true` or the personal-accounts tenant. An unverified one neither links nor
+ * mints a rival account: it is refused with the neutral code above. The remedy is the challenge — a
+ * magic link (an OTP here, which proves the address the same way) to that address, then connecting
+ * Microsoft from inside. That Microsoft identity naming the address the account holds is verified by the
+ * kit, and links. From then on it signs in on `oid` alone, row 1, and the address never matters again.
+ *
+ * Driven for both shapes the issue names: an address that already has an account, and a first-time one.
+ */
+describe("microsoft, the verify-to-link challenge", () => {
+  const microsoft = microsoftWith();
+  const UNVERIFIED: Identity = { subject: "oid-unverified", address: ADDRESS, verified: false };
+
+  test("an existing account: refused, then verified by OTP, then linked, then signs in on its own", async () => {
+    const userId = await seedUser(ADDRESS);
+    const app = buildApp();
+
+    const refused = await signInWith(app, microsoft, UNVERIFIED);
+    expect(refused.location).toBe(`${ERROR_CALLBACK}?error=${NEUTRAL_PROVIDER_REFUSAL}`);
+    expect(await accountsFor("microsoft")).toEqual([]);
+    expect(await sessionCount()).toBe(0);
+
+    const session = await otpSession(app, ADDRESS);
+    expect(await linkFromInside(app, session, microsoft, UNVERIFIED)).toBe(CALLBACK_URL);
+    expect(await accountsFor("microsoft")).toEqual([{ user_id: userId, account_id: "oid-unverified" }]);
+
+    // Signed out, the same unverified token now signs straight in: the identity is attached.
+    const again = await signInWith(buildApp(), microsoft, UNVERIFIED);
+    expect(again.location).toBe(CALLBACK_URL);
+    const users = await env.DB.prepare("select count(*) as n from pithy_auth_users").first<{ n: number }>();
+    expect(users?.n).toBe(1);
+  });
+
+  test("a first-time sign-up: refused and nothing minted, then the OTP creates the account, then linked", async () => {
+    const app = buildApp();
+
+    const refused = await signInWith(app, microsoft, UNVERIFIED);
+    expect(refused.location).toBe(`${ERROR_CALLBACK}?error=${NEUTRAL_PROVIDER_REFUSAL}`);
+    const before = await env.DB.prepare("select count(*) as n from pithy_auth_users").first<{ n: number }>();
+    expect(before?.n).toBe(0);
+
+    const session = await otpSession(app, ADDRESS);
+    expect(await linkFromInside(app, session, microsoft, UNVERIFIED)).toBe(CALLBACK_URL);
+    const users = await env.DB.prepare("select id, email, email_verified from pithy_auth_users").all<{
+      id: string;
+      email: string;
+      email_verified: number;
+    }>();
+    expect(users.results.map(({ email, email_verified }) => ({ email, email_verified }))).toEqual([
+      { email: ADDRESS, email_verified: 1 },
+    ]);
+    expect(await accountsFor("microsoft")).toEqual([{ user_id: users.results[0]?.id, account_id: "oid-unverified" }]);
+  });
+
+  test("the address is matched without regard to case, as the account stores it", async () => {
+    const userId = await seedUser(ADDRESS);
+    const app = buildApp();
+    const session = await otpSession(app, ADDRESS);
+
+    const location = await linkFromInside(app, session, microsoft, { ...UNVERIFIED, address: ADDRESS.toUpperCase() });
+
+    expect(location).toBe(CALLBACK_URL);
+    expect(await accountsFor("microsoft")).toEqual([{ user_id: userId, account_id: "oid-unverified" }]);
+  });
+
+  test("from inside, an unverified address that is not the account's own is refused, and nothing links", async () => {
+    // The challenge verified one address. A tenant's claim about any other is still the tenant's word.
+    await seedUser(ADDRESS);
+    const app = buildApp();
+    const session = await otpSession(app, ADDRESS);
+
+    const location = await linkFromInside(app, session, microsoft, {
+      subject: "oid-other",
+      address: "ceo@victim.test",
+      verified: false,
+    });
+
+    // Better Auth's link branch refuses it as `unable_to_link_account`, and `../http/providerRefusal`
+    // carries that to the screen as the one neutral code, like every provider refusal.
+    expect(location).toBe(`${ERROR_CALLBACK}?error=${NEUTRAL_PROVIDER_REFUSAL}`);
+    expect(await accountsFor("microsoft")).toEqual([]);
+  });
+
+  test("a forged link in the caller's additionalData buys no verification", async () => {
+    // `generateState` assigns `link` after spreading `additionalData`, so a sign-in carries none. Planted
+    // here as well as above, because the email rule reads the same field the gate does.
+    const userId = await seedUser(ADDRESS);
+    const outcome = await signInWith(buildApp(), microsoft, UNVERIFIED, {
+      additionalData: { link: { email: ADDRESS, userId } },
+    });
+
+    expect(outcome.location).toBe(`${ERROR_CALLBACK}?error=${NEUTRAL_PROVIDER_REFUSAL}`);
+    expect(await accountsFor("microsoft")).toEqual([]);
+  });
+
+  test("a personal Microsoft account links on its tenant alone, with no xms_edov", async () => {
+    const userId = await seedUser(ADDRESS);
+    const personal = microsoftWith(() => ({ tid: MICROSOFT_PERSONAL_ACCOUNTS_TENANT_ID }));
+
+    const outcome = await signInWith(buildApp(), personal, UNVERIFIED);
+
+    expect(outcome.location).toBe(CALLBACK_URL);
+    expect(await accountsFor("microsoft")).toEqual([{ user_id: userId, account_id: "oid-unverified" }]);
+  });
+
+  test.each([
+    ["the string 'true'", "true"],
+    ["the number 1", 1],
+    ["false", false],
+  ])("xms_edov as %s is not verification, and nothing links", async (_label, value) => {
+    await seedUser(ADDRESS);
+    const lookalike = microsoftWith(() => ({ xms_edov: value }));
+
+    const outcome = await signInWith(buildApp(), lookalike, UNVERIFIED);
+
+    expect(outcome.location).toBe(`${ERROR_CALLBACK}?error=${NEUTRAL_PROVIDER_REFUSAL}`);
+    expect(await accountsFor("microsoft")).toEqual([]);
+  });
+
+  test("email_verified true, which Entra does not issue for work accounts, is not honored", async () => {
+    // Better Auth's own default reads it. The kit's mapper is spread over that default and always states
+    // the flag, so a token carrying it is decided by the rule like any other.
+    await seedUser(ADDRESS);
+    const claimed = microsoftWith(() => ({ email_verified: true, verified_primary_email: [ADDRESS] }));
+
+    const outcome = await signInWith(buildApp(), claimed, UNVERIFIED);
+
+    expect(outcome.location).toBe(`${ERROR_CALLBACK}?error=${NEUTRAL_PROVIDER_REFUSAL}`);
+    expect(await accountsFor("microsoft")).toEqual([]);
   });
 });

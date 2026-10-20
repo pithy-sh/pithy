@@ -19,6 +19,7 @@ import {
   resolveFacebookCredentials,
   resolveGithubCredentials,
   resolveGoogleCredentials,
+  resolveMicrosoftCredentials,
   resolveSessionSecrets,
 } from "../instance/secrets";
 import { baseURLResolver } from "./baseUrl";
@@ -87,7 +88,7 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
     });
   }
   const env = c.env as unknown as AuthEnv;
-  // Secret resolutions hit the same per-invocation cache; run them concurrently. Five reads, and they
+  // Secret resolutions hit the same per-invocation cache; run them concurrently. Six reads, and they
   // are not alike — which is the whole of #381.
   //
   // `resolveSessionSecret` is what an auth instance *is*: nothing signs a session without it, so its
@@ -105,12 +106,13 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
   //
   // A held failure belongs to its own secret (#170), so an unreadable provider credential does not
   // disturb the session secret's own read, and a *disabled* provider never calls `.get()` at all.
-  const [sessionSecrets, google, apple, facebook, github] = await Promise.all([
+  const [sessionSecrets, google, apple, facebook, github, microsoft] = await Promise.all([
     resolveSessionSecrets(env),
     resolveProvider(cfg.google.enabled, () => resolveGoogleCredentials(env)),
     resolveProvider(cfg.apple.enabled, () => resolveAppleCredentials(env)),
     resolveProvider(cfg.facebook.enabled, () => resolveFacebookCredentials(env)),
     resolveProvider(cfg.github.enabled, () => resolveGithubCredentials(env)),
+    resolveProvider(cfg.microsoft.enabled, () => resolveMicrosoftCredentials(env)),
   ]);
   const expiresMinutes = Math.max(1, Math.round(cfg.verificationExpiresIn / 60));
   const d1 = resolveDb(c.env, cfg.database);
@@ -161,6 +163,7 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
     apple,
     facebook,
     github,
+    microsoft,
     sendEmail: makeSendAuthEmail(
       (input) => enqueueEmail(env, input),
       expiresMinutes,
@@ -179,6 +182,7 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
       apple: cfg.apple.allowSignUp,
       facebook: cfg.facebook.allowSignUp,
       github: cfg.github.allowSignUp,
+      microsoft: cfg.microsoft.allowSignUp,
     },
     ...(wiring.resolveGithubUserInfo ? { resolveGithubUserInfo: wiring.resolveGithubUserInfo } : {}),
     // Read the emit seam lazily so a later-composed audit capability is honored regardless of the

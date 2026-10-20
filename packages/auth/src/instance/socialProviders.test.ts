@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { type AuthInstanceDeps, isUnverifiedSignup, socialProviders } from "./auth";
+import { type AuthInstanceDeps, isUnverifiedSignup, socialProviders, TRUSTED_PROVIDERS } from "./auth";
+import { microsoftProfileToUser } from "./microsoftEmail";
 import { NO_SOCIAL_PROVIDERS, type ResolvedProvider, type ResolvedProviders } from "./providers";
 
 /**
@@ -14,7 +15,7 @@ function providers(slice: Partial<ResolvedProviders>, signUp: Partial<Record<str
     ...NO_SOCIAL_PROVIDERS,
     ...slice,
     // Every provider may create an account unless a case says otherwise — the config default.
-    providerSignUp: { google: true, apple: true, facebook: true, github: true, ...signUp },
+    providerSignUp: { google: true, apple: true, facebook: true, github: true, microsoft: true, ...signUp },
   } as unknown as AuthInstanceDeps);
 }
 
@@ -74,6 +75,27 @@ describe("socialProviders() branch matrix", () => {
     expect(out.github).not.toHaveProperty("disableSignUp");
   });
 
+  test("microsoft → the tenant from its credential, no profile photo, and the kit's own email rule", () => {
+    const out = providers({
+      microsoft: ready({ clientId: "m-id", clientSecret: "m-secret", tenantId: "organizations" }),
+    }) as never as { microsoft: Record<string, unknown> };
+    expect(out.microsoft).toEqual({
+      clientId: "m-id",
+      clientSecret: "m-secret",
+      tenantId: "organizations",
+      // Better Auth's photo is a `data:image/jpeg;base64, …` with a space after the comma, which the kit's
+      // stored-image rule refuses, so every one fetched from Graph would be dropped on the user create.
+      disableProfilePhoto: true,
+      mapProfileToUser: microsoftProfileToUser,
+    });
+  });
+
+  test("microsoft's email is never trusted by name: it is absent from trustedProviders", () => {
+    // Entra ID cannot vouch for an email it did not verify, so the flag is the rule's to set, per sign-in.
+    expect(TRUSTED_PROVIDERS).toEqual(["google", "apple"]);
+    expect(TRUSTED_PROVIDERS).not.toContain("microsoft");
+  });
+
   test("every provider honors allowSignUp, not just the one anybody would test", () => {
     // The toggle is on the shared `ProviderToggle`, so it is writable for all four — and a policy the
     // config accepts while the instance ignores it is worse than one never offered. It shipped
@@ -84,10 +106,11 @@ describe("socialProviders() branch matrix", () => {
         apple: ready({ clientId: "a", clientSecret: "as" }),
         facebook: ready({ clientId: "f", clientSecret: "fs" }),
         github: ready({ clientId: "h", clientSecret: "hs" }),
+        microsoft: ready({ clientId: "m", clientSecret: "ms", tenantId: "common" }),
       },
-      { google: false, apple: false, facebook: false, github: false },
+      { google: false, apple: false, facebook: false, github: false, microsoft: false },
     ) as never as Record<string, Record<string, unknown>>;
-    for (const id of ["google", "apple", "facebook", "github"]) {
+    for (const id of ["google", "apple", "facebook", "github", "microsoft"]) {
       expect(out[id]?.disableSignUp, id).toBe(true);
     }
   });
@@ -98,8 +121,9 @@ describe("socialProviders() branch matrix", () => {
       apple: ready({ clientId: "a", clientSecret: "as" }),
       facebook: ready({ clientId: "f", clientSecret: "fs" }),
       github: ready({ clientId: "h", clientSecret: "hs" }),
+      microsoft: ready({ clientId: "m", clientSecret: "ms", tenantId: "common" }),
     }) as never as Record<string, Record<string, unknown>>;
-    for (const id of ["google", "apple", "facebook", "github"]) {
+    for (const id of ["google", "apple", "facebook", "github", "microsoft"]) {
       expect(out[id], id).not.toHaveProperty("disableSignUp");
     }
   });
@@ -121,7 +145,7 @@ describe("socialProviders() branch matrix", () => {
     const out = socialProviders({
       ...NO_SOCIAL_PROVIDERS,
       github: ready({ clientId: "h-id", clientSecret: "h-secret" }),
-      providerSignUp: { google: true, apple: true, facebook: true, github: true },
+      providerSignUp: { google: true, apple: true, facebook: true, github: true, microsoft: true },
       resolveGithubUserInfo: mine,
     } as unknown as AuthInstanceDeps) as never as { github: Record<string, unknown> };
     expect(out.github.getUserInfo).toBe(mine);
@@ -134,8 +158,9 @@ describe("socialProviders() branch matrix", () => {
       apple: ready({ clientId: "a", clientSecret: "as" }),
       facebook: ready({ clientId: "f", clientSecret: "fs" }),
       github: ready({ clientId: "h", clientSecret: "hs" }),
+      microsoft: ready({ clientId: "m", clientSecret: "ms", tenantId: "common" }),
     });
-    expect(Object.keys(out ?? {}).sort()).toEqual(["apple", "facebook", "github", "google"]);
+    expect(Object.keys(out ?? {}).sort()).toEqual(["apple", "facebook", "github", "google", "microsoft"]);
   });
 
   /**
@@ -156,7 +181,13 @@ describe("socialProviders() branch matrix", () => {
 
   test("every provider unresolvable → undefined, exactly as every provider disabled", () => {
     expect(
-      providers({ google: UNRESOLVABLE, apple: UNRESOLVABLE, facebook: UNRESOLVABLE, github: UNRESOLVABLE }),
+      providers({
+        google: UNRESOLVABLE,
+        apple: UNRESOLVABLE,
+        facebook: UNRESOLVABLE,
+        github: UNRESOLVABLE,
+        microsoft: UNRESOLVABLE,
+      }),
     ).toBeUndefined();
   });
 });

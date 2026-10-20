@@ -42,14 +42,14 @@ import { type AuthProjection, type HumanityCheck, SignInScreen } from "../templa
 /** A projection with the two providers a scaffold most often enables. */
 const AUTH: AuthProjection = {
   basePath: "/auth",
-  providers: { google: true, github: true, apple: false, facebook: false },
+  providers: { google: true, github: true, apple: false, facebook: false, microsoft: false },
   signUpEnabled: true,
 };
 
 /** Every provider on, which is how the marks are checked. */
 const ALL_PROVIDERS: AuthProjection = {
   ...AUTH,
-  providers: { google: true, github: true, apple: true, facebook: true },
+  providers: { google: true, github: true, apple: true, facebook: true, microsoft: true },
 };
 
 /** One call the screen made. */
@@ -198,7 +198,10 @@ describe("the sign-up promise says only what is true", () => {
     // The configuration #554 exists for: email may create an account, GitHub may not. The blanket
     // sentence is true of the link and false of the button beside it, and the reader used to find out
     // by being refused after a full round trip to GitHub.
-    const scoped = text({ ...AUTH, providerSignUp: { google: true, github: false, apple: true, facebook: true } });
+    const scoped = text({
+      ...AUTH,
+      providerSignUp: { google: true, github: false, apple: true, facebook: true, microsoft: true },
+    });
     expect(scoped).toContain("Emailing you a link creates one.");
     expect(scoped).not.toContain("Signing in creates one.");
   });
@@ -206,7 +209,10 @@ describe("the sign-up promise says only what is true", () => {
   test("a refusing provider that is switched off does not scope anything", () => {
     // `apple` cannot sign up here, but it is not offered — so no button on this screen refuses, and
     // qualifying the sentence would be answering a question nobody can ask.
-    const auth = { ...AUTH, providerSignUp: { google: true, github: true, apple: false, facebook: false } };
+    const auth = {
+      ...AUTH,
+      providerSignUp: { google: true, github: true, apple: false, facebook: false, microsoft: false },
+    };
     expect(text(auth)).toContain("Signing in creates one.");
   });
 
@@ -221,7 +227,7 @@ describe("the sign-up promise says only what is true", () => {
     const closed = {
       ...AUTH,
       signUpEnabled: false,
-      providerSignUp: { google: true, github: false, apple: true, facebook: true },
+      providerSignUp: { google: true, github: false, apple: true, facebook: true, microsoft: true },
     };
     expect(text(closed)).toContain("Existing accounts only.");
   });
@@ -459,14 +465,14 @@ describe("the provider marks", () => {
 
   /** Every color any shape in `svg` is filled with. */
   function fills(svg: SVGElement): string[] {
-    return [...svg.querySelectorAll("path, circle")]
+    return [...svg.querySelectorAll("path, circle, rect")]
       .map((shape) => shape.getAttribute("fill"))
       .filter((value): value is string => value !== null);
   }
 
   test("every provider the template can render arrives with one", () => {
     const container = mount(<SignInScreen auth={ALL_PROVIDERS} fetch={recorder().fetch} origin="https://x" />);
-    for (const label of ["Google", "GitHub", "Apple", "Facebook"]) {
+    for (const label of ["Google", "GitHub", "Apple", "Facebook", "Microsoft"]) {
       expect(mark(container, label).tagName.toLowerCase()).toBe("svg");
     }
   });
@@ -482,6 +488,8 @@ describe("the provider marks", () => {
     const facebook = fills(mark(container, "Facebook"));
     expect(facebook).toContain("#1877F2");
     expect(facebook).not.toContain("currentColor");
+    // Microsoft's four squares, at the colors of the logo it publishes for exactly this button.
+    expect(fills(mark(container, "Microsoft"))).toEqual(["#f25022", "#00a4ef", "#7fba00", "#ffb900"]);
   });
 
   test("a mark whose owner permits the two ink colors takes the page's, so it follows the theme", () => {
@@ -492,7 +500,7 @@ describe("the provider marks", () => {
 
   test("a mark is decorative, and the action is on the button", () => {
     const container = mount(<SignInScreen auth={ALL_PROVIDERS} fetch={recorder().fetch} origin="https://x" />);
-    for (const label of ["Google", "GitHub", "Apple", "Facebook"]) {
+    for (const label of ["Google", "GitHub", "Apple", "Facebook", "Microsoft"]) {
       expect(mark(container, label).getAttribute("aria-hidden")).toBe("true");
     }
     // The visible word is inside the accessible name, so voice control still matches "click Google"
@@ -601,7 +609,7 @@ describe("every language the kit ships", () => {
     for (const locale of LOCALES) {
       const container = inLocale(locale);
       const buttons = all(container, ".auth__provider");
-      expect(buttons, locale).toHaveLength(4);
+      expect(buttons, locale).toHaveLength(5);
       for (const button of buttons) {
         expect(button.getAttribute("aria-label"), `${locale}: ${button.textContent}`).toContain(button.textContent);
       }

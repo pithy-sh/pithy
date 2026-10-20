@@ -9,6 +9,7 @@ import type {
   FacebookOAuthCredentials,
   GithubOAuthCredentials,
   GoogleOAuthCredentials,
+  MicrosoftOAuthCredentials,
 } from "./secrets";
 
 /**
@@ -56,7 +57,7 @@ export type ResolvedProvider<Credentials> =
 export const PROVIDER_DISABLED: { readonly state: "disabled" } = { state: "disabled" };
 
 /** The social providers the kit composes. Ordered as they are declared in config. */
-export const SOCIAL_PROVIDER_IDS = ["google", "apple", "facebook", "github"] as const;
+export const SOCIAL_PROVIDER_IDS = ["google", "apple", "facebook", "github", "microsoft"] as const;
 
 /** One of the kit's social providers. */
 export type SocialProviderId = (typeof SOCIAL_PROVIDER_IDS)[number];
@@ -64,9 +65,9 @@ export type SocialProviderId = (typeof SOCIAL_PROVIDER_IDS)[number];
 /**
  * Every provider's state for one instance.
  *
- * A record rather than four loose fields, because two things read it — the `socialProviders` block the
+ * A record rather than five loose fields, because two things read it — the `socialProviders` block the
  * instance is built from, and the refusal that answers a caller who asked for one that is not there —
- * and they must be reading the same four values or they will disagree about what is available.
+ * and they must be reading the same five values or they will disagree about what is available.
  */
 export interface ResolvedProviders {
   /** Google OAuth: disabled, ready with its credential pair, or declared and unreadable. */
@@ -77,17 +78,20 @@ export interface ResolvedProviders {
   facebook: ResolvedProvider<FacebookOAuthCredentials>;
   /** GitHub OAuth: disabled, ready with its credential pair, or declared and unreadable. */
   github: ResolvedProvider<GithubOAuthCredentials>;
+  /** Microsoft Entra ID: disabled, ready with its credential set and tenant, or declared and unreadable. */
+  microsoft: ResolvedProvider<MicrosoftOAuthCredentials>;
 }
 
 /**
  * Every provider disabled — what a composition that enables no social sign-in resolves to, and the
- * base a construction site spreads over rather than spelling four times.
+ * base a construction site spreads over rather than spelling five times.
  */
 export const NO_SOCIAL_PROVIDERS: Readonly<ResolvedProviders> = {
   google: PROVIDER_DISABLED,
   apple: PROVIDER_DISABLED,
   facebook: PROVIDER_DISABLED,
   github: PROVIDER_DISABLED,
+  microsoft: PROVIDER_DISABLED,
 };
 
 /**

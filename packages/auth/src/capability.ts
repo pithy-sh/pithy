@@ -97,6 +97,9 @@ export const AuthConfig = z
     github: ProviderToggle.prefault({}).describe(
       "GitHub OAuth. Enable it, then store credentials as the `auth-github-credentials` secret. See docs/github-oauth.md.",
     ),
+    microsoft: ProviderToggle.prefault({}).describe(
+      "Microsoft sign-in — work, school, or personal accounts through Entra ID. Enable it, then store credentials and the tenant as the `auth-microsoft-credentials` secret. Entra ID cannot vouch for an email it did not verify, so an unverified one is verified by magic link before it links. See docs/microsoft-oauth.md.",
+    ),
     sessionExpiresIn: z
       .number()
       .int()
@@ -436,6 +439,7 @@ export function auth(options: AuthOptions): AuthCapability {
         apple: resolved.apple.enabled,
         facebook: resolved.facebook.enabled,
         github: resolved.github.enabled,
+        microsoft: resolved.microsoft.enabled,
       },
       // Per provider, beside the global one. A project may let email create accounts while a provider
       // may not, and a screen with only `signUpEnabled` promises what that provider will refuse (#559).
@@ -444,6 +448,7 @@ export function auth(options: AuthOptions): AuthCapability {
         apple: resolved.apple.allowSignUp,
         facebook: resolved.facebook.allowSignUp,
         github: resolved.github.allowSignUp,
+        microsoft: resolved.microsoft.allowSignUp,
       },
       otpLength: resolved.otpLength,
       signUpEnabled: !resolved.disableSignUp,

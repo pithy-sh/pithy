@@ -83,7 +83,13 @@ auth({
 **Both credentials travel as one typed JSON secret.** The client id and client secret are stored together — through `@pithy-sh/secrets`, never committed, never an env literal — as `auth-google-credentials`:
 
 ```
-pithy secrets create auth-google-credentials --json '{"clientId":"<your-client-id>","clientSecret":"<your-client-secret>"}'
+pithy secrets create auth-google-credentials --env <env>
+```
+
+At a terminal it asks for the value, masked. An agent or a script pipes the JSON document in on stdin instead. `--json` only shapes the output, and the value is never read from a flag:
+
+```
+printf '%s' '{"clientId":"<your-client-id>","clientSecret":"<your-client-secret>"}' | pithy secrets create auth-google-credentials --env <env>
 ```
 
 The pair stays atomic: the client id never splits off into config. The package reads the whole credential from the secrets store at request time and wires it into the provider. Enable Google in config with `auth({ google: { enabled: true } })` — no credential values in the config.

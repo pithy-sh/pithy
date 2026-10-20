@@ -482,7 +482,7 @@ describe("bootstrapAdd", () => {
       manifest: await shippedManifest("auth"),
     });
     const file = await readDevSecrets(await secretsPath(dir));
-    for (const name of ["google", "apple", "facebook", "github"]) {
+    for (const name of ["google", "apple", "facebook", "github", "microsoft"]) {
       expect(file[`auth-${name}-credentials`]).toBeUndefined();
     }
 

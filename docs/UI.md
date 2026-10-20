@@ -329,7 +329,7 @@ const MARK: ReactNode = null;    // the compact mark, for the widths the panel i
 
 ### The provider marks, and the terms they ship under
 
-Every provider the screen can render arrives with its logo: Google, GitHub, Apple, Facebook. **They are trademarks, not icons, and none of them is covered by Pithy's MIT license.** Each mark is a component of its own with its owner's rules in the doc comment above it, and that is deliberate — the rules are opposite from one provider to the next, so one parameterized `<Mark provider="…" />` would have to encode "unless it is Google" somewhere and the first tidy-up would lose it.
+Every provider the screen can render arrives with its logo: Google, GitHub, Apple, Facebook, Microsoft. **They are trademarks, not icons, and none of them is covered by Pithy's MIT license.** Each mark is a component of its own with its owner's rules in the doc comment above it, and that is deliberate — the rules are opposite from one provider to the next, so one parameterized `<Mark provider="…" />` would have to encode "unless it is Google" somewhere and the first tidy-up would lose it.
 
 The short version, with the long version beside the asset:
 
@@ -339,13 +339,14 @@ The short version, with the long version beside the asset:
 | Google | four fixed hex fills | Google's terms forbid recolouring the mark. It answers no theme and no token. |
 | Apple | `currentColor` | Apple permits black or white only — which is what `--pithy-fg` resolves to. Change `--fg` to anything else and you must override it. |
 | Facebook | fixed `#1877F2` on a white disc | Meta fixes the color, and the published path cuts the "f" out, so the disc is what keeps the counter white in both themes. |
+| Microsoft | four fixed hex fills | Microsoft's guidelines say not to alter the logo. The four squares are its published asset, unchanged. |
 
 Two rules if you add a provider:
 
 - **Never hand-draw a mark.** A wrong-shaped official logo on a credentials page is what a phishing page looks like. If you cannot source accurate path data, ship that button with no mark — label-only buttons render correctly.
 - **Font Awesome's `brands/google` is a monochrome single-path G.** It is the obvious thing to reach for, it is in the package most projects already have, and it is the wrong asset for a sign-in button: Google's guidelines require the four-color mark there. The same goes for any other icon set's "google" glyph.
 
-Apple and Google additionally specify the *button*, not only the mark — background, corner radius, minimum size, wording. Pithy's `.auth__provider` is a generic secondary button and makes no claim to satisfy either. Read their guidelines before you enable those providers in production.
+Apple, Google and Microsoft additionally specify the *button*, not only the mark — background, corner radius, minimum size, wording. Pithy's `.auth__provider` is a generic secondary button and makes no claim to satisfy any of them. Read their guidelines before you enable those providers in production.
 
 ## Social providers
 

@@ -440,7 +440,7 @@ describe("the React 19 stub", () => {
   test("the sign-in screen renders from config, never from a flag", () => {
     const signIn = AUTH["src/routes/pithy/sign-in.tsx"] ?? "";
     expect(signIn).toContain('from "../../pithy-config"');
-    for (const provider of ["google", "apple", "facebook", "github"]) {
+    for (const provider of ["google", "apple", "facebook", "github", "microsoft"]) {
       expect(signIn).toContain(`id: "${provider}"`);
     }
     // Only enabled providers render at all.

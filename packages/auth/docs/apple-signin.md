@@ -99,7 +99,13 @@ auth({
 **All three values travel as one typed JSON secret.** The Services ID, the signed JWT, and the bundle id are stored together — through `@pithy-sh/secrets`, never committed, never an env literal — as `auth-apple-credentials`:
 
 ```
-pithy secrets create auth-apple-credentials --json '{"clientId":"<services-id>","clientSecret":"<es256-jwt>","appBundleIdentifier":"<ios-bundle-id>"}'
+pithy secrets create auth-apple-credentials --env <env>
+```
+
+At a terminal it asks for the value, masked. An agent or a script pipes the JSON document in on stdin instead. `--json` only shapes the output, and the value is never read from a flag:
+
+```
+printf '%s' '{"clientId":"<services-id>","clientSecret":"<es256-jwt>","appBundleIdentifier":"<ios-bundle-id>"}' | pithy secrets create auth-apple-credentials --env <env>
 ```
 
 `appBundleIdentifier` is optional. Omit it for web-only. The package reads the whole credential from the secrets store at request time and wires it into the provider. Enable Apple in config with `auth({ apple: { enabled: true } })` — no credential values in the config.

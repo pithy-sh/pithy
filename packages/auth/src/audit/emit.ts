@@ -431,7 +431,7 @@ export const ProviderAccount = z
   .object({
     id: z.string().describe("The account row's primary key — which link was made or broken."),
     userId: z.string().describe("The user this provider can, or could, sign in as."),
-    providerId: z.string().describe("The provider slug (`google`, `apple`, `facebook`, `github`)."),
+    providerId: z.string().describe("The provider slug (`google`, `apple`, `facebook`, `github`, `microsoft`)."),
   })
   .describe("The account-row columns `auth/oauth_linked` and `auth/oauth_unlinked` are built from.");
 export type ProviderAccount = z.output<typeof ProviderAccount>;

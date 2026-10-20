@@ -93,7 +93,7 @@ describe("ui command", () => {
   });
 
   test("there are no provider flags — the sign-in screen reads pithy.config.ts instead", () => {
-    for (const provider of ["google", "apple", "facebook", "github"]) {
+    for (const provider of ["google", "apple", "facebook", "github", "microsoft"]) {
       expect(Object.keys(args("add"))).not.toContain(provider);
     }
     expect(subcommand("add").meta).toBeDefined();

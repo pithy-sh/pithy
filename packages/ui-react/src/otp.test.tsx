@@ -39,7 +39,7 @@ vi.mock("../templates/src/pithy-config", () => ({
   authConfig: {
     enabled: true,
     basePath: "/auth",
-    providers: { google: false, apple: false, facebook: false, github: false },
+    providers: { google: false, apple: false, facebook: false, github: false, microsoft: false },
     otpLength: OTP_LENGTH,
     signUpEnabled: true,
   },
