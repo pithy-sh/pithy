@@ -58,6 +58,10 @@ So: **do not "improve" this by matching more addresses, and do not make the refu
 
 **Microsoft reaches row 3 more than any other provider, on purpose.** Entra ID cannot vouch for an email it did not verify: its `email` is a directory attribute a tenant admin sets to anything. So a Microsoft address is verified only by the `xms_edov` claim, the personal-accounts tenant, or — connecting from inside the account — matching the address the account already holds. `src/instance/microsoftEmail.ts` is the rule and `docs/microsoft-oauth.md` is the setup.
 
+## Account lifecycle
+
+An account can be suspended or deleted, and the kit refuses it at every door with `auth/account_suspended` or `auth/account_deleted`. [`docs/account-lifecycle.md`](docs/account-lifecycle.md) has the two states, the record, the scopes, the mail, the hooks, the screens, and the purge contribution a capability declares for its own rows.
+
 ## Server-authoritative writes
 
 The leaderboard, rating and ledger gates open only for a caller your `resolveScopes` vouches for. A scope is an attestation about the caller, not a permission granted to the user. [`docs/server-authoritative.md`](docs/server-authoritative.md) ranks the three ways to prove it: a service binding, mTLS, and a short-lived token bound to this origin.

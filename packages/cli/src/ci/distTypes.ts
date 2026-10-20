@@ -202,9 +202,11 @@ export const SIDES: readonly Side[] = ["input", "output"];
  * `pithy_secrets_reencryptions`, where a Worker records that the values it seals under a secret have moved
  * to its newest version — what a value rotation's retirement waits for. Moved on 2026-10-19 (#673):
  * `@pithy-sh/artifacts` is the eighteenth package and brings `pithy_artifacts_repos` and `pithy_artifacts_grants`
- * — who owns each Git repository, and each person's read or write grant on it.
+ * — who owns each Git repository, and each person's read or write grant on it. Moved on 2026-10-20 (#620):
+ * `@pithy-sh/auth` brings `pithy_auth_user_lifecycle`, every suspension, deletion, restore and purge an
+ * account went through, with who made it and why — the record that outlives the user row it names.
  */
-export const CENSUS = { tables: 59, packages: 18 };
+export const CENSUS = { tables: 60, packages: 18 };
 
 /**
  * Where the generated programs are written — **outside the checkout, and that is forced**.
