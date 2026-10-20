@@ -4,7 +4,9 @@
 import type { Context } from "hono";
 import type { PithyHonoEnv } from "../../capability/capability";
 import { causeMessage } from "../../error/cause";
-import { workerVersion } from "../../worker/identity";
+import type { PrivacyInventory } from "../../privacy/inventory";
+import { privacyAttestation, privacyPosture } from "../../privacy/posture";
+import { workerVersionMetadata } from "../../worker/identity";
 import { ControlPlaneAuditActions, safeEmit } from "../audit/actions";
 import type { ControlPlaneConfig } from "../config/config";
 import type { ControlPlaneContext } from "../context";
@@ -20,6 +22,7 @@ import type {
   ControlPlaneKeysResponse,
   ControlPlaneMigrationsResponse,
   ControlPlanePingResponse,
+  ControlPlanePrivacyResponse,
   ExpireKeyResponse,
   PublicKeyView,
   RegisterKeyResponse,
@@ -76,6 +79,11 @@ export interface ControlPlaneHandlerDeps {
    * `compose` hook through `collectMigrationSets`, the function `pithy migrate` composes with (#729).
    */
   composedMigrations: () => readonly ComposedMigrationDatabase[];
+  /**
+   * The privacy inventory of every storage schema this Worker composed (#132), walked on the first call and
+   * cached for the isolate. A thunk, so a Worker whose control plane is never called never walks.
+   */
+  privacyInventory: () => PrivacyInventory;
   /** The clock, injected so a test can stand at any instant. */
   now: () => Date;
 }
@@ -199,12 +207,19 @@ export function manifestHandler(deps: ControlPlaneHandlerDeps) {
         ),
       })),
     );
+    // The build answering this call. Read per request rather than captured at assembly: it is the same
+    // binding every log record and audit event reads, and there is one reader for it.
+    const build = workerVersionMetadata(c.env);
     return c.json({
       environment: context.environment,
       connectionId: context.connectionId,
-      // The build answering this call. Read per request rather than captured at assembly: it is the
-      // same binding every log record and audit event reads, and there is one reader for it.
-      version: workerVersion(c.env),
+      version: build.id,
+      // Beside the id, because the id alone cannot tell a deploy from a rollback (#132): a rollback
+      // reactivates a version already seen, and this is the one field that moves backwards when it does.
+      versionCreatedAt: build.createdAt,
+      // Classes and counts, never field names — those are `GET /privacy`'s, behind their own scope. A project
+      // that declared nothing walks nothing; otherwise the walk is the isolate's cached one.
+      privacy: privacyPosture(privacyAttestation(c.env), deps.privacyInventory),
       capabilities,
       grantedScopes: [...context.grantedScopes],
     } satisfies ControlPlaneManifestWire);
@@ -383,5 +398,26 @@ export function expireKeyHandler(deps: ControlPlaneHandlerDeps) {
       validUntil: now.toISOString(),
       keys: expired.map(publicKeyView),
     } satisfies ExpireKeyResponse);
+  };
+}
+
+/**
+ * `GET /control-plane/privacy` — the full privacy inventory (#132).
+ *
+ * Every storage schema this Worker composed that holds a marked field, each field's path and class, and where it
+ * is stored — derived from the running code, so unmarking a field removes it on the next deploy with nothing in
+ * between. Behind `privacy:read`, because field names are the kind of thing an adopter may withhold from a client
+ * that has no business seeing them. Read-only.
+ */
+export function privacyHandler(deps: ControlPlaneHandlerDeps) {
+  return (c: Context<PithyHonoEnv>) => {
+    const context = caller(c);
+    const inventory = deps.privacyInventory();
+    return c.json({
+      environment: context.environment,
+      posture: privacyPosture(privacyAttestation(c.env), () => inventory),
+      schemasWalked: inventory.schemasWalked,
+      schemas: inventory.schemas.map((schema) => ({ ...schema, fields: schema.fields.map((field) => ({ ...field })) })),
+    } satisfies ControlPlanePrivacyResponse);
   };
 }

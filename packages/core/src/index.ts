@@ -102,6 +102,7 @@ export {
   KEYS_ROTATE_SCOPE,
   MANIFEST_READ_SCOPE,
   MIGRATIONS_READ_SCOPE,
+  PRIVACY_READ_SCOPE,
   SEAM_SCOPES,
 } from "./controlPlane/scope/scope";
 export { exportPublicJwk, type MintControlPlaneToken, mintControlPlaneToken } from "./controlPlane/token/mint";

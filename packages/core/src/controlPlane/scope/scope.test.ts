@@ -8,6 +8,7 @@ import {
   KEYS_ROTATE_SCOPE,
   MANIFEST_READ_SCOPE,
   MIGRATIONS_READ_SCOPE,
+  PRIVACY_READ_SCOPE,
   SEAM_SCOPES,
   scopeCovers,
 } from "./scope";
@@ -81,5 +82,13 @@ describe("MIGRATIONS_READ_SCOPE", () => {
   test("is well-formed, and left to the read derivation rather than the base grant", () => {
     expect(ControlPlaneScope.parse(MIGRATIONS_READ_SCOPE)).toBe("migrations:read");
     expect(SEAM_SCOPES).not.toContain(MIGRATIONS_READ_SCOPE);
+  });
+});
+
+describe("PRIVACY_READ_SCOPE", () => {
+  test("is well-formed, its own grant, and left to the read derivation rather than the base grant", () => {
+    expect(ControlPlaneScope.parse(PRIVACY_READ_SCOPE)).toBe("privacy:read");
+    expect(PRIVACY_READ_SCOPE).not.toBe(MANIFEST_READ_SCOPE);
+    expect(SEAM_SCOPES).not.toContain(PRIVACY_READ_SCOPE);
   });
 });

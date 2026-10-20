@@ -86,12 +86,23 @@ export const KEYS_ROTATE_SCOPE: ControlPlaneScope = "keys:rotate";
 export const MIGRATIONS_READ_SCOPE: ControlPlaneScope = "migrations:read";
 
 /**
+ * Read this Worker's full privacy inventory: every storage schema holding a marked field, each marked field's
+ * path, its class, and where it is stored (#132). Read-only — the one route behind it is a `GET`.
+ *
+ * **Its own scope rather than `manifest:read`**, because field names are the kind of thing an adopter may
+ * reasonably withhold from a client that has no business seeing them. The manifest's privacy block carries
+ * classes and counts only, so a connection without this one still sees the posture headline.
+ */
+export const PRIVACY_READ_SCOPE: ControlPlaneScope = "privacy:read";
+
+/**
  * The seam's base grant — what `pithy dashboard connect` grants whatever the Worker composes. Ping is absent
  * because it is not grantable; see {@link ANY_VERIFIED_CALLER}.
  *
- * **{@link MIGRATIONS_READ_SCOPE} is absent on purpose.** It is a read — every route requiring it is a `GET`
- * — so `connect` derives it from the seam's `adminRoutes` the way it derives every capability's reads. The
- * base exists for `keys:rotate`, which is not a read and would otherwise drop out.
+ * **{@link MIGRATIONS_READ_SCOPE} and {@link PRIVACY_READ_SCOPE} are absent on purpose.** Each is a read —
+ * every route requiring it is a `GET` — so `connect` derives it from the seam's `adminRoutes` the way it
+ * derives every capability's reads. The base exists for `keys:rotate`, which is not a read and would
+ * otherwise drop out.
  */
 export const SEAM_SCOPES: readonly ControlPlaneScope[] = [MANIFEST_READ_SCOPE, KEYS_ROTATE_SCOPE];
 
