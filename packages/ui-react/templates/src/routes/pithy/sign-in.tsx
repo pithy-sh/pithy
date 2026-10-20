@@ -7,9 +7,10 @@ import { NEUTRAL_PROVIDER_REFUSAL } from "@pithy-sh/auth/src/http/providerRefusa
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import type { Translator } from "@pithy-sh/core/src/i18n/translator";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
-import { type FormEvent, type ReactNode, useCallback, useMemo, useState } from "react";
+import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { authConfig } from "../../pithy-config";
-import { useSearchParam } from "../../router";
+import { navigate, routeTable, screenPath, useSearchParam } from "../../router";
+import { refusedAccountScreen } from "../../session";
 import { Turnstile, turnstilePending, turnstileRequest } from "../../turnstile";
 // The magic link's callback URL is built from this, never from a literal of the same shape. The two are
 // one statement for the reason #393 gives: renaming `callback.tsx`'s path is an edit that typechecks,
@@ -447,7 +448,15 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
   // A refusal that came back on the callback, rather than from the pre-redirect call. Both halves are
   // read from the URL: `error` is Better Auth's, `provider` is the one this screen wrote into the
   // `errorCallbackURL` before redirecting. See `urlRefusal` for why neither can be component state.
-  const returned = urlRefusal(useSearchParam("error"), useSearchParam("provider"));
+  const error = useSearchParam("error");
+  const returned = urlRefusal(error, useSearchParam("provider"));
+  // A social sign-in the Worker refused for the account's standing — suspended, or deleted — comes back here
+  // with the code as `?error=`. That is not a refusal this form can help with, so it goes on to the screen
+  // for that state, by role.
+  useEffect(() => {
+    const refused = refusedAccountScreen(error);
+    if (refused) void routeTable().then((table) => navigate(screenPath(table, refused)));
+  }, [error]);
 
   const offered = SOCIAL.filter((provider) => auth.providers[provider.id]);
   // Whether any button on this screen signs people in without being able to create an account for them.

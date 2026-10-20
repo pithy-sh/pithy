@@ -114,6 +114,12 @@ export const TEMPLATE_GROUPS = {
     "src/routes/pithy/sign-in.test.tsx",
     "src/routes/pithy/otp.tsx",
     "src/routes/pithy/callback.tsx",
+    // The account lifecycle (#620): where a suspended or deleted account lands, and where somebody acting
+    // for a suspended organization does. Each says what happened, what it means, and who to ask. The third
+    // is auth's rather than organization's because the account screens and it are one set, written once.
+    "src/routes/pithy/account-suspended.tsx",
+    "src/routes/pithy/account-deleted.tsx",
+    "src/routes/pithy/organization-suspended.tsx",
   ],
   organization: [
     // One screen, and the three-arrival logic is the reason it ships at all. A headless hook would hand
