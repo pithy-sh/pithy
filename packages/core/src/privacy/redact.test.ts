@@ -167,12 +167,37 @@ describe("redact", () => {
     expect(redact(Prim, "plain")).toBe("plain");
   });
 
-  test("keeps a key the schema does not name, as it was", () => {
+  test("drops a key the schema does not name, the way parse strips it, so its type tells the truth", () => {
     expect(redact(User, { ...ada, extra: 1 } as typeof ada)).toEqual({
       id: "u_1",
       email: "[pii]",
       diagnosis: "[phi]",
-      extra: 1,
     });
+    const narrow = redact(User.pick({ id: true }), ada);
+    expect(narrow).toEqual({ id: "u_1" });
+  });
+
+  test("keeps every key an intersection names on either side, and masks each side's markers", () => {
+    const Both = z.intersection(z.object({ id: z.string() }), z.object({ email: pii(z.string()) }));
+    expect(redact(Both, Both.parse({ id: "u", email: "a@b.c", extra: 1 }))).toEqual({ id: "u", email: "[pii]" });
+    expect(redact(Both, { id: "u", email: "a@b.c", extra: 1 } as never)).toEqual({ id: "u", email: "[pii]" });
+  });
+
+  test("keeps a key a loose object's catchall lets through", () => {
+    const Loose = z.looseObject({ id: z.string() });
+    expect(redact(Loose, Loose.parse({ id: "u", extra: 1 }))).toEqual({ id: "u", extra: 1 });
+  });
+
+  test("masks a marked record key and a marked map key, keeping entries apart", () => {
+    const ByEmail = z.object({ m: z.record(pii(z.string()), z.number()) });
+    const masked = redact(ByEmail, ByEmail.parse({ m: { "a@b.c": 1, "d@e.f": 2 } }));
+    expect(Object.keys(masked.m)).toHaveLength(2);
+    expect(Object.values(masked.m).sort()).toEqual([1, 2]);
+    expect(JSON.stringify(masked)).not.toContain("@");
+    expect(Object.keys(masked.m).every((key) => key.startsWith("[pii]"))).toBe(true);
+    const ByPhone = z.map(pii(z.string()), z.string());
+    const map = redact(ByPhone, ByPhone.parse(new Map([["555-0100", "home"]])));
+    expect([...map.keys()]).toEqual(["[pii]"]);
+    expect([...map.values()]).toEqual(["home"]);
   });
 });

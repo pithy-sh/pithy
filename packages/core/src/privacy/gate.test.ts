@@ -58,6 +58,18 @@ function compileOnly(log: Logger, emit: AuditEmit): void {
   void new NotFoundError({ detail: user.diagnosis });
   // @ts-expect-error nor on a payload handed to PithyError directly
   void new PithyError({ code: "core/internal", status: 500, message: "x", detail: user.email });
+  // @ts-expect-error a marked value is not a log message, which every record carries as `msg`
+  log.info(user.email);
+  // @ts-expect-error nor a logger's name, which every record the child emits carries
+  log.child(user.email);
+  // @ts-expect-error nor an error's message, which rides into every log line that holds the error
+  void new NotFoundError({ message: user.email });
+  // @ts-expect-error nor its action
+  void new InternalError({ action: user.diagnosis });
+  // @ts-expect-error nor a message on a payload handed to PithyError directly
+  void new PithyError({ code: "core/internal", status: 500, message: user.email });
+  // @ts-expect-error a record keyed by a marked value holds the value in its keys
+  log.info("index", { byEmail: {} as Record<User["email"], number> });
 
   log.info("signup", { id: user.id });
   log.info("signup", { user: redact(User, user) });
@@ -65,6 +77,9 @@ function compileOnly(log: Logger, emit: AuditEmit): void {
   void emit({ action: "auth/signup", outcome: "success", actorType: "user", metadata: { userId: user.id } });
   void new ValidationError({ detail: `user ${user.id} sent a bad form` });
   void new InternalError({ detail: "plain" });
+  log.info(`signup for ${user.id}`);
+  void new NotFoundError({ message: "No such user.", action: "Check the id." });
+  log.info("index", { byId: {} as Record<string, number> });
 }
 
 describe("the type gate", () => {

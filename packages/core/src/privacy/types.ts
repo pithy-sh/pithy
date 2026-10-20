@@ -16,7 +16,9 @@ import type { z } from "zod";
  * - **A marked value itself**, anywhere a field value goes: `log.info("m", { email: user.email })` fails.
  * - **A marked value inside an object or an array, down to {@link PRIVACY_CHECK_DEPTH} levels below the field**:
  *   `{ user }`, `{ user: { email } }`, `{ users: [user] }`, `{ batch: { users: [user] } }` all fail.
- * - **`detail: email`** on any `PithyError` constructor fails, because `detail` takes {@link UnmarkedString}.
+ * - **A marked key**: a record keyed by a marked value, `Record<User["email"], …>`, is refused like the value.
+ * - **A marked string as a message**: `log.info(user.email)`, `log.child(user.email)`, and `message`, `action` or
+ *   `detail` on any `PithyError` constructor fail, because each takes {@link UnmarkedString}.
  *
  * ## What it does not, and cannot
  *
@@ -68,7 +70,10 @@ export type IsMarked<T> =
         : true
       : false;
 
-/** Whether `T`, or anything up to `D` levels of object or array inside it, carries a privacy brand. */
+/**
+ * Whether `T`, or anything up to `D` levels of object or array inside it, carries a privacy brand — in a value, or
+ * in a key: a `Record<User["email"], number>` holds every email it is keyed by.
+ */
 export type ContainsMarked<T, D extends number = PRIVACY_CHECK_DEPTH> =
   IsAny<T> extends true
     ? false
@@ -81,9 +86,11 @@ export type ContainsMarked<T, D extends number = PRIVACY_CHECK_DEPTH> =
           : T extends readonly (infer E)[]
             ? ContainsMarked<E, Prev[D]>
             : T extends object
-              ? true extends { [K in keyof T]-?: ContainsMarked<T[K], Prev[D]> }[keyof T]
+              ? true extends IsMarked<keyof T>
                 ? true
-                : false
+                : true extends { [K in keyof T]-?: ContainsMarked<T[K], Prev[D]> }[keyof T]
+                  ? true
+                  : false
               : false;
 
 /**
@@ -105,7 +112,7 @@ type NoPrivacyBrand = { readonly [z.core.$brand]?: { readonly [K in `privacy:${s
 
 /**
  * A string that is not marked. A plain `string` and a template literal both are; `user.email` from a `pii()`
- * field is not. What `PithyError.detail` takes.
+ * field is not. What a log message, a logger's name and `PithyError`'s `message`, `action` and `detail` take.
  */
 export type UnmarkedString = string & NoPrivacyBrand;
 
@@ -122,6 +129,6 @@ export type Redacted<T> =
         : T extends Opaque
           ? T
           : T extends object
-            ? { [K in keyof T]: Redacted<T[K]> }
+            ? { [K in keyof T as IsMarked<K> extends true ? string : K]: Redacted<T[K]> }
             : T
       : never;

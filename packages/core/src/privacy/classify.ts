@@ -18,9 +18,9 @@ import { PRIVACY_META_KEY } from "./classes";
  *
  * ## What a path looks like
  *
- * Object keys join with `.`, an array element is `[]`, a tuple position is `[i]`, a record's value and an
- * object's catchall are `*`: `address.line1`, `devices[].token`, `pair[1]`, `notes.*`. A marked root is the
- * empty path.
+ * Object keys join with `.`, an array element is `[]`, a tuple position is `[i]`, a record's or a map's value
+ * and an object's catchall are `*`, and a record's or a map's key is `<key>`: `address.line1`, `devices[].token`,
+ * `pair[1]`, `notes.*`, `byEmail.<key>`. A marked root is the empty path.
  *
  * ## What the walk steps into, and what it does not
  *
@@ -28,11 +28,10 @@ import { PRIVACY_META_KEY } from "./classes";
  * field inside it is a marked field the table holds. A codec field marked as a whole — `pii(SQLiteDate)` — is
  * read off the codec itself before anything is stepped into. A plain pipe is stepped into on both sides.
  *
- * **A lazy schema is not followed.** It is how a recursive schema is written, and following its getter is how a
- * walk over one never returns. A marker that lives only behind a `z.lazy` is therefore not classified, and the
- * inventory says which sources it walked rather than implying it walked everything. `redact` does follow one,
- * because it walks a value, and a value ends. A recursive object written with a getter is walked once per
- * branch: reaching the same object again inside itself stops there.
+ * **A lazy schema is followed**, the way `redact` follows one, so a marker behind a `z.lazy` is classified like
+ * any other. A recursive schema is walked once per branch: a lazy or an object reached again inside itself
+ * stops there, because the second visit has nothing new to say. That is what ends a walk over a recursive
+ * schema, whether it is written with `z.lazy` or with a getter.
  *
  * **A marked node is not descended into.** `phi(z.object({ … }))` makes the whole value PHI, and `redact` masks
  * it whole; listing its inner fields as well would describe a masking that does not happen.
@@ -56,8 +55,10 @@ interface Def {
   right?: z.ZodType;
   items?: z.ZodType[];
   rest?: z.ZodType | null;
+  keyType?: z.ZodType;
   valueType?: z.ZodType;
   catchall?: z.ZodType;
+  getter?: () => z.ZodType;
   in?: z.ZodType;
   out?: z.ZodType;
 }
@@ -120,7 +121,7 @@ export interface PrivacyVisitor {
   unmarkedKey?(path: string, key: string): void;
 }
 
-/** Walk one node, reporting each marked path it holds. `open` is the objects on the current branch. */
+/** Walk one node, reporting each marked path it holds. `open` is the objects and lazies on the current branch. */
 function walk(schema: z.ZodType, path: string, visitor: PrivacyVisitor, open: Set<z.ZodType>): void {
   const marked = privacyOf(schema);
   if (marked !== null) {
@@ -156,8 +157,18 @@ function walk(schema: z.ZodType, path: string, visitor: PrivacyVisitor, open: Se
       return;
     case "record":
     case "map":
+      // A key is stored as surely as a value is, so a record keyed by a marked value holds that value.
+      if (def.keyType) walk(def.keyType, join(path, "<key>"), visitor, open);
       if (def.valueType) walk(def.valueType, join(path, "*"), visitor, open);
       return;
+    case "lazy": {
+      // A recursive schema reaches the same lazy again inside itself; the second visit has nothing new to say.
+      if (open.has(node) || !def.getter) return;
+      open.add(node);
+      walk(def.getter(), path, visitor, open);
+      open.delete(node);
+      return;
+    }
     case "union":
       for (const option of def.options ?? []) walk(option, path, visitor, open);
       return;
@@ -175,7 +186,7 @@ function walk(schema: z.ZodType, path: string, visitor: PrivacyVisitor, open: Se
       if (def.out) walk(def.out, path, visitor, open);
       return;
     default:
-      // A leaf, a lazy schema, or a kind with no schema inside it. See the module note on `lazy`.
+      // A leaf, or a kind with no schema inside it.
       return;
   }
 }

@@ -3,7 +3,7 @@
 
 import type { ErrorPayload } from "../error/payload";
 import { PithyError } from "../error/pithyError";
-import type { Loggable } from "../privacy/types";
+import type { Loggable, UnmarkedString } from "../privacy/types";
 import { LOG_LEVEL_ORDER, type LogFields, type LogLevel, type LogRecord } from "./record";
 
 /**
@@ -20,24 +20,24 @@ import { LOG_LEVEL_ORDER, type LogFields, type LogLevel, type LogRecord } from "
  * **A value marked with a privacy class does not compile here** (#132). Every method takes `F & Loggable<F>`,
  * so a field holding a `pii()`/`phi()`/`secret()`/`pci()` value — the value itself, or one inside an object or
  * an array, to the depth `privacy/types.ts` states — is refused at that key, and `redact(Schema, value)` is the
- * way through. `LogFields` the schema stays permissive: a record that reaches a sink at runtime still parses,
+ * way through. The message and a child's name take `UnmarkedString`, so `log.info(user.email)` is refused too. `LogFields` the schema stays permissive: a record that reaches a sink at runtime still parses,
  * because a brand is a type and a parsed log line has none.
  */
 export interface Logger {
   /** Dev-time diagnostics. Dropped unless the logger's level is `debug`. */
-  debug<F extends LogFields = LogFields>(msg: string, fields?: F & Loggable<F>): void;
+  debug<F extends LogFields = LogFields>(msg: UnmarkedString, fields?: F & Loggable<F>): void;
   /** Normal operational events. */
-  info<F extends LogFields = LogFields>(msg: string, fields?: F & Loggable<F>): void;
+  info<F extends LogFields = LogFields>(msg: UnmarkedString, fields?: F & Loggable<F>): void;
   /** A recoverable problem worth attention. */
-  warn<F extends LogFields = LogFields>(msg: string, fields?: F & Loggable<F>): void;
+  warn<F extends LogFields = LogFields>(msg: UnmarkedString, fields?: F & Loggable<F>): void;
   /** A failure that was observed. Pass `{ error }` (a PithyError) to carry its full payload. */
-  error<F extends LogFields = LogFields>(msg: string, fields?: F & Loggable<F>): void;
+  error<F extends LogFields = LogFields>(msg: UnmarkedString, fields?: F & Loggable<F>): void;
   /**
    * A namespaced sub-logger. `name` composes as `parent:child`; bound `fields` merge into every record
    * the child emits. Omit `name` (pass `undefined`) to bind fields only — how request-correlation
    * attaches `request`/`method`/`path` without renaming the logger.
    */
-  child<F extends LogFields = LogFields>(name?: string, fields?: F & Loggable<F>): Logger;
+  child<F extends LogFields = LogFields>(name?: UnmarkedString, fields?: F & Loggable<F>): Logger;
 }
 
 /** A sink receives a finished {@link LogRecord}. Adapters supply one; the engine builds records and calls it. */

@@ -28,8 +28,8 @@ import { PRIVACY_SOURCES, type PrivacyInventory, type PrivacyInventorySchema } f
  * ## What a path looks like
  *
  * A D1 field is its column path (`email`, `profile.phone` inside a JSON column). A KV field leads with the part
- * of the entry it is in: `key.email`, `value.token`, `metadata.ip` — or `value` alone when the whole value is
- * marked.
+ * of the entry it is in: `key.email`, `value.token`, `metadata.ip`, `value[].email` for an array value — or
+ * `value` alone when the whole value is marked. It is the path `pithy privacy scan` writes for the same field.
  *
  * ## The per-field record
  *
@@ -53,7 +53,7 @@ function kvFields(store: { key: z.ZodType; value: z.ZodType; metadata?: z.ZodTyp
   return parts.flatMap(([part, schema]) =>
     schema
       ? classifyPrivacy(schema).map((field) => ({
-          path: field.path === "" ? part : `${part}.${field.path}`,
+          path: field.path === "" || field.path.startsWith("[") ? `${part}${field.path}` : `${part}.${field.path}`,
           class: field.class,
         }))
       : [],

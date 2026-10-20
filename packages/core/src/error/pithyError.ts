@@ -20,12 +20,19 @@ export class PithyError extends Error {
   readonly payload: ErrorPayload;
 
   /**
-   * `detail` is an {@link UnmarkedString} here and on every subclass's arguments (#132): a value marked with a
-   * privacy class is refused at compile time, because `detail` rides into every log line and audit row that
-   * carries this error. A template literal is a plain `string`, so interpolation is not caught — see
+   * `message`, `action` and `detail` are each an {@link UnmarkedString} here and on every subclass's arguments
+   * (#132): a value marked with a privacy class is refused at compile time, because all three ride into every log
+   * line and audit row that carries this error. A template literal is a plain `string`, so interpolation is not caught — see
    * `privacy/types.ts` for exactly what is.
    */
-  constructor(payload: ErrorPayload & { detail?: UnmarkedString | undefined }, options?: { cause?: unknown }) {
+  constructor(
+    payload: ErrorPayload & {
+      message: UnmarkedString;
+      action?: UnmarkedString | undefined;
+      detail?: UnmarkedString | undefined;
+    },
+    options?: { cause?: unknown },
+  ) {
     const parsed = ErrorPayload.parse(payload);
     super(parsed.message, options);
     this.payload = parsed;
@@ -35,10 +42,10 @@ export class PithyError extends Error {
 
 /** Variable parts every subclass accepts; the `code`/`status` are fixed by the subclass. */
 interface ErrorArgs {
-  /** Override the public, safe-to-expose message. Defaults to a per-code summary. */
-  message?: string;
-  /** A remediation hint (CLI action line). */
-  action?: string;
+  /** Override the public, safe-to-expose message. Defaults to a per-code summary. Never a privacy-marked value. */
+  message?: UnmarkedString;
+  /** A remediation hint (CLI action line). Never a privacy-marked value. */
+  action?: UnmarkedString;
   /** Internal context for logs + audit. Never serialized to clients, and never a privacy-marked value (#132). */
   detail?: UnmarkedString;
   /**

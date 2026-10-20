@@ -110,12 +110,34 @@ describe("classifyPrivacy", () => {
     ]);
   });
 
-  test("does not follow a lazy schema, so a recursive one returns", () => {
+  test("follows a lazy schema, and returns on a recursive one", () => {
     type Node = { name: string; children: Node[] };
     const Node: z.ZodType<Node> = z.lazy(() =>
       z.object({ name: pii(z.string()), children: z.array(Node) }),
     ) as z.ZodType<Node>;
-    expect(classifyPrivacy(z.object({ root: Node }).describe("t"))).toEqual([]);
+    expect(classifyPrivacy(z.object({ root: Node }).describe("t"))).toEqual([{ path: "root.name", class: "pii" }]);
+    expect(classifyPrivacy(Node)).toEqual([{ path: "name", class: "pii" }]);
+  });
+
+  test("finds a marker that lives only behind a lazy, so hasPrivacy sees it at any depth", () => {
+    type Entry = { id: string; note: string; children: Entry[] };
+    const Entry: z.ZodType<Entry> = z.lazy(() =>
+      z.object({ id: z.string(), note: z.lazy(() => phi(z.string())), children: z.array(Entry) }),
+    ) as z.ZodType<Entry>;
+    expect(classifyPrivacy(Entry)).toEqual([{ path: "note", class: "phi" }]);
+    expect(hasPrivacy(Entry, "phi")).toBe(true);
+  });
+
+  test("names a marked record or map key by `<key>`", () => {
+    const Shape = z.object({
+      byEmail: z.record(pii(z.string()), z.number()),
+      byPhone: z.map(pii(z.string()), phi(z.string())),
+    });
+    expect(classifyPrivacy(Shape)).toEqual([
+      { path: "byEmail.<key>", class: "pii" },
+      { path: "byPhone.<key>", class: "pii" },
+      { path: "byPhone.*", class: "phi" },
+    ]);
   });
 
   test("names a marked catchall by `*`", () => {

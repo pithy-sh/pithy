@@ -96,6 +96,32 @@ describe("privacyInventory", () => {
   });
 });
 
+describe("privacyInventory paths", () => {
+  test("joins a KV part to an element path the way classifyPrivacy and the scan write it", () => {
+    const capability = defineCapability({
+      name: "list",
+      requiredBindings: [],
+      kvNamespaces: {
+        lists: {
+          binding: "LISTS",
+          stores: {
+            members: {
+              prefix: "m",
+              key: z.object({ id: z.string() }),
+              value: z.array(z.object({ email: pii(z.string()) })),
+              metadata: z.tuple([z.string(), pii(z.string())]),
+            },
+          },
+        },
+      },
+    });
+    expect(privacyInventory([capability]).schemas[0]?.fields).toEqual([
+      { path: "value[].email", class: "pii" },
+      { path: "metadata[1]", class: "pii" },
+    ]);
+  });
+});
+
 describe("lazyPrivacyInventory", () => {
   test("walks nothing until it is read, then walks once for the isolate", () => {
     let walks = 0;
