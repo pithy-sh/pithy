@@ -1,11 +1,11 @@
 ---
-"@pithy-sh/cli": major
-"@pithy-sh/cloudflare": major
-"@pithy-sh/core": major
-"@pithy-sh/i18n": major
-"@pithy-sh/media": major
-"@pithy-sh/secrets": major
-"@pithy-sh/storage": major
+"@pithy-sh/cli": minor
+"@pithy-sh/cloudflare": minor
+"@pithy-sh/core": minor
+"@pithy-sh/i18n": minor
+"@pithy-sh/media": minor
+"@pithy-sh/secrets": minor
+"@pithy-sh/storage": minor
 ---
 
 Media now reports what was actually served — images delivered and minutes of video watched, per asset — read from Cloudflare's own analytics and joined to the assets you already have. A deployed application now holds one Cloudflare API token, `runtime`, minted with exactly what its capabilities call. **Breaking:** the secrets manager's own token and media's hand-made Images and Stream token are replaced by it; mint `runtime`, deploy, then revoke the old ones.

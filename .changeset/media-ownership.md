@@ -1,11 +1,11 @@
 ---
-"@pithy-sh/cli": major
-"@pithy-sh/cloudflare": major
-"@pithy-sh/core": major
-"@pithy-sh/i18n": major
-"@pithy-sh/media": major
-"@pithy-sh/organization": major
-"@pithy-sh/storage": major
+"@pithy-sh/cli": minor
+"@pithy-sh/cloudflare": minor
+"@pithy-sh/core": minor
+"@pithy-sh/i18n": minor
+"@pithy-sh/media": minor
+"@pithy-sh/organization": minor
+"@pithy-sh/storage": minor
 ---
 
 Media assets and stored objects now carry an owner, an organization and a visibility — private, organization or public — so a file is seen only by the people it is meant for, private media is delivered through signed URLs, usage rolls up per user or per team, duplicate detection stays inside the tenant, and an erasure reaches a subject's files. **Breaking:** existing media records become private and system-owned; the `kv` media record store is removed; storage's `defaultVisibility` is now `visibility.default`, and a config still naming the old key is refused; and a public file read from outside its organization, or anonymously, no longer names its `ownerId`.

@@ -1,5 +1,5 @@
 ---
-"@pithy-sh/payments": major
+"@pithy-sh/payments": minor
 "@pithy-sh/core": minor
 "@pithy-sh/email": minor
 "@pithy-sh/storage": minor
