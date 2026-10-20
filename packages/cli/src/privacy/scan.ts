@@ -3,7 +3,7 @@
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { BuiltInPrivacyClass } from "@pithy-sh/core/src/privacy/classes";
-import { privacyOf } from "@pithy-sh/core/src/privacy/classify";
+import { walkPrivacy } from "@pithy-sh/core/src/privacy/classify";
 import { z } from "zod";
 
 /**
@@ -21,7 +21,8 @@ import { z } from "zod";
  * composes** — not by importing an arbitrary project's modules and hunting for exported Zod objects. That is the
  * open question the issue named, settled: a config is already a thing the CLI resolves, a capability's storage
  * schemas are already the table definitions, and walking them is walking exactly what the control plane's
- * inventory walks, so the scanner and the report cannot disagree about what was covered. A schema that is not a
+ * inventory walks. The walk is core's own `walkPrivacy`, the one `classifyPrivacy` is built on, so the scanner
+ * and the report cannot disagree about what was covered. A schema that is not a
  * table or a KV store — a request body, an email template — is not reached, which is the inventory's own scope.
  * A Worker whose config does not load is reported as unreadable rather than skipped in silence.
  *
@@ -130,64 +131,29 @@ export const ScanFinding = z
   .describe("One field `pithy privacy scan` reports: a candidate to mark, or a field already marked.");
 export type ScanFinding = z.output<typeof ScanFinding>;
 
-/** A Zod schema's internal definition, as much of it as this walk reads. */
-interface Def {
-  type: string;
-  innerType?: z.ZodType;
-  element?: z.ZodType;
-  options?: z.ZodType[];
-  valueType?: z.ZodType;
-  out?: z.ZodType;
-  in?: z.ZodType;
-}
-
-/** The definition behind a schema. */
-function defOf(schema: z.ZodType): Def {
-  return (schema as unknown as { def: Def }).def;
-}
-
-const WRAPPERS: ReadonlySet<string> = new Set(["optional", "nullable", "default", "prefault", "readonly", "catch"]);
-
 /** Where a finding sits, before its field is known. */
 type Place = Omit<ScanFinding, "path" | "status" | "class" | "marker">;
 
-/** Walk one schema's fields, appending a finding for each covered or candidate field. */
+/**
+ * Walk one schema with core's own privacy walk, appending a finding for each covered or candidate field. A marked
+ * path is covered wherever it sits — a root, an array element, a record's value — because it is the walk the
+ * inventory lists from; an unmarked object key whose name reads as private is a candidate.
+ */
 function walkFields(schema: z.ZodType, path: string, place: Place, out: ScanFinding[]): void {
-  let node = schema;
-  for (let def = defOf(node); WRAPPERS.has(def.type) && def.innerType; def = defOf(node)) node = def.innerType;
-  const def = defOf(node);
-  if (def.type === "object") {
-    for (const [key, field] of Object.entries((node as z.ZodObject).shape) as [string, z.ZodType][]) {
-      const fieldPath = path === "" ? key : `${path}.${key}`;
-      const marked = privacyOf(field);
-      if (marked !== null) {
-        out.push({ ...place, path: fieldPath, status: "covered", class: marked, marker: null });
-        continue;
-      }
-      const suggested = candidateClass(key);
-      if (suggested !== null) {
-        out.push({ ...place, path: fieldPath, status: "candidate", class: suggested, marker: `${suggested}(…)` });
-      }
-      walkFields(field, fieldPath, place, out);
-    }
-    return;
-  }
-  if (def.type === "array" && def.element) {
-    walkFields(def.element, `${path}[]`, place, out);
-    return;
-  }
-  if ((def.type === "record" || def.type === "map") && def.valueType) {
-    walkFields(def.valueType, path === "" ? "*" : `${path}.*`, place, out);
-    return;
-  }
-  if (def.type === "union") {
-    for (const option of def.options ?? []) walkFields(option, path, place, out);
-    return;
-  }
-  if (def.type === "pipe") {
-    const side = node instanceof z.ZodCodec ? def.out : (def.in ?? def.out);
-    if (side) walkFields(side, path, place, out);
-  }
+  walkPrivacy(
+    schema,
+    {
+      marked: (fieldPath, className) =>
+        out.push({ ...place, path: fieldPath, status: "covered", class: className, marker: null }),
+      unmarkedKey: (fieldPath, key) => {
+        const suggested = candidateClass(key);
+        if (suggested !== null) {
+          out.push({ ...place, path: fieldPath, status: "candidate", class: suggested, marker: `${suggested}(…)` });
+        }
+      },
+    },
+    path,
+  );
 }
 
 /** The findings of one Worker's composed capabilities, in composition order. A path reached twice is listed once. */

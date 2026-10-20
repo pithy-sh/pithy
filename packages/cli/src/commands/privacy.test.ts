@@ -14,7 +14,7 @@ import { linkKitPackages } from "../test-utils/linkKit";
 import { expectConforms, runCaptured } from "../test-utils/payloadContract";
 import { removeTempDir } from "../test-utils/tempRepo";
 import { snapshotTree } from "../test-utils/treeSnapshot";
-import { collectClasses, offerAudit, offerPrivacy, renderScan } from "./privacy";
+import { collectClasses, composesAudit, offerAudit, offerPrivacy, renderScan } from "./privacy";
 
 let dir: string;
 
@@ -93,6 +93,22 @@ describe("the offers between privacy and audit", () => {
     expect(await snapshotTree(dir)).toEqual(before);
     await offerAudit(dir, { confirm: async () => true, run });
     expect(run).toHaveBeenCalledOnce();
+  });
+
+  test("reads each Worker's config as it is now, so a run that just added audit is not offered it again", async () => {
+    // `pithy add audit` loads the Worker's config before it wires audit in, then offers privacy, whose enable
+    // offers audit. That last read must see the wiring, not the module an earlier import cached.
+    const config = (name: string) => `import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+
+const app = defineCapability({ name: "${name}", requiredBindings: [] });
+
+export default { capabilities: [], app };
+`;
+    const path = join(dir, "apps", "api", "pithy.config.ts");
+    await writeFile(path, config("app"));
+    expect(await composesAudit(dir)).toBe(false);
+    await writeFile(path, config("audit"));
+    expect(await composesAudit(dir)).toBe(true);
   });
 
   test("add audit offers privacy in return; declining leaves it as it was, and a declared project is not asked", async () => {

@@ -3,7 +3,8 @@
 
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { sqliteJson } from "@pithy-sh/core/src/data/codecs";
-import { phi, pii } from "@pithy-sh/core/src/privacy/classes";
+import { phi, pii, secret } from "@pithy-sh/core/src/privacy/classes";
+import { privacyInventory } from "@pithy-sh/core/src/privacy/inventory";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { candidateClass, scanCapabilities } from "./scan";
@@ -85,5 +86,48 @@ describe("scanCapabilities", () => {
       databases: { app: { binding: "DB", tables: { users: z.object({ email: z.string() }) } } },
     });
     expect(scanCapabilities("api", [kit])[0]).toMatchObject({ owner: "kit", status: "candidate", path: "email" });
+  });
+
+  test("reports covered exactly the fields the inventory lists, whatever the shape around them", () => {
+    const shapes = defineCapability({
+      name: "shapes",
+      requiredBindings: [],
+      databases: {
+        app: {
+          binding: "DB",
+          tables: {
+            people: z.object({
+              emails: z.array(pii(z.string())),
+              pair: z.tuple([z.string(), secret(z.string())]),
+              tags: z.set(pii(z.string())),
+              both: z.intersection(z.object({ a: z.string() }), z.object({ phone: pii(z.string()) })),
+              required: z
+                .object({ ssn: pii(z.string()) })
+                .optional()
+                .nonoptional(),
+              piped: z.string().pipe(pii(z.string())),
+              extra: z.object({}).catchall(phi(z.string())),
+            }),
+          },
+        },
+      },
+      kvNamespaces: {
+        cache: {
+          binding: "CACHE",
+          stores: { tokens: { prefix: "t", key: z.object({ id: z.string() }), value: secret(z.string()) } },
+        },
+      },
+    });
+    const covered = scanCapabilities("api", [shapes])
+      .filter((finding) => finding.status === "covered")
+      .map((finding) => ({ schema: finding.schema, path: finding.path, class: finding.class }));
+    const listed = privacyInventory([shapes]).schemas.flatMap((schema) =>
+      schema.fields.map((field) => ({ schema: schema.name, path: field.path, class: field.class })),
+    );
+    expect(covered).toEqual(listed);
+    expect(covered).toContainEqual({ schema: "tokens", path: "value", class: "secret" });
+    expect(covered).toContainEqual({ schema: "people", path: "emails[]", class: "pii" });
+    expect(covered).toContainEqual({ schema: "people", path: "required.ssn", class: "pii" });
+    expect(covered).toContainEqual({ schema: "people", path: "piped", class: "pii" });
   });
 });

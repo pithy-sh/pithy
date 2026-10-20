@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { join } from "node:path";
+import type { Dirent } from "node:fs";
+import { readdir } from "node:fs/promises";
+import { join, sep } from "node:path";
 import { parse } from "comment-json";
 import { readFileOutcome } from "../project/readOptionalFile";
 
@@ -15,15 +17,23 @@ import { readFileOutcome } from "../project/readOptionalFile";
  *
  * ## Three states, because Pithy does not own the toolchain
  *
- * - **`enforced`** — a Biome config was found and `suspicious/noConsole` is `error` somewhere in it, and nothing
- *   turns it back down.
- * - **`off`** — a Biome config was found and the rule is not `error`: absent, `warn`, `info`, turned off by an
- *   override, or the linter disabled. A warning is off on purpose: it fails no lint run, so it closes nothing.
- *   `pithy deploy` refuses this state, and it is the only hard failure the privacy work adds.
- * - **`unverifiable`** — there is no Biome config to read, it does not parse, there are two of them, or it
- *   `extends` a config the rule is not stated beside. An adopter may lint with something else, or in CI, or by
- *   review, and refusing to deploy over a file Pithy does not own would be too blunt. Deploy proceeds, says so,
- *   and the manifest carries the state with its reason.
+ * - **`enforced`** — a Biome config was found and `suspicious/noConsole` is `error`, allowing no method, for every
+ *   Worker source file: each `.ts` under `apps/*\/src`, tests aside.
+ * - **`off`** — a Biome config was found and, for some Worker source file, the rule is not `error`: absent,
+ *   `warn`, `info`, turned off by an override that covers the file, `options.allow` letting a method through, the
+ *   linter disabled for it, or `files.includes` or `linter.includes` leaving it unlinted. A warning is off on
+ *   purpose: it fails no lint run, so it closes nothing. `pithy deploy` refuses this state, and it is the only
+ *   hard failure the privacy work adds.
+ * - **`unverifiable`** — there is no Biome config to read, it does not parse, there are two of them, a Worker
+ *   holds a nested one, it scopes a setting with a glob Pithy will not guess Biome's reading of, or it `extends`
+ *   a config the rule is not stated beside. An adopter may lint with something else, or in CI, or by review, and
+ *   refusing to deploy over a file Pithy does not own would be too blunt. Deploy proceeds, says so, and the
+ *   manifest carries the state with its reason.
+ *
+ * **It reads the rule per file, the way Biome does.** An override applies only to the files its `includes`
+ * covers, so an override at `error` on `scripts/**` closes nothing in a Worker, and one at `off` on tests opens
+ * nothing. Each Worker source file in the project is read through the root's includes and every override that
+ * covers it, in order, and the gate is the first file that is not closed — named in the reason.
  *
  * **`unverifiable` is not a hiding place.** Deleting `biome.jsonc` to escape a failing gate moves a project from
  * `enforced` to a state the dashboard renders as unverified on every read. The one state Pithy never reports is
@@ -64,59 +74,172 @@ export type ConsoleGateReading =
     }
   | { state: "unverifiable"; file: string | null; reason: string };
 
-/** A rule level as Biome states it: a string, or `{ level }`. */
-function levelOf(value: unknown): string | undefined {
-  if (typeof value === "string") return value;
-  if (typeof value === "object" && value !== null && "level" in value) {
-    const level = (value as { level: unknown }).level;
+/**
+ * The Worker source file the gate reads for when it is handed none: the path every Worker's entry sits at. A
+ * project's real files are read by {@link readConsoleGate}; this is what {@link consoleGateOf} assumes alone.
+ */
+export const DEFAULT_WORKER_SOURCE = "apps/app/src/index.ts";
+
+/** A rule as Biome states it — a string or `{ level, options }` — or `undefined` where `rules` states none. */
+function ruleOf(rules: unknown): unknown {
+  if (typeof rules !== "object" || rules === null) return undefined;
+  const suspicious = (rules as Record<string, unknown>).suspicious;
+  if (typeof suspicious === "string") return suspicious === "off" ? "off" : undefined;
+  if (typeof suspicious !== "object" || suspicious === null) return undefined;
+  return (suspicious as Record<string, unknown>).noConsole;
+}
+
+/** A rule's level: the string itself, or `{ level }`'s. */
+function levelOf(rule: unknown): string | undefined {
+  if (typeof rule === "string") return rule;
+  if (typeof rule === "object" && rule !== null && "level" in rule) {
+    const level = (rule as { level: unknown }).level;
     return typeof level === "string" ? level : undefined;
   }
   return undefined;
 }
 
-/** `rules.suspicious.noConsole`'s level, where `rules` states one — a group set to `off` counts as `off`. */
-function ruleLevel(rules: unknown): string | undefined {
-  if (typeof rules !== "object" || rules === null) return undefined;
-  const suspicious = (rules as Record<string, unknown>).suspicious;
-  if (typeof suspicious === "string") return suspicious === "off" ? "off" : undefined;
-  if (typeof suspicious !== "object" || suspicious === null) return undefined;
-  return levelOf((suspicious as Record<string, unknown>).noConsole);
+/** The console methods a rule's `options.allow` lets through. Any one of them is `console` left open. */
+function allowedOf(rule: unknown): string[] {
+  if (typeof rule !== "object" || rule === null) return [];
+  const options = (rule as { options?: unknown }).options;
+  if (typeof options !== "object" || options === null) return [];
+  const allow = (options as { allow?: unknown }).allow;
+  return Array.isArray(allow) ? allow.map(String) : [];
 }
 
-/** A config's `linter` block, or an empty one. */
-function linterOf(block: unknown): { enabled?: unknown; rules?: unknown } {
+/** A block's `key` object, or an empty one. */
+function blockOf(block: unknown, key: string): Record<string, unknown> {
   if (typeof block !== "object" || block === null) return {};
-  const linter = (block as Record<string, unknown>).linter;
-  return typeof linter === "object" && linter !== null ? (linter as { enabled?: unknown; rules?: unknown }) : {};
+  const inner = (block as Record<string, unknown>)[key];
+  return typeof inner === "object" && inner !== null ? (inner as Record<string, unknown>) : {};
 }
 
-/** Decide the gate from a parsed Biome config. `file` is the config's project-relative name. */
-export function consoleGateOf(config: unknown, file: string): ConsoleGateReading {
-  const linter = linterOf(config);
-  if (linter.enabled === false) {
+/** Raised for a glob this module cannot read the way Biome would. The reading is `unverifiable`, never a guess. */
+class UnreadableGlob extends Error {}
+
+/**
+ * One Biome glob as a matcher. `*` stays inside a segment and `**` spans any number of them; a glob is matched
+ * against the project-relative path. Anything richer — `?`, `[…]`, `{…}`, an escape — is not guessed at.
+ */
+function globMatcher(glob: string): (path: string) => boolean {
+  if (/[?[\]{}\\]/.test(glob)) throw new UnreadableGlob(glob);
+  const parts = (glob.startsWith("./") ? glob.slice(2) : glob).split("/");
+  const literal = (text: string) => text.replace(/[.+^$()|]/g, "\\$&");
+  let source = "^";
+  for (const [index, part] of parts.entries()) {
+    const last = index === parts.length - 1;
+    if (part === "**") source += last ? ".*" : "(?:[^/]+/)*";
+    else source += part.split("*").map(literal).join("[^/]*") + (last ? "" : "/");
+  }
+  const pattern = new RegExp(`${source}$`);
+  return (path) => pattern.test(path);
+}
+
+/**
+ * Whether an `includes` list covers a path: the last pattern that matches decides, and a `!` pattern excludes.
+ * A negation also excludes a directory the path sits in, the way `!**\/dist` does. A list with no positive
+ * pattern is not guessed at, and neither is a positive pattern that names only a directory the path is in.
+ */
+function covers(includes: unknown, path: string): boolean {
+  if (!Array.isArray(includes)) throw new UnreadableGlob(String(includes));
+  const prefixes = path
+    .split("/")
+    .slice(0, -1)
+    .map((_, index, segments) => segments.slice(0, index + 1).join("/"));
+  let covered = false;
+  let positive = false;
+  for (const raw of includes) {
+    if (typeof raw !== "string") throw new UnreadableGlob(String(raw));
+    const negated = raw.startsWith("!");
+    const matches = globMatcher(raw.replace(/^!+/, ""));
+    if (negated) {
+      if (matches(path) || prefixes.some(matches)) covered = false;
+      continue;
+    }
+    positive = true;
+    if (matches(path)) covered = true;
+    else if (prefixes.some(matches)) throw new UnreadableGlob(raw);
+  }
+  if (!positive) throw new UnreadableGlob(includes.join(", "));
+  return covered;
+}
+
+/** What the rule is for one file: on, or the first reason it is not. */
+type FileReading =
+  | { state: "enforced" }
+  | { state: "disabled"; why: string }
+  | { state: "lowered"; why: string }
+  | { state: "unstated" };
+
+/** The rule's effect on one project-relative file, root config first and each override after it in order. */
+function readingFor(config: unknown, file: string, path: string): FileReading {
+  const files = blockOf(config, "files");
+  if (files.includes !== undefined && !covers(files.includes, path)) {
+    return { state: "disabled", why: `${file}'s \`files.includes\` leaves ${path} unread, so nothing lints it.` };
+  }
+  const linter = blockOf(config, "linter");
+  if (linter.includes !== undefined && !covers(linter.includes, path)) {
+    return { state: "disabled", why: `${file}'s \`linter.includes\` leaves ${path} unlinted.` };
+  }
+  let enabled = linter.enabled !== false;
+  let rule = ruleOf(linter.rules);
+  const overrides = (config as { overrides?: unknown })?.overrides;
+  for (const override of Array.isArray(overrides) ? overrides : []) {
+    const includes = (override as { includes?: unknown })?.includes;
+    if (includes !== undefined && !covers(includes, path)) continue;
+    const overridden = blockOf(override, "linter");
+    if (typeof overridden.enabled === "boolean") enabled = overridden.enabled;
+    const stated = ruleOf(overridden.rules);
+    if (stated !== undefined) rule = stated;
+  }
+  if (!enabled) return { state: "disabled", why: `The linter is disabled for ${path} in ${file}.` };
+  const level = levelOf(rule);
+  if (level === undefined) return { state: "unstated" };
+  if (level !== "error") {
     return {
-      state: "off",
-      file,
-      cause: "disabled",
-      reason: `The linter is disabled in ${file}, so ${NO_CONSOLE_RULE} never runs.`,
+      state: "lowered",
+      why: `${NO_CONSOLE_RULE} is \`${level}\` for ${path} in ${file}, and only \`error\` fails a lint run.`,
     };
   }
-  const overrides = Array.isArray((config as { overrides?: unknown })?.overrides)
-    ? ((config as { overrides: unknown[] }).overrides as unknown[])
-    : [];
-  const levels = [ruleLevel(linter.rules), ...overrides.map((override) => ruleLevel(linterOf(override).rules))].filter(
-    (level): level is string => level !== undefined,
-  );
-  const lowered = levels.find((level) => level !== "error");
-  if (levels.includes("error") && lowered === undefined) return { state: "enforced", file };
-  if (lowered !== undefined) {
+  const allowed = allowedOf(rule);
+  if (allowed.length > 0) {
     return {
-      state: "off",
-      file,
-      cause: "lowered",
-      reason: `${NO_CONSOLE_RULE} is \`${lowered}\` in ${file}, and only \`error\` fails a lint run.`,
+      state: "lowered",
+      why: `${NO_CONSOLE_RULE} allows \`console.${allowed.join("`, `console.")}\` for ${path} in ${file}.`,
     };
   }
+  return { state: "enforced" };
+}
+
+/**
+ * Decide the gate from a parsed Biome config, for the Worker source files it must cover. `file` is the config's
+ * project-relative name; `sources` are project-relative paths, {@link DEFAULT_WORKER_SOURCE} when none are known.
+ * Every file is read the way Biome would read it — `files.includes`, `linter.includes`, then each override whose
+ * `includes` covers it, in order — and the gate is `enforced` only when every one of them is.
+ */
+export function consoleGateOf(
+  config: unknown,
+  file: string,
+  sources: readonly string[] = [DEFAULT_WORKER_SOURCE],
+): ConsoleGateReading {
+  const readings: FileReading[] = [];
+  try {
+    for (const path of sources.length > 0 ? sources : [DEFAULT_WORKER_SOURCE])
+      readings.push(readingFor(config, file, path));
+  } catch (error) {
+    if (!(error instanceof UnreadableGlob)) throw error;
+    return {
+      state: "unverifiable",
+      file,
+      reason: `${file} scopes a setting with \`${error.message}\`, a pattern Pithy will not guess Biome's reading of.`,
+    };
+  }
+  const disabled = readings.find((reading) => reading.state === "disabled");
+  if (disabled?.state === "disabled") return { state: "off", file, cause: "disabled", reason: disabled.why };
+  const lowered = readings.find((reading) => reading.state === "lowered");
+  if (lowered?.state === "lowered") return { state: "off", file, cause: "lowered", reason: lowered.why };
+  if (readings.every((reading) => reading.state === "enforced")) return { state: "enforced", file };
   const extended = (config as { extends?: unknown })?.extends;
   if (extended !== undefined && !(Array.isArray(extended) && extended.length === 0)) {
     return {
@@ -126,6 +249,52 @@ export function consoleGateOf(config: unknown, file: string): ConsoleGateReading
     };
   }
   return { state: "off", file, cause: "unstated", reason: `${NO_CONSOLE_RULE} is not on in ${file}.` };
+}
+
+/** What a read of `apps/` found: each Worker's source files and any Biome config nested inside a Worker. */
+interface AppsRead {
+  sources: string[];
+  nested: string[];
+}
+
+/** A directory's entries, or none when it is not there. */
+async function entriesOf(dir: string): Promise<Dirent[]> {
+  try {
+    return await readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Each Worker's source — `.ts` under `apps/*\/src`, tests aside — and every Biome config at a Worker's root or
+ * inside its `src`, where it would govern that source. Only `src` is read below a Worker, so its dependencies
+ * and build output are never entered.
+ */
+async function readApps(projectDir: string): Promise<AppsRead> {
+  const found: AppsRead = { sources: [], nested: [] };
+  const isConfig = (name: string) => (BIOME_CONFIG_FILES as readonly string[]).includes(name);
+  for (const app of await entriesOf(join(projectDir, "apps"))) {
+    if (!app.isDirectory()) continue;
+    const root = `apps/${app.name}`;
+    for (const entry of await entriesOf(join(projectDir, root))) {
+      if (entry.isFile() && isConfig(entry.name)) found.nested.push(`${root}/${entry.name}`);
+    }
+    let below: string[] = [];
+    try {
+      below = await readdir(join(projectDir, root, "src"), { recursive: true });
+    } catch {
+      continue;
+    }
+    for (const relative of below.map((path) => path.split(sep).join("/")).sort()) {
+      const path = `${root}/src/${relative}`;
+      const name = relative.slice(relative.lastIndexOf("/") + 1);
+      if (isConfig(name)) found.nested.push(path);
+      else if (path.endsWith(".ts") && !path.endsWith(".test.ts")) found.sources.push(path);
+    }
+  }
+  found.nested.sort();
+  return found;
 }
 
 /**
@@ -162,5 +331,14 @@ export async function readConsoleGate(projectDir: string): Promise<ConsoleGateRe
   } catch {
     return { state: "unverifiable", file: only.file, reason: `${only.file} does not parse.` };
   }
-  return consoleGateOf(config, only.file);
+  const apps = await readApps(projectDir);
+  const [nested] = apps.nested;
+  if (nested !== undefined) {
+    return {
+      state: "unverifiable",
+      file: nested,
+      reason: `${nested} is a nested Biome config, and Pithy reads only the root one, so it will not say what it turns off.`,
+    };
+  }
+  return consoleGateOf(config, only.file, apps.sources);
 }

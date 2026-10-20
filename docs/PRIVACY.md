@@ -72,11 +72,11 @@ HTTP responses are not gated. Returning a user their own email is correct.
 
 ## The masked view
 
-`redact(Schema, value)` returns a copy in which every unmarked field is verbatim and every marked one is its class's mask. It walks nested objects, arrays, records, tuples, a marked field inside an optional block, a whole marked object, a codec field and a JSON column. It reads the app shape — what `Schema.parse(row)` returns — and never mutates its argument. `null` and `undefined` stay as they are. A union is redacted by the first option the value parses as, or by every option's markers when none does.
+`redact(Schema, value)` returns a copy in which every unmarked field is verbatim and every marked one is its class's mask. It walks nested objects, an object's catchall, arrays, records, tuples, a marked field inside an optional block, a whole marked object, a codec field, a JSON column and a lazy schema, so a recursive one is masked at every depth. It reads the app shape — what `Schema.parse(row)` returns — and never mutates its argument. `null` and `undefined` stay as they are. A union is redacted by every option the value parses as, so a looser option that strips a marked key cannot let it through, and by every option's markers when none parses.
 
 **The mask is a placeholder, not a hash.** `[pii]` loses correlation: two lines about one person look unrelated. A keyed hash would keep it, and an email is low-entropy enough to brute-force from an unkeyed one — so it would need a secret salt, and that would pull `@pithy-sh/secrets` into core. Correlation is what the unmarked id beside it is for.
 
-`classifyPrivacy(Schema)` lists every marked path and its class — `email`, `address.line1`, `devices[].token` — and `hasPrivacy(Schema, "phi")` is the boolean a route or a guard branches on.
+`classifyPrivacy(Schema)` lists every marked path and its class — `email`, `address.line1`, `devices[].token` — and `hasPrivacy(Schema, "phi")` is the boolean a route or a guard branches on. It does not follow a `z.lazy`, because a walk over a schema alone has nothing to stop it on a recursive one, so a marker that lives only behind a lazy is masked by `redact` but missing from the list and the inventory. A recursive object written with a getter is walked.
 
 ## Declare what the project handles
 
@@ -102,9 +102,11 @@ A structured log goes through the logger, where the brand stops a marked value. 
 
 Three states, because Pithy does not own your toolchain:
 
-- **`enforced`** — a Biome config was read and the rule is `error`. A `warn` is not enforced: it fails no lint run.
-- **`off`** — a Biome config was read and the rule is not `error`. Deploy refuses.
-- **`unverifiable`** — no Biome config Pithy can read: none at the root, one that does not parse, both `biome.json` and `biome.jsonc`, or one that `extends` a config without stating the rule. Deploy proceeds, says so on every run, and the manifest carries `unverifiable` with the reason.
+- **`enforced`** — a Biome config was read and the rule is `error`, allowing no method, for every Worker source file: each `.ts` under `apps/*/src`, tests aside. A `warn` is not enforced: it fails no lint run.
+- **`off`** — a Biome config was read and, for some Worker source file, the rule is not `error`: unstated, lowered by an override that covers the file, letting a method through with `options.allow`, or the file left unlinted by a disabled linter, `files.includes` or `linter.includes`. Deploy refuses, and names the file.
+- **`unverifiable`** — no Biome config Pithy can read: none at the root, one that does not parse, both `biome.json` and `biome.jsonc`, a nested config inside a Worker, a glob Pithy will not guess Biome's reading of, or one that `extends` a config without stating the rule. Deploy proceeds, says so on every run, and the manifest carries `unverifiable` with the reason.
+
+The gate reads the rule per file, the way Biome does. An override applies only to the files its `includes` covers, so an override at `error` on `scripts/**` closes nothing in a Worker, and an override at `off` on your tests opens nothing.
 
 `unverifiable` is honest, and it is not a hiding place. Deleting `biome.jsonc` to escape a failing gate moves a project from `enforced` to a state the dashboard renders as unverified, on every read. Pithy cannot make a lint rule impossible to turn off — you own `biome.jsonc` — and this page will not pretend otherwise. What it makes impossible to turn off is the visibility. The one state Pithy never reports is a false `enforced`.
 
@@ -142,7 +144,7 @@ The declared classes and the gate's verdict reach the Worker as the `PITHY_PRIVA
 
 ## Find what is not marked
 
-`pithy privacy scan` walks the same storage schemas and reads each field's name. `email`, `phone`, `ipAddress`, `dateOfBirth`, `ssn`, `diagnosis` and the rest are candidates, each with the class it suggests and the marker to apply. A marked field is covered. It exits 0, edits nothing, and fails no build. Which of your fields are regulated is a question for your jurisdiction, your sector and your counsel — Pithy surfaces candidates and the marking stays yours.
+`pithy privacy scan` walks the same storage schemas, with the same walk, and reads each field's name. `email`, `phone`, `ipAddress`, `dateOfBirth`, `ssn`, `diagnosis` and the rest are candidates, each with the class it suggests and the marker to apply. A marked field is covered. It exits 0, edits nothing, and fails no build. Which of your fields are regulated is a question for your jurisdiction, your sector and your counsel — Pithy surfaces candidates and the marking stays yours.
 
 ## What this does not do
 

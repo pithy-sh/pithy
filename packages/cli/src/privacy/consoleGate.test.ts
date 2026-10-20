@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -75,6 +75,48 @@ describe("consoleGateOf", () => {
   });
 });
 
+describe("consoleGateOf, read for the files the rule must cover", () => {
+  const rule = (level: unknown) => ({ rules: { suspicious: { noConsole: level } } });
+
+  test("is not enforced by an override at `error` that covers no Worker source", () => {
+    const gate = consoleGateOf({ overrides: [{ includes: ["scripts/**"], linter: rule("error") }] }, "biome.jsonc");
+    expect(gate).toMatchObject({ state: "off", cause: "unstated" });
+  });
+
+  test("stays enforced when an override lowers the rule only on files that are not Worker source", () => {
+    const config = {
+      linter: rule("error"),
+      overrides: [{ includes: ["**/*.test.ts"], linter: rule("off") }],
+    };
+    expect(consoleGateOf(config, "biome.jsonc").state).toBe("enforced");
+  });
+
+  test("is off when the rule allows any console method", () => {
+    const gate = consoleGateOf({ linter: rule({ level: "error", options: { allow: ["log"] } }) }, "biome.jsonc");
+    expect(gate).toMatchObject({ state: "off", cause: "lowered" });
+    expect(gate.state === "off" && gate.reason).toContain("log");
+  });
+
+  test("is off when an override covering Worker source disables the linter", () => {
+    const config = { linter: rule("error"), overrides: [{ includes: ["apps/**"], linter: { enabled: false } }] };
+    expect(consoleGateOf(config, "biome.jsonc")).toMatchObject({ state: "off", cause: "disabled" });
+  });
+
+  test("is off when files or linter includes leave Worker source unlinted", () => {
+    const files = { files: { includes: ["packages/**"] }, linter: rule("error") };
+    expect(consoleGateOf(files, "biome.jsonc")).toMatchObject({ state: "off", cause: "disabled" });
+    const linter = { linter: { includes: ["**", "!apps/**"], ...rule("error") } };
+    expect(consoleGateOf(linter, "biome.jsonc")).toMatchObject({ state: "off", cause: "disabled" });
+    const covered = { files: { includes: ["**", "!**/dist"] }, linter: rule("error") };
+    expect(consoleGateOf(covered, "biome.jsonc").state).toBe("enforced");
+  });
+
+  test("is unverifiable, never enforced, for a glob it cannot read the way Biome does", () => {
+    const config = { linter: rule("error"), overrides: [{ includes: ["apps/{api,web}/**"], linter: rule("off") }] };
+    expect(consoleGateOf(config, "biome.jsonc").state).toBe("unverifiable");
+  });
+});
+
 describe("readConsoleGate", () => {
   test("reads biome.jsonc at the project root, comments and all", async () => {
     await writeFile(
@@ -110,5 +152,28 @@ describe("readConsoleGate", () => {
     const gate = await readConsoleGate(dir);
     expect(gate.state).toBe("unverifiable");
     expect(gate.state === "unverifiable" && gate.reason).toContain("both");
+  });
+
+  test("reads the gate for each Worker source file there is, so a lowered subdirectory is found", async () => {
+    await mkdir(join(dir, "apps/api/src/legacy"), { recursive: true });
+    await writeFile(join(dir, "apps/api/src/index.ts"), "");
+    await writeFile(join(dir, "apps/api/src/legacy/old.ts"), "");
+    const config = {
+      linter: { rules: { suspicious: { noConsole: "error" } } },
+      overrides: [{ includes: ["apps/api/src/legacy/**"], linter: { rules: { suspicious: { noConsole: "off" } } } }],
+    };
+    await writeFile(join(dir, "biome.jsonc"), JSON.stringify(config));
+    const gate = await readConsoleGate(dir);
+    expect(gate).toMatchObject({ state: "off", cause: "lowered" });
+    expect(gate.state === "off" && gate.reason).toContain("apps/api/src/legacy/old.ts");
+  });
+
+  test("is unverifiable when a Worker holds a nested Biome config Pithy does not read", async () => {
+    await mkdir(join(dir, "apps/api/src"), { recursive: true });
+    await writeFile(join(dir, "apps/api/src/index.ts"), "");
+    await writeFile(join(dir, "biome.jsonc"), JSON.stringify({ overrides: [NO_CONSOLE_OVERRIDE] }));
+    await writeFile(join(dir, "apps/api/biome.jsonc"), JSON.stringify({ root: false, linter: { enabled: false } }));
+    const gate = await readConsoleGate(dir);
+    expect(gate).toMatchObject({ state: "unverifiable", file: "apps/api/biome.jsonc" });
   });
 });

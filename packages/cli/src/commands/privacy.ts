@@ -125,11 +125,21 @@ export async function classesToDeclare(
   return ask();
 }
 
-/** Whether any Worker under `apps/` composes the audit capability. A Worker that will not load counts as not. */
+/**
+ * Whether any Worker under `apps/` composes the audit capability. A Worker that will not load counts as not.
+ *
+ * Each config is read `fresh`. `pithy add audit` loads the target Worker's config before it wires audit in, then
+ * offers privacy, and a yes there runs `enable`, which asks this — so a cached import is the config from before
+ * audit was added, and the run would offer audit again (#273's reason, met on this path).
+ */
 export async function composesAudit(projectDir: string): Promise<boolean> {
   for (const worker of await discoverWorkers(projectDir)) {
     try {
-      if (allCapabilities(await loadWorkerConfig(worker.dir)).some((capability) => capability.name === "audit")) {
+      if (
+        allCapabilities(await loadWorkerConfig(worker.dir, { fresh: true })).some(
+          (capability) => capability.name === "audit",
+        )
+      ) {
         return true;
       }
     } catch {
