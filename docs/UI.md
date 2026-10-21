@@ -12,7 +12,7 @@ pithy ui add react --worker api
 
 It scaffolds the client into `apps/api/`, beside the Worker that serves it, and edits three files to connect them.
 
-- **Writes the client.** A Vite entry document, a Vite config wired with the Cloudflare and React plugins, two tsconfigs, ambient types, an SPA entry, a router, styles, the one module that narrows every capability's client projection, Pithy's sign-in screens when the Worker composes `auth`, its paywall, pricing and subscription screens when it composes `payments`, the account chooser when it composes `organization`, and one screen of your own.
+- **Writes the client.** A Vite entry document, a Vite config wired with the Cloudflare and React plugins, two tsconfigs, ambient types, an SPA entry, a router, styles, the one module that narrows every capability's client projection, Pithy's sign-in screens and the screens a suspended or deleted account lands on when the Worker composes `auth`, its paywall, pricing and subscription screens when it composes `payments`, the account chooser when it composes `organization`, and one screen of your own.
 - **Wires the asset routing.** An `assets` stanza in `wrangler.jsonc`: SPA fallback for anything the browser asks for, and an explicit allowlist of the API paths the Worker must answer itself.
 - **Declares how it starts.** A `dev` block in `pithy.worker.jsonc` so `pithy dev` runs Vite for this Worker instead of `wrangler dev` — one process serving the SPA and the API together.
 - **Records the build.** A `ui` block so `pithy deploy` builds the client before shipping the Worker.
@@ -56,6 +56,9 @@ apps/api/
     routes/
       pithy/sign-in.tsx      new   --auth  and otp.tsx, callback.tsx — Pithy's screens
       pithy/sign-in.test.tsx new   --auth  the gate over the magic link's callback URL
+      pithy/otp.test.tsx     new   --auth  the gate that sends a refused account on to its screen
+      pithy/account-suspended.tsx
+                             new   --auth  and account-deleted.tsx, organization-suspended.tsx
       pithy/paywall.tsx      new   --payments  and pricing.tsx, subscription.tsx
       pithy/choose-organization.tsx
                              new   --organization  and its seeded gate
