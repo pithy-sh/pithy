@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import type { z } from "zod";
-import { privacyClass } from "./classes";
-import { privacyOf } from "./classify";
-import type { Redacted } from "./types";
+import { privacyClass, strongestPrivacyClass } from "./classes";
+import { classifyPrivacy, opaqueOutput, privacyOf } from "./classify";
+import type { RedactedOutput } from "./types";
 
 /**
  * **The masked view: safe for a log, an audit record and an error detail** (#132).
@@ -34,7 +34,18 @@ import type { Redacted } from "./types";
  * chooses a branch by testing the value against a schema. That test is what leaked before: the value `redact` holds
  * is the app shape, and `safeParse` runs a codec's or a transform's wire side, so the option that marks a field
  * refuses it and a looser one is applied in its place. Walking every branch needs no guess, and it is the same walk
- * `classifyPrivacy` does, so the two agree on every position.
+ * `classifyPrivacy` does, so the two agree on every position the schema decides.
+ *
+ * **A transform over a marked input is masked whole.** What `z.object({ email: pii(z.email()) }).transform(toAccount)`
+ * returns says nothing about where the email went — a class instance, a renamed field, a copy under a second key — so
+ * the output is masked whole with the strongest class its input carries (`secret`, `phi`, `pci`, an adopter's class,
+ * then `pii`), as its placeholder. A custom check, an `any` or an `unknown` on a pipe's output side is as opaque. A
+ * transform over an unmarked input, and a codec or a pipe into a schema, are walked like any other branch.
+ * `classifyPrivacy` lists the position, and `Redacted<T>` types it as a `string`.
+ *
+ * **A class instance or a date where a branch with a mark inside reaches it is masked whole** too, because no schema
+ * kind walks into one: in `z.union([z.object({ e: pii(z.email()) }), z.instanceof(Account)])` an `Account` comes back
+ * as `[pii]`. This is the one over-masking `classifyPrivacy` cannot list, because it depends on the value.
  *
  * **It may mask a field only some branches mark.** In `z.union([z.object({ e: pii(z.email()) }), z.object({ e:
  * z.number() })])` a `{ e: 5 }` comes back `{ e: "[pii]" }`. That over-masking is the price of never guessing, it is
@@ -51,7 +62,8 @@ import type { Redacted } from "./types";
  * **A record's or a map's key is redacted by its key schema**, because a key is stored and logged as surely as a
  * value: a record keyed by a `pii()` email masks each key. A masked key never takes the name of a key that stayed
  * as it was, nor of another masked key: two keys that mask alike come back as `[pii]` and `[pii] #2`, so the
- * result holds as many entries as the value did.
+ * result holds as many entries as the value did. A set's masked elements are numbered apart the same way, so it keeps
+ * every element, and a map's object key is redacted field by field.
  *
  * It never mutates its argument, and it never throws on a value that does not match the schema: it masks what it
  * can name and copies the rest.
@@ -131,6 +143,8 @@ function distinct(key: string, taken: (candidate: string) => boolean): string {
  */
 interface Plan {
   mask?: string;
+  /** Whether `mask` masks the position whole because what is there is opaque, so it takes the class's placeholder. */
+  whole?: boolean;
   /** Whether some object schema reached this position, so a key no branch names is one parse strips. */
   objects: boolean;
   /** Whether some branch keeps every key here: a loose object, a catchall, a record, a transform, an `unknown`. */
@@ -164,6 +178,32 @@ function planAt(table: Map<string | number, Plan>, at: string | number): Plan {
   return plan;
 }
 
+/**
+ * A value no schema kind walks into: a class instance, a `Date`, an `Error` — any object that is not a plain object,
+ * an array, a map or a set.
+ */
+function isOpaqueValue(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !isPlainObject(value) &&
+    !Array.isArray(value) &&
+    !(value instanceof Map) &&
+    !(value instanceof Set)
+  );
+}
+
+/** Mask a position whole with the strongest class `schema` carries anywhere; `false` when it carries none. */
+function maskedWhole(schema: z.ZodType, plan: Plan): boolean {
+  const strongest = strongestPrivacyClass(classifyPrivacy(schema).map((field) => field.class));
+  if (strongest === undefined) return false;
+  if (plan.mask === undefined) {
+    plan.mask = strongest;
+    plan.whole = true;
+  }
+  return true;
+}
+
 /** Schemas whose output is opaque to this walk: they keep whatever object the value is, every key of it. */
 const KEEPS_ALL: ReadonlySet<string> = new Set(["transform", "any", "unknown", "custom"]);
 
@@ -181,6 +221,8 @@ function walk(schema: z.ZodType, value: unknown, plan: Plan): void {
     plan.mask ??= marked;
     return;
   }
+  // A class instance or a date where a branch with a mark inside reached it: what the mark became is not readable.
+  if (isOpaqueValue(value) && maskedWhole(schema, plan)) return;
 
   const node = unwrapped(schema);
   const def = defOf(node);
@@ -248,6 +290,8 @@ function walk(schema: z.ZodType, value: unknown, plan: Plan): void {
       if (def.right) walk(def.right, value, plan);
       return;
     case "pipe":
+      // A transform's output, or a custom check's, is opaque: when the input carries a mark, the output is masked whole.
+      if (def.in && def.out && opaqueOutput(def.out) && maskedWhole(def.in, plan)) return;
       // Both sides: a codec's wire side and its app side, a plain pipe's input and its output, a transform's input.
       if (def.in) walk(def.in, value, plan);
       if (def.out) walk(def.out, value, plan);
@@ -261,10 +305,9 @@ function walk(schema: z.ZodType, value: unknown, plan: Plan): void {
   }
 }
 
-/** A key, redacted by its plan, and whether the plan masked it. */
+/** A key, redacted by its plan — masked, or a map's object key redacted field by field — and whether it was masked. */
 function redactedKey(plan: Plan | undefined, key: unknown): { key: unknown; masked: boolean } {
-  if (!plan || plan.mask === undefined || key === null || key === undefined) return { key, masked: false };
-  return { key: mask(plan.mask, key), masked: true };
+  return { key: applied(plan, key), masked: plan?.mask !== undefined && key !== null && key !== undefined };
 }
 
 /**
@@ -289,11 +332,26 @@ function redactedEntries<K>(entries: readonly (readonly [K, unknown, Plan | unde
  */
 function applied(plan: Plan | undefined, value: unknown): unknown {
   if (!plan || value === null || value === undefined) return value;
-  if (plan.mask !== undefined) return mask(plan.mask, value);
+  if (plan.mask !== undefined) return plan.whole ? `[${plan.mask}]` : mask(plan.mask, value);
   const limit = plan.elements ?? Number.POSITIVE_INFINITY;
   if (Array.isArray(value))
     return value.slice(0, Math.min(value.length, limit)).map((item, index) => applied(plan.inner.get(index), item));
-  if (value instanceof Set) return new Set([...value].map((item, index) => applied(plan.inner.get(index), item)));
+  if (value instanceof Set) {
+    // Masked elements alike would merge into one; each takes a name no kept element and no earlier masked one holds.
+    const items = [...value].map((item, index) => {
+      const at = plan.inner.get(index);
+      return { item: applied(at, item), masked: at?.mask !== undefined && item !== null && item !== undefined };
+    });
+    const taken = new Set<unknown>(items.filter((each) => !each.masked).map((each) => each.item));
+    return new Set(
+      items.map((each) => {
+        if (!each.masked) return each.item;
+        const name = distinct(String(each.item), (candidate) => taken.has(candidate));
+        taken.add(name);
+        return name;
+      }),
+    );
+  }
   if (value instanceof Map) {
     const entries = [...value].map(([key, item], index) => [key, item, plan.keys.get(index)] as const);
     const named = redactedEntries(entries);
@@ -316,8 +374,8 @@ function applied(plan: Plan | undefined, value: unknown): unknown {
  * The masked view of a value, against the schema it is an instance of. See the module note for exactly what it
  * reads, why it fails closed, and why the mask is a placeholder.
  */
-export function redact<S extends z.ZodType>(schema: S, value: z.output<S>): Redacted<z.output<S>> {
+export function redact<S extends z.ZodType>(schema: S, value: z.output<S>): RedactedOutput<S> {
   const plan = newPlan();
   walk(schema, value, plan);
-  return applied(plan, value) as Redacted<z.output<S>>;
+  return applied(plan, value) as RedactedOutput<S>;
 }

@@ -296,8 +296,9 @@ describe("redact", () => {
     const Pipe = z.object({ s: pii(z.string()) }).pipe(z.object({ s: z.string() }) as z.ZodType as never);
     expect(redact(Pipe, Pipe.parse({ s: "S-1" }))).toEqual({ s: "[pii]" });
     expect(classifyPrivacy(Pipe)).toEqual([{ path: "s", class: "pii" }]);
+    // A transform's output is opaque: what its marked input became cannot be read off it, so it is masked whole.
     const Transformed = z.object({ s: pii(z.string()) }).pipe(z.transform((value) => value));
-    expect(redact(Transformed, Transformed.parse({ s: "S-1" }))).toEqual({ s: "[pii]" });
+    expect(redact(Transformed, Transformed.parse({ s: "S-1" }))).toBe("[pii]");
     const Wire = z.codec(z.object({ s: pii(z.string()) }), z.object({ s: z.string() }), {
       decode: (wire) => ({ s: String(wire.s) }),
       encode: (app) => ({ s: pii(z.string()).parse(app.s) }),
@@ -327,5 +328,69 @@ describe("redact", () => {
     expect([...map.keys()].some((key) => String(key).includes("@"))).toBe(false);
     const Unmarked = z.map(z.string(), z.string()).and(z.map(z.string(), z.string()));
     expect(redact(Unmarked, new Map([["[pii]", "kept"]])).get("[pii]")).toBe("kept");
+  });
+
+  test("masks a transform's output whole when its input carries a mark, whatever shape it returns", () => {
+    class Account {
+      constructor(
+        readonly email: string,
+        readonly id: string,
+      ) {}
+    }
+    const Instance = z.object({ e: pii(z.string()), id: z.string() }).transform((o) => new Account(o.e, o.id));
+    expect(redact(Instance, Instance.parse({ e: "S-1", id: "i" }))).toBe("[pii]");
+    const Copied = z.array(z.object({ e: pii(z.string()) }).transform((o) => ({ ...o, f: o.e })));
+    expect(redact(Copied, Copied.parse([{ e: "S-1" }]))).toEqual(["[pii]"]);
+    const Renamed = z.object({ e: pii(z.string()) }).pipe(z.transform((o) => ({ f: o.e })));
+    expect(redact(Renamed, Renamed.parse({ e: "S-1" }))).toBe("[pii]");
+    // A chain of transforms is as opaque as one, and a later schema over it does not undo that.
+    const Chained = z
+      .object({ e: pii(z.string()) })
+      .transform((o) => ({ f: String(o.e) }))
+      .pipe(z.object({ f: z.string() }));
+    expect(redact(Chained, Chained.parse({ e: "S-1" }))).toBe("[pii]");
+    // The strongest class the input carries masks it.
+    const Mixed = z.object({ e: pii(z.string()), t: secret(z.string()) }).transform((o) => ({ ...o }));
+    expect(redact(Mixed, Mixed.parse({ e: "S-1", t: "S-2" }))).toBe("[secret]");
+    // A transform over an unmarked input is left as it was.
+    const Plain = z.object({ n: z.string() }).transform((o) => ({ m: o.n }));
+    expect(redact(Plain, Plain.parse({ n: "x" }))).toEqual({ m: "x" });
+    expect(classifyPrivacy(Instance)).toEqual([
+      { path: "", class: "pii" },
+      { path: "e", class: "pii" },
+    ]);
+  });
+
+  test("masks a class instance or a date whole where a branch that reaches it carries a mark", () => {
+    class Account {
+      constructor(readonly email: string) {}
+    }
+    const Either = z.union([z.object({ e: pii(z.string()) }), z.instanceof(Account)]);
+    expect(redact(Either, new Account("S-1"))).toBe("[pii]");
+    const Dated = z.union([z.object({ e: pii(z.string()) }), z.date()]);
+    expect(redact(Dated, new Date(0))).toBe("[pii]");
+    // An unmarked branch leaves its own value alone.
+    const Kept = z.object({ at: z.date(), e: pii(z.string()) });
+    expect(redact(Kept, Kept.parse({ at: new Date(0), e: "S-1" }))).toEqual({
+      at: new Date(0),
+      e: "[pii]",
+    });
+  });
+
+  test("keeps every element of a set whose masked elements would collide", () => {
+    const Emails = z.set(pii(z.string()));
+    const masked = redact(Emails, Emails.parse(new Set(["S-1", "S-2"])));
+    expect(masked.size).toBe(2);
+    expect([...masked]).toEqual(["[pii]", "[pii] #2"]);
+    const Mixed = z.set(z.union([pii(z.email()), z.string()]));
+    const mixed = redact(Mixed, Mixed.parse(new Set(["a@b.co", "[pii]", "c@d.co"])));
+    expect(mixed.size).toBe(3);
+    expect([...mixed].some((item) => String(item).includes("@"))).toBe(false);
+  });
+
+  test("redacts a map's object key by its key schema, field by field", () => {
+    const ByOwner = z.map(z.object({ e: pii(z.string()), id: z.string() }), z.string());
+    const map = redact(ByOwner, ByOwner.parse(new Map([[{ e: "S-k", id: "i" }, "v"]])));
+    expect([...map]).toEqual([[{ e: "[pii]", id: "i" }, "v"]]);
   });
 });

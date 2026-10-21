@@ -170,6 +170,22 @@ export function privacyClasses(): PrivacyClass[] {
   return [...registry.values()];
 }
 
+/** The built-ins from the most harmful disclosure to the least: a credential, then health, then card, then identity. */
+const STRENGTH: readonly BuiltInPrivacyClass[] = ["secret", "phi", "pci"];
+
+/**
+ * The strongest of `names`, the class a value is masked with when it carries several and is masked whole: `secret`,
+ * then `phi`, then `pci`, then an adopter's class, then `pii`. An adopter registers a class because its data is more
+ * specific than `pii`, so it ranks above it; adopter classes rank among themselves by name. `undefined` for none.
+ */
+export function strongestPrivacyClass(names: Iterable<string>): string | undefined {
+  const all = [...new Set(names)];
+  const builtIn = STRENGTH.find((name) => all.includes(name));
+  if (builtIn) return builtIn;
+  const adopter = all.filter((name) => name !== "pii").sort()[0];
+  return adopter ?? (all.includes("pii") ? "pii" : undefined);
+}
+
 /** Mark a schema with a class: the introspectable `meta`, and the type-level brand. */
 function marker<const C extends string>(name: C): PrivacyMarker<C> {
   const mark = <S extends z.ZodType>(schema: S): Marked<S, C> =>

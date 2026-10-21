@@ -26,6 +26,12 @@ import { redact } from "./redact";
  * off. A placeholder fails each of them, so a walk that tested a union's option against a value would pick a looser
  * option and let a field only the stricter one marks out raw. Two kinds put a union on an intersection's right side
  * to make that happen.
+ *
+ * `redact` is handed what `parse` returned, as a caller hands it the app value, so a codec and a transform change the
+ * value it walks. Kinds put a codec in the option that marks, a transform on an unmarked field, an object piped into an
+ * unmarked one, and a transform over a marked input that returns a class instance or renames the marked field; the
+ * last two are masked whole, and a class instance holding a marked value that comes back unmasked is a failure. A set
+ * holds two elements, so masked elements that merged would show.
  */
 
 /** A marked leaf's base schema, and the value the grid puts at a marked position of it. */
@@ -67,7 +73,7 @@ const LEAVES: readonly Leaf[] = [
   {
     name: "number",
     base: () => z.number(),
-    secret: (tag) => SECRET_NUMBER + tag.length,
+    secret: (tag) => SECRET_NUMBER + ([...tag].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 100),
     key: () => z.string(),
     keySecret: (tag) => `SECRET-${tag}`,
   },
@@ -115,6 +121,17 @@ function named(side: Side): Record<string, z.ZodType> {
     ...(side.names.includes("n") ? { n: z.number() } : {}),
     ...(side.names.includes("m") ? { m: z.number() } : {}),
   };
+}
+
+/** A wire datetime decoded to a `Date`: a codec whose app value its wire side refuses. */
+const isoDate = z.codec(z.iso.datetime(), z.date(), {
+  decode: (wire: string) => new Date(wire),
+  encode: (date: Date) => date.toISOString(),
+});
+
+/** What a transform kind hands back: a class instance, which no schema names the fields of. */
+class Box {
+  constructor(readonly held: unknown) {}
 }
 
 const KINDS: readonly Kind[] = [
@@ -177,7 +194,7 @@ const KINDS: readonly Kind[] = [
   {
     name: "set",
     schema: (child, side) => z.set(child(side)),
-    value: (child) => new Set([child()]),
+    value: (child) => new Set([child(), child()]),
   },
   {
     name: "map",
@@ -247,12 +264,59 @@ const KINDS: readonly Kind[] = [
       ]),
     value: (child) => ({ k: "L", a: child(), s: leaf.secret("s"), n: 1, m: 2, x: "stripped" }),
   },
+  {
+    // A codec in the option that marks: its wire side refuses the app value, so a test against it picks the looser one.
+    name: "codecUnion",
+    schema: (child, side) =>
+      z.union([
+        z.strictObject({ at: isoDate, a: child(side), s: markedString(side), n: z.number(), m: z.number() }),
+        z.looseObject({}),
+      ]),
+    value: (child) => ({ at: "2026-01-01T00:00:00Z", a: child(), s: leaf.secret("s"), n: 1, m: 2 }),
+  },
+  {
+    name: "transformField",
+    schema: (child, side) =>
+      z.object({
+        a: child(side),
+        s: markedString(side),
+        t: z.string().transform((wire) => wire.length),
+        ...named(side),
+      }),
+    value: (child) => ({ a: child(), s: leaf.secret("s"), t: "abc", n: 1, m: 2 }),
+  },
+  {
+    // The input side marks; the output side names every field, unmarked, and keeps whatever is below `a`.
+    name: "pipedObject",
+    schema: (child, side) =>
+      z
+        .object({ a: child(side), s: markedString(side), ...named(side) })
+        .pipe(z.object({ a: z.unknown(), s: z.unknown(), ...named(side) })),
+    value: (child) => ({ a: child(), s: leaf.secret("s"), n: 1, m: 2 }),
+  },
+  {
+    // A transform over a marked input: what it returns is opaque, so it is masked whole.
+    name: "transformInstance",
+    schema: (child, side) => z.object({ a: child(side), s: markedString(side) }).transform((input) => new Box(input)),
+    value: (child) => ({ a: child(), s: leaf.secret("s") }),
+  },
+  {
+    // A transform that renames: the marked value lands under a key no schema names.
+    name: "transformRename",
+    schema: (child, side) =>
+      z.object({ a: child(side), s: markedString(side) }).transform((input) => ({ renamed: input.s, a: input.a })),
+    value: (child) => ({ a: child(), s: leaf.secret("s") }),
+  },
 ];
 
-/** A chain of kinds, outermost first, over the marked leaf. */
+/** A chain of kinds, outermost first, over the marked leaf. Each leaf value is its own, so a set keeps both. */
 function build(chain: readonly Kind[]): { schema: z.ZodType; value: () => unknown } {
   let schema: Child = (side) => markedString(side);
-  let value: ChildValue = () => leaf.secret("leaf");
+  let leaves = 0;
+  let value: ChildValue = () => {
+    leaves += 1;
+    return leaf.secret(`leaf${leaves}`);
+  };
   for (const kind of [...chain].reverse()) {
     const inner = schema;
     const innerValue = value;
@@ -273,6 +337,9 @@ const isSecret = (value: unknown): boolean =>
 const MASKED_KEY = /^\[pii\]( #\d+)?$/;
 
 const MASK = "[pii]";
+
+/** A set's masked element, read as the mask: masked elements alike are numbered apart, `[pii] #2`, so none merge. */
+const setElement = (item: unknown): unknown => (typeof item === "string" && MASKED_KEY.test(item) ? MASK : item);
 
 /** `parent.key`, or `key` at the root: the join `classifyPrivacy` writes a path with. */
 const join = (path: string, key: string): string => (path === "" ? key : `${path}.${key}`);
@@ -321,14 +388,26 @@ function compareToParse(parsed: unknown, redacted: unknown, path: string, out: s
     else
       pairs(
         [...parsed].map((item, index) => [index, item]),
-        [...redacted].map((item, index) => [index, item]),
+        [...redacted].map((item, index) => [index, setElement(item)]),
       );
   } else if (parsed instanceof Map) {
     if (!(redacted instanceof Map)) out.push(`${path}: map came back as ${String(redacted)}`);
     else pairs([...parsed.entries()], [...redacted.entries()]);
+  } else if (holdsSecret(parsed)) {
+    out.push(`${path}: an opaque value holding a marked value came back as ${String(redacted)}`);
   } else if (!Object.is(parsed, redacted)) {
     out.push(`${path}: ${JSON.stringify(parsed)} came back as ${JSON.stringify(redacted)}`);
   }
+}
+
+/** Whether a value holds a marked value anywhere: in a field of a class instance, an element, a key. */
+function holdsSecret(value: unknown, seen = new Set<unknown>()): boolean {
+  if (isSecret(value)) return true;
+  if (typeof value !== "object" || value === null || seen.has(value) || value instanceof Date) return false;
+  seen.add(value);
+  const entries: unknown[] =
+    value instanceof Map ? [...value].flat() : value instanceof Set ? [...value] : Object.entries(value).flat();
+  return entries.some((item) => holdsSecret(item, seen));
 }
 
 /**
@@ -376,7 +455,7 @@ function compareToClassify(redacted: unknown, paths: readonly string[], marked: 
   } else if (redacted instanceof Set) {
     for (const item of redacted)
       compareToClassify(
-        item,
+        setElement(item),
         under((path) => [`${path}[]`]),
         marked,
         out,
@@ -394,9 +473,12 @@ function compareToClassify(redacted: unknown, paths: readonly string[], marked: 
   }
 }
 
-/** Every difference between `redact` and its two oracles, for one shape and one value. */
-function compare(schema: z.ZodType, parsed: unknown, value: unknown): string[] {
-  const redacted = redact(schema, value as never);
+/**
+ * Every difference between `redact` and its two oracles, for one shape and what `parse` returned for it. `redact` is
+ * handed the app value, as a caller hands it one: the wire value would hide every transform and codec from the grid.
+ */
+function compare(schema: z.ZodType, parsed: unknown): string[] {
+  const redacted = redact(schema, parsed as never);
   const found: string[] = [];
   compareToParse(parsed, redacted, "$", found);
   const marked = new Set(classifyPrivacy(schema).map((field) => field.path));
@@ -441,7 +523,7 @@ describe("redact against parse", () => {
           continue;
         }
         compared += 1;
-        const found = compare(schema, parsed.data, value());
+        const found = compare(schema, parsed.data);
         if (found.length > 0)
           failures.push(`${chain.map((kind) => kind.name).join(" > ")}\n    ${found.join("\n    ")}`);
       }
@@ -500,6 +582,6 @@ describe("redact against parse", () => {
       { id: "u", email: "SECRET-e", extra: 1 },
     ],
   ])("agrees with parse and classifyPrivacy on %s", (_label, schema, value) => {
-    expect(compare(schema, schema.parse(value), value)).toEqual([]);
+    expect(compare(schema, schema.parse(value))).toEqual([]);
   });
 });

@@ -158,11 +158,117 @@ type RedactedAt<T, C> =
                 : T extends ReadonlySet<infer E>
                   ? ReadonlySet<RedactedAt<E, SetElementOf<C>>>
                   : T extends Opaque
-                    ? T
+                    ? T extends MaskedWhenMarked
+                      ? true extends CarriesMark<C>
+                        ? string
+                        : T
+                      : T
                     : T extends object
                       ? { [K in keyof T as true extends IsMarked<K> ? string : K]: RedactedAt<T[K], FieldOf<C, K>> }
                       : T
         : never;
+
+/**
+ * The {@link Opaque} values `redact` masks whole where the position also holds a marked type: a `Date`, an `Error`,
+ * any object it cannot walk into. A function is not an object to it, and is copied as it is.
+ */
+type MaskedWhenMarked = Error | Date | RegExp | PromiseLike<unknown>;
+
+/** Whether any member of `C` carries a privacy brand, in a map's or a set's members as well. */
+type CarriesMark<C> =
+  true extends ContainsMarked<C>
+    ? true
+    : C extends ReadonlyMap<infer K, infer V>
+      ? true extends ContainsMarked<K> | ContainsMarked<V>
+        ? true
+        : false
+      : C extends ReadonlySet<infer E>
+        ? ContainsMarked<E>
+        : false;
+
+/**
+ * What `redact(schema, value)` returns: {@link Redacted} over the schema's output, where every position a transform
+ * over a marked input fills is the masked `string` it is at runtime. A transform's output type says nothing about
+ * where its input's marks went — a class instance, a renamed field — and `redact` masks it whole, so the type reads
+ * the schema, not only its output: an object, an array, a set, a map, a record, a union, an intersection, a lazy and
+ * every wrapper are followed to {@link PRIVACY_CHECK_DEPTH} levels, and any other kind keeps its output type.
+ */
+export type RedactedOutput<S> = Redacted<Revealed<S>>;
+
+/** The brand a position {@link Revealed} masks whole carries, so {@link Redacted} turns it into a `string`. */
+type MaskedWhole = string & { readonly [z.core.$brand]: { readonly "privacy:opaque": true } };
+
+/** A schema kind, read off its definition. */
+type DefOf<S> = S extends { readonly _zod: { readonly def: infer D } } ? D : never;
+
+/** Whether a pipe's output side is opaque — a transform, a custom check, an `any` or an `unknown` — as `redact` reads it. */
+type IsOpaqueOutput<S, D extends number = PRIVACY_CHECK_DEPTH> = [D] extends [never]
+  ? false
+  : DefOf<S> extends { type: "transform" | "custom" | "any" | "unknown" }
+    ? true
+    : DefOf<S> extends { type: "pipe"; out: infer O }
+      ? IsOpaqueOutput<O, Prev[D]>
+      : DefOf<S> extends {
+            type: "optional" | "nullable" | "default" | "prefault" | "readonly" | "catch" | "nonoptional";
+            innerType: infer I;
+          }
+        ? IsOpaqueOutput<I, Prev[D]>
+        : DefOf<S> extends { type: "union"; options: readonly (infer O)[] }
+          ? true extends (O extends unknown ? IsOpaqueOutput<O, Prev[D]> : never)
+            ? true
+            : false
+          : DefOf<S> extends { type: "intersection"; left: infer L; right: infer R }
+            ? true extends IsOpaqueOutput<L, Prev[D]> | IsOpaqueOutput<R, Prev[D]>
+              ? true
+              : false
+            : DefOf<S> extends { type: "lazy"; getter: () => infer I }
+              ? IsOpaqueOutput<I, Prev[D]>
+              : false;
+
+/** A schema's output, with every position a transform over a marked input fills replaced by {@link MaskedWhole}. */
+type Revealed<S, D extends number = PRIVACY_CHECK_DEPTH> = [D] extends [never]
+  ? z.output<S>
+  : IsAny<z.output<S>> extends true
+    ? z.output<S>
+    : true extends IsMarked<z.output<S>>
+      ? z.output<S>
+      : DefOf<S> extends { type: "pipe"; in: infer I; out: infer O }
+        ? IsOpaqueOutput<O> extends true
+          ? true extends ContainsMarked<z.output<I>>
+            ? MaskedWhole
+            : z.output<S>
+          : Revealed<O, Prev[D]>
+        : DefOf<S> extends { type: "optional"; innerType: infer I }
+          ? Revealed<I, Prev[D]> | undefined
+          : DefOf<S> extends { type: "nullable"; innerType: infer I }
+            ? Revealed<I, Prev[D]> | null
+            : DefOf<S> extends { type: "default" | "nonoptional"; innerType: infer I }
+              ? Exclude<Revealed<I, Prev[D]>, undefined>
+              : DefOf<S> extends { type: "prefault" | "catch"; innerType: infer I }
+                ? Revealed<I, Prev[D]>
+                : DefOf<S> extends { type: "lazy"; getter: () => infer I }
+                  ? Revealed<I, Prev[D]>
+                  : DefOf<S> extends { type: "union"; options: readonly (infer O)[] }
+                    ? O extends unknown
+                      ? Revealed<O, Prev[D]>
+                      : never
+                    : DefOf<S> extends { type: "intersection"; left: infer L; right: infer R }
+                      ? Revealed<L, Prev[D]> & Revealed<R, Prev[D]>
+                      : DefOf<S> extends { type: "array"; element: infer E }
+                        ? Revealed<E, Prev[D]>[]
+                        : DefOf<S> extends { type: "set"; valueType: infer E }
+                          ? Set<Revealed<E, Prev[D]>>
+                          : DefOf<S> extends { type: "map"; keyType: infer K; valueType: infer V }
+                            ? Map<Revealed<K, Prev[D]>, Revealed<V, Prev[D]>>
+                            : DefOf<S> extends { type: "record"; valueType: infer V }
+                              ? { [P in keyof z.output<S>]: Revealed<V, Prev[D]> }
+                              : DefOf<S> extends { type: "object"; shape: infer Shape }
+                                ? {
+                                    [P in keyof z.output<S>]: P extends keyof Shape
+                                      ? Revealed<Shape[P], Prev[D]>
+                                      : z.output<S>[P];
+                                  }
+                                : z.output<S>;
 
 /**
  * A tuple's positions, redacted. A mapped type over a type parameter is homomorphic, so a tuple keeps its length and

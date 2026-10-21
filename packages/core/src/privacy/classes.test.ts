@@ -15,6 +15,7 @@ import {
   privacyClass,
   privacyClasses,
   secret,
+  strongestPrivacyClass,
 } from "./classes";
 
 describe("the four built-in classes", () => {
@@ -127,5 +128,16 @@ describe("PrivacyClassName", () => {
     expect(PrivacyClassName.safeParse("genetic_data").success).toBe(true);
     expect(PrivacyClassName.safeParse("PHI").success).toBe(false);
     expect(PrivacyClassName.safeParse("").success).toBe(false);
+  });
+});
+
+describe("strongestPrivacyClass", () => {
+  test("ranks secret, then phi, then pci, then an adopter's class, then pii", () => {
+    expect(strongestPrivacyClass(["pii", "phi", "secret"])).toBe("secret");
+    expect(strongestPrivacyClass(["pii", "pci", "phi"])).toBe("phi");
+    expect(strongestPrivacyClass(["pii", "pci"])).toBe("pci");
+    expect(strongestPrivacyClass(["pii", "zeta_class", "alpha_class"])).toBe("alpha_class");
+    expect(strongestPrivacyClass(["pii"])).toBe("pii");
+    expect(strongestPrivacyClass([])).toBeUndefined();
   });
 });

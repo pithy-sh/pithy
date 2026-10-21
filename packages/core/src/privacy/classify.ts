@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { z } from "zod";
-import { PRIVACY_META_KEY } from "./classes";
+import { PRIVACY_META_KEY, strongestPrivacyClass } from "./classes";
 
 /**
  * **Reading a privacy marker off a schema, and every marker off a schema tree** (#132).
@@ -28,6 +28,12 @@ import { PRIVACY_META_KEY } from "./classes";
  * marked field inside it is a marked field the table holds; a marker on a codec's wire side, or on a pipe's input, is
  * one `redact` masks, so it is listed too. A codec field marked as a whole — `pii(SQLiteDate)` — is read off the codec
  * itself before anything is stepped into.
+ *
+ * **A transform over a marked input is listed whole.** `z.object({ email: pii(z.email()) }).transform(toAccount)` hands
+ * back whatever `toAccount` returns, and no schema says where the email went, so `redact` masks the output whole with
+ * the strongest class its input carries. The walk lists that position first — the empty path here — and then the
+ * input's own marked fields, because those are what the input holds. A custom check, an `any` or an `unknown` on a
+ * pipe's output side is as opaque as a transform.
  *
  * **Every branch is walked**: each option of a union or a discriminated union, both sides of an intersection. This is
  * the set of positions `redact` masks, exactly — it fails closed, masking a position any branch marks.
@@ -125,6 +131,35 @@ export interface PrivacyVisitor {
   unmarkedKey?(path: string, key: string): void;
 }
 
+/** Schemas whose output this walk cannot describe: a transform's, a custom check's, an `any`'s, an `unknown`'s. */
+const OPAQUE: ReadonlySet<string> = new Set(["transform", "custom", "any", "unknown"]);
+
+/**
+ * Whether a pipe's output side can hand back something no schema names: a transform, a custom check, an `any` or an
+ * `unknown`, behind any wrapper, at the end of a further pipe, or as any option of a union or side of an intersection.
+ * A codec's or a plain pipe's output side is a schema like any other, and is not.
+ */
+export function opaqueOutput(schema: z.ZodType, seen: Set<z.ZodType> = new Set()): boolean {
+  if (seen.has(schema)) return false;
+  seen.add(schema);
+  let node: z.ZodType = schema;
+  for (let inner = unwrapOnce(node); inner; inner = unwrapOnce(node)) node = inner;
+  const def = defOf(node);
+  if (OPAQUE.has(def.type)) return true;
+  switch (def.type) {
+    case "pipe":
+      return def.out !== undefined && opaqueOutput(def.out, seen);
+    case "union":
+      return (def.options ?? []).some((option) => opaqueOutput(option, seen));
+    case "intersection":
+      return [def.left, def.right].some((side) => side !== undefined && opaqueOutput(side, seen));
+    case "lazy":
+      return def.getter !== undefined && opaqueOutput(def.getter(), seen);
+    default:
+      return false;
+  }
+}
+
 /** Walk one node, reporting each marked path it holds. `open` is the objects and lazies on the current branch. */
 function walk(schema: z.ZodType, path: string, visitor: PrivacyVisitor, open: Set<z.ZodType>): void {
   const marked = privacyOf(schema);
@@ -180,12 +215,31 @@ function walk(schema: z.ZodType, path: string, visitor: PrivacyVisitor, open: Se
       if (def.left) walk(def.left, path, visitor, open);
       if (def.right) walk(def.right, path, visitor, open);
       return;
-    case "pipe":
+    case "pipe": {
       // Either side may carry a marker — a codec's wire side and its app side, a plain pipe's input and its output —
-      // and `redact` masks a position either side marks, so both are listed.
-      if (def.in) walk(def.in, path, visitor, open);
+      // and `redact` masks a position either side marks, so both are listed. When the output is opaque and the input
+      // carries a marker, `redact` masks the position whole, so the position is listed first, as the strongest class.
+      const heard: ((target: PrivacyVisitor) => void)[] = [];
+      const classes: string[] = [];
+      if (def.in)
+        walk(
+          def.in,
+          path,
+          {
+            marked: (at, className) => {
+              classes.push(className);
+              heard.push((target) => target.marked(at, className));
+            },
+            unmarkedKey: (at, key) => heard.push((target) => target.unmarkedKey?.(at, key)),
+          },
+          open,
+        );
+      const whole = def.out && opaqueOutput(def.out) ? strongestPrivacyClass(classes) : undefined;
+      if (whole !== undefined) visitor.marked(path, whole);
+      for (const replay of heard) replay(visitor);
       if (def.out) walk(def.out, path, visitor, open);
       return;
+    }
     default:
       // A leaf, or a kind with no schema inside it.
       return;

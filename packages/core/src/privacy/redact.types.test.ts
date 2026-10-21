@@ -66,6 +66,39 @@ const nested = redact(
 );
 same<typeof nested, { p: { e: string }[] } | { p: { e: string }[] }>();
 
+// A transform over a marked input is masked whole, so its position is a string whatever the transform returns.
+class Account {
+  constructor(
+    readonly email: string,
+    readonly id: string,
+  ) {}
+}
+const instance = redact(
+  z.object({ e: pii(z.string()), id: z.string() }).transform((o) => new Account(o.e, o.id)),
+  {} as never,
+);
+same<typeof instance, string>();
+const copied = redact(z.array(z.object({ e: pii(z.string()) }).transform((o) => ({ ...o, f: o.e }))), []);
+same<typeof copied, string[]>();
+const renamed = redact(
+  z.object({
+    inner: z.object({ e: pii(z.string()) }).pipe(z.transform((o) => ({ f: o.e }))),
+    n: z.number().optional(),
+  }),
+  {} as never,
+);
+same<typeof renamed, { inner: string; n?: number | undefined }>();
+const unmarkedTransform = redact(
+  z.object({ n: z.string() }).transform((o) => ({ m: o.n })),
+  { m: "x" },
+);
+same<typeof unmarkedTransform, { m: string }>();
+// A date where a branch with a mark inside reaches it is masked whole too.
+const dated = redact(z.union([z.object({ e: pii(z.string()) }), z.date()]), new Date(0));
+same<typeof dated, { e: string } | string>();
+const keptDate = redact(z.object({ at: z.date(), e: pii(z.string()) }), { at: new Date(0) } as never);
+same<typeof keptDate, { at: Date; e: string }>();
+
 same<ContainsMarked<typeof list>, false>();
 same<ContainsMarked<typeof pair>, false>();
 same<ContainsMarked<typeof either>, false>();
