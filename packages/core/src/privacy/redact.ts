@@ -5,15 +5,13 @@ import type { z } from "zod";
 import { privacyClass } from "./classes";
 import {
   carried,
-  elementSchemas,
-  fieldSchemas,
-  keySchemas,
   leafIs,
-  MAX_SCHEMA_DEPTH,
-  PAST_DEPTH,
+  MAX_RECURSION_DEPTH,
   type Position,
-  position,
-  wholeMask,
+  type Shape,
+  type Site,
+  siteOf,
+  TRUNCATED_CLASS,
 } from "./classify";
 import type { RedactedOutput } from "./types";
 
@@ -71,9 +69,11 @@ import type { RedactedOutput } from "./types";
  * defined on the copy, not assigned, so an own `__proto__` key stays a key and never becomes the copy's prototype.
  *
  * It never mutates its argument, and it never throws on a value that does not match the schema: it masks what it
- * can name and copies the rest. Nor on any schema `parse` accepts: a factory-built recursive schema, whose insides
- * would never end, and a value nested past `MAX_SCHEMA_DEPTH` are cut off there and the position is masked whole as
- * `[secret]`, the strongest class, because what lies past the limit was not read (`./classify`).
+ * can name and copies the rest. Nor on any schema `parse` accepts, at any size: it reads each schema once, wherever it
+ * appears, from the record `classifyPrivacy` lists, so the two agree on every position. The one limit is recursion
+ * (`./classify`). A factory-built recursive schema, whose insides would never end, and a value that comes round to a
+ * schema it is already inside more than `MAX_RECURSION_DEPTH` times, are cut off there and the position is masked
+ * whole as `[secret]`, the strongest class, because what lies past the limit was not read.
  */
 
 /** A plain object — not an array, not a `Date`, not a class instance. */
@@ -134,56 +134,74 @@ function scalarHolds(at: Position, value: unknown): boolean {
 }
 
 /**
- * One position: `schemas` are every schema that reaches it, `value` what is there, and `depth` how many positions and
- * lazies deep it sits. Past `MAX_SCHEMA_DEPTH` it is masked whole as the strongest class, and read no further.
+ * The shapes a value's path is inside, and how many times each: a shape met again is one more level of recursion.
  */
-function redactAt(schemas: readonly z.ZodType[], value: unknown, depth: number): unknown {
-  if (value === null || value === undefined || schemas.length === 0) return value;
-  const reached = position(schemas);
-  const below = depth + reached.lazies.length;
-  const at = below > MAX_SCHEMA_DEPTH ? PAST_DEPTH : reached;
-  const whole = wholeMask(at);
+type Line = Map<Shape, number>;
+
+/**
+ * Read into `shape` for one level of a value: `recursion` is how many times the path has come round to a shape it was
+ * already inside. Past `MAX_RECURSION_DEPTH` the value is masked whole as the strongest class, and read no further.
+ */
+function within(shape: Shape, recursion: number, line: Line, read: (recursion: number) => unknown): unknown {
+  const again = line.get(shape) ?? 0;
+  const deeper = again > 0 ? recursion + 1 : recursion;
+  if (deeper > MAX_RECURSION_DEPTH) return `[${TRUNCATED_CLASS}]`;
+  line.set(shape, again + 1);
+  try {
+    return read(deeper);
+  } finally {
+    line.set(shape, again);
+  }
+}
+
+/** One position: `site` is what every walk reads there, and `value` what is there. */
+function redactAt(site: Site | undefined, value: unknown, recursion: number, line: Line): unknown {
+  if (value === null || value === undefined || site === undefined) return value;
+  const { at, whole, shape } = site;
   if (whole) return whole.placeholder ? `[${whole.className}]` : mask(whole.className, value);
   // A value no structural node at the position matches — an array where only an object is named, a string a
   // `.catch()` handed back — is masked like a key no schema names, unless a scalar there holds it.
   if (Array.isArray(value)) {
-    if (!at.leaves.some((leaf) => leafIs(leaf, "array", "tuple"))) return unnamed(at, value);
-    return value.map((item, index) => {
-      const element = elementSchemas(at.leaves, index);
-      return element.length === 0 ? unnamed(at, item) : redactAt(element, item, below + 1);
-    });
+    if (!shape?.leaves.some((leaf) => leafIs(leaf, "array", "tuple"))) return unnamed(at, value);
+    return within(shape, recursion, line, (deeper) =>
+      value.map((item, index) => {
+        const element = index < shape.items.length ? shape.items[index] : shape.rest;
+        return element === undefined ? unnamed(at, item) : redactAt(element, item, deeper, line);
+      }),
+    );
   }
   if (isPlainObject(value)) {
-    if (!at.leaves.some((leaf) => leafIs(leaf, "object", "record"))) return unnamed(at, value);
-    return redactedObject(at, value, below + 1);
+    if (!shape?.leaves.some((leaf) => leafIs(leaf, "object", "record"))) return unnamed(at, value);
+    return within(shape, recursion, line, (deeper) => redactedObject(at, shape, value, deeper, line));
   }
   return scalarHolds(at, value) ? value : unnamed(at, value);
 }
 
 /**
- * An object's entries, each value redacted by the schemas that name its key, and each key by every record's key
- * schema. A masked key takes the first name, `[pii]`, `[pii] #2` …, that no kept key and no earlier masked key holds.
+ * An object's entries, each value redacted by the site at its key, and each key by the site a record's keys are read
+ * at. A masked key takes the first name, `[pii]`, `[pii] #2` …, that no kept key and no earlier masked key holds.
  * A symbol key is an entry like any other: a record parse keeps one, so the copy does too.
  */
 function redactedObject(
   at: Position,
+  shape: Shape,
   value: Record<PropertyKey, unknown>,
-  depth: number,
+  recursion: number,
+  line: Line,
 ): Record<PropertyKey, unknown> {
-  const keyed = keySchemas(at.leaves);
-  const keyMasked = keyed.length > 0 && wholeMask(position(keyed)) !== undefined;
+  const keyMasked = shape.key?.whole !== undefined;
   const entries = Reflect.ownKeys(value)
     .filter((key) => Object.prototype.propertyIsEnumerable.call(value, key))
     .map((key): [PropertyKey, unknown] => [key, value[key]]);
   const taken = new Set<unknown>(keyMasked ? [] : entries.map(([key]) => key));
   const out: Record<PropertyKey, unknown> = {};
   for (const [key, item] of entries) {
-    const name = keyMasked ? distinct(String(redactAt(keyed, key, depth)), taken) : key;
+    const name = keyMasked ? distinct(String(redactAt(shape.key, key, recursion, line)), taken) : key;
     taken.add(name);
-    const field = fieldSchemas(at.leaves, key);
+    const field = shape.fields.get(key) ?? shape.catchall;
     // Defined, not assigned: an own `__proto__` key that parse kept stays a key, and never becomes the prototype.
     Object.defineProperty(out, name, {
-      value: field.length === 0 ? unnamed(at, item) : redactAt(field, item, depth),
+      value: field === undefined ? unnamed(at, item) : redactAt(field, item, recursion, line),
       enumerable: true,
       writable: true,
       configurable: true,
@@ -197,5 +215,5 @@ function redactedObject(
  * reads, what it over-masks, and why the mask is a placeholder.
  */
 export function redact<S extends z.ZodType>(schema: S, value: z.output<S>): RedactedOutput<S> {
-  return redactAt([schema], value, 0) as RedactedOutput<S>;
+  return redactAt(siteOf(schema), value, 0, new Map()) as RedactedOutput<S>;
 }

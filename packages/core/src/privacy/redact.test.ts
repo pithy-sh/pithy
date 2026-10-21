@@ -6,7 +6,7 @@ import { z } from "zod";
 import { SQLiteBoolean, SQLiteDate, sqliteJson } from "../data/codecs";
 import { LogRecord, serializeRecord } from "../logger/record";
 import { definePrivacyClass, pci, phi, pii, secret } from "./classes";
-import { classifyPrivacy } from "./classify";
+import { classifyPrivacy, hasPrivacy, walkPrivacy } from "./classify";
 import { redact } from "./redact";
 
 const User = z
@@ -842,7 +842,7 @@ describe("regressions: round 4", () => {
 });
 
 describe("regressions: round 5", () => {
-  // A factory-built tree: every level builds two fresh lazies, so the depth budget alone allows 2^256 paths.
+  // A factory-built tree: every level builds two fresh lazies, so the recursion limit alone allows 2^256 paths.
   // biome-ignore lint/suspicious/noExplicitAny: a factory's type is circular, and TypeScript infers none.
   const mkTree = (): any =>
     z.object({ e: pii(z.string()).optional(), l: z.lazy(mkTree).optional(), r: z.lazy(mkTree).optional() });
@@ -855,7 +855,7 @@ describe("regressions: round 5", () => {
     expect(fields).toContainEqual({ path: "l.e", class: "pii" });
     expect(fields.some((field) => field.path === "r" || field.path.startsWith("r."))).toBe(true);
     expect(fields.some((field) => field.truncated === true && field.class === "secret")).toBe(true);
-    // A field the walk reaches after the budget is spent keeps its own class.
+    // A field outside the recursion that ran out keeps its own class.
     expect(classifyPrivacy(z.object({ tree: mkTree(), ssn: pii(z.string()) }))).toContainEqual({
       path: "ssn",
       class: "pii",
@@ -863,7 +863,7 @@ describe("regressions: round 5", () => {
     expect(masked(mkTree(), { e: "S-1", l: { e: "S-2" } })).toEqual({ e: "[pii]", l: { e: "[pii]" } });
   });
 
-  test("G1 an opaque or free node over a wide factory is searched to a budget, and masked whole past it", () => {
+  test("G1 an opaque or free node over a wide factory is searched to the recursion limit, and masked whole past it", () => {
     expect(
       redact(
         mkPlainTree().transform((x: unknown) => x),
@@ -954,5 +954,148 @@ describe("regressions: round 5", () => {
     const Both = z.intersection(z.object({ n: pci(z.string()) }), z.object({ n: pii(z.string()) }));
     expect(masked(Both, { n: "8001015009087" })).toEqual({ n: "[pci]" });
     expect(masked(z.object({ n: pci(z.string()) }), { n: "4242424242424242" })).toEqual({ n: "424242******4242" });
+  });
+});
+
+/**
+ * **Regressions from the sixth review round** (#132): the walks counted nodes, and a schema with no recursion in it
+ * ran the count out. Now each schema is read once, wherever it appears, and the one limit is recursion.
+ */
+describe("regressions: round 6", () => {
+  /** Every path `walkPrivacy` reports, as `classifyPrivacy` lists them. */
+  function walked(schema: z.ZodType): { path: string; class: string; truncated?: true }[] {
+    const out: { path: string; class: string; truncated?: true }[] = [];
+    const seen = new Set<string>();
+    walkPrivacy(schema, {
+      marked: (path, className, truncated) => {
+        const key = `${path}\u0000${className}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        out.push(truncated ? { path, class: className, truncated: true } : { path, class: className });
+      },
+    });
+    return out;
+  }
+
+  /** `count` copies of `schema`, under keys `prefix0` … */
+  function times(prefix: string, count: number, schema: z.ZodType): Record<string, z.ZodType> {
+    return Object.fromEntries(Array.from({ length: count }, (_, index) => [`${prefix}${index}`, schema]));
+  }
+
+  test("R1 a wide schema that shares its parts lists every mark exactly, and nothing it did not read", () => {
+    const Address = z.object({ l1: pii(z.string()), city: z.string(), ...times("x", 8, z.string()) });
+    const Person = z.object({ id: z.string(), email: pii(z.string()), home: Address, work: Address, bill: Address });
+    const Team = z.object({ name: z.string(), ...times("p", 10, Person) });
+    const Org = z.object({ name: z.string(), ...times("t", 5, Team) });
+    const Root = z.object({ id: z.string(), ...times("o", 5, Org) });
+    const fields = classifyPrivacy(Root);
+    expect(fields).toHaveLength(5 * 5 * 10 * 4);
+    expect(fields.filter((field) => field.truncated !== undefined)).toEqual([]);
+    expect(fields).toContainEqual({ path: "o4.t4.p9.bill.l1", class: "pii" });
+    expect(hasPrivacy(Root, "secret")).toBe(false);
+    expect(hasPrivacy(Root, "pii")).toBe(true);
+    expect(walked(Root)).toEqual(fields);
+    const address = {
+      l1: "S-l1",
+      city: "Oslo",
+      ...Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`x${i}`, "x"])),
+    };
+    const person = { id: "i", email: "S-e", home: address, work: address, bill: address };
+    const team = { name: "t", ...Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`p${i}`, person])) };
+    const org = { name: "o", ...Object.fromEntries(Array.from({ length: 5 }, (_, i) => [`t${i}`, team])) };
+    const root = { id: "r", ...Object.fromEntries(Array.from({ length: 5 }, (_, i) => [`o${i}`, org])) };
+    const out = masked(Root, root) as Record<string, Record<string, Record<string, Record<string, unknown>>>>;
+    expect(raw(out)).toEqual([]);
+    expect(out.o4?.t4?.p9).toEqual({
+      id: "i",
+      email: "[pii]",
+      home: { ...address, l1: "[pii]" },
+      work: { ...address, l1: "[pii]" },
+      bill: { ...address, l1: "[pii]" },
+    });
+  });
+
+  test("R2 a DAG that doubles at every level lists every path, and masks every one", () => {
+    // biome-ignore lint/suspicious/noExplicitAny: the level's type is built in a loop.
+    let Level: any = z.object({ e: pii(z.string()), n: z.string() });
+    for (let index = 0; index < 15; index += 1) Level = z.object({ a: Level, b: Level });
+    const fields = classifyPrivacy(Level);
+    expect(fields).toHaveLength(2 ** 15);
+    expect(fields.filter((field) => field.truncated !== undefined)).toEqual([]);
+    expect(fields).toContainEqual({ path: `${"b.".repeat(15)}e`, class: "pii" });
+    expect(hasPrivacy(Level, "secret")).toBe(false);
+    const build = (depth: number): unknown =>
+      depth === 0 ? { e: "S-1", n: "n" } : { a: build(depth - 1), b: build(depth - 1) };
+    let out = redact(Level, build(15) as never) as Record<string, unknown>;
+    expect(raw(out)).toEqual([]);
+    for (let index = 0; index < 15; index += 1) out = out.b as Record<string, unknown>;
+    expect(out).toEqual({ e: "[pii]", n: "n" });
+  });
+
+  const wide = (fields: number) =>
+    z.object(Object.fromEntries(Array.from({ length: fields }, (_, index) => [`f${index}`, z.string()])));
+  const value = (outer: number, inner: number) =>
+    Object.fromEntries(
+      Array.from({ length: outer }, (_, i) => [
+        `g${i}`,
+        Object.fromEntries(Array.from({ length: inner }, (_, j) => [`f${j}`, "v"])),
+      ]),
+    );
+
+  test("R3 a large unmarked object is kept exactly, as a field and inside a JSON column", () => {
+    const Shared = wide(101);
+    const Big = z.object(times("g", 100, Shared));
+    const Row = z.object({ id: z.string(), doc: Big });
+    const doc = value(100, 101);
+    expect(masked(Row, { id: "1", doc })).toEqual({ id: "1", doc });
+    expect(classifyPrivacy(Row)).toEqual([]);
+    expect(hasPrivacy(Row, "secret")).toBe(false);
+    // Ten thousand distinct nodes, with nothing marked, behind a codec: the column is kept, not masked.
+    const Fresh = z.object(Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`g${i}`, wide(101)])));
+    const Column = z.object({ id: z.string(), doc: sqliteJson(Fresh) });
+    expect(masked(Column, { id: "1", doc: JSON.stringify(doc) })).toEqual({ id: "1", doc });
+    expect(classifyPrivacy(Column)).toEqual([]);
+    expect(walked(Column)).toEqual([]);
+  });
+
+  test("R4 a union of ten thousand and one literals keeps its value", () => {
+    const Lits = z.object({
+      code: z.union(Array.from({ length: 10_001 }, (_, index) => z.literal(index)) as [z.ZodLiteral<number>]),
+    });
+    expect(masked(Lits, { code: 7 })).toEqual({ code: 7 });
+    expect(classifyPrivacy(Lits)).toEqual([]);
+  });
+
+  test("R5 a schema of ten thousand distinct nodes with marks inside is read quickly, and exactly", () => {
+    const started = performance.now();
+    const Big = z.object(
+      Object.fromEntries(
+        Array.from({ length: 100 }, (_, i) => [
+          `g${i}`,
+          z.object({
+            e: pii(z.string()),
+            ...Object.fromEntries(Array.from({ length: 99 }, (_, j) => [`f${j}`, z.string()])),
+          }),
+        ]),
+      ),
+    );
+    const fields = classifyPrivacy(Big);
+    const out = redact(Big, value(100, 99) as never) as Record<string, Record<string, unknown>>;
+    expect(performance.now() - started).toBeLessThan(2000);
+    expect(fields).toHaveLength(100);
+    expect(fields.filter((field) => field.truncated !== undefined)).toEqual([]);
+    expect(out.g99?.f98).toBe("v");
+  });
+
+  test("R6 a non-recursive schema nested deeper than the recursion limit is read to the end", () => {
+    // biome-ignore lint/suspicious/noExplicitAny: the level's type is built in a loop.
+    let Deep: any = z.object({ e: pii(z.string()) });
+    for (let index = 0; index < 300; index += 1) Deep = z.object({ d: Deep, n: z.string() });
+    expect(classifyPrivacy(Deep)).toEqual([{ path: `${"d.".repeat(300)}e`, class: "pii" }]);
+    let wire: unknown = { e: "S-1" };
+    for (let index = 0; index < 300; index += 1) wire = { d: wire, n: "n" };
+    let out = masked(Deep, wire) as Record<string, unknown>;
+    for (let index = 0; index < 300; index += 1) out = out.d as Record<string, unknown>;
+    expect(out).toEqual({ e: "[pii]" });
   });
 });
