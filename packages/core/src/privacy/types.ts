@@ -120,38 +120,80 @@ export type UnmarkedString = string & NoPrivacyBrand;
  * What `redact` (`./redact`) returns: the value's own type, with every marked part replaced by the
  * string its class masks it to.
  *
- * Each container stays the container it is, because that is what `redact` hands back at runtime: an array or a
- * tuple maps element by element, keeping a tuple's length and a `readonly`, and a map or a set maps its keys and
- * its elements, which is where a `pii()` key comes back as a masked string. A plain object maps its fields, and a
- * marked key becomes `string`. The remaining {@link Opaque} values — an `Error`, a `Date`, a function — are copied
- * as they are.
+ * **It fails closed, as `redact` does.** A position is a masked `string` when any member of the union the schema
+ * gives it is marked: `pii(z.string()) | z.number()` is `string`, and in `{ e: Email } | { e: number }` the field
+ * `e` is `string` in both members, because `redact` masks the position whichever option the value came from.
+ *
+ * Each container stays the container it is, because that is what `redact` hands back at runtime: an array maps to an
+ * array of its redacted elements — a branded `string[] & $brand<"Ids">` included, whose brand goes — keeping a
+ * `readonly`, and a tuple maps position by position, keeping its length. A map or a set maps its keys and its
+ * elements, which is where a `pii()` key comes back as a masked string. A plain object maps its fields, and a marked
+ * key becomes `string`. The remaining {@link Opaque} values — an `Error`, a `Date`, a function — are copied as they
+ * are.
  */
-export type Redacted<T> =
+export type Redacted<T> = RedactedAt<T, T>;
+
+/**
+ * One member `T` of a position, redacted against `C`: every type the schema puts at that position, across every
+ * union member. `C` decides whether the position is masked; `T` decides the shape a member keeps.
+ */
+type RedactedAt<T, C> =
   IsAny<T> extends true
     ? T
-    : T extends unknown
-      ? IsMarked<T> extends true
-        ? string
-        : T extends readonly unknown[]
-          ? RedactedElements<T>
+    : true extends IsMarked<C>
+      ? string
+      : T extends unknown
+        ? T extends readonly unknown[]
+          ? IsTuple<T> extends true
+            ? RedactedTuple<T, C>
+            : T extends unknown[]
+              ? RedactedAt<T[number], ElementOf<C>>[]
+              : readonly RedactedAt<T[number], ElementOf<C>>[]
           : T extends Map<infer K, infer V>
-            ? Map<Redacted<K>, Redacted<V>>
+            ? Map<RedactedAt<K, MapKeyOf<C>>, RedactedAt<V, MapValueOf<C>>>
             : T extends ReadonlyMap<infer K, infer V>
-              ? ReadonlyMap<Redacted<K>, Redacted<V>>
+              ? ReadonlyMap<RedactedAt<K, MapKeyOf<C>>, RedactedAt<V, MapValueOf<C>>>
               : T extends Set<infer E>
-                ? Set<Redacted<E>>
+                ? Set<RedactedAt<E, SetElementOf<C>>>
                 : T extends ReadonlySet<infer E>
-                  ? ReadonlySet<Redacted<E>>
+                  ? ReadonlySet<RedactedAt<E, SetElementOf<C>>>
                   : T extends Opaque
                     ? T
                     : T extends object
-                      ? { [K in keyof T as IsMarked<K> extends true ? string : K]: Redacted<T[K]> }
+                      ? { [K in keyof T as true extends IsMarked<K> ? string : K]: RedactedAt<T[K], FieldOf<C, K>> }
                       : T
-      : never;
+        : never;
 
 /**
- * An array's or a tuple's elements, redacted. A mapped type over a type parameter is homomorphic, so an array maps
- * to an array and a tuple keeps its length and its `readonly`; the key-remapping one {@link Redacted} uses for an
- * object would turn either into a plain object.
+ * A tuple's positions, redacted. A mapped type over a type parameter is homomorphic, so a tuple keeps its length and
+ * its `readonly`; the key-remapping one {@link RedactedAt} uses for an object would turn it into a plain object.
  */
-type RedactedElements<T extends readonly unknown[]> = { [K in keyof T]: Redacted<T[K]> };
+type RedactedTuple<T extends readonly unknown[], C> = { [K in keyof T]: RedactedAt<T[K], IndexOf<C, K>> };
+
+/**
+ * Whether an array type is a tuple: a fixed length, or a first position of its own (`[number, ...string[]]`). A plain
+ * array — a branded one included — has neither.
+ */
+type IsTuple<T extends readonly unknown[]> = number extends T["length"] ? ("0" extends keyof T ? true : false) : true;
+
+/** Every type an array or a tuple member of `C` holds as an element. */
+type ElementOf<C> = C extends readonly (infer E)[] ? E : never;
+
+/** Every type a member of `C` holds at tuple position `K`, or as any element of an array. */
+type IndexOf<C, K> = C extends readonly unknown[] ? (K extends keyof C ? C[K] : C[number]) : never;
+
+/** Every type a map member of `C` holds as a key, and as a value. */
+type MapKeyOf<C> = C extends ReadonlyMap<infer K, unknown> ? K : never;
+type MapValueOf<C> = C extends ReadonlyMap<unknown, infer V> ? V : never;
+
+/** Every type a set member of `C` holds. */
+type SetElementOf<C> = C extends ReadonlySet<infer E> ? E : never;
+
+/** Every type an object member of `C` holds at field `K`. */
+type FieldOf<C, K> = C extends readonly unknown[] | Opaque
+  ? never
+  : C extends object
+    ? K extends keyof C
+      ? C[K]
+      : never
+    : never;

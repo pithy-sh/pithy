@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { z } from "zod";
+import type { z } from "zod";
 import { PRIVACY_META_KEY } from "./classes";
 
 /**
@@ -24,9 +24,13 @@ import { PRIVACY_META_KEY } from "./classes";
  *
  * ## What the walk steps into, and what it does not
  *
- * **A codec is stepped into on its app side.** `sqliteJson(Profile)` stores `Profile` in a column, so a marked
- * field inside it is a marked field the table holds. A codec field marked as a whole — `pii(SQLiteDate)` — is
- * read off the codec itself before anything is stepped into. A plain pipe is stepped into on both sides.
+ * **A codec and a pipe are stepped into on both sides.** `sqliteJson(Profile)` stores `Profile` in a column, so a
+ * marked field inside it is a marked field the table holds; a marker on a codec's wire side, or on a pipe's input, is
+ * one `redact` masks, so it is listed too. A codec field marked as a whole — `pii(SQLiteDate)` — is read off the codec
+ * itself before anything is stepped into.
+ *
+ * **Every branch is walked**: each option of a union or a discriminated union, both sides of an intersection. This is
+ * the set of positions `redact` masks, exactly — it fails closed, masking a position any branch marks.
  *
  * **A lazy schema is followed**, the way `redact` follows one, so a marker behind a `z.lazy` is classified like
  * any other. A recursive schema is walked once per branch: a lazy or an object reached again inside itself
@@ -177,11 +181,8 @@ function walk(schema: z.ZodType, path: string, visitor: PrivacyVisitor, open: Se
       if (def.right) walk(def.right, path, visitor, open);
       return;
     case "pipe":
-      // A codec's app side is what the field holds; a plain pipe may carry a marker on either side.
-      if (node instanceof z.ZodCodec) {
-        if (def.out) walk(def.out, path, visitor, open);
-        return;
-      }
+      // Either side may carry a marker — a codec's wire side and its app side, a plain pipe's input and its output —
+      // and `redact` masks a position either side marks, so both are listed.
       if (def.in) walk(def.in, path, visitor, open);
       if (def.out) walk(def.out, path, visitor, open);
       return;

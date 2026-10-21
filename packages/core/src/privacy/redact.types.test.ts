@@ -39,6 +39,33 @@ same<typeof list, { list: { e: string; n: number }[]; frozen: readonly { e: stri
 same<typeof pair, { pair: [string, number]; rest: [number, ...string[]] }>();
 same<typeof keyed, { byEmail: Map<string, { e: string; n: number }>; emails: Set<string> }>();
 same<typeof either, { k: "a"; list: { e: string; n: number }[] } | { k: "b"; emails: Set<string> }>();
+// A branded array is still an array: the brand goes, the elements map.
+const branded = redact(
+  z.object({ ids: z.array(z.string()).brand("Ids"), frozen: z.array(Entry).readonly().brand("F") }),
+  {
+    ids: [],
+    frozen: [],
+  } as never,
+);
+same<typeof branded, { ids: string[]; frozen: readonly { e: string; n: number }[] }>();
+
+// Fail closed: a position any option marks is a masked string in every option.
+const root = redact(z.union([pii(z.string()), z.number()]), 1);
+same<typeof root, string>();
+const field = redact(z.union([z.object({ e: pii(z.string()) }), z.object({ e: z.number(), k: z.literal(1) })]), {
+  e: 1,
+  k: 1,
+});
+same<typeof field, { e: string } | { e: string; k: 1 }>();
+const nested = redact(
+  z.union([
+    z.object({ p: z.array(z.object({ e: pii(z.string()) })) }),
+    z.object({ p: z.array(z.object({ e: z.number() })) }),
+  ]),
+  { p: [] },
+);
+same<typeof nested, { p: { e: string }[] } | { p: { e: string }[] }>();
+
 same<ContainsMarked<typeof list>, false>();
 same<ContainsMarked<typeof pair>, false>();
 same<ContainsMarked<typeof either>, false>();

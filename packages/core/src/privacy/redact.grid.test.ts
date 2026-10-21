@@ -4,24 +4,28 @@
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { pii } from "./classes";
+import { classifyPrivacy } from "./classify";
 import { redact } from "./redact";
 
 /**
- * **`redact` against `parse`, over a grid of shapes** (#132).
+ * **`redact` against `parse` and `classifyPrivacy`, over a grid of shapes** (#132).
  *
  * Every shape below is built from a chain of up to three combinators over a marked leaf, and every object level
- * carries a marked field of its own, so a mark sits at every depth. `parse` is the oracle: whatever it keeps,
- * `redact` keeps, equal; whatever it drops, `redact` drops; and every value the grid put at a marked position —
- * each one the grid knows as marked — comes back as `[pii]`, as a value or as a key.
+ * carries a marked field of its own, so a mark sits at every depth. Two oracles hold `redact` to its fail-closed rule:
+ *
+ * - **`parse`**: every key, element and entry it keeps, `redact` keeps — verbatim, or masked — and every value the grid
+ *   put at a marked position that `parse` keeps comes back as `[pii]`, as a value or as a key.
+ * - **`classifyPrivacy`**: a position of what `redact` returns is masked exactly when `classifyPrivacy` lists a path
+ *   that names it. The two walk every branch alike, so they agree on every position, over-masking included.
  *
  * An intersection's two sides name different unmarked fields at every depth (`n` on one, `m` on the other), and
  * the right side leaves the marks off, so a mask only one side knows has to survive the other.
  *
  * The grid runs once per marked leaf, and a leaf may carry its own type or refinement — `z.email()`, `z.uuid()`,
  * `z.number()`, a `.refine()` — at every marked position, with the same type unmarked on a side that leaves the marks
- * off. A placeholder fails each of them, so a walk that tested a union's option against a value it had already
- * masked would pick a looser option and let a field only the stricter one marks out raw. Two kinds put a union on
- * an intersection's right side to make that happen.
+ * off. A placeholder fails each of them, so a walk that tested a union's option against a value would pick a looser
+ * option and let a field only the stricter one marks out raw. Two kinds put a union on an intersection's right side
+ * to make that happen.
  */
 
 /** A marked leaf's base schema, and the value the grid puts at a marked position of it. */
@@ -268,14 +272,21 @@ const isSecret = (value: unknown): boolean =>
     : typeof value === "number" && value >= SECRET_NUMBER && value < SECRET_NUMBER + 100;
 const MASKED_KEY = /^\[pii\]( #\d+)?$/;
 
-/** Each difference between what parse kept and what redact returned, by path. */
-function compare(parsed: unknown, redacted: unknown, path: string, out: string[]): void {
+const MASK = "[pii]";
+
+/** `parent.key`, or `key` at the root: the join `classifyPrivacy` writes a path with. */
+const join = (path: string, key: string): string => (path === "" ? key : `${path}.${key}`);
+
+/** Each place `parse` kept something that `redact` lost, left raw, or changed, by path. */
+function compareToParse(parsed: unknown, redacted: unknown, path: string, out: string[]): void {
   if (isSecret(parsed)) {
-    if (redacted !== "[pii]") out.push(`${path}: marked value came back as ${JSON.stringify(redacted)}`);
+    if (redacted !== MASK) out.push(`${path}: marked value came back as ${JSON.stringify(redacted)}`);
     return;
   }
-  const entries = (left: [unknown, unknown][], right: [unknown, unknown][]): void => {
-    if (left.length !== right.length) {
+  // Masking a whole position is over-masking, which the classify oracle checks; nothing below it is left to lose.
+  if (redacted === MASK) return;
+  const pairs = (left: [unknown, unknown][], right: [unknown, unknown][]): void => {
+    if (right.length < left.length) {
       out.push(`${path}: parse kept ${left.length} entries, redact ${right.length}`);
       return;
     }
@@ -283,28 +294,114 @@ function compare(parsed: unknown, redacted: unknown, path: string, out: string[]
       const [redactedKey, redactedItem] = right[index] as [unknown, unknown];
       if (isSecret(key) ? !MASKED_KEY.test(String(redactedKey)) : redactedKey !== key)
         out.push(`${path}: key ${String(key)} came back as ${String(redactedKey)}`);
-      compare(item, redactedItem, `${path}.${String(key)}`, out);
+      compareToParse(item, redactedItem, `${path}.${String(key)}`, out);
     });
   };
   if (isPlainObject(parsed)) {
-    if (!isPlainObject(redacted)) out.push(`${path}: object came back as ${JSON.stringify(redacted)}`);
-    else entries(Object.entries(parsed), Object.entries(redacted));
+    if (!isPlainObject(redacted)) {
+      out.push(`${path}: object came back as ${JSON.stringify(redacted)}`);
+      return;
+    }
+    // A key is found by name, or — a masked one — by its order among the masked keys, which both keep.
+    const masked = Object.entries(redacted).filter(([key]) => MASKED_KEY.test(key));
+    let nextMasked = 0;
+    for (const [key, item] of Object.entries(parsed)) {
+      if (isSecret(key)) {
+        const found = masked[nextMasked++];
+        if (!found) out.push(`${path}: key ${key} was lost`);
+        else compareToParse(item, found[1], `${path}.${key}`, out);
+      } else if (!Object.hasOwn(redacted, key)) out.push(`${path}: key ${key} was lost`);
+      else compareToParse(item, redacted[key], `${path}.${key}`, out);
+    }
   } else if (Array.isArray(parsed)) {
     if (!Array.isArray(redacted)) out.push(`${path}: array came back as ${JSON.stringify(redacted)}`);
-    else entries([...parsed.entries()], [...redacted.entries()]);
+    else pairs([...parsed.entries()], [...redacted.entries()]);
   } else if (parsed instanceof Set) {
     if (!(redacted instanceof Set)) out.push(`${path}: set came back as ${String(redacted)}`);
     else
-      entries(
+      pairs(
         [...parsed].map((item, index) => [index, item]),
         [...redacted].map((item, index) => [index, item]),
       );
   } else if (parsed instanceof Map) {
     if (!(redacted instanceof Map)) out.push(`${path}: map came back as ${String(redacted)}`);
-    else entries([...parsed.entries()], [...redacted.entries()]);
+    else pairs([...parsed.entries()], [...redacted.entries()]);
   } else if (!Object.is(parsed, redacted)) {
     out.push(`${path}: ${JSON.stringify(parsed)} came back as ${JSON.stringify(redacted)}`);
   }
+}
+
+/**
+ * Each position of what `redact` returned that is masked where `classifyPrivacy` lists no path naming it, or left
+ * as it was where it lists one. `paths` is every way of spelling the position: an object key is its name or a
+ * record's `*`, an array element `[]` or a tuple's `[i]`, a key `<key>`.
+ */
+function compareToClassify(redacted: unknown, paths: readonly string[], marked: ReadonlySet<string>, out: string[]) {
+  const listed = paths.some((path) => marked.has(path));
+  const where = paths[0] ?? "";
+  if (redacted === MASK) {
+    if (!listed) out.push(`${where || "$"}: masked, but classifyPrivacy lists none of ${paths.join(", ")}`);
+    return;
+  }
+  if (listed) {
+    out.push(`${where || "$"}: classifyPrivacy lists it, but it came back ${JSON.stringify(redacted)}`);
+    return;
+  }
+  const under = (keys: (path: string) => string[]): string[] => [...new Set(paths.flatMap(keys))];
+  const key = (name: unknown): void => {
+    const keyPaths = under((path) => [join(path, "<key>")]);
+    const keyListed = keyPaths.some((path) => marked.has(path));
+    if (MASKED_KEY.test(String(name)) !== keyListed)
+      out.push(`${keyPaths[0]}: key ${String(name)} disagrees with classifyPrivacy`);
+  };
+  if (isPlainObject(redacted)) {
+    for (const [name, item] of Object.entries(redacted)) {
+      key(name);
+      compareToClassify(
+        item,
+        under((path) => [join(path, name), join(path, "*")]),
+        marked,
+        out,
+      );
+    }
+  } else if (Array.isArray(redacted)) {
+    redacted.forEach((item, index) => {
+      compareToClassify(
+        item,
+        under((path) => [`${path}[]`, `${path}[${index}]`]),
+        marked,
+        out,
+      );
+    });
+  } else if (redacted instanceof Set) {
+    for (const item of redacted)
+      compareToClassify(
+        item,
+        under((path) => [`${path}[]`]),
+        marked,
+        out,
+      );
+  } else if (redacted instanceof Map) {
+    for (const [name, item] of redacted) {
+      key(name);
+      compareToClassify(
+        item,
+        under((path) => [join(path, "*")]),
+        marked,
+        out,
+      );
+    }
+  }
+}
+
+/** Every difference between `redact` and its two oracles, for one shape and one value. */
+function compare(schema: z.ZodType, parsed: unknown, value: unknown): string[] {
+  const redacted = redact(schema, value as never);
+  const found: string[] = [];
+  compareToParse(parsed, redacted, "$", found);
+  const marked = new Set(classifyPrivacy(schema).map((field) => field.path));
+  compareToClassify(redacted, [""], marked, found);
+  return found;
 }
 
 /** Every chain of one to `depth` kinds, outermost first. */
@@ -330,7 +427,7 @@ function parseOrUndefined(schema: z.ZodType, value: unknown): { data: unknown } 
 
 describe("redact against parse", () => {
   test.each(LEAVES.map((each) => [each.name, each] as const))(
-    "keeps what parse keeps, drops what parse drops, and masks every marked %s leaf, over every shape to depth 3",
+    "keeps what parse keeps, masks every marked %s leaf, and agrees with classifyPrivacy, over every shape to depth 3",
     (_name, each) => {
       leaf = each;
       const failures: string[] = [];
@@ -344,8 +441,7 @@ describe("redact against parse", () => {
           continue;
         }
         compared += 1;
-        const found: string[] = [];
-        compare(parsed.data, redact(schema, value() as never), "$", found);
+        const found = compare(schema, parsed.data, value());
         if (found.length > 0)
           failures.push(`${chain.map((kind) => kind.name).join(" > ")}\n    ${found.join("\n    ")}`);
       }
@@ -403,9 +499,7 @@ describe("redact against parse", () => {
       z.intersection(z.object({ id: z.string() }), z.object({ email: pii(z.string()) })),
       { id: "u", email: "SECRET-e", extra: 1 },
     ],
-  ])("matches parse on %s", (_label, schema, value) => {
-    const found: string[] = [];
-    compare(schema.parse(value), redact(schema, value as never), "$", found);
-    expect(found).toEqual([]);
+  ])("agrees with parse and classifyPrivacy on %s", (_label, schema, value) => {
+    expect(compare(schema, schema.parse(value), value)).toEqual([]);
   });
 });

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { z } from "zod";
+import type { z } from "zod";
 import { privacyClass } from "./classes";
 import { privacyOf } from "./classify";
 import type { Redacted } from "./types";
@@ -27,25 +27,31 @@ import type { Redacted } from "./types";
  * masked whole; a JSON column is walked on its parsed side. `null` and `undefined` stay as they are, because an
  * absent value discloses nothing.
  *
- * ## Three steps, so it keeps exactly what parse keeps
+ * ## It fails closed
  *
- * **First, the value as `parse` would keep it**, by the same walk: a strip-mode object drops a key it does not
- * name, a catchall or a loose object keeps one, a pick or an omit is the object it returns, an intersection merges
- * what each side keeps at every depth, and a union keeps what the first option the value parses as keeps.
- * `Redacted<T>` is computed from the schema, so a wider value handed to a narrower schema —
- * `redact(User.pick({ id: true }), user)` — loses the keys the type says are gone. **Then every position the schema
- * marks is found, against that unmasked value**: an intersection by both its sides, and a union by every option
- * the value parses as. Taking only the first would let a looser option — a loose object that keeps the key a
- * stricter option marks — copy that key through. When no option parses, every option marks its own: the
- * conservative reading of a value the schema cannot place. **Last, every marked position is masked, once**, and
- * that step never drops or adds a key, so no shape can lose a field `parse` keeps. Every choice is made before
- * anything is masked: a union tested against `[pii]` where an email, a number or a refinement was would fail its
- * strict option, apply a looser one, and leave raw a field only the strict one marks. **A lazy schema is
- * followed**, so a recursive one is masked at every depth: the walk ends where the value does.
+ * **A position is masked when any branch of the schema that reaches it marks it**: any option of a union or a
+ * discriminated union, either side of an intersection, and either side of a pipe, a codec or a transform. It never
+ * chooses a branch by testing the value against a schema. That test is what leaked before: the value `redact` holds
+ * is the app shape, and `safeParse` runs a codec's or a transform's wire side, so the option that marks a field
+ * refuses it and a looser one is applied in its place. Walking every branch needs no guess, and it is the same walk
+ * `classifyPrivacy` does, so the two agree on every position.
+ *
+ * **It may mask a field only some branches mark.** In `z.union([z.object({ e: pii(z.email()) }), z.object({ e:
+ * z.number() })])` a `{ e: 5 }` comes back `{ e: "[pii]" }`. That over-masking is the price of never guessing, it is
+ * what `classifyPrivacy` already reports for the schema, and `Redacted<T>` types the field as a `string` in every
+ * member.
+ *
+ * **It keeps every key and element any branch keeps, so nothing `parse` keeps is dropped.** A key no branch names
+ * — not a field, not a catchall, not a loose object, a record or a transform's opaque output — is one `parse`
+ * strips under every branch, and it is dropped here too: `redact(User.pick({ id: true }), user)` returns `{ id }`.
+ * Every other key comes back, masked where any branch marks it and verbatim where none does.
+ *
+ * **A lazy schema is followed**, so a recursive one is masked at every depth: the walk ends where the value does.
  *
  * **A record's or a map's key is redacted by its key schema**, because a key is stored and logged as surely as a
- * value: a record keyed by a `pii()` email masks each key. Two keys that mask alike are kept apart by a
- * ` #2`, ` #3` suffix, so no entry is lost.
+ * value: a record keyed by a `pii()` email masks each key. A masked key never takes the name of a key that stayed
+ * as it was, nor of another masked key: two keys that mask alike come back as `[pii]` and `[pii] #2`, so the
+ * result holds as many entries as the value did.
  *
  * It never mutates its argument, and it never throws on a value that does not match the schema: it masks what it
  * can name and copies the rest.
@@ -97,21 +103,6 @@ function mask(className: string, value: unknown): string {
   return privacyClass(className)?.mask(value) ?? `[${className}]`;
 }
 
-/** Whether `value` parses as `schema`. Zod throws, rather than reports, an intersection it cannot merge: a no. */
-function parses(schema: z.ZodType, value: unknown): boolean {
-  try {
-    return schema.safeParse(value).success;
-  } catch {
-    return false;
-  }
-}
-
-/** The options of a union the walk applies to `value`: every one it parses as, or all of them when none does. */
-function appliedOptions(options: readonly z.ZodType[], value: unknown): readonly z.ZodType[] {
-  const matched = options.filter((option) => parses(option, value));
-  return matched.length > 0 ? matched : options;
-}
-
 /** A schema with its wrappers stepped through. */
 function unwrapped(schema: z.ZodType): z.ZodType {
   let node = schema;
@@ -119,102 +110,9 @@ function unwrapped(schema: z.ZodType): z.ZodType {
   return node;
 }
 
-/** The side of a pipe that names the value's fields: a codec's app side, or a plain pipe's input before a transform. */
-function pipeTarget(node: z.ZodType, def: Def): z.ZodType | undefined {
-  if (node instanceof z.ZodCodec) return def.out;
-  return def.out && defOf(def.out).type !== "transform" ? def.out : def.in;
-}
-
 /** Whether a schema is `z.never()`, the catchall a strict object refuses an extra key with. */
 function isNever(schema: z.ZodType): boolean {
   return defOf(unwrapped(schema)).type === "never";
-}
-
-/**
- * Two results of one value merged the way `parse` merges an intersection's sides: an object holds every key either
- * holds, an array of one length merges by position, and anything else is the left side's.
- */
-function merged(left: unknown, right: unknown): unknown {
-  if (isPlainObject(left) && isPlainObject(right)) {
-    const out: Record<string, unknown> = { ...left };
-    for (const [key, item] of Object.entries(right)) out[key] = Object.hasOwn(out, key) ? merged(out[key], item) : item;
-    return out;
-  }
-  if (Array.isArray(left) && Array.isArray(right) && left.length === right.length)
-    return left.map((item, index) => merged(item, right[index]));
-  return left;
-}
-
-/**
- * **Step one: the value as `parse` would keep it.** The same walk `parse` does — a strip-mode object drops a key it
- * does not name, a catchall keeps one, an intersection merges what each side keeps, a union keeps what the first
- * option the value parses as keeps — on the app shape, so a codec is not decoded twice. Nothing is masked here, and
- * every container is a copy.
- */
-function kept(schema: z.ZodType, value: unknown): unknown {
-  if (value === null || value === undefined) return value;
-  const node = unwrapped(schema);
-  const def = defOf(node);
-  switch (def.type) {
-    case "object": {
-      if (!isPlainObject(value)) return value;
-      const shape = (node as z.ZodObject).shape as Record<string, z.ZodType>;
-      const catchall = def.catchall && !isNever(def.catchall) ? def.catchall : undefined;
-      const out: Record<string, unknown> = {};
-      for (const [key, field] of Object.entries(value)) {
-        const fieldSchema = Object.hasOwn(shape, key) ? shape[key] : catchall;
-        // A key nothing names is dropped, the way parse strips it, and the way a strict object refuses it.
-        if (fieldSchema) out[key] = kept(fieldSchema, field);
-      }
-      return out;
-    }
-    case "array":
-      return Array.isArray(value) && def.element ? value.map((item) => kept(def.element as z.ZodType, item)) : value;
-    case "set":
-      return value instanceof Set && def.valueType
-        ? new Set([...value].map((item) => kept(def.valueType as z.ZodType, item)))
-        : value;
-    case "tuple": {
-      if (!Array.isArray(value)) return value;
-      const items = def.items ?? [];
-      const rest = def.rest ?? undefined;
-      // A position past the tuple's items with no rest is one parse refuses, so it is not kept.
-      const length = rest ? value.length : Math.min(value.length, items.length);
-      return value.slice(0, length).map((item, index) => kept((items[index] ?? rest) as z.ZodType, item));
-    }
-    case "record": {
-      if (!isPlainObject(value)) return value;
-      const out: Record<string, unknown> = {};
-      for (const [key, item] of Object.entries(value)) out[key] = def.valueType ? kept(def.valueType, item) : item;
-      return out;
-    }
-    case "map": {
-      if (!(value instanceof Map)) return value;
-      const out = new Map<unknown, unknown>();
-      for (const [key, item] of value) out.set(key, def.valueType ? kept(def.valueType, item) : item);
-      return out;
-    }
-    case "union": {
-      const options = def.options ?? [];
-      const first = options.find((option) => parses(option, value));
-      // What parse returns is the first option the value parses as. When none does, every option keeps its own.
-      if (first) return kept(first, value);
-      return options.map((option) => kept(option, value)).reduce((left, right) => merged(left, right), value);
-    }
-    case "intersection": {
-      const left = def.left ? kept(def.left, value) : value;
-      return def.right ? merged(left, kept(def.right, value)) : left;
-    }
-    case "pipe": {
-      const target = pipeTarget(node, def);
-      return target ? kept(target, value) : value;
-    }
-    case "lazy":
-      // A lazy schema is how a recursive one is written. Following it here ends, because the value does.
-      return def.getter ? kept(def.getter(), value) : value;
-    default:
-      return value;
-  }
 }
 
 /** `key`, or `key #2`, `key #3` … — the first that `taken` does not hold yet. */
@@ -226,17 +124,35 @@ function distinct(key: string, taken: (candidate: string) => boolean): string {
 }
 
 /**
- * Where the schema marks one value: the class it masks with, and what the schema marks inside it — by property
- * name in an object or a record, and by position in an array, a tuple, a set or a map. A key's own plan masks a
- * record's or a map's key.
+ * What every branch that reaches one position of the value says about it, merged: the class it masks with, which of
+ * an object's keys any branch keeps, how many of an array's elements, and what is marked inside — by property name
+ * in an object or a record, by position in an array, a tuple, a set or a map. A key's own plan masks a record's or a
+ * map's key.
  */
 interface Plan {
   mask?: string;
+  /** Whether some object schema reached this position, so a key no branch names is one parse strips. */
+  objects: boolean;
+  /** Whether some branch keeps every key here: a loose object, a catchall, a record, a transform, an `unknown`. */
+  keepsAll: boolean;
+  /** The keys some object branch names. */
+  readonly named: Set<string>;
+  /** The most elements an array, a set or a tuple branch keeps; `undefined` when none reached this position. */
+  elements?: number;
   readonly inner: Map<string | number, Plan>;
   readonly keys: Map<string | number, Plan>;
+  /** The schemas already walked at this position, so a lazy that reaches itself, or a shared branch, is walked once. */
+  readonly seen: Set<z.ZodType>;
 }
 
-const newPlan = (): Plan => ({ inner: new Map(), keys: new Map() });
+const newPlan = (): Plan => ({
+  objects: false,
+  keepsAll: false,
+  named: new Set(),
+  inner: new Map(),
+  keys: new Map(),
+  seen: new Set(),
+});
 
 /** The plan at `at` in `table`, made when it is not there yet. */
 function planAt(table: Map<string | number, Plan>, at: string | number): Plan {
@@ -248,15 +164,17 @@ function planAt(table: Map<string | number, Plan>, at: string | number): Plan {
   return plan;
 }
 
+/** Schemas whose output is opaque to this walk: they keep whatever object the value is, every key of it. */
+const KEEPS_ALL: ReadonlySet<string> = new Set(["transform", "any", "unknown", "custom"]);
+
 /**
- * **Step two: where the schema marks the value.** It walks what {@link kept} returned — the value unmasked — and
- * records each marked position in `plan`, masking nothing yet. Every choice it makes is made against that value: a
- * union by every option it parses as, an intersection by both sides. Choosing against a value one side had already
- * masked would test `[pii]` against a refinement, an email or a number, fail the strict option, and apply a looser
- * one that marks less.
+ * **Step one: what every branch says about the value.** It walks the schema and the value together, records each
+ * marked position and each kept key in `plan`, and masks nothing yet. At a union, an intersection and a pipe it walks
+ * every option and both sides, against the same value, so no branch is chosen and none is tested.
  */
-function marks(schema: z.ZodType, value: unknown, plan: Plan): void {
-  if (value === null || value === undefined) return;
+function walk(schema: z.ZodType, value: unknown, plan: Plan): void {
+  if (value === null || value === undefined || plan.seen.has(schema)) return;
+  plan.seen.add(schema);
   const marked = privacyOf(schema);
   if (marked !== null) {
     // The first class to mark a position masks it; what is inside a masked value is gone with it.
@@ -270,100 +188,125 @@ function marks(schema: z.ZodType, value: unknown, plan: Plan): void {
   switch (def.type) {
     case "object": {
       if (!isPlainObject(value)) return;
+      plan.objects = true;
       const shape = (node as z.ZodObject).shape as Record<string, z.ZodType>;
+      const catchall = def.catchall && !isNever(def.catchall) ? def.catchall : undefined;
+      if (catchall) plan.keepsAll = true;
       for (const [key, field] of Object.entries(value)) {
-        const fieldSchema = Object.hasOwn(shape, key) ? shape[key] : def.catchall;
-        // A key this object does not name is another side's, kept by step one for that side to mark.
-        if (fieldSchema) marks(fieldSchema, field, planAt(plan.inner, key));
+        const fieldSchema = Object.hasOwn(shape, key) ? shape[key] : catchall;
+        if (!fieldSchema) continue;
+        plan.named.add(key);
+        walk(fieldSchema, field, planAt(plan.inner, key));
       }
       return;
     }
     case "array":
-      if (Array.isArray(value) && def.element)
-        for (const [index, item] of value.entries()) marks(def.element, item, planAt(plan.inner, index));
+      if (!Array.isArray(value) || !def.element) return;
+      plan.elements = Number.POSITIVE_INFINITY;
+      for (const [index, item] of value.entries()) walk(def.element, item, planAt(plan.inner, index));
       return;
     case "set":
-      if (value instanceof Set && def.valueType)
-        for (const [index, item] of [...value].entries()) marks(def.valueType, item, planAt(plan.inner, index));
+      if (!(value instanceof Set) || !def.valueType) return;
+      plan.elements = Number.POSITIVE_INFINITY;
+      for (const [index, item] of [...value].entries()) walk(def.valueType, item, planAt(plan.inner, index));
       return;
     case "tuple": {
       if (!Array.isArray(value)) return;
       const items = def.items ?? [];
+      const rest = def.rest ?? undefined;
+      // A position past a tuple's items with no rest is one parse refuses; another branch may still keep it.
+      plan.elements = Math.max(plan.elements ?? 0, rest ? Number.POSITIVE_INFINITY : items.length);
       value.forEach((item, index) => {
-        const itemSchema = items[index] ?? def.rest ?? undefined;
-        if (itemSchema) marks(itemSchema, item, planAt(plan.inner, index));
+        const itemSchema = items[index] ?? rest;
+        if (itemSchema) walk(itemSchema, item, planAt(plan.inner, index));
       });
       return;
     }
     case "record": {
       if (!isPlainObject(value)) return;
+      plan.keepsAll = true;
       for (const [key, item] of Object.entries(value)) {
-        if (def.keyType) marks(def.keyType, key, planAt(plan.keys, key));
-        if (def.valueType) marks(def.valueType, item, planAt(plan.inner, key));
+        if (def.keyType) walk(def.keyType, key, planAt(plan.keys, key));
+        if (def.valueType) walk(def.valueType, item, planAt(plan.inner, key));
       }
       return;
     }
     case "map": {
       if (!(value instanceof Map)) return;
       [...value].forEach(([key, item], index) => {
-        if (def.keyType) marks(def.keyType, key, planAt(plan.keys, index));
-        if (def.valueType) marks(def.valueType, item, planAt(plan.inner, index));
+        if (def.keyType) walk(def.keyType, key, planAt(plan.keys, index));
+        if (def.valueType) walk(def.valueType, item, planAt(plan.inner, index));
       });
       return;
     }
     case "union":
-      // Every option the value parses as, not the first: a looser object option parses a value by stripping the
-      // key a stricter one marks, and marking by it alone would copy that key through.
-      for (const option of appliedOptions(def.options ?? [], value)) marks(option, value, plan);
+      // Every option, a discriminated union's included: the one parse took cannot be read back off the app value.
+      for (const option of def.options ?? []) walk(option, value, plan);
       return;
     case "intersection":
-      if (def.left) marks(def.left, value, plan);
-      if (def.right) marks(def.right, value, plan);
+      if (def.left) walk(def.left, value, plan);
+      if (def.right) walk(def.right, value, plan);
       return;
-    case "pipe": {
-      // A codec holds its app side. A plain pipe's output is a transform's when `out` is one, so its input
-      // shape is the one that names the fields.
-      const target = pipeTarget(node, def);
-      if (target) marks(target, value, plan);
+    case "pipe":
+      // Both sides: a codec's wire side and its app side, a plain pipe's input and its output, a transform's input.
+      if (def.in) walk(def.in, value, plan);
+      if (def.out) walk(def.out, value, plan);
       return;
-    }
     case "lazy":
-      if (def.getter) marks(def.getter(), value, plan);
+      if (def.getter) walk(def.getter(), value, plan);
       return;
     default:
+      if (KEEPS_ALL.has(def.type)) plan.keepsAll = true;
       return;
   }
 }
 
+/** A key, redacted by its plan, and whether the plan masked it. */
+function redactedKey(plan: Plan | undefined, key: unknown): { key: unknown; masked: boolean } {
+  if (!plan || plan.mask === undefined || key === null || key === undefined) return { key, masked: false };
+  return { key: mask(plan.mask, key), masked: true };
+}
+
 /**
- * **Step three: the plan applied, once.** Every marked position takes its class's mask, every marked key is
- * replaced by its own, and nothing else is touched: no key is dropped or added, so no field `parse` keeps is lost.
+ * The entries of a record or a map with their keys redacted. A key that stays as it was keeps its name; a masked one
+ * takes the first name, `[pii]`, `[pii] #2` …, that no unmasked key and no earlier masked key holds, so every entry
+ * survives.
+ */
+function redactedEntries<K>(entries: readonly (readonly [K, unknown, Plan | undefined])[]): [unknown, unknown][] {
+  const keys = entries.map(([key, , plan]) => redactedKey(plan, key));
+  const taken = new Set<unknown>(keys.filter((key) => !key.masked).map((key) => key.key));
+  return keys.map((each, index) => {
+    if (!each.masked) return [each.key, entries[index]?.[1]];
+    const name = distinct(String(each.key), (candidate) => taken.has(candidate));
+    taken.add(name);
+    return [name, entries[index]?.[1]];
+  });
+}
+
+/**
+ * **Step two: the plan applied, once.** Every marked position takes its class's mask, every marked key is replaced by
+ * its own, a key or an element no branch keeps is dropped, and nothing else is touched.
  */
 function applied(plan: Plan | undefined, value: unknown): unknown {
   if (!plan || value === null || value === undefined) return value;
   if (plan.mask !== undefined) return mask(plan.mask, value);
-  if (plan.inner.size === 0 && plan.keys.size === 0) return value;
-  if (Array.isArray(value)) return value.map((item, index) => applied(plan.inner.get(index), item));
+  const limit = plan.elements ?? Number.POSITIVE_INFINITY;
+  if (Array.isArray(value))
+    return value.slice(0, Math.min(value.length, limit)).map((item, index) => applied(plan.inner.get(index), item));
   if (value instanceof Set) return new Set([...value].map((item, index) => applied(plan.inner.get(index), item)));
   if (value instanceof Map) {
-    const out = new Map<unknown, unknown>();
-    [...value].forEach(([key, item], index) => {
-      const redactedKey = applied(plan.keys.get(index), key);
-      const name =
-        redactedKey !== key && typeof redactedKey === "string"
-          ? distinct(redactedKey, (candidate) => out.has(candidate))
-          : redactedKey;
-      out.set(name, applied(plan.inner.get(index), item));
-    });
-    return out;
+    const entries = [...value].map(([key, item], index) => [key, item, plan.keys.get(index)] as const);
+    const named = redactedEntries(entries);
+    return new Map(named.map(([key, item], index) => [key, applied(plan.inner.get(index), item)]));
   }
   if (isPlainObject(value)) {
+    // A key no branch names is one parse strips under every branch; when no object branch reached here, none did.
+    const kept = Object.entries(value).filter(([key]) => !plan.objects || plan.keepsAll || plan.named.has(key));
+    const entries = kept.map(([key, item]) => [key, item, plan.keys.get(key)] as const);
     const out: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(value)) {
-      const redactedKey = String(applied(plan.keys.get(key), key));
-      const name = redactedKey === key ? key : distinct(redactedKey, (candidate) => Object.hasOwn(out, candidate));
-      out[name] = applied(plan.inner.get(key), item);
-    }
+    redactedEntries(entries).forEach(([name, item], index) => {
+      out[String(name)] = applied(plan.inner.get(entries[index]?.[0] as string), item);
+    });
     return out;
   }
   return value;
@@ -371,11 +314,10 @@ function applied(plan: Plan | undefined, value: unknown): unknown {
 
 /**
  * The masked view of a value, against the schema it is an instance of. See the module note for exactly what it
- * reads, and why the mask is a placeholder.
+ * reads, why it fails closed, and why the mask is a placeholder.
  */
 export function redact<S extends z.ZodType>(schema: S, value: z.output<S>): Redacted<z.output<S>> {
-  const unmasked = kept(schema, value);
   const plan = newPlan();
-  marks(schema, unmasked, plan);
-  return applied(plan, unmasked) as Redacted<z.output<S>>;
+  walk(schema, value, plan);
+  return applied(plan, value) as Redacted<z.output<S>>;
 }

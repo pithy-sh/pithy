@@ -6,6 +6,7 @@ import { z } from "zod";
 import { SQLiteDate, sqliteJson } from "../data/codecs";
 import { LogRecord, serializeRecord } from "../logger/record";
 import { definePrivacyClass, pci, phi, pii, secret } from "./classes";
+import { classifyPrivacy } from "./classify";
 import { redact } from "./redact";
 
 const User = z
@@ -158,17 +159,17 @@ describe("redact", () => {
     expect(redact(Bag, Bag.parse({ id: "1", e: "a@b.c" }))).toEqual({ id: "1", e: "[pii]" });
   });
 
-  test("applies every union option the value parses as, so a looser option cannot let a marked key through", () => {
+  test("masks a position any union option marks, whichever option the value parses as", () => {
     const Basic = z.object({ id: z.string() });
     const Full = z.object({ id: z.string(), email: pii(z.string()) });
-    // Parse keeps what the first option it parses as keeps: a strip-mode option drops the key, so redact does.
+    // Parse keeps what the first option keeps, and drops `email`; redact keeps what any option names, masked.
     const U = z.union([Basic, Full]).describe("Either.");
-    expect(redact(U, { id: "u1", email: "a@b.c" } as never)).toEqual({ id: "u1" });
-    // A loose option keeps the key raw, so the stricter option's marker is what masks it.
+    expect(redact(U, { id: "u1", email: "a@b.c" } as never)).toEqual({ id: "u1", email: "[pii]" });
     const Loose = z.union([Basic.loose(), Full]).describe("Either, loosely.");
     expect(redact(Loose, { id: "u1", email: "a@b.c" } as never)).toEqual({ id: "u1", email: "[pii]" });
+    // An option that marks the root masks the value, even one the marked option would refuse.
     const Prim = z.union([z.string(), pii(z.number())]).describe("A string or a marked number.");
-    expect(redact(Prim, "plain")).toBe("plain");
+    expect(redact(Prim, "plain")).toBe("[pii]");
   });
 
   test("drops a key the schema does not name, the way parse strips it, so its type tells the truth", () => {
@@ -196,14 +197,13 @@ describe("redact", () => {
     expect(redact(Both, value)).toEqual({ p: { name: "Ada", email: "[pii]", deep: { a: "x", b: "[secret]" } } });
   });
 
-  test("keeps a nested key exactly when parse does, and masks it by any option the value parses as", () => {
+  test("keeps a nested key any option names, masks it when any option marks it, and drops one none names", () => {
     const U = z.union([
       z.object({ p: z.object({ x: z.string() }) }),
       z.object({ p: z.object({ y: pii(z.string()) }) }),
     ]);
     const value = { p: { x: "kept", y: "a@b.c", z: "dropped" } };
-    expect(U.parse(value)).toEqual({ p: { x: "kept" } });
-    expect(redact(U, value as never)).toEqual({ p: { x: "kept" } });
+    expect(redact(U, value as never)).toEqual({ p: { x: "kept", y: "[pii]" } });
     const Loose = z.union([
       z.object({ p: z.looseObject({ x: z.string() }) }),
       z.object({ p: z.object({ y: pii(z.string()) }) }),
@@ -211,11 +211,11 @@ describe("redact", () => {
     expect(redact(Loose, value as never)).toEqual({ p: { x: "kept", y: "[pii]", z: "dropped" } });
   });
 
-  test("drops a key only an option the value does not parse as names, so no side copies it raw", () => {
+  test("masks what any option of either side marks, wherever the value sits", () => {
     const Left = z.union([z.object({ b: pii(z.string()), z: z.number() }), z.object({ c: z.string() })]);
     const Right = z.union([z.object({ b: pii(z.string()), z: z.number() }), z.object({ d: z.string() })]);
     const Both = z.intersection(Left, Right);
-    expect(redact(Both, { b: "a@b.c", c: "c", d: "d" } as never)).toEqual({ c: "c", d: "d" });
+    expect(redact(Both, { b: "a@b.c", c: "c", d: "d" } as never)).toEqual({ b: "[pii]", c: "c", d: "d" });
   });
 
   test("does not throw when an option's parse does, and masks by every option instead", () => {
@@ -262,5 +262,70 @@ describe("redact", () => {
     const map = redact(ByPhone, ByPhone.parse(new Map([["555-0100", "home"]])));
     expect([...map.keys()]).toEqual(["[pii]"]);
     expect([...map.values()]).toEqual(["home"]);
+  });
+
+  test("masks an option's marked field when a codec or a transform in that option would refuse the app value", () => {
+    const isoDate = z.codec(z.iso.datetime(), z.date(), {
+      decode: (wire: string) => new Date(wire),
+      encode: (date: Date) => date.toISOString(),
+    });
+    const Codec = z.union([z.object({ at: isoDate, s: pii(z.string()) }), z.looseObject({})]);
+    const codec = Codec.parse({ at: "2026-01-01T00:00:00Z", s: "S-1" });
+    expect(redact(Codec, codec)).toEqual({ at: new Date("2026-01-01T00:00:00Z"), s: "[pii]" });
+    const Transform = z.union([
+      z.object({ n: z.string().transform((wire) => wire.length), s: pii(z.string()) }),
+      z.looseObject({}),
+    ]);
+    expect(redact(Transform, Transform.parse({ n: "abc", s: "S-1" }))).toEqual({ n: 3, s: "[pii]" });
+    // With no loose fallback, the option that took the value is still the one that marks it, and nothing is dropped.
+    const Strict = z.union([
+      z.object({ n: z.string().transform((wire) => wire.length), s: pii(z.string()) }),
+      z.object({ s: z.string() }),
+    ]);
+    expect(redact(Strict, Strict.parse({ n: "abc", s: "S-1" }))).toEqual({ n: 3, s: "[pii]" });
+    const Discriminated = z.discriminatedUnion("t", [
+      z.object({ t: z.literal("a"), at: isoDate, s: pii(z.string()) }),
+      z.looseObject({ t: z.literal("b") }),
+    ]);
+    const tagged = Discriminated.parse({ t: "a", at: "2026-01-01T00:00:00Z", s: "S-1" });
+    expect(redact(Discriminated, tagged)).toMatchObject({ t: "a", s: "[pii]" });
+  });
+
+  test("masks a field either side of a pipe marks, and agrees with classifyPrivacy", () => {
+    // The input side marks `s`; the output side, which parse returns, names it unmarked.
+    const Pipe = z.object({ s: pii(z.string()) }).pipe(z.object({ s: z.string() }) as z.ZodType as never);
+    expect(redact(Pipe, Pipe.parse({ s: "S-1" }))).toEqual({ s: "[pii]" });
+    expect(classifyPrivacy(Pipe)).toEqual([{ path: "s", class: "pii" }]);
+    const Transformed = z.object({ s: pii(z.string()) }).pipe(z.transform((value) => value));
+    expect(redact(Transformed, Transformed.parse({ s: "S-1" }))).toEqual({ s: "[pii]" });
+    const Wire = z.codec(z.object({ s: pii(z.string()) }), z.object({ s: z.string() }), {
+      decode: (wire) => ({ s: String(wire.s) }),
+      encode: (app) => ({ s: pii(z.string()).parse(app.s) }),
+    });
+    expect(redact(Wire, Wire.parse({ s: "S-1" }))).toEqual({ s: "[pii]" });
+    expect(classifyPrivacy(Wire)).toEqual([{ path: "s", class: "pii" }]);
+  });
+
+  test("never lets a masked key overwrite a literal key equal to its placeholder", () => {
+    const Rec = z.record(z.union([pii(z.email()), z.string()]), z.string());
+    const rec = redact(Rec, { "a@b.co": "v1", "[pii]": "v2" });
+    expect(Object.keys(rec)).toHaveLength(2);
+    expect(Object.values(rec).sort()).toEqual(["v1", "v2"]);
+    expect(JSON.stringify(rec)).not.toContain("@");
+    const Plain = z.record(z.string(), z.string()).and(z.record(pii(z.email()), z.string()));
+    expect(Object.keys(redact(Plain, { "[pii]": "v2", "a@b.co": "v1" }))).toHaveLength(2);
+    const ByKey = z.map(z.union([pii(z.email()), z.string()]), z.string());
+    const map = redact(
+      ByKey,
+      new Map([
+        ["a@b.co", "v1"],
+        ["[pii]", "v2"],
+      ]),
+    );
+    expect(map.size).toBe(2);
+    expect([...map.values()].sort()).toEqual(["v1", "v2"]);
+    expect([...map.keys()].some((key) => String(key).includes("@"))).toBe(false);
+    const Unmarked = z.map(z.string(), z.string()).and(z.map(z.string(), z.string()));
+    expect(redact(Unmarked, new Map([["[pii]", "kept"]])).get("[pii]")).toBe("kept");
   });
 });
