@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
+import { sqliteJson } from "../data/codecs";
 import { pii } from "./classes";
 import { classifyPrivacy } from "./classify";
 import { redact } from "./redact";
@@ -10,30 +11,25 @@ import { redact } from "./redact";
 /**
  * **`redact` against `parse` and `classifyPrivacy`, over a grid of shapes** (#132).
  *
- * Every shape below is built from a chain of up to three combinators over a marked leaf, and every object level
- * carries a marked field of its own, so a mark sits at every depth. Two oracles hold `redact` to its fail-closed rule:
+ * Every shape below is a chain of up to three kinds over a marked leaf, and every object level carries a marked field
+ * of its own, so a mark sits at every depth. The kinds are every node the rule names: each structural one — an object
+ * stripped, strict and loose, a pick and an omit, an array, a record and one keyed by a marked value, a tuple, an
+ * optional, a nullable, a lazy, the standard recursive lazy, an intersection, a union and a discriminated union — and
+ * each opaque one — a transform, a pipe, a preprocess, a codec, `sqliteJson`, a `z.custom`, `any` and `unknown`, a
+ * set, a map and a function. `redact` is handed `parse`'s data, as a caller hands it the app value, and three oracles
+ * hold it to the rule:
  *
- * - **`parse`**: every key, element and entry it keeps, `redact` keeps — verbatim, or masked — and every value the grid
- *   put at a marked position that `parse` keeps comes back as `[pii]`, as a value or as a key.
- * - **`classifyPrivacy`**: a position of what `redact` returns is masked exactly when `classifyPrivacy` lists a path
- *   that names it. The two walk every branch alike, so they agree on every position, over-masking included.
+ * - **No raw marked value comes back**, as a value or as a key, anywhere — inside a class instance included.
+ * - **Nothing `parse` kept is dropped**: every key, element and entry comes back, verbatim or masked, or the position
+ *   holding it is masked whole.
+ * - **`classifyPrivacy` agrees**: a position of what `redact` returns is masked exactly when `classifyPrivacy` lists a
+ *   path naming it, over-masking included.
  *
- * An intersection's two sides name different unmarked fields at every depth (`n` on one, `m` on the other), and
- * the right side leaves the marks off, so a mask only one side knows has to survive the other.
+ * `redact.types.test.ts` holds `Redacted<T>` to the same kinds at compile time.
  *
- * The grid runs once per marked leaf, and a leaf may carry its own type or refinement — `z.email()`, `z.uuid()`,
- * `z.number()`, a `.refine()` — at every marked position, with the same type unmarked on a side that leaves the marks
- * off. A placeholder fails each of them, so a walk that tested a union's option against a value would pick a looser
- * option and let a field only the stricter one marks out raw. Two kinds put a union on an intersection's right side
- * to make that happen.
- *
- * `redact` is handed what `parse` returned, as a caller hands it the app value, so a codec and a transform change the
- * value it walks. Kinds put a codec in the option that marks, a transform on an unmarked field, an object piped into an
- * unmarked one, and a transform over a marked input that returns a class instance or renames the marked field; the
- * last two are masked whole, and a class instance holding a marked value that comes back unmasked is a failure. Three
- * more run a function where the marked value can reach it from elsewhere: a pipe whose output side renames before its
- * tail, an intersection whose unmarked side renames, and a check that reassigns the value. Each is masked whole. A set
- * holds two elements, so masked elements that merged would show.
+ * An intersection's two sides name different unmarked fields at every depth (`n` on one, `m` on the other), and the
+ * right side leaves the marks off, so a mask only one side knows has to survive the other. The grid runs once per
+ * marked leaf, and a leaf may carry its own type or refinement — `z.email()`, `z.uuid()`, `z.number()`, a `.refine()`.
  */
 
 /** A marked leaf's base schema, and the value the grid puts at a marked position of it. */
@@ -333,13 +329,57 @@ const KINDS: readonly Kind[] = [
     value: (child) => ({ a: child(), s: leaf.secret("s") }),
   },
   {
-    // A custom check reassigns the value, which is how `.overwrite()` is built: it copies `s` under a new key.
-    name: "checkedObject",
-    schema: (child, side) =>
-      z.looseObject({ a: child(side), s: markedString(side) }).check((ctx) => {
-        ctx.value = { ...ctx.value, copied: ctx.value.s };
-      }),
+    name: "preprocess",
+    schema: (child, side) => z.preprocess((value) => value, z.object({ a: child(side), s: markedString(side) })),
     value: (child) => ({ a: child(), s: leaf.secret("s") }),
+  },
+  {
+    name: "codec",
+    schema: (child, side) =>
+      z.codec(z.string(), z.object({ a: child(side), s: markedString(side) }), {
+        decode: (wire) => JSON.parse(wire),
+        encode: (app) => JSON.stringify(app),
+      }),
+    value: (child) => JSON.stringify({ a: child(), s: leaf.secret("s") }),
+  },
+  {
+    name: "sqliteJson",
+    schema: (child, side) => z.object({ c: sqliteJson(z.object({ a: child(side), s: markedString(side) })) }),
+    value: (child) => ({ c: { a: child(), s: leaf.secret("s") } }),
+  },
+  {
+    name: "pipe",
+    schema: (child, side) => z.unknown().pipe(z.object({ a: child(side), s: markedString(side) })),
+    value: (child) => ({ a: child(), s: leaf.secret("s") }),
+  },
+  {
+    // Opaque nodes with no mark inside, beside the marked ones: each is kept as it is.
+    name: "unmarkedOpaque",
+    schema: (child, side) =>
+      z.object({
+        a: child(side),
+        s: markedString(side),
+        u: z.unknown(),
+        y: z.any(),
+        c: z.custom<Box>((value) => value instanceof Box),
+        f: z.function({ input: [z.string()], output: z.string() }),
+      }),
+    value: (child) => ({ a: child(), s: leaf.secret("s"), u: { kept: 1 }, y: [2], c: new Box(3), f: String }),
+  },
+  {
+    // A function whose argument is marked holds a mark.
+    name: "function",
+    schema: (child, side) => z.object({ f: z.function({ input: [child(side)], output: z.string() }), n: z.number() }),
+    value: () => ({ f: String, n: 1 }),
+  },
+  {
+    // The standard recursive lazy: a node, and the next one.
+    name: "recursive",
+    schema: (child, side) => {
+      const Node: z.ZodType = z.lazy(() => z.object({ a: child(side), s: markedString(side), next: Node.optional() }));
+      return Node;
+    },
+    value: (child) => ({ a: child(), s: leaf.secret("s"), next: { a: child(), s: leaf.secret("t") } }),
   },
 ];
 
@@ -427,6 +467,9 @@ function compareToParse(parsed: unknown, redacted: unknown, path: string, out: s
   } else if (parsed instanceof Map) {
     if (!(redacted instanceof Map)) out.push(`${path}: map came back as ${String(redacted)}`);
     else pairs([...parsed.entries()], [...redacted.entries()]);
+  } else if (typeof parsed === "function") {
+    // Parse wraps a function in one of its own, so it is compared by kind, not by identity.
+    if (typeof redacted !== "function") out.push(`${path}: function came back as ${String(redacted)}`);
   } else if (holdsSecret(parsed)) {
     out.push(`${path}: an opaque value holding a marked value came back as ${String(redacted)}`);
   } else if (!Object.is(parsed, redacted)) {
@@ -470,9 +513,10 @@ function compareToClassify(redacted: unknown, paths: readonly string[], marked: 
   if (isPlainObject(redacted)) {
     for (const [name, item] of Object.entries(redacted)) {
       key(name);
+      // The recursive kind's next node is the position its parent is, and `classifyPrivacy` lists it there once.
       compareToClassify(
         item,
-        under((path) => [join(path, name), join(path, "*")]),
+        [...under((path) => [join(path, name), join(path, "*")]), ...(name === "next" ? paths : [])],
         marked,
         out,
       );

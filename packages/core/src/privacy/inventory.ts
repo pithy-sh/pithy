@@ -27,9 +27,10 @@ import { PRIVACY_SOURCES, type PrivacyInventory, type PrivacyInventorySchema } f
  *
  * ## What a path looks like
  *
- * A D1 field is its column path (`email`, `profile.phone` inside a JSON column). A KV field leads with the part
- * of the entry it is in: `key.email`, `value.token`, `metadata.ip`, `value[].email` for an array value — or
- * `value` alone when the whole value is marked. It is the path `pithy privacy scan` writes for the same field.
+ * A D1 field is its column path: `email`, `address.line1`, or `profile` for a JSON column with a marked field inside,
+ * which `redact` masks whole. A KV field leads with the part of the entry it is in: `key.email`, `value.token`,
+ * `metadata.ip`, `value[].email` for an array value — or `value` alone when the whole value is marked. It is the path
+ * `pithy privacy scan` writes for the same field.
  *
  * ## The per-field record
  *

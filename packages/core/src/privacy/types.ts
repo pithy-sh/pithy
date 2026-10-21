@@ -117,66 +117,46 @@ type NoPrivacyBrand = { readonly [z.core.$brand]?: { readonly [K in `privacy:${s
 export type UnmarkedString = string & NoPrivacyBrand;
 
 /**
- * What `redact` (`./redact`) returns: the value's own type, with every marked part replaced by the
- * string its class masks it to.
+ * A value's own type with every marked part replaced by the string `redact` masks it to, read off the type alone:
+ * the type a caller names for a value it already redacted, `Redacted<User>`. `redact` itself returns
+ * {@link RedactedOutput}, which reads the schema and agrees with this wherever the schema's output says enough.
  *
- * **It fails closed, as `redact` does.** A position is a masked `string` when any member of the union the schema
- * gives it is marked: `pii(z.string()) | z.number()` is `string`, and in `{ e: Email } | { e: number }` the field
- * `e` is `string` in both members, because `redact` masks the position whichever option the value came from.
- *
- * Each container stays the container it is, because that is what `redact` hands back at runtime: an array maps to an
- * array of its redacted elements — a branded `string[] & $brand<"Ids">` included, whose brand goes — keeping a
- * `readonly`, and a tuple maps position by position, keeping its length. A map or a set maps its keys and its
- * elements, which is where a `pii()` key comes back as a masked string. A plain object maps its fields, and a marked
- * key becomes `string`. The remaining {@link Opaque} values — an `Error`, a `Date`, a function — are copied as they
- * are.
+ * **It fails closed, as `redact` does.** A position is a masked `string` when any member of the union the type gives
+ * it is marked: `pii(z.string()) | z.number()` is `string`, and in `{ e: Email } | { e: number }` the field `e` is
+ * `string` in both members. An array maps to an array of its redacted elements, a tuple keeps its length, a plain
+ * object maps its fields, and a marked key becomes `string`. A map, a set or a promise holding a mark is a masked
+ * `string`, because `redact` masks one whole; one holding none, and any other {@link Opaque} value, is kept as it is.
  */
 export type Redacted<T> = RedactedAt<T, T>;
 
 /**
- * One member `T` of a position, redacted against `C`: every type the schema puts at that position, across every
- * union member. `C` decides whether the position is masked; `T` decides the shape a member keeps.
+ * One member `T` of a position, redacted against `C`: every type at that position, across every union member. `C`
+ * decides whether the position is masked; `T` decides the shape a member keeps.
  */
 type RedactedAt<T, C> =
   IsAny<T> extends true
     ? T
     : true extends IsMarked<C>
-      ? string
-      : T extends unknown
-        ? T extends MaybeInstance<infer U>
-          ? string | RedactedAt<U, C>
-          : T extends readonly unknown[]
+      ? string | Extract<T, null | undefined>
+      : true extends CarriesMark<C>
+        ? T extends unknown
+          ? T extends readonly unknown[]
             ? IsTuple<T> extends true
               ? RedactedTuple<T, C>
               : T extends unknown[]
                 ? RedactedAt<T[number], ElementOf<C>>[]
                 : readonly RedactedAt<T[number], ElementOf<C>>[]
-            : T extends Map<infer K, infer V>
-              ? Map<RedactedAt<K, MapKeyOf<C>>, RedactedAt<V, MapValueOf<C>>>
-              : T extends ReadonlyMap<infer K, infer V>
-                ? ReadonlyMap<RedactedAt<K, MapKeyOf<C>>, RedactedAt<V, MapValueOf<C>>>
-                : T extends Set<infer E>
-                  ? Set<RedactedAt<E, SetElementOf<C>>>
-                  : T extends ReadonlySet<infer E>
-                    ? ReadonlySet<RedactedAt<E, SetElementOf<C>>>
-                    : T extends Opaque
-                      ? T extends MaskedWhenMarked
-                        ? true extends CarriesMark<C>
-                          ? string
-                          : T
-                        : T
-                      : T extends object
-                        ? { [K in keyof T as true extends IsMarked<K> ? string : K]: RedactedAt<T[K], FieldOf<C, K>> }
-                        : T
-        : never;
+            : T extends ReadonlyMap<unknown, unknown> | ReadonlySet<unknown> | PromiseLike<unknown>
+              ? string
+              : T extends Opaque
+                ? T
+                : T extends object
+                  ? { [K in keyof T as true extends IsMarked<K> ? string : K]: RedactedAt<T[K], FieldOf<C, K>> }
+                  : T
+          : never
+        : T;
 
-/**
- * The {@link Opaque} values `redact` masks whole where the position also holds a marked type: a `Date`, an `Error`,
- * any object it cannot walk into. A function is not an object to it, and is copied as it is.
- */
-type MaskedWhenMarked = Error | Date | RegExp | PromiseLike<unknown>;
-
-/** Whether any member of `C` carries a privacy brand, in a map's or a set's members as well. */
+/** Whether any member of `C` carries a privacy brand: in a value, a key, a map's or a set's members, or a promise. */
 type CarriesMark<C> =
   true extends ContainsMarked<C>
     ? true
@@ -186,261 +166,9 @@ type CarriesMark<C> =
         : false
       : C extends ReadonlySet<infer E>
         ? ContainsMarked<E>
-        : false;
-
-/**
- * What `redact(schema, value)` returns: {@link Redacted} over the schema's output, where every position a function
- * over a mark fills is the masked `string` it is at runtime. A transform's output type says nothing about where its
- * input's marks went — a class instance, a renamed field — and `redact` masks it whole, so the type reads the schema,
- * not only its output: an object, an array, a set, a map, a record, a union, an intersection, a lazy and every wrapper
- * are followed to {@link PRIVACY_CHECK_DEPTH} levels, and any other kind keeps its output type.
- *
- * The rule is `redact`'s, read off the schema's type: a position is a `string` where a function the type can see runs
- * ({@link RunsHere}) over a mark it could read ({@link Carries}) — a transform anywhere on a pipe's output side, an
- * option or a side that runs one beside another that marks, a codec whose wire side marks. A codec is trusted only in
- * `sqliteJson`'s shape. A plain pipe's input marks join its output's. A check — `.refine()`, `.check()`,
- * `.overwrite()` — is not in the type, so an object with one and a mark inside keeps its type though `redact` masks it
- * whole. And a codec in `sqliteJson`'s shape that is not `sqliteJson`, or one of the kit's scalar codecs, can differ:
- * `redact` trusts the kit's own decode functions, which a type cannot name.
- */
-export type RedactedOutput<S> = Redacted<Revealed<S>>;
-
-/**
- * A `z.instanceof` or `z.custom` member where a branch with a mark inside reaches the position, and no function reads
- * that mark — it sits after one. `redact` masks a class instance there whole and walks a plain object, and the type
- * cannot tell the two apart, so {@link Redacted} gives this member as `string` or the type redacted. A box, not a
- * brand: a brand would mask the whole position.
- */
-type MaybeInstance<T> = { readonly "privacy:instance": T };
-
-/** The brand a position {@link Revealed} masks whole carries, so {@link Redacted} turns it into a `string`. */
-type MaskedWhole = string & { readonly [z.core.$brand]: { readonly "privacy:opaque": true } };
-
-/** A schema kind, read off its definition. */
-type DefOf<S> = S extends { readonly _zod: { readonly def: infer D } } ? D : never;
-
-/** `parent.key`, or `key` at the root, as `classifyPrivacy` joins a path. */
-type Join<P extends string, K extends string> = P extends "" ? K : `${P}.${K}`;
-
-/** The privacy brand keys a type carries — `privacy:pii` — or `never`. */
-type MarkKeys<T> = T extends { readonly [z.core.$brand]: infer M } ? Extract<keyof M, `privacy:${string}`> : never;
-
-/**
- * Every marked path in a schema and its brand key, as `path|privacy:class` — the walk `classifyPrivacy` does, at the
- * type level, to {@link PRIVACY_CHECK_DEPTH} levels. A marked node is not descended into. A schema's output type
- * cannot say this: a codec's wire side, and a pipe's input, leave no brand on what it returns.
- */
-type MarkedPaths<S, P extends string = "", D extends number = PRIVACY_CHECK_DEPTH> = [D] extends [never]
-  ? never
-  : IsAny<z.output<S>> extends true
-    ? never
-    : [MarkKeys<z.output<S>>] extends [never]
-      ? DefOf<S> extends { type: "pipe"; in: infer I; out: infer O }
-        ? MarkedPaths<I, P, Prev[D]> | MarkedPaths<O, P, Prev[D]>
-        : DefOf<S> extends {
-              type: "optional" | "nullable" | "default" | "prefault" | "readonly" | "catch" | "nonoptional";
-              innerType: infer I;
-            }
-          ? MarkedPaths<I, P, Prev[D]>
-          : DefOf<S> extends { type: "lazy"; getter: () => infer I }
-            ? MarkedPaths<I, P, Prev[D]>
-            : DefOf<S> extends { type: "union"; options: readonly (infer O)[] }
-              ? O extends unknown
-                ? MarkedPaths<O, P, Prev[D]>
-                : never
-              : DefOf<S> extends { type: "intersection"; left: infer L; right: infer R }
-                ? MarkedPaths<L, P, Prev[D]> | MarkedPaths<R, P, Prev[D]>
-                : DefOf<S> extends { type: "array"; element: infer E }
-                  ? MarkedPaths<E, `${P}[]`, Prev[D]>
-                  : DefOf<S> extends { type: "set"; valueType: infer E }
-                    ? MarkedPaths<E, `${P}[]`, Prev[D]>
-                    : DefOf<S> extends { type: "tuple"; items: infer Items extends readonly unknown[]; rest: infer R }
-                      ?
-                          | {
-                              [K in keyof Items & `${number}`]: MarkedPaths<Items[K], `${P}[${K}]`, Prev[D]>;
-                            }[keyof Items & `${number}`]
-                          | MarkedPaths<R, `${P}[]`, Prev[D]>
-                      : DefOf<S> extends { type: "record" | "map"; keyType: infer K; valueType: infer V }
-                        ? MarkedPaths<K, Join<P, "<key>">, Prev[D]> | MarkedPaths<V, Join<P, "*">, Prev[D]>
-                        : DefOf<S> extends { type: "object"; shape: infer Shape; catchall?: infer C }
-                          ?
-                              | {
-                                  [K in keyof Shape & string]: MarkedPaths<Shape[K], Join<P, K>, Prev[D]>;
-                                }[keyof Shape & string]
-                              | MarkedPaths<C, Join<P, "*">, Prev[D]>
-                          : never
-      : `${P}|${MarkKeys<z.output<S>>}`;
-
-/** Whether a schema carries a mark anywhere: on a codec's wire side and a pipe's input as well as its output. */
-type SchemaMarked<S> = [MarkedPaths<S>] extends [never] ? false : true;
-
-/** Whether one schema marks a path, with a class, that the other does not: what a plain pipe's input adds. */
-type HidesMarks<I, O> = [Exclude<MarkedPaths<I>, MarkedPaths<O>>] extends [never] ? false : true;
-
-/** A codec's definition: a pipe whose decode is a function. A plain pipe's `transform` is optional and absent. */
-type CodecDef = { type: "pipe"; transform: (...args: never[]) => unknown };
-
-/** The wrappers that are the same position as what they wrap and run nothing of their own. */
-type PlainWrapper = "optional" | "nullable" | "default" | "prefault" | "readonly" | "nonoptional";
-
-/**
- * Whether a codec is `sqliteJson`'s shape — a string or the schema on the wire, the same schema in the app — which is
- * the one codec `redact` trusts to move nothing that a type can name. Any other codec's decode is a function.
- */
-type TrustedCodec<S> =
-  DefOf<S> extends { type: "pipe"; in: infer I; out: infer O }
-    ? DefOf<I> extends { type: "union"; options: readonly [infer First, infer X] }
-      ? DefOf<First> extends { type: "string" }
-        ? [X] extends [O]
-          ? [O] extends [X]
-            ? true
-            : false
-          : false
-        : false
-      : false
-    : false;
-
-/** Whether a codec's decode is a function `redact` does not trust. `false` for a schema that is not a codec. */
-type UntrustedCodec<S> = DefOf<S> extends CodecDef ? (TrustedCodec<S> extends true ? false : true) : false;
-
-/**
- * Whether a function the type can see runs on the value at this position, as `redact` reads it: a transform, a
- * `z.custom`, a `.catch()`, a codec's decode, on either side of a pipe, in any option of a union, on either side of an
- * intersection, behind a lazy or a wrapper. A check — `.refine()`, `.check()`, `.overwrite()` — is not in the type.
- */
-type RunsHere<S, D extends number = PRIVACY_CHECK_DEPTH> = [D] extends [never]
-  ? false
-  : DefOf<S> extends { type: "transform" | "custom" | "catch" }
-    ? true
-    : UntrustedCodec<S> extends true
-      ? true
-      : DefOf<S> extends { type: "pipe"; in: infer I; out: infer O }
-        ? true extends RunsHere<I, Prev[D]> | RunsHere<O, Prev[D]>
-          ? true
-          : false
-        : DefOf<S> extends { type: PlainWrapper; innerType: infer I }
-          ? RunsHere<I, Prev[D]>
-          : DefOf<S> extends { type: "union"; options: readonly (infer O)[] }
-            ? true extends (O extends unknown ? RunsHere<O, Prev[D]> : never)
-              ? true
-              : false
-            : DefOf<S> extends { type: "intersection"; left: infer L; right: infer R }
-              ? true extends RunsHere<L, Prev[D]> | RunsHere<R, Prev[D]>
-                ? true
-                : false
-              : DefOf<S> extends { type: "lazy"; getter: () => infer I }
-                ? RunsHere<I, Prev[D]>
-                : false;
-
-/**
- * Whether a function at this position could read a mark: one at or below it in any branch, except a mark that sits
- * only after every function that runs here — `classify`'s `carriedClasses`, at the type level. `A` says a function
- * here ran before this schema, `B` that one runs after it.
- */
-type Carries<S, A extends boolean = false, B extends boolean = false, D extends number = PRIVACY_CHECK_DEPTH> = [
-  D,
-] extends [never]
-  ? false
-  : B extends true
-    ? SchemaMarked<S>
-    : A extends true
-      ? RunsHere<S> extends true
-        ? CarriesHere<S, A, D>
-        : false
-      : CarriesHere<S, A, D>;
-
-/** {@link Carries}, once the schema is known to count. */
-type CarriesHere<S, A extends boolean, D extends number> = [MarkKeys<z.output<S>>] extends [never]
-  ? DefOf<S> extends { type: "pipe"; in: infer I; out: infer O }
-    ? true extends
-        | Carries<I, A, RunsHere<O>, Prev[D]>
-        | Carries<O, true extends A | UntrustedCodec<S> | RunsHere<I> ? true : false, false, Prev[D]>
-      ? true
-      : false
-    : DefOf<S> extends { type: PlainWrapper | "catch"; innerType: infer I }
-      ? Carries<I, A, false, Prev[D]>
-      : DefOf<S> extends { type: "union"; options: readonly (infer O)[] }
-        ? true extends (O extends unknown ? Carries<O, A, false, Prev[D]> : never)
-          ? true
-          : false
-        : DefOf<S> extends { type: "intersection"; left: infer L; right: infer R }
-          ? true extends Carries<L, A, false, Prev[D]> | Carries<R, A, false, Prev[D]>
-            ? true
-            : false
-          : DefOf<S> extends { type: "lazy"; getter: () => infer I }
-            ? Carries<I, A, false, Prev[D]>
-            : SchemaMarked<S>
-  : true;
-
-/**
- * A schema's output at a position it starts, with the position replaced by {@link MaskedWhole} where a function runs
- * over a mark it could read, as `redact` masks it, and with every such position below it replaced the same way.
- */
-type Revealed<S, D extends number = PRIVACY_CHECK_DEPTH> = [D] extends [never]
-  ? z.output<S>
-  : IsAny<z.output<S>> extends true
-    ? z.output<S>
-    : true extends IsMarked<z.output<S>>
-      ? z.output<S>
-      : RunsHere<S> extends true
-        ? Carries<S> extends true
-          ? MaskedWhole
-          : RevealedHere<S, D, S>
-        : RevealedHere<S, D, S>;
-
-/**
- * The body of {@link Revealed}. `P` is the outermost schema at this position: a union's or an intersection's options,
- * a pipe's sides and every wrapper are the same position, so they keep it, and a field, an element or a value starts
- * its own.
- */
-type RevealedHere<S, D extends number, P> = [D] extends [never]
-  ? z.output<S>
-  : IsAny<z.output<S>> extends true
-    ? z.output<S>
-    : true extends IsMarked<z.output<S>>
-      ? z.output<S>
-      : DefOf<S> extends { type: "pipe"; in: infer I; out: infer O }
-        ? DefOf<S> extends CodecDef
-          ? RevealedHere<O, Prev[D], P>
-          : HidesMarks<I, O> extends true
-            ? RevealedHere<O, Prev[D], P> | RevealedHere<I, Prev[D], P>
-            : RevealedHere<O, Prev[D], P>
-        : DefOf<S> extends { type: "custom" }
-          ? // A class instance where a branch with a mark inside reaches it is masked whole; a plain object is walked.
-            SchemaMarked<P> extends true
-            ? MaybeInstance<z.output<S>>
-            : z.output<S>
-          : DefOf<S> extends { type: "optional"; innerType: infer I }
-            ? RevealedHere<I, Prev[D], P> | undefined
-            : DefOf<S> extends { type: "nullable"; innerType: infer I }
-              ? RevealedHere<I, Prev[D], P> | null
-              : DefOf<S> extends { type: "default" | "nonoptional"; innerType: infer I }
-                ? Exclude<RevealedHere<I, Prev[D], P>, undefined>
-                : DefOf<S> extends { type: "prefault" | "catch"; innerType: infer I }
-                  ? RevealedHere<I, Prev[D], P>
-                  : DefOf<S> extends { type: "lazy"; getter: () => infer I }
-                    ? RevealedHere<I, Prev[D], P>
-                    : DefOf<S> extends { type: "union"; options: readonly (infer O)[] }
-                      ? O extends unknown
-                        ? RevealedHere<O, Prev[D], P>
-                        : never
-                      : DefOf<S> extends { type: "intersection"; left: infer L; right: infer R }
-                        ? RevealedHere<L, Prev[D], P> & RevealedHere<R, Prev[D], P>
-                        : DefOf<S> extends { type: "array"; element: infer E }
-                          ? Revealed<E, Prev[D]>[]
-                          : DefOf<S> extends { type: "set"; valueType: infer E }
-                            ? Set<Revealed<E, Prev[D]>>
-                            : DefOf<S> extends { type: "map"; keyType: infer K; valueType: infer V }
-                              ? Map<Revealed<K, Prev[D]>, Revealed<V, Prev[D]>>
-                              : DefOf<S> extends { type: "record"; valueType: infer V }
-                                ? { [P in keyof z.output<S>]: Revealed<V, Prev[D]> }
-                                : DefOf<S> extends { type: "object"; shape: infer Shape }
-                                  ? {
-                                      [P in keyof z.output<S>]: P extends keyof Shape
-                                        ? Revealed<Shape[P], Prev[D]>
-                                        : z.output<S>[P];
-                                    }
-                                  : z.output<S>;
+        : C extends PromiseLike<infer P>
+          ? ContainsMarked<P>
+          : false;
 
 /**
  * A tuple's positions, redacted. A mapped type over a type parameter is homomorphic, so a tuple keeps its length and
@@ -460,13 +188,6 @@ type ElementOf<C> = C extends readonly (infer E)[] ? E : never;
 /** Every type a member of `C` holds at tuple position `K`, or as any element of an array. */
 type IndexOf<C, K> = C extends readonly unknown[] ? (K extends keyof C ? C[K] : C[number]) : never;
 
-/** Every type a map member of `C` holds as a key, and as a value. */
-type MapKeyOf<C> = C extends ReadonlyMap<infer K, unknown> ? K : never;
-type MapValueOf<C> = C extends ReadonlyMap<unknown, infer V> ? V : never;
-
-/** Every type a set member of `C` holds. */
-type SetElementOf<C> = C extends ReadonlySet<infer E> ? E : never;
-
 /** Every type an object member of `C` holds at field `K`. */
 type FieldOf<C, K> = C extends readonly unknown[] | Opaque
   ? never
@@ -475,3 +196,239 @@ type FieldOf<C, K> = C extends readonly unknown[] | Opaque
       ? C[K]
       : never
     : never;
+
+/**
+ * **What `redact(schema, value)` returns, read off the schema: the rule `redact` and `classifyPrivacy` share**
+ * (`./classify`), at the type level.
+ *
+ * - **A marked position is a `string`**: a marked node, or any option or side of one that is.
+ * - **An opaque node with a mark anywhere inside it is a `string`** — a transform, a pipe, a preprocess, a codec
+ *   (`sqliteJson` too), a `z.custom`, a set, a map, a promise, a function — because `redact` masks it whole. With no
+ *   mark inside it keeps its output type, unless something else at its position carries a mark: then a transform, an
+ *   `unknown` or a custom beside it holds the same value, and the position is a `string`. A scalar never is.
+ * - **A structural node keeps its shape**: an object maps its fields, an array stays an array — a branded one
+ *   included, whose brand goes — a tuple keeps its positions and its rest, a record maps its values and turns a
+ *   marked key into `string`, and every wrapper keeps the `undefined` or the `null` it adds. A union is a union of its
+ *   members, each with every option's marks at each position; an intersection intersects its sides the same way.
+ * - **A check is not in the type**, as it is not in the rule.
+ *
+ * It follows a schema {@link PRIVACY_CHECK_DEPTH} levels of structure deep. Below that it reads the output type the
+ * way {@link Redacted} does, which masks every marked value and may keep a container `redact` masks whole.
+ */
+export type RedactedOutput<S> = RedactedPosition<S, S, PRIVACY_CHECK_DEPTH>;
+
+/**
+ * A schema kind, read off its definition. Anything that is not a schema has a kind no branch below names: `never`
+ * would match every branch, and a walk over a type that is not a schema would never end.
+ */
+type DefOf<S> = S extends { readonly _zod: { readonly def: infer D } } ? D : { readonly type: "not-a-schema" };
+
+/** A schema's output, by its own `_zod`. Distributes over a union of schemas. */
+type Out<S> = S extends { readonly _zod: { readonly output: infer O } } ? O : never;
+
+/** The kinds a position is walked into. */
+type Structural = "object" | "array" | "record" | "tuple";
+
+/** The wrappers that are the same position as what they wrap. */
+type Wrapper = "optional" | "nullable" | "default" | "prefault" | "readonly" | "catch" | "nonoptional";
+
+/**
+ * Every node at a position: `S` flattened through its wrappers, the options of a union, the sides of an intersection
+ * and each lazy, to the structural and opaque nodes underneath. Distributes over a union of schemas.
+ */
+type Nodes<S, D extends number = PRIVACY_CHECK_DEPTH> = [D] extends [never]
+  ? S
+  : S extends unknown
+    ? DefOf<S> extends { type: Wrapper; innerType: infer I }
+      ? Nodes<I, Prev[D]>
+      : DefOf<S> extends { type: "union"; options: readonly (infer O)[] }
+        ? Nodes<O, Prev[D]>
+        : DefOf<S> extends { type: "intersection"; left: infer L; right: infer R }
+          ? Nodes<L, Prev[D]> | Nodes<R, Prev[D]>
+          : DefOf<S> extends { type: "lazy"; getter: () => infer I }
+            ? Nodes<I, Prev[D]>
+            : S
+    : never;
+
+/** Whether a node is one the rule walks into. */
+type IsStructural<S> = DefOf<S> extends { type: Structural } ? true : false;
+
+/** A Zod schema, as a definition slot holds one. */
+type Schema = { readonly _zod: { readonly output: unknown; readonly def: unknown } };
+
+/**
+ * Whether a schema carries a mark anywhere inside it: on its output, or on any schema its definition holds — a pipe's
+ * sides, a codec's wire side, an option, an element, a field, a lazy's target. What decides an opaque node.
+ */
+type HasMark<S, D extends number = PRIVACY_CHECK_DEPTH> = [D] extends [never]
+  ? false
+  : S extends Schema
+    ? true extends IsMarked<Out<S>>
+      ? true
+      : true extends {
+            [K in keyof DefOf<S>]-?: K extends "checks" ? false : SlotHasMark<DefOf<S>[K], Prev[D]>;
+          }[keyof DefOf<S>]
+        ? true
+        : false
+    : false;
+
+/** One slot of a definition: a schema, a lazy's getter, a list of schemas, or an object's shape. */
+type SlotHasMark<V, D extends number> = V extends Schema
+  ? HasMark<V, D>
+  : V extends () => infer R
+    ? HasMark<R, D>
+    : V extends readonly (infer E)[]
+      ? HasMark<E, D>
+      : V extends object
+        ? { [K in keyof V]-?: V[K] extends Schema ? HasMark<V[K], D> : false }[keyof V]
+        : false;
+
+/** The opaque kinds that only ever hold a scalar, as `./classify` lists them. */
+type Scalar =
+  | "string"
+  | "number"
+  | "bigint"
+  | "boolean"
+  | "date"
+  | "symbol"
+  | "undefined"
+  | "null"
+  | "void"
+  | "never"
+  | "nan"
+  | "literal"
+  | "enum"
+  | "template_literal";
+
+/**
+ * Whether a node is opaque and may hold whatever the rest of its position marks: a transform, an `unknown`, a custom.
+ * A schema typed only as `z.ZodType<T>` names no kind, and is not one.
+ */
+type IsFree<N> =
+  DefOf<N> extends { type: infer T }
+    ? "object" extends T
+      ? false
+      : T extends Structural | Scalar
+        ? false
+        : true
+    : false;
+
+/**
+ * Whether a position is masked whole: a marked node, an opaque node with a mark inside, or an opaque node that may hold
+ * anything where something else at the position carries a mark.
+ */
+type MaskedWhole<S> = true extends
+  | IsMarked<Out<S>>
+  | IsMarked<Out<Nodes<S>>>
+  | OpaqueMarked<Nodes<S>>
+  | (true extends FreeAt<Nodes<S>> ? CarriesAt<Nodes<S>> : false)
+  ? true
+  : false;
+
+/** Whether an opaque node among `N` carries a mark. */
+type OpaqueMarked<N> = N extends unknown ? (IsStructural<N> extends true ? false : HasMark<N>) : never;
+
+/** Whether an opaque node among `N` may hold anything. */
+type FreeAt<N> = N extends unknown ? IsFree<N> : never;
+
+/** Whether any node among `N` carries a mark. */
+type CarriesAt<N> = N extends unknown ? HasMark<N> : never;
+
+/**
+ * One member's schema `S` at a position, against `C`, every schema that reaches the position. `C` decides whether the
+ * position is masked, and what is at each position below it; `S` decides the shape this member keeps.
+ */
+type RedactedPosition<S, C, D extends number> = [S] extends [never]
+  ? never
+  : IsAny<Out<S>> extends true
+    ? Out<S>
+    : [D] extends [never]
+      ? Redacted<Out<S>>
+      : MaskedWhole<C> extends true
+        ? string | Extract<Out<S>, null | undefined>
+        : Shaped<S, Nodes<C>, D>;
+
+/**
+ * One schema at a position that is walked into, against `C`, every node at the position: a wrapper keeps what it
+ * adds, a union and an intersection keep their form, and a structural node maps by every node's schemas.
+ */
+type Shaped<S, C, D extends number> = S extends unknown
+  ? DefOf<S> extends { type: "optional"; innerType: infer I }
+    ? Shaped<I, C, D> | undefined
+    : DefOf<S> extends { type: "nullable"; innerType: infer I }
+      ? Shaped<I, C, D> | null
+      : DefOf<S> extends { type: "default" | "prefault" | "nonoptional"; innerType: infer I }
+        ? Exclude<Shaped<I, C, D>, undefined>
+        : DefOf<S> extends { type: "catch"; innerType: infer I }
+          ? Shaped<I, C, D>
+          : DefOf<S> extends { type: "readonly"; innerType: infer I }
+            ? Readonly<Shaped<I, C, D>>
+            : DefOf<S> extends { type: "lazy"; getter: () => infer I }
+              ? Shaped<I, C, D>
+              : DefOf<S> extends { type: "union"; options: readonly (infer O)[] }
+                ? Shaped<O, C, D>
+                : DefOf<S> extends { type: "intersection"; left: infer L; right: infer R }
+                  ? Shaped<L, C, D> & Shaped<R, C, D>
+                  : DefOf<S> extends { type: "object"; shape: infer Shape }
+                    ? {
+                        [K in keyof Out<S>]: K extends keyof Shape
+                          ? RedactedPosition<Shape[K], FieldSchemas<C, K>, Prev[D]>
+                          : Redacted<Out<S>[K]>;
+                      }
+                    : DefOf<S> extends { type: "record"; valueType: infer V }
+                      ? {
+                          [K in keyof Out<S> as MaskedWhole<KeySchemas<C>> extends true ? string : K]: RedactedPosition<
+                            V,
+                            FieldSchemas<C, K>,
+                            Prev[D]
+                          >;
+                        }
+                      : DefOf<S> extends { type: "array"; element: infer E }
+                        ? RedactedPosition<E, ElementSchemas<C, number>, Prev[D]>[]
+                        : DefOf<S> extends {
+                              type: "tuple";
+                              items: infer Items extends readonly unknown[];
+                              rest: infer R;
+                            }
+                          ? ShapedTuple<Items, R, C, D>
+                          : Redacted<Out<S>>
+  : never;
+
+/** A tuple's items position by position, then its rest. Mapped over a type parameter, so it stays a tuple. */
+type ShapedTuple<Items extends readonly unknown[], R, C, D extends number> = [R] extends [null]
+  ? TupleItems<Items, C, D>
+  : [...TupleItems<Items, C, D>, ...RedactedPosition<R, ElementSchemas<C, number>, Prev[D]>[]];
+
+type TupleItems<Items extends readonly unknown[], C, D extends number> = {
+  -readonly [K in keyof Items]: RedactedPosition<Items[K], ElementSchemas<C, K>, Prev[D]>;
+};
+
+/** The schemas at object key `K`: each object's field there, and each record's value. */
+type FieldSchemas<C, K> = C extends unknown
+  ? DefOf<C> extends { type: "object"; shape: infer Shape }
+    ? K extends keyof Shape
+      ? Shape[K]
+      : never
+    : DefOf<C> extends { type: "record"; valueType: infer V }
+      ? V
+      : never
+  : never;
+
+/** The schemas a record's keys are parsed by. */
+type KeySchemas<C> = C extends unknown ? (DefOf<C> extends { type: "record"; keyType: infer K } ? K : never) : never;
+
+/**
+ * The schemas at element `K`: each array's element, and each tuple's item there. `number` is any element of an array,
+ * which may sit at any tuple position or past them all, so it takes every item and the rest.
+ */
+type ElementSchemas<C, K> = C extends unknown
+  ? DefOf<C> extends { type: "array"; element: infer E }
+    ? E
+    : DefOf<C> extends { type: "tuple"; items: infer Items extends readonly unknown[]; rest: infer R }
+      ? K extends number
+        ? Items[number] | Exclude<R, null>
+        : K extends keyof Items
+          ? Items[K]
+          : never
+      : never
+  : never;

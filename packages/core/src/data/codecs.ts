@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
-import { trustDecode } from "../privacy/trusted";
 
 /**
  * SQLite/D1 codecs: bidirectional JS ↔ SQLite conversion through Zod.
@@ -50,12 +49,10 @@ function isTruthy(value: unknown): boolean {
 }
 
 /** SQLiteBoolean: boolean ↔ 0|1. Decode is lenient (number/boolean/string). */
-export const SQLiteBoolean = trustDecode(
-  z.codec(z.union([z.literal(0), z.literal(1), z.boolean(), z.string()]), z.boolean(), {
-    decode: (input: 0 | 1 | boolean | string): boolean => (typeof input === "boolean" ? input : isTruthy(input)),
-    encode: (value: boolean): 0 | 1 => (value ? 1 : 0),
-  }),
-);
+export const SQLiteBoolean = z.codec(z.union([z.literal(0), z.literal(1), z.boolean(), z.string()]), z.boolean(), {
+  decode: (input: 0 | 1 | boolean | string): boolean => (typeof input === "boolean" ? input : isTruthy(input)),
+  encode: (value: boolean): 0 | 1 => (value ? 1 : 0),
+});
 
 /**
  * The shared decode for both date codecs. A string is parsed, a number is ms-epoch — what `encode`
@@ -76,20 +73,16 @@ function toDate(input: number | string | Date, payload: Payload<number | string 
 }
 
 /** SQLiteDate: Date ↔ ms-epoch number. Decode accepts number/string/Date. */
-export const SQLiteDate = trustDecode(
-  z.codec(z.union([z.number(), z.string(), z.date()]), z.date(), {
-    decode: toDate,
-    encode: (value: Date): number => value.getTime(),
-  }),
-);
+export const SQLiteDate = z.codec(z.union([z.number(), z.string(), z.date()]), z.date(), {
+  decode: toDate,
+  encode: (value: Date): number => value.getTime(),
+});
 
 /** JsonDate: Date ↔ ISO string, for dates nested inside `sqliteJson` payloads. */
-export const JsonDate = trustDecode(
-  z.codec(z.union([z.string(), z.number(), z.date()]), z.date(), {
-    decode: toDate,
-    encode: (value: Date): string => value.toISOString(),
-  }),
-);
+export const JsonDate = z.codec(z.union([z.string(), z.number(), z.date()]), z.date(), {
+  decode: toDate,
+  encode: (value: Date): string => value.toISOString(),
+});
 
 /**
  * sqliteJson: T ↔ JSON string, validated by `schema` on both sides. Decode
@@ -101,42 +94,37 @@ export const JsonDate = trustDecode(
  * text an older writer put there, or a payload a customer's Worker returned, can be.
  * `JSON.stringify` throws a `TypeError` on a `BigInt` and on a cycle, either of
  * which a `schema` can legitimately admit. Both become an issue (#358).
- *
- * Every codec here registers its decode with `trustDecode` (`../privacy/trusted`): none of them moves a value, so
- * `redact` walks a marked field inside a JSON column rather than masking the column whole (#132).
  */
 export function sqliteJson<T extends z.ZodType>(schema: T) {
-  return trustDecode(
-    z.codec(z.union([z.string(), schema]), schema, {
-      decode: (value, payload): z.input<T> => {
-        if (typeof value !== "string") return value as z.input<T>;
-        try {
-          return JSON.parse(value) as z.input<T>;
-        } catch {
-          payload.issues.push({ code: "invalid_format", format: "json", input: value, message: "Not valid JSON." });
-          return z.NEVER;
-        }
-      },
-      encode: (value, payload): string => {
-        // The offending value is deliberately not carried onto the issue: it is the thing JSON could not
-        // hold, so a reporter that renders an issue would be the second place to trip over it.
-        try {
-          const json = JSON.stringify(value);
-          if (typeof json === "string") return json;
-        } catch {
-          // Falls through to the one push below. A `BigInt`, a cycle and an `undefined` result are the
-          // same answer — this value does not survive the round trip — and they deserve the same issue.
-        }
-        payload.issues.push({
-          code: "invalid_format",
-          format: "json",
-          input: undefined,
-          message: "Not serializable as JSON.",
-        });
+  return z.codec(z.union([z.string(), schema]), schema, {
+    decode: (value, payload): z.input<T> => {
+      if (typeof value !== "string") return value as z.input<T>;
+      try {
+        return JSON.parse(value) as z.input<T>;
+      } catch {
+        payload.issues.push({ code: "invalid_format", format: "json", input: value, message: "Not valid JSON." });
         return z.NEVER;
-      },
-    }),
-  );
+      }
+    },
+    encode: (value, payload): string => {
+      // The offending value is deliberately not carried onto the issue: it is the thing JSON could not
+      // hold, so a reporter that renders an issue would be the second place to trip over it.
+      try {
+        const json = JSON.stringify(value);
+        if (typeof json === "string") return json;
+      } catch {
+        // Falls through to the one push below. A `BigInt`, a cycle and an `undefined` result are the
+        // same answer — this value does not survive the round trip — and they deserve the same issue.
+      }
+      payload.issues.push({
+        code: "invalid_format",
+        format: "json",
+        input: undefined,
+        message: "Not serializable as JSON.",
+      });
+      return z.NEVER;
+    },
+  });
 }
 
 export const MAX_TIMEZONE_LENGTH = 64;

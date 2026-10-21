@@ -73,7 +73,7 @@ describe("classifyPrivacy", () => {
     expect(classifyPrivacy(pci(z.string()))).toEqual([{ path: "", class: "pci" }]);
   });
 
-  test("reads markers on codec fields and inside a JSON column", () => {
+  test("reads markers on codec fields, and lists a JSON column with a mark inside whole", () => {
     const Profile = z.object({ phone: pii(z.string().describe("A phone number.")) }).describe("A profile.");
     const Row = z
       .object({
@@ -82,10 +82,11 @@ describe("classifyPrivacy", () => {
         profile: sqliteJson(Profile).describe("The profile, as JSON."),
       })
       .describe("A row.");
+    // A JSON column is a codec, which is opaque: a mark inside it lists the column, whole.
     expect(classifyPrivacy(Row)).toEqual([
       { path: "bornAt", class: "pii" },
       { path: "smoker", class: "phi" },
-      { path: "profile.phone", class: "pii" },
+      { path: "profile", class: "pii" },
     ]);
   });
 
@@ -128,15 +129,15 @@ describe("classifyPrivacy", () => {
     expect(hasPrivacy(Entry, "phi")).toBe(true);
   });
 
-  test("names a marked record or map key by `<key>`", () => {
+  test("names a marked record key by `<key>`, and lists a map with a mark inside whole, once per class", () => {
     const Shape = z.object({
       byEmail: z.record(pii(z.string()), z.number()),
       byPhone: z.map(pii(z.string()), phi(z.string())),
     });
     expect(classifyPrivacy(Shape)).toEqual([
       { path: "byEmail.<key>", class: "pii" },
-      { path: "byPhone.<key>", class: "pii" },
-      { path: "byPhone.*", class: "phi" },
+      { path: "byPhone", class: "pii" },
+      { path: "byPhone", class: "phi" },
     ]);
   });
 

@@ -95,12 +95,12 @@ describe("a marked codec field", () => {
     expect(read.profile).toEqual({ phone: "555-0100", city: "Oslo" });
   });
 
-  test("still classifies, on the codec and inside the JSON column", () => {
+  test("still classifies, on the codec and on the JSON column a mark sits inside", () => {
     expect(classifyPrivacy(Patient)).toEqual([
       { path: "email", class: "pii" },
       { path: "smoker", class: "phi" },
       { path: "bornAt", class: "pii" },
-      { path: "profile.phone", class: "pii" },
+      { path: "profile", class: "pii" },
       { path: "resetToken", class: "secret" },
     ]);
   });
