@@ -30,6 +30,10 @@ const validPayloads: Record<string, unknown> = {
   securityAlert: { event: "New sign-in", when: "today", actionUrl: "https://acme.test/activity" },
   invite: { inviterName: "Pat", organizationName: "Acme", acceptUrl: "https://acme.test/accept" },
   passwordChanged: { when: "today", supportUrl: "https://acme.test/support" },
+  accountSuspended: { reason: "A payment is under review.", until: "1 November 2026" },
+  accountReinstated: {},
+  deletionScheduled: { purgeOn: "19 November 2026" },
+  deletionComplete: { purgedOn: "19 November 2026" },
   operationalNotice: {
     severity: "critical",
     summary: "Sign-in is failing for every user",
@@ -64,13 +68,18 @@ const validPayloads: Record<string, unknown> = {
 };
 
 describe("template registry", () => {
-  test("ships the nine starter templates, plus the testers envelope", () => {
+  test("ships the nine starter templates, the four lifecycle notices, plus the testers envelope", () => {
     expect(
       listTemplates()
         .map((t) => t.id)
         .sort(),
     ).toEqual(
       [
+        // The account lifecycle `@pithy-sh/auth` sends (#620).
+        "accountReinstated",
+        "accountSuspended",
+        "deletionComplete",
+        "deletionScheduled",
         "invite",
         "leadCapture",
         "magicLink",
@@ -204,6 +213,10 @@ describe("tracking", () => {
       securityAlert: "transactional",
       invite: "transactional",
       passwordChanged: "transactional",
+      accountSuspended: "transactional",
+      accountReinstated: "transactional",
+      deletionScheduled: "transactional",
+      deletionComplete: "transactional",
       supportReply: "transactional",
       testerNudge: "elective",
       leadCapture: "elective",

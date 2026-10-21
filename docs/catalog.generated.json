@@ -1199,6 +1199,22 @@
       "remedy": "Read the error"
     },
     {
+      "code": "auth/account_deleted",
+      "status": 403,
+      "exitClass": "person",
+      "exit": 5,
+      "retryable": false,
+      "remedy": "Stop and ask"
+    },
+    {
+      "code": "auth/account_suspended",
+      "status": 403,
+      "exitClass": "person",
+      "exit": 5,
+      "retryable": false,
+      "remedy": "Stop and ask"
+    },
+    {
       "code": "auth/forbidden",
       "status": 403,
       "exitClass": "precondition",

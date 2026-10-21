@@ -128,12 +128,13 @@ const DECLARED_ONLY: Record<string, string> = {
  * unattended rotation (#602): `auth`'s `instance/jwksReencryption.ts`, which records in the secrets D1 that the
  * JWKS keys have moved under the session secret's newest version. A file added or removed moves a count, which
  * is the point: the number is a second reader of the same change. `artifacts` (#673) joined with two:
- * `data/tables.ts` and `binding/artifacts.test.ts`.
+ * `data/tables.ts` and `binding/artifacts.test.ts`. The account lifecycle (#620) moved `auth` by two:
+ * `lifecycle/hooks.ts` hands an adopter's hook the request's D1, and `lifecycle/transitions.ts` carries it.
  */
 const IMPORTERS: Record<string, number> = {
   "packages/artifacts": 2,
   "packages/audit": 2,
-  "packages/auth": 6,
+  "packages/auth": 8,
   "packages/cli": 15,
   "packages/cloudflare": 2,
   "packages/core": 16,

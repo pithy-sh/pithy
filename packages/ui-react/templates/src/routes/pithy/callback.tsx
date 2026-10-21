@@ -2,7 +2,7 @@ import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
 import { useEffect } from "react";
 import { navigate, routeTable, screenPath } from "../../router";
-import { getSession } from "../../session";
+import { getSession, refusedAccountScreen } from "../../session";
 import "../../pithy-screens.css";
 
 export const path = "/callback";
@@ -28,9 +28,14 @@ export default function Callback() {
     //
     // Where "away" is comes from the route table, never a literal: the sign-in screen declares its own
     // path and claims the role, and this reads whatever it declared.
-    void Promise.all([getSession(), routeTable()]).then(([current, table]) =>
-      navigate(current ? "/" : screenPath(table, "sign-in")),
-    );
+    //
+    // A magic link the Worker refused for the account's standing comes back here carrying the code as
+    // `?error=` — and goes on to the screen for that state, rather than to a sign-in form that says nothing.
+    void Promise.all([getSession(), routeTable()]).then(([current, table]) => {
+      const refused = refusedAccountScreen(new URLSearchParams(window.location.search).get("error"));
+      if (refused) return navigate(screenPath(table, refused));
+      navigate(current ? "/" : screenPath(table, "sign-in"));
+    });
   }, []);
 
   return (

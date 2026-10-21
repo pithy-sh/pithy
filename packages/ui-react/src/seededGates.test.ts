@@ -133,10 +133,7 @@ const LEDGER: Record<string, Held> = {
   },
   "src/turnstile.tsx": { gate: "src/turnstile.test.tsx", expectation: "canary" },
   "src/routes/pithy/sign-in.tsx": { gate: "src/routes/pithy/sign-in.test.tsx", expectation: "canary" },
-  "src/routes/pithy/otp.tsx": {
-    ungated:
-      "Its own `path` is the single statement of where it is, and it navigates through `navigate` rather than to a literal. Nothing outside it holds a copy of anything in it.",
-  },
+  "src/routes/pithy/otp.tsx": { gate: "src/routes/pithy/otp.test.tsx", expectation: "canary" },
   // ── organization ────────────────────────────────────────────────────────────────────────────────
   "src/routes/pithy/choose-organization.tsx": {
     gate: "src/routes/pithy/choose-organization.test.tsx",
@@ -144,6 +141,18 @@ const LEDGER: Record<string, Held> = {
     why: "Leaving by `window.location.assign` rather than `navigate` is the invariant, and it is one an adopter can break with a one-word edit that looks like a correction — every other screen here uses `navigate`, correctly. What it protects is invisible in every manual test: the first account somebody switches to is the one whose data is already on screen, so a route change that keeps the React tree alive looks identical until a customer with two accounts sees the other one's roster in production. There is no value to invent a canary for; the assertion is that one API ran and the other did not.",
   },
 
+  "src/routes/pithy/account-suspended.tsx": {
+    ungated:
+      "Copy and one action, and both are held from the kit: templateCopy.test.ts keeps every sentence in the baked catalog, and lifecycleScreens.test.tsx renders it in both themes and holds it to naming no Pithy-hosted origin. How a reader arrives here is a role, read by the callback, the sign-in and the OTP screen through `refusedAccountScreen` in session.tsx, so renaming the path is one edit and nothing in this file restates where it is.",
+  },
+  "src/routes/pithy/account-deleted.tsx": {
+    ungated:
+      "The suspended screen's shape for the other state, held by the same two sweeps and reached by the same role lookup. It renders no date and no reason, so there is nothing in it a value from elsewhere could drift from.",
+  },
+  "src/routes/pithy/organization-suspended.tsx": {
+    ungated:
+      "Static copy and a link home, ahead of the organization state it describes (#623). Held by the same sweeps as the two account screens; the one value in it, `HOME`, is the adopter's to change and says so.",
+  },
   "src/routes/pithy/callback.tsx": {
     ungated:
       "Held from the other end. Its `path` is the one statement of where a magic link returns, and sign-in.test.tsx is the gate that keeps sign-in.tsx reading it rather than restating it (#393). A second gate here would assert the file agrees with itself.",
@@ -283,9 +292,9 @@ describe("a seeded gate does not write down the value it is checking", () => {
       ).toBe(true);
       checked += 1;
     }
-    // Near-exact, not a comfortable floor. Five canary gates are seeded, by #383, #393, #394 and #441.
-    // A sweep that found four has stopped reading one, and a sweep that found none passes over nothing.
-    expect(checked, "the canary sweep no longer reads every canary gate the ledger names").toBeGreaterThanOrEqual(5);
+    // Near-exact, not a comfortable floor. Six canary gates are seeded, by #383, #393, #394, #441 and #620.
+    // A sweep that found five has stopped reading one, and a sweep that found none passes over nothing.
+    expect(checked, "the canary sweep no longer reads every canary gate the ledger names").toBeGreaterThanOrEqual(6);
   });
 
   test("every kept gate is a file that exists, outside the tree, with the reason it stayed", async () => {

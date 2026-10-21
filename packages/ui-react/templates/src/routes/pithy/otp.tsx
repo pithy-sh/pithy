@@ -3,7 +3,8 @@ import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
 import { useCallback, useRef, useState } from "react";
 import { authConfig } from "../../pithy-config";
-import { navigate, useSearchParam } from "../../router";
+import { navigate, routeTable, screenPath, useSearchParam } from "../../router";
+import { refusedAccountScreen } from "../../session";
 import { Turnstile, turnstilePending, turnstileRequest } from "../../turnstile";
 import "../../pithy-screens.css";
 
@@ -70,8 +71,13 @@ export default function Otp() {
     setError(false);
     const result = await signInWithOtp({ email, otp: code }, client);
     setBusy(false);
-    if (result.ok) navigate("/");
-    else setError(true);
+    if (result.ok) return navigate("/");
+    // A right code for an account that may not act is refused with what happened to it, not as a wrong code.
+    // Telling that person "that code didn't work" sends them back for a code that was never the problem, so
+    // the refusal goes on to the screen for that state, by role, the way the callback and sign-in screens do.
+    const refused = refusedAccountScreen(result.failure.code);
+    if (refused) return navigate(screenPath(await routeTable(), refused));
+    setError(true);
   }
 
   async function resend(): Promise<void> {

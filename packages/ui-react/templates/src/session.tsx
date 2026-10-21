@@ -1,8 +1,9 @@
 import type { AuthSession, AuthUser } from "@pithy-sh/auth/src/client/api";
 import { signOut as endSession, getSession as readSession } from "@pithy-sh/auth/src/client/api";
+import { accountRefusal } from "@pithy-sh/auth/src/client/lifecycle";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { authConfig } from "./pithy-config";
-import { navigate, routeTable, screenPath } from "./router";
+import { navigate, routeTable, type ScreenRole, screenPath } from "./router";
 
 /**
  * Session state, read from the server.
@@ -39,6 +40,21 @@ export async function getSession(): Promise<Session> {
   if (!authConfig.enabled) return null;
   const result = await readSession(client);
   return result.ok ? result.value : null;
+}
+
+/**
+ * The screen for an account that may not act, from the code its refusal carried — or `null` for any other
+ * code, which a screen leaves alone.
+ *
+ * A magic link and a social sign-in come back with the code as `?error=`, and a JSON call carries it as the
+ * refusal's `code`. Either way the question is the same, so it is asked here once: the callback and the
+ * sign-in screen both route through it, by role, so renaming either destination moves every way there.
+ */
+export function refusedAccountScreen(code: string | null | undefined): ScreenRole | null {
+  const refused = accountRefusal(code);
+  if (refused === "suspended") return "account-suspended";
+  if (refused === "deleted") return "account-deleted";
+  return null;
 }
 
 /** End the session server-side and return to the sign-in screen. */

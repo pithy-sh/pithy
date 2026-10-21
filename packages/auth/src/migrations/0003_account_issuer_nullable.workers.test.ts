@@ -34,8 +34,18 @@ const BEFORE = provider({
   "0002_session_authenticated_at": auth_0002_session_authenticated_at,
 });
 
-/** The chain as it ships now. */
-const ALL = provider(AUTH_MIGRATIONS);
+/**
+ * The chain through this migration, with `0003` on top.
+ *
+ * Not the whole shipped chain, though it was until `0004` landed: every case here reverses the top of
+ * whatever it ran, and the subject is `0003`'s `down`, so a migration appended after it would be the one
+ * reversed and every rollback case would test the wrong thing.
+ */
+const ALL = provider({
+  "0001_init": auth_0001_init,
+  "0002_session_authenticated_at": auth_0002_session_authenticated_at,
+  "0003_account_issuer_nullable": AUTH_MIGRATIONS["0003_account_issuer_nullable"],
+});
 
 interface ColumnInfo {
   name: string;
@@ -104,6 +114,7 @@ beforeEach(async () => {
     "pithy_auth_jwks",
     "pithy_auth_rate_limit",
     "pithy_auth_rotated_tokens",
+    "pithy_auth_user_lifecycle",
     "pithy_auth_sessions",
     "pithy_auth_users",
     "pithy_auth_verifications",

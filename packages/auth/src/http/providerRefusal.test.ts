@@ -61,9 +61,12 @@ function matches(source: string, pattern: RegExp, transform: (raw: string) => st
  * A `new APIError(…, { code: "…" })` site — the one shape that reaches the redirect from outside the
  * dependency's own error tables.
  *
+ * The code may carry a `/`: the lifecycle refusals reach the callback as the kit's own `auth/…` codes
+ * (#620), and a pattern that stopped at the slash would read them as nothing and wave them past the gate.
+ *
  * `matchAll` works from a copy of the pattern, so one module-level regex is shared safely.
  */
-const API_ERROR_CODE = /new APIError\([\s\S]{0,400}?code:\s*"([A-Za-z_]+)"/g;
+const API_ERROR_CODE = /new APIError\([\s\S]{0,400}?code:\s*"([A-Za-z_/]+)"/g;
 
 /**
  * Every non-test TypeScript source in this package.

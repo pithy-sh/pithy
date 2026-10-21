@@ -51,7 +51,7 @@ Scaffold the account chooser?
 
 - The suggested answer is **yes when the target Worker composes that capability** — `auth`, `payments`, `organization` — and no when it does not.
 - `--auth` / `--no-auth`, `--payments` / `--no-payments` and `--organization` / `--no-organization` answer them without asking. Where nobody may be asked (`--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`), the suggested answer applies unless a flag is passed.
-- With auth on, the stub adds `src/routes/pithy/` — the magic-link, OTP, and callback screens — and the router's route guard. Payments adds the paywall, pricing and subscription screens; organization adds the account chooser. Everything else is scaffolded either way. `docs/UI.md` lists every file and the flag that writes it.
+- With auth on, the stub adds `src/routes/pithy/` — the magic-link, OTP, and callback screens, and the screens a suspended or deleted account lands on — and the router's route guard. Payments adds the paywall, pricing and subscription screens; organization adds the account chooser. Everything else is scaffolded either way. `docs/UI.md` lists every file and the flag that writes it.
 
 Asking for a set on a Worker that does not compose its capability is an error, not a warning (Errors, below).
 
@@ -75,7 +75,7 @@ Both are `composite`, because both are referenced from the project's root `tscon
 | `src/pithy-config.tsx` | `--auth` | The one module that imports `virtual:pithy/*`, narrowed once for every screen |
 | `src/session.tsx` | `--auth` | The session hook, `signOut`, and the signed-in route guard |
 | `src/turnstile.tsx` | `--auth` | The Turnstile widget and the token placement the middleware reads |
-| `src/routes/pithy/*.tsx` | `--auth` | Pithy's screens: sign-in, OTP, callback |
+| `src/routes/pithy/*.tsx` | `--auth` | Pithy's screens: sign-in, OTP, callback, and account suspended, account deleted, organization suspended |
 | `src/routes/app/home.tsx` | always | Your first screen. Written once, never again |
 
 `src/index.ts` — the Worker entry — is not touched.

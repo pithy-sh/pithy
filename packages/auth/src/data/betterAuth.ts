@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { JsonDate, SQLiteBoolean } from "@pithy-sh/core/src/data/codecs";
+import { JsonDate, SQLiteBoolean, SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { Locale } from "@pithy-sh/core/src/i18n/locale";
 import { z } from "zod";
 
@@ -51,6 +51,26 @@ export const User = z
     ),
     updatedAt: BetterAuthDate.describe(
       "When the user record was last updated. ISO-8601 text in SQLite; a `Date` in app code.",
+    ),
+    // The four lifecycle columns (#620). **Ms-epoch through `SQLiteDate`, not ISO text like their
+    // neighbors**, and the difference is who writes them: Better Auth writes every other date on this
+    // table, and never these — they are `input: false` and only the kit's lifecycle transitions set
+    // them, through the kit's own Kysely. So they take the house convention, and `../data/kitFields.ts`
+    // declares them `type: "number"` so Better Auth hands back exactly what is stored.
+    //
+    // `nullish` rather than `nullable`: a row read before `0004_user_lifecycle` ran has no such key at
+    // all, and an absent state is the same fact as a null one — nothing has happened to this account.
+    suspendedAt: SQLiteDate.nullish().describe(
+      "When this account was suspended, or null when it is not. A suspended account cannot sign in, refresh a token, or act on any route. Ms-epoch in SQLite; a `Date` in app code.",
+    ),
+    suspendedUntil: SQLiteDate.nullish().describe(
+      "When the current suspension ends by itself, or null for one that lasts until an operator reinstates the account. A suspension past this instant is treated as absent, with no write needed to expire it. Ms-epoch in SQLite.",
+    ),
+    deletedAt: SQLiteDate.nullish().describe(
+      "When this account was deleted, or null when it is not. A deleted account cannot sign in or act, and can be restored until `purgeAfter`. Ms-epoch in SQLite.",
+    ),
+    purgeAfter: SQLiteDate.nullish().describe(
+      "When a deleted account's data may be erased — the deletion instant plus `retention.purgeAfterDays`. Null unless the account is deleted. Ms-epoch in SQLite.",
     ),
   })
   .describe("A user in `pithy_auth_users` — the canonical identity every session and account hangs off.");

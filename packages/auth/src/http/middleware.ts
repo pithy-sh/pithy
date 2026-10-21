@@ -2,14 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 import type { PithyHonoEnv, PithyMiddleware } from "@pithy-sh/core/src/capability/capability";
-import { UnauthorizedError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, type PithyError, UnauthorizedError } from "@pithy-sh/core/src/error/pithyError";
 import { AuthContext } from "@pithy-sh/core/src/http/authContext";
 import { isLocale } from "@pithy-sh/core/src/i18n/locale";
 import type { Context, MiddlewareHandler } from "hono";
 import type { AuthWiring, ScopeResolver, ScopeResolverSession } from "../capability";
+import { authDatabase } from "../data/tables";
 import type { AuthInstance } from "../instance/auth";
+import { lifecycleRefusalFor, noteRefusal, noticedRefusal } from "../lifecycle/enforce";
+import { LifecycleColumns } from "../lifecycle/state";
 import { withResignedCredentials } from "./credentialResign";
-import { getAuthInstance } from "./resolve";
+import { getAuthInstance, resolveDb } from "./resolve";
 
 /**
  * The session-resolution middleware: it fills core's `AuthContext` seam (`c.var.auth`) for every
@@ -93,6 +96,16 @@ async function resolveSession(c: Context<PithyHonoEnv>, wiring: AuthWiring, inst
   try {
     const session = await instance.api.getSession({ headers });
     if (session) {
+      // **A suspended or deleted account gets no `AuthContext` at all** (#620). Read off the user Better
+      // Auth just loaded, which carries the four columns, so an account in good standing costs nothing
+      // here. Leaving `auth` null is what makes every `requireAuth()` in the kit refuse it — the copies
+      // other capabilities carry included, since each one only asks whether `auth` was filled. This
+      // capability's own guard raises the refusal itself, with its code; see `requireAuth` below.
+      const refusal = await standingRefusal(c, wiring, session.user);
+      if (refusal) {
+        noteRefusal(c, refusal);
+        return;
+      }
       // Before the context is built, so a resolver sees the request exactly as it arrived and the
       // context is published once, whole. Per request and never cached: the answer is about this
       // request's caller, and a cached one is a revocation that has not taken effect (#560).
@@ -129,12 +142,58 @@ async function resolveSession(c: Context<PithyHonoEnv>, wiring: AuthWiring, inst
 }
 
 /**
+ * The refusal for the session's account, or `null` when it may act.
+ *
+ * **A check that cannot be made refuses**, rather than throwing into `resolveSession`'s catch. That catch
+ * leaves `auth` null and notes nothing, and `handleBetterAuth` only refuses on a noted verdict — so a failed
+ * read of a suspension's reason, or a column that will not decode, would let Better Auth's own `/token` mint a
+ * JWT for the suspended account it resolved on its own. So the failure is logged and becomes the verdict: a
+ * 500, since the fault is this Worker's, and every door that honors a lifecycle refusal honors this one.
+ */
+async function standingRefusal(
+  c: Context<PithyHonoEnv>,
+  wiring: AuthWiring,
+  user: { id: string },
+): Promise<PithyError | null> {
+  try {
+    return await lifecycleRefusalFor(
+      authDatabase(resolveDb(c.env, wiring.config.database)),
+      user.id,
+      LifecycleColumns.parse(user),
+      new Date(),
+    );
+  } catch (cause) {
+    // Optional, unlike the logger elsewhere here: this branch is the refusal, and a missing logger must not
+    // turn it back into the throw it exists to replace.
+    c.var.log?.child("auth").warn("the account's standing could not be checked; the request is refused", {
+      userId: user.id,
+      reason: cause instanceof Error ? cause.message : String(cause),
+    });
+    return new InternalError(
+      {
+        message: "This account could not be checked. Try again shortly.",
+        action: "Check the auth database binding and that the auth migrations have run.",
+        detail: `lifecycle check for user ${user.id} failed`,
+      },
+      { cause },
+    );
+  }
+}
+
+/**
  * The gate other capabilities stack on a protected route. Rejects a request whose `AuthContext` was
  * not filled (no valid credential) with a `PithyError` `auth/invalid_token` (401).
+ *
+ * **A genuine credential for an account that may not act is refused with what happened to it** —
+ * `auth/account_suspended` or `auth/account_deleted`, 403 — rather than the 401, because signing in again
+ * cannot help and a client that read it as an expired token would loop. The verdict is the session
+ * middleware's, remembered for this request; this guard only raises it.
  */
 export function requireAuth(): MiddlewareHandler<PithyHonoEnv> {
   return async (c, next) => {
     if (!c.var.auth) {
+      const refusal = noticedRefusal(c);
+      if (refusal) throw refusal;
       throw new UnauthorizedError({
         message: "Authentication required.",
         action: "Sign in and retry with a valid session or bearer token.",

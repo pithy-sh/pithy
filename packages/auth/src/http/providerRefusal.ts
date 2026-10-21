@@ -169,6 +169,16 @@ const PROVIDER_REFUSAL_VERDICTS: Readonly<Record<string, RefusalVerdict>> = {
     why: "Two producers, and the verdict follows the one that reads our rows. `linkOAuthAccount` (link-account.mjs:45/68) answers it on `/link-social`, where the caller is signed in as the user being changed. But `handleOAuthUserInfo` answers it too, inside `if (dbUser)` when the account write fails (:171/:184), so on the social callback it says a row matched, and `unable_to_create_user` is its other half. Collapsing costs the signed-in linker a specific code for a fault. Letting it travel would cost the oracle. Corrected in #787; the earlier verdict read only the link flow.",
   },
 
+  // ── The account's own standing, told to the person who just proved they hold it. ──────────────
+  "auth/account_suspended": {
+    collapse: false,
+    why: "The kit's own `session.create.before` hook (instance/auth.ts, #620). A session is only ever created for a user the callback has already resolved and linked — the caller has just proved control of a provider identity bound to this account — so the code is told to its holder, never to somebody probing an address. Collapsing it would leave a suspended person with a screen that says nothing happened.",
+  },
+  "auth/account_deleted": {
+    collapse: false,
+    why: "The same hook, for an account inside its purge window, and the same reasoning: it is reached only after the caller authenticated as the account, so it names the state of their own account to them.",
+  },
+
   // ── The caller's own request, or the provider's. Nothing to do with our rows. ──────────────────
   no_code: {
     collapse: false,

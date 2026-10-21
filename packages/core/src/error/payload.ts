@@ -181,6 +181,38 @@ const AuthSessionNotFreshPublic = z
   })
   .describe("The session is authentic but the holder authenticated too long ago to attach a provider (403).");
 
+const AuthAccountSuspendedPublic = z
+  .object({
+    code: z
+      .literal("auth/account_suspended")
+      .describe(
+        "The account this credential belongs to is suspended, so the request is refused whatever it carries. An operator suspended it on purpose, with a reason, and the reason is the `message`. When the suspension has an end, `params.suspendedUntil` names it as ISO-8601; a suspension past its end is no longer one, and nothing has to clear it. A separate code from `auth/forbidden` so a client can render the screen that says what happened rather than a generic refusal.",
+      ),
+    status: z
+      .literal(403)
+      .describe(
+        "Forbidden — the credential is genuine and the account behind it may not act. Not 401: signing in again cannot help, and a client that read it as an expired token would loop.",
+      ),
+    ...publicFields,
+  })
+  .describe("The account is suspended (403).");
+
+const AuthAccountDeletedPublic = z
+  .object({
+    code: z
+      .literal("auth/account_deleted")
+      .describe(
+        "The account this credential belongs to is deleted and inside its purge window: it cannot sign in or act, and it can still be restored until the window closes. After the purge there is no account, and the credential is simply invalid.",
+      ),
+    status: z
+      .literal(403)
+      .describe(
+        "Forbidden — the account exists and may not act. Not 404, because until the purge runs it can come back, and not 401, because signing in again cannot help.",
+      ),
+    ...publicFields,
+  })
+  .describe("The account is deleted and awaiting its purge (403).");
+
 const NotFoundPublic = z
   .object({
     code: z.literal("core/not_found").describe("The requested resource does not exist."),
@@ -1758,6 +1790,8 @@ export const KitPublicErrorPayload = z
     ForbiddenPublic,
     AuthProviderUnavailablePublic,
     AuthSessionNotFreshPublic,
+    AuthAccountSuspendedPublic,
+    AuthAccountDeletedPublic,
     NotFoundPublic,
     ConflictPublic,
     RateLimitPublic,
@@ -1913,6 +1947,12 @@ const AuthProviderUnavailable = AuthProviderUnavailablePublic.extend(internalFie
 );
 const AuthSessionNotFresh = AuthSessionNotFreshPublic.extend(internalFields).describe(
   AuthSessionNotFreshPublic.description ?? "",
+);
+const AuthAccountSuspended = AuthAccountSuspendedPublic.extend(internalFields).describe(
+  AuthAccountSuspendedPublic.description ?? "",
+);
+const AuthAccountDeleted = AuthAccountDeletedPublic.extend(internalFields).describe(
+  AuthAccountDeletedPublic.description ?? "",
 );
 const NotFound = NotFoundPublic.extend(internalFields).describe(NotFoundPublic.description ?? "");
 const Conflict = ConflictPublic.extend(internalFields).describe(ConflictPublic.description ?? "");
@@ -2311,6 +2351,8 @@ export const KitErrorPayload = z
     Forbidden,
     AuthProviderUnavailable,
     AuthSessionNotFresh,
+    AuthAccountSuspended,
+    AuthAccountDeleted,
     NotFound,
     Conflict,
     RateLimit,

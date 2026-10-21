@@ -201,7 +201,14 @@ describe("the React 19 stub", () => {
   test("the auth template adds exactly the screens, the session hook, the widget, and the widget's gate", () => {
     const added = Object.keys(AUTH).filter((path) => !(path in BARE));
     expect(added.sort()).toEqual([
+      // Where a suspended or deleted account lands, and where somebody acting for a suspended
+      // organization does (#620).
+      "src/routes/pithy/account-deleted.tsx",
+      "src/routes/pithy/account-suspended.tsx",
       "src/routes/pithy/callback.tsx",
+      "src/routes/pithy/organization-suspended.tsx",
+      // A refused account's right code goes on to its screen, and this gate travels with the screen (#620).
+      "src/routes/pithy/otp.test.tsx",
       "src/routes/pithy/otp.tsx",
       // The magic link's `callbackURL` is built from `callback.tsx`'s `path`, and this is what keeps
       // them one statement once both files are the adopter's (#393).
@@ -221,9 +228,9 @@ describe("the React 19 stub", () => {
   });
 
   test("every route module declares its own path — dropping a file in is the registration", () => {
-    // Four with auth, seven with payments as well. Every one of them, in every combination.
-    expect(routeModules(AUTH).length).toBe(4);
-    expect(routeModules(BOTH).length).toBe(7);
+    // Seven with auth, ten with payments as well. Every one of them, in every combination.
+    expect(routeModules(AUTH).length).toBe(7);
+    expect(routeModules(BOTH).length).toBe(10);
     for (const [path, contents] of routeModules(BOTH)) {
       expect(contents, path).toMatch(/^export const path = "\/[^"]*";$/m);
     }

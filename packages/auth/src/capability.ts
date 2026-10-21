@@ -22,6 +22,7 @@ import { createAuthRoutes } from "./http/routes";
 import type { GithubUserInfoResolver } from "./instance/githubUserInfo";
 import { AuthPlugin, assertAdditivePlugins } from "./instance/plugins";
 import { authSecretsRegistryFor, inapplicableProviderSecrets } from "./instance/secrets";
+import type { UserLifecycleHooks } from "./lifecycle/hooks";
 import { AUTH_MIGRATION_ORDER } from "./migrations/0001_init";
 import { authPluginPlan } from "./migrations/pluginTables";
 import { AUTH_MIGRATIONS } from "./migrations/set";
@@ -130,6 +131,41 @@ export const AuthConfig = z
       .describe(
         "When true, sign-in never provisions a new user — existing accounts only. Unknown emails get no email (anti-enumeration).",
       ),
+    retention: z
+      .object({
+        purgeAfterDays: z
+          .number()
+          .int()
+          .positive()
+          .default(30)
+          .describe(
+            "How many days a deleted account waits before its data is erased. Inside the window it cannot sign in and can be restored; after it, the purge erases its rows from every capability that holds them. Defaults to 30.",
+          ),
+      })
+      .prefault({})
+      .describe(
+        "How long a deleted account is kept before it is purged. Self-service deletion and an operator's soft deletion both use this window.",
+      ),
+    lifecycleEmails: z
+      .object({
+        accountSuspended: z
+          .boolean()
+          .default(true)
+          .describe("Email the person when their account is suspended, with the reason and any end date."),
+        accountReinstated: z.boolean().default(true).describe("Email the person when a suspension is lifted."),
+        deletionScheduled: z
+          .boolean()
+          .default(true)
+          .describe("Email the person when their account is deleted, with the date its data will be erased."),
+        deletionComplete: z
+          .boolean()
+          .default(true)
+          .describe("Email the person once their data has been erased. Sent before the address is."),
+      })
+      .prefault({})
+      .describe(
+        "Which account-lifecycle emails are sent. All four send by default, through `@pithy-sh/email`; switch one off by setting it to false.",
+      ),
     plugins: z
       .array(AuthPlugin)
       .default([])
@@ -167,6 +203,12 @@ export interface AuthWiring {
    * Optional on the wiring for the reason `onSessionRevoked` is: no resolver is the ordinary composition.
    */
   resolveScopes?: ScopeResolver | undefined;
+  /**
+   * The adopter's lifecycle hooks, or absent. See {@link UserLifecycleHooks}.
+   *
+   * Optional on the wiring for the reason `onSessionRevoked` is: no hook is the ordinary composition.
+   */
+  lifecycleHooks?: UserLifecycleHooks | undefined;
 }
 
 /** The session a {@link ScopeResolver} is asked about — the one Better Auth just resolved for this request. */
@@ -208,62 +250,68 @@ export type SessionRevokedListener = (session: { id: string; userId: string }, d
  * `PaymentsOptions`: everything describable stays in {@link AuthConfig}, and a resolver is a sibling key
  * destructured off before the parse.
  */
-export type AuthOptions = AuthConfigInput & {
-  /**
-   * Resolve a GitHub identity yourself, replacing the kit's primary-only rule.
-   *
-   * The kit's default is deliberately conservative: it links on the **primary** address and nothing else,
-   * because GitHub never re-verifies and a verified secondary can only speak to the past. An adopter who
-   * wants a richer ladder — match a verified secondary, present a chooser on multiple matches — builds it
-   * here. `getUserInfo` is the only hook in this flow running before both fetches and before
-   * `mapProfileToUser`, and the only one holding the OAuth token.
-   *
-   * **Better Auth trusts what you return, verbatim.** It performs no independent check, so an
-   * `emailVerified: true` you did not read from GitHub is an account takeover: an attacker adds a
-   * victim's address to their own GitHub *unverified* and links to the victim's user. Return GitHub's
-   * real per-address flag, always.
-   */
-  resolveGithubUserInfo?: GithubUserInfoResolver;
-  /**
-   * Told when a session is revoked, so state another capability keyed on it can go with it.
-   *
-   * **On the row, not on the sign-out route.** A sign-out, a revoke and an admin ending somebody's
-   * devices all delete the same row, so a listener hung off one endpoint would miss the others.
-   *
-   * The case this exists for is `@pithy-sh/organization`: its acting selection is keyed by session id
-   * and its schema says signing out must take it with it. Tenancy depends on auth and not the reverse,
-   * so the composition holding both is what joins them, and this is the join.
-   *
-   * **Non-fatal by contract.** The session is already gone when this runs; a failure here must not turn
-   * a completed sign-out into an error the caller retries, so the instance swallows what it throws.
-   *
-   * A function, so it is destructured off before `AuthConfig.parse` for the reason above.
-   */
-  onSessionRevoked?: SessionRevokedListener;
-  /**
-   * Decide, per request, what this request's caller is — and so which scope gates it opens (#560).
-   *
-   * `leaderboard:submit`, `rating:record`, `leaderboard:admin` and `ledger:admin` are **attestations about
-   * the caller, not permissions granted to the user**: each says *this write came from the adopter's own
-   * trusted backend, not from a device*. This is where that is decided, and the seam does not dictate how.
-   * A backend calling over a service binding, one presenting a client certificate, and one presenting a
-   * short-lived token all answer the same question here. `verifyCallerToken` and `readClientCertificate`
-   * are the kit's helpers for the last two; `docs/server-authoritative.md` ranks the three.
-   *
-   * **Resolved per request, never cached** — a cached scope is a revocation that has not taken effect.
-   * **Failure is closed and never fatal**: a resolver that throws, or answers anything but a list of
-   * strings, leaves the request with no scopes and logs at warn, and the request goes on to whatever gate
-   * it was headed for. **No default**: without one the array is empty and nothing extra runs, so composing
-   * this changes nothing until an adopter opts in.
-   *
-   * A function, so it is destructured off before `AuthConfig.parse` for the reason above.
-   */
-  resolveScopes?: ScopeResolver;
-};
+export type AuthOptions = AuthConfigInput &
+  UserLifecycleHooks & {
+    /**
+     * Resolve a GitHub identity yourself, replacing the kit's primary-only rule.
+     *
+     * The kit's default is deliberately conservative: it links on the **primary** address and nothing else,
+     * because GitHub never re-verifies and a verified secondary can only speak to the past. An adopter who
+     * wants a richer ladder — match a verified secondary, present a chooser on multiple matches — builds it
+     * here. `getUserInfo` is the only hook in this flow running before both fetches and before
+     * `mapProfileToUser`, and the only one holding the OAuth token.
+     *
+     * **Better Auth trusts what you return, verbatim.** It performs no independent check, so an
+     * `emailVerified: true` you did not read from GitHub is an account takeover: an attacker adds a
+     * victim's address to their own GitHub *unverified* and links to the victim's user. Return GitHub's
+     * real per-address flag, always.
+     */
+    resolveGithubUserInfo?: GithubUserInfoResolver;
+    /**
+     * Told when a session is revoked, so state another capability keyed on it can go with it.
+     *
+     * **On the row, not on the sign-out route.** A sign-out, a revoke and an admin ending somebody's
+     * devices all delete the same row, so a listener hung off one endpoint would miss the others.
+     *
+     * The case this exists for is `@pithy-sh/organization`: its acting selection is keyed by session id
+     * and its schema says signing out must take it with it. Tenancy depends on auth and not the reverse,
+     * so the composition holding both is what joins them, and this is the join.
+     *
+     * **Non-fatal by contract.** The session is already gone when this runs; a failure here must not turn
+     * a completed sign-out into an error the caller retries, so the instance swallows what it throws.
+     *
+     * A function, so it is destructured off before `AuthConfig.parse` for the reason above.
+     */
+    onSessionRevoked?: SessionRevokedListener;
+    /**
+     * Decide, per request, what this request's caller is — and so which scope gates it opens (#560).
+     *
+     * `leaderboard:submit`, `rating:record`, `leaderboard:admin` and `ledger:admin` are **attestations about
+     * the caller, not permissions granted to the user**: each says *this write came from the adopter's own
+     * trusted backend, not from a device*. This is where that is decided, and the seam does not dictate how.
+     * A backend calling over a service binding, one presenting a client certificate, and one presenting a
+     * short-lived token all answer the same question here. `verifyCallerToken` and `readClientCertificate`
+     * are the kit's helpers for the last two; `docs/server-authoritative.md` ranks the three.
+     *
+     * **Resolved per request, never cached** — a cached scope is a revocation that has not taken effect.
+     * **Failure is closed and never fatal**: a resolver that throws, or answers anything but a list of
+     * strings, leaves the request with no scopes and logs at warn, and the request goes on to whatever gate
+     * it was headed for. **No default**: without one the array is empty and nothing extra runs, so composing
+     * this changes nothing until an adopter opts in.
+     *
+     * A function, so it is destructured off before `AuthConfig.parse` for the reason above.
+     */
+    resolveScopes?: ScopeResolver;
+  };
 
 /** The auth capability, with its resolved config attached for inspection. */
 export interface AuthCapability extends Capability {
   authConfig: AuthConfig;
+  /**
+   * The adopter's account-lifecycle hooks, as `auth()` was handed them. Read by whatever runs a transition
+   * outside a request this capability serves — the purge Workflow (#622) fires `onUserPurged` through it.
+   */
+  lifecycleHooks: UserLifecycleHooks;
   /**
    * What a capability composed beside this one reads an account through — `matchmaking`, `support`,
    * `testers`. Found in their `compose` hooks, so none of them imports this package and a project without
@@ -314,8 +362,25 @@ export function auth(options: AuthOptions): AuthCapability {
   // Zod 4 objects strip unknown keys silently, so a `resolveGithubUserInfo` handed to `AuthConfig.parse`
   // would vanish with no error and the adopter's override would simply never run. `payments()` splits
   // its `resolveSubject` out for the same reason.
-  const { resolveGithubUserInfo, onSessionRevoked, resolveScopes, ...config } = options;
+  const {
+    resolveGithubUserInfo,
+    onSessionRevoked,
+    resolveScopes,
+    onUserSuspended,
+    onUserReinstated,
+    onUserDeleted,
+    onUserPurged,
+    ...config
+  } = options;
   const resolved = AuthConfig.parse(config);
+  // The lifecycle hooks, kept only where one was given, so an absent hook is an absent key rather than an
+  // `undefined` every reader has to tell apart from a hook.
+  const lifecycleHooks: UserLifecycleHooks = {
+    ...(onUserSuspended ? { onUserSuspended } : {}),
+    ...(onUserReinstated ? { onUserReinstated } : {}),
+    ...(onUserDeleted ? { onUserDeleted } : {}),
+    ...(onUserPurged ? { onUserPurged } : {}),
+  };
   // What may be composed, before anything is built from the list. The four the kit composes are the
   // sign-in this product promises and what the control-plane seam verifies against, so a list naming one
   // of them is refused here by name rather than silently redefining a route at request time — and so is a
@@ -332,6 +397,7 @@ export function auth(options: AuthOptions): AuthCapability {
     turnstile: undefined,
     onSessionRevoked,
     resolveScopes,
+    lifecycleHooks,
   };
 
   // Tier-1 edge rate limiter, contributed as middleware so it runs before session resolution.
@@ -475,7 +541,7 @@ export function auth(options: AuthOptions): AuthCapability {
     seeds: [authExampleSeed, authDevSessionSeed],
   });
 
-  return Object.assign(capability, { authConfig: resolved, authPeer });
+  return Object.assign(capability, { authConfig: resolved, authPeer, lifecycleHooks });
 }
 
 /** Type guard: is this capability the auth capability? */

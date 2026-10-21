@@ -48,6 +48,7 @@ describe("auth_0002_session_authenticated_at", () => {
       "pithy_auth_jwks",
       "pithy_auth_rate_limit",
       "pithy_auth_rotated_tokens",
+      "pithy_auth_user_lifecycle",
       "pithy_auth_sessions",
       "pithy_auth_users",
       "pithy_auth_verifications",
@@ -65,9 +66,10 @@ describe("auth_0002_session_authenticated_at", () => {
 
   test("down removes it again, leaving 0001's own columns untouched", async () => {
     // Every migration's `down` is tested, and this one has a specific trap: a careless inverse that
-    // rebuilt the table would drop `family_id` and `device_id` with it. `0003` sits above it in the chain,
-    // so it comes down first.
+    // rebuilt the table would drop `family_id` and `device_id` with it. `0004` and `0003` sit above it in
+    // the chain, so they come down first.
     await runMigrations(env.DB, provider());
+    await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());
     const columns = await sessionColumns();

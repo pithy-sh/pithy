@@ -46,7 +46,7 @@ describe("auth capability", () => {
   // table must be namespaced under the capability so it can't clash with an adopter's.
   test("every provided table is namespaced under pithyAuth (the pithy_auth_ prefix)", () => {
     const tables = Object.keys(build().databases?.app?.tables ?? {});
-    expect(tables.length).toBe(8);
+    expect(tables.length).toBe(9);
     for (const name of tables) expect(name.startsWith("pithyAuth")).toBe(true);
   });
 
@@ -56,6 +56,7 @@ describe("auth capability", () => {
       "0001_init",
       "0002_session_authenticated_at",
       "0003_account_issuer_nullable",
+      "0004_user_lifecycle",
     ]);
     // A second migration never gets a second order. Renumbering would rename `0300_auth_0001_init`, and
     // Kysely would then read every applied auth migration as unapplied and run it again.
@@ -150,6 +151,7 @@ describe("additional Better Auth plugins", () => {
       "0001_init",
       "0002_session_authenticated_at",
       "0003_account_issuer_nullable",
+      "0004_user_lifecycle",
     ]);
     expect(cap.extensions).toEqual([]);
   });
@@ -160,6 +162,7 @@ describe("additional Better Auth plugins", () => {
       "0001_init",
       "0002_session_authenticated_at",
       "0003_account_issuer_nullable",
+      "0004_user_lifecycle",
       "0002_plugin_organization",
     ]);
   });
@@ -390,5 +393,65 @@ describe("pithy.manifest.json", () => {
     // A generated Google client secret authenticates against nothing. It would replace a loud gap
     // with a quiet one.
     expect(manifest.devSecrets).toEqual([{ name: AUTH_SESSION_SECRET, devValue: "random" }]);
+  });
+});
+
+describe("the account lifecycle config (#620)", () => {
+  test("retention defaults to a 30-day purge window when nothing says otherwise", () => {
+    expect(build().authConfig.retention).toEqual({ purgeAfterDays: 30 });
+    expect(AuthConfig.parse({ baseURL: "https://api.example.com" }).retention.purgeAfterDays).toBe(30);
+  });
+
+  test("retention.purgeAfterDays takes a positive integer", () => {
+    expect(build({ retention: { purgeAfterDays: 7 } }).authConfig.retention.purgeAfterDays).toBe(7);
+    for (const purgeAfterDays of [0, -1, 1.5]) {
+      expect(() => build({ retention: { purgeAfterDays } }), String(purgeAfterDays)).toThrow();
+    }
+  });
+
+  test("all four lifecycle emails send by default, and each can be switched off on its own", () => {
+    expect(build().authConfig.lifecycleEmails).toEqual({
+      accountSuspended: true,
+      accountReinstated: true,
+      deletionScheduled: true,
+      deletionComplete: true,
+    });
+    expect(build({ lifecycleEmails: { accountSuspended: false } }).authConfig.lifecycleEmails).toEqual({
+      accountSuspended: false,
+      accountReinstated: true,
+      deletionScheduled: true,
+      deletionComplete: true,
+    });
+  });
+
+  test("both keys describe themselves, like every other config key", () => {
+    expect(AuthConfig.shape.retention.description).toBeTruthy();
+    expect(AuthConfig.shape.lifecycleEmails.description).toBeTruthy();
+  });
+
+  test("the four hooks are behavior, not config: kept off the parse and handed to the wiring", () => {
+    const calls: string[] = [];
+    const cap = auth({
+      baseURL: "https://api.example.com",
+      onUserSuspended: () => {
+        calls.push("suspended");
+      },
+      onUserReinstated: () => {
+        calls.push("reinstated");
+      },
+      onUserDeleted: () => {
+        calls.push("deleted");
+      },
+      onUserPurged: () => {
+        calls.push("purged");
+      },
+    });
+    expect(Object.keys(cap.authConfig)).not.toContain("onUserSuspended");
+    expect(Object.keys(cap.lifecycleHooks).sort()).toEqual([
+      "onUserDeleted",
+      "onUserPurged",
+      "onUserReinstated",
+      "onUserSuspended",
+    ]);
   });
 });

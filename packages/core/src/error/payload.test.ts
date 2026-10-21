@@ -63,6 +63,8 @@ describe("ErrorPayload (the kit taxonomy)", () => {
       ["validation/invalid_input", 400],
       ["auth/invalid_token", 401],
       ["auth/forbidden", 403],
+      ["auth/account_suspended", 403],
+      ["auth/account_deleted", 403],
       ["core/not_found", 404],
       ["core/conflict", 409],
       ["rate_limit/exceeded", 429],
@@ -263,6 +265,13 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  *
  * Verified 2026-08-28: 121 members in each union, no duplicates, sorted lists identical.
  *
+ * `auth/account_suspended` and `auth/account_deleted` (#620) took it to 147 — the two states an account
+ * can be in where its credential is genuine and it may not act. Each needs its own code because the
+ * client's next move differs from every neighbor's: not `auth/invalid_token`, because signing in again
+ * cannot help; not `auth/forbidden`, because the screen to render says what happened to the account,
+ * not that a permission is missing; and not each other, because a deleted account can be restored until
+ * its purge and a suspension can simply end.
+ *
  * `media/forbidden` (#727) took it to 134 — a media record the caller may read but not change. A record
  * the caller cannot read is `media/not_found`, so this one only ever answers somebody who already knows
  * the record exists, and it is storage's `storage/forbidden` given to media.
@@ -321,7 +330,7 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  * And the code itself also needs: the Spanish sentence in `packages/i18n/src/catalogs/es/errors.ts`,
  * and `bun run docs-catalog` to regenerate `docs/catalog.generated.json`.
  */
-const KIT_ERROR_CODE_COUNT = 145;
+const KIT_ERROR_CODE_COUNT = 147;
 
 /** One member of either kit union — the public projection or its `action`/`detail` twin. */
 type KitUnionMember = (typeof KitErrorPayload | typeof KitPublicErrorPayload)["options"][number];

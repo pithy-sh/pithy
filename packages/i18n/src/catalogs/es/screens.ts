@@ -70,6 +70,22 @@ export const esScreens: MessageCatalog = {
   "auth/callback.title": "Entrando.",
   "auth/callback.body": "Un momento.",
 
+  // ── auth: an account that may not act ───────────────────────────────────────
+  "auth/suspended.title": "Tu cuenta está suspendida.",
+  "auth/suspended.body": "No puedes iniciar sesión ni usar esta app mientras siga suspendida.",
+  "auth/suspended.detail": "Te enviamos el motivo a la dirección de tu cuenta.",
+  "auth/suspended.contact": "Si crees que es un error, responde a ese correo.",
+  "auth/suspended.sign_out": "Cerrar sesión",
+  "auth/deleted.title": "Tu cuenta está eliminada.",
+  "auth/deleted.body": "No puedes iniciar sesión. Sus datos se borran cuando termine el plazo de eliminación.",
+  "auth/deleted.detail": "Hasta entonces se puede recuperar. Te enviamos la fecha a la dirección de tu cuenta.",
+  "auth/deleted.contact": "Para recuperarla, responde a ese correo antes de esa fecha.",
+  "auth/deleted.sign_out": "Cerrar sesión",
+  "organization/suspended.title": "Esta organización está suspendida.",
+  "organization/suspended.body": "Nadie puede usarla hasta que se reactive. Tu propia cuenta no se ve afectada.",
+  "organization/suspended.contact": "A sus propietarios se les dijo el motivo. Pregunta a uno de ellos.",
+  "organization/suspended.home": "Ir al inicio",
+
   // ── organization: the account chooser ──────────────────────────────────────
   //
   // "Cuenta" rather than "organización" throughout, and it is the same call the English makes in the

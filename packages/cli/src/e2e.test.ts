@@ -220,6 +220,7 @@ test("pithy add auth --with-prerequisites composes secrets, email and auth, and 
     "0300_auth_0001_init",
     "0300_auth_0002_session_authenticated_at",
     "0300_auth_0003_account_issuer_nullable",
+    "0300_auth_0004_user_lifecycle",
   ]);
   expect(result.databases.every((database) => database.results.every((entry) => entry.status === "Success"))).toBe(
     true,

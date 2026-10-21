@@ -222,7 +222,10 @@ export const EXIT_CLASS_BY_CODE = {
   "support/reply_failed": "upstream",
   "testers/nudge_cooldown": "upstream",
   // Needs a person (5): a typed phrase, a manual command, a fresh sign-in, a credential rolled at its issuer
-  // that the store never took. No automated retry or variation fixes these.
+  // that the store never took, an account somebody suspended or deleted. No automated retry or variation
+  // fixes these.
+  "auth/account_deleted": "person",
+  "auth/account_suspended": "person",
   "auth/session_not_fresh": "person",
   "core/person_required": "person",
   "secrets/rotation_unrecorded": "person",

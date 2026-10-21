@@ -59,7 +59,13 @@ const paymentsModules = import.meta.glob<{ holdsEntitlement: (key: string) => Pr
  *
  * Claim one from `src/routes/app/` to take the job over — the same shadowing rule as a path.
  */
-export type ScreenRole = "sign-in" | "paywall" | "subscription";
+export type ScreenRole =
+  | "sign-in"
+  | "paywall"
+  | "subscription"
+  | "account-suspended"
+  | "account-deleted"
+  | "organization-suspended";
 
 /**
  * The parameter names a pattern declares. `"/invitations/:token"` gives `"token"`; a pattern with no
