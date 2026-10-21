@@ -34,7 +34,7 @@ import { PRIVACY_SOURCES, type PrivacyInventory, type PrivacyInventorySchema } f
  *
  * ## The per-field record
  *
- * `{ path, class }`, from `classifyPrivacy`, with `truncated: true` where a search ran past the recursion limit and
+ * `{ path, class }`, from `classifyPrivacy`, with `truncated: true` where the walk stopped reading at the recursion limit and
  * assumed `secret`. It is the extension point #390 builds on: once a field can be marked encrypted at rest, that lands beside
  * `class` on this record, and "which of your PHI fields are encrypted" becomes one more derivation rather than a
  * second thing to maintain.

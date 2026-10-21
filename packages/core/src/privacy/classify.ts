@@ -19,16 +19,15 @@ import { type BuiltInPrivacyClass, PRIVACY_META_KEY, strongestPrivacyClass } fro
  *
  * - **Walked exactly**: objects (strict, loose, catchall, and `pick`, `omit`, `partial`, `extend` of one), arrays,
  *   tuples and their rest, records, `Map` and `Set`; the wrappers `optional`, `nullable`, `default`, `catch`,
- *   `readonly` and a brand; unions, discriminated unions and intersections, where a position is masked when any
- *   option or side marks it; the kit's `SQLiteDate`, `SQLiteBoolean` and `sqliteJson(schema)`, read through to the
- *   schema they decode to; and recursion, a `z.lazy` or a getter, read as the schema Zod settled on.
- * - **Everything else is opaque**: a transform, a pipe, a preprocess, any other codec, `z.custom`, `any`, `unknown`,
- *   a lazy that builds a new schema at every level without end, and a field that does, from the first one holding a
- *   fresh copy of the object it sits in, whoever read the shape first. Nothing inside one is walked. With a mark
- *   anywhere beneath it, its position is masked whole with the strongest class it carries; with none, it is kept.
- * - **Recursion is bounded once**, at {@link MAX_RECURSION_DEPTH}: a search through lazies and getters that goes
- *   deeper, and a value that comes round to one position it is already inside more often, is masked whole as
- *   {@link TRUNCATED_CLASS}.
+ *   `readonly` and a brand; unions, discriminated unions and intersections, where an option's marks apply where
+ *   the value has that option's shape; the kit's `SQLiteDate`, `SQLiteBoolean` and `sqliteJson(schema)`, read through to the
+ *   schema they decode to; and recursion, a `z.lazy` or a getter, to the one limit below.
+ * - **Everything else is opaque**: a transform, a pipe, a preprocess, any other codec, `z.custom`, `any`, `unknown`.
+ *   Nothing inside one is walked. With a mark anywhere beneath it, its position is masked whole with the strongest
+ *   class it carries; with none, it is kept, a union option beside a marked one included.
+ * - **Recursion is bounded once**, at {@link MAX_RECURSION_DEPTH} levels of nesting: a position deeper than that is
+ *   masked whole as {@link TRUNCATED_CLASS}, whatever the recursion is written with. Nothing here tells one kind of
+ *   recursion from another, so every answer is a function of the schema and the value alone.
  *
  * ## What a path looks like
  *
@@ -45,18 +44,28 @@ export interface PrivacyField {
   /** The class it was marked with. */
   class: string;
   /**
-   * Set when a search ran past {@link MAX_RECURSION_DEPTH} here and assumed {@link TRUNCATED_CLASS} rather than read
-   * further: a schema built anew at every level. Absent everywhere the schema was read to the end.
+   * Set where the walk stopped reading and assumed {@link TRUNCATED_CLASS}: a position nested past
+   * {@link MAX_RECURSION_DEPTH}, a search beneath it that ran that deep, or one left past
+   * {@link MAX_CLASSIFIED_POSITIONS}. Absent everywhere the schema was read to the end.
    */
   truncated?: true;
 }
 
 /**
- * How many recursion steps a search takes before it stops and assumes the strongest class: each lazy resolved and
- * each object whose fields are getters. It bounds `redact` too, by how often a value comes round to one position it
- * is already inside, each position counted on its own. Far past any recursion a real value holds.
+ * **The one recursion limit**, shared by `redact`, `classifyPrivacy` and `Redacted<T>` (`./types` reads this constant's
+ * type). Depth is counted in levels of nesting: every object, array, tuple, record, map and set a position sits inside.
+ * A position deeper than this is masked whole as {@link TRUNCATED_CLASS} and typed `unknown`, however the recursion
+ * is written: a `z.lazy`, a getter that returns one schema, or one that builds a new schema each read. No schema
+ * written out by hand nests this deep, so only a recursion reaches it. A search for a mark beneath an opaque node
+ * stops at the same depth, counting each lazy too.
  */
 export const MAX_RECURSION_DEPTH = 256;
+
+/**
+ * How many positions {@link classifyPrivacy} reads before it lists each one left as {@link TRUNCATED_CLASS}. Far past
+ * any schema written out; only one that builds two new schemas at every level, without end, reaches it.
+ */
+export const MAX_CLASSIFIED_POSITIONS = 10_000;
 
 /** The class assumed past {@link MAX_RECURSION_DEPTH}: the strongest there is, because nothing past it was read. */
 export const TRUNCATED_CLASS: BuiltInPrivacyClass = "secret";
@@ -135,82 +144,9 @@ function lazyInner(schema: z.ZodType): z.ZodType | undefined {
   return isSchema(inner) ? inner : undefined;
 }
 
-/** The getters of an object's shape as written, while Zod has not yet read it. Once read, it holds plain values. */
-function rawGetters(schema: z.ZodType): Map<PropertyKey, () => unknown> {
-  const found = new Map<PropertyKey, () => unknown>();
-  const accessor = Object.getOwnPropertyDescriptor(defOf(schema), "shape")?.get as { raw?: unknown } | undefined;
-  const raw = accessor?.raw;
-  if (typeof raw !== "object" || raw === null) return found;
-  for (const key of Reflect.ownKeys(raw)) {
-    const get = Object.getOwnPropertyDescriptor(raw, key)?.get;
-    if (get) found.set(key, () => get.call(raw));
-  }
-  return found;
-}
-
-/** The object each field schema was first read in: where a build that never ends is told from a recursion. */
-const heldBy = new WeakMap<z.ZodType, z.ZodType>();
-
-/**
- * An object's fields, read through the shape Zod freezes on first read, so every walk sees the schemas `parse` does,
- * whichever read the shape first. A getter is never called here: Zod calls it once, and its answer is the field.
- */
+/** An object's fields, read through the shape Zod freezes on first read, so every walk sees the schemas `parse` does. */
 function shapeOf(schema: z.ZodType): Record<PropertyKey, z.ZodType> {
-  const shape = defOf(schema).shape ?? {};
-  for (const key of Reflect.ownKeys(shape)) {
-    const field = shape[key];
-    if (isSchema(field) && !heldBy.has(field)) heldBy.set(field, schema);
-  }
-  return shape;
-}
-
-/** An object's keys and the kind each holds: what a fresh copy of it has in common with it. */
-function likeness(schema: z.ZodType): string {
-  const shape = shapeOf(schema);
-  return Reflect.ownKeys(shape)
-    .map((key) => `${String(key)}:${isSchema(shape[key]) ? defOf(shape[key]).type : ""}`)
-    .join(",");
-}
-
-const repeating = new WeakMap<z.ZodType, boolean>();
-
-/**
- * Whether a field holds a fresh copy of the object it sits in, a different schema with the same keys holding the same
- * kinds, depth first along the path that runs out, within {@link MAX_RECURSION_DEPTH} objects and lazies of it. Read
- * the same whether a getter is still on the shape or Zod has frozen it, so it answers alike before and after `parse`.
- */
-function repeatsHolder(field: z.ZodType, holder: z.ZodType): boolean {
-  const known = repeating.get(field);
-  if (known !== undefined) return known;
-  const want = likeness(holder);
-  let found = false;
-  const seen = new Set<z.ZodType>();
-  const stack: [z.ZodType, number][] = [[field, 0]];
-  for (let entry = stack.pop(); entry && !found; entry = stack.pop()) {
-    const [node, depth] = entry;
-    if (seen.has(node) || ownMarker(node) !== null) continue;
-    seen.add(node);
-    const type = defOf(node).type;
-    if (type === "object" && node !== holder && likeness(node) === want) found = true;
-    const next = type === "object" || type === "lazy" ? depth + 1 : depth;
-    // Depth first, and the first path that runs past the limit ends the search, as in `search`: a schema that builds
-    // two new ones at every level stays linear.
-    if (next > MAX_RECURSION_DEPTH) break;
-    for (const child of children(node).reverse()) stack.push([child, next]);
-  }
-  repeating.set(field, found);
-  return found;
-}
-
-/**
- * Whether a field builds a new schema at every level without end: the search beneath it ran out of recursion, and it
- * holds a fresh copy of the object it sits in. Such a field is opaque, from the first level that repeats. A recursion
- * defined once never is, as its search meets itself. This reads the schemas, never which of them came from a getter,
- * since Zod forgets that once `parse` has read a shape.
- */
-function builtWithoutEnd(schema: z.ZodType): boolean {
-  const holder = heldBy.get(schema);
-  return holder !== undefined && search(schema).truncated && repeatsHolder(schema, holder);
+  return defOf(schema).shape ?? {};
 }
 
 /** Every schema a node holds, whatever its kind: what a search for a mark reads through. */
@@ -242,9 +178,9 @@ const searched = new WeakMap<z.ZodType, Search>();
 
 /**
  * Every class marked anywhere beneath a schema, on every side of every node. Depth first, each schema once, and a
- * path more than {@link MAX_RECURSION_DEPTH} recursion steps long stops the whole search with
- * {@link TRUNCATED_CLASS}: nothing past it could carry a stronger class. Depth first is what keeps a schema that
- * builds two new ones at every level linear: the first path runs out, and the search ends.
+ * path more than {@link MAX_RECURSION_DEPTH} levels long, counting each lazy and each structural node, stops the whole
+ * search with {@link TRUNCATED_CLASS}: nothing past it could carry a stronger class. Depth first is what keeps a
+ * schema that builds two new ones at every level linear: the first path runs out, and the search ends.
  */
 function search(schema: z.ZodType): Search {
   const known = searched.get(schema);
@@ -263,7 +199,7 @@ function search(schema: z.ZodType): Search {
       continue;
     }
     const def = defOf(node);
-    const step = def.type === "lazy" || (def.type === "object" && rawGetters(node).size > 0) ? 1 : 0;
+    const step = def.type === "lazy" || STRUCTURAL.has(def.type) ? 1 : 0;
     if (depth + step > MAX_RECURSION_DEPTH) {
       truncated = true;
       break;
@@ -301,8 +237,6 @@ export interface Position {
   readonly kinds: ReadonlySet<string>;
   /** Whether anything here but a structural node may hold the value: a scalar, an opaque node. */
   readonly other: boolean;
-  /** The strongest class anything here carries: what masks a key or an element no schema names. */
-  readonly carried: string | undefined;
   /** The position at an object key or a record's value. */
   field(key: PropertyKey): Position | undefined;
   /** The keys the objects here name, in order. */
@@ -404,11 +338,16 @@ function readPosition(schemas: readonly z.ZodType[]): { position: Position; leav
     }
     const def = defOf(node);
     const codec = kitCodecOutput(node);
-    const lazy = def.type === "lazy" && !search(node).truncated;
+    const lazy = def.type === "lazy";
     if (lazy && lazies.has(node)) continue;
-    if (builtWithoutEnd(node)) {
-      // Opaque, below.
-    } else if (WRAPPERS.has(def.type) && def.innerType) {
+    if (lazy && lazies.size >= MAX_RECURSION_DEPTH) {
+      // A lazy that only ever resolves to another: past the limit, assumed the strongest class, as a search is.
+      opaque.add(TRUNCATED_CLASS);
+      truncated = true;
+      other = true;
+      continue;
+    }
+    if (WRAPPERS.has(def.type) && def.innerType) {
       stack.push(def.innerType);
       continue;
     } else if (def.type === "union" && def.options) {
@@ -435,14 +374,9 @@ function readPosition(schemas: readonly z.ZodType[]): { position: Position; leav
     other = true;
   }
   const leafList = [...leaves];
-  let carriedClasses: string[] | undefined;
-  const carriedAll = (): string[] => {
-    carriedClasses ??= [...new Set([...marks, ...opaque, ...leafList.flatMap((leaf) => [...search(leaf).classes])])];
-    return carriedClasses;
-  };
   let mask: Mask | undefined;
   if (marks.size > 0 || opaque.size > 0) {
-    const classes = carriedAll();
+    const classes = [...new Set([...marks, ...opaque, ...leafList.flatMap((leaf) => [...search(leaf).classes])])];
     mask = {
       className: strongestPrivacyClass(classes) as string,
       own: opaque.size === 0 && classes.length === 1,
@@ -465,9 +399,6 @@ function readPosition(schemas: readonly z.ZodType[]): { position: Position; leav
     mask,
     kinds: new Set(leafList.map((leaf) => defOf(leaf).type)),
     other,
-    get carried() {
-      return strongestPrivacyClass(carriedAll());
-    },
     keys: [...new Set(objects.flatMap((leaf) => Reflect.ownKeys(shapeOf(leaf))))],
     field: (name) => {
       if (!fields.has(name)) {
@@ -531,38 +462,56 @@ function join(path: string, segment: string): string {
 /**
  * Walk a schema tree the way {@link classifyPrivacy} does, from `path`, and report to `visitor`. Exported so a second
  * reader of the tree — the CLI's scan — cannot walk it differently. A position met again below itself is a recursion
- * defined once, and is not walked again: its fields are listed once.
+ * defined once, and is not walked again: its fields are listed once. A position nested more than
+ * {@link MAX_RECURSION_DEPTH} levels deep is masked whole by `redact`, and listed as {@link TRUNCATED_CLASS}. So is
+ * every position left once the walk has read {@link MAX_CLASSIFIED_POSITIONS}, which only a schema that builds two
+ * new ones at every level reaches.
  */
 export function walkPrivacy(schema: z.ZodType, visitor: PrivacyVisitor, path = ""): void {
-  type Frame = { at: Position | undefined; path: string; key?: string } | { leave: Position };
+  type Frame = { at: Position | undefined; path: string; depth: number; key?: string } | { leave: Position };
   const line = new Set<Position>();
-  const stack: Frame[] = [{ at: rootPosition(schema), path }];
+  const stack: Frame[] = [{ at: rootPosition(schema), path, depth: 0 }];
+  let read = 0;
   for (let frame = stack.pop(); frame; frame = stack.pop()) {
     if ("leave" in frame) {
       line.delete(frame.leave);
       continue;
     }
-    const { at } = frame;
+    const { at, depth } = frame;
     if (at === undefined) continue;
+    if (depth > MAX_RECURSION_DEPTH) {
+      visitor.marked(frame.path, TRUNCATED_CLASS, true);
+      continue;
+    }
     if (at.mask) {
       for (const className of at.mask.classes)
         visitor.marked(frame.path, className, at.mask.truncated && className === TRUNCATED_CLASS);
       continue;
     }
     if (frame.key !== undefined) visitor.unmarkedKey?.(frame.path, frame.key);
-    if (line.has(at)) continue;
+    if (line.has(at) || at.kinds.size === 0) continue;
+    if (read >= MAX_CLASSIFIED_POSITIONS) {
+      visitor.marked(frame.path, TRUNCATED_CLASS, true);
+      continue;
+    }
+    read += 1;
     line.add(at);
+    const next = depth + 1;
     const below: Frame[] = [];
     for (const key of at.keys)
-      if (typeof key === "string") below.push({ at: at.field(key), path: join(frame.path, key), key });
-    below.push({ at: at.catchall, path: join(frame.path, "*") }, { at: at.key, path: join(frame.path, "<key>") });
-    for (let index = 0; index < at.items; index += 1)
-      below.push({ at: at.item(index), path: `${frame.path}[${index}]` });
+      if (typeof key === "string") below.push({ at: at.field(key), path: join(frame.path, key), depth: next, key });
     below.push(
-      { at: at.rest, path: `${frame.path}[]` },
-      { at: at.mapKey, path: join(frame.path, "<key>") },
-      { at: at.mapValue, path: join(frame.path, "*") },
-      { at: at.element, path: `${frame.path}[]` },
+      { at: at.catchall, path: join(frame.path, "*"), depth: next },
+      // A key is read where its object is, and never nested below it.
+      { at: at.key, path: join(frame.path, "<key>"), depth },
+    );
+    for (let index = 0; index < at.items; index += 1)
+      below.push({ at: at.item(index), path: `${frame.path}[${index}]`, depth: next });
+    below.push(
+      { at: at.rest, path: `${frame.path}[]`, depth: next },
+      { at: at.mapKey, path: join(frame.path, "<key>"), depth: next },
+      { at: at.mapValue, path: join(frame.path, "*"), depth: next },
+      { at: at.element, path: `${frame.path}[]`, depth: next },
     );
     stack.push({ leave: at }, ...below.reverse());
   }

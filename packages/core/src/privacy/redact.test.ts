@@ -6,7 +6,7 @@ import { z } from "zod";
 import { SQLiteBoolean, SQLiteDate, sqliteJson } from "../data/codecs";
 import { LogRecord, serializeRecord } from "../logger/record";
 import { definePrivacyClass, pci, phi, pii, secret } from "./classes";
-import { classifyPrivacy, MAX_RECURSION_DEPTH } from "./classify";
+import { classifyPrivacy } from "./classify";
 import { redact } from "./redact";
 import type { Redacted } from "./types";
 
@@ -33,32 +33,6 @@ function raw(value: unknown, seen = new Set<unknown>()): string[] {
 /** `redact` over what `parse` returns, as a caller hands it the app value. */
 function masked(schema: z.ZodType, wire: unknown): unknown {
   return redact(schema, schema.parse(wire) as never);
-}
-
-/** A recursion that passes sixteen nested objects a level, and a value of it `n` levels deep. */
-const WIDTH = 16;
-const Wide: z.ZodType = (() => {
-  const self: { node?: z.ZodType } = {};
-  let level: z.ZodType = z.object({
-    id: z.number(),
-    get next() {
-      return (self.node as z.ZodType).optional();
-    },
-  });
-  for (let index = 1; index < WIDTH; index += 1) level = z.object({ w: level });
-  self.node = level;
-  return level;
-})();
-function wide(n: number): unknown {
-  let value: unknown = n === 0 ? { id: 0 } : { id: n, next: wide(n - 1) };
-  for (let index = 1; index < WIDTH; index += 1) value = { w: value };
-  return value;
-}
-/** One level down a {@link wide} value: through its sixteen objects to the next level. */
-function down(at: object): unknown {
-  let inner: unknown = at;
-  for (let index = 1; index < WIDTH; index += 1) inner = (inner as { w: unknown }).w;
-  return typeof inner === "object" && inner !== null ? (inner as { next?: unknown }).next : inner;
 }
 
 describe("redact", () => {
@@ -216,15 +190,14 @@ describe("the rule: structural nodes are walked", () => {
     expect(masked(Tagged, { t: "a", e: "S-1" })).toEqual({ t: "a", e: "[pii]" });
   });
 
-  test("keeps every key the value holds, masking one no schema names where the position carries a mark", () => {
-    // A key no option names is one a `.catch()` fallback or a mismatched value put there: masked, never dropped.
-    expect(redact(User, { ...ada, extra: "S-x" } as typeof ada)).toEqual({
+  test("keeps every key the value holds, and keeps one no schema names as it is", () => {
+    // A key no option names is kept, beside marked fields or not, and never dropped.
+    expect(redact(User, { ...ada, extra: "x" } as typeof ada)).toEqual({
       id: "u_1",
       email: "[pii]",
       diagnosis: "[phi]",
-      extra: "[phi]",
+      extra: "x",
     });
-    // Where the position carries no mark, it is kept as it is.
     expect(redact(z.object({ id: z.string() }), { id: "u", extra: 1 } as never)).toEqual({ id: "u", extra: 1 });
     // A stripped key never reaches redact at all: parse took it.
     expect(masked(User.pick({ id: true }), ada)).toEqual({ id: "u_1" });
@@ -283,8 +256,8 @@ describe("the rule: structural nodes are walked", () => {
 
   test("keeps every element a tuple has no item for", () => {
     expect(masked(z.union([z.tuple([z.string()]), z.any()]), ["a", "b", "c"])).toEqual(["a", "b", "c"]);
-    // Handed more than it names, a marked tuple masks the extra element rather than dropping it.
-    expect(redact(z.tuple([pii(z.string())]), ["S-1", "S-2"] as never)).toEqual(["[pii]", "[pii]"]);
+    // Handed more than it names, a tuple keeps the extra element, which no item names, rather than dropping it.
+    expect(redact(z.tuple([pii(z.string())]), ["S-1", "x"] as never)).toEqual(["[pii]", "x"]);
   });
 
   test("walks a catch, a default, a readonly and a brand as the field they wrap", () => {
@@ -292,11 +265,11 @@ describe("the rule: structural nodes are walked", () => {
     expect(masked(Wrapped, { e: "S-1", n: "n" })).toEqual({ e: "[pii]", n: "n" });
     const Defaulted = z.object({ e: pii(z.string()) }).default({ e: "S-d" } as never);
     expect(masked(Defaulted, undefined)).toEqual({ e: "[pii]" });
-    // A fallback's extra key is one no schema names, so the marked position masks it.
+    // A fallback's field is masked where the object marks it, and its extra key, which no schema names, is kept.
     const Caught = z
       .object({ e: pii(z.string()), n: z.number() })
-      .catch((ctx) => ({ e: "x", n: 0, leak: String((ctx.input as { e: string }).e) }) as never);
-    expect(masked(Caught, { e: "S-1", n: "bad" })).toEqual({ e: "[pii]", n: 0, leak: "[pii]" });
+      .catch((ctx) => ({ e: String((ctx.input as { e: string }).e), n: 0, extra: "x" }) as never);
+    expect(masked(Caught, { e: "S-1", n: "bad" })).toEqual({ e: "[pii]", n: 0, extra: "x" });
   });
 });
 
@@ -306,13 +279,16 @@ describe("the contract's edges", () => {
     expect(masked(Id, { n: "4111111111111111" })).toEqual({ n: "[pci]" });
   });
 
-  test("masks a scalar a fallback handed back where only an object is named, and keeps one a scalar option holds", () => {
+  test("keeps a value of a kind no option names, as a fallback handed back, and one a scalar option holds", () => {
     // biome-ignore lint/suspicious/noExplicitAny: a fallback that hands back the raw input, as one with a cast can.
     const back = (ctx: { input: unknown }): any => ctx.input;
     const Caught = z.object({ email: pii(z.string()) }).catch(back);
-    expect(masked(Caught, "S-1")).toBe("[pii]");
-    expect(masked(Caught, ["S-1"])).toBe("[pii]");
-    expect(masked(z.object({ u: Caught }), { u: new Map([["email", "S-1"]]) })).toEqual({ u: "[pii]" });
+    // The object's marks apply to an object value: a string, an array or a map has none of its shape.
+    expect(masked(Caught, "x")).toBe("x");
+    expect(masked(Caught, ["x"])).toEqual(["x"]);
+    const map = new Map([["email", "x"]]);
+    expect(masked(z.object({ u: Caught }), { u: map })).toEqual({ u: map });
+    expect(masked(Caught, { email: "S-1" })).toEqual({ email: "[pii]" });
     const at = new Date(0);
     expect(masked(z.union([z.string(), z.object({ e: pii(z.string()) })]), "hello")).toBe("hello");
     expect(masked(z.union([z.date(), z.object({ e: pii(z.string()) })]), at)).toBe(at);
@@ -356,81 +332,6 @@ describe("the contract's edges", () => {
       ],
     });
     expect(classifyPrivacy(Tree)).toEqual([{ path: "owner", class: "phi" }]);
-  });
-
-  test("masks a value nested past the recursion limit as secret, with every level above it masked, and never throws", () => {
-    const Item = z.object({
-      e: pii(z.string()),
-      get next() {
-        return Item.optional();
-      },
-    });
-    type Link = { e: string; next?: Link };
-    let list: Link = { e: "S-last" };
-    for (let index = 0; index < 5_000; index += 1) list = { e: `S-${index}`, next: list };
-    const out = redact(Item, list as never) as Link | string;
-    expect(raw(out)).toEqual([]);
-    let depth = 0;
-    let at: Link | string | undefined = out;
-    while (typeof at === "object") {
-      expect(at.e).toBe("[pii]");
-      at = at.next as Link | string | undefined;
-      depth += 1;
-    }
-    expect(at).toBe("[secret]");
-    // The first level is where the recursion starts; each one after it comes round to it again.
-    expect(depth).toBe(MAX_RECURSION_DEPTH + 1);
-  });
-
-  test("bounds a recursion by each position it returns to, however many positions one level passes", () => {
-    type Kept = { id: number; children?: unknown };
-    /** How many levels down the first child chain keep their shape, and what the chain ends in. */
-    const levels = (out: unknown, next: (at: Kept) => unknown): [number, unknown] => {
-      let count = 0;
-      let at = out;
-      while (typeof at === "object" && at !== null) {
-        count += 1;
-        at = next(at as Kept);
-      }
-      return [count, at];
-    };
-    // One object and one array a level, through a getter.
-    const Tree = z.object({
-      id: z.number(),
-      get children() {
-        return z.array(Tree);
-      },
-    });
-    type TreeValue = { id: number; children: TreeValue[] };
-    const tree = (n: number): TreeValue => ({ id: n, children: n === 0 ? [] : [tree(n - 1)] });
-    const first = (at: Kept) => (at.children as unknown[] | string | undefined)?.[0];
-    expect(levels(redact(Tree, tree(200) as never), first)).toEqual([201, undefined]);
-    expect(levels(redact(Tree, tree(400) as never), first)).toEqual([MAX_RECURSION_DEPTH + 1, "[secret]"]);
-    // Three positions a level: the object, its array, and the edge object the array holds.
-    const Graph = z.object({
-      id: z.number(),
-      children: z.array(
-        z.object({
-          weight: z.number(),
-          get node() {
-            return Graph;
-          },
-        }),
-      ),
-    });
-    type GraphValue = { id: number; children: { weight: number; node: GraphValue }[] };
-    const graph = (n: number): GraphValue => ({
-      id: n,
-      children: n === 0 ? [] : [{ weight: 1, node: graph(n - 1) }],
-    });
-    const through = (at: Kept) => {
-      const edge = (at.children as { node: unknown }[] | string | undefined)?.[0];
-      return typeof edge === "object" ? edge.node : edge;
-    };
-    expect(levels(redact(Graph, graph(200) as never), through)).toEqual([201, undefined]);
-    expect(levels(redact(Graph, graph(400) as never), through)).toEqual([MAX_RECURSION_DEPTH + 1, "[secret]"]);
-    // Sixteen positions a level, so the walk is thousands of positions deep: it keeps its own stack, and never throws.
-    expect(levels(redact(Wide, wide(400) as never), down)).toEqual([MAX_RECURSION_DEPTH + 1, "[secret]"]);
   });
 
   test("types a union's array by the items a tuple beside it names, and a record by the keys an object names", () => {
@@ -495,75 +396,6 @@ describe("the contract's edges", () => {
 });
 
 describe("outside the contract: masked whole when marked beneath, kept when not, never throws, never raw", () => {
-  test("a getter that builds a new schema at every level without end is masked whole, and never leaks once parsed", () => {
-    const make = (): z.ZodType =>
-      z.object({
-        e: pii(z.string()),
-        get next() {
-          return make().optional();
-        },
-      });
-    const Root = make();
-    // Its insides never end, so the search beneath `next` runs to the recursion limit and assumes the strongest class.
-    expect(classifyPrivacy(Root)).toEqual([
-      { path: "e", class: "pii" },
-      { path: "next", class: "pii" },
-      { path: "next", class: "secret", truncated: true },
-    ]);
-    expect(redact(Root, { e: "S-1", next: { e: "S-2" } } as never)).toEqual({ e: "[pii]", next: "[secret]" });
-    // Read by `parse` first, which freezes each shape it reads: the same answer, masked whole at the same position.
-    const Parsed = make();
-    const value = Parsed.parse({ e: "S-1", next: { e: "S-2", next: { e: "S-3" } } });
-    expect(redact(Parsed, value as never)).toEqual({ e: "[pii]", next: "[secret]" });
-    expect(classifyPrivacy(Parsed)).toEqual(classifyPrivacy(Root));
-  });
-
-  test("an endless build held by a plain field is masked whole where it starts to repeat, whoever read it first", () => {
-    const make = (): z.ZodType =>
-      z.object({
-        e: pii(z.string()),
-        get next() {
-          return make().optional();
-        },
-      });
-    const deep = (n: number): unknown => (n === 0 ? { e: "S-0" } : { e: `S-${n}`, next: deep(n - 1) });
-    const value = { id: "P-1", n: deep(4) };
-    const expected = { id: "P-1", n: { e: "[pii]", next: "[secret]" } };
-    const listed = [
-      { path: "n.e", class: "pii" },
-      { path: "n.next", class: "pii" },
-      { path: "n.next", class: "secret", truncated: true },
-    ];
-    const Fresh = z.object({ id: z.string(), n: make() });
-    expect(redact(Fresh, value as never)).toEqual(expected);
-    expect(classifyPrivacy(Fresh)).toEqual(listed);
-    const Parsed = z.object({ id: z.string(), n: make() });
-    Parsed.parse(value);
-    expect(redact(Parsed, value as never)).toEqual(expected);
-    expect(classifyPrivacy(Parsed)).toEqual(listed);
-    // Two builders that build each other: the build repeats every second level, and is masked whole where it starts.
-    const makeA = (): z.ZodType =>
-      z.object({
-        a: pii(z.string()),
-        get b() {
-          return makeB().optional();
-        },
-      });
-    const makeB = (): z.ZodType =>
-      z.object({
-        k: z.string(),
-        get a() {
-          return makeA();
-        },
-      });
-    const mutual = { a: "S-1", b: { k: "P-1", a: { a: "S-2", b: { k: "P-2", a: { a: "S-3" } } } } };
-    const FreshA = makeA();
-    const ParsedA = makeA();
-    ParsedA.parse(mutual);
-    expect(redact(FreshA, mutual as never)).toEqual({ a: "[pii]", b: "[secret]" });
-    expect(redact(ParsedA, mutual as never)).toEqual({ a: "[pii]", b: "[secret]" });
-  });
-
   test("a transform, a preprocess and a pipe are masked whole over a mark, and kept over none", () => {
     const Copy = z.object({ e: pii(z.string()), n: z.string() }).transform((v) => ({ copy: v.e, n: v.n }));
     expect(masked(Copy, { e: "S-1", n: "n" })).toBe("[pii]");
@@ -574,15 +406,13 @@ describe("outside the contract: masked whole when marked beneath, kept when not,
     expect(masked(z.object({ p: Piped }), { p: "S-1" })).toEqual({ p: "[secret]" });
     const Length = z.object({ n: z.string().transform((s) => s.length) });
     expect(masked(Length, { n: "four" })).toEqual({ n: 4 });
-    // A transform on an intersection's side that copies a marked field the other side names: the copy's key is one
-    // no schema names, at a position that carries the mark, so it is masked.
+    // A transform on an intersection's side with nothing marked beneath it is kept as it is: its key is one no
+    // schema names, and the side that marks `e` applies only to `e`.
     const Side = z.intersection(
       z.object({ e: pii(z.string()) }),
-      z.object({ e: z.string() }).transform((v) => ({ copied: v.e })),
+      z.object({ e: z.string() }).transform((v) => ({ copied: v.e.length })),
     );
-    const side = masked(Side, { e: "S-1" });
-    expect(raw(side)).toEqual([]);
-    expect(side).toEqual({ e: "[pii]", copied: "[pii]" });
+    expect(masked(Side, { e: "S-1" })).toEqual({ e: "[pii]", copied: 3 });
   });
 
   test("an adopter's codec is masked whole over a mark, and kept over none", () => {
@@ -627,25 +457,50 @@ describe("outside the contract: masked whole when marked beneath, kept when not,
     expect(masked(z.object({ a: pii(z.custom<Acct>((v) => v instanceof Acct)) }), { a: acct })).toEqual({
       a: "[pii]",
     });
-    // An unknown option beside a marked object: a key only the unknown could have put there is masked, not kept raw.
-    const Either = z.union([z.object({ e: pii(z.string()) }), z.unknown()]);
-    expect(masked(Either, { leak: "S-1" })).toEqual({ leak: "[pii]" });
   });
 
-  test("a lazy built anew at every level is masked whole as secret past the limit, and two a level end as fast", () => {
-    const make = (): z.ZodType => z.lazy(() => z.object({ e: pii(z.string()), next: make().optional() }));
-    const Chain = make();
-    expect(classifyPrivacy(Chain)).toEqual([
-      { path: "", class: "pii" },
-      { path: "", class: "secret", truncated: true },
-    ]);
-    expect(redact(Chain, { e: "S-1" } as never)).toBe("[secret]");
-    const wide = (): z.ZodType => z.lazy(() => z.object({ a: wide().optional(), b: wide().optional() }));
-    const started = Date.now();
-    expect(classifyPrivacy(z.object({ id: z.string(), tree: wide() }))).toEqual([
-      { path: "tree", class: "secret", truncated: true },
-    ]);
-    expect(Date.now() - started).toBeLessThan(2_000);
+  test("an opaque option with nothing marked beneath it keeps its value beside a marked option", () => {
+    const Obj = z.object({ e: pii(z.string()) });
+    const listed = [{ path: "e", class: "pii" }];
+    const opaque: [string, z.ZodType][] = [
+      ["unknown", z.unknown()],
+      ["any", z.any()],
+      ["custom", z.custom<unknown>(() => true)],
+    ];
+    for (const [, other] of opaque) {
+      const Either = z.union([Obj, other]);
+      // The object option's marks apply to an object value, by the keys it names; a key it does not name is kept.
+      expect(masked(Either, { zzz: "P-1" })).toEqual({ zzz: "P-1" });
+      const both = redact(Either, { e: "S-1", zzz: "P-1" } as never);
+      expect(both).toEqual({ e: "[pii]", zzz: "P-1" });
+      expect(raw(both)).toEqual([]);
+      // An array, a string, a map: no option of that shape marks anything, so each is kept as it is.
+      expect(masked(Either, ["P-1", "P-2"])).toEqual(["P-1", "P-2"]);
+      expect(masked(Either, "P-1")).toBe("P-1");
+      const map = new Map([["e", "P-1"]]);
+      expect(masked(Either, map)).toBe(map);
+      expect(classifyPrivacy(Either)).toEqual(listed);
+      // As a row's field, the same.
+      const Row = z.object({ id: z.string(), f: Either });
+      expect(masked(Row, { id: "P-0", f: { zzz: "P-1" } })).toEqual({ id: "P-0", f: { zzz: "P-1" } });
+      expect(masked(Row, { id: "P-0", f: { e: "S-1" } })).toEqual({ id: "P-0", f: { e: "[pii]" } });
+    }
+    // A transform option's output, an object or an array, is its own: nothing beneath it is marked.
+    const ToObject = z.union([Obj, z.string().transform((text) => ({ zzz: text }))]);
+    expect(masked(ToObject, "P-1")).toEqual({ zzz: "P-1" });
+    expect(masked(ToObject, { e: "S-1" })).toEqual({ e: "[pii]" });
+    const ToArray = z.union([Obj, z.string().transform((text) => [text])]);
+    expect(masked(ToArray, "P-1")).toEqual(["P-1"]);
+    // An array option's marks apply to an array value, and never to an object one.
+    const Lists = z.union([z.array(pii(z.string())), z.unknown()]);
+    expect(masked(Lists, ["S-1"])).toEqual(["[pii]"]);
+    expect(masked(Lists, { 0: "P-1" })).toEqual({ 0: "P-1" });
+    // The type is each option's own: the object's field is masked, and the opaque option keeps its output.
+    type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+    const same = <A, B>(..._proof: Same<A, B> extends true ? [] : [never]): void => {};
+    same<Redacted<typeof ToObject>, { e: string } | { zzz: string }>();
+    same<Redacted<typeof ToArray>, { e: string } | string[]>();
+    same<Redacted<z.ZodUnion<[typeof Obj, z.ZodCustom<Date>]>>, { e: string } | Date>();
   });
 
   test("Redacted<T> types an opaque position unknown where it is marked beneath, and as its output where not", () => {

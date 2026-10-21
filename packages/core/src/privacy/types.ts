@@ -3,6 +3,7 @@
 
 import type { z } from "zod";
 import type { SQLiteBoolean, SQLiteDate, SqliteJsonSchema } from "../data/codecs";
+import type { MAX_RECURSION_DEPTH } from "./classify";
 
 /**
  * **The type gate: a marked value does not compile into a log, an audit record or an error detail** (#132).
@@ -141,8 +142,26 @@ export type Redacted<S extends z.ZodType> = RedactedOutput<S>;
  * - **An opaque node is its own output**, or `unknown` where a mark sits anywhere beneath it, because `redact` masks
  *   it whole there. That is the one place the type says `unknown`, with two more a type cannot see past: a schema
  *   annotated `z.ZodType<T>`, as a self-referencing `z.lazy` must be, names no kind; and `any` is `unknown`.
+ * - **A position nested deeper than {@link REDACT_RECURSION_DEPTH} levels is `unknown`**, as `redact` masks it whole
+ *   from the same depth: every object, array, tuple, record, map and set above it counts one.
  */
-export type RedactedOutput<S> = At<S, S>;
+export type RedactedOutput<S> = At<S, S, []>;
+
+/**
+ * The one recursion limit, in levels of nesting: the type of `MAX_RECURSION_DEPTH`, the constant `redact` stops at. A
+ * position nested deeper than this is `unknown`, as `redact` masks it whole there.
+ */
+export type REDACT_RECURSION_DEPTH = typeof MAX_RECURSION_DEPTH;
+
+/** How deep a position is: one element per level of nesting above it, or `"past"` beyond the limit. */
+type Depth = readonly unknown[] | "past";
+
+/** One level of nesting below `D`. */
+type Deeper<D extends Depth> = D extends readonly unknown[]
+  ? D["length"] extends REDACT_RECURSION_DEPTH
+    ? "past"
+    : [...D, 0]
+  : "past";
 
 /** How deep a search for a mark beneath an opaque node reads. Past it, the type cannot tell, and says `unknown`. */
 type SEARCH_DEPTH = 12;
@@ -253,20 +272,22 @@ type Unnamed<N> = N extends unknown
 type IsUnion<T, U = T> = T extends unknown ? ([U] extends [T] ? false : true) : never;
 
 /**
- * One member's schema `S` at a position, against `C`, every schema that reaches it. `C` decides whether the position
- * is masked, and what is at each position below it; `S` decides the shape this member keeps.
+ * One member's schema `S` at a position `D` levels deep, against `C`, every schema that reaches it. `C` decides whether
+ * the position is masked, and what is at each position below it; `S` decides the shape this member keeps.
  */
-type At<S, C> = [S] extends [never]
+type At<S, C, D extends Depth> = [S] extends [never]
   ? never
-  : IsAny<Out<S>> extends true
+  : [D] extends ["past"]
     ? unknown
-    : Verdict<AnyOpaqueMarked<Nodes<C>>> extends false
-      ? true extends AnyMarked<Nodes<C>>
-        ? string | Extract<Out<S>, null | undefined>
-        : true extends Unnamed<Nodes<C>>
-          ? unknown
-          : Shaped<S, Nodes<C>>
-      : unknown;
+    : IsAny<Out<S>> extends true
+      ? unknown
+      : Verdict<AnyOpaqueMarked<Nodes<C>>> extends false
+        ? true extends AnyMarked<Nodes<C>>
+          ? string | Extract<Out<S>, null | undefined>
+          : true extends Unnamed<Nodes<C>>
+            ? unknown
+            : Shaped<S, Nodes<C>, D>
+        : unknown;
 
 /** A structural result keeps a brand that is not a privacy class, as the copy is the same kind of value. */
 type Rebrand<S, X> = Out<S> extends { readonly [z.core.$brand]: infer B } ? X & { readonly [z.core.$brand]: B } : X;
@@ -279,57 +300,59 @@ type KeyName<K, N> = K extends typeof z.core.$brand ? never : true extends AnyMa
  * adds, a union and an intersection keep their form, and a structural node maps by every node's schemas. Any other
  * node, unmarked and with nothing marked beneath it, keeps its output type, which is what `redact` hands back.
  */
-type Shaped<S, N> = S extends unknown ? Rebrand<S, ShapedNode<S, N>> : never;
+type Shaped<S, N, D extends Depth> = S extends unknown ? Rebrand<S, ShapedNode<S, N, D>> : never;
 
 /** {@link Shaped}, before a brand that is not a privacy class is put back. */
-type ShapedNode<S, N> = S extends unknown
+type ShapedNode<S, N, D extends Depth> = S extends unknown
   ? DefOf<S> extends { type: "optional"; innerType: infer I }
-    ? Shaped<I, N> | undefined
+    ? Shaped<I, N, D> | undefined
     : DefOf<S> extends { type: "nullable"; innerType: infer I }
-      ? Shaped<I, N> | null
+      ? Shaped<I, N, D> | null
       : DefOf<S> extends { type: "default" | "prefault" | "nonoptional"; innerType: infer I }
-        ? Exclude<Shaped<I, N>, undefined>
+        ? Exclude<Shaped<I, N, D>, undefined>
         : DefOf<S> extends { type: "catch"; innerType: infer I }
-          ? Shaped<I, N>
+          ? Shaped<I, N, D>
           : DefOf<S> extends { type: "readonly"; innerType: infer I }
-            ? z.core.util.MakeReadonly<Shaped<I, N>>
+            ? z.core.util.MakeReadonly<Shaped<I, N, D>>
             : DefOf<S> extends { type: "lazy"; getter: () => infer I }
-              ? Shaped<I, N>
+              ? Shaped<I, N, D>
               : DefOf<S> extends { type: "union"; options: readonly (infer O)[] }
-                ? Shaped<O, N>
+                ? Shaped<O, N, D>
                 : DefOf<S> extends { type: "intersection"; left: infer L; right: infer R }
-                  ? Shaped<L, N> & Shaped<R, N>
+                  ? Shaped<L, N, D> & Shaped<R, N, D>
                   : DefOf<S> extends { type: Structural }
-                    ? Walked<S, N>
+                    ? Walked<S, N, D>
                     : [KitCodec<S>] extends [never]
                       ? Out<S>
-                      : Shaped<KitCodec<S>, N>
+                      : Shaped<KitCodec<S>, N, D>
   : never;
 
 /** A structural node, mapped by every node's schemas at the position. */
-type Walked<S, N> =
+type Walked<S, N, D extends Depth, E extends Depth = Deeper<D>> =
   DefOf<S> extends { type: "object"; shape: infer Shape }
     ? WithNamed<
         {
           [K in keyof Out<S> as KeyName<K, N>]: K extends keyof Shape
-            ? At<Shape[K], Fields<N, K>>
-            : At<OpenCatchall<S>, Catchalls<N>> | NamedAt<OpenCatchall<S>, N, Exclude<NamedKeys<N>, keyof Shape>>;
+            ? At<Shape[K], Fields<N, K>, E>
+            : At<OpenCatchall<S>, Catchalls<N>, E> | NamedAt<OpenCatchall<S>, N, Exclude<NamedKeys<N>, keyof Shape>, E>;
         },
         [OpenCatchall<S>] extends [never] ? never : OpenCatchall<S>,
         N,
-        Exclude<NamedKeys<N>, keyof Shape>
+        Exclude<NamedKeys<N>, keyof Shape>,
+        E
       >
     : DefOf<S> extends { type: "record"; valueType: infer V }
       ? string extends keyof Out<S>
         ? WithNamed<
-            { [K in keyof Out<S> as KeyName<K, N>]: At<V, Fields<N, K>> | NamedAt<V, N, NamedKeys<N>> },
+            { [K in keyof Out<S> as KeyName<K, N>]: At<V, Fields<N, K>, E> | NamedAt<V, N, NamedKeys<N>, E> },
             V,
             N,
-            NamedKeys<N>
+            NamedKeys<N>,
+            E
           >
-        : { [K in keyof Out<S> as KeyName<K, N>]: At<V, Fields<N, K>> }
-      : DefOf<S> extends { type: "array"; element: infer E }
-        ? Beyond<E, N, []>
+        : { [K in keyof Out<S> as KeyName<K, N>]: At<V, Fields<N, K>, E> }
+      : DefOf<S> extends { type: "array"; element: infer El }
+        ? Beyond<El, N, [], E>
         : DefOf<S> extends {
               type: "tuple";
               items: infer Items extends readonly z.core.SomeType[];
@@ -338,14 +361,14 @@ type Walked<S, N> =
           ? // The tuple's own items, rebuilt from them so a brand on it does not turn it into an array, then its rest.
             z.output<z.ZodTuple<Items, null>> extends infer O extends readonly unknown[]
             ? [
-                ...{ -readonly [K in keyof O]: K extends keyof Items ? At<Items[K], Elements<N, K>> : never },
-                ...(R extends z.core.SomeType ? Beyond<R, N, [...Items]> : []),
+                ...{ -readonly [K in keyof O]: K extends keyof Items ? At<Items[K], Elements<N, K>, E> : never },
+                ...(R extends z.core.SomeType ? Beyond<R, N, [...Items], E> : []),
               ]
             : never
           : DefOf<S> extends { type: "map"; keyType: infer K; valueType: infer V }
-            ? Map<At<K, MapKeys<N>>, At<V, MapValues<N>>>
+            ? Map<At<K, MapKeys<N>, E>, At<V, MapValues<N>, E>>
             : DefOf<S> extends { type: "set"; valueType: infer V }
-              ? Set<At<V, SetElements<N>>>
+              ? Set<At<V, SetElements<N>, E>>
               : never;
 
 /**
@@ -359,23 +382,23 @@ type NamedKeys<N> = N extends unknown
   : never;
 
 /** What a key in `Keys` holds, against every schema there, for a value parsed by `V`. Distributes over the keys. */
-type NamedAt<V, N, Keys> = Keys extends unknown ? At<V, Fields<N, Keys>> : never;
+type NamedAt<V, N, Keys, D extends Depth> = Keys extends unknown ? At<V, Fields<N, Keys>, D> : never;
 
 /** `Mapped`, with each key in `Keys` an optional field of its own where `V` lets a key no shape names through. */
-type WithNamed<Mapped, V, N, Keys extends PropertyKey> = [V] extends [never]
+type WithNamed<Mapped, V, N, Keys extends PropertyKey, D extends Depth> = [V] extends [never]
   ? Mapped
   : [Keys] extends [never]
     ? Mapped
-    : Mapped & { [K in Keys as KeyName<K, N>]?: At<V, Fields<N, K>> };
+    : Mapped & { [K in Keys as KeyName<K, N>]?: At<V, Fields<N, K>, D> };
 
 /**
  * An array's element, or a tuple's rest, from index `I["length"]` on: optional and one by one while a tuple beside it
  * names the index, so each takes the items there, then any number past every tuple's items.
  */
-type Beyond<E, N, I extends unknown[]> =
+type Beyond<E, N, I extends unknown[], D extends Depth> =
   true extends NamesIndex<N, `${I["length"]}`>
-    ? [At<E, Elements<N, `${I["length"]}`>>?, ...Beyond<E, N, [...I, unknown]>]
-    : At<E, Past<N>>[];
+    ? [At<E, Elements<N, `${I["length"]}`>, D>?, ...Beyond<E, N, [...I, unknown], D>]
+    : At<E, Past<N>, D>[];
 
 /** Whether a tuple at the position names index `K`. */
 type NamesIndex<N, K extends string> = N extends unknown
