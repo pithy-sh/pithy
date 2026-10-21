@@ -126,116 +126,15 @@ type NoPrivacyBrand = { readonly [z.core.$brand]?: { readonly [K in `privacy:${s
 export type UnmarkedString = string & NoPrivacyBrand;
 
 /**
- * A value's own type with every marked part replaced by the string `redact` masks it to, read off the type alone:
- * the type a caller names for a value it already redacted, `Redacted<User>`. `redact` itself returns
- * {@link RedactedOutput}, which reads the schema and agrees with this wherever the schema's output says enough.
- *
- * **It fails closed, as `redact` does.** A position is a masked `string` when any member of the union the type gives
- * it is marked: `pii(z.string()) | z.number()` is `string`, and in `{ e: Email } | { e: number }` the field `e` is
- * `string` in both members. An array maps to an array of its redacted elements, a tuple keeps its length, a plain
- * object maps its fields, and a marked key becomes `string`. A map, a set or a promise holding a mark is a masked
- * `string`, because `redact` masks one whole; one holding none, and any other {@link Opaque} value, is kept as it is.
- *
- * **It is coarse where it cannot be sure.** It reads {@link REDACT_TYPE_DEPTH} levels; a position below that which may
- * still hold a mark is `unknown`, and so is `any`. Narrow it yourself where you know more.
+ * What `redact(schema, value)` returns, named by the schema: the type a caller names for a value it already redacted,
+ * `Redacted<typeof User>`. It is {@link RedactedOutput}, and it takes the schema rather than the value's type on
+ * purpose: a value's type cannot tell a plain object from the output of a JSON column, a transform or a pipe, which
+ * `redact` masks whole as a string, so a type read off the value alone would claim a shape `redact` never returns.
  */
-export type Redacted<T> = RedactedAt<T, T, REDACT_TYPE_DEPTH>;
-
-/**
- * One member `T` of a position, redacted against `C`: every type at that position, across every union member. `C`
- * decides whether the position is masked; `T` decides the shape a member keeps. `D` is the depth left to read.
- */
-type RedactedAt<T, C, D extends number> =
-  IsAny<T> extends true
-    ? unknown
-    : true extends IsMarked<C>
-      ? string | Extract<T, null | undefined>
-      : Verdict<MarkIn<C, D>> extends false
-        ? T
-        : [D] extends [never]
-          ? unknown
-          : T extends unknown
-            ? T extends readonly unknown[]
-              ? IsTuple<T> extends true
-                ? RedactedTuple<T, C, D>
-                : T extends unknown[]
-                  ? RedactedAt<T[number], ElementOf<C>, Down<D>>[]
-                  : readonly RedactedAt<T[number], ElementOf<C>, Down<D>>[]
-              : T extends ReadonlyMap<unknown, unknown> | ReadonlySet<unknown> | PromiseLike<unknown>
-                ? string
-                : T extends Opaque
-                  ? T
-                  : T extends object
-                    ? {
-                        [K in keyof T as true extends IsMarked<K> ? string : K]: RedactedAt<
-                          T[K],
-                          FieldOf<C, K>,
-                          Down<D>
-                        >;
-                      }
-                    : T
-            : never;
+export type Redacted<S extends z.ZodType> = RedactedOutput<S>;
 
 /** A search's answer: `true` when a mark was found, `"deep"` when none was but the search ran out of depth. */
 type Verdict<R> = true extends R ? true : "deep" extends R ? "deep" : false;
-
-/**
- * Whether any member of `C`, or anything up to `D` levels inside it, carries a privacy brand: in a value, a key, a
- * map's or a set's members, or a promise. `"deep"` where the depth ran out on something that could still hold one.
- */
-type MarkIn<C, D extends number> =
-  IsAny<C> extends true
-    ? false
-    : C extends unknown
-      ? true extends IsMarked<C>
-        ? true
-        : C extends ReadonlyMap<infer K, infer V>
-          ? MarkIn<K, Down<D>> | MarkIn<V, Down<D>>
-          : C extends ReadonlySet<infer E>
-            ? MarkIn<E, Down<D>>
-            : C extends PromiseLike<infer P>
-              ? MarkIn<P, Down<D>>
-              : C extends Opaque
-                ? false
-                : C extends object
-                  ? [D] extends [never]
-                    ? "deep"
-                    : true extends IsMarked<keyof C>
-                      ? true
-                      : C extends readonly (infer E)[]
-                        ? MarkIn<E, Down<D>>
-                        : { [K in keyof C]-?: MarkIn<C[K], Down<D>> }[keyof C] | false
-                  : false
-      : never;
-
-/**
- * A tuple's positions, redacted. A mapped type over a type parameter is homomorphic, so a tuple keeps its length and
- * its `readonly`; the key-remapping one {@link RedactedAt} uses for an object would turn it into a plain object.
- */
-type RedactedTuple<T extends readonly unknown[], C, D extends number> = {
-  [K in keyof T]: RedactedAt<T[K], IndexOf<C, K>, Down<D>>;
-};
-
-/**
- * Whether an array type is a tuple: a fixed length, or a first position of its own (`[number, ...string[]]`). A plain
- * array — a branded one included — has neither.
- */
-type IsTuple<T extends readonly unknown[]> = number extends T["length"] ? ("0" extends keyof T ? true : false) : true;
-
-/** Every type an array or a tuple member of `C` holds as an element. */
-type ElementOf<C> = C extends readonly (infer E)[] ? E : never;
-
-/** Every type a member of `C` holds at tuple position `K`, or as any element of an array. */
-type IndexOf<C, K> = C extends readonly unknown[] ? (K extends keyof C ? C[K] : C[number]) : never;
-
-/** Every type an object member of `C` holds at field `K`. */
-type FieldOf<C, K> = C extends readonly unknown[] | Opaque
-  ? never
-  : C extends object
-    ? K extends keyof C
-      ? C[K]
-      : never
-    : never;
 
 /**
  * **What `redact(schema, value)` returns, read off the schema: the rule `redact` and `classifyPrivacy` share**
@@ -500,7 +399,10 @@ type Shaped<S, C, D extends number, M extends boolean> = S extends unknown
                   ? Shaped<L, C, D, M> & Shaped<R, C, D, M>
                   : DefOf<S> extends { type: "object"; shape: infer Shape }
                     ? {
-                        [K in keyof Out<S>]: K extends keyof Shape
+                        // A record beside it with a marked key renames every key, the object's own included.
+                        [K in keyof Out<S> as MaskedWhole<KeySchemas<C>> extends false
+                          ? K
+                          : string]: K extends keyof Shape
                           ? RedactedPosition<Shape[K], FieldSchemas<C, K>, Down<D>, M>
                           : unknown;
                       }
@@ -517,17 +419,30 @@ type Shaped<S, C, D extends number, M extends boolean> = S extends unknown
                               items: infer Items extends readonly unknown[];
                               rest: infer R;
                             }
-                          ? ShapedTuple<Items, R, C, D, M>
+                          ? Out<S> extends infer O extends readonly unknown[]
+                            ? ShapedTuple<O, Items, R, C, D, M>
+                            : never
                           : Out<S>
   : never;
 
-/** A tuple's items position by position, then its rest. Mapped over a type parameter, so it stays a tuple. */
-type ShapedTuple<Items extends readonly unknown[], R, C, D extends number, M extends boolean> = [R] extends [null]
-  ? TupleItems<Items, C, D, M>
-  : [...TupleItems<Items, C, D, M>, ...RedactedPosition<R, ElementSchemas<C, number>, Down<D>, M>[]];
-
-type TupleItems<Items extends readonly unknown[], C, D extends number, M extends boolean> = {
-  -readonly [K in keyof Items]: RedactedPosition<Items[K], ElementSchemas<C, K>, Down<D>, M>;
+/**
+ * A tuple's items position by position, then its rest. Mapped over its output `O`, a type parameter, so it stays a
+ * tuple and keeps what the output says of its length: an optional trailing item stays optional, as `parse` may leave
+ * it out.
+ */
+type ShapedTuple<
+  O extends readonly unknown[],
+  Items extends readonly unknown[],
+  R,
+  C,
+  D extends number,
+  M extends boolean,
+> = {
+  -readonly [K in keyof O]: K extends `${number}`
+    ? K extends keyof Items
+      ? RedactedPosition<Items[K], ElementSchemas<C, K>, Down<D>, M>
+      : RedactedPosition<R, ElementSchemas<C, number>, Down<D>, M>
+    : RedactedPosition<R, ElementSchemas<C, number>, Down<D>, M>;
 };
 
 /** The schemas at object key `K`: each object's field there, and each record's value. */

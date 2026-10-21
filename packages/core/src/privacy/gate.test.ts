@@ -117,7 +117,7 @@ describe("the type gate", () => {
   });
 
   test("a redacted value carries no brand, and a detail takes an unmarked string", () => {
-    const masked: Redacted<User> = redact(User, user);
+    const masked: Redacted<typeof User> = redact(User, user);
     const contains: ContainsMarked<typeof masked> = false;
     const detail: UnmarkedString = `user ${masked.email}`;
     expect([contains, detail]).toEqual([false, "user [pii]"]);

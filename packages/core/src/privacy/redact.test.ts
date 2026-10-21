@@ -840,3 +840,119 @@ describe("regressions: round 4", () => {
     });
   });
 });
+
+describe("regressions: round 5", () => {
+  // A factory-built tree: every level builds two fresh lazies, so the depth budget alone allows 2^256 paths.
+  // biome-ignore lint/suspicious/noExplicitAny: a factory's type is circular, and TypeScript infers none.
+  const mkTree = (): any =>
+    z.object({ e: pii(z.string()).optional(), l: z.lazy(mkTree).optional(), r: z.lazy(mkTree).optional() });
+  // biome-ignore lint/suspicious/noExplicitAny: as above, with no mark anywhere.
+  const mkPlainTree = (): any => z.object({ l: z.lazy(mkPlainTree).optional(), r: z.lazy(mkPlainTree).optional() });
+
+  test("G1 a factory that builds two lazies per level finishes, listing what it read and failing closed past it", () => {
+    const fields = classifyPrivacy(mkTree());
+    expect(fields).toContainEqual({ path: "e", class: "pii" });
+    expect(fields).toContainEqual({ path: "l.e", class: "pii" });
+    expect(fields.some((field) => field.path === "r" || field.path.startsWith("r."))).toBe(true);
+    expect(fields.some((field) => field.truncated === true && field.class === "secret")).toBe(true);
+    // A field the walk reaches after the budget is spent keeps its own class.
+    expect(classifyPrivacy(z.object({ tree: mkTree(), ssn: pii(z.string()) }))).toContainEqual({
+      path: "ssn",
+      class: "pii",
+    });
+    expect(masked(mkTree(), { e: "S-1", l: { e: "S-2" } })).toEqual({ e: "[pii]", l: { e: "[pii]" } });
+  });
+
+  test("G1 an opaque or free node over a wide factory is searched to a budget, and masked whole past it", () => {
+    expect(
+      redact(
+        mkPlainTree().transform((x: unknown) => x),
+        {} as never,
+      ),
+    ).toBe("[secret]");
+    expect(redact(z.union([mkPlainTree(), z.unknown()]), {} as never)).toBe("[secret]");
+    const beside = z.object({ j: mkPlainTree().transform((x: unknown) => x), e: pii(z.string()) });
+    expect(redact(beside, { j: {}, e: "S-1" } as never)).toEqual({ j: "[secret]", e: "[pii]" });
+  });
+
+  const X = z.object({ e: pii(z.string()) });
+  const W = z.object({ e: pii(z.string()), n: z.number() });
+
+  test.each<[string, z.ZodType, unknown, string]>([
+    ["D1 a union option reused below another", z.union([X, z.object({ k: X })]), { k: { e: "S-1" } }, "k.e"],
+    [
+      "D2 an intersection side reused below",
+      z.intersection(X, z.object({ k: X })),
+      { e: "S-0", k: { e: "S-1" } },
+      "k.e",
+    ],
+    [
+      "D3 an array reused below",
+      z.union([z.array(X), z.object({ list: z.array(X) })]),
+      { list: [{ e: "S-1" }] },
+      "list[].e",
+    ],
+    [
+      "D4 a field's option reused below",
+      z.object({ a: z.union([W, z.object({ w: W })]) }),
+      { a: { w: { e: "S-1", n: 1 } } },
+      "a.w.e",
+    ],
+  ])("%s: classifyPrivacy lists every path redact masks", (_label, schema, wire, path) => {
+    expect(raw(masked(schema, wire))).toEqual([]);
+    expect(classifyPrivacy(schema)).toContainEqual({ path, class: "pii" });
+  });
+
+  test("N2 keeps a record's symbol keys, masking their values and a marked symbol key", () => {
+    const key = Symbol("k");
+    const Values = z.record(z.union([z.string(), z.symbol()]), pii(z.string()));
+    const out = masked(Values, { a: "S-1", [key]: "S-2" }) as Record<PropertyKey, unknown>;
+    expect(Reflect.ownKeys(out)).toEqual(["a", key]);
+    expect(out[key]).toBe("[pii]");
+    const Plain = z.record(z.symbol(), z.string());
+    const kept = masked(Plain, { [key]: "x" }) as Record<PropertyKey, unknown>;
+    expect(Reflect.ownKeys(kept)).toEqual([key]);
+    expect(kept[key]).toBe("x");
+    const Keyed = z.record(pii(z.symbol()), z.string());
+    expect(masked(Keyed, { [key]: "x" })).toEqual({ "[pii]": "x" });
+  });
+
+  test("N3 masks a value whose kind no structural node at a marked position matches", () => {
+    // biome-ignore lint/suspicious/noExplicitAny: a fallback that hands back the raw input, as one with a cast can.
+    const back = (ctx: { input: unknown }): any => ctx.input;
+    const C = z.object({ email: pii(z.string()) }).catch(back);
+    class Acct {
+      constructor(readonly email: string) {}
+    }
+    expect(masked(C, ["S-1"])).toBe("[pii]");
+    expect(masked(C, "S-1")).toBe("[pii]");
+    expect(masked(C, new Map([["email", "S-1"]]))).toBe("[pii]");
+    // An instance parses into a plain object, which the object names.
+    expect(masked(C, new Acct("S-1"))).toEqual({ email: "[pii]" });
+    expect(masked(z.object({ u: C }), { u: ["S-1"] })).toEqual({ u: "[pii]" });
+    expect(masked(z.array(pii(z.string())).catch(back), { x: "S-1" })).toBe("[pii]");
+  });
+
+  test("N3 keeps a value a scalar beside a marked node holds", () => {
+    const at = new Date(0);
+    expect(masked(z.union([z.string(), z.object({ e: pii(z.string()) })]), "hello")).toBe("hello");
+    expect(masked(z.union([z.date(), z.object({ e: pii(z.string()) })]), at)).toBe(at);
+    expect(masked(z.union([z.number(), z.array(pii(z.string()))]), 4)).toBe(4);
+  });
+
+  test("N4 masks a position more than one class marks with the placeholder, never a class's own partial mask", () => {
+    const Union = z.union([
+      z.object({ t: z.literal("c"), n: pci(z.string()) }),
+      z.object({ t: z.literal("i"), n: pii(z.string()) }),
+    ]);
+    expect(masked(Union, { t: "i", n: "8001015009087" })).toEqual({ t: "i", n: "[pci]" });
+    const Tagged = z.discriminatedUnion("t", [
+      z.object({ t: z.literal("c"), n: pci(z.string()) }),
+      z.object({ t: z.literal("i"), n: pii(z.string()) }),
+    ]);
+    expect(masked(Tagged, { t: "i", n: "110101199003077777" })).toEqual({ t: "i", n: "[pci]" });
+    const Both = z.intersection(z.object({ n: pci(z.string()) }), z.object({ n: pii(z.string()) }));
+    expect(masked(Both, { n: "8001015009087" })).toEqual({ n: "[pci]" });
+    expect(masked(z.object({ n: pci(z.string()) }), { n: "4242424242424242" })).toEqual({ n: "424242******4242" });
+  });
+});

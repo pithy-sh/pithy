@@ -227,7 +227,6 @@ const plainUnion = redact(z.union([z.object({ a: z.object({ e: E }) }), z.object
 same<typeof plainUnion, { a: { e: string } } | { b: number }>();
 
 // Past the depth the type reads, a position is `unknown`, never the brand-based guess: redact masks this one whole.
-type Chain<T, N extends unknown[] = []> = N["length"] extends 18 ? T : { n: Chain<T, [...N, 0]> };
 type Level16<T> = T extends { n: { n: { n: { n: { n: { n: { n: { n: infer R } } } } } } } }
   ? R extends { n: { n: { n: { n: { n: { n: { n: { n: infer Q } } } } } } } }
     ? Q
@@ -243,8 +242,6 @@ same<Level16<typeof deep18>, { n: unknown }>();
 // An opaque node whose insides run past the depth the type searches is `unknown`, marked or not.
 const deepPlain = redact(z.object({ p: sqliteJson(deep(deep(deep(z.object({ x: z.string() }))))) }), any);
 same<typeof deepPlain, { p: unknown }>();
-// The value-level type is bounded the same way.
-same<Level16<Redacted<Chain<{ e: z.output<typeof E> }>>>["n"], unknown>();
 
 // A recursive schema inside a codec is searched until the depth runs out: a marked one is a string, as redact masks
 // it, and an unmarked one is `unknown`, because the type cannot tell it from one marked deeper than it reads.
@@ -266,13 +263,27 @@ same<typeof cats, { j: unknown; k: string }>();
 const twice = redact(z.object({ p: sqliteJson(deep(deep(z.object({ e: E })))) }), any);
 same<typeof twice, { p: string }>();
 
-// The type of a value already redacted, read off its own type.
-same<
-  Redacted<{ e: z.output<typeof E>; n: number; tags: z.output<typeof E>[] }>,
-  { e: string; n: number; tags: string[] }
->();
-same<Redacted<Map<string, z.output<typeof E>>>, string>();
-same<Redacted<{ at: Date; m: Map<string, number> }>, { at: Date; m: Map<string, number> }>();
+// The type of a value already redacted, named by its schema: what redact returns, a JSON column masked whole included.
+const Tagged = z.object({ e: E, n: z.number(), tags: z.array(E) });
+same<Redacted<typeof Tagged>, { e: string; n: number; tags: string[] }>();
+same<Redacted<z.ZodMap<z.ZodString, typeof E>>, string>();
+const Stamped = z.object({ at: z.date(), m: z.map(z.string(), z.number()) });
+same<Redacted<typeof Stamped>, { at: Date; m: Map<string, number> }>();
+const Row = z.object({ id: z.string(), profile: sqliteJson(z.object({ phone: E, city: z.string() })) });
+same<Redacted<typeof Row>, { id: string; profile: string }>();
+const Moved = z.object({ u: z.object({ e: E, n: z.number() }).transform((o) => o) });
+same<Redacted<typeof Moved>, { u: string }>();
+
+// A record with a marked key renames every key at its position, an intersected object's own keys included.
+const renamed = redact(z.intersection(z.object({ a: z.number() }), z.record(pii(z.string()), z.number())), any);
+same<keyof typeof renamed, string | number>();
+// @ts-expect-error: `a` is not a key redact returns, so reading it may be undefined.
+const _renamedA: number = renamed.a;
+// An optional trailing tuple item stays optional: parse may leave it out, and redact keeps the length parse gave.
+const shortTuple = redact(z.tuple([z.string(), E.optional()]), any);
+same<typeof shortTuple, [string, (string | undefined)?]>();
+// @ts-expect-error: the length is 1 or 2.
+const _shortLength: 2 = shortTuple.length;
 
 same<ContainsMarked<typeof array>, false>();
 same<ContainsMarked<typeof tuple>, false>();

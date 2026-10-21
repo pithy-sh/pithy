@@ -46,8 +46,11 @@ import type { RedactedOutput } from "./types";
  *   and a union of a marked object with a transform, an `unknown` or a loose fallback.
  * - **A field only one option marks is masked in every option.** In `z.union([z.object({ e: pii(z.email()) }),
  *   z.object({ e: z.number() })])` a `{ e: 5 }` comes back `{ e: "[pii]" }`.
- * - **A key or an element no schema at its position names** — one a `.catch()` fallback put there, or a value that
- *   does not match — is masked with the strongest class the position carries, and kept where it carries none. It is
+ * - **A position two classes mark takes the strongest one's placeholder**, never one class's own mask over the other's
+ *   value: a `pii` national ID where an option marks `pci` comes back `[pci]`, not as a PAN's first six and last four.
+ * - **A key or an element no schema at its position names** — one a `.catch()` fallback put there, or a value whose
+ *   kind no node at its position holds, such as the raw input a fallback handed back where an object was named — is
+ *   masked with the strongest class the position carries, and kept where it carries none. It is
  *   never dropped. `classifyPrivacy` cannot list it, because the schema does not name it.
  * - **A check is not seen.** A `.refine()` or an `.overwrite()` that writes a marked value elsewhere is not a node,
  *   and neither is what a `.catch()` fallback writes into a field its schema names.
@@ -63,7 +66,7 @@ import type { RedactedOutput } from "./types";
  *
  * **The app shape** — what `Schema.parse(row)` returns — not the SQLite row. `null` and `undefined` stay as they are,
  * because an absent value discloses nothing. **A record's key is redacted by its key schema**, because a key is stored
- * and logged as surely as a value: two keys that mask alike come back as `[pii]` and `[pii] #2`, so the result holds
+ * and logged as surely as a value, a symbol key as surely as a string one: two keys that mask alike come back as `[pii]` and `[pii] #2`, so the result holds
  * as many entries as the value did, and a masked key never takes the name of one that stayed as it was. Every key is
  * defined on the copy, not assigned, so an own `__proto__` key stays a key and never becomes the copy's prototype.
  *
@@ -100,6 +103,36 @@ function unnamed(at: Position, value: unknown): unknown {
   return className === undefined ? value : `[${className}]`;
 }
 
+/** Whether a scalar kind holds a value of this kind: a string schema a string, a date schema a `Date`. */
+function holds(kind: string, value: unknown): boolean {
+  switch (kind) {
+    case "string":
+    case "template_literal":
+      return typeof value === "string";
+    case "number":
+    case "nan":
+      return typeof value === "number";
+    case "enum":
+      return typeof value === "string" || typeof value === "number";
+    case "bigint":
+    case "boolean":
+    case "symbol":
+      return typeof value === kind;
+    case "date":
+      return value instanceof Date;
+    case "literal":
+      return typeof value !== "object" && typeof value !== "function";
+    default:
+      return false;
+  }
+}
+
+/** Whether a scalar at the position holds `value`, so it is kept as that scalar's own. */
+function scalarHolds(at: Position, value: unknown): boolean {
+  for (const kind of at.scalars) if (holds(kind, value)) return true;
+  return false;
+}
+
 /**
  * One position: `schemas` are every schema that reaches it, `value` what is there, and `depth` how many positions and
  * lazies deep it sits. Past `MAX_SCHEMA_DEPTH` it is masked whole as the strongest class, and read no further.
@@ -111,30 +144,39 @@ function redactAt(schemas: readonly z.ZodType[], value: unknown, depth: number):
   const at = below > MAX_SCHEMA_DEPTH ? PAST_DEPTH : reached;
   const whole = wholeMask(at);
   if (whole) return whole.placeholder ? `[${whole.className}]` : mask(whole.className, value);
+  // A value no structural node at the position matches — an array where only an object is named, a string a
+  // `.catch()` handed back — is masked like a key no schema names, unless a scalar there holds it.
   if (Array.isArray(value)) {
-    if (!at.leaves.some((leaf) => leafIs(leaf, "array", "tuple"))) return value;
+    if (!at.leaves.some((leaf) => leafIs(leaf, "array", "tuple"))) return unnamed(at, value);
     return value.map((item, index) => {
       const element = elementSchemas(at.leaves, index);
       return element.length === 0 ? unnamed(at, item) : redactAt(element, item, below + 1);
     });
   }
   if (isPlainObject(value)) {
-    if (!at.leaves.some((leaf) => leafIs(leaf, "object", "record"))) return value;
+    if (!at.leaves.some((leaf) => leafIs(leaf, "object", "record"))) return unnamed(at, value);
     return redactedObject(at, value, below + 1);
   }
-  return value;
+  return scalarHolds(at, value) ? value : unnamed(at, value);
 }
 
 /**
  * An object's entries, each value redacted by the schemas that name its key, and each key by every record's key
  * schema. A masked key takes the first name, `[pii]`, `[pii] #2` …, that no kept key and no earlier masked key holds.
+ * A symbol key is an entry like any other: a record parse keeps one, so the copy does too.
  */
-function redactedObject(at: Position, value: Record<string, unknown>, depth: number): Record<string, unknown> {
+function redactedObject(
+  at: Position,
+  value: Record<PropertyKey, unknown>,
+  depth: number,
+): Record<PropertyKey, unknown> {
   const keyed = keySchemas(at.leaves);
   const keyMasked = keyed.length > 0 && wholeMask(position(keyed)) !== undefined;
-  const entries = Object.entries(value);
+  const entries = Reflect.ownKeys(value)
+    .filter((key) => Object.prototype.propertyIsEnumerable.call(value, key))
+    .map((key): [PropertyKey, unknown] => [key, value[key]]);
   const taken = new Set<unknown>(keyMasked ? [] : entries.map(([key]) => key));
-  const out: Record<string, unknown> = {};
+  const out: Record<PropertyKey, unknown> = {};
   for (const [key, item] of entries) {
     const name = keyMasked ? distinct(String(redactAt(keyed, key, depth)), taken) : key;
     taken.add(name);

@@ -34,16 +34,21 @@ import { type BuiltInPrivacyClass, PRIVACY_META_KEY, strongestPrivacyClass } fro
  * neither is what a `.catch()` fallback writes into a field its schema names. Move a value with a `.transform()`,
  * which is a node.
  *
- A recursive schema terminates on the lazy itself: a lazy is read through Zod's own cached target, the schema `parse`
- * ran, never by calling its getter again, and a walk that meets the same lazy again at the same position, or below
- * itself here, stops. An object written with a getter that reaches itself stops the same way, through the shape Zod
- * froze on first read. **A walk never throws, and past {@link MAX_SCHEMA_DEPTH} it fails closed.** A factory that
- * builds a new schema at every level — a getter or a lazy that calls a function returning a fresh one — hands every
- * level a node no guard has seen. Every position, every lazy resolved and every level searched counts toward one
- * budget, and where it runs out the walk stops and takes the rest to carry a mark of the strongest class,
- * {@link TRUNCATED_CLASS}: `redact` masks that position whole as `[secret]`, and `classifyPrivacy` lists it with
- * `truncated: true`. A value nested that deep under a recursive schema built once is masked there the same way. Build
- * a recursive schema once and refer to it by name, and nothing a hand-written schema holds ever reaches the limit.
+ * A recursive schema terminates on itself: a lazy is read through Zod's own cached target, the schema `parse` ran,
+ * never by calling its getter again, and a walk that meets the same lazy again at the same position stops. An object,
+ * array, record or tuple met again below itself, on the line of schemas that leads to it, is not walked again; one a
+ * sibling reuses — a union option, an intersection side — is walked there in full. An object written with a getter
+ * that reaches itself stops the same way, through the shape Zod froze on first read.
+ *
+ * **A walk never throws, and past {@link MAX_SCHEMA_DEPTH} it fails closed.** A factory that builds a new schema at
+ * every level — a getter or a lazy that calls a function returning a fresh one — hands every level a node no guard
+ * has seen. Every position, every lazy resolved and every level searched counts toward one budget, and so does every
+ * position one walk reads and every node one search reads, up to {@link MAX_SCHEMA_NODES}: a factory that builds two
+ * lazies at every level has 2^256 paths inside the depth limit. Where a budget runs out the walk stops and takes the
+ * rest to carry a mark of the strongest class, {@link TRUNCATED_CLASS}: `redact` masks that position whole as
+ * `[secret]`, and `classifyPrivacy` lists it with `truncated: true`. A field reached after the cut still keeps its own
+ * class. A value nested that deep under a recursive schema built once is masked there the same way. Build a recursive
+ * schema once and refer to it by name, and nothing a hand-written schema holds ever reaches the limit.
  *
  * ## What a path looks like
  *
@@ -140,6 +145,13 @@ const SCALARS: ReadonlySet<string> = new Set([
 export const MAX_SCHEMA_DEPTH = 256;
 
 /**
+ * How many nodes one search, and how many positions one walk, reads before it stops and fails closed. The depth limit
+ * bounds each path and not how many there are: a factory that builds two fresh lazies at every level has 2^256 paths
+ * inside the depth limit. Far past any schema written by hand, and short of a hang.
+ */
+export const MAX_SCHEMA_NODES = 10_000;
+
+/**
  * The class a walk assumes where it ran out of depth: the strongest there is, because what lies past the limit was
  * not read. `redact` masks such a position as `[secret]`.
  */
@@ -213,7 +225,8 @@ const cutShort = new WeakSet<z.ZodType>();
 /**
  * Every class marked anywhere in a schema: on it, on every side of every pipe and codec, in every option, behind
  * every lazy, in a set's elements, a map's keys and a function's arguments. What decides an opaque node. A search
- * deeper than {@link MAX_SCHEMA_DEPTH} stops there and adds {@link TRUNCATED_CLASS}, so it fails closed.
+ * deeper than {@link MAX_SCHEMA_DEPTH}, or past {@link MAX_SCHEMA_NODES} nodes, stops there and adds
+ * {@link TRUNCATED_CLASS}, so it fails closed.
  */
 function marksIn(schema: z.ZodType): ReadonlySet<string> {
   const known = marked.get(schema);
@@ -224,9 +237,10 @@ function marksIn(schema: z.ZodType): ReadonlySet<string> {
   for (let entry = stack.pop(); entry; entry = stack.pop()) {
     const [node, depth] = entry;
     if (seen.has(node)) continue;
-    if (depth > MAX_SCHEMA_DEPTH) {
+    if (depth > MAX_SCHEMA_DEPTH || seen.size >= MAX_SCHEMA_NODES) {
       found.add(TRUNCATED_CLASS);
       cutShort.add(schema);
+      if (seen.size >= MAX_SCHEMA_NODES) break;
       continue;
     }
     seen.add(node);
@@ -264,11 +278,12 @@ export interface Position {
   readonly free: boolean;
   /** The opaque nodes with no mark inside, which `pithy privacy scan` still reads field names through. */
   readonly unmarked: readonly z.ZodType[];
-  /** The classes inside each lazy this position did not follow again, because the walk is already inside it. */
-  readonly beyond: ReadonlySet<string>;
+  /** The scalar kinds at this position: a value of one of them is held by a scalar, and kept. */
+  readonly scalars: ReadonlySet<string>;
   /**
-   * Whether the walk ran out of depth here — a chain of lazies past {@link MAX_SCHEMA_DEPTH}, or a search of an opaque
-   * node's insides that was cut short — so the position is taken to carry {@link TRUNCATED_CLASS}, and masked whole.
+   * Whether the walk ran out of depth here — a chain of lazies past {@link MAX_SCHEMA_DEPTH}, more nodes than
+   * {@link MAX_SCHEMA_NODES}, or a search of an opaque node's insides that was cut short — so the position is taken to
+   * carry {@link TRUNCATED_CLASS}, and masked whole.
    */
   readonly truncated: boolean;
 }
@@ -276,12 +291,9 @@ export interface Position {
 /** {@link position} of one schema, which is the common case and never changes. */
 const positions = new WeakMap<z.ZodType, Position>();
 
-/**
- * The position `schemas` reach. A lazy in `stop` is not followed: it is one the walk is already inside, so following
- * it again would say nothing new and never end.
- */
-export function position(schemas: readonly z.ZodType[], stop?: ReadonlySet<z.ZodType>): Position {
-  const single = schemas.length === 1 && !stop ? schemas[0] : undefined;
+/** The position `schemas` reach. A lazy met again at the same position is not followed again. */
+export function position(schemas: readonly z.ZodType[]): Position {
+  const single = schemas.length === 1 ? schemas[0] : undefined;
   const known = single && positions.get(single);
   if (known) return known;
   const marks = new Set<string>();
@@ -290,10 +302,17 @@ export function position(schemas: readonly z.ZodType[], stop?: ReadonlySet<z.Zod
   const lazies: z.ZodType[] = [];
   let free = false;
   const unmarked: z.ZodType[] = [];
-  const beyond = new Set<string>();
+  const scalars = new Set<string>();
   let truncated = false;
+  let read = 0;
   const stack = [...schemas].reverse();
   for (let node = stack.pop(); node; node = stack.pop()) {
+    // A union of fresh lazies at every level would flatten without end: stop, closed.
+    read += 1;
+    if (read > MAX_SCHEMA_NODES) {
+      truncated = true;
+      break;
+    }
     const own = ownMarker(node);
     if (own !== null) {
       marks.add(own);
@@ -307,12 +326,6 @@ export function position(schemas: readonly z.ZodType[], stop?: ReadonlySet<z.Zod
     else if (def.type === "lazy") {
       // The lazy itself is the guard, never a wrapper built around it: a getter that reaches it again stops here.
       if (lazies.includes(node)) continue;
-      if (stop?.has(node)) {
-        // Not walked again, but what it holds is still what this position holds.
-        for (const className of marksIn(node)) beyond.add(className);
-        if (cutShort.has(node)) truncated = true;
-        continue;
-      }
       // A lazy whose getter returns a new lazy, at every level, would never reach anything else: stop, closed.
       if (lazies.length >= MAX_SCHEMA_DEPTH) {
         truncated = true;
@@ -326,21 +339,22 @@ export function position(schemas: readonly z.ZodType[], stop?: ReadonlySet<z.Zod
       const inside = marksIn(node);
       for (const className of inside) opaque.add(className);
       if (cutShort.has(node)) truncated = true;
-      if (inside.size === 0 && !isScalar(def)) {
+      if (inside.size === 0 && isScalar(def)) scalars.add(def.type);
+      else if (inside.size === 0) {
         free = true;
         unmarked.push(node);
       }
     }
   }
   if (truncated) opaque.add(TRUNCATED_CLASS);
-  const found: Position = { marks, opaque, leaves, lazies, free, unmarked, beyond, truncated };
+  const found: Position = { marks, opaque, leaves, lazies, free, unmarked, scalars, truncated };
   if (single) positions.set(single, found);
   return found;
 }
 
 /** Every class a position carries, on it or anywhere below it. */
 function carriedClasses(at: Position): string[] {
-  return [...new Set([...at.marks, ...at.opaque, ...at.beyond, ...at.leaves.flatMap((leaf) => [...marksIn(leaf)])])];
+  return [...new Set([...at.marks, ...at.opaque, ...at.leaves.flatMap((leaf) => [...marksIn(leaf)])])];
 }
 
 /** Whether anything a position carries was assumed rather than read, because a search ran out of depth. */
@@ -356,13 +370,14 @@ export const PAST_DEPTH: Position = {
   lazies: [],
   free: false,
   unmarked: [],
-  beyond: new Set(),
+  scalars: new Set(),
   truncated: true,
 };
 
 /**
  * How a position is masked whole, or `undefined` when it is walked into. A marked node masks it with its class's own
- * mask. An opaque node with a mark inside masks it with the `[class]` placeholder, and so does an opaque node with no
+ * mask where that class is the only one at the position; two classes mask it with the placeholder of the strongest,
+ * because one class's own mask — a PAN's first six and last four — is no mask for another's value. An opaque node with a mark inside masks it with the `[class]` placeholder, and so does an opaque node with no
  * mark inside where anything else at the position carries one: a transform or an `unknown` beside a marked object
  * reads, or holds, the same value. `classes` are every class the mask stands for; `className` is the strongest.
  * `truncated` says the walk ran out of depth and assumed {@link TRUNCATED_CLASS} among them.
@@ -381,7 +396,7 @@ export function wholeMask(at: Position):
   const className = strongestPrivacyClass(classes);
   if (className === undefined) return undefined;
   const truncated = fromCarried ? carriedTruncated(at) : at.truncated;
-  return { className, placeholder: at.opaque.size > 0 || at.marks.size === 0, classes, truncated };
+  return { className, placeholder: at.opaque.size > 0 || at.marks.size !== 1, classes, truncated };
 }
 
 /** The strongest class a position carries, on it or below it: what masks a key or an element no schema names. */
@@ -395,13 +410,13 @@ function isNever(schema: z.ZodType | undefined): boolean {
 }
 
 /** The schemas at an object key `key`: each object's field or catchall, and each record's value. */
-export function fieldSchemas(leaves: readonly z.ZodType[], key: string): z.ZodType[] {
+export function fieldSchemas(leaves: readonly z.ZodType[], key: PropertyKey): z.ZodType[] {
   const found: z.ZodType[] = [];
   for (const leaf of leaves) {
     const def = defOf(leaf);
     if (def.type === "object") {
       const shape = shapeOf(leaf);
-      if (Object.hasOwn(shape, key)) found.push(shape[key] as z.ZodType);
+      if (Object.hasOwn(shape, key)) found.push((shape as Record<PropertyKey, z.ZodType>)[key] as z.ZodType);
       else if (!isNever(def.catchall)) found.push(def.catchall as z.ZodType);
     } else if (def.type === "record" && def.valueType) found.push(def.valueType);
   }
@@ -482,54 +497,114 @@ export interface PrivacyVisitor {
 }
 
 /**
- * Walk one position. `open` is the lazies and objects on the current branch, which are not walked again below
- * themselves, and `depth` how many positions and lazies deep the branch is. Past {@link MAX_SCHEMA_DEPTH} the position
+ * One schema that reaches a position, and the nodes it was reached through: the objects, arrays, records and tuples
+ * above it, and the opaque nodes the scan read into, along this schema's own line. A node already in its own line is
+ * one the walk is inside of, so it is not walked again — a recursive object written with a getter, or a lazy whose
+ * target reaches itself. Only the line that leads to a schema stops it: a union option reused below a sibling, or an
+ * intersection side reused below the other, is walked there in full.
+ */
+interface Reach {
+  readonly schema: z.ZodType;
+  readonly line: ReadonlySet<z.ZodType>;
+}
+
+/** What one walk has left: a factory's paths run it out as surely as its depth. */
+interface Budget {
+  left: number;
+}
+
+/** Each of `nodes` with the line that reaches it, leaving out a node already in that line. */
+function lines(reach: readonly Reach[], pick: (at: Position) => readonly z.ZodType[]): Map<z.ZodType, Set<z.ZodType>> {
+  const found = new Map<z.ZodType, Set<z.ZodType>>();
+  for (const { schema, line } of reach)
+    for (const node of pick(position([schema]))) {
+      if (line.has(node)) continue;
+      const known = found.get(node) ?? new Set([node]);
+      for (const each of line) known.add(each);
+      found.set(node, known);
+    }
+  return found;
+}
+
+/** The schemas `pick` finds below each node, each with the node's line. */
+function below(lined: Map<z.ZodType, Set<z.ZodType>>, pick: (node: z.ZodType) => z.ZodType[]): Reach[] {
+  return [...lined].flatMap(([node, line]) => pick(node).map((schema) => ({ schema, line })));
+}
+
+/**
+ * Walk one position. `depth` is how many positions and lazies deep the branch is, and `budget` how many positions the
+ * whole walk has left. Past {@link MAX_SCHEMA_DEPTH}, or once {@link MAX_SCHEMA_NODES} positions are read, the position
  * is listed as {@link TRUNCATED_CLASS}, truncated, and read no further.
  */
-function walkAt(
-  schemas: readonly z.ZodType[],
-  path: string,
-  visitor: PrivacyVisitor,
-  open: Set<z.ZodType>,
-  depth: number,
-): void {
-  if (schemas.length === 0) return;
-  const reached = position(schemas, open);
+function walkAt(reach: readonly Reach[], path: string, visitor: PrivacyVisitor, depth: number, budget: Budget): void {
+  if (reach.length === 0) return;
+  budget.left -= 1;
+  const reached = position(reach.map((each) => each.schema));
   // Every lazy this position resolved is one more level down: a factory's lazies run the budget out like its fields.
   const at = depth + reached.lazies.length > MAX_SCHEMA_DEPTH ? PAST_DEPTH : reached;
-  const whole = wholeMask(at);
+  // Once the walk has read its fill, a position still says what its own marks say, and one it would walk into is
+  // listed closed: a field beside a factory keeps its class, and nothing below the cut is read.
+  const spent = budget.left < 0;
+  const whole = wholeMask(at) ?? (spent && at.leaves.length > 0 ? wholeMask(PAST_DEPTH) : undefined);
   if (whole) {
     for (const className of whole.classes)
       visitor.marked(path, className, whole.truncated && className === TRUNCATED_CLASS);
     return;
   }
+  if (spent) return;
   // An opaque node with no mark inside is kept by `redact` and lists nothing, but the scan still reads the names of
   // the fields inside it — a JSON column's, a transform's input — because marking one is how the node gets masked.
   if (visitor.unmarkedKey)
-    for (const node of at.unmarked.filter((each) => !open.has(each))) {
-      open.add(node);
-      walkAt(children(node), path, visitor, open, depth + 1);
-      open.delete(node);
-    }
-  // A recursive object written with a getter reaches itself again; the second visit has nothing new to say.
-  const leaves = at.leaves.filter((leaf) => !open.has(leaf));
-  if (leaves.length === 0) return;
-  const entered = [...at.lazies, ...leaves].filter((node) => !open.has(node));
-  for (const node of entered) open.add(node);
-  depth += at.lazies.length;
-  for (const key of namedKeys(leaves)) {
+    walkAt(
+      below(
+        lines(reach, (one) => one.unmarked),
+        (node) => children(node),
+      ),
+      path,
+      visitor,
+      depth + 1,
+      budget,
+    );
+  const leaves = lines(reach, (one) => one.leaves);
+  if (leaves.size === 0) return;
+  const all = [...leaves.keys()];
+  const next = depth + at.lazies.length + 1;
+  for (const key of namedKeys(all)) {
     const fieldPath = join(path, key);
-    const field = fieldSchemas(leaves, key);
-    if (!wholeMask(position(field, open))) visitor.unmarkedKey?.(fieldPath, key);
-    walkAt(field, fieldPath, visitor, open, depth + 1);
+    const field = below(leaves, (leaf) => fieldSchemas([leaf], key));
+    if (!wholeMask(position(field.map((each) => each.schema)))) visitor.unmarkedKey?.(fieldPath, key);
+    walkAt(field, fieldPath, visitor, next, budget);
   }
-  walkAt(catchallSchemas(leaves), join(path, "*"), visitor, open, depth + 1);
-  walkAt(keySchemas(leaves), join(path, "<key>"), visitor, open, depth + 1);
-  const items = Math.max(0, ...leaves.map((leaf) => (leafIs(leaf, "tuple") ? (defOf(leaf).items?.length ?? 0) : 0)));
+  walkAt(
+    below(leaves, (leaf) => catchallSchemas([leaf])),
+    join(path, "*"),
+    visitor,
+    next,
+    budget,
+  );
+  walkAt(
+    below(leaves, (leaf) => keySchemas([leaf])),
+    join(path, "<key>"),
+    visitor,
+    next,
+    budget,
+  );
+  const items = Math.max(0, ...all.map((leaf) => (leafIs(leaf, "tuple") ? (defOf(leaf).items?.length ?? 0) : 0)));
   for (let index = 0; index < items; index += 1)
-    walkAt(elementSchemas(leaves, index), `${path}[${index}]`, visitor, open, depth + 1);
-  walkAt(restSchemas(leaves), `${path}[]`, visitor, open, depth + 1);
-  for (const node of entered) open.delete(node);
+    walkAt(
+      below(leaves, (leaf) => elementSchemas([leaf], index)),
+      `${path}[${index}]`,
+      visitor,
+      next,
+      budget,
+    );
+  walkAt(
+    below(leaves, (leaf) => restSchemas([leaf])),
+    `${path}[]`,
+    visitor,
+    next,
+    budget,
+  );
 }
 
 /**
@@ -537,7 +612,7 @@ function walkAt(
  * second reader of the tree — the CLI's scan — cannot walk it differently.
  */
 export function walkPrivacy(schema: z.ZodType, visitor: PrivacyVisitor, path = ""): void {
-  walkAt([schema], path, visitor, new Set(), 0);
+  walkAt([{ schema, line: new Set() }], path, visitor, 0, { left: MAX_SCHEMA_NODES });
 }
 
 /** Classifications already computed, by schema. A schema is immutable, so its answer never changes. */
