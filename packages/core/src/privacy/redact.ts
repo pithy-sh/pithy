@@ -30,12 +30,13 @@ import type { RedactedOutput } from "./types";
  * 4. Choices: unions, discriminated unions and intersections. A field is masked when any option or side marks it.
  * 5. The kit's database codecs: `SQLiteDate`, `SQLiteBoolean` and `sqliteJson(schema)`. A JSON column's inner fields
  *    are redacted field by field.
- * 6. Recursion defined once: `z.lazy(() => Node)`, or a getter that returns the same schema object, such as trees
- *    and linked lists.
+ * 6. Recursion and getters: `z.lazy(() => Node)`, or a getter, whether it returns one schema or builds a new one each
+ *    read, such as trees and linked lists. Zod reads a getter once, and `redact` walks the schema it settled on.
  * 7. Values copied out of a parsed row into a plain object, array, `Map` or `Set` described by any of the above.
  *
- * **Outside the contract.** Custom transforms and pipes, `preprocess`, codecs other than the kit's own, `z.custom`,
- * `any`, `unknown`, and getters that build a new schema on each read. `redact` does not look inside these. When
+ * **Outside the contract.** Custom transforms and pipes, `preprocess`, codecs other than the kit's own (one built the
+ * way `sqliteJson` is built included), `z.custom`, `any`, `unknown`, and a recursion that builds a new schema at every
+ * level without end. `redact` does not look inside these. When
  * anything beneath one is marked, the whole value is masked with the strongest class it carries, and `Redacted<T>`
  * types that position `unknown`. When nothing beneath it is marked, it is kept as it is. Recursion past a fixed depth
  * is masked whole. None of this ever throws or leaks a raw marked value.
@@ -49,11 +50,13 @@ import type { RedactedOutput } from "./types";
  * - **A record's or a map's key is redacted by its key schema**, and so is a set's element. Two that mask alike come
  *   back as `[pii]` and `[pii] #2`, so the copy holds as many entries as the value did. Every key is defined on the
  *   copy, not assigned, so an own `__proto__` key stays a key.
- * - **Recursion past {@link MAX_RECURSION_DEPTH}**: a value that comes round to a position it is already inside more
- *   often than that is masked whole there as `[secret]`, the strongest class, because the walk stops reading.
- * - **A getter Zod has already resolved is a fixed schema.** Zod reads an object's getters once, the first time the
- *   shape is read. A getter that builds a new schema each read is opaque where `redact` meets it first; where `parse`
- *   resolved it first, the schema it settled on is walked like any other, and every mark in it is still masked.
+ * - **Recursion past {@link MAX_RECURSION_DEPTH}, per position**: a value that comes round to a position it is already
+ *   inside more than that many times is masked whole there as `[secret]`, the strongest class, because the walk stops
+ *   reading. Each position is counted on its own, so a level that passes an object and an array costs one level, not
+ *   two, and the walk keeps its own stack, so a deep value never overflows the call stack.
+ * - **A getter is the schema Zod settled on.** Zod reads an object's getters once, the first time the shape is read,
+ *   whoever reads it first, and keeps that answer. `redact` never calls a getter itself, so one that builds a new
+ *   schema each read is walked like a field written in place.
  *
  * ## The placeholder, and why it is not a hash
  *
@@ -95,43 +98,111 @@ function distinct(name: unknown, taken: { has(key: unknown): boolean }): unknown
   return `${name} #${index}`;
 }
 
-/** The positions a value's path is inside, and how many times each: one met again is one more level of recursion. */
-type Line = Map<Position, number>;
+/**
+ * One step of the walk. `visit` redacts one value at one position and hands the result to `put`; `after` runs once
+ * every step above it on the stack is done, to fill a map or a set in order or to leave a position. The walk keeps its own
+ * stack rather than the call stack, so a deep value never overflows it, however many positions a recursion passes.
+ */
+type Step =
+  | { visit: unknown; at: Position | undefined; owner: Position; put: (result: unknown) => void }
+  | { after: () => void };
 
-/** One value at one position. `depth` is how often the path has come round to a position it was already inside. */
-function redactAt(at: Position | undefined, owner: Position, value: unknown, depth: number, line: Line): unknown {
-  if (at === undefined) return unnamed(owner, value);
-  if (value === null || value === undefined) return value;
-  if (at.mask) return masked(at, value);
-  const again = line.get(at) ?? 0;
-  const deeper = again > 0 ? depth + 1 : depth;
-  if (deeper > MAX_RECURSION_DEPTH) return `[${TRUNCATED_CLASS}]`;
-  line.set(at, again + 1);
-  try {
-    return redactKind(at, value, deeper, line);
-  } finally {
-    line.set(at, again);
+/** The walk: every value at its position, depth first and in order, each position counted while the path is inside it. */
+function walkValue(root: Position, value: unknown): unknown {
+  let result: unknown;
+  const steps: Step[] = [{ visit: value, at: root, owner: root, put: (out) => (result = out) }];
+  // The positions the path is inside, and how many times each: one met again is one more level of recursion.
+  const line = new Map<Position, number>();
+  for (let step = steps.pop(); step; step = steps.pop()) {
+    if ("after" in step) step.after();
+    else redactAt(step, line, steps);
+  }
+  return result;
+}
+
+/**
+ * One value at one position. A position the path is already inside more than {@link MAX_RECURSION_DEPTH} times is
+ * masked whole: each position is counted on its own, so a level that passes several of them costs one level.
+ */
+function redactAt(step: Extract<Step, { visit: unknown }>, line: Map<Position, number>, steps: Step[]): void {
+  const { at, owner, visit: value, put } = step;
+  if (at === undefined) put(unnamed(owner, value));
+  else if (value === null || value === undefined) put(value);
+  else if (at.mask) put(masked(at, value));
+  else if ((line.get(at) ?? 0) > MAX_RECURSION_DEPTH) put(`[${TRUNCATED_CLASS}]`);
+  else {
+    const again = line.get(at) ?? 0;
+    line.set(at, again + 1);
+    const below: Step[] = [];
+    put(redactKind(at, value, below));
+    // Popped last to first: what is below runs in order, then the position is left.
+    steps.push(
+      {
+        after: () => {
+          line.set(at, again);
+        },
+      },
+      ...below.reverse(),
+    );
   }
 }
 
-/** A value walked by its kind against the structural nodes at its position. A scalar is kept. */
-function redactKind(at: Position, value: unknown, depth: number, line: Line): unknown {
+/**
+ * A value walked by its kind against the structural nodes at its position, as the copy its children are put into. A
+ * scalar is kept. Each child is a step in `below`, in order.
+ */
+function redactKind(at: Position, value: unknown, below: Step[]): unknown {
   const { kinds } = at;
-  const walk = (child: Position | undefined, item: unknown): unknown => redactAt(child, at, item, depth, line);
+  const walk = (child: Position | undefined, item: unknown, put: (result: unknown) => void): void => {
+    below.push({ visit: item, at: child, owner: at, put });
+  };
   if (Array.isArray(value)) {
     if (!kinds.has("array") && !kinds.has("tuple")) return unnamed(at, value);
-    return value.map((item, index) => walk(at.item(index), item));
+    // `map`, so a hole stays a hole, as it did in the value.
+    const out = value.map(() => undefined) as unknown[];
+    value.forEach((item, index) => {
+      walk(at.item(index), item, (result) => {
+        out[index] = result;
+      });
+    });
+    return out;
   }
   if (value instanceof Map) {
     if (!kinds.has("map")) return unnamed(at, value);
     const out = new Map<unknown, unknown>();
-    for (const [key, item] of value) out.set(distinct(walk(at.mapKey, key), out), walk(at.mapValue, item));
+    const entries: [unknown, unknown][] = [];
+    for (const [key, item] of value) {
+      const entry: [unknown, unknown] = [undefined, undefined];
+      entries.push(entry);
+      walk(at.mapKey, key, (result) => {
+        entry[0] = result;
+      });
+      walk(at.mapValue, item, (result) => {
+        entry[1] = result;
+      });
+    }
+    below.push({
+      after: () => {
+        for (const [key, item] of entries) out.set(distinct(key, out), item);
+      },
+    });
     return out;
   }
   if (value instanceof Set) {
     if (!kinds.has("set")) return unnamed(at, value);
     const out = new Set<unknown>();
-    for (const item of value) out.add(distinct(walk(at.element, item), out));
+    const items: unknown[] = [];
+    for (const item of value) {
+      const index = items.push(undefined) - 1;
+      walk(at.element, item, (result) => {
+        items[index] = result;
+      });
+    }
+    below.push({
+      after: () => {
+        for (const item of items) out.add(distinct(item, out));
+      },
+    });
     return out;
   }
   if (isPlainObject(value)) {
@@ -144,12 +215,13 @@ function redactKind(at: Position, value: unknown, depth: number, line: Line): un
 
 /**
  * An object's entries, each value redacted at its key's position and each key at a record's key position. A masked
- * key takes the first name, `[pii]`, `[pii] #2` …, that no kept key and no earlier masked key holds.
+ * key takes the first name, `[pii]`, `[pii] #2` …, that no kept key and no earlier masked key holds. Each value is
+ * put in when its step runs, and the steps run in key order, so the copy's keys keep the value's order.
  */
 function redactObject(
   at: Position,
   value: Record<PropertyKey, unknown>,
-  walk: (child: Position | undefined, item: unknown) => unknown,
+  walk: (child: Position | undefined, item: unknown, put: (result: unknown) => void) => void,
 ): Record<PropertyKey, unknown> {
   const keyMasked = at.key?.mask !== undefined;
   const keys = Reflect.ownKeys(value).filter((key) => Object.prototype.propertyIsEnumerable.call(value, key));
@@ -159,11 +231,8 @@ function redactObject(
     const name = keyMasked ? (distinct(masked(at.key as Position, key), taken) as string) : key;
     taken.add(name);
     // Defined, not assigned: an own `__proto__` key that parse kept stays a key, and never becomes the prototype.
-    Object.defineProperty(out, name, {
-      value: walk(at.field(key), value[key]),
-      enumerable: true,
-      writable: true,
-      configurable: true,
+    walk(at.field(key), value[key], (result) => {
+      Object.defineProperty(out, name, { value: result, enumerable: true, writable: true, configurable: true });
     });
   }
   return out;
@@ -172,5 +241,5 @@ function redactObject(
 /** The masked view of a value, against the schema it is an instance of. See the module note for the contract. */
 export function redact<S extends z.ZodType>(schema: S, value: z.output<S>): RedactedOutput<S> {
   const root = rootPosition(schema);
-  return redactAt(root, root, value, 0, new Map()) as RedactedOutput<S>;
+  return walkValue(root, value) as RedactedOutput<S>;
 }

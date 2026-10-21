@@ -35,6 +35,32 @@ function masked(schema: z.ZodType, wire: unknown): unknown {
   return redact(schema, schema.parse(wire) as never);
 }
 
+/** A recursion that passes sixteen nested objects a level, and a value of it `n` levels deep. */
+const WIDTH = 16;
+const Wide: z.ZodType = (() => {
+  const self: { node?: z.ZodType } = {};
+  let level: z.ZodType = z.object({
+    id: z.number(),
+    get next() {
+      return (self.node as z.ZodType).optional();
+    },
+  });
+  for (let index = 1; index < WIDTH; index += 1) level = z.object({ w: level });
+  self.node = level;
+  return level;
+})();
+function wide(n: number): unknown {
+  let value: unknown = n === 0 ? { id: 0 } : { id: n, next: wide(n - 1) };
+  for (let index = 1; index < WIDTH; index += 1) value = { w: value };
+  return value;
+}
+/** One level down a {@link wide} value: through its sixteen objects to the next level. */
+function down(at: object): unknown {
+  let inner: unknown = at;
+  for (let index = 1; index < WIDTH; index += 1) inner = (inner as { w: unknown }).w;
+  return typeof inner === "object" && inner !== null ? (inner as { next?: unknown }).next : inner;
+}
+
 describe("redact", () => {
   test("returns every unmarked field verbatim and masks each marked one with its class", () => {
     expect(redact(User, ada)).toEqual({ id: "u_1", email: "[pii]", diagnosis: "[phi]" });
@@ -346,10 +372,121 @@ describe("the contract's edges", () => {
     // The first level is where the recursion starts; each one after it comes round to it again.
     expect(depth).toBe(MAX_RECURSION_DEPTH + 1);
   });
+
+  test("bounds a recursion by each position it returns to, however many positions one level passes", () => {
+    type Kept = { id: number; children?: unknown };
+    /** How many levels down the first child chain keep their shape, and what the chain ends in. */
+    const levels = (out: unknown, next: (at: Kept) => unknown): [number, unknown] => {
+      let count = 0;
+      let at = out;
+      while (typeof at === "object" && at !== null) {
+        count += 1;
+        at = next(at as Kept);
+      }
+      return [count, at];
+    };
+    // One object and one array a level, through a getter.
+    const Tree = z.object({
+      id: z.number(),
+      get children() {
+        return z.array(Tree);
+      },
+    });
+    type TreeValue = { id: number; children: TreeValue[] };
+    const tree = (n: number): TreeValue => ({ id: n, children: n === 0 ? [] : [tree(n - 1)] });
+    const first = (at: Kept) => (at.children as unknown[] | string | undefined)?.[0];
+    expect(levels(redact(Tree, tree(200) as never), first)).toEqual([201, undefined]);
+    expect(levels(redact(Tree, tree(400) as never), first)).toEqual([MAX_RECURSION_DEPTH + 1, "[secret]"]);
+    // Three positions a level: the object, its array, and the edge object the array holds.
+    const Graph = z.object({
+      id: z.number(),
+      children: z.array(
+        z.object({
+          weight: z.number(),
+          get node() {
+            return Graph;
+          },
+        }),
+      ),
+    });
+    type GraphValue = { id: number; children: { weight: number; node: GraphValue }[] };
+    const graph = (n: number): GraphValue => ({
+      id: n,
+      children: n === 0 ? [] : [{ weight: 1, node: graph(n - 1) }],
+    });
+    const through = (at: Kept) => {
+      const edge = (at.children as { node: unknown }[] | string | undefined)?.[0];
+      return typeof edge === "object" ? edge.node : edge;
+    };
+    expect(levels(redact(Graph, graph(200) as never), through)).toEqual([201, undefined]);
+    expect(levels(redact(Graph, graph(400) as never), through)).toEqual([MAX_RECURSION_DEPTH + 1, "[secret]"]);
+    // Sixteen positions a level, so the walk is thousands of positions deep: it keeps its own stack, and never throws.
+    expect(levels(redact(Wide, wide(400) as never), down)).toEqual([MAX_RECURSION_DEPTH + 1, "[secret]"]);
+  });
+
+  test("types a union's array by the items a tuple beside it names, and a record by the keys an object names", () => {
+    const Pair = z.union([z.tuple([pii(z.string()), z.number()]), z.array(z.number())]);
+    const pair: Redacted<typeof Pair> = ["[pii]", 2, 3];
+    expect(masked(Pair, [1, 2, 3])).toEqual(pair);
+    // @ts-expect-error The array's first element is masked where the tuple marks it, so a number is refused there.
+    const wrongPair: Redacted<typeof Pair> = [1, 2, 3];
+    expect(masked(Pair, ["S-1", 2])).toEqual(["[pii]", 2]);
+    const Bag = z.union([z.object({ a: pii(z.string()), c: z.boolean() }), z.record(z.string(), z.number())]);
+    const bag: Redacted<typeof Bag> = { a: "[pii]", b: 2 };
+    expect(masked(Bag, { a: 1, b: 2 })).toEqual(bag);
+    // @ts-expect-error The record's `a` is masked where the object marks it, so a number is refused there.
+    const wrongBag: Redacted<typeof Bag> = { a: 1, b: 2 };
+    // And the other way round: an open object's extra key is masked where a record marks every value.
+    const Open = z.union([z.object({ a: z.number() }).catchall(z.number()), z.record(z.string(), pii(z.string()))]);
+    const open: Redacted<typeof Open> = { a: "[pii]", b: "[pii]" };
+    expect(masked(Open, { a: 1, b: 2 })).toEqual(open);
+    // A tuple's rest is masked only at the positions a longer tuple beside it marks.
+    const Rest = z.union([z.tuple([z.number()], z.number()), z.tuple([z.number(), z.number(), pii(z.string())])]);
+    const rest: Redacted<typeof Rest> = [1, 2, "[pii]", 4];
+    expect(masked(Rest, [1, 2, 3, 4])).toEqual(rest);
+    void [wrongPair, wrongBag];
+  });
+
+  test("a getter that builds a new schema each read is walked as the schema Zod settled on, read first or not", () => {
+    const shape = () => ({
+      id: z.number(),
+      get addr() {
+        return z.object({ email: pii(z.string()), city: z.string() });
+      },
+    });
+    const value = { id: 1, addr: { email: "S-1", city: "Paris" } };
+    // Met by redact before parse ever read it, and met after: the same walk, and the same type.
+    const Unread = z.object(shape());
+    expect(redact(Unread, value as never)).toEqual({ id: 1, addr: { email: "[pii]", city: "Paris" } });
+    const Read = z.object(shape());
+    Read.parse(value);
+    expect(redact(Read, value as never)).toEqual({ id: 1, addr: { email: "[pii]", city: "Paris" } });
+    expect(classifyPrivacy(z.object(shape()))).toEqual([{ path: "addr.email", class: "pii" }]);
+    type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+    const same = <A, B>(..._proof: Same<A, B> extends true ? [] : [never]): void => {};
+    same<Redacted<typeof Unread>["addr"], { email: string; city: string }>();
+    // A recursion through a getter that builds its record anew: the record settles once, so it is a recursion
+    // defined once.
+    type Kin = { name: string; email: string; kids: Record<string, Kin> };
+    const Kin: z.ZodType<Kin> = z.object({
+      name: z.string(),
+      email: pii(z.string()),
+      get kids() {
+        return z.record(z.string(), Kin);
+      },
+    });
+    const kin = { name: "a", email: "S-1", kids: { b: { name: "b", email: "S-2", kids: {} } } };
+    expect(redact(Kin, kin)).toEqual({
+      name: "a",
+      email: "[pii]",
+      kids: { b: { name: "b", email: "[pii]", kids: {} } },
+    });
+    expect(classifyPrivacy(Kin)).toEqual([{ path: "email", class: "pii" }]);
+  });
 });
 
 describe("outside the contract: masked whole when marked beneath, kept when not, never throws, never raw", () => {
-  test("a getter that builds a new schema each read is opaque where it is met unread", () => {
+  test("a getter that builds a new schema at every level without end is masked whole, and never leaks once parsed", () => {
     const make = (): z.ZodType =>
       z.object({
         e: pii(z.string()),
@@ -358,44 +495,17 @@ describe("outside the contract: masked whole when marked beneath, kept when not,
         },
       });
     const Root = make();
-    // Read before parse ever ran: the getter is a factory, so `next` is opaque. Its insides never end, so the search
-    // beneath it runs to the recursion limit and assumes the strongest class.
+    // Its insides never end, so the search beneath `next` runs to the recursion limit and assumes the strongest class.
     expect(classifyPrivacy(Root)).toEqual([
       { path: "e", class: "pii" },
       { path: "next", class: "pii" },
       { path: "next", class: "secret", truncated: true },
     ]);
     expect(redact(Root, { e: "S-1", next: { e: "S-2" } } as never)).toEqual({ e: "[pii]", next: "[secret]" });
-    // One that builds a schema with nothing marked in it is kept as it is, and one with a mark is masked whole.
-    const Plain = z.object({
-      id: z.string(),
-      get extra() {
-        return z.object({ note: z.string() });
-      },
-    });
-    const extra = { note: "kept" };
-    expect((redact(Plain, { id: "u", extra } as never) as { extra: unknown }).extra).toBe(extra);
-    const Marked = z.object({
-      get extra() {
-        return z.object({ e: pii(z.string()), note: z.string() });
-      },
-    });
-    expect(redact(Marked, { extra: { e: "S-1", note: "n" } } as never)).toEqual({ extra: "[pii]" });
-  });
-
-  test("a getter that builds a new schema each read, resolved by parse first, is a fixed schema and never leaks", () => {
-    const make = (): z.ZodType =>
-      z.object({
-        e: pii(z.string()),
-        get next() {
-          return make().optional();
-        },
-      });
-    const Root = make();
-    const value = Root.parse({ e: "S-1", next: { e: "S-2", next: { e: "S-3" } } });
-    const out = redact(Root, value as never);
-    expect(raw(out)).toEqual([]);
-    expect(() => classifyPrivacy(Root)).not.toThrow();
+    const Parsed = make();
+    const value = Parsed.parse({ e: "S-1", next: { e: "S-2", next: { e: "S-3" } } });
+    expect(raw(redact(Parsed, value as never))).toEqual([]);
+    expect(() => classifyPrivacy(Parsed)).not.toThrow();
   });
 
   test("a transform, a preprocess and a pipe are masked whole over a mark, and kept over none", () => {
@@ -431,6 +541,20 @@ describe("outside the contract: masked whole when marked beneath, kept when not,
       encode: (value) => JSON.stringify(value),
     });
     expect(masked(z.object({ c: Plain }), { c: '{"city":"Oslo"}' })).toEqual({ c: { city: "Oslo" } });
+    // One built the way the kit builds a JSON column is still not the kit's: masked whole, and typed unknown.
+    const Inner = z.object({ email: pii(z.string()), city: z.string() });
+    const MyJson = z.codec(z.union([z.string(), Inner]), Inner, {
+      decode: (v) => (typeof v === "string" ? JSON.parse(v) : v),
+      encode: (v) => JSON.stringify(v),
+    });
+    expect(masked(MyJson, '{"email":"S-1","city":"Oslo"}')).toBe("[pii]");
+    type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+    const same = <A, B>(..._proof: Same<A, B> extends true ? [] : [never]): void => {};
+    same<Redacted<typeof MyJson>, unknown>();
+    // The kit's own, and a clone of it, are walked field by field, at runtime and in the type.
+    const Column = sqliteJson(Inner).describe("A JSON column.");
+    expect(masked(Column, '{"email":"S-1","city":"Oslo"}')).toEqual({ email: "[pii]", city: "Oslo" });
+    same<Redacted<typeof Column>, { email: string; city: string }>();
   });
 
   test("a z.custom, an any and an unknown are kept as they are, and masked where marked", () => {

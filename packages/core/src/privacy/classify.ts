@@ -21,12 +21,12 @@ import { type BuiltInPrivacyClass, PRIVACY_META_KEY, strongestPrivacyClass } fro
  *   tuples and their rest, records, `Map` and `Set`; the wrappers `optional`, `nullable`, `default`, `catch`,
  *   `readonly` and a brand; unions, discriminated unions and intersections, where a position is masked when any
  *   option or side marks it; the kit's `SQLiteDate`, `SQLiteBoolean` and `sqliteJson(schema)`, read through to the
- *   schema they decode to; and recursion defined once, a `z.lazy` or a getter that returns the same schema.
+ *   schema they decode to; and recursion, a `z.lazy` or a getter, read as the schema Zod settled on.
  * - **Everything else is opaque**: a transform, a pipe, a preprocess, any other codec, `z.custom`, `any`, `unknown`,
- *   a getter that builds a new schema each time it is read. Nothing inside one is walked. With a mark anywhere
- *   beneath it, its position is masked whole with the strongest class it carries; with none, it is kept.
+ *   a lazy or a getter that builds a new schema at every level without end. Nothing inside one is walked. With a mark
+ *   anywhere beneath it, its position is masked whole with the strongest class it carries; with none, it is kept.
  * - **Recursion is bounded once**, at {@link MAX_RECURSION_DEPTH}: a search through lazies and getters that goes
- *   deeper, and a value that comes round to a position it is already inside more often, is masked whole as
+ *   deeper, and a value that comes round to one position it is already inside more often, is masked whole as
  *   {@link TRUNCATED_CLASS}.
  *
  * ## What a path looks like
@@ -52,8 +52,8 @@ export interface PrivacyField {
 
 /**
  * How many recursion steps a search takes before it stops and assumes the strongest class: each lazy resolved and
- * each object whose fields are getters. It bounds `redact` too, by how often a value comes round to a position it
- * is already inside. Far past any recursion a real value holds, and short of a stack overflow.
+ * each object whose fields are getters. It bounds `redact` too, by how often a value comes round to one position it
+ * is already inside, each position counted on its own. Far past any recursion a real value holds.
  */
 export const MAX_RECURSION_DEPTH = 256;
 
@@ -147,37 +147,26 @@ function rawGetters(schema: z.ZodType): Map<PropertyKey, () => unknown> {
   return found;
 }
 
-/** Whether two reads of one getter are the same schema under the same wrappers: `Node.optional()` twice is. */
-function sameRead(a: unknown, b: unknown): boolean {
-  while (a !== b) {
-    if (!isSchema(a) || !isSchema(b)) return false;
-    const [left, right] = [defOf(a), defOf(b)];
-    if (left.type !== right.type || ownMarker(a) !== ownMarker(b)) return false;
-    if (WRAPPERS.has(left.type)) [a, b] = [left.innerType, right.innerType];
-    else if (left.type === "array") [a, b] = [left.element, right.element];
-    else if (left.type === "set") [a, b] = [left.valueType, right.valueType];
-    else return false;
-  }
-  return true;
-}
-
-/** The objects whose getters were checked, and the schemas a getter settled on after building a new one per read. */
-const checked = new WeakSet<z.ZodType>();
-const builtAnew = new WeakSet<z.ZodType>();
+/** The schemas an object's getters settled on, read before Zod froze its shape: each is checked for an endless build. */
+const fromGetter = new WeakSet<z.ZodType>();
 
 /**
- * An object's fields, read through the shape Zod freezes on first read, so every walk sees the schemas `parse` does.
- * Before that first read, each getter is read twice: one that returns a different schema each time builds a new one
- * per read, and the schema Zod settles on is opaque wherever it is met.
+ * An object's fields, read through the shape Zod freezes on first read, so every walk sees the schemas `parse` does,
+ * whichever read the shape first. A getter is never called here: Zod calls it once, and its answer is the field.
  */
 function shapeOf(schema: z.ZodType): Record<PropertyKey, z.ZodType> {
-  if (!checked.has(schema)) {
-    checked.add(schema);
-    const built = [...rawGetters(schema)].filter(([, read]) => !sameRead(read(), read())).map(([key]) => key);
-    const shape = defOf(schema).shape ?? {};
-    for (const key of built) if (isSchema(shape[key])) builtAnew.add(shape[key]);
-  }
-  return defOf(schema).shape ?? {};
+  const getters = rawGetters(schema);
+  const shape = defOf(schema).shape ?? {};
+  for (const key of getters.keys()) if (isSchema(shape[key])) fromGetter.add(shape[key]);
+  return shape;
+}
+
+/**
+ * Whether a getter's schema builds a new one at every level without end: the search beneath it ran out of recursion.
+ * Such a schema is opaque wherever it is met, and a recursion defined once never is, as its search meets itself.
+ */
+function builtWithoutEnd(schema: z.ZodType): boolean {
+  return fromGetter.has(schema) && search(schema).truncated;
 }
 
 /** Every schema a node holds, whatever its kind: what a search for a mark reads through. */
@@ -373,7 +362,7 @@ function readPosition(schemas: readonly z.ZodType[]): { position: Position; leav
     const codec = kitCodecOutput(node);
     const lazy = def.type === "lazy" && !search(node).truncated;
     if (lazy && lazies.has(node)) continue;
-    if (builtAnew.has(node)) {
+    if (builtWithoutEnd(node)) {
       // Opaque, below.
     } else if (WRAPPERS.has(def.type) && def.innerType) {
       stack.push(def.innerType);

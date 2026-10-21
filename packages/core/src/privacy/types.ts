@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { z } from "zod";
-import type { SQLiteBoolean, SQLiteDate } from "../data/codecs";
+import type { SQLiteBoolean, SQLiteDate, SqliteJsonSchema } from "../data/codecs";
 
 /**
  * **The type gate: a marked value does not compile into a log, an audit record or an error detail** (#132).
@@ -135,7 +135,9 @@ export type Redacted<S extends z.ZodType> = RedactedOutput<S>;
  * - **Every structural kind keeps its shape**: an object maps its fields, an array and a tuple their elements, a
  *   record and a map their values, a set its elements, and a marked key becomes `string`. Each wrapper keeps what it
  *   adds. A union is a union of its members and an intersection intersects its sides, each with every option's and
- *   every side's marks at each position. The kit's three codecs are the schema they decode to.
+ *   every side's marks at each position: an array beside a tuple is typed index by index where the tuple names one,
+ *   and a record or an open object beside an object types each key the object names. The kit's three codecs are the
+ *   schema they decode to, and a JSON column is known by the type `sqliteJson` returns, never by its shape.
  * - **An opaque node is its own output**, or `unknown` where a mark sits anywhere beneath it, because `redact` masks
  *   it whole there. That is the one place the type says `unknown`, with two more a type cannot see past: a schema
  *   annotated `z.ZodType<T>`, as a self-referencing `z.lazy` must be, names no kind; and `any` is `unknown`.
@@ -160,18 +162,15 @@ type Wrapper = "optional" | "nullable" | "default" | "prefault" | "readonly" | "
 /** The kinds a value is walked into. */
 type Structural = "object" | "array" | "tuple" | "record" | "map" | "set";
 
-/** The schema one of the kit's three codecs decodes to, or `never` for any other node. */
+/**
+ * The schema one of the kit's three codecs decodes to, or `never` for any other node. A JSON column is known by the type
+ * `sqliteJson` names, never by its shape: an adopter's codec built the same way is opaque, as it is to `redact`.
+ */
 type KitCodec<S> = S extends typeof SQLiteDate | typeof SQLiteBoolean
   ? DefOf<S> extends { out: infer O }
     ? O
     : never
-  : S extends z.ZodCodec<z.ZodUnion<readonly [z.ZodString, infer T extends z.ZodType]>, infer U extends z.ZodType>
-    ? [T] extends [U]
-      ? [U] extends [T]
-        ? U
-        : never
-      : never
-    : never;
+  : SqliteJsonSchema<S>;
 
 /** Whether a schema's own output carries a privacy brand: a marked node, read through its wrappers. */
 type IsMarkedNode<S> = true extends IsMarked<Out<S>> ? true : false;
@@ -310,35 +309,91 @@ type ShapedNode<S, N> = S extends unknown
 /** A structural node, mapped by every node's schemas at the position. */
 type Walked<S, N> =
   DefOf<S> extends { type: "object"; shape: infer Shape }
-    ? {
-        [K in keyof Out<S> as KeyName<K, N>]: K extends keyof Shape
-          ? At<Shape[K], Fields<N, K>>
-          : At<OpenCatchall<S>, Catchalls<N>>;
-      }
+    ? WithNamed<
+        {
+          [K in keyof Out<S> as KeyName<K, N>]: K extends keyof Shape
+            ? At<Shape[K], Fields<N, K>>
+            : At<OpenCatchall<S>, Catchalls<N>> | NamedAt<OpenCatchall<S>, N, Exclude<NamedKeys<N>, keyof Shape>>;
+        },
+        [OpenCatchall<S>] extends [never] ? never : OpenCatchall<S>,
+        N,
+        Exclude<NamedKeys<N>, keyof Shape>
+      >
     : DefOf<S> extends { type: "record"; valueType: infer V }
-      ? { [K in keyof Out<S> as KeyName<K, N>]: At<V, Fields<N, K>> }
+      ? string extends keyof Out<S>
+        ? WithNamed<
+            { [K in keyof Out<S> as KeyName<K, N>]: At<V, Fields<N, K>> | NamedAt<V, N, NamedKeys<N>> },
+            V,
+            N,
+            NamedKeys<N>
+          >
+        : { [K in keyof Out<S> as KeyName<K, N>]: At<V, Fields<N, K>> }
       : DefOf<S> extends { type: "array"; element: infer E }
-        ? At<E, Elements<N, number>>[]
+        ? Beyond<E, N, []>
         : DefOf<S> extends {
               type: "tuple";
               items: infer Items extends readonly z.core.SomeType[];
               rest: infer R extends z.core.SomeType | null;
             }
-          ? // The tuple's own output, rebuilt from its items so a brand on it does not turn it into an array.
-            z.output<z.ZodTuple<Items, R>> extends infer O extends readonly unknown[]
-            ? {
-                -readonly [K in keyof O]: K extends `${number}`
-                  ? K extends keyof Items
-                    ? At<Items[K], Elements<N, K>>
-                    : At<R, Elements<N, number>>
-                  : At<R, Elements<N, number>>;
-              }
+          ? // The tuple's own items, rebuilt from them so a brand on it does not turn it into an array, then its rest.
+            z.output<z.ZodTuple<Items, null>> extends infer O extends readonly unknown[]
+            ? [
+                ...{ -readonly [K in keyof O]: K extends keyof Items ? At<Items[K], Elements<N, K>> : never },
+                ...(R extends z.core.SomeType ? Beyond<R, N, [...Items]> : []),
+              ]
             : never
           : DefOf<S> extends { type: "map"; keyType: infer K; valueType: infer V }
             ? Map<At<K, MapKeys<N>>, At<V, MapValues<N>>>
             : DefOf<S> extends { type: "set"; valueType: infer V }
               ? Set<At<V, SetElements<N>>>
               : never;
+
+/**
+ * The keys the objects at a position name. A record or an open object beside them takes each one where the value has
+ * it, at the position every schema there gives that key: `{ a: pii(…) }` beside a record masks the record's `a`.
+ */
+type NamedKeys<N> = N extends unknown
+  ? DefOf<N> extends { type: "object"; shape: infer Shape }
+    ? Extract<keyof Shape, string>
+    : never
+  : never;
+
+/** What a key in `Keys` holds, against every schema there, for a value parsed by `V`. Distributes over the keys. */
+type NamedAt<V, N, Keys> = Keys extends unknown ? At<V, Fields<N, Keys>> : never;
+
+/** `Mapped`, with each key in `Keys` an optional field of its own where `V` lets a key no shape names through. */
+type WithNamed<Mapped, V, N, Keys extends PropertyKey> = [V] extends [never]
+  ? Mapped
+  : [Keys] extends [never]
+    ? Mapped
+    : Mapped & { [K in Keys as KeyName<K, N>]?: At<V, Fields<N, K>> };
+
+/**
+ * An array's element, or a tuple's rest, from index `I["length"]` on: optional and one by one while a tuple beside it
+ * names the index, so each takes the items there, then any number past every tuple's items.
+ */
+type Beyond<E, N, I extends unknown[]> =
+  true extends NamesIndex<N, `${I["length"]}`>
+    ? [At<E, Elements<N, `${I["length"]}`>>?, ...Beyond<E, N, [...I, unknown]>]
+    : At<E, Past<N>>[];
+
+/** Whether a tuple at the position names index `K`. */
+type NamesIndex<N, K extends string> = N extends unknown
+  ? DefOf<N> extends { type: "tuple"; items: infer Items extends readonly unknown[] }
+    ? K extends keyof Items
+      ? true
+      : false
+    : false
+  : never;
+
+/** The schemas at an index past every tuple's items: each array's element and each tuple's rest. */
+type Past<N> = N extends unknown
+  ? DefOf<N> extends { type: "array"; element: infer E }
+    ? E
+    : DefOf<N> extends { type: "tuple"; rest: infer R }
+      ? Exclude<R, null>
+      : never
+  : never;
 
 /** The schemas at object key `K`: each object's field there or its catchall, and each record's value. */
 type Fields<N, K> = N extends unknown
@@ -382,18 +437,13 @@ type MapKeys<N> = N extends unknown ? (DefOf<N> extends { type: "map"; keyType: 
 type MapValues<N> = N extends unknown ? (DefOf<N> extends { type: "map"; valueType: infer V } ? V : never) : never;
 type SetElements<N> = N extends unknown ? (DefOf<N> extends { type: "set"; valueType: infer V } ? V : never) : never;
 
-/**
- * The schemas at element `K`: each array's element, and each tuple's item there. `number` is any element of an array,
- * which may sit at any tuple position or past them all, so it takes every item and the rest.
- */
+/** The schemas at element `K`, an index: each array's element, and each tuple's item there or its rest. */
 type Elements<N, K> = N extends unknown
   ? DefOf<N> extends { type: "array"; element: infer E }
     ? E
     : DefOf<N> extends { type: "tuple"; items: infer Items extends readonly unknown[]; rest: infer R }
-      ? K extends number
-        ? Items[number] | Exclude<R, null>
-        : K extends keyof Items
-          ? Items[K]
-          : Exclude<R, null>
+      ? K extends keyof Items
+        ? Items[K]
+        : Exclude<R, null>
       : never
   : never;

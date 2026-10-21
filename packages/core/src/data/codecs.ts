@@ -128,12 +128,27 @@ function encodeJson(value: unknown, payload: Payload<unknown>): string {
  * sqliteJson: T ↔ JSON string, validated by `schema` on both sides. Decode accepts a JSON string or an
  * already-parsed value; the result is validated against `schema` before it reaches the app.
  */
-export function sqliteJson<T extends z.ZodType>(schema: T) {
+export function sqliteJson<T extends z.ZodType>(schema: T): SqliteJson<T> {
   return z.codec(z.union([z.string(), schema]), schema, {
     decode: decodeJson as (value: string | z.output<T>, payload: Payload<string | z.output<T>>) => z.input<T>,
     encode: encodeJson as (value: z.input<T>, payload: Payload<z.input<T>>) => string,
-  });
+  }) as SqliteJson<T>;
 }
+
+/**
+ * Names the type `sqliteJson` returns, and nothing else. A type only: no value carries it. `Redacted<T>` reads a JSON
+ * column's fields through it, as `redact` reads them through {@link isSqliteJson}, so an adopter's codec of the same
+ * shape is opaque to both.
+ */
+declare const kitJsonColumn: unique symbol;
+
+/** What `sqliteJson(schema)` returns: the kit's JSON column over `schema`. Clones keep it, as they return `this`. */
+export type SqliteJson<T extends z.ZodType> = z.ZodCodec<z.ZodUnion<[z.ZodString, T]>, T> & {
+  readonly [kitJsonColumn]: T;
+};
+
+/** The schema a kit JSON column decodes to, or `never` for any other node. */
+export type SqliteJsonSchema<S> = S extends { readonly [kitJsonColumn]: infer T } ? T : never;
 
 /**
  * Whether a schema is a JSON column `sqliteJson` built, or a clone of one (`.describe()`, `.meta()`), read by its
