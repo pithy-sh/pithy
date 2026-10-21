@@ -3,6 +3,11 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  type AuthProviderToggles,
+  authSecretsRegistry,
+  inapplicableProviderSecrets,
+} from "@pithy-sh/auth/src/instance/secrets";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { NotFoundError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
@@ -11,12 +16,13 @@ import { secrets } from "@pithy-sh/secrets/src/capability";
 import type { SecretDispatcher, SecretWriteRequest } from "@pithy-sh/secrets/src/cli/dispatch";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
+import { SUPPORT_BUCKET_BINDING, supportSecretsRegistry } from "@pithy-sh/support/src/secret/registry";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import type { WorkerConfig } from "../project/config";
 import { fixOf } from "../terminal/exitClass";
-import { unresolvedLines } from "./secretApplicability";
+import { secretApplicability, unresolvedLines } from "./secretApplicability";
 import {
   assertNotTheMasterKey,
   hiddenNote,
@@ -790,21 +796,45 @@ describe("the ls examples in docs/commands/secrets.md", () => {
     return page.slice(open + 5, close);
   }
 
-  const d1 = { backend: "d1", scope: "environment", rotatable: false, valueType: "text" } as const;
-  const project = defineSecretRegistry({
-    "auth-apple-credentials": d1,
-    "auth-facebook-credentials": d1,
-    "auth-github-credentials": d1,
-    "auth-google-credentials": d1,
-    "auth-microsoft-credentials": d1,
-    "auth-session-secret": { ...d1, rotatable: true },
-    "support-r2-credentials": d1,
-  });
-  const inapplicable = new Map([
-    ["auth-apple-credentials", "auth() does not enable the apple provider"],
-    ["auth-facebook-credentials", "auth() does not enable the facebook provider"],
-    ["auth-microsoft-credentials", "auth() does not enable the microsoft provider"],
-    ["support-r2-credentials", "SUPPORT_BUCKET declined in pithy.config.ts"],
+  /**
+   * The project the page describes, built from the capabilities' own declarations rather than from a copy
+   * of them: auth's real registry and its real provider reasons with Google and GitHub enabled, and
+   * support's real registry with `SUPPORT_BUCKET` declined, folded by the same `secretApplicability` the
+   * command runs. A provider auth adds, or a reason it rewords, moves these rows and fails the page — the
+   * drift #801 was opened for, when Microsoft arrived in #262 and the page kept counting four.
+   */
+  const providers = { google: true, apple: false, facebook: false, github: true, microsoft: false } as const;
+  const project = { ...authSecretsRegistry, ...supportSecretsRegistry };
+  const { project: inapplicable } = secretApplicability([
+    {
+      name: "api",
+      capabilities: [
+        defineCapability({
+          name: "auth",
+          requiredBindings: [],
+          inapplicableSecrets: inapplicableProviderSecrets(
+            Object.fromEntries(
+              Object.entries(providers).map(([name, enabled]) => [name, { enabled }]),
+            ) as AuthProviderToggles,
+          ),
+        }),
+        defineCapability({ name: "support", requiredBindings: [] }),
+      ],
+      registry: project,
+      declines: {
+        state: "read",
+        declines: [
+          {
+            state: "honored",
+            name: SUPPORT_BUCKET_BINDING,
+            type: "r2",
+            capability: "support",
+            reason: "Attachments are off.",
+            stillPresentIn: [],
+          },
+        ],
+      },
+    },
   ]);
   const prod = [
     {
