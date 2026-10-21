@@ -1,15 +1,15 @@
 # Account lifecycle
 
-An account can be suspended or deleted. The kit holds the state, enforces it at every door, records every transition, and sends the mail. The routes that suspend, delete, restore and export arrive with their own issues; this page is the seam they are built on.
+An account can be suspended or deleted. The kit holds the state, enforces it at every door, records every transition, and sends the mail. The routes that suspend, delete, restore and export arrive with their own issues, and so does the purge that erases a deleted account's data: the suspend routes with #621, the delete, restore and export routes and the purge Workflow with #622. This page is the seam they are built on.
 
 ## Two states
 
 | State | Columns | What it means | Ends |
 |---|---|---|---|
 | Suspended | `suspended_at`, `suspended_until` | The account cannot sign in, refresh a token, or act on any route. | At `suspended_until`, by itself, or when an operator reinstates it. |
-| Deleted | `deleted_at`, `purge_after` | The same, and its data is erased once the purge window closes. Restorable until then. | When it is restored, or when the purge erases it. |
+| Deleted | `deleted_at`, `purge_after` | The same, and its data is due for erasure once the purge window closes. Restorable until then. | When it is restored, or when the purge erases it. The purge arrives with #622; until then a deleted account stays deleted and its rows stay where they are. |
 
-Both live on `pithy_auth_users`, so a session read already carries them. Refusing a suspended account costs no query, and an account in good standing costs nothing either. A deleted account outranks a suspension it was already under. A suspension past its `suspended_until` is not a suspension, and nothing has to be written to end it.
+Both live on `pithy_auth_users`, so a session read already carries them. An account in good standing costs no extra read, and neither does refusing a deleted one. Refusing a suspended account costs one: the operator's reason is read from `pithy_auth_user_lifecycle`, on every refused request. A deleted account outranks a suspension it was already under. A suspension past its `suspended_until` is not a suspension, and nothing has to be written to end it.
 
 No client can write its own state. The four columns are `input: false`, and only the kit's transitions set them.
 
@@ -34,7 +34,7 @@ A magic link for a refused account returns to the screen it named, with the code
 
 ## The record
 
-`pithy_auth_user_lifecycle` holds every transition: the action, the actor, the reason, the time. The columns say what is true now; the table says what happened and who did it. The two are written in one transaction, so neither is ever there without the other. It has no foreign key to the user, because a purge erases the user row and this record must outlive it. It is the one `pithy_auth_*` row a purge leaves behind.
+`pithy_auth_user_lifecycle` holds every transition: the action, the actor, the reason, the time. The columns say what is true now; the table says what happened and who did it. The two are written in one transaction, so neither is ever there without the other. It has no foreign key to the user, because a purge erases the user row and this record must outlive it. It is the one `pithy_auth_*` row the purge will leave behind.
 
 A transition that finds the account already where it was asked to put it does nothing: no row, no event, no mail, no hook. A suspension past its end counts as no suspension, so reinstating it is nothing too. A deleted account cannot be suspended or reinstated; restore it first, and its suspension is still there to lift.
 
@@ -55,7 +55,7 @@ None of them is implied by another. See [CONTROL-PLANE.md](../../../docs/CONTROL
 ```ts
 auth({
   baseURL: "https://api.example.com",
-  // How long a deleted account waits before its data is erased. 30 when nothing says otherwise.
+  // How long a deleted account waits before the purge erases its data (the purge lands in #622). 30 when nothing says otherwise.
   retention: { purgeAfterDays: 30 },
   // All four send by default. Turn one off by setting it to false.
   lifecycleEmails: { accountSuspended: true, accountReinstated: true, deletionScheduled: true, deletionComplete: true },
@@ -64,7 +64,7 @@ auth({
 
 ## Mail
 
-Four templates in `@pithy-sh/email`, all transactional, so an unsubscribe never silences them: account suspended, account reinstated, deletion scheduled, deletion complete. Each says what happened, what it means, and who to answer — a reply, which reaches your sending address. The deletion ones carry the purge date. Each is written in the account's own language, dates included.
+Four templates in `@pithy-sh/email`, all transactional, so an unsubscribe never silences them: account suspended, account reinstated, deletion scheduled, deletion complete. Each says what happened and what it means. Account suspended and deletion scheduled also say who to answer: a reply, which reaches your sending address. Account reinstated and deletion complete say nothing about who to answer; add that to your own copy if your people need it. Deletion scheduled carries the date the purge is due. Deletion complete carries the date it ran. Each is written in the account's own language, dates included.
 
 ## Hooks
 
@@ -102,4 +102,4 @@ const purge: PurgeContribution = {
 defineCapability({ name: "app", requiredBindings: [], purge: [purge] });
 ```
 
-The purge runs every composed contribution as its own step, named for its capability, so a failure retries that capability alone. That is why there is at most one per subject per capability, and why `erase` must succeed when the rows are already gone. `defineCapability` refuses a contribution for a subject the kit does not know. Declare one on your own `app` capability for your own tables.
+Today the kit declares the contract and the window, and nothing calls `erase` yet. The purge Workflow arrives with #622. It will run every composed contribution as its own step, named for its capability, so a failure retries that capability alone. That is why there is at most one per subject per capability, and why `erase` must succeed when the rows are already gone. `defineCapability` refuses a contribution for a subject the kit does not know. Declare one on your own `app` capability for your own tables.
