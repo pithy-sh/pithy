@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { PithyHonoEnv, PithyMiddleware } from "@pithy-sh/core/src/capability/capability";
-import { UnauthorizedError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, type PithyError, UnauthorizedError } from "@pithy-sh/core/src/error/pithyError";
 import { AuthContext } from "@pithy-sh/core/src/http/authContext";
 import { isLocale } from "@pithy-sh/core/src/i18n/locale";
 import type { Context, MiddlewareHandler } from "hono";
@@ -101,15 +101,7 @@ async function resolveSession(c: Context<PithyHonoEnv>, wiring: AuthWiring, inst
       // here. Leaving `auth` null is what makes every `requireAuth()` in the kit refuse it — the copies
       // other capabilities carry included, since each one only asks whether `auth` was filled. This
       // capability's own guard raises the refusal itself, with its code; see `requireAuth` below.
-      //
-      // A column that will not decode throws into the catch below and leaves the request anonymous:
-      // closed, for the one account whose row is wrong.
-      const refusal = await lifecycleRefusalFor(
-        authDatabase(resolveDb(c.env, wiring.config.database)),
-        session.user.id,
-        LifecycleColumns.parse(session.user),
-        new Date(),
-      );
+      const refusal = await standingRefusal(c, wiring, session.user);
       if (refusal) {
         noteRefusal(c, refusal);
         return;
@@ -146,6 +138,45 @@ async function resolveSession(c: Context<PithyHonoEnv>, wiring: AuthWiring, inst
     }
   } catch {
     // Leave `auth` null; the credential was missing/invalid.
+  }
+}
+
+/**
+ * The refusal for the session's account, or `null` when it may act.
+ *
+ * **A check that cannot be made refuses**, rather than throwing into `resolveSession`'s catch. That catch
+ * leaves `auth` null and notes nothing, and `handleBetterAuth` only refuses on a noted verdict — so a failed
+ * read of a suspension's reason, or a column that will not decode, would let Better Auth's own `/token` mint a
+ * JWT for the suspended account it resolved on its own. So the failure is logged and becomes the verdict: a
+ * 500, since the fault is this Worker's, and every door that honors a lifecycle refusal honors this one.
+ */
+async function standingRefusal(
+  c: Context<PithyHonoEnv>,
+  wiring: AuthWiring,
+  user: { id: string },
+): Promise<PithyError | null> {
+  try {
+    return await lifecycleRefusalFor(
+      authDatabase(resolveDb(c.env, wiring.config.database)),
+      user.id,
+      LifecycleColumns.parse(user),
+      new Date(),
+    );
+  } catch (cause) {
+    // Optional, unlike the logger elsewhere here: this branch is the refusal, and a missing logger must not
+    // turn it back into the throw it exists to replace.
+    c.var.log?.child("auth").warn("the account's standing could not be checked; the request is refused", {
+      userId: user.id,
+      reason: cause instanceof Error ? cause.message : String(cause),
+    });
+    return new InternalError(
+      {
+        message: "This account could not be checked. Try again shortly.",
+        action: "Check the auth database binding and that the auth migrations have run.",
+        detail: `lifecycle check for user ${user.id} failed`,
+      },
+      { cause },
+    );
   }
 }
 

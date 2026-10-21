@@ -113,6 +113,10 @@ export const TEMPLATE_GROUPS = {
     // widget's is: the round trip it protects is the one flow nobody already signed in can test.
     "src/routes/pithy/sign-in.test.tsx",
     "src/routes/pithy/otp.tsx",
+    // A right code for a suspended or deleted account goes on to the screen for that state, not to "that
+    // code didn't work" (#620). Seeded: the screen is the adopter's, and an edit that reads every failure as
+    // a wrong code looks like a simplification.
+    "src/routes/pithy/otp.test.tsx",
     "src/routes/pithy/callback.tsx",
     // The account lifecycle (#620): where a suspended or deleted account lands, and where somebody acting
     // for a suspended organization does. Each says what happened, what it means, and who to ask. The third

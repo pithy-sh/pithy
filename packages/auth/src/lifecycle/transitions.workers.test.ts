@@ -305,6 +305,127 @@ describe("reinstateUser", () => {
     expect(h.fired).toEqual([]);
     expect(await history()).toEqual([]);
   });
+
+  test("reinstating a suspension that has already run out is no transition: no row, no mail, no hook", async () => {
+    await seedUser();
+    const h = harness();
+    // The columns as they stand an hour after a timed suspension ended. No write expires it, so they stay set.
+    await env.DB.prepare("update pithy_auth_users set suspended_at = ?, suspended_until = ? where id = 'u1'")
+      .bind(NOW.getTime() - 2 * 3_600_000, NOW.getTime() - 3_600_000)
+      .run();
+    expect((await reinstateUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x" })).changed).toBe(false);
+    expect(await history()).toEqual([]);
+    expect(await jobs()).toEqual([]);
+    expect(h.fired).toEqual([]);
+    expect(h.events).toEqual([]);
+  });
+
+  test("reinstating a deleted account is a conflict, and tells nobody they can sign in again", async () => {
+    await seedUser();
+    const h = harness();
+    await suspendUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Review." });
+    await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x" });
+    await expect(reinstateUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "y" })).rejects.toMatchObject({
+      payload: { code: "core/conflict" },
+    });
+    expect((await readLifecycleColumns(h.deps.db, "u1"))?.suspendedAt).toBeInstanceOf(Date);
+    expect((await history()).map((row) => row.action)).toEqual(["suspended", "deleted"]);
+    expect((await jobs()).map((job) => job.template)).toEqual(["accountSuspended", "deletionScheduled"]);
+    expect(h.fired.map((call) => call.hook)).toEqual(["onUserSuspended", "onUserDeleted"]);
+  });
+});
+
+describe("the columns and the row are one write", () => {
+  /** Make every insert into the history table fail, the way a D1 error between the two statements would. */
+  async function breakHistory(): Promise<void> {
+    await env.DB.prepare(
+      "create trigger pithy_test_history_fails before insert on pithy_auth_user_lifecycle begin select raise(abort, 'history write failed'); end",
+    ).run();
+  }
+  async function mendHistory(): Promise<void> {
+    await env.DB.prepare("drop trigger pithy_test_history_fails").run();
+  }
+
+  const cases = [
+    {
+      name: "suspendUser",
+      action: "suspended",
+      before: async () => {},
+      run: (deps: LifecycleDeps) => suspendUser(deps, { userId: "u1", actor: OPERATOR, reason: "Review." }),
+      moved: (columns: Awaited<ReturnType<typeof readLifecycleColumns>>) => columns?.suspendedAt instanceof Date,
+    },
+    {
+      name: "reinstateUser",
+      action: "reinstated",
+      before: async (deps: LifecycleDeps) => {
+        await suspendUser(deps, { userId: "u1", actor: OPERATOR, reason: "Review." });
+      },
+      run: (deps: LifecycleDeps) => reinstateUser(deps, { userId: "u1", actor: OPERATOR, reason: "Cleared." }),
+      moved: (columns: Awaited<ReturnType<typeof readLifecycleColumns>>) => (columns?.suspendedAt ?? null) === null,
+    },
+    {
+      name: "deleteUser",
+      action: "deleted",
+      before: async () => {},
+      run: (deps: LifecycleDeps) => deleteUser(deps, { userId: "u1", actor: OPERATOR, reason: "x" }),
+      moved: (columns: Awaited<ReturnType<typeof readLifecycleColumns>>) => columns?.deletedAt instanceof Date,
+    },
+    {
+      name: "restoreUser",
+      action: "restored",
+      before: async (deps: LifecycleDeps) => {
+        await deleteUser(deps, { userId: "u1", actor: OPERATOR, reason: "x" });
+      },
+      run: (deps: LifecycleDeps) => restoreUser(deps, { userId: "u1", actor: OPERATOR, reason: "y" }),
+      moved: (columns: Awaited<ReturnType<typeof readLifecycleColumns>>) => (columns?.deletedAt ?? null) === null,
+    },
+  ] as const;
+
+  for (const each of cases) {
+    test(`${each.name}: a failed history write leaves the account where it was, so a retry does the whole transition`, async () => {
+      await seedUser();
+      const h = harness();
+      await each.before(h.deps);
+      const firedBefore = h.fired.length;
+      const eventsBefore = h.events.length;
+
+      await breakHistory();
+      await expect(each.run(h.deps)).rejects.toThrow();
+      expect(each.moved(await readLifecycleColumns(h.deps.db, "u1"))).toBe(false);
+      expect(h.fired).toHaveLength(firedBefore);
+      expect(h.events).toHaveLength(eventsBefore);
+
+      await mendHistory();
+      expect((await each.run(h.deps)).changed).toBe(true);
+      expect(each.moved(await readLifecycleColumns(h.deps.db, "u1"))).toBe(true);
+      expect((await history()).filter((row) => row.action === each.action)).toHaveLength(1);
+      expect(h.events).toHaveLength(eventsBefore + 1);
+    });
+  }
+
+  test("an update that loses the race writes no history row either", async () => {
+    await seedUser();
+    const h = harness();
+    await suspendUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Review." });
+    // Another request lifts the suspension after this one read the account and before its write lands.
+    const d1 = new Proxy(env.DB, {
+      get(target, key) {
+        if (key === "batch") {
+          return async (statements: Parameters<typeof target.batch>[0]) => {
+            await target.prepare("update pithy_auth_users set suspended_at = null, suspended_until = null").run();
+            return await target.batch(statements);
+          };
+        }
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const result = await reinstateUser({ ...h.deps, d1 }, { userId: "u1", actor: OPERATOR, reason: "Cleared." });
+    expect(result.changed).toBe(false);
+    expect((await history()).map((row) => row.action)).toEqual(["suspended"]);
+    expect((await jobs()).map((job) => job.template)).toEqual(["accountSuspended"]);
+    expect(h.fired.map((call) => call.hook)).toEqual(["onUserSuspended"]);
+  });
 });
 
 describe("deleteUser", () => {

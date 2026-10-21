@@ -305,6 +305,55 @@ describe("a suspended account cannot obtain a new access token", () => {
   });
 });
 
+describe("a lifecycle check that fails closes the door rather than opening it", () => {
+  // The reason for a suspension costs a read, and a read can fail. A failure there must not leave the request
+  // looking anonymous, because Better Auth's own endpoints resolve their own session and would serve it.
+  async function brokenReasonRead(): Promise<{ app: Hono<PithyHonoEnv>; token: string }> {
+    const app = buildApp();
+    const { token, userId } = await signedIn(app);
+    await suspend(userId, "Chargeback under review.");
+    await env.DB.prepare("drop table pithy_auth_user_lifecycle").run();
+    return { app, token };
+  }
+
+  test("Better Auth's /token mints nothing", async () => {
+    const { app, token } = await brokenReasonRead();
+    const res = await app.request("/auth/token", { headers: bearer(token) }, appEnv());
+    expect(res.status).toBe(500);
+    expect(await res.text()).not.toContain('"token"');
+  });
+
+  test("Better Auth's /get-session hands back no session", async () => {
+    const { app, token } = await brokenReasonRead();
+    const res = await app.request("/auth/get-session", { headers: bearer(token) }, appEnv());
+    expect(res.status).toBe(500);
+    expect(await res.text()).not.toContain('"session"');
+  });
+
+  test("the kit's own routes refuse it, and /token/rotate spends nothing", async () => {
+    const { app, token } = await brokenReasonRead();
+    expect((await app.request("/kit/mine", { headers: bearer(token) }, appEnv())).status).toBe(500);
+    const rotate = await app.request(
+      "/auth/token/rotate",
+      { method: "POST", headers: { ...bearer(token), origin: ORIGIN } },
+      appEnv(),
+    );
+    expect(rotate.status).toBe(500);
+    const sessions = await env.DB.prepare("select token from pithy_auth_sessions").all<{ token: string }>();
+    expect(sessions.results.map((row) => row.token)).toEqual([token]);
+  });
+
+  test("it can still sign out", async () => {
+    const { app, token } = await brokenReasonRead();
+    const res = await app.request(
+      "/auth/sign-out",
+      { method: "POST", headers: { ...bearer(token), origin: ORIGIN } },
+      appEnv(),
+    );
+    expect(res.status).toBe(200);
+  });
+});
+
 describe("a suspended or deleted account cannot sign in again", () => {
   test("an OTP sign-in is refused with auth/account_suspended, and no session is written", async () => {
     const events: AuditEventInput[] = [];

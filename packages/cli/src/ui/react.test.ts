@@ -207,6 +207,8 @@ describe("the React 19 stub", () => {
       "src/routes/pithy/account-suspended.tsx",
       "src/routes/pithy/callback.tsx",
       "src/routes/pithy/organization-suspended.tsx",
+      // A refused account's right code goes on to its screen, and this gate travels with the screen (#620).
+      "src/routes/pithy/otp.test.tsx",
       "src/routes/pithy/otp.tsx",
       // The magic link's `callbackURL` is built from `callback.tsx`'s `path`, and this is what keeps
       // them one statement once both files are the adopter's (#393).

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { D1Database } from "@cloudflare/workers-types";
+import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
@@ -9,6 +9,7 @@ import { ConflictError, NotFoundError, ValidationError } from "@pithy-sh/core/sr
 import { formattingLocaleOf } from "@pithy-sh/core/src/i18n/locale";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import type { EnqueueInput } from "@pithy-sh/email/src/send/enqueue";
+import { type CompiledQuery, sql } from "kysely";
 import { type AuthAuditAction, AuthAuditActions } from "../audit/actions";
 import type { AuthConfig } from "../capability";
 import type { AuthDatabase } from "../data/tables";
@@ -22,11 +23,14 @@ import { accountStanding, LifecycleColumns } from "./state";
  * The admin routes (#621, #622), the self-service deletion, and the purge Workflow call these and write
  * nothing themselves, so each transition happens the same way whoever asked for it:
  *
- * 1. **The columns move, conditionally.** The `update` names the state it expects to find, so of two
- *    concurrent suspensions exactly one changes a row, and only that one goes on. A request that finds the
- *    account already where it asked to put it is `changed: false` and does nothing else — no row, no mail, no
- *    hook — which is what "once per transition" means.
- * 2. **The history row is written** in `pithy_auth_user_lifecycle`, with the actor, the reason, the time.
+ * 1. **The columns move, conditionally, and the history row is written with them.** The `update` names the
+ *    state it expects to find, so of two concurrent suspensions exactly one changes a row, and only that one
+ *    goes on. A request that finds the account already where it asked to put it is `changed: false` and does
+ *    nothing else — no row, no mail, no hook — which is what "once per transition" means.
+ * 2. **The row in `pithy_auth_user_lifecycle`** — the actor, the reason, the time — is the second statement of
+ *    the same `d1.batch()`, which D1 runs as one transaction, and it is written only when the first moved the
+ *    account. Two awaits would leave a gap: a failed insert after a committed update, and a retry that finds
+ *    the account already moved, returns `changed: false`, and loses the row, the event, the mail and the hook.
  * 3. **The audit event is emitted** — the trail answers who and from where; the row answers what happened.
  * 4. **The mail is enqueued**, when the config sends it, in the account's own language.
  * 5. **The hook fires.**
@@ -120,32 +124,70 @@ function readable(date: Date, locale: string | null): string {
   return new Intl.DateTimeFormat(tag, { dateStyle: "long", timeZone: "UTC" }).format(date);
 }
 
-/** The history row. Not swallowed: the transition is not recorded until it is written. */
-async function record(
-  deps: LifecycleDeps,
-  row: {
-    userId: string;
-    action: UserLifecycleAction;
-    actor: LifecycleActor;
-    reason: string | null;
-    at: Date;
-    suspendedUntil?: Date | null;
-    step?: string | null;
-  },
-): Promise<void> {
-  await deps.db
+/** One row of an account's history. */
+interface HistoryRow {
+  readonly userId: string;
+  readonly action: UserLifecycleAction;
+  readonly actor: LifecycleActor;
+  readonly reason: string | null;
+  readonly at: Date;
+  readonly suspendedUntil?: Date | null;
+  readonly step?: string | null;
+}
+
+/** The history row's values, as the table stores them. */
+function encoded(row: HistoryRow) {
+  return {
+    userId: row.userId,
+    action: row.action,
+    actorType: row.actor.type,
+    actorId: row.actor.id,
+    reason: row.reason,
+    suspendedUntil: row.suspendedUntil ? SQLiteDate.encode(row.suspendedUntil) : null,
+    step: row.step ?? null,
+    createdAt: SQLiteDate.encode(row.at),
+  };
+}
+
+/** A history row with no column change to pair it with: a purge step, a finished purge. Not swallowed. */
+async function record(deps: LifecycleDeps, row: HistoryRow): Promise<void> {
+  await deps.db.insertInto("pithyAuthUserLifecycle").values(encoded(row)).execute();
+}
+
+/** Bind a compiled statement to D1, so it can join a `batch`. */
+function prepared(d1: D1Database, compiled: CompiledQuery): D1PreparedStatement {
+  return d1.prepare(compiled.sql).bind(...(compiled.parameters as unknown[]));
+}
+
+/**
+ * Move the columns and write the history row as one transaction, and say whether the account moved.
+ *
+ * The insert is guarded by `changes()`, which SQLite answers for the statement just before it — the update —
+ * so a conditional update that matched nothing writes no row. Not swallowed: until both are written, nothing
+ * after them runs.
+ */
+async function move(deps: LifecycleDeps, update: { compile(): CompiledQuery }, row: HistoryRow): Promise<boolean> {
+  const v = encoded(row);
+  const insert = deps.db
     .insertInto("pithyAuthUserLifecycle")
-    .values({
-      userId: row.userId,
-      action: row.action,
-      actorType: row.actor.type,
-      actorId: row.actor.id,
-      reason: row.reason,
-      suspendedUntil: row.suspendedUntil ? SQLiteDate.encode(row.suspendedUntil) : null,
-      step: row.step ?? null,
-      createdAt: SQLiteDate.encode(row.at),
-    })
-    .execute();
+    .columns(["userId", "action", "actorType", "actorId", "reason", "suspendedUntil", "step", "createdAt"])
+    .expression(
+      deps.db
+        .selectNoFrom([
+          sql.val(v.userId).as("userId"),
+          sql.val(v.action).as("action"),
+          sql.val(v.actorType).as("actorType"),
+          sql.val(v.actorId).as("actorId"),
+          sql.val(v.reason).as("reason"),
+          sql.val(v.suspendedUntil).as("suspendedUntil"),
+          sql.val(v.step).as("step"),
+          sql.val(v.createdAt).as("createdAt"),
+        ])
+        .where(sql<number>`changes()`, ">", 0),
+    )
+    .compile();
+  const [updated] = await deps.d1.batch([prepared(deps.d1, update.compile()), prepared(deps.d1, insert)]);
+  return (updated?.meta.changes ?? 0) > 0;
 }
 
 /** The audit event, swallowed on failure — an audit write never breaks what it records. */
@@ -210,11 +252,6 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Whether a conditional update moved a row. */
-function moved(result: { numUpdatedRows?: bigint }): boolean {
-  return (result.numUpdatedRows ?? 0n) > 0n;
-}
-
 /** Without a name, a greeting says "Hi," rather than greeting an empty string. */
 function named(name: string): { name?: string } {
   return name.trim() ? { name } : {};
@@ -245,7 +282,7 @@ export async function suspendUser(
     });
   }
   if (standing.state === "suspended") return { changed: false };
-  const result = await deps.db
+  const update = deps.db
     .updateTable("pithyAuthUsers")
     .set({ suspendedAt: SQLiteDate.encode(at), suspendedUntil: until ? SQLiteDate.encode(until) : null })
     .where("id", "=", input.userId)
@@ -255,18 +292,17 @@ export async function suspendUser(
         eb("suspendedAt", "is", null),
         eb.and([eb("suspendedUntil", "is not", null), eb("suspendedUntil", "<=", SQLiteDate.encode(at))]),
       ]),
-    )
-    .executeTakeFirst();
-  if (!moved(result)) return { changed: false };
-
-  await record(deps, {
+    );
+  const row: HistoryRow = {
     userId: input.userId,
     action: "suspended",
     actor: input.actor,
     reason,
     at,
     suspendedUntil: until,
-  });
+  };
+  if (!(await move(deps, update, row))) return { changed: false };
+
   await audit(deps, AuthAuditActions.adminUserSuspended, input.userId, input.actor, {
     reason,
     suspendedUntil: until?.toISOString() ?? null,
@@ -286,7 +322,14 @@ export async function suspendUser(
   return { changed: true };
 }
 
-/** Lift a suspension. An account that is not suspended — including one whose suspension ran out — is a no-op. */
+/**
+ * Lift a suspension. An account that is not suspended — including one whose suspension ran out — is a no-op.
+ *
+ * Where the account stands is read through `accountStanding`, never off the raw column, because a suspension
+ * past its end leaves `suspendedAt` set and is not a suspension. A deleted account is a conflict, as it is
+ * for `suspendUser`: deletion outranks the suspension it keeps, so lifting that suspension would mail "you can
+ * sign in again" to somebody every sign-in still refuses. Restore it first.
+ */
 export async function reinstateUser(
   deps: LifecycleDeps,
   input: { userId: string; actor: LifecycleActor; reason: string | null },
@@ -294,16 +337,24 @@ export async function reinstateUser(
   const at = (deps.now ?? (() => new Date()))();
   const reason = reasonOf(input.reason);
   const subject = await subjectOf(deps.db, input.userId);
-  if (!subject.columns.suspendedAt) return { changed: false };
-  const result = await deps.db
+  const standing = accountStanding(subject.columns, at);
+  if (standing.state === "deleted") {
+    throw new ConflictError({
+      message: "This account is deleted.",
+      action: "Restore it first. Its suspension stays in place through a restore, and can be lifted after.",
+    });
+  }
+  if (standing.state !== "suspended") return { changed: false };
+  const update = deps.db
     .updateTable("pithyAuthUsers")
     .set({ suspendedAt: null, suspendedUntil: null })
     .where("id", "=", input.userId)
+    .where("deletedAt", "is", null)
     .where("suspendedAt", "is not", null)
-    .executeTakeFirst();
-  if (!moved(result)) return { changed: false };
+    .where((eb) => eb.or([eb("suspendedUntil", "is", null), eb("suspendedUntil", ">", SQLiteDate.encode(at))]));
+  const row: HistoryRow = { userId: input.userId, action: "reinstated", actor: input.actor, reason, at };
+  if (!(await move(deps, update, row))) return { changed: false };
 
-  await record(deps, { userId: input.userId, action: "reinstated", actor: input.actor, reason, at });
   await audit(deps, AuthAuditActions.adminUserReinstated, input.userId, input.actor, { reason });
   await mail(
     deps,
@@ -337,15 +388,14 @@ export async function deleteUser(
   const purgeAfter = new Date(at.getTime() + deps.config.retention.purgeAfterDays * 86_400_000);
   const subject = await subjectOf(deps.db, input.userId);
   if (subject.columns.deletedAt) return { changed: false };
-  const result = await deps.db
+  const update = deps.db
     .updateTable("pithyAuthUsers")
     .set({ deletedAt: SQLiteDate.encode(at), purgeAfter: SQLiteDate.encode(purgeAfter) })
     .where("id", "=", input.userId)
-    .where("deletedAt", "is", null)
-    .executeTakeFirst();
-  if (!moved(result)) return { changed: false };
+    .where("deletedAt", "is", null);
+  const row: HistoryRow = { userId: input.userId, action: "deleted", actor: input.actor, reason, at };
+  if (!(await move(deps, update, row))) return { changed: false };
 
-  await record(deps, { userId: input.userId, action: "deleted", actor: input.actor, reason, at });
   const self = input.actor.type === "user" && input.actor.id === input.userId;
   await audit(
     deps,
@@ -380,15 +430,14 @@ export async function restoreUser(
   const reason = reasonOf(input.reason);
   const subject = await subjectOf(deps.db, input.userId);
   if (!subject.columns.deletedAt) return { changed: false };
-  const result = await deps.db
+  const update = deps.db
     .updateTable("pithyAuthUsers")
     .set({ deletedAt: null, purgeAfter: null })
     .where("id", "=", input.userId)
-    .where("deletedAt", "is not", null)
-    .executeTakeFirst();
-  if (!moved(result)) return { changed: false };
+    .where("deletedAt", "is not", null);
+  const row: HistoryRow = { userId: input.userId, action: "restored", actor: input.actor, reason, at };
+  if (!(await move(deps, update, row))) return { changed: false };
 
-  await record(deps, { userId: input.userId, action: "restored", actor: input.actor, reason, at });
   await audit(deps, AuthAuditActions.adminUserRestored, input.userId, input.actor, { reason });
   return { changed: true };
 }

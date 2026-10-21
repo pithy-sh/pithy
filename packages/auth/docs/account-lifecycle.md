@@ -28,11 +28,15 @@ Where an account is refused:
 - **Every sign-in and every token refresh.** Magic link, OTP, each social provider and `/token/rotate` all create their session in one place, and that place refuses. A refused rotation spends nothing: the presented credential still works once the account is reinstated.
 - **Better Auth's own endpoints.** `/token`, `/get-session` and the rest of what acts as the session's holder refuse too. Signing out always works, and a stale credential on a shared device never stops somebody else signing in.
 
-A magic link for a refused account returns to the screen it named, with the code as `?error=`. So does a social sign-in, to its `errorCallbackURL`. The callback and sign-in screens send the reader on to the screen for that state.
+A check that cannot be made refuses. If the read behind it fails, the request gets a `core/internal` 500 at every door above, never a session.
+
+A magic link for a refused account returns to the screen it named, with the code as `?error=`. So does a social sign-in, to its `errorCallbackURL`. The callback and sign-in screens send the reader on to the screen for that state. So does the OTP screen, when a right code meets a refused account.
 
 ## The record
 
-`pithy_auth_user_lifecycle` holds every transition: the action, the actor, the reason, the time. The columns say what is true now; the table says what happened and who did it. It has no foreign key to the user, because a purge erases the user row and this record must outlive it. It is the one `pithy_auth_*` row a purge leaves behind.
+`pithy_auth_user_lifecycle` holds every transition: the action, the actor, the reason, the time. The columns say what is true now; the table says what happened and who did it. The two are written in one transaction, so neither is ever there without the other. It has no foreign key to the user, because a purge erases the user row and this record must outlive it. It is the one `pithy_auth_*` row a purge leaves behind.
+
+A transition that finds the account already where it was asked to put it does nothing: no row, no event, no mail, no hook. A suspension past its end counts as no suspension, so reinstating it is nothing too. A deleted account cannot be suspended or reinstated; restore it first, and its suspension is still there to lift.
 
 Each transition also writes an audit event: `auth/admin_user_suspended`, `auth/admin_user_reinstated`, `auth/admin_user_soft_deleted`, `auth/admin_user_restored`, `auth/admin_user_purged`, and `auth/user_self_deleted` when the account's holder deletes it.
 

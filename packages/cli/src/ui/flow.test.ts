@@ -297,6 +297,8 @@ describe("pithy ui", () => {
       "src/routes/pithy/account-suspended.tsx",
       "src/routes/pithy/callback.tsx",
       "src/routes/pithy/organization-suspended.tsx",
+      // A refused account's right code goes on to its screen, and this gate travels with the screen (#620).
+      "src/routes/pithy/otp.test.tsx",
       "src/routes/pithy/otp.tsx",
       // The seeded gate over the callback contract backfills with the screens it protects (#393).
       "src/routes/pithy/sign-in.test.tsx",
