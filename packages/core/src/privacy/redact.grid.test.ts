@@ -12,11 +12,75 @@ import { redact } from "./redact";
  * Every shape below is built from a chain of up to three combinators over a marked leaf, and every object level
  * carries a marked field of its own, so a mark sits at every depth. `parse` is the oracle: whatever it keeps,
  * `redact` keeps, equal; whatever it drops, `redact` drops; and every value the grid put at a marked position —
- * each starts `SECRET-` — comes back as `[pii]`, as a value or as a key.
+ * each one the grid knows as marked — comes back as `[pii]`, as a value or as a key.
  *
  * An intersection's two sides name different unmarked fields at every depth (`n` on one, `m` on the other), and
  * the right side leaves the marks off, so a mask only one side knows has to survive the other.
+ *
+ * The grid runs once per marked leaf, and a leaf may carry its own type or refinement — `z.email()`, `z.uuid()`,
+ * `z.number()`, a `.refine()` — at every marked position, with the same type unmarked on a side that leaves the marks
+ * off. A placeholder fails each of them, so a walk that tested a union's option against a value it had already
+ * masked would pick a looser option and let a field only the stricter one marks out raw. Two kinds put a union on
+ * an intersection's right side to make that happen.
  */
+
+/** A marked leaf's base schema, and the value the grid puts at a marked position of it. */
+interface Leaf {
+  readonly name: string;
+  base(): z.ZodType;
+  secret(tag: string): unknown;
+  /** The key schema a record keyed by this leaf takes: a number is not a record key, so it keys by a string. */
+  key(): z.ZodType;
+  keySecret(tag: string): string;
+}
+
+const stringLeaf: Leaf = {
+  name: "string",
+  base: () => z.string(),
+  secret: (tag) => `SECRET-${tag}`,
+  key: () => z.string(),
+  keySecret: (tag) => `SECRET-${tag}`,
+};
+
+/** A uuid the grid knows as marked, one per tag. */
+const uuidOf = (tag: string): string =>
+  `5ec2e700-0000-4000-8000-${[...tag]
+    .map((char) => char.charCodeAt(0).toString(16))
+    .join("")
+    .padStart(12, "0")
+    .slice(-12)}`;
+
+const LEAVES: readonly Leaf[] = [
+  stringLeaf,
+  {
+    name: "email",
+    base: () => z.email(),
+    secret: (tag) => `SECRET-${tag}@example.com`,
+    key: () => z.email(),
+    keySecret: (tag) => `SECRET-${tag}@example.com`,
+  },
+  { name: "uuid", base: () => z.uuid(), secret: uuidOf, key: () => z.uuid(), keySecret: uuidOf },
+  {
+    name: "number",
+    base: () => z.number(),
+    secret: (tag) => SECRET_NUMBER + tag.length,
+    key: () => z.string(),
+    keySecret: (tag) => `SECRET-${tag}`,
+  },
+  {
+    name: "refine",
+    base: () => z.string().refine((value) => value.startsWith("SECRET-")),
+    secret: (tag) => `SECRET-${tag}`,
+    key: () => z.string().refine((value) => value.startsWith("SECRET-")),
+    keySecret: (tag) => `SECRET-${tag}`,
+  },
+];
+
+/** The marked numbers sit in a band no unmarked number in the grid reaches. */
+const SECRET_NUMBER = 424_200;
+
+/** The leaf the grid is building with. Set per run, so the kinds below read it. */
+let leaf: Leaf = stringLeaf;
 
 /** Which unmarked fields an object level names, and whether this side marks. */
 interface Side {
@@ -36,7 +100,10 @@ interface Kind {
 }
 
 /** The marked field, or its unmarked twin on a side that leaves the marks off. */
-const markedString = (side: Side): z.ZodType => (side.mark ? pii(z.string()) : z.string());
+const markedString = (side: Side): z.ZodType => (side.mark ? pii(leaf.base()) : leaf.base());
+
+/** A record key schema: the leaf's key schema, marked on a side that marks. */
+const markedKey = (side: Side): z.ZodType => (side.mark ? pii(leaf.key()) : leaf.key());
 
 /** The unmarked fields a side names. */
 function named(side: Side): Record<string, z.ZodType> {
@@ -50,17 +117,17 @@ const KINDS: readonly Kind[] = [
   {
     name: "object",
     schema: (child, side) => z.object({ a: child(side), s: markedString(side), ...named(side) }),
-    value: (child) => ({ a: child(), s: "SECRET-s", n: 1, m: 2, x: "stripped" }),
+    value: (child) => ({ a: child(), s: leaf.secret("s"), n: 1, m: 2, x: "stripped" }),
   },
   {
     name: "strict",
     schema: (child, side) => z.strictObject({ a: child(side), s: markedString(side), n: z.number(), m: z.number() }),
-    value: (child) => ({ a: child(), s: "SECRET-s", n: 1, m: 2 }),
+    value: (child) => ({ a: child(), s: leaf.secret("s"), n: 1, m: 2 }),
   },
   {
     name: "loose",
     schema: (child, side) => z.looseObject({ a: child(side), s: markedString(side), ...named(side) }),
-    value: (child) => ({ a: child(), s: "SECRET-s", n: 1, m: 2, x: "kept" }),
+    value: (child) => ({ a: child(), s: leaf.secret("s"), n: 1, m: 2, x: "kept" }),
   },
   {
     name: "pick",
@@ -71,7 +138,7 @@ const KINDS: readonly Kind[] = [
         ...(side.names.includes("n") ? { n: true as const } : {}),
         ...(side.names.includes("m") ? { m: true as const } : {}),
       }),
-    value: (child) => ({ a: child(), s: "SECRET-s", n: 1, m: 2, d: "SECRET-dropped" }),
+    value: (child) => ({ a: child(), s: leaf.secret("s"), n: 1, m: 2, d: leaf.secret("dropped") }),
   },
   {
     name: "omit",
@@ -81,7 +148,7 @@ const KINDS: readonly Kind[] = [
         ...(side.names.includes("n") ? {} : { n: true }),
         ...(side.names.includes("m") ? {} : { m: true }),
       }),
-    value: (child) => ({ a: child(), s: "SECRET-s", n: 1, m: 2, d: "SECRET-dropped" }),
+    value: (child) => ({ a: child(), s: leaf.secret("s"), n: 1, m: 2, d: leaf.secret("dropped") }),
   },
   {
     name: "array",
@@ -95,8 +162,8 @@ const KINDS: readonly Kind[] = [
   },
   {
     name: "markedKeyRecord",
-    schema: (child, side) => z.record(markedString(side) as z.ZodString, child(side)),
-    value: (child) => ({ "SECRET-k": child(), "SECRET-j": child() }),
+    schema: (child, side) => z.record(markedKey(side) as z.ZodString, child(side)),
+    value: (child) => ({ [leaf.keySecret("k")]: child(), [leaf.keySecret("j")]: child() }),
   },
   {
     name: "tuple",
@@ -139,6 +206,25 @@ const KINDS: readonly Kind[] = [
     value: (child) => child(),
   },
   {
+    name: "intersectionOfUnion",
+    schema: (child, side) =>
+      z.intersection(
+        child({ names: "n", mark: side.mark }),
+        z.union([child({ names: "m", mark: false }), z.looseObject({})]),
+      ),
+    value: (child) => child(),
+  },
+  {
+    // The left side marks `s`; the right side's strict option names `s` unmarked and marks what is below `a`.
+    name: "unionAfterMask",
+    schema: (child, side) =>
+      z.intersection(
+        z.object({ s: markedString(side) }),
+        z.union([z.object({ a: child(side), s: markedString({ ...side, mark: false }) }), z.looseObject({})]),
+      ),
+    value: (child) => ({ a: child(), s: leaf.secret("s") }),
+  },
+  {
     name: "discriminatedUnion",
     schema: (child, side) =>
       z.discriminatedUnion("k", [
@@ -155,14 +241,14 @@ const KINDS: readonly Kind[] = [
           m: z.number(),
         }),
       ]),
-    value: (child) => ({ k: "L", a: child(), s: "SECRET-s", n: 1, m: 2, x: "stripped" }),
+    value: (child) => ({ k: "L", a: child(), s: leaf.secret("s"), n: 1, m: 2, x: "stripped" }),
   },
 ];
 
 /** A chain of kinds, outermost first, over the marked leaf. */
 function build(chain: readonly Kind[]): { schema: z.ZodType; value: () => unknown } {
   let schema: Child = (side) => markedString(side);
-  let value: ChildValue = () => "SECRET-leaf";
+  let value: ChildValue = () => leaf.secret("leaf");
   for (const kind of [...chain].reverse()) {
     const inner = schema;
     const innerValue = value;
@@ -176,7 +262,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && Object.getPrototypeOf(value) === Object.prototype;
 }
 
-const isSecret = (value: unknown): boolean => typeof value === "string" && value.startsWith("SECRET-");
+const isSecret = (value: unknown): boolean =>
+  typeof value === "string"
+    ? value.startsWith("SECRET-") || value.startsWith("5ec2e700-")
+    : typeof value === "number" && value >= SECRET_NUMBER && value < SECRET_NUMBER + 100;
 const MASKED_KEY = /^\[pii\]( #\d+)?$/;
 
 /** Each difference between what parse kept and what redact returned, by path. */
@@ -240,26 +329,31 @@ function parseOrUndefined(schema: z.ZodType, value: unknown): { data: unknown } 
 }
 
 describe("redact against parse", () => {
-  test("keeps what parse keeps, drops what parse drops, and masks every marked value, over every shape to depth 3", () => {
-    const failures: string[] = [];
-    let compared = 0;
-    let unparsed = 0;
-    for (const chain of chains(3)) {
-      const { schema, value } = build(chain);
-      const parsed = parseOrUndefined(schema, value());
-      if (!parsed) {
-        unparsed += 1;
-        continue;
+  test.each(LEAVES.map((each) => [each.name, each] as const))(
+    "keeps what parse keeps, drops what parse drops, and masks every marked %s leaf, over every shape to depth 3",
+    (_name, each) => {
+      leaf = each;
+      const failures: string[] = [];
+      let compared = 0;
+      let unparsed = 0;
+      for (const chain of chains(3)) {
+        const { schema, value } = build(chain);
+        const parsed = parseOrUndefined(schema, value());
+        if (!parsed) {
+          unparsed += 1;
+          continue;
+        }
+        compared += 1;
+        const found: string[] = [];
+        compare(parsed.data, redact(schema, value() as never), "$", found);
+        if (found.length > 0)
+          failures.push(`${chain.map((kind) => kind.name).join(" > ")}\n    ${found.join("\n    ")}`);
       }
-      compared += 1;
-      const found: string[] = [];
-      compare(parsed.data, redact(schema, value() as never), "$", found);
-      if (found.length > 0) failures.push(`${chain.map((kind) => kind.name).join(" > ")}\n    ${found.join("\n    ")}`);
-    }
-    // The grid is only a check where parse succeeds; an intersection of two sets or maps cannot merge.
-    expect(compared).toBeGreaterThan(unparsed * 4);
-    expect(failures.slice(0, 20), `${failures.length} of ${compared} shapes differ`).toEqual([]);
-  });
+      // The grid is only a check where parse succeeds; an intersection of two sets or maps cannot merge.
+      expect(compared).toBeGreaterThan(unparsed * 4);
+      expect(failures.slice(0, 20), `${failures.length} of ${compared} shapes differ`).toEqual([]);
+    },
+  );
 
   test.each<[string, z.ZodType, unknown]>([
     [

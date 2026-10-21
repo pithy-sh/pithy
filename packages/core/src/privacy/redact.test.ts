@@ -224,6 +224,28 @@ describe("redact", () => {
     expect([...redact(U, new Set(["a@b.c"]))]).toEqual(["[pii]"]);
   });
 
+  test("chooses an option by the unmasked value, so a mask cannot steer a later union to a looser option", () => {
+    // The left side marks a field the right side's union refines: tested against `[pii]`, the strict option fails,
+    // the loose one applies, and the field only the strict option marks would come out raw.
+    const Email = z.intersection(
+      z.object({ e: pii(z.email()) }),
+      z.union([z.object({ e: z.email(), s: pii(z.string()) }), z.looseObject({})]),
+    );
+    expect(redact(Email, Email.parse({ e: "a@b.co", s: "S-1" }))).toEqual({ e: "[pii]", s: "[pii]" });
+    const Count = z.intersection(
+      z.object({ n: pii(z.number()) }),
+      z.union([z.object({ n: z.number(), s: pii(z.string()) }), z.looseObject({})]),
+    );
+    expect(redact(Count, Count.parse({ n: 5, s: "S-1" }))).toEqual({ n: "[pii]", s: "[pii]" });
+    const Refined = z.intersection(
+      z.object({ p: z.object({ id: pii(z.string().refine((v) => v.length >= 5)) }) }),
+      z.object({ p: z.union([z.object({ id: z.string().min(5), s: secret(z.string()) }), z.looseObject({})]) }),
+    );
+    expect(redact(Refined, Refined.parse({ p: { id: "abcdefg", s: "S-s" } }))).toEqual({
+      p: { id: "[pii]", s: "[secret]" },
+    });
+  });
+
   test("keeps a key a loose object's catchall lets through", () => {
     const Loose = z.looseObject({ id: z.string() });
     expect(redact(Loose, Loose.parse({ id: "u", extra: 1 }))).toEqual({ id: "u", extra: 1 });

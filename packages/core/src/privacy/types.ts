@@ -119,6 +119,12 @@ export type UnmarkedString = string & NoPrivacyBrand;
 /**
  * What `redact` (`./redact`) returns: the value's own type, with every marked part replaced by the
  * string its class masks it to.
+ *
+ * Each container stays the container it is, because that is what `redact` hands back at runtime: an array or a
+ * tuple maps element by element, keeping a tuple's length and a `readonly`, and a map or a set maps its keys and
+ * its elements, which is where a `pii()` key comes back as a masked string. A plain object maps its fields, and a
+ * marked key becomes `string`. The remaining {@link Opaque} values — an `Error`, a `Date`, a function — are copied
+ * as they are.
  */
 export type Redacted<T> =
   IsAny<T> extends true
@@ -126,9 +132,26 @@ export type Redacted<T> =
     : T extends unknown
       ? IsMarked<T> extends true
         ? string
-        : T extends Opaque
-          ? T
-          : T extends object
-            ? { [K in keyof T as IsMarked<K> extends true ? string : K]: Redacted<T[K]> }
-            : T
+        : T extends readonly unknown[]
+          ? RedactedElements<T>
+          : T extends Map<infer K, infer V>
+            ? Map<Redacted<K>, Redacted<V>>
+            : T extends ReadonlyMap<infer K, infer V>
+              ? ReadonlyMap<Redacted<K>, Redacted<V>>
+              : T extends Set<infer E>
+                ? Set<Redacted<E>>
+                : T extends ReadonlySet<infer E>
+                  ? ReadonlySet<Redacted<E>>
+                  : T extends Opaque
+                    ? T
+                    : T extends object
+                      ? { [K in keyof T as IsMarked<K> extends true ? string : K]: Redacted<T[K]> }
+                      : T
       : never;
+
+/**
+ * An array's or a tuple's elements, redacted. A mapped type over a type parameter is homomorphic, so an array maps
+ * to an array and a tuple keeps its length and its `readonly`; the key-remapping one {@link Redacted} uses for an
+ * object would turn either into a plain object.
+ */
+type RedactedElements<T extends readonly unknown[]> = { [K in keyof T]: Redacted<T[K]> };
