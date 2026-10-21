@@ -50,9 +50,12 @@ import { type BuiltInPrivacyClass, PRIVACY_META_KEY, strongestPrivacyClass } fro
  * value nested that deep under a recursive schema built once. Past it the position is taken to carry the strongest
  * class, {@link TRUNCATED_CLASS}: `redact` masks it whole as `[secret]`, and `classifyPrivacy` lists it with
  * `truncated: true` — the way `Redacted<T>` types a position past its own depth as `unknown`. Once one recursion has
- * run out, the rest of that recursion is listed closed rather than read, because a factory that builds two lazies at
- * every level has 2^256 paths inside the limit. A field outside it, and a field with a mark of its own, keeps its own
- * class. Build a recursive schema once and refer to it by name, and nothing it holds ever reaches the limit.
+ * run out, every position in the rest of it that would take another recursion step is listed closed rather than read,
+ * because a factory that builds two lazies at every level has 2^256 paths inside the limit. A field outside it, a
+ * field with a mark of its own, and a field with no recursion step anywhere below it are read as they are. What one
+ * schema reads as never turns on which schema was read before it: a shape is filed by whether it was read inside a
+ * recursion that ran out, and one whose read reached the limit by the depth it was read at. Build a recursive schema
+ * once and refer to it by name, and nothing it holds ever reaches the limit.
  *
  * ## What a path looks like
  *
@@ -609,35 +612,152 @@ const CUT: Site = {
   shape: undefined,
 };
 
-/** Every shape read, by its structural nodes. */
-const shapes: Memo<Shape> = new WeakMap();
+/**
+ * How a shape is read, which is part of what it is filed under: `open` where no recursion has run out, and `closed`
+ * inside one that has, where every position that would take another recursion step is listed closed. Outside every
+ * recursion a read is always open, because a cut in one field there is no reason to close the next.
+ */
+type Mode = "open" | "closed";
+
+/**
+ * What one set of structural nodes, read one way, has read as. A shape whose read never reached the recursion limit
+ * reads the same at any depth that keeps it inside the limit, so it is kept once, with how many recursion steps below
+ * it the read went. A shape whose read did reach the limit cut a path at a depth of its own, and outside every
+ * recursion opened each field after the cut again, so it is kept by the depth it was read at.
+ */
+interface Filed {
+  clean: { shape: Shape; reach: number } | undefined;
+  readonly byDepth: Map<number, Shape>;
+}
+
+/** Every shape read, by its structural nodes and how it was read. */
+const shapes: Record<Mode, Memo<Filed>> = { open: new WeakMap(), closed: new WeakMap() };
+
+/**
+ * A shape while it is read. `low` is the oldest shape still being read that this one closed a cycle to, and `members`
+ * the shapes read inside it that closed one to it: their record holds a shape whose depth is settled only when it is.
+ */
+interface Frame {
+  readonly shape: Shape;
+  readonly filed: Filed;
+  readonly depth: number;
+  low: number;
+  readonly members: Frame[];
+}
+
+/** The shapes being read, outermost first, and where each is on that line. */
+const reading: Frame[] = [];
+const readingAt = new Map<Filed, number>();
 
 /**
  * Set where a recursion ran out, and cleared once the read is back outside every recursion: until then, a position it
- * would walk into is listed closed rather than read. A factory that builds two lazies at every level would otherwise
- * read 2^256 shapes.
+ * would walk into and that holds a recursion step below it is listed closed rather than read. A factory that builds
+ * two lazies at every level would otherwise read 2^256 shapes.
  */
 let cutting = false;
+
+/** The most recursion steps any check in the current read has reached: past the limit, the read cut a path. */
+let deepest = 0;
+
+/** Whether a structural walk from a schema takes a recursion step: a lazy, or an object whose getters build its fields. */
+const recursive = new WeakMap<z.ZodType, boolean>();
+
+/** The schemas a shape read walks into from a node: through wrappers, options, sides and structural slots. */
+function walkedInto(schema: z.ZodType): z.ZodType[] {
+  const def = defOf(schema);
+  if (WRAPPERS.has(def.type)) return def.innerType ? [def.innerType] : [];
+  if (def.type === "union") return [...(def.options ?? [])];
+  if (def.type === "intersection") return [def.left, def.right].filter(isSchema);
+  if (def.type === "object") {
+    const shape = shapeOf(schema);
+    const fields = Reflect.ownKeys(shape).map((key) => shape[key]);
+    return [...fields, isNever(def.catchall) ? undefined : def.catchall].filter(isSchema);
+  }
+  if (def.type === "array") return def.element ? [def.element] : [];
+  if (def.type === "record") return [def.keyType, def.valueType].filter(isSchema);
+  if (def.type === "tuple") return [...(def.items ?? []), def.rest ?? undefined].filter(isSchema);
+  return [];
+}
+
+/**
+ * Whether reading a schema's shape takes a recursion step anywhere below it. A marked node is masked whole and an
+ * opaque one is not walked into, so neither counts. Without a step the walk is finite, so it is read to the end even
+ * where a recursion beside it ran out: closing it would mask a value nothing below it marks or cuts.
+ */
+function holdsRecursion(schema: z.ZodType): boolean {
+  const known = recursive.get(schema);
+  if (known !== undefined) return known;
+  const seen = new Set<z.ZodType>();
+  const stack = [schema];
+  let found = false;
+  for (let node = stack.pop(); node; node = stack.pop()) {
+    if (seen.has(node)) continue;
+    seen.add(node);
+    const done = node === schema ? undefined : recursive.get(node);
+    if (done === false) continue;
+    if (done === true || (ownMarker(node) === null && stepInto(node) > 0)) {
+      found = true;
+      break;
+    }
+    if (ownMarker(node) === null) stack.push(...walkedInto(node));
+  }
+  // With no step found, nothing reachable from any node read takes one either.
+  if (!found) for (const node of seen) recursive.set(node, false);
+  recursive.set(schema, found);
+  return found;
+}
 
 /** The site `schemas` reach, `depth` recursion steps down. */
 function siteAt(schemas: readonly z.ZodType[], depth: number): Site | undefined {
   if (schemas.length === 0) return undefined;
   const at = position(distinctSchemas(schemas));
   const below = depth + at.depth;
+  deepest = Math.max(deepest, below);
   if (below > MAX_RECURSION_DEPTH) {
     cutting = true;
     return CUT;
   }
   const whole = wholeMask(at);
   if (whole || at.leaves.length === 0) return { at, whole, shape: undefined };
-  if (cutting && below > 0) return CUT;
+  if (cutting && below > 0 && at.leaves.some(holdsRecursion)) return CUT;
   return { at, whole: undefined, shape: shapeAt(at.leaves, below) };
 }
 
-/** The shape of `leaves`, read once: a shape met again while it is still being read is the cycle closing. */
+/** Forget a shape kept for one read only: it closed a cycle to a shape whose read reached the limit. */
+function unfile(frame: Frame): void {
+  if (frame.filed.clean?.shape === frame.shape) frame.filed.clean = undefined;
+  if (frame.filed.byDepth.get(frame.depth) === frame.shape) frame.filed.byDepth.delete(frame.depth);
+}
+
+/**
+ * The shape of `leaves`, read once for each way it is read: a shape met again while it is still being read is the
+ * cycle closing. What a later read is handed is what it would have read itself, whichever schema was read first.
+ */
 function shapeAt(leaves: readonly z.ZodType[], depth: number): Shape {
-  const memo = slot(shapes, leaves);
-  if (memo.found) return memo.found;
+  // Outside every recursion `cutting` is always clear here: each field there clears it before it is read.
+  const mode: Mode = cutting ? "closed" : "open";
+  const memo = slot(shapes[mode], leaves);
+  const filed = memo.found ?? { clean: undefined, byDepth: new Map<number, Shape>() };
+  if (!memo.found) memo.fill(filed);
+  const open = readingAt.get(filed);
+  if (open !== undefined) {
+    // Every shape read since this one depends on it, and is settled when it is.
+    for (let index = open + 1; index < reading.length; index += 1)
+      (reading[index] as Frame).low = Math.min((reading[index] as Frame).low, open);
+    return (reading[open] as Frame).shape;
+  }
+  const clean = filed.clean;
+  if (clean && depth + clean.reach <= MAX_RECURSION_DEPTH) {
+    deepest = Math.max(deepest, depth + clean.reach);
+    return clean.shape;
+  }
+  const known = filed.byDepth.get(depth);
+  if (known) {
+    // It ran out here when it was read, so it runs out here now.
+    cutting = true;
+    deepest = Math.max(deepest, MAX_RECURSION_DEPTH + 1);
+    return known;
+  }
   const shape: Building = {
     leaves,
     fields: new Map(),
@@ -646,7 +766,11 @@ function shapeAt(leaves: readonly z.ZodType[], depth: number): Shape {
     items: [],
     rest: undefined,
   };
-  memo.fill(shape);
+  const frame: Frame = { shape, filed, depth, low: reading.length, members: [] };
+  const outer = deepest;
+  deepest = depth;
+  readingAt.set(filed, reading.length);
+  reading.push(frame);
   const next = depth + Math.max(0, ...leaves.map(stepInto));
   const read = (schemas: readonly z.ZodType[]): Site | undefined => {
     // Outside every recursion, a cut in one field is no reason to close the next.
@@ -662,6 +786,23 @@ function shapeAt(leaves: readonly z.ZodType[], depth: number): Shape {
   const items = Math.max(0, ...leaves.map((leaf) => (leafIs(leaf, "tuple") ? (defOf(leaf).items?.length ?? 0) : 0)));
   for (let index = 0; index < items; index += 1) shape.items.push(read(elementSchemas(leaves, index)));
   shape.rest = read(restSchemas(leaves));
+  reading.pop();
+  readingAt.delete(filed);
+  const ranOut = deepest > MAX_RECURSION_DEPTH;
+  if (ranOut) filed.byDepth.set(depth, shape);
+  else filed.clean = { shape, reach: deepest - depth };
+  if (frame.low < reading.length) {
+    // Part of a cycle through a shape still being read: kept for the rest of that read, and settled with it.
+    (reading[frame.low] as Frame).members.push(frame, ...frame.members);
+  } else {
+    for (const member of frame.members) {
+      if (ranOut) unfile(member);
+      // A member reused elsewhere reaches this shape again, as deep below it as this read went.
+      else if (member.filed.clean?.shape === member.shape)
+        member.filed.clean = { shape: member.shape, reach: deepest - member.depth };
+    }
+  }
+  deepest = Math.max(outer, deepest);
   return shape;
 }
 
@@ -673,6 +814,7 @@ export function siteOf(schema: z.ZodType): Site {
   const known = roots.get(schema);
   if (known) return known;
   cutting = false;
+  deepest = 0;
   const found = siteAt([schema], 0) as Site;
   cutting = false;
   roots.set(schema, found);
@@ -693,10 +835,10 @@ function insideOf(site: Site): Site | undefined {
   const memo = slot(insides, unmarked);
   if (memo.found !== undefined) return memo.found ?? undefined;
   memo.fill(null);
-  const outer = cutting;
+  const outer = { cutting, deepest };
   cutting = false;
   const found = siteAt(unmarked.flatMap(children), 0);
-  cutting = outer;
+  ({ cutting, deepest } = outer);
   memo.fill(found ?? null);
   return found;
 }

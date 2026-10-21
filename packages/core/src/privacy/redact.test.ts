@@ -1099,3 +1099,97 @@ describe("regressions: round 6", () => {
     expect(out).toEqual({ e: "[pii]" });
   });
 });
+
+/**
+ * **Regressions from the seventh review round** (#132): once one recursion ran out, a finite field beside it was listed
+ * closed, and a shape read while one was closing was kept for every later read, so a schema's answer turned on which
+ * schema the isolate read first.
+ */
+describe("regressions: round 7", () => {
+  type Node = { c?: Node; v: number };
+  /** A factory with no mark anywhere: every level builds a new lazy, so it always runs out. */
+  const make = (): z.ZodType<Node> => z.object({ c: z.lazy(make).optional(), v: z.number() });
+
+  /** What every walk says about a schema, for one value. */
+  function answer(schema: z.ZodType, wire: unknown) {
+    return {
+      redacted: masked(schema, wire),
+      fields: classifyPrivacy(schema),
+      secret: hasPrivacy(schema, "secret"),
+      pii: hasPrivacy(schema, "pii"),
+    };
+  }
+
+  test("C1 keeps a finite field beside a factory that ran out, inside a recursion", () => {
+    const A = z.lazy(() => z.object({ first: make().optional(), n: z.object({ v: z.number() }) }));
+    expect(masked(A, { n: { v: 1 } })).toEqual({ n: { v: 1 } });
+    const fields = classifyPrivacy(A);
+    expect(fields.filter((field) => field.path === "n" || field.path.startsWith("n."))).toEqual([]);
+    expect(fields.some((field) => field.path.startsWith("first") && field.truncated === true)).toBe(true);
+  });
+
+  test("C2 keeps every finite kind beside a factory that ran out, and still masks a mark inside one", () => {
+    const Leaf = z.object({ v: z.number() });
+    const B = z.lazy(() =>
+      z.object({
+        first: make().optional(),
+        list: z.array(Leaf),
+        pair: z.tuple([Leaf, z.string()]),
+        byId: z.record(z.string(), Leaf),
+        once: z.lazy(() => Leaf),
+        mark: z.object({ e: pii(z.string()) }),
+      }),
+    );
+    expect(
+      masked(B, { list: [{ v: 1 }], pair: [{ v: 2 }, "x"], byId: { a: { v: 3 } }, once: { v: 4 }, mark: { e: "S-1" } }),
+    ).toEqual({ list: [{ v: 1 }], pair: [{ v: 2 }, "x"], byId: { a: { v: 3 } }, once: { v: 4 }, mark: { e: "[pii]" } });
+    const fields = classifyPrivacy(B);
+    expect(fields).toContainEqual({ path: "mark.e", class: "pii" });
+    expect(fields.filter((field) => !field.path.startsWith("first"))).toEqual([{ path: "mark.e", class: "pii" }]);
+  });
+
+  test("C3 still lists a second recursion beside the one that ran out closed", () => {
+    const D = z.lazy(() => z.object({ first: make().optional(), second: make().optional() }));
+    const fields = classifyPrivacy(D);
+    expect(fields).toContainEqual({ path: "second", class: "secret", truncated: true });
+  });
+
+  test("O1 a schema reads the same whichever schema the isolate read first", () => {
+    const build = () => {
+      const X = z.object({ first: make().optional(), n: z.object({ v: z.number() }) });
+      const B = z.object({ x: X, id: z.string() });
+      return { X, B, A: z.lazy(() => X) };
+    };
+    const fresh = build();
+    const freshX = answer(fresh.X, { n: { v: 1 } });
+    const freshB = answer(fresh.B, { x: { n: { v: 1 } }, id: "i" });
+    expect(freshX.redacted).toEqual({ n: { v: 1 } });
+    expect(freshB.redacted).toEqual({ x: { n: { v: 1 } }, id: "i" });
+    const after = build();
+    answer(after.A, { n: { v: 1 } });
+    expect(answer(after.X, { n: { v: 1 } })).toEqual(freshX);
+    expect(answer(after.B, { x: { n: { v: 1 } }, id: "i" })).toEqual(freshB);
+  });
+
+  test("O2 a shape read inside a recursion that ran out is not what a later root reads outside every recursion", () => {
+    const build = () => {
+      const Y = z.object({ first: make().optional(), second: make().optional() });
+      return { Y, A: z.lazy(() => Y), R: z.object({ a: z.lazy(() => Y).optional(), b: Y }) };
+    };
+    const fresh = build();
+    const freshY = answer(fresh.Y, { second: { v: 1 } });
+    const fromLazy = build();
+    const lazyA = answer(fromLazy.A, { second: { v: 1 } });
+    expect(answer(fromLazy.Y, { second: { v: 1 } })).toEqual(freshY);
+    // And read the other way round, the lazy root reads as it does fresh.
+    const lazyFresh = build();
+    expect(answer(lazyFresh.A, { second: { v: 1 } })).toEqual(lazyA);
+    // Within one root: `b` sits outside every recursion, so it reads as `Y` does at the root.
+    const inOne = build();
+    const below = classifyPrivacy(inOne.R)
+      .filter((field) => field.path === "b" || field.path.startsWith("b."))
+      .map((field) => ({ ...field, path: field.path.slice(2) }));
+    expect(below).toEqual(freshY.fields);
+    expect((masked(inOne.R, { b: { second: { v: 1 } } }) as { b: unknown }).b).toEqual(freshY.redacted);
+  });
+});
