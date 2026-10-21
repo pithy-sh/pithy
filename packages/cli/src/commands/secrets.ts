@@ -47,14 +47,13 @@ import { projectSecretApplicability } from "../capabilities/secretApplicability"
 import { mergeSecretBranches, type SecretBranches, secretBranchDeclarations } from "../capabilities/secretBranches";
 import {
   assertNotTheMasterKey,
-  hiddenNote,
+  renderSecretList,
   resolveSecretRegistry,
   runSecretWrite,
   secretListRows,
   secretWriteEffect,
   secretWriteReportLine,
   secretWriteRouting,
-  unresolvedNote,
 } from "../capabilities/secrets";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import {
@@ -107,14 +106,7 @@ import {
 } from "../secretTables/report";
 import { canceled } from "../terminal/exitClass";
 import { mayDraw } from "../terminal/inputMode";
-import {
-  formatDone,
-  formatError,
-  formatErrorJson,
-  formatJsonLine,
-  formatList,
-  withErrorReporting,
-} from "../terminal/output";
+import { formatDone, formatError, formatErrorJson, formatJsonLine, withErrorReporting } from "../terminal/output";
 import { tokenOverrideResolver } from "../tokens/config";
 
 /**
@@ -960,9 +952,7 @@ const ls = withContract(
           );
           return;
         }
-        process.stdout.write(
-          `${formatList(rows)}${hiddenNote(hidden)}${unresolvedNote(applicability.unresolved, hidden)}\n`,
-        );
+        process.stdout.write(`${renderSecretList(rows, hidden, applicability.unresolved)}\n`);
       }),
   }),
   {

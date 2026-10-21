@@ -100,15 +100,19 @@ That credential is unreachable in `dev` and `staging` and read on every sign-in 
 **Only a composition has an opinion, so an environment that will not compose has none.** Your `pithy.config.ts` is code, so it can throw — a half-configured `prod` that refuses with *Billing is not configured for this environment* is the ordinary case. That environment produced no composition: no capabilities, no registry, no configuration, and so nothing that could need a secret. It is left out of the union, and the marks come from the environments that did compose:
 
 ```
-auth-github-credentials     d1 · environment
-auth-apple-credentials      not applicable — auth() does not enable the apple provider
+auth-github-credentials  d1 · environment
+auth-google-credentials  d1 · environment
+auth-session-secret      d1 · environment · rotatable
 
+4 secrets this configuration will never read are not listed. pithy secrets ls --all shows them, and why.
 One environment did not compose, so this answer is drawn from the rest.
   prod: Set payments.billing in apps/api/pithy.config.ts, or drop prod from environments.
-A secret only those environments need may be marked not applicable above. Run pithy doctor.
+A secret only those environments need may be among the ones not listed. Run pithy doctor.
 ```
 
-The reason is that error's own action line. **The note is there because this carries a risk**: a credential only `prod` reads can be marked *not applicable* on the strength of `dev` and `staging`. The answer is to fix the config rather than to guess — a `prod` that does not load does not have requirements, it has a fault, and [`pithy doctor`](./doctor.md) reports it as one under `Environment configs:`. Fix it and the marks are decided from all three.
+Under `--all` the last line reads *may be marked not applicable above* instead, because there the rows it means are on the screen.
+
+The reason is that error's own action line. **The note is there because this carries a risk**: a credential only `prod` reads can be ruled *not applicable*, and so left out of the list, on the strength of `dev` and `staging`. The answer is to fix the config rather than to guess — a `prod` that does not load does not have requirements, it has a fault, and [`pithy doctor`](./doctor.md) reports it as one under `Environment configs:`. Fix it and the marks are decided from all three.
 
 **A value never comes from a flag.** `create` and `update` read the value from stdin when it is piped, and from a masked prompt when one can be drawn — and refuse when neither is available, rather than reading your terminal in silence. A flag would leave a live credential in shell history and in every process list on the machine. Nothing here prints a value back, on any subcommand, in either output mode.
 

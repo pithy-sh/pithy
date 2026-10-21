@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { NotFoundError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
@@ -18,6 +20,7 @@ import { unresolvedLines } from "./secretApplicability";
 import {
   assertNotTheMasterKey,
   hiddenNote,
+  renderSecretList,
   resolveSecretRegistry,
   runSecretsList,
   runSecretWrite,
@@ -761,5 +764,69 @@ describe("unresolvedNote", () => {
     const unresolved = [{ environment: "prod", reason: "Set payments.billing." }];
     for (const line of unresolvedLines(unresolved)) expect(unresolvedNote(unresolved)).toContain(line);
     expect(unresolvedLines(unresolved).join("\n")).not.toContain("pithy doctor");
+  });
+});
+
+/**
+ * **The `ls` listings in `docs/commands/secrets.md` are what the command prints (#801).**
+ *
+ * They had drifted three ways at once: one example sat in the wrong order, showed a row only `--all`
+ * prints without the rest `--all` would add, and closed on the risk sentence for the other mode. A page
+ * that shows output the command cannot produce teaches a reader to distrust the real thing, so each
+ * fence is rendered here from the same seam the command writes through and compared byte for byte.
+ */
+describe("the ls examples in docs/commands/secrets.md", () => {
+  const page = readFileSync(
+    resolve(import.meta.dirname, "..", "..", "..", "..", "docs", "commands", "secrets.md"),
+    "utf8",
+  );
+
+  /** The first bare fence after `marker`: the example that paragraph introduces. */
+  function fenceAfter(marker: string): string {
+    const at = page.indexOf(marker);
+    expect(at, marker).toBeGreaterThan(-1);
+    const open = page.indexOf("\n```\n", at);
+    const close = page.indexOf("\n```\n", open + 5);
+    return page.slice(open + 5, close);
+  }
+
+  const d1 = { backend: "d1", scope: "environment", rotatable: false, valueType: "text" } as const;
+  const project = defineSecretRegistry({
+    "auth-apple-credentials": d1,
+    "auth-facebook-credentials": d1,
+    "auth-github-credentials": d1,
+    "auth-google-credentials": d1,
+    "auth-microsoft-credentials": d1,
+    "auth-session-secret": { ...d1, rotatable: true },
+    "support-r2-credentials": d1,
+  });
+  const inapplicable = new Map([
+    ["auth-apple-credentials", "auth() does not enable the apple provider"],
+    ["auth-facebook-credentials", "auth() does not enable the facebook provider"],
+    ["auth-microsoft-credentials", "auth() does not enable the microsoft provider"],
+    ["support-r2-credentials", "SUPPORT_BUCKET declined in pithy.config.ts"],
+  ]);
+  const prod = [
+    {
+      environment: "prod",
+      reason: "Set payments.billing in apps/api/pithy.config.ts, or drop prod from environments.",
+    },
+  ];
+
+  test("the default listing", () => {
+    const rows = secretListRows(project, inapplicable);
+    expect(fenceAfter("**`ls` lists the secrets your configuration actually uses.**")).toBe(
+      renderSecretList(rows, inapplicable.size, []),
+    );
+  });
+
+  test("the --all listing", () => {
+    const rows = secretListRows(project, inapplicable, true);
+    expect(fenceAfter("**`--all` adds them back, each with its reason**")).toBe(renderSecretList(rows, 0, []));
+  });
+
+  test("the listing an environment that will not compose qualifies", () => {
+    const rows = secretListRows(project, inapplicable);
+    expect(fenceAfter("**Only a composition has an opinion")).toBe(renderSecretList(rows, inapplicable.size, prod));
   });
 });
