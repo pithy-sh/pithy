@@ -32,7 +32,8 @@ import type { RedactedOutput } from "./types";
  * `z.custom`, `any`, `unknown`, a set, a map, a promise, a function — and an opaque node with a mark anywhere inside
  * it is masked whole, as `[class]` for the strongest class it carries. One with no mark inside is kept as it is,
  * unless something else at its position marks: a transform or an `unknown` beside a marked object reads or holds the
- * same value, so the position is masked whole. A scalar kind never masks a position by itself.
+ * same value, so the position is masked whole. A scalar kind never masks a position by itself, and a coercion is not a
+ * scalar.
  *
  * ## What it over-masks, and what it cannot see
  *
@@ -65,7 +66,8 @@ import type { RedactedOutput } from "./types";
  * defined on the copy, not assigned, so an own `__proto__` key stays a key and never becomes the copy's prototype.
  *
  * It never mutates its argument, and it never throws on a value that does not match the schema: it masks what it
- * can name and copies the rest.
+ * can name and copies the rest. It does throw `core/internal` on a factory-built recursive schema whose insides it
+ * must search with no value to follow, because that search would never end (`./classify`).
  */
 
 /** A plain object — not an array, not a `Date`, not a class instance. */

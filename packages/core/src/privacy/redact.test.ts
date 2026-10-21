@@ -4,6 +4,7 @@
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { SQLiteBoolean, SQLiteDate, sqliteJson } from "../data/codecs";
+import { InternalError } from "../error/pithyError";
 import { LogRecord, serializeRecord } from "../logger/record";
 import { definePrivacyClass, pci, phi, pii, secret } from "./classes";
 import { classifyPrivacy } from "./classify";
@@ -689,5 +690,76 @@ describe("regressions: round 3", () => {
     const Ref = P2.refine(() => true);
     const refined: { e: string; n: string } = redact(Ref, Ref.parse({ e: "S-1", n: "x" }));
     expect(refined).toEqual({ e: "[pii]", n: "x" });
+  });
+});
+
+/**
+ * **Regressions from the fourth review round** (#132): a recursive schema built by a factory, which no identity guard
+ * recognizes, and a coercion, which reads the whole input a structural option beside it reads.
+ */
+describe("regressions: round 4", () => {
+  // A factory hands back a new schema at every level, so the schema-only walks have no node to stop on.
+  // biome-ignore lint/suspicious/noExplicitAny: a factory's type is circular, and TypeScript infers none.
+  const mkLazy = (): any => z.lazy(() => z.object({ n: z.string(), e: pii(z.string()), kid: mkLazy().optional() }));
+  // biome-ignore lint/suspicious/noExplicitAny: as above.
+  const mkGet = (): any =>
+    z.object({
+      n: z.string(),
+      e: pii(z.string()),
+      get kid() {
+        return mkGet().optional();
+      },
+    });
+  const tree = { n: "a", e: "S-1", kid: { n: "b", e: "S-2" } };
+
+  test("refuses a factory-built recursive schema with an error, never a stack overflow or a hang", () => {
+    for (const schema of [mkLazy(), mkGet()]) {
+      expect(() => classifyPrivacy(schema)).toThrow(InternalError);
+      expect(() => classifyPrivacy(schema)).toThrow(/too deep/);
+    }
+    for (const schema of [
+      z.object({ t: mkLazy().transform((x: unknown) => x) }),
+      z.object({ t: mkGet().transform((x: unknown) => x) }),
+      z.object({ t: z.union([mkLazy(), z.unknown()]) }),
+    ]) {
+      expect(() => masked(schema, { t: tree })).toThrow(InternalError);
+      expect(() => classifyPrivacy(schema)).toThrow(InternalError);
+    }
+  });
+
+  test("still masks a factory-built recursive schema by its value, where the walk follows the value", () => {
+    expect(masked(mkLazy(), tree)).toEqual({ n: "a", e: "[pii]", kid: { n: "b", e: "[pii]" } });
+    expect(masked(mkGet(), tree)).toEqual({ n: "a", e: "[pii]", kid: { n: "b", e: "[pii]" } });
+  });
+
+  test.each<[string, z.ZodType, unknown]>([
+    ["K1 a tuple beside a coerced string", z.union([z.tuple([pii(z.string())]), z.coerce.string()]), ["S-1", "x"]],
+    [
+      "K2 a capped array beside a coerced string",
+      z.object({ tags: z.union([z.array(pii(z.string())).max(1), z.coerce.string()]) }),
+      { tags: ["S-1", "S-2"] },
+    ],
+    [
+      "K5 a phi array beside a coerced date",
+      z.union([z.array(phi(z.string())).length(2), z.coerce.date()]),
+      ["1990-05-01"],
+    ],
+  ])("%s: a coercion beside a mark masks the position whole", (_label, schema, wire) => {
+    const out = masked(schema, wire);
+    expect(raw(out)).toEqual([]);
+    expect(JSON.stringify(out)).not.toMatch(/S-|1990/);
+  });
+
+  test("lists a coercion beside a mark at its own position, and keeps a plain scalar beside one", () => {
+    expect(classifyPrivacy(z.object({ tags: z.union([z.array(pii(z.string())).max(1), z.coerce.string()]) }))).toEqual([
+      { path: "tags", class: "pii" },
+    ]);
+    expect(classifyPrivacy(z.object({ tags: z.union([z.array(pii(z.string())), z.string()]) }))).toEqual([
+      { path: "tags[]", class: "pii" },
+    ]);
+    expect(masked(z.object({ n: z.coerce.number(), e: pii(z.string()) }), { n: "4", e: "S-1" })).toEqual({
+      n: 4,
+      e: "[pii]",
+    });
   });
 });

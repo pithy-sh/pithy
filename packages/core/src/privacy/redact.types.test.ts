@@ -164,6 +164,51 @@ const refined = redact(
 );
 same<typeof refined, Entry>();
 
+// A coercion runs over the whole input a structural option beside it reads, so it is not a scalar: masked whole.
+const coerced = redact(z.object({ tags: z.union([z.array(E).max(1), z.coerce.string()]) }), any);
+same<typeof coerced, { tags: string }>();
+const coercedDate = redact(z.union([z.array(E).length(2), z.coerce.date()]), any);
+same<typeof coercedDate, string>();
+const plainScalar = redact(z.object({ tags: z.union([z.array(E), z.string()]) }), any);
+same<typeof plainScalar, { tags: string[] | string }>();
+
+// A mark seven levels inside an opaque node still masks it whole, as redact does.
+const d7 = z.object({
+  a: z.object({ b: z.object({ c: z.object({ d: z.object({ f: z.object({ g: z.object({ e: E }) }) }) }) }) }),
+});
+const deepColumn = redact(z.object({ p: sqliteJson(d7) }), any);
+same<typeof deepColumn, { p: string }>();
+// And a position seven levels down is still read by the rule: a transform or an unknown beside a mark is a string.
+type Deep<T> = { a: { b: { c: { d: { f: { g: { t: T } } } } } } };
+const deep = <S extends z.ZodType>(t: S) =>
+  z.object({ a: z.object({ b: z.object({ c: z.object({ d: z.object({ f: z.object({ g: z.object({ t }) }) }) }) }) }) });
+const deepTransform = redact(deep(z.object({ e: E }).transform((v) => v)), any);
+same<typeof deepTransform, Deep<string>>();
+const deepUnknown = redact(deep(z.union([z.object({ e: E }), z.unknown()])), any);
+same<typeof deepUnknown, Deep<string>>();
+const deepKept = redact(deep(z.object({ e: E, n: z.number() })), any);
+same<typeof deepKept, Deep<{ e: string; n: number }>>();
+// Past every bound the type never keeps a raw marked value.
+const d15 = redact(deep(deep(z.object({ e: E }))), any);
+same<typeof d15.a.b.c.d.f.g.t.a.b.c.d.f.g.t.e, string>();
+
+// A recursive schema is searched once around its cycle, so an unmarked one inside a codec keeps its type.
+const Cat = z.object({
+  label: z.string(),
+  get children() {
+    return z.array(Cat);
+  },
+});
+const MarkedCat = z.object({
+  label: E,
+  get children() {
+    return z.array(MarkedCat);
+  },
+});
+const cats = redact(z.object({ j: sqliteJson(Cat), k: sqliteJson(MarkedCat) }), any);
+same<typeof cats, { j: z.output<typeof Cat>; k: string }>();
+same<(typeof cats.j.children)[number]["label"], string>();
+
 // The type of a value already redacted, read off its own type.
 same<
   Redacted<{ e: z.output<typeof E>; n: number; tags: z.output<typeof E>[] }>,

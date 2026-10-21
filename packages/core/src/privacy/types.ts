@@ -41,8 +41,14 @@ import type { z } from "zod";
 /** How many levels of object or array below a field value the gate inspects. See the module note. */
 export type PRIVACY_CHECK_DEPTH = 6;
 
+/**
+ * How many levels of schema {@link RedactedOutput} reads, structure and opaque insides alike. Deeper than the gate,
+ * because a mark seven levels inside a JSON column is masked by `redact` and must be typed the same.
+ */
+export type REDACT_TYPE_DEPTH = 16;
+
 /** Depth countdown: `Prev[3]` is `2`. Index past the end is `never`, which stops the walk. */
-type Prev = [never, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+type Prev = [never, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
 
 /** `true` for `any`, so an untyped value is never mistaken for a marked one. */
 type IsAny<T> = 0 extends 1 & T ? true : false;
@@ -205,17 +211,21 @@ type FieldOf<C, K> = C extends readonly unknown[] | Opaque
  * - **An opaque node with a mark anywhere inside it is a `string`** — a transform, a pipe, a preprocess, a codec
  *   (`sqliteJson` too), a `z.custom`, a set, a map, a promise, a function — because `redact` masks it whole. With no
  *   mark inside it keeps its output type, unless something else at its position carries a mark: then a transform, an
- *   `unknown` or a custom beside it holds the same value, and the position is a `string`. A scalar never is.
+ *   `unknown`, a custom or a coercion beside it holds the same value, and the position is a `string`. A scalar never
+ *   is, and a coercion is not a scalar.
  * - **A structural node keeps its shape**: an object maps its fields, an array stays an array — a branded one
  *   included, whose brand goes — a tuple keeps its positions and its rest, a record maps its values and turns a
  *   marked key into `string`, and every wrapper keeps the `undefined` or the `null` it adds. A union is a union of its
  *   members, each with every option's marks at each position; an intersection intersects its sides the same way.
  * - **A check is not in the type**, as it is not in the rule.
  *
- * It follows a schema {@link PRIVACY_CHECK_DEPTH} levels of structure deep. Below that it reads the output type the
- * way {@link Redacted} does, which masks every marked value and may keep a container `redact` masks whole.
+ * It follows a schema {@link REDACT_TYPE_DEPTH} levels of structure deep, and searches an opaque node's insides as
+ * deep again; a recursive schema is searched once around its cycle. **An opaque node deeper inside than that is a
+ * `string`**, marked or not, because the type cannot tell and `redact` would mask one that is. Below that much
+ * structure it reads the output type the way {@link Redacted} does, which masks every marked value
+ * {@link PRIVACY_CHECK_DEPTH} levels further and may keep a container `redact` masks whole.
  */
-export type RedactedOutput<S> = RedactedPosition<S, S, PRIVACY_CHECK_DEPTH>;
+export type RedactedOutput<S> = RedactedPosition<S, S, REDACT_TYPE_DEPTH>;
 
 /**
  * A schema kind, read off its definition. Anything that is not a schema has a kind no branch below names: `never`
@@ -236,7 +246,7 @@ type Wrapper = "optional" | "nullable" | "default" | "prefault" | "readonly" | "
  * Every node at a position: `S` flattened through its wrappers, the options of a union, the sides of an intersection
  * and each lazy, to the structural and opaque nodes underneath. Distributes over a union of schemas.
  */
-type Nodes<S, D extends number = PRIVACY_CHECK_DEPTH> = [D] extends [never]
+type Nodes<S, D extends number = REDACT_TYPE_DEPTH> = [D] extends [never]
   ? S
   : S extends unknown
     ? DefOf<S> extends { type: Wrapper; innerType: infer I }
@@ -259,28 +269,41 @@ type Schema = { readonly _zod: { readonly output: unknown; readonly def: unknown
 /**
  * Whether a schema carries a mark anywhere inside it: on its output, or on any schema its definition holds — a pipe's
  * sides, a codec's wire side, an option, an element, a field, a lazy's target. What decides an opaque node.
+ *
+ * `Seen` is every schema on the way down, so a recursive schema stops where it reaches itself: the second visit has
+ * nothing new to say. **It fails closed**: a schema still unread at depth `D` is taken to carry a mark, because
+ * `redact` masks an opaque node with one however deep it sits.
  */
-type HasMark<S, D extends number = PRIVACY_CHECK_DEPTH> = [D] extends [never]
-  ? false
-  : S extends Schema
-    ? true extends IsMarked<Out<S>>
+type HasMark<S, D extends number = REDACT_TYPE_DEPTH, Seen = never> = S extends Schema
+  ? true extends SeenBefore<S, Seen>
+    ? false
+    : [D] extends [never]
       ? true
-      : true extends {
-            [K in keyof DefOf<S>]-?: K extends "checks" ? false : SlotHasMark<DefOf<S>[K], Prev[D]>;
-          }[keyof DefOf<S>]
+      : true extends IsMarked<Out<S>>
         ? true
-        : false
-    : false;
+        : true extends {
+              [K in keyof DefOf<S>]-?: K extends "checks" ? false : SlotHasMark<DefOf<S>[K], Prev[D], Seen | S>;
+            }[keyof DefOf<S>]
+          ? true
+          : false
+  : false;
+
+/** Whether `S` is one of `Seen`: the same type, not merely assignable to it. */
+type SeenBefore<S, Seen> = Seen extends unknown
+  ? (<T>() => T extends S ? 1 : 2) extends <T>() => T extends Seen ? 1 : 2
+    ? true
+    : false
+  : never;
 
 /** One slot of a definition: a schema, a lazy's getter, a list of schemas, or an object's shape. */
-type SlotHasMark<V, D extends number> = V extends Schema
-  ? HasMark<V, D>
+type SlotHasMark<V, D extends number, Seen> = V extends Schema
+  ? HasMark<V, D, Seen>
   : V extends () => infer R
-    ? HasMark<R, D>
+    ? HasMark<R, D, Seen>
     : V extends readonly (infer E)[]
-      ? HasMark<E, D>
+      ? HasMark<E, D, Seen>
       : V extends object
-        ? { [K in keyof V]-?: V[K] extends Schema ? HasMark<V[K], D> : false }[keyof V]
+        ? { [K in keyof V]-?: V[K] extends Schema ? HasMark<V[K], D, Seen> : false }[keyof V]
         : false;
 
 /** The opaque kinds that only ever hold a scalar, as `./classify` lists them. */
@@ -301,17 +324,25 @@ type Scalar =
   | "template_literal";
 
 /**
- * Whether a node is opaque and may hold whatever the rest of its position marks: a transform, an `unknown`, a custom.
- * A schema typed only as `z.ZodType<T>` names no kind, and is not one.
+ * Whether a node is opaque and may hold whatever the rest of its position marks: a transform, an `unknown`, a custom,
+ * or a coercion — `z.coerce.string()` is a string kind that takes an `unknown` input and runs `String()` over it. A
+ * schema typed only as `z.ZodType<T>` names no kind, and is not one.
  */
 type IsFree<N> =
   DefOf<N> extends { type: infer T }
     ? "object" extends T
       ? false
-      : T extends Structural | Scalar
+      : T extends Structural
         ? false
-        : true
+        : T extends Scalar
+          ? unknown extends In<N>
+            ? true
+            : false
+          : true
     : false;
+
+/** A schema's input, by its own `_zod`. */
+type In<S> = S extends { readonly _zod: { readonly input: infer I } } ? I : never;
 
 /**
  * Whether a position is masked whole: a marked node, an opaque node with a mark inside, or an opaque node that may hold

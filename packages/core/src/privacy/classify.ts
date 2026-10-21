@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { z } from "zod";
+import { InternalError } from "../error/pithyError";
 import { PRIVACY_META_KEY, strongestPrivacyClass } from "./classes";
 
 /**
@@ -25,8 +26,9 @@ import { PRIVACY_META_KEY, strongestPrivacyClass } from "./classes";
  * whole, with one placeholder naming the strongest class it carries. An opaque node with no mark inside is kept as it
  * is — unless something else at its position carries a mark, because a transform or an `unknown` beside a marked
  * object reads or holds the same value, so the position is masked whole with it. A scalar kind (a string, a number, a
- * literal, an enum, a date) holds nothing else, and never masks a position by itself. What a function returns says
- * nothing about where a mark went, so the rule does not try.
+ * literal, an enum, a date) holds nothing else, and never masks a position by itself. A coercion is not a scalar:
+ * `z.coerce.string()` runs `String()` over the same input a marked array beside it reads, so it counts as a transform.
+ * What a function returns says nothing about where a mark went, so the rule does not try.
  *
  * **A check is not a node.** `.refine()`, `.superRefine()`, `.check()` and `.overwrite()` leave the schema the kind
  * it was, so a check that writes a marked value somewhere else is not seen — here, by `redact` or by the type — and
@@ -35,7 +37,11 @@ import { PRIVACY_META_KEY, strongestPrivacyClass } from "./classes";
  *
  * A recursive schema terminates on the lazy itself: a `z.lazy`'s getter is resolved once and kept, and a walk that
  * meets the same lazy again at the same position, or below itself here, stops. An object written with a getter that
- * reaches itself stops the same way.
+ * reaches itself stops the same way. **A factory that builds a new schema at every level is refused**: a getter or a
+ * lazy that calls a function returning a fresh schema hands every level a node no guard has seen, so a walk of the
+ * schema alone would never end. Past {@link MAX_SCHEMA_DEPTH} levels it throws `core/internal` instead, and a
+ * `redact` that follows the value still does where it never needs the schema alone. Build the schema once and refer to
+ * it by name.
  *
  * ## What a path looks like
  *
@@ -68,6 +74,7 @@ interface Def {
   catchall?: z.ZodType;
   shape?: Record<string, z.ZodType>;
   getter?: () => z.ZodType;
+  coerce?: boolean;
 }
 
 /** The definition behind a schema. */
@@ -109,6 +116,25 @@ const SCALARS: ReadonlySet<string> = new Set([
   "enum",
   "template_literal",
 ]);
+
+/**
+ * How deep a schema-only walk goes before it gives up: far past any schema written by hand, and short of a stack
+ * overflow. Only a factory that builds a new schema at every level reaches it.
+ */
+export const MAX_SCHEMA_DEPTH = 256;
+
+/** The error a schema-only walk throws past {@link MAX_SCHEMA_DEPTH}: a factory-built recursive schema never ends. */
+function tooDeep(): InternalError {
+  return new InternalError({
+    message: "A schema is too deep to redact or classify.",
+    action: `Build a recursive schema once and refer to it by name. A z.lazy or a getter that calls a function returning a new schema never ends, and no schema may nest more than ${MAX_SCHEMA_DEPTH} levels.`,
+  });
+}
+
+/** Whether a node only ever holds a scalar: a scalar kind that does not coerce its input. */
+function isScalar(def: Def): boolean {
+  return SCALARS.has(def.type) && def.coerce !== true;
+}
 
 /** The `privacy` meta on this exact schema, or `null`. */
 function ownMarker(schema: z.ZodType): string | null {
@@ -181,14 +207,21 @@ function marksIn(schema: z.ZodType): ReadonlySet<string> {
   if (known) return known;
   const found = new Set<string>();
   const seen = new Set<z.ZodType>();
-  const stack = [schema];
-  for (let node = stack.pop(); node; node = stack.pop()) {
+  const stack: [z.ZodType, number][] = [[schema, 0]];
+  for (let entry = stack.pop(); entry; entry = stack.pop()) {
+    const [node, depth] = entry;
     if (seen.has(node)) continue;
+    if (depth > MAX_SCHEMA_DEPTH) throw tooDeep();
     seen.add(node);
     const own = ownMarker(node);
     if (own !== null) found.add(own);
     // Reversed, so the classes come out in the order the schema declares them.
-    else stack.push(...children(node).reverse());
+    else
+      stack.push(
+        ...children(node)
+          .map((child): [z.ZodType, number] => [child, depth + 1])
+          .reverse(),
+      );
   }
   marked.set(schema, found);
   return found;
@@ -257,13 +290,15 @@ export function position(schemas: readonly z.ZodType[], stop?: ReadonlySet<z.Zod
         continue;
       }
       lazies.push(node);
+      // A lazy whose getter returns a new lazy, at every level, would never reach anything else.
+      if (lazies.length > MAX_SCHEMA_DEPTH) throw tooDeep();
       const inner = lazyInner(node);
       if (inner) stack.push(inner);
     } else if (STRUCTURAL.has(def.type)) leaves.push(node);
     else {
       const inside = marksIn(node);
       for (const className of inside) opaque.add(className);
-      if (inside.size === 0 && !SCALARS.has(def.type)) {
+      if (inside.size === 0 && !isScalar(def)) {
         free = true;
         unmarked.push(node);
       }
@@ -391,9 +426,19 @@ export interface PrivacyVisitor {
   unmarkedKey?(path: string, key: string): void;
 }
 
-/** Walk one position. `open` is the lazies and objects on the current branch, which are not walked again below themselves. */
-function walkAt(schemas: readonly z.ZodType[], path: string, visitor: PrivacyVisitor, open: Set<z.ZodType>): void {
+/**
+ * Walk one position. `open` is the lazies and objects on the current branch, which are not walked again below
+ * themselves, and `depth` how many positions deep the branch is.
+ */
+function walkAt(
+  schemas: readonly z.ZodType[],
+  path: string,
+  visitor: PrivacyVisitor,
+  open: Set<z.ZodType>,
+  depth: number,
+): void {
   if (schemas.length === 0) return;
+  if (depth > MAX_SCHEMA_DEPTH) throw tooDeep();
   const at = position(schemas, open);
   const whole = wholeMask(at);
   if (whole) {
@@ -405,7 +450,7 @@ function walkAt(schemas: readonly z.ZodType[], path: string, visitor: PrivacyVis
   if (visitor.unmarkedKey)
     for (const node of at.unmarked.filter((each) => !open.has(each))) {
       open.add(node);
-      walkAt(children(node), path, visitor, open);
+      walkAt(children(node), path, visitor, open, depth + 1);
       open.delete(node);
     }
   // A recursive object written with a getter reaches itself again; the second visit has nothing new to say.
@@ -417,14 +462,14 @@ function walkAt(schemas: readonly z.ZodType[], path: string, visitor: PrivacyVis
     const fieldPath = join(path, key);
     const field = fieldSchemas(leaves, key);
     if (!wholeMask(position(field, open))) visitor.unmarkedKey?.(fieldPath, key);
-    walkAt(field, fieldPath, visitor, open);
+    walkAt(field, fieldPath, visitor, open, depth + 1);
   }
-  walkAt(catchallSchemas(leaves), join(path, "*"), visitor, open);
-  walkAt(keySchemas(leaves), join(path, "<key>"), visitor, open);
+  walkAt(catchallSchemas(leaves), join(path, "*"), visitor, open, depth + 1);
+  walkAt(keySchemas(leaves), join(path, "<key>"), visitor, open, depth + 1);
   const items = Math.max(0, ...leaves.map((leaf) => (leafIs(leaf, "tuple") ? (defOf(leaf).items?.length ?? 0) : 0)));
   for (let index = 0; index < items; index += 1)
-    walkAt(elementSchemas(leaves, index), `${path}[${index}]`, visitor, open);
-  walkAt(restSchemas(leaves), `${path}[]`, visitor, open);
+    walkAt(elementSchemas(leaves, index), `${path}[${index}]`, visitor, open, depth + 1);
+  walkAt(restSchemas(leaves), `${path}[]`, visitor, open, depth + 1);
   for (const node of entered) open.delete(node);
 }
 
@@ -433,7 +478,7 @@ function walkAt(schemas: readonly z.ZodType[], path: string, visitor: PrivacyVis
  * second reader of the tree — the CLI's scan — cannot walk it differently.
  */
 export function walkPrivacy(schema: z.ZodType, visitor: PrivacyVisitor, path = ""): void {
-  walkAt([schema], path, visitor, new Set());
+  walkAt([schema], path, visitor, new Set(), 0);
 }
 
 /** Classifications already computed, by schema. A schema is immutable, so its answer never changes. */
