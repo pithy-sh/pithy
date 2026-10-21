@@ -1,6 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import {
+  type AuthProviderToggles,
+  authSecretsRegistry,
+  inapplicableProviderSecrets,
+} from "@pithy-sh/auth/src/instance/secrets";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { NotFoundError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
@@ -9,15 +16,17 @@ import { secrets } from "@pithy-sh/secrets/src/capability";
 import type { SecretDispatcher, SecretWriteRequest } from "@pithy-sh/secrets/src/cli/dispatch";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
+import { SUPPORT_BUCKET_BINDING, supportSecretsRegistry } from "@pithy-sh/support/src/secret/registry";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import type { WorkerConfig } from "../project/config";
 import { fixOf } from "../terminal/exitClass";
-import { unresolvedLines } from "./secretApplicability";
+import { secretApplicability, unresolvedLines } from "./secretApplicability";
 import {
   assertNotTheMasterKey,
   hiddenNote,
+  renderSecretList,
   resolveSecretRegistry,
   runSecretsList,
   runSecretWrite,
@@ -761,5 +770,93 @@ describe("unresolvedNote", () => {
     const unresolved = [{ environment: "prod", reason: "Set payments.billing." }];
     for (const line of unresolvedLines(unresolved)) expect(unresolvedNote(unresolved)).toContain(line);
     expect(unresolvedLines(unresolved).join("\n")).not.toContain("pithy doctor");
+  });
+});
+
+/**
+ * **The `ls` listings in `docs/commands/secrets.md` are what the command prints (#801).**
+ *
+ * They had drifted three ways at once: one example sat in the wrong order, showed a row only `--all`
+ * prints without the rest `--all` would add, and closed on the risk sentence for the other mode. A page
+ * that shows output the command cannot produce teaches a reader to distrust the real thing, so each
+ * fence is rendered here from the same seam the command writes through and compared byte for byte.
+ */
+describe("the ls examples in docs/commands/secrets.md", () => {
+  const page = readFileSync(
+    resolve(import.meta.dirname, "..", "..", "..", "..", "docs", "commands", "secrets.md"),
+    "utf8",
+  );
+
+  /** The first bare fence after `marker`: the example that paragraph introduces. */
+  function fenceAfter(marker: string): string {
+    const at = page.indexOf(marker);
+    expect(at, marker).toBeGreaterThan(-1);
+    const open = page.indexOf("\n```\n", at);
+    const close = page.indexOf("\n```\n", open + 5);
+    return page.slice(open + 5, close);
+  }
+
+  /**
+   * The project the page describes, built from the capabilities' own declarations rather than from a copy
+   * of them: auth's real registry and its real provider reasons with Google and GitHub enabled, and
+   * support's real registry with `SUPPORT_BUCKET` declined, folded by the same `secretApplicability` the
+   * command runs. A provider auth adds, or a reason it rewords, moves these rows and fails the page — the
+   * drift #801 was opened for, when Microsoft arrived in #262 and the page kept counting four.
+   */
+  const providers = { google: true, apple: false, facebook: false, github: true, microsoft: false } as const;
+  const project = { ...authSecretsRegistry, ...supportSecretsRegistry };
+  const { project: inapplicable } = secretApplicability([
+    {
+      name: "api",
+      capabilities: [
+        defineCapability({
+          name: "auth",
+          requiredBindings: [],
+          inapplicableSecrets: inapplicableProviderSecrets(
+            Object.fromEntries(
+              Object.entries(providers).map(([name, enabled]) => [name, { enabled }]),
+            ) as AuthProviderToggles,
+          ),
+        }),
+        defineCapability({ name: "support", requiredBindings: [] }),
+      ],
+      registry: project,
+      declines: {
+        state: "read",
+        declines: [
+          {
+            state: "honored",
+            name: SUPPORT_BUCKET_BINDING,
+            type: "r2",
+            capability: "support",
+            reason: "Attachments are off.",
+            stillPresentIn: [],
+          },
+        ],
+      },
+    },
+  ]);
+  const prod = [
+    {
+      environment: "prod",
+      reason: "Set payments.billing in apps/api/pithy.config.ts, or drop prod from environments.",
+    },
+  ];
+
+  test("the default listing", () => {
+    const rows = secretListRows(project, inapplicable);
+    expect(fenceAfter("**`ls` lists the secrets your configuration actually uses.**")).toBe(
+      renderSecretList(rows, inapplicable.size, []),
+    );
+  });
+
+  test("the --all listing", () => {
+    const rows = secretListRows(project, inapplicable, true);
+    expect(fenceAfter("**`--all` adds them back, each with its reason**")).toBe(renderSecretList(rows, 0, []));
+  });
+
+  test("the listing an environment that will not compose qualifies", () => {
+    const rows = secretListRows(project, inapplicable);
+    expect(fenceAfter("**Only a composition has an opinion")).toBe(renderSecretList(rows, inapplicable.size, prod));
   });
 });

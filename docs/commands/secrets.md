@@ -60,11 +60,11 @@ The registry is the definition. `pithy secrets` never invents a name — a secre
 **`ls` lists the secrets your configuration actually uses.** A capability declares its secrets whether or not you use them — `auth` declares five OAuth credentials whichever providers you enabled, `support` declares its R2 credentials whether or not anything will ever write to the bucket — and the ones your configuration will never read are **not listed**. This is a checklist of what to go and set, and a project running Google and GitHub has two OAuth credentials to think about, not five.
 
 ```
-auth-github-credentials     d1 · environment
-auth-google-credentials     d1 · environment
-auth-session-secret         d1 · environment · rotatable
+auth-github-credentials  d1 · environment
+auth-google-credentials  d1 · environment
+auth-session-secret      d1 · environment · rotatable
 
-2 secrets this configuration will never read are not listed. pithy secrets ls --all shows them, and why.
+4 secrets this configuration will never read are not listed. pithy secrets ls --all shows them, and why.
 ```
 
 Hiding is never silent: the count is always there, so *nothing applies here* can never be mistaken for *the CLI stopped showing me things*.
@@ -73,13 +73,18 @@ Hiding is never silent: the count is always there, so *nothing applies here* can
 
 ```
 auth-apple-credentials      not applicable — auth() does not enable the apple provider
+auth-facebook-credentials   not applicable — auth() does not enable the facebook provider
+auth-github-credentials     d1 · environment
+auth-google-credentials     d1 · environment
+auth-microsoft-credentials  not applicable — auth() does not enable the microsoft provider
+auth-session-secret         d1 · environment · rotatable
 support-r2-credentials      not applicable — SUPPORT_BUCKET declined in pithy.config.ts
 ```
 
 `--all` applies to `--json` too, rather than only the terminal — an agent is asking the same question a person is. Every row carries `applies` and, when it is `false`, `reason`, so nothing has to read the sentence; `hidden` counts what the flag would add:
 
 ```json
-{"command":"secrets ls","schemaVersion":1,"secrets":[{"name":"auth-github-credentials","description":"d1 · environment","applies":true}],"hidden":2,"unresolved":[]}
+{"command":"secrets ls","schemaVersion":1,"secrets":[{"name":"auth-github-credentials","description":"d1 · environment","applies":true},{"name":"auth-google-credentials","description":"d1 · environment","applies":true},{"name":"auth-session-secret","description":"d1 · environment · rotatable","applies":true}],"hidden":4,"unresolved":[]}
 ```
 
 A secret is hidden only when **no** Worker in the project can reach it. One Worker that still reads it is enough to leave the row alone, because the value is one value and that Worker needs it. [`pithy doctor`](./doctor.md) takes the other branch with the same answer: it is a fault report, so it leaves these out of *"No dev value for …"* entirely rather than listing something you cannot act on.
@@ -95,15 +100,19 @@ That credential is unreachable in `dev` and `staging` and read on every sign-in 
 **Only a composition has an opinion, so an environment that will not compose has none.** Your `pithy.config.ts` is code, so it can throw — a half-configured `prod` that refuses with *Billing is not configured for this environment* is the ordinary case. That environment produced no composition: no capabilities, no registry, no configuration, and so nothing that could need a secret. It is left out of the union, and the marks come from the environments that did compose:
 
 ```
-auth-github-credentials     d1 · environment
-auth-apple-credentials      not applicable — auth() does not enable the apple provider
+auth-github-credentials  d1 · environment
+auth-google-credentials  d1 · environment
+auth-session-secret      d1 · environment · rotatable
 
+4 secrets this configuration will never read are not listed. pithy secrets ls --all shows them, and why.
 One environment did not compose, so this answer is drawn from the rest.
   prod: Set payments.billing in apps/api/pithy.config.ts, or drop prod from environments.
-A secret only those environments need may be marked not applicable above. Run pithy doctor.
+A secret only those environments need may be among the ones not listed. Run pithy doctor.
 ```
 
-The reason is that error's own action line. **The note is there because this carries a risk**: a credential only `prod` reads can be marked *not applicable* on the strength of `dev` and `staging`. The answer is to fix the config rather than to guess — a `prod` that does not load does not have requirements, it has a fault, and [`pithy doctor`](./doctor.md) reports it as one under `Environment configs:`. Fix it and the marks are decided from all three.
+Under `--all` the last line reads *may be marked not applicable above* instead, because there the rows it means are on the screen.
+
+The reason is that error's own action line. **The note is there because this carries a risk**: a credential only `prod` reads can be ruled *not applicable*, and so left out of the list, on the strength of `dev` and `staging`. The answer is to fix the config rather than to guess — a `prod` that does not load does not have requirements, it has a fault, and [`pithy doctor`](./doctor.md) reports it as one under `Environment configs:`. Fix it and the marks are decided from all three.
 
 **A value never comes from a flag.** `create` and `update` read the value from stdin when it is piped, and from a masked prompt when one can be drawn — and refuse when neither is available, rather than reading your terminal in silence. A flag would leave a live credential in shell history and in every process list on the machine. Nothing here prints a value back, on any subcommand, in either output mode.
 

@@ -49,6 +49,8 @@ async function filtersFor(changed: readonly string[]): Promise<string[]> {
 const RECORD: Record<string, string> = {
   ".": "The repo root. `project/atomic.test.ts`'s rename and recursive-delete tripwires walk every source file in the tree, and the docs tests hold `README.md` and `docs/` to the CLI's real output.",
   "docs/CLI.md": "`terminal/styleDocs.test.ts` holds the documented styles to the ones the terminal module exports.",
+  "docs/commands/secrets.md":
+    "`capabilities/secrets.test.ts` renders each `ls` listing the page shows through the seam the command prints with, and compares the fence byte for byte (#801): one example had drifted into an order, a row set and a closing sentence that neither `ls` nor `ls --all` can print.",
   "docs/commands/testers.md":
     "`commands/testers.test.ts` runs the testers refusals and notes the page quotes, and finds each on the page (#711): a quoted line that kept its old form named a roster read with no `--env`, which reads `dev`'s whatever environment the reader was on.",
   "docs/FIXTURES.md":

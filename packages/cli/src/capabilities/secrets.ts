@@ -19,6 +19,7 @@ import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { allCapabilities, type WorkerConfig } from "../project/config";
+import { formatList } from "../terminal/output";
 import { type UnresolvedEnvironment, unresolvedLines } from "./secretApplicability";
 
 /** The audit action for a value-touching secret command, by mode. Never carries the secret's value. */
@@ -437,6 +438,19 @@ export function unresolvedNote(unresolved: readonly UnresolvedEnvironment[], hid
       ? `A secret only those environments need may be among the ones not listed. Run ${pithyCommand("doctor")}.`
       : `A secret only those environments need may be marked not applicable above. Run ${pithyCommand("doctor")}.`;
   return ["", ...unresolvedLines(unresolved), risk].join("\n");
+}
+
+/**
+ * The whole terminal `ls` listing: the rows, the hidden count, and the note on environments that did not
+ * compose. One seam, so the examples in `docs/commands/secrets.md` are pinned to what the command prints
+ * rather than to what somebody remembered it printing (#801).
+ */
+export function renderSecretList(
+  rows: readonly SecretListRow[],
+  hidden: number,
+  unresolved: readonly UnresolvedEnvironment[],
+): string {
+  return `${formatList([...rows])}${hiddenNote(hidden)}${unresolvedNote(unresolved, hidden)}`;
 }
 
 /** The `ls` / `ls --check` view: the declared names (keyspaces included), the audit, and the gate. */
