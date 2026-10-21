@@ -22,7 +22,8 @@ import type { RedactedOutput } from "./types";
  * not, it masks whole and says so.
  *
  * **Redacted exactly.** Every marked field is masked with its class placeholder, every unmarked field is kept as
- * `parse` returned it, nothing is dropped, and `Redacted<T>` is the exact type of the result:
+ * `parse` returned it, nothing is dropped, and `Redacted<T>` is the exact type of the result, save the one position
+ * item 6 names:
  *
  * 1. Rows and objects: `z.object`, strict, loose or with a catchall, and `pick`, `omit`, `partial` and `extend` of one.
  * 2. Collections: arrays, tuples including rest elements, records with marked keys or values, `Map` and `Set`.
@@ -31,15 +32,17 @@ import type { RedactedOutput } from "./types";
  * 5. The kit's database codecs: `SQLiteDate`, `SQLiteBoolean` and `sqliteJson(schema)`. A JSON column's inner fields
  *    are redacted field by field.
  * 6. Recursion and getters: `z.lazy(() => Node)`, or a getter, whether it returns one schema or builds a new one each
- *    read, such as trees and linked lists. Zod reads a getter once, and `redact` walks the schema it settled on.
+ *    read, such as trees and linked lists. Zod reads a getter once, and `redact` walks the schema it settled on. A
+ *    self-referencing `z.lazy` has to be annotated `z.ZodType<T>`, which names no kind, so `Redacted<T>` types it, and
+ *    every field that holds it, `unknown`. Write the recursion with a getter and the type keeps its shape.
  * 7. Values copied out of a parsed row into a plain object, array, `Map` or `Set` described by any of the above.
  *
  * **Outside the contract.** Custom transforms and pipes, `preprocess`, codecs other than the kit's own (one built the
  * way `sqliteJson` is built included), `z.custom`, `any`, `unknown`, and a recursion that builds a new schema at every
- * level without end. `redact` does not look inside these. When
- * anything beneath one is marked, the whole value is masked with the strongest class it carries, and `Redacted<T>`
- * types that position `unknown`. When nothing beneath it is marked, it is kept as it is. Recursion past a fixed depth
- * is masked whole. None of this ever throws or leaks a raw marked value.
+ * level without end: a lazy, or a field that holds a fresh copy of the object it sits in. `redact` does not look inside
+ * these. When anything beneath one is marked, the whole value is masked with the strongest class it carries, and
+ * `Redacted<T>` types that position `unknown`. When nothing beneath it is marked, it is kept as it is. Recursion past a
+ * fixed depth is masked whole. None of this ever throws or leaks a raw marked value.
  *
  * ## The edges, exactly
  *

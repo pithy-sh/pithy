@@ -270,6 +270,15 @@ describe("the rule: structural nodes are walked", () => {
       label: "[pii]",
       children: [{ label: "[pii]", children: [] }],
     });
+    // The type: a self-referencing lazy has to be annotated `z.ZodType<T>`, which names no kind, so it is `unknown`,
+    // and so is every field that holds it. The getter is inferred, and keeps its shape.
+    type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+    const same = <A, B>(..._proof: Same<A, B> extends true ? [] : [never]): void => {};
+    same<Redacted<typeof Nd>, unknown>();
+    same<Redacted<z.ZodObject<{ id: z.ZodNumber; list: typeof Nd }>>, { id: number; list: unknown }>();
+    type Walked = Redacted<typeof Category>;
+    same<Walked["label"], string>();
+    same<Walked["children"][number]["label"], string>();
   });
 
   test("keeps every element a tuple has no item for", () => {
@@ -502,10 +511,57 @@ describe("outside the contract: masked whole when marked beneath, kept when not,
       { path: "next", class: "secret", truncated: true },
     ]);
     expect(redact(Root, { e: "S-1", next: { e: "S-2" } } as never)).toEqual({ e: "[pii]", next: "[secret]" });
+    // Read by `parse` first, which freezes each shape it reads: the same answer, masked whole at the same position.
     const Parsed = make();
     const value = Parsed.parse({ e: "S-1", next: { e: "S-2", next: { e: "S-3" } } });
-    expect(raw(redact(Parsed, value as never))).toEqual([]);
-    expect(() => classifyPrivacy(Parsed)).not.toThrow();
+    expect(redact(Parsed, value as never)).toEqual({ e: "[pii]", next: "[secret]" });
+    expect(classifyPrivacy(Parsed)).toEqual(classifyPrivacy(Root));
+  });
+
+  test("an endless build held by a plain field is masked whole where it starts to repeat, whoever read it first", () => {
+    const make = (): z.ZodType =>
+      z.object({
+        e: pii(z.string()),
+        get next() {
+          return make().optional();
+        },
+      });
+    const deep = (n: number): unknown => (n === 0 ? { e: "S-0" } : { e: `S-${n}`, next: deep(n - 1) });
+    const value = { id: "P-1", n: deep(4) };
+    const expected = { id: "P-1", n: { e: "[pii]", next: "[secret]" } };
+    const listed = [
+      { path: "n.e", class: "pii" },
+      { path: "n.next", class: "pii" },
+      { path: "n.next", class: "secret", truncated: true },
+    ];
+    const Fresh = z.object({ id: z.string(), n: make() });
+    expect(redact(Fresh, value as never)).toEqual(expected);
+    expect(classifyPrivacy(Fresh)).toEqual(listed);
+    const Parsed = z.object({ id: z.string(), n: make() });
+    Parsed.parse(value);
+    expect(redact(Parsed, value as never)).toEqual(expected);
+    expect(classifyPrivacy(Parsed)).toEqual(listed);
+    // Two builders that build each other: the build repeats every second level, and is masked whole where it starts.
+    const makeA = (): z.ZodType =>
+      z.object({
+        a: pii(z.string()),
+        get b() {
+          return makeB().optional();
+        },
+      });
+    const makeB = (): z.ZodType =>
+      z.object({
+        k: z.string(),
+        get a() {
+          return makeA();
+        },
+      });
+    const mutual = { a: "S-1", b: { k: "P-1", a: { a: "S-2", b: { k: "P-2", a: { a: "S-3" } } } } };
+    const FreshA = makeA();
+    const ParsedA = makeA();
+    ParsedA.parse(mutual);
+    expect(redact(FreshA, mutual as never)).toEqual({ a: "[pii]", b: "[secret]" });
+    expect(redact(ParsedA, mutual as never)).toEqual({ a: "[pii]", b: "[secret]" });
   });
 
   test("a transform, a preprocess and a pipe are masked whole over a mark, and kept over none", () => {
