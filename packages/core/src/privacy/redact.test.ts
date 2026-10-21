@@ -183,6 +183,31 @@ describe("redact", () => {
     expect(redact(Both, { id: "u", email: "a@b.c", extra: 1 } as never)).toEqual({ id: "u", email: "[pii]" });
   });
 
+  test("keeps a nested key either side of an intersection names, and masks it at every depth", () => {
+    const Both = z.intersection(
+      z.object({ p: z.object({ name: z.string(), deep: z.object({ a: z.string() }) }) }),
+      z.object({ p: z.object({ email: pii(z.string()), deep: z.object({ b: secret(z.string()) }) }) }),
+    );
+    const value = Both.parse({ p: { name: "Ada", email: "a@b.c", deep: { a: "x", b: "y", c: "z" }, extra: 1 } });
+    expect(redact(Both, value)).toEqual({ p: { name: "Ada", email: "[pii]", deep: { a: "x", b: "[secret]" } } });
+  });
+
+  test("keeps a nested key any option a union value parses as names", () => {
+    const U = z.union([
+      z.object({ p: z.object({ x: z.string() }) }),
+      z.object({ p: z.object({ y: pii(z.string()) }) }),
+    ]);
+    const value = { p: { x: "kept", y: "a@b.c", z: "dropped" } };
+    expect(redact(U, value as never)).toEqual({ p: { x: "kept", y: "[pii]" } });
+  });
+
+  test("drops a key only an option the value does not parse as names, so no side copies it raw", () => {
+    const Left = z.union([z.object({ b: pii(z.string()), z: z.number() }), z.object({ c: z.string() })]);
+    const Right = z.union([z.object({ b: pii(z.string()), z: z.number() }), z.object({ d: z.string() })]);
+    const Both = z.intersection(Left, Right);
+    expect(redact(Both, { b: "a@b.c", c: "c", d: "d" } as never)).toEqual({ c: "c", d: "d" });
+  });
+
   test("keeps a key a loose object's catchall lets through", () => {
     const Loose = z.looseObject({ id: z.string() });
     expect(redact(Loose, Loose.parse({ id: "u", extra: 1 }))).toEqual({ id: "u", extra: 1 });
