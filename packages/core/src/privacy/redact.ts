@@ -3,7 +3,7 @@
 
 import type { z } from "zod";
 import { privacyClass, strongestPrivacyClass } from "./classes";
-import { classifyPrivacy, opaqueOutput, privacyOf } from "./classify";
+import { classifyPrivacy, codecHidesMarks, opaqueOutput, overwrites, privacyOf } from "./classify";
 import type { RedactedOutput } from "./types";
 
 /**
@@ -40,8 +40,17 @@ import type { RedactedOutput } from "./types";
  * returns says nothing about where the email went — a class instance, a renamed field, a copy under a second key — so
  * the output is masked whole with the strongest class its input carries (`secret`, `phi`, `pci`, an adopter's class,
  * then `pii`), as its placeholder. A custom check, an `any` or an `unknown` on a pipe's output side is as opaque. A
- * transform over an unmarked input, and a codec or a pipe into a schema, are walked like any other branch.
- * `classifyPrivacy` lists the position, and `Redacted<T>` types it as a `string`.
+ * codec's decode is a function too, so a codec whose app side does not mark, with the same class, every path its wire
+ * side marks is masked whole the same way: decode may have put the wire value in any app field. `sqliteJson(Profile)`
+ * holds `Profile` on both sides and is walked. A transform over an unmarked input, a codec whose app side names its
+ * wire side's marks, and a plain pipe into a schema are walked like any other branch. `classifyPrivacy` lists the
+ * position, and `Redacted<T>` types it as a `string`.
+ *
+ * **An overwrite over a node with a mark inside is masked whole.** `.overwrite()` is a function that keeps the type, so
+ * `z.object({ email: pii(z.email()), name: z.string() }).overwrite(copyEmailToName)` holds the email under `name`.
+ * `classifyPrivacy` lists the position. The type cannot see a check, so `Redacted<T>` still types it as the object:
+ * this is the one place the type says less than `redact` does. A marked field with an overwrite of its own,
+ * `pii(z.string().trim())`, is masked by its own marker, and an unmarked leaf has nothing inside to move.
  *
  * **A class instance or a date where a branch with a mark inside reaches it is masked whole** too, because no schema
  * kind walks into one: in `z.union([z.object({ e: pii(z.email()) }), z.instanceof(Account)])` an `Account` comes back
@@ -63,7 +72,8 @@ import type { RedactedOutput } from "./types";
  * value: a record keyed by a `pii()` email masks each key. A masked key never takes the name of a key that stayed
  * as it was, nor of another masked key: two keys that mask alike come back as `[pii]` and `[pii] #2`, so the
  * result holds as many entries as the value did. A set's masked elements are numbered apart the same way, so it keeps
- * every element, and a map's object key is redacted field by field.
+ * every element, and a map's object key is redacted field by field. Every key is defined on the copy, not assigned, so
+ * an own `__proto__` key that parse kept under an `unknown` stays a key and never becomes the copy's prototype.
  *
  * It never mutates its argument, and it never throws on a value that does not match the schema: it masks what it
  * can name and copies the rest.
@@ -221,6 +231,8 @@ function walk(schema: z.ZodType, value: unknown, plan: Plan): void {
     plan.mask ??= marked;
     return;
   }
+  // An overwrite is a function that keeps the type: it can copy a marked value into an unmarked field.
+  if (overwrites(schema) && maskedWhole(schema, plan)) return;
   // A class instance or a date where a branch with a mark inside reached it: what the mark became is not readable.
   if (isOpaqueValue(value) && maskedWhole(schema, plan)) return;
 
@@ -291,8 +303,10 @@ function walk(schema: z.ZodType, value: unknown, plan: Plan): void {
       return;
     case "pipe":
       // A transform's output, or a custom check's, is opaque: when the input carries a mark, the output is masked whole.
-      if (def.in && def.out && opaqueOutput(def.out) && maskedWhole(def.in, plan)) return;
-      // Both sides: a codec's wire side and its app side, a plain pipe's input and its output, a transform's input.
+      // A codec's decode is a function like a transform, so one whose app side does not mark what its wire side marks
+      // is masked whole too.
+      if (def.in && def.out && (opaqueOutput(def.out) || codecHidesMarks(node)) && maskedWhole(def.in, plan)) return;
+      // Both sides: a codec's app side over an unmarked wire, a plain pipe's input and its output, a transform's input.
       if (def.in) walk(def.in, value, plan);
       if (def.out) walk(def.out, value, plan);
       return;
@@ -361,9 +375,15 @@ function applied(plan: Plan | undefined, value: unknown): unknown {
     // A key no branch names is one parse strips under every branch; when no object branch reached here, none did.
     const kept = Object.entries(value).filter(([key]) => !plan.objects || plan.keepsAll || plan.named.has(key));
     const entries = kept.map(([key, item]) => [key, item, plan.keys.get(key)] as const);
+    // Defined, not assigned: an own `__proto__` key that parse kept stays a key, and never becomes the prototype.
     const out: Record<string, unknown> = {};
     redactedEntries(entries).forEach(([name, item], index) => {
-      out[String(name)] = applied(plan.inner.get(entries[index]?.[0] as string), item);
+      Object.defineProperty(out, String(name), {
+        value: applied(plan.inner.get(entries[index]?.[0] as string), item),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
     });
     return out;
   }

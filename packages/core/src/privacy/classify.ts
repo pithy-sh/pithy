@@ -33,7 +33,9 @@ import { PRIVACY_META_KEY, strongestPrivacyClass } from "./classes";
  * back whatever `toAccount` returns, and no schema says where the email went, so `redact` masks the output whole with
  * the strongest class its input carries. The walk lists that position first — the empty path here — and then the
  * input's own marked fields, because those are what the input holds. A custom check, an `any` or an `unknown` on a
- * pipe's output side is as opaque as a transform.
+ * pipe's output side is as opaque as a transform, and so is a codec whose app side does not mark every path its wire
+ * side marks, because decode is a function too. An `.overwrite()` over a node with a mark inside is listed whole the
+ * same way.
  *
  * **Every branch is walked**: each option of a union or a discriminated union, both sides of an intersection. This is
  * the set of positions `redact` masks, exactly — it fails closed, masking a position any branch marks.
@@ -71,6 +73,8 @@ interface Def {
   getter?: () => z.ZodType;
   in?: z.ZodType;
   out?: z.ZodType;
+  transform?: unknown;
+  checks?: readonly { _zod?: { def?: { check?: string } } }[];
 }
 
 /** The definition behind a schema. */
@@ -160,6 +164,90 @@ export function opaqueOutput(schema: z.ZodType, seen: Set<z.ZodType> = new Set()
   }
 }
 
+/** Codecs already decided, and the ones being decided now: a recursive one reaches itself inside its own sides. */
+const decided = new WeakMap<z.ZodType, boolean>();
+const deciding = new Set<z.ZodType>();
+/**
+ * The objects and lazies open across every decision in progress. A lazy's getter may build a new codec each time it is
+ * called, so the codec alone never repeats; the lazy does, and a decision nested in another stops at it.
+ */
+let decidingOpen: Set<z.ZodType> | undefined;
+
+/** Every marked path in `schema` and its class, as `path\0class`, walked from the empty path. */
+function markedPaths(schema: z.ZodType, open: Set<z.ZodType>): Set<string> {
+  const found = new Set<string>();
+  walk(schema, "", { marked: (path, className) => found.add(`${path}\u0000${className}`) }, open);
+  return found;
+}
+
+/**
+ * Whether a codec's decode can hide a mark: its wire side marks a path, with a class, that its app side does not mark
+ * with the same class. Decode is a function, so a marked wire value can land in any app field; only when the app side
+ * marks every path the wire side marks does the app side say where each one went. `sqliteJson(Profile)` holds
+ * `Profile` on both sides and is walked; a codec that renames a marked field is masked whole. `false` for a schema that
+ * is not a codec.
+ */
+export function codecHidesMarks(schema: z.ZodType): boolean {
+  const def = defOf(schema);
+  if (def.type !== "pipe" || typeof def.transform !== "function" || !def.in || !def.out) return false;
+  const known = decided.get(schema);
+  if (known !== undefined) return known;
+  // A codec reached again inside its own sides answers for the outer one, which is still deciding.
+  if (deciding.has(schema)) return false;
+  const outermost = decidingOpen === undefined;
+  const open = decidingOpen ?? new Set<z.ZodType>();
+  decidingOpen = open;
+  deciding.add(schema);
+  try {
+    const wire = markedPaths(def.in, open);
+    const app = wire.size === 0 ? wire : markedPaths(def.out, open);
+    const hides = [...wire].some((path) => !app.has(path));
+    // A nested answer was reached with lazies open above it, so only the outermost one is kept.
+    if (outermost) decided.set(schema, hides);
+    return hides;
+  } finally {
+    deciding.delete(schema);
+    if (outermost) decidingOpen = undefined;
+  }
+}
+
+/**
+ * Whether `.overwrite()` sits on a schema or on any wrapper around it. An overwrite is a function that keeps the
+ * type, so over an object it can copy a marked field into an unmarked one.
+ */
+export function overwrites(schema: z.ZodType): boolean {
+  for (let node: z.ZodType | undefined = schema; node; node = unwrapOnce(node))
+    if ((defOf(node).checks ?? []).some((check) => check._zod?.def?.check === "overwrite")) return true;
+  return false;
+}
+
+/**
+ * Walk `schema` into a buffer, and hand `visitor` the strongest class it heard at `path` first when `whole` says the
+ * position is masked whole, then everything it heard. The step a transform's input, a codec's wire side and an
+ * overwritten object share.
+ */
+function walkWhole(
+  schema: z.ZodType,
+  path: string,
+  visitor: PrivacyVisitor,
+  open: Set<z.ZodType>,
+  whole: boolean,
+  body: (target: PrivacyVisitor) => void = (target) => walk(schema, path, target, open),
+): void {
+  const heard: ((target: PrivacyVisitor) => void)[] = [];
+  const classes: string[] = [];
+  body({
+    marked: (at, className) => {
+      classes.push(className);
+      heard.push((target) => target.marked(at, className));
+    },
+    unmarkedKey: (at, key) => heard.push((target) => target.unmarkedKey?.(at, key)),
+  });
+  const strongest = whole ? strongestPrivacyClass(classes) : undefined;
+  if (strongest !== undefined) visitor.marked(path, strongest);
+  for (const replay of heard) replay(visitor);
+}
+
 /** Walk one node, reporting each marked path it holds. `open` is the objects and lazies on the current branch. */
 function walk(schema: z.ZodType, path: string, visitor: PrivacyVisitor, open: Set<z.ZodType>): void {
   const marked = privacyOf(schema);
@@ -167,6 +255,16 @@ function walk(schema: z.ZodType, path: string, visitor: PrivacyVisitor, open: Se
     visitor.marked(path, marked);
     return;
   }
+  // An overwrite over a node with a mark inside is masked whole by `redact`, so the position is listed first.
+  if (overwrites(schema)) {
+    walkWhole(schema, path, visitor, open, true, (target) => walkNode(schema, path, target, open));
+    return;
+  }
+  walkNode(schema, path, visitor, open);
+}
+
+/** The body of {@link walk}, past the marker and the overwrite. */
+function walkNode(schema: z.ZodType, path: string, visitor: PrivacyVisitor, open: Set<z.ZodType>): void {
   let node: z.ZodType = schema;
   for (let inner = unwrapOnce(node); inner; inner = unwrapOnce(node)) node = inner;
   const def = defOf(node);
@@ -217,26 +315,17 @@ function walk(schema: z.ZodType, path: string, visitor: PrivacyVisitor, open: Se
       return;
     case "pipe": {
       // Either side may carry a marker — a codec's wire side and its app side, a plain pipe's input and its output —
-      // and `redact` masks a position either side marks, so both are listed. When the output is opaque and the input
-      // carries a marker, `redact` masks the position whole, so the position is listed first, as the strongest class.
-      const heard: ((target: PrivacyVisitor) => void)[] = [];
-      const classes: string[] = [];
+      // and `redact` masks a position either side marks, so both are listed. When the output is opaque, or the pipe is
+      // a codec whose app side does not mark what its wire side marks, and the input carries a marker, `redact` masks
+      // the position whole, so the position is listed first, as the strongest class.
       if (def.in)
-        walk(
+        walkWhole(
           def.in,
           path,
-          {
-            marked: (at, className) => {
-              classes.push(className);
-              heard.push((target) => target.marked(at, className));
-            },
-            unmarkedKey: (at, key) => heard.push((target) => target.unmarkedKey?.(at, key)),
-          },
+          visitor,
           open,
+          (def.out !== undefined && opaqueOutput(def.out)) || codecHidesMarks(node),
         );
-      const whole = def.out && opaqueOutput(def.out) ? strongestPrivacyClass(classes) : undefined;
-      if (whole !== undefined) visitor.marked(path, whole);
-      for (const replay of heard) replay(visitor);
       if (def.out) walk(def.out, path, visitor, open);
       return;
     }

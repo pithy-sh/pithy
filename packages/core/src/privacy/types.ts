@@ -143,29 +143,31 @@ type RedactedAt<T, C> =
     : true extends IsMarked<C>
       ? string
       : T extends unknown
-        ? T extends readonly unknown[]
-          ? IsTuple<T> extends true
-            ? RedactedTuple<T, C>
-            : T extends unknown[]
-              ? RedactedAt<T[number], ElementOf<C>>[]
-              : readonly RedactedAt<T[number], ElementOf<C>>[]
-          : T extends Map<infer K, infer V>
-            ? Map<RedactedAt<K, MapKeyOf<C>>, RedactedAt<V, MapValueOf<C>>>
-            : T extends ReadonlyMap<infer K, infer V>
-              ? ReadonlyMap<RedactedAt<K, MapKeyOf<C>>, RedactedAt<V, MapValueOf<C>>>
-              : T extends Set<infer E>
-                ? Set<RedactedAt<E, SetElementOf<C>>>
-                : T extends ReadonlySet<infer E>
-                  ? ReadonlySet<RedactedAt<E, SetElementOf<C>>>
-                  : T extends Opaque
-                    ? T extends MaskedWhenMarked
-                      ? true extends CarriesMark<C>
-                        ? string
+        ? T extends MaybeInstance<infer U>
+          ? string | RedactedAt<U, C>
+          : T extends readonly unknown[]
+            ? IsTuple<T> extends true
+              ? RedactedTuple<T, C>
+              : T extends unknown[]
+                ? RedactedAt<T[number], ElementOf<C>>[]
+                : readonly RedactedAt<T[number], ElementOf<C>>[]
+            : T extends Map<infer K, infer V>
+              ? Map<RedactedAt<K, MapKeyOf<C>>, RedactedAt<V, MapValueOf<C>>>
+              : T extends ReadonlyMap<infer K, infer V>
+                ? ReadonlyMap<RedactedAt<K, MapKeyOf<C>>, RedactedAt<V, MapValueOf<C>>>
+                : T extends Set<infer E>
+                  ? Set<RedactedAt<E, SetElementOf<C>>>
+                  : T extends ReadonlySet<infer E>
+                    ? ReadonlySet<RedactedAt<E, SetElementOf<C>>>
+                    : T extends Opaque
+                      ? T extends MaskedWhenMarked
+                        ? true extends CarriesMark<C>
+                          ? string
+                          : T
                         : T
-                      : T
-                    : T extends object
-                      ? { [K in keyof T as true extends IsMarked<K> ? string : K]: RedactedAt<T[K], FieldOf<C, K>> }
-                      : T
+                      : T extends object
+                        ? { [K in keyof T as true extends IsMarked<K> ? string : K]: RedactedAt<T[K], FieldOf<C, K>> }
+                        : T
         : never;
 
 /**
@@ -192,8 +194,21 @@ type CarriesMark<C> =
  * where its input's marks went — a class instance, a renamed field — and `redact` masks it whole, so the type reads
  * the schema, not only its output: an object, an array, a set, a map, a record, a union, an intersection, a lazy and
  * every wrapper are followed to {@link PRIVACY_CHECK_DEPTH} levels, and any other kind keeps its output type.
+ *
+ * The marks are read off the schema too, because a codec's wire side and a pipe's input leave no brand on the output
+ * type. A codec whose app side does not mark every path its wire side marks is a `string`, as `redact` masks it
+ * whole; a plain pipe's input marks join its output's; a `z.instanceof` member of a position with a mark inside may be
+ * the masked `string`. An `.overwrite()` is a check, which no type can see, so the object it overwrites keeps its type
+ * though `redact` masks it whole.
  */
 export type RedactedOutput<S> = Redacted<Revealed<S>>;
+
+/**
+ * A `z.instanceof` or `z.custom` member where a branch with a mark inside reaches the position. `redact` masks a class
+ * instance there whole and walks a plain object, and the type cannot tell the two apart, so {@link Redacted} gives
+ * this member as `string` or the type redacted. A box, not a brand: a brand would mask the whole position.
+ */
+type MaybeInstance<T> = { readonly "privacy:instance": T };
 
 /** The brand a position {@link Revealed} masks whole carries, so {@link Redacted} turns it into a `string`. */
 type MaskedWhole = string & { readonly [z.core.$brand]: { readonly "privacy:opaque": true } };
@@ -225,8 +240,73 @@ type IsOpaqueOutput<S, D extends number = PRIVACY_CHECK_DEPTH> = [D] extends [ne
               ? IsOpaqueOutput<I, Prev[D]>
               : false;
 
-/** A schema's output, with every position a transform over a marked input fills replaced by {@link MaskedWhole}. */
-type Revealed<S, D extends number = PRIVACY_CHECK_DEPTH> = [D] extends [never]
+/** `parent.key`, or `key` at the root, as `classifyPrivacy` joins a path. */
+type Join<P extends string, K extends string> = P extends "" ? K : `${P}.${K}`;
+
+/** The privacy brand keys a type carries — `privacy:pii` — or `never`. */
+type MarkKeys<T> = T extends { readonly [z.core.$brand]: infer M } ? Extract<keyof M, `privacy:${string}`> : never;
+
+/**
+ * Every marked path in a schema and its brand key, as `path|privacy:class` — the walk `classifyPrivacy` does, at the
+ * type level, to {@link PRIVACY_CHECK_DEPTH} levels. A marked node is not descended into. A schema's output type
+ * cannot say this: a codec's wire side, and a pipe's input, leave no brand on what it returns.
+ */
+type MarkedPaths<S, P extends string = "", D extends number = PRIVACY_CHECK_DEPTH> = [D] extends [never]
+  ? never
+  : IsAny<z.output<S>> extends true
+    ? never
+    : [MarkKeys<z.output<S>>] extends [never]
+      ? DefOf<S> extends { type: "pipe"; in: infer I; out: infer O }
+        ? MarkedPaths<I, P, Prev[D]> | MarkedPaths<O, P, Prev[D]>
+        : DefOf<S> extends {
+              type: "optional" | "nullable" | "default" | "prefault" | "readonly" | "catch" | "nonoptional";
+              innerType: infer I;
+            }
+          ? MarkedPaths<I, P, Prev[D]>
+          : DefOf<S> extends { type: "lazy"; getter: () => infer I }
+            ? MarkedPaths<I, P, Prev[D]>
+            : DefOf<S> extends { type: "union"; options: readonly (infer O)[] }
+              ? O extends unknown
+                ? MarkedPaths<O, P, Prev[D]>
+                : never
+              : DefOf<S> extends { type: "intersection"; left: infer L; right: infer R }
+                ? MarkedPaths<L, P, Prev[D]> | MarkedPaths<R, P, Prev[D]>
+                : DefOf<S> extends { type: "array"; element: infer E }
+                  ? MarkedPaths<E, `${P}[]`, Prev[D]>
+                  : DefOf<S> extends { type: "set"; valueType: infer E }
+                    ? MarkedPaths<E, `${P}[]`, Prev[D]>
+                    : DefOf<S> extends { type: "tuple"; items: infer Items extends readonly unknown[]; rest: infer R }
+                      ?
+                          | {
+                              [K in keyof Items & `${number}`]: MarkedPaths<Items[K], `${P}[${K}]`, Prev[D]>;
+                            }[keyof Items & `${number}`]
+                          | MarkedPaths<R, `${P}[]`, Prev[D]>
+                      : DefOf<S> extends { type: "record" | "map"; keyType: infer K; valueType: infer V }
+                        ? MarkedPaths<K, Join<P, "<key>">, Prev[D]> | MarkedPaths<V, Join<P, "*">, Prev[D]>
+                        : DefOf<S> extends { type: "object"; shape: infer Shape; catchall?: infer C }
+                          ?
+                              | {
+                                  [K in keyof Shape & string]: MarkedPaths<Shape[K], Join<P, K>, Prev[D]>;
+                                }[keyof Shape & string]
+                              | MarkedPaths<C, Join<P, "*">, Prev[D]>
+                          : never
+      : `${P}|${MarkKeys<z.output<S>>}`;
+
+/** Whether a schema carries a mark anywhere: on a codec's wire side and a pipe's input as well as its output. */
+type SchemaMarked<S> = [MarkedPaths<S>] extends [never] ? false : true;
+
+/** Whether one schema marks a path, with a class, that the other does not: what a codec's decode could hide. */
+type HidesMarks<I, O> = [Exclude<MarkedPaths<I>, MarkedPaths<O>>] extends [never] ? false : true;
+
+/** A codec's definition: a pipe whose decode is a function. A plain pipe's `transform` is optional and absent. */
+type CodecDef = { type: "pipe"; transform: (...args: never[]) => unknown };
+
+/**
+ * A schema's output, with every position a transform over a marked input fills replaced by {@link MaskedWhole}. `P` is
+ * the outermost schema at this position: a union's or an intersection's options, a pipe's sides and every wrapper are
+ * the same position, so they keep it, and a field, an element or a value starts its own.
+ */
+type Revealed<S, D extends number = PRIVACY_CHECK_DEPTH, P = S> = [D] extends [never]
   ? z.output<S>
   : IsAny<z.output<S>> extends true
     ? z.output<S>
@@ -234,41 +314,52 @@ type Revealed<S, D extends number = PRIVACY_CHECK_DEPTH> = [D] extends [never]
       ? z.output<S>
       : DefOf<S> extends { type: "pipe"; in: infer I; out: infer O }
         ? IsOpaqueOutput<O> extends true
-          ? true extends ContainsMarked<z.output<I>>
+          ? SchemaMarked<I> extends true
             ? MaskedWhole
             : z.output<S>
-          : Revealed<O, Prev[D]>
-        : DefOf<S> extends { type: "optional"; innerType: infer I }
-          ? Revealed<I, Prev[D]> | undefined
-          : DefOf<S> extends { type: "nullable"; innerType: infer I }
-            ? Revealed<I, Prev[D]> | null
-            : DefOf<S> extends { type: "default" | "nonoptional"; innerType: infer I }
-              ? Exclude<Revealed<I, Prev[D]>, undefined>
-              : DefOf<S> extends { type: "prefault" | "catch"; innerType: infer I }
-                ? Revealed<I, Prev[D]>
-                : DefOf<S> extends { type: "lazy"; getter: () => infer I }
-                  ? Revealed<I, Prev[D]>
-                  : DefOf<S> extends { type: "union"; options: readonly (infer O)[] }
-                    ? O extends unknown
-                      ? Revealed<O, Prev[D]>
-                      : never
-                    : DefOf<S> extends { type: "intersection"; left: infer L; right: infer R }
-                      ? Revealed<L, Prev[D]> & Revealed<R, Prev[D]>
-                      : DefOf<S> extends { type: "array"; element: infer E }
-                        ? Revealed<E, Prev[D]>[]
-                        : DefOf<S> extends { type: "set"; valueType: infer E }
-                          ? Set<Revealed<E, Prev[D]>>
-                          : DefOf<S> extends { type: "map"; keyType: infer K; valueType: infer V }
-                            ? Map<Revealed<K, Prev[D]>, Revealed<V, Prev[D]>>
-                            : DefOf<S> extends { type: "record"; valueType: infer V }
-                              ? { [P in keyof z.output<S>]: Revealed<V, Prev[D]> }
-                              : DefOf<S> extends { type: "object"; shape: infer Shape }
-                                ? {
-                                    [P in keyof z.output<S>]: P extends keyof Shape
-                                      ? Revealed<Shape[P], Prev[D]>
-                                      : z.output<S>[P];
-                                  }
-                                : z.output<S>;
+          : DefOf<S> extends CodecDef
+            ? HidesMarks<I, O> extends true
+              ? MaskedWhole
+              : Revealed<O, Prev[D], P>
+            : HidesMarks<I, O> extends true
+              ? Revealed<O, Prev[D], P> | Revealed<I, Prev[D], P>
+              : Revealed<O, Prev[D], P>
+        : DefOf<S> extends { type: "custom" }
+          ? // A class instance where a branch with a mark inside reaches it is masked whole; a plain object is walked.
+            SchemaMarked<P> extends true
+            ? MaybeInstance<z.output<S>>
+            : z.output<S>
+          : DefOf<S> extends { type: "optional"; innerType: infer I }
+            ? Revealed<I, Prev[D], P> | undefined
+            : DefOf<S> extends { type: "nullable"; innerType: infer I }
+              ? Revealed<I, Prev[D], P> | null
+              : DefOf<S> extends { type: "default" | "nonoptional"; innerType: infer I }
+                ? Exclude<Revealed<I, Prev[D], P>, undefined>
+                : DefOf<S> extends { type: "prefault" | "catch"; innerType: infer I }
+                  ? Revealed<I, Prev[D], P>
+                  : DefOf<S> extends { type: "lazy"; getter: () => infer I }
+                    ? Revealed<I, Prev[D], P>
+                    : DefOf<S> extends { type: "union"; options: readonly (infer O)[] }
+                      ? O extends unknown
+                        ? Revealed<O, Prev[D], P>
+                        : never
+                      : DefOf<S> extends { type: "intersection"; left: infer L; right: infer R }
+                        ? Revealed<L, Prev[D], P> & Revealed<R, Prev[D], P>
+                        : DefOf<S> extends { type: "array"; element: infer E }
+                          ? Revealed<E, Prev[D]>[]
+                          : DefOf<S> extends { type: "set"; valueType: infer E }
+                            ? Set<Revealed<E, Prev[D]>>
+                            : DefOf<S> extends { type: "map"; keyType: infer K; valueType: infer V }
+                              ? Map<Revealed<K, Prev[D]>, Revealed<V, Prev[D]>>
+                              : DefOf<S> extends { type: "record"; valueType: infer V }
+                                ? { [P in keyof z.output<S>]: Revealed<V, Prev[D]> }
+                                : DefOf<S> extends { type: "object"; shape: infer Shape }
+                                  ? {
+                                      [P in keyof z.output<S>]: P extends keyof Shape
+                                        ? Revealed<Shape[P], Prev[D]>
+                                        : z.output<S>[P];
+                                    }
+                                  : z.output<S>;
 
 /**
  * A tuple's positions, redacted. A mapped type over a type parameter is homomorphic, so a tuple keeps its length and

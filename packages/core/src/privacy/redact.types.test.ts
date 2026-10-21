@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
+import { sqliteJson } from "../data/codecs";
 import type { Logger } from "../logger/logger";
 import { pii } from "./classes";
 import { redact } from "./redact";
@@ -98,6 +99,55 @@ const dated = redact(z.union([z.object({ e: pii(z.string()) }), z.date()]), new 
 same<typeof dated, { e: string } | string>();
 const keptDate = redact(z.object({ at: z.date(), e: pii(z.string()) }), { at: new Date(0) } as never);
 same<typeof keptDate, { at: Date; e: string }>();
+
+// A codec over a marked wire side is masked whole, so its position is a string whatever its app side says.
+const wireCodec = redact(
+  z.codec(z.object({ e: pii(z.string()) }), z.object({ e: z.number() }), {
+    decode: (wire) => ({ e: wire.e.length }),
+    encode: (app) => ({ e: String(app.e) as never }),
+  }),
+  { e: 1 },
+);
+same<typeof wireCodec, string>();
+const wireField = redact(
+  z.object({
+    p: z.codec(pii(z.string()), z.number(), { decode: (wire) => wire.length, encode: (app) => String(app) as never }),
+    n: z.number(),
+  }),
+  { p: 1, n: 1 },
+);
+same<typeof wireField, { p: string; n: number }>();
+// A transform over a wire-marked codec carries the mark, though its input's output type has no brand.
+const overWire = redact(
+  z
+    .object({ p: z.codec(pii(z.string()), z.string(), { decode: (wire) => wire, encode: (app) => app as never }) })
+    .transform((o) => ({ q: o.p.length })),
+  { q: 1 },
+);
+same<typeof overWire, string>();
+// A plain pipe's input marks reach the position, as redact masks them.
+const Marked = z.object({ n: pii(z.string()) });
+const piped = redact(Marked.pipe(z.object({ n: z.coerce.number<z.output<typeof Marked>["n"]>() })), { n: 1 });
+same<typeof piped, { n: string } | { n: string }>();
+// A codec with an unmarked wire side is walked on its app side.
+const appSide = redact(
+  z.codec(z.string(), z.object({ e: pii(z.string()), n: z.number() }), {
+    decode: (wire) => JSON.parse(wire),
+    encode: (app) => JSON.stringify(app),
+  }),
+  {} as never,
+);
+same<typeof appSide, { e: string; n: number }>();
+const column = redact(z.object({ profile: sqliteJson(z.object({ e: pii(z.string()), n: z.number() })) }), {} as never);
+same<typeof column, { profile: { e: string; n: number } }>();
+// A class instance where a branch with a mark inside reaches it is masked whole, so the member may be a string.
+class Acct {
+  constructor(readonly e: string) {}
+}
+const instanceOption = redact(z.union([z.object({ e: pii(z.string()) }), z.instanceof(Acct)]), new Acct("x"));
+same<typeof instanceOption, { e: string } | string | { readonly e: string }>();
+const unmarkedInstance = redact(z.object({ a: z.instanceof(Acct), e: pii(z.string()) }), {} as never);
+same<typeof unmarkedInstance, { a: Acct; e: string }>();
 
 same<ContainsMarked<typeof list>, false>();
 same<ContainsMarked<typeof pair>, false>();

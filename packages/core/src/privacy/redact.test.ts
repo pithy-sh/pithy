@@ -303,8 +303,75 @@ describe("redact", () => {
       decode: (wire) => ({ s: String(wire.s) }),
       encode: (app) => ({ s: pii(z.string()).parse(app.s) }),
     });
-    expect(redact(Wire, Wire.parse({ s: "S-1" }))).toEqual({ s: "[pii]" });
-    expect(classifyPrivacy(Wire)).toEqual([{ path: "s", class: "pii" }]);
+    // A codec's decode is a function too, so a codec over a marked wire side is masked whole.
+    expect(redact(Wire, Wire.parse({ s: "S-1" }))).toBe("[pii]");
+    expect(classifyPrivacy(Wire)).toEqual([
+      { path: "", class: "pii" },
+      { path: "s", class: "pii" },
+    ]);
+  });
+
+  test("masks a codec whole when its app side does not mark what its wire side marks", () => {
+    const Moved = z.codec(z.object({ email: pii(z.string()) }), z.object({ name: z.string() }), {
+      decode: (wire) => ({ name: wire.email }),
+      encode: (app) => ({ email: app.name as never }),
+    });
+    expect(redact(Moved, Moved.parse({ email: "S-1" }))).toBe("[pii]");
+    const Nested = z.object({ u: Moved, id: z.string() });
+    expect(redact(Nested, Nested.parse({ u: { email: "S-1" }, id: "i" }))).toEqual({ u: "[pii]", id: "i" });
+    const FromArray = z.codec(z.array(pii(z.string())), z.object({ first: z.string() }), {
+      decode: (wire) => ({ first: String(wire[0]) }),
+      encode: (app) => [app.first as never],
+    });
+    expect(redact(FromArray, FromArray.parse(["S-1"]))).toBe("[pii]");
+    expect(classifyPrivacy(Moved)).toEqual([
+      { path: "", class: "pii" },
+      { path: "email", class: "pii" },
+    ]);
+    expect(classifyPrivacy(Nested)).toContainEqual({ path: "u", class: "pii" });
+    // A codec whose marks sit on its app side only is walked as before: a JSON column keeps its shape.
+    const Column = sqliteJson(z.object({ phone: pii(z.string()), city: z.string() }));
+    expect(redact(Column, Column.parse('{"phone":"S-1","city":"c"}'))).toEqual({ phone: "[pii]", city: "c" });
+    // A recursive codec is decided once, and the walk ends.
+    type Node = { e: string; kids: Node[] };
+    const Tree: z.ZodType<Node> = z.lazy(() => sqliteJson(z.object({ e: pii(z.string()), kids: z.array(Tree) })));
+    const tree = Tree.parse({ e: "S-1", kids: [{ e: "S-2", kids: [] }] });
+    expect(redact(Tree, tree)).toEqual({ e: "[pii]", kids: [{ e: "[pii]", kids: [] }] });
+  });
+
+  test("masks an object whole when an overwrite over it could move a marked value", () => {
+    const Copied = z.object({ email: pii(z.string()), name: z.string() }).overwrite((v) => ({ ...v, name: v.email }));
+    expect(redact(Copied, Copied.parse({ email: "S-1", name: "n" }))).toBe("[pii]");
+    const Field = z.object({ u: Copied, id: z.string() });
+    expect(redact(Field, Field.parse({ u: { email: "S-1", name: "n" }, id: "i" }))).toEqual({ u: "[pii]", id: "i" });
+    expect(classifyPrivacy(Copied)).toEqual([
+      { path: "", class: "pii" },
+      { path: "email", class: "pii" },
+    ]);
+    // A marked leaf with an overwrite of its own is masked by its own marker, and an unmarked one is left alone.
+    const Trimmed = z.object({ e: pii(z.string().trim()), n: z.string().trim() });
+    expect(redact(Trimmed, Trimmed.parse({ e: " S-1 ", n: " x " }))).toEqual({ e: "[pii]", n: "x" });
+    const Plain = z.object({ n: z.string() }).overwrite((v) => ({ n: v.n.toUpperCase() }));
+    expect(redact(Plain, Plain.parse({ n: "x" }))).toEqual({ n: "X" });
+  });
+
+  test("keeps an own __proto__ key as an own key", () => {
+    const Meta = z.object({ meta: z.unknown() });
+    const value = Meta.parse({ meta: JSON.parse('{"__proto__":{"x":1},"a":1}') });
+    const masked = redact(Meta, value) as { meta: Record<string, unknown> };
+    expect(Object.hasOwn(masked.meta, "__proto__")).toBe(true);
+    expect(Object.getPrototypeOf(masked.meta)).toBe(Object.prototype);
+    expect(Object.keys(masked.meta)).toEqual(["__proto__", "a"]);
+    expect(JSON.stringify(masked)).toBe(JSON.stringify(value));
+    const Out = z.string().transform(() => JSON.parse('{"__proto__":{"x":1},"a":1}') as Record<string, unknown>);
+    const out = redact(Out, Out.parse("w"));
+    expect(Object.hasOwn(out, "__proto__")).toBe(true);
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+    // A record's parse drops the key itself; handed one anyway, redact still keeps it as a key.
+    const Keyed = z.record(z.string(), z.number());
+    const rec = redact(Keyed, JSON.parse('{"__proto__":1,"b":2}') as Record<string, number>);
+    expect(Object.keys(rec)).toEqual(["__proto__", "b"]);
+    expect(Object.getPrototypeOf(rec)).toBe(Object.prototype);
   });
 
   test("never lets a masked key overwrite a literal key equal to its placeholder", () => {
