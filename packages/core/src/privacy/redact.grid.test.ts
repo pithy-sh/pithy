@@ -30,7 +30,9 @@ import { redact } from "./redact";
  * `redact` is handed what `parse` returned, as a caller hands it the app value, so a codec and a transform change the
  * value it walks. Kinds put a codec in the option that marks, a transform on an unmarked field, an object piped into an
  * unmarked one, and a transform over a marked input that returns a class instance or renames the marked field; the
- * last two are masked whole, and a class instance holding a marked value that comes back unmasked is a failure. A set
+ * last two are masked whole, and a class instance holding a marked value that comes back unmasked is a failure. Three
+ * more run a function where the marked value can reach it from elsewhere: a pipe whose output side renames before its
+ * tail, an intersection whose unmarked side renames, and a check that reassigns the value. Each is masked whole. A set
  * holds two elements, so masked elements that merged would show.
  */
 
@@ -305,6 +307,38 @@ const KINDS: readonly Kind[] = [
     name: "transformRename",
     schema: (child, side) =>
       z.object({ a: child(side), s: markedString(side) }).transform((input) => ({ renamed: input.s, a: input.a })),
+    value: (child) => ({ a: child(), s: leaf.secret("s") }),
+  },
+  {
+    // A marked input piped into a chain that renames further along: the function is not at the output side's tail.
+    name: "pipedTransform",
+    schema: (child, side) =>
+      z
+        .object({ a: child(side), s: markedString(side) })
+        .pipe(
+          z
+            .transform((input: { a: unknown; s: unknown }) => ({ moved: input.s, a: input.a }))
+            .pipe(z.object({ moved: z.unknown(), a: z.unknown() })),
+        ),
+    value: (child) => ({ a: child(), s: leaf.secret("s") }),
+  },
+  {
+    // One side marks `s`; the other leaves it unmarked and renames it in a transform, so the merged value holds a copy.
+    name: "intersectionTransform",
+    schema: (child, side) =>
+      z.intersection(
+        z.object({ a: child(side), s: markedString(side) }),
+        z.object({ s: markedString({ ...side, mark: false }) }).transform((input) => ({ moved: input.s })),
+      ),
+    value: (child) => ({ a: child(), s: leaf.secret("s") }),
+  },
+  {
+    // A custom check reassigns the value, which is how `.overwrite()` is built: it copies `s` under a new key.
+    name: "checkedObject",
+    schema: (child, side) =>
+      z.looseObject({ a: child(side), s: markedString(side) }).check((ctx) => {
+        ctx.value = { ...ctx.value, copied: ctx.value.s };
+      }),
     value: (child) => ({ a: child(), s: leaf.secret("s") }),
   },
 ];

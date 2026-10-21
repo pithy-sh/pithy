@@ -3,7 +3,7 @@
 
 import type { z } from "zod";
 import { privacyClass, strongestPrivacyClass } from "./classes";
-import { classifyPrivacy, codecHidesMarks, opaqueOutput, overwrites, privacyOf } from "./classify";
+import { carriedClasses, classifyPrivacy, privacyOf, runsHere } from "./classify";
 import type { RedactedOutput } from "./types";
 
 /**
@@ -36,25 +36,24 @@ import type { RedactedOutput } from "./types";
  * refuses it and a looser one is applied in its place. Walking every branch needs no guess, and it is the same walk
  * `classifyPrivacy` does, so the two agree on every position the schema decides.
  *
- * **A transform over a marked input is masked whole.** What `z.object({ email: pii(z.email()) }).transform(toAccount)`
- * returns says nothing about where the email went — a class instance, a renamed field, a copy under a second key — so
- * the output is masked whole with the strongest class its input carries (`secret`, `phi`, `pci`, an adopter's class,
- * then `pii`), as its placeholder. A custom check, an `any` or an `unknown` on a pipe's output side is as opaque. A
- * codec's decode is a function too, so a codec whose app side does not mark, with the same class, every path its wire
- * side marks is masked whole the same way: decode may have put the wire value in any app field. `sqliteJson(Profile)`
- * holds `Profile` on both sides and is walked. A transform over an unmarked input, a codec whose app side names its
- * wire side's marks, and a plain pipe into a schema are walked like any other branch. `classifyPrivacy` lists the
- * position, and `Redacted<T>` types it as a `string`.
- *
- * **An overwrite over a node with a mark inside is masked whole.** `.overwrite()` is a function that keeps the type, so
- * `z.object({ email: pii(z.email()), name: z.string() }).overwrite(copyEmailToName)` holds the email under `name`.
- * `classifyPrivacy` lists the position. The type cannot see a check, so `Redacted<T>` still types it as the object:
- * this is the one place the type says less than `redact` does. A marked field with an overwrite of its own,
- * `pii(z.string().trim())`, is masked by its own marker, and an unmarked leaf has nothing inside to move.
+ * **A function over a mark it could read is masked whole.** What
+ * `z.object({ email: pii(z.email()) }).transform(toAccount)` returns says nothing about where the email went — a class
+ * instance, a renamed field, a copy under a second key — so the position is masked whole with the strongest class the
+ * function could read (`secret`, `phi`, `pci`, an adopter's class, then `pii`), as its placeholder. A function is a
+ * transform, a preprocess, a `z.custom` or a `z.instanceof`, a `.catch()`, a codec's decode, and every check that can
+ * rewrite the value: `.refine()`, `.superRefine()`, `.check()`, `.overwrite()`. It counts wherever it runs at the
+ * position — at a pipe's tail or in its middle, behind a lazy or a wrapper, in any option of a union, on either side of
+ * an intersection — and a mark it could read is one at or below the position in any branch, except one that sits only
+ * after every function there: `z.preprocess(coerce, Profile)` hands `Profile` its value, and `Profile` says where each
+ * mark is. A codec's wire side comes before its decode, so a codec whose wire side marks is masked whole; only the
+ * kit's own codecs (`./trusted`) are walked, `sqliteJson(Profile)` among them. `classifyPrivacy` reads the same rule
+ * (`runsHere`, `carriedClasses`) and lists the position. `Redacted<T>` types it as a `string`, except where only a
+ * check runs: a check is not in the type, so there the type says less than `redact` does. A function over an unmarked
+ * input, and a refine on an unmarked field, are walked like any other branch.
  *
  * **A class instance or a date where a branch with a mark inside reaches it is masked whole** too, because no schema
- * kind walks into one: in `z.union([z.object({ e: pii(z.email()) }), z.instanceof(Account)])` an `Account` comes back
- * as `[pii]`. This is the one over-masking `classifyPrivacy` cannot list, because it depends on the value.
+ * kind walks into one: in `z.union([z.object({ e: pii(z.email()) }), z.date()])` a `Date` comes back as `[pii]`. This is
+ * the one over-masking `classifyPrivacy` cannot list, because it depends on the value.
  *
  * **It may mask a field only some branches mark.** In `z.union([z.object({ e: pii(z.email()) }), z.object({ e:
  * z.number() })])` a `{ e: 5 }` comes back `{ e: "[pii]" }`. That over-masking is the price of never guessing, it is
@@ -167,6 +166,10 @@ interface Plan {
   readonly keys: Map<string | number, Plan>;
   /** The schemas already walked at this position, so a lazy that reaches itself, or a shared branch, is walked once. */
   readonly seen: Set<z.ZodType>;
+  /** Whether a function runs on the value here, in any branch that reaches it. */
+  runs: boolean;
+  /** The classes such a function could read, from every branch that reaches here. */
+  readonly carried: Set<string>;
 }
 
 const newPlan = (): Plan => ({
@@ -176,6 +179,8 @@ const newPlan = (): Plan => ({
   inner: new Map(),
   keys: new Map(),
   seen: new Set(),
+  runs: false,
+  carried: new Set(),
 });
 
 /** The plan at `at` in `table`, made when it is not there yet. */
@@ -218,6 +223,29 @@ function maskedWhole(schema: z.ZodType, plan: Plan): boolean {
 const KEEPS_ALL: ReadonlySet<string> = new Set(["transform", "any", "unknown", "custom"]);
 
 /**
+ * Step into a position from its parent, or at the root: record whether a function runs on the value here, and the
+ * classes it could read, then walk it. Every branch that reaches the position adds to both, so a function in one
+ * branch is held to a mark in another.
+ */
+function enter(schema: z.ZodType, value: unknown, plan: Plan): void {
+  if (runsHere(schema)) plan.runs = true;
+  for (const className of carriedClasses(schema)) plan.carried.add(className);
+  walk(schema, value, plan);
+}
+
+/**
+ * Where a function runs over a mark it could read, and no branch marks the position itself, the position is masked
+ * whole with the strongest class that function could read: what it returned says nothing about where the mark went.
+ */
+function settle(plan: Plan): void {
+  if (plan.mask !== undefined || !plan.runs) return;
+  const strongest = strongestPrivacyClass([...plan.carried]);
+  if (strongest === undefined) return;
+  plan.mask = strongest;
+  plan.whole = true;
+}
+
+/**
  * **Step one: what every branch says about the value.** It walks the schema and the value together, records each
  * marked position and each kept key in `plan`, and masks nothing yet. At a union, an intersection and a pipe it walks
  * every option and both sides, against the same value, so no branch is chosen and none is tested.
@@ -231,8 +259,6 @@ function walk(schema: z.ZodType, value: unknown, plan: Plan): void {
     plan.mask ??= marked;
     return;
   }
-  // An overwrite is a function that keeps the type: it can copy a marked value into an unmarked field.
-  if (overwrites(schema) && maskedWhole(schema, plan)) return;
   // A class instance or a date where a branch with a mark inside reached it: what the mark became is not readable.
   if (isOpaqueValue(value) && maskedWhole(schema, plan)) return;
 
@@ -250,19 +276,19 @@ function walk(schema: z.ZodType, value: unknown, plan: Plan): void {
         const fieldSchema = Object.hasOwn(shape, key) ? shape[key] : catchall;
         if (!fieldSchema) continue;
         plan.named.add(key);
-        walk(fieldSchema, field, planAt(plan.inner, key));
+        enter(fieldSchema, field, planAt(plan.inner, key));
       }
       return;
     }
     case "array":
       if (!Array.isArray(value) || !def.element) return;
       plan.elements = Number.POSITIVE_INFINITY;
-      for (const [index, item] of value.entries()) walk(def.element, item, planAt(plan.inner, index));
+      for (const [index, item] of value.entries()) enter(def.element, item, planAt(plan.inner, index));
       return;
     case "set":
       if (!(value instanceof Set) || !def.valueType) return;
       plan.elements = Number.POSITIVE_INFINITY;
-      for (const [index, item] of [...value].entries()) walk(def.valueType, item, planAt(plan.inner, index));
+      for (const [index, item] of [...value].entries()) enter(def.valueType, item, planAt(plan.inner, index));
       return;
     case "tuple": {
       if (!Array.isArray(value)) return;
@@ -272,7 +298,7 @@ function walk(schema: z.ZodType, value: unknown, plan: Plan): void {
       plan.elements = Math.max(plan.elements ?? 0, rest ? Number.POSITIVE_INFINITY : items.length);
       value.forEach((item, index) => {
         const itemSchema = items[index] ?? rest;
-        if (itemSchema) walk(itemSchema, item, planAt(plan.inner, index));
+        if (itemSchema) enter(itemSchema, item, planAt(plan.inner, index));
       });
       return;
     }
@@ -280,16 +306,16 @@ function walk(schema: z.ZodType, value: unknown, plan: Plan): void {
       if (!isPlainObject(value)) return;
       plan.keepsAll = true;
       for (const [key, item] of Object.entries(value)) {
-        if (def.keyType) walk(def.keyType, key, planAt(plan.keys, key));
-        if (def.valueType) walk(def.valueType, item, planAt(plan.inner, key));
+        if (def.keyType) enter(def.keyType, key, planAt(plan.keys, key));
+        if (def.valueType) enter(def.valueType, item, planAt(plan.inner, key));
       }
       return;
     }
     case "map": {
       if (!(value instanceof Map)) return;
       [...value].forEach(([key, item], index) => {
-        if (def.keyType) walk(def.keyType, key, planAt(plan.keys, index));
-        if (def.valueType) walk(def.valueType, item, planAt(plan.inner, index));
+        if (def.keyType) enter(def.keyType, key, planAt(plan.keys, index));
+        if (def.valueType) enter(def.valueType, item, planAt(plan.inner, index));
       });
       return;
     }
@@ -302,11 +328,8 @@ function walk(schema: z.ZodType, value: unknown, plan: Plan): void {
       if (def.right) walk(def.right, value, plan);
       return;
     case "pipe":
-      // A transform's output, or a custom check's, is opaque: when the input carries a mark, the output is masked whole.
-      // A codec's decode is a function like a transform, so one whose app side does not mark what its wire side marks
-      // is masked whole too.
-      if (def.in && def.out && (opaqueOutput(def.out) || codecHidesMarks(node)) && maskedWhole(def.in, plan)) return;
-      // Both sides: a codec's app side over an unmarked wire, a plain pipe's input and its output, a transform's input.
+      // Both sides: a codec's wire side and its app side, a plain pipe's input and its output, a transform's input. A
+      // function on either side is what `enter` already counted for this position.
       if (def.in) walk(def.in, value, plan);
       if (def.out) walk(def.out, value, plan);
       return;
@@ -346,6 +369,7 @@ function redactedEntries<K>(entries: readonly (readonly [K, unknown, Plan | unde
  */
 function applied(plan: Plan | undefined, value: unknown): unknown {
   if (!plan || value === null || value === undefined) return value;
+  settle(plan);
   if (plan.mask !== undefined) return plan.whole ? `[${plan.mask}]` : mask(plan.mask, value);
   const limit = plan.elements ?? Number.POSITIVE_INFINITY;
   if (Array.isArray(value))
@@ -396,6 +420,6 @@ function applied(plan: Plan | undefined, value: unknown): unknown {
  */
 export function redact<S extends z.ZodType>(schema: S, value: z.output<S>): RedactedOutput<S> {
   const plan = newPlan();
-  walk(schema, value, plan);
+  enter(schema, value, plan);
   return applied(plan, value) as RedactedOutput<S>;
 }

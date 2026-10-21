@@ -460,4 +460,158 @@ describe("redact", () => {
     const map = redact(ByOwner, ByOwner.parse(new Map([[{ e: "S-k", id: "i" }, "v"]])));
     expect([...map]).toEqual([[{ e: "[pii]", id: "i" }, "v"]]);
   });
+
+  test("masks a pipe whole when a function runs anywhere on its output side over a marked input", () => {
+    const In = z.object({ e: pii(z.string()) });
+    const rename = (o: z.output<typeof In>) => ({ n: o.e as string });
+    const Renamed = z.object({ e: z.string() });
+    const moves = z.codec(Renamed, z.object({ n: z.string() }), {
+      decode: (o) => ({ n: o.e }),
+      encode: (o) => ({ e: o.n }),
+    });
+    const cases: [string, z.ZodType, unknown][] = [
+      [
+        "an any-transform chain",
+        In.pipe(
+          z
+            .any()
+            .transform(rename)
+            .pipe(z.object({ n: z.string() })),
+        ),
+        { e: "S-1" },
+      ],
+      ["a transform chain", In.pipe(z.transform(rename).pipe(z.object({ n: z.string() }))), { e: "S-1" }],
+      ["a renaming codec", In.pipe(moves as never), { e: "S-1" }],
+      ["a preprocess", In.pipe(z.preprocess((o) => rename(o as never), z.object({ n: z.string() }))), { e: "S-1" }],
+      [
+        "a union holding a renaming codec",
+        z.union([In.pipe(moves as never), z.object({ q: z.string() })]),
+        { e: "S-1" },
+      ],
+      [
+        "an overwrite",
+        z
+          .object({ e: pii(z.string()), n: z.string() })
+          .pipe(z.object({ e: z.string(), n: z.string() }).overwrite((o) => ({ ...o, n: o.e })) as never),
+        { e: "S-1", n: "x" },
+      ],
+      [
+        "an overwrite behind an optional",
+        In.pipe(
+          z
+            .object({ e: z.string(), n: z.string().optional() })
+            .overwrite((o) => ({ ...o, n: o.e }))
+            .optional() as never,
+        ),
+        { e: "S-1" },
+      ],
+      ["a lazy", In.pipe(z.lazy(() => z.transform(rename).pipe(z.object({ n: z.string() })))), { e: "S-1" }],
+      [
+        "a union holding a preprocess",
+        In.pipe(z.union([z.preprocess((o) => rename(o as never), z.object({ n: z.string() })), z.number()]) as never),
+        { e: "S-1" },
+      ],
+      [
+        "a codec to an array",
+        In.pipe(
+          z.codec(Renamed, z.array(z.string()), {
+            decode: (o) => [o.e],
+            encode: (a) => ({ e: String(a[0]) }),
+          }) as never,
+        ),
+        { e: "S-1" },
+      ],
+    ];
+    for (const [label, schema, value] of cases) {
+      const parsed = schema.parse(value);
+      expect([label, redact(schema, parsed as never)]).toEqual([label, "[pii]"]);
+      expect([label, classifyPrivacy(schema)[0]]).toEqual([label, { path: "", class: "pii" }]);
+    }
+    // A function before a marked schema hands that schema its value; the schema says where each mark is.
+    const Coerced = z.preprocess((o) => o, z.object({ e: pii(z.string()), n: z.string() }));
+    expect(redact(Coerced, Coerced.parse({ e: "S-1", n: "x" }))).toEqual({ e: "[pii]", n: "x" });
+    const Then = z
+      .string()
+      .transform((s) => ({ e: s }))
+      .pipe(z.object({ e: pii(z.string()) }));
+    expect(redact(Then, Then.parse("S-1"))).toEqual({ e: "[pii]" });
+    expect(classifyPrivacy(Then)).toEqual([{ path: "e", class: "pii" }]);
+    // A function after that marked schema reads what it marks, so the position is masked whole again.
+    const ThenMoved = Then.transform((o) => ({ n: o.e as string }));
+    expect(redact(ThenMoved, ThenMoved.parse("S-1"))).toBe("[pii]");
+  });
+
+  test("masks an intersection side or a union option whole when it runs a function at a position another marks", () => {
+    const Both = z.intersection(
+      z.object({ e: pii(z.string()) }),
+      z.object({ e: z.string() }).transform((o) => ({ n: o.e })),
+    );
+    expect(redact(Both, Both.parse({ e: "S-1" }))).toBe("[pii]");
+    const Either = z.union([
+      z.object({ e: pii(z.email()) }),
+      z.object({ e: z.string() }).transform((o) => ({ n: o.e })),
+    ]);
+    expect(redact(Either, Either.parse({ e: "S-1" }))).toBe("[pii]");
+    for (const schema of [Both, Either]) expect(classifyPrivacy(schema)).toContainEqual({ path: "", class: "pii" });
+    // One level down, the position is the field.
+    const Nested = z.union([
+      z.object({ p: z.object({ e: pii(z.string()) }), id: z.string() }),
+      z.object({ p: z.object({ e: z.string() }).transform((o) => ({ n: o.e })), id: z.string() }),
+    ]);
+    expect(redact(Nested, Nested.parse({ p: { e: "S-1" }, id: "i" }))).toEqual({ p: "[pii]", id: "i" });
+    expect(classifyPrivacy(Nested)).toContainEqual({ path: "p", class: "pii" });
+  });
+
+  test("masks a codec whole when its wire side marks, whatever its app side marks", () => {
+    const Same = z.object({ e: pii(z.string()), n: z.string() });
+    const Copies = z.codec(Same, Same, { decode: (o) => ({ e: o.e, n: o.e as string }), encode: (o) => o as never });
+    expect(redact(Copies, Copies.parse({ e: "S-1", n: "x" }))).toBe("[pii]");
+    const Field = z.object({ c: Copies });
+    expect(redact(Field, Field.parse({ c: { e: "S-1", n: "x" } }))).toEqual({ c: "[pii]" });
+    expect(classifyPrivacy(Copies)).toEqual([
+      { path: "", class: "pii" },
+      { path: "e", class: "pii" },
+    ]);
+    // The kit's own JSON column is a codec whose decode is JSON.parse, and is walked, described or not.
+    const Column = sqliteJson(Same).describe("A JSON column.");
+    expect(redact(Column, Column.parse('{"e":"S-1","n":"x"}'))).toEqual({ e: "[pii]", n: "x" });
+    expect(classifyPrivacy(Column)).toEqual([{ path: "e", class: "pii" }]);
+  });
+
+  test("masks a node whole when a custom check or a refine over it could move a marked value", () => {
+    const Base = z.object({ e: pii(z.string()), n: z.string() });
+    const cases: [string, z.ZodType][] = [
+      [
+        "a check that reassigns the value",
+        Base.check((ctx) => {
+          ctx.value = { ...ctx.value, n: ctx.value.e as string };
+        }),
+      ],
+      [
+        "a superRefine that mutates",
+        Base.superRefine((o) => {
+          o.n = o.e as string;
+        }),
+      ],
+      [
+        "a refine that mutates",
+        Base.refine((o) => {
+          o.n = o.e as string;
+          return true;
+        }),
+      ],
+      [
+        "a catch that reads its input",
+        Base.catch((ctx) => ({ e: "x", n: String((ctx.input as { e: string }).e) }) as never),
+      ],
+    ];
+    for (const [label, schema] of cases) {
+      const parsed = schema.parse(label.startsWith("a catch") ? { e: 5 } : { e: "S-1", n: "x" });
+      expect([label, JSON.stringify(redact(schema, parsed as never))]).toEqual([label, '"[pii]"']);
+      expect([label, classifyPrivacy(schema)[0]]).toEqual([label, { path: "", class: "pii" }]);
+    }
+    // A refine on an unmarked leaf has nothing inside to move.
+    const Leaf = z.object({ e: pii(z.string()), n: z.string().refine((v) => v.length > 0) });
+    expect(redact(Leaf, Leaf.parse({ e: "S-1", n: "x" }))).toEqual({ e: "[pii]", n: "x" });
+  });
 });

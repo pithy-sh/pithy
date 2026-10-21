@@ -189,24 +189,27 @@ type CarriesMark<C> =
         : false;
 
 /**
- * What `redact(schema, value)` returns: {@link Redacted} over the schema's output, where every position a transform
- * over a marked input fills is the masked `string` it is at runtime. A transform's output type says nothing about
- * where its input's marks went — a class instance, a renamed field — and `redact` masks it whole, so the type reads
- * the schema, not only its output: an object, an array, a set, a map, a record, a union, an intersection, a lazy and
- * every wrapper are followed to {@link PRIVACY_CHECK_DEPTH} levels, and any other kind keeps its output type.
+ * What `redact(schema, value)` returns: {@link Redacted} over the schema's output, where every position a function
+ * over a mark fills is the masked `string` it is at runtime. A transform's output type says nothing about where its
+ * input's marks went — a class instance, a renamed field — and `redact` masks it whole, so the type reads the schema,
+ * not only its output: an object, an array, a set, a map, a record, a union, an intersection, a lazy and every wrapper
+ * are followed to {@link PRIVACY_CHECK_DEPTH} levels, and any other kind keeps its output type.
  *
- * The marks are read off the schema too, because a codec's wire side and a pipe's input leave no brand on the output
- * type. A codec whose app side does not mark every path its wire side marks is a `string`, as `redact` masks it
- * whole; a plain pipe's input marks join its output's; a `z.instanceof` member of a position with a mark inside may be
- * the masked `string`. An `.overwrite()` is a check, which no type can see, so the object it overwrites keeps its type
- * though `redact` masks it whole.
+ * The rule is `redact`'s, read off the schema's type: a position is a `string` where a function the type can see runs
+ * ({@link RunsHere}) over a mark it could read ({@link Carries}) — a transform anywhere on a pipe's output side, an
+ * option or a side that runs one beside another that marks, a codec whose wire side marks. A codec is trusted only in
+ * `sqliteJson`'s shape. A plain pipe's input marks join its output's. A check — `.refine()`, `.check()`,
+ * `.overwrite()` — is not in the type, so an object with one and a mark inside keeps its type though `redact` masks it
+ * whole. And a codec in `sqliteJson`'s shape that is not `sqliteJson`, or one of the kit's scalar codecs, can differ:
+ * `redact` trusts the kit's own decode functions, which a type cannot name.
  */
 export type RedactedOutput<S> = Redacted<Revealed<S>>;
 
 /**
- * A `z.instanceof` or `z.custom` member where a branch with a mark inside reaches the position. `redact` masks a class
- * instance there whole and walks a plain object, and the type cannot tell the two apart, so {@link Redacted} gives
- * this member as `string` or the type redacted. A box, not a brand: a brand would mask the whole position.
+ * A `z.instanceof` or `z.custom` member where a branch with a mark inside reaches the position, and no function reads
+ * that mark — it sits after one. `redact` masks a class instance there whole and walks a plain object, and the type
+ * cannot tell the two apart, so {@link Redacted} gives this member as `string` or the type redacted. A box, not a
+ * brand: a brand would mask the whole position.
  */
 type MaybeInstance<T> = { readonly "privacy:instance": T };
 
@@ -215,30 +218,6 @@ type MaskedWhole = string & { readonly [z.core.$brand]: { readonly "privacy:opaq
 
 /** A schema kind, read off its definition. */
 type DefOf<S> = S extends { readonly _zod: { readonly def: infer D } } ? D : never;
-
-/** Whether a pipe's output side is opaque — a transform, a custom check, an `any` or an `unknown` — as `redact` reads it. */
-type IsOpaqueOutput<S, D extends number = PRIVACY_CHECK_DEPTH> = [D] extends [never]
-  ? false
-  : DefOf<S> extends { type: "transform" | "custom" | "any" | "unknown" }
-    ? true
-    : DefOf<S> extends { type: "pipe"; out: infer O }
-      ? IsOpaqueOutput<O, Prev[D]>
-      : DefOf<S> extends {
-            type: "optional" | "nullable" | "default" | "prefault" | "readonly" | "catch" | "nonoptional";
-            innerType: infer I;
-          }
-        ? IsOpaqueOutput<I, Prev[D]>
-        : DefOf<S> extends { type: "union"; options: readonly (infer O)[] }
-          ? true extends (O extends unknown ? IsOpaqueOutput<O, Prev[D]> : never)
-            ? true
-            : false
-          : DefOf<S> extends { type: "intersection"; left: infer L; right: infer R }
-            ? true extends IsOpaqueOutput<L, Prev[D]> | IsOpaqueOutput<R, Prev[D]>
-              ? true
-              : false
-            : DefOf<S> extends { type: "lazy"; getter: () => infer I }
-              ? IsOpaqueOutput<I, Prev[D]>
-              : false;
 
 /** `parent.key`, or `key` at the root, as `classifyPrivacy` joins a path. */
 type Join<P extends string, K extends string> = P extends "" ? K : `${P}.${K}`;
@@ -295,56 +274,158 @@ type MarkedPaths<S, P extends string = "", D extends number = PRIVACY_CHECK_DEPT
 /** Whether a schema carries a mark anywhere: on a codec's wire side and a pipe's input as well as its output. */
 type SchemaMarked<S> = [MarkedPaths<S>] extends [never] ? false : true;
 
-/** Whether one schema marks a path, with a class, that the other does not: what a codec's decode could hide. */
+/** Whether one schema marks a path, with a class, that the other does not: what a plain pipe's input adds. */
 type HidesMarks<I, O> = [Exclude<MarkedPaths<I>, MarkedPaths<O>>] extends [never] ? false : true;
 
 /** A codec's definition: a pipe whose decode is a function. A plain pipe's `transform` is optional and absent. */
 type CodecDef = { type: "pipe"; transform: (...args: never[]) => unknown };
 
+/** The wrappers that are the same position as what they wrap and run nothing of their own. */
+type PlainWrapper = "optional" | "nullable" | "default" | "prefault" | "readonly" | "nonoptional";
+
 /**
- * A schema's output, with every position a transform over a marked input fills replaced by {@link MaskedWhole}. `P` is
- * the outermost schema at this position: a union's or an intersection's options, a pipe's sides and every wrapper are
- * the same position, so they keep it, and a field, an element or a value starts its own.
+ * Whether a codec is `sqliteJson`'s shape — a string or the schema on the wire, the same schema in the app — which is
+ * the one codec `redact` trusts to move nothing that a type can name. Any other codec's decode is a function.
  */
-type Revealed<S, D extends number = PRIVACY_CHECK_DEPTH, P = S> = [D] extends [never]
+type TrustedCodec<S> =
+  DefOf<S> extends { type: "pipe"; in: infer I; out: infer O }
+    ? DefOf<I> extends { type: "union"; options: readonly [infer First, infer X] }
+      ? DefOf<First> extends { type: "string" }
+        ? [X] extends [O]
+          ? [O] extends [X]
+            ? true
+            : false
+          : false
+        : false
+      : false
+    : false;
+
+/** Whether a codec's decode is a function `redact` does not trust. `false` for a schema that is not a codec. */
+type UntrustedCodec<S> = DefOf<S> extends CodecDef ? (TrustedCodec<S> extends true ? false : true) : false;
+
+/**
+ * Whether a function the type can see runs on the value at this position, as `redact` reads it: a transform, a
+ * `z.custom`, a `.catch()`, a codec's decode, on either side of a pipe, in any option of a union, on either side of an
+ * intersection, behind a lazy or a wrapper. A check — `.refine()`, `.check()`, `.overwrite()` — is not in the type.
+ */
+type RunsHere<S, D extends number = PRIVACY_CHECK_DEPTH> = [D] extends [never]
+  ? false
+  : DefOf<S> extends { type: "transform" | "custom" | "catch" }
+    ? true
+    : UntrustedCodec<S> extends true
+      ? true
+      : DefOf<S> extends { type: "pipe"; in: infer I; out: infer O }
+        ? true extends RunsHere<I, Prev[D]> | RunsHere<O, Prev[D]>
+          ? true
+          : false
+        : DefOf<S> extends { type: PlainWrapper; innerType: infer I }
+          ? RunsHere<I, Prev[D]>
+          : DefOf<S> extends { type: "union"; options: readonly (infer O)[] }
+            ? true extends (O extends unknown ? RunsHere<O, Prev[D]> : never)
+              ? true
+              : false
+            : DefOf<S> extends { type: "intersection"; left: infer L; right: infer R }
+              ? true extends RunsHere<L, Prev[D]> | RunsHere<R, Prev[D]>
+                ? true
+                : false
+              : DefOf<S> extends { type: "lazy"; getter: () => infer I }
+                ? RunsHere<I, Prev[D]>
+                : false;
+
+/**
+ * Whether a function at this position could read a mark: one at or below it in any branch, except a mark that sits
+ * only after every function that runs here — `classify`'s `carriedClasses`, at the type level. `A` says a function
+ * here ran before this schema, `B` that one runs after it.
+ */
+type Carries<S, A extends boolean = false, B extends boolean = false, D extends number = PRIVACY_CHECK_DEPTH> = [
+  D,
+] extends [never]
+  ? false
+  : B extends true
+    ? SchemaMarked<S>
+    : A extends true
+      ? RunsHere<S> extends true
+        ? CarriesHere<S, A, D>
+        : false
+      : CarriesHere<S, A, D>;
+
+/** {@link Carries}, once the schema is known to count. */
+type CarriesHere<S, A extends boolean, D extends number> = [MarkKeys<z.output<S>>] extends [never]
+  ? DefOf<S> extends { type: "pipe"; in: infer I; out: infer O }
+    ? true extends
+        | Carries<I, A, RunsHere<O>, Prev[D]>
+        | Carries<O, true extends A | UntrustedCodec<S> | RunsHere<I> ? true : false, false, Prev[D]>
+      ? true
+      : false
+    : DefOf<S> extends { type: PlainWrapper | "catch"; innerType: infer I }
+      ? Carries<I, A, false, Prev[D]>
+      : DefOf<S> extends { type: "union"; options: readonly (infer O)[] }
+        ? true extends (O extends unknown ? Carries<O, A, false, Prev[D]> : never)
+          ? true
+          : false
+        : DefOf<S> extends { type: "intersection"; left: infer L; right: infer R }
+          ? true extends Carries<L, A, false, Prev[D]> | Carries<R, A, false, Prev[D]>
+            ? true
+            : false
+          : DefOf<S> extends { type: "lazy"; getter: () => infer I }
+            ? Carries<I, A, false, Prev[D]>
+            : SchemaMarked<S>
+  : true;
+
+/**
+ * A schema's output at a position it starts, with the position replaced by {@link MaskedWhole} where a function runs
+ * over a mark it could read, as `redact` masks it, and with every such position below it replaced the same way.
+ */
+type Revealed<S, D extends number = PRIVACY_CHECK_DEPTH> = [D] extends [never]
+  ? z.output<S>
+  : IsAny<z.output<S>> extends true
+    ? z.output<S>
+    : true extends IsMarked<z.output<S>>
+      ? z.output<S>
+      : RunsHere<S> extends true
+        ? Carries<S> extends true
+          ? MaskedWhole
+          : RevealedHere<S, D, S>
+        : RevealedHere<S, D, S>;
+
+/**
+ * The body of {@link Revealed}. `P` is the outermost schema at this position: a union's or an intersection's options,
+ * a pipe's sides and every wrapper are the same position, so they keep it, and a field, an element or a value starts
+ * its own.
+ */
+type RevealedHere<S, D extends number, P> = [D] extends [never]
   ? z.output<S>
   : IsAny<z.output<S>> extends true
     ? z.output<S>
     : true extends IsMarked<z.output<S>>
       ? z.output<S>
       : DefOf<S> extends { type: "pipe"; in: infer I; out: infer O }
-        ? IsOpaqueOutput<O> extends true
-          ? SchemaMarked<I> extends true
-            ? MaskedWhole
-            : z.output<S>
-          : DefOf<S> extends CodecDef
-            ? HidesMarks<I, O> extends true
-              ? MaskedWhole
-              : Revealed<O, Prev[D], P>
-            : HidesMarks<I, O> extends true
-              ? Revealed<O, Prev[D], P> | Revealed<I, Prev[D], P>
-              : Revealed<O, Prev[D], P>
+        ? DefOf<S> extends CodecDef
+          ? RevealedHere<O, Prev[D], P>
+          : HidesMarks<I, O> extends true
+            ? RevealedHere<O, Prev[D], P> | RevealedHere<I, Prev[D], P>
+            : RevealedHere<O, Prev[D], P>
         : DefOf<S> extends { type: "custom" }
           ? // A class instance where a branch with a mark inside reaches it is masked whole; a plain object is walked.
             SchemaMarked<P> extends true
             ? MaybeInstance<z.output<S>>
             : z.output<S>
           : DefOf<S> extends { type: "optional"; innerType: infer I }
-            ? Revealed<I, Prev[D], P> | undefined
+            ? RevealedHere<I, Prev[D], P> | undefined
             : DefOf<S> extends { type: "nullable"; innerType: infer I }
-              ? Revealed<I, Prev[D], P> | null
+              ? RevealedHere<I, Prev[D], P> | null
               : DefOf<S> extends { type: "default" | "nonoptional"; innerType: infer I }
-                ? Exclude<Revealed<I, Prev[D], P>, undefined>
+                ? Exclude<RevealedHere<I, Prev[D], P>, undefined>
                 : DefOf<S> extends { type: "prefault" | "catch"; innerType: infer I }
-                  ? Revealed<I, Prev[D], P>
+                  ? RevealedHere<I, Prev[D], P>
                   : DefOf<S> extends { type: "lazy"; getter: () => infer I }
-                    ? Revealed<I, Prev[D], P>
+                    ? RevealedHere<I, Prev[D], P>
                     : DefOf<S> extends { type: "union"; options: readonly (infer O)[] }
                       ? O extends unknown
-                        ? Revealed<O, Prev[D], P>
+                        ? RevealedHere<O, Prev[D], P>
                         : never
                       : DefOf<S> extends { type: "intersection"; left: infer L; right: infer R }
-                        ? Revealed<L, Prev[D], P> & Revealed<R, Prev[D], P>
+                        ? RevealedHere<L, Prev[D], P> & RevealedHere<R, Prev[D], P>
                         : DefOf<S> extends { type: "array"; element: infer E }
                           ? Revealed<E, Prev[D]>[]
                           : DefOf<S> extends { type: "set"; valueType: infer E }

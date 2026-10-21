@@ -140,12 +140,54 @@ const appSide = redact(
 same<typeof appSide, { e: string; n: number }>();
 const column = redact(z.object({ profile: sqliteJson(z.object({ e: pii(z.string()), n: z.number() })) }), {} as never);
 same<typeof column, { profile: { e: string; n: number } }>();
-// A class instance where a branch with a mark inside reaches it is masked whole, so the member may be a string.
+// A `z.instanceof` runs a function on the value, so beside an option with a mark inside, the position is masked whole.
 class Acct {
   constructor(readonly e: string) {}
 }
 const instanceOption = redact(z.union([z.object({ e: pii(z.string()) }), z.instanceof(Acct)]), new Acct("x"));
-same<typeof instanceOption, { e: string } | string | { readonly e: string }>();
+same<typeof instanceOption, string>();
+// A function anywhere on a pipe's output side, over a marked input, masks the position whole.
+const In = z.object({ e: pii(z.string()) });
+const rename = (o: z.output<typeof In>) => ({ n: o.e as string });
+const chained = redact(In.pipe(z.transform(rename).pipe(z.object({ n: z.string() }))), {} as never);
+same<typeof chained, string>();
+const anyChained = redact(
+  In.pipe(
+    z
+      .any()
+      .transform(rename)
+      .pipe(z.object({ n: z.string() })),
+  ),
+  {} as never,
+);
+same<typeof anyChained, string>();
+// So does a function in an option or on a side, at a position another one marks.
+const sideRenames = redact(
+  z.intersection(
+    In,
+    z.object({ e: z.string() }).transform((o) => ({ n: o.e })),
+  ),
+  {} as never,
+);
+same<typeof sideRenames, string>();
+const optionRenames = redact(
+  z.union([z.object({ e: pii(z.email()) }), z.object({ e: z.string() }).transform((o) => ({ n: o.e }))]),
+  {} as never,
+);
+same<typeof optionRenames, string>();
+// A codec whose wire side marks is masked whole, whatever its app side marks.
+const Same = z.object({ e: pii(z.string()), n: z.string() });
+const copies = redact(z.codec(Same, Same, { decode: (o) => o, encode: (o) => o as never }), {} as never);
+same<typeof copies, string>();
+// A function before a marked schema hands it its value, so the schema says where each mark is.
+const then = redact(
+  z
+    .string()
+    .transform((s) => ({ e: s }))
+    .pipe(z.object({ e: pii(z.string()) })),
+  {} as never,
+);
+same<typeof then, { e: string }>();
 const unmarkedInstance = redact(z.object({ a: z.instanceof(Acct), e: pii(z.string()) }), {} as never);
 same<typeof unmarkedInstance, { a: Acct; e: string }>();
 
