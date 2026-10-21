@@ -458,7 +458,7 @@ pithy/
 │   ├── core/             # @pithy-sh/core — runtime primitives, contract, codecs, registry, Workflow seam
 │   ├── cloudflare/       # @pithy-sh/cloudflare — encapsulated CF REST client (out-of-Worker)
 │   ├── secrets/          # @pithy-sh/secrets — secrets store + key rotation
-│   ├── auth/             # @pithy-sh/auth — Better Auth: magic-link/OTP/Google/Apple
+│   ├── auth/             # @pithy-sh/auth — Better Auth: magic-link/OTP/Google/Apple/GitHub/Facebook/Microsoft
 │   ├── audit/            # @pithy-sh/audit — audit-trail capability + seam
 │   ├── email/            # @pithy-sh/email — CF Email via D1 job table + Workflow
 │   ├── turnstile/        # @pithy-sh/turnstile — bot-protection middleware
