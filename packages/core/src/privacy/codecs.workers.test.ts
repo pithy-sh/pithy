@@ -100,7 +100,7 @@ describe("a marked codec field", () => {
       { path: "email", class: "pii" },
       { path: "smoker", class: "phi" },
       { path: "bornAt", class: "pii" },
-      { path: "profile", class: "pii" },
+      { path: "profile.phone", class: "pii" },
       { path: "resetToken", class: "secret" },
     ]);
   });

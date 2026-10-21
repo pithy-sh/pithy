@@ -27,15 +27,15 @@ import { PRIVACY_SOURCES, type PrivacyInventory, type PrivacyInventorySchema } f
  *
  * ## What a path looks like
  *
- * A D1 field is its column path: `email`, `address.line1`, or `profile` for a JSON column with a marked field inside,
- * which `redact` masks whole. A KV field leads with the part of the entry it is in: `key.email`, `value.token`,
+ * A D1 field is its column path: `email`, `address.line1`, or `profile.phone` for a marked field inside a JSON column,
+ * which `redact` reads field by field. A KV field leads with the part of the entry it is in: `key.email`, `value.token`,
  * `metadata.ip`, `value[].email` for an array value — or `value` alone when the whole value is marked. It is the path
  * `pithy privacy scan` writes for the same field.
  *
  * ## The per-field record
  *
- * `{ path, class }`, from `classifyPrivacy`, with `truncated: true` where the walk ran out of depth and assumed
- * `secret`. It is the extension point #390 builds on: once a field can be marked encrypted at rest, that lands beside
+ * `{ path, class }`, from `classifyPrivacy`, with `truncated: true` where a search ran past the recursion limit and
+ * assumed `secret`. It is the extension point #390 builds on: once a field can be marked encrypted at rest, that lands beside
  * `class` on this record, and "which of your PHI fields are encrypted" becomes one more derivation rather than a
  * second thing to maintain.
  *

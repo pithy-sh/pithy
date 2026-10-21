@@ -243,7 +243,7 @@ export const PrivacyFieldView = z
     path: z
       .string()
       .describe(
-        "Where the field sits. A D1 column path (`email`, `address.line1`, or `profile` for a JSON column with a marked field inside), or a KV entry's part first (`key.email`, `value.token`, `metadata.ip`, or `value` for a whole marked value). An array element is `[]`, a record's value `*`.",
+        "Where the field sits. A D1 column path (`email`, `address.line1`, `profile.phone` inside a JSON column), or a KV entry's part first (`key.email`, `value.token`, `metadata.ip`, or `value` for a whole marked value). An array element is `[]`, a record's value `*`.",
       ),
     class: z
       .string()

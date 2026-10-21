@@ -85,46 +85,63 @@ export const JsonDate = z.codec(z.union([z.string(), z.number(), z.date()]), z.d
 });
 
 /**
- * sqliteJson: T ↔ JSON string, validated by `schema` on both sides. Decode
- * accepts a JSON string or an already-parsed value; the result is validated
- * against `schema` before it reaches the app.
+ * sqliteJson's decode: a JSON string is parsed, an already-parsed value passes through. One function for every
+ * column, so `isSqliteJson` can tell the kit's codec from any other by its decode.
  *
- * **Both `JSON` functions throw**, and both were reachable. `JSON.parse` throws a
- * `SyntaxError` on any string that is not a JSON document — which a column holding
- * text an older writer put there, or a payload a customer's Worker returned, can be.
- * `JSON.stringify` throws a `TypeError` on a `BigInt` and on a cycle, either of
- * which a `schema` can legitimately admit. Both become an issue (#358).
+ * **`JSON.parse` throws**, and it was reachable: a column holding text an older writer put there, or a payload a
+ * customer's Worker returned, need not be a JSON document. That becomes an issue (#358).
+ */
+function decodeJson(value: unknown, payload: Payload<unknown>): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    payload.issues.push({ code: "invalid_format", format: "json", input: value, message: "Not valid JSON." });
+    return z.NEVER;
+  }
+}
+
+/**
+ * sqliteJson's encode. **`JSON.stringify` throws** on a `BigInt` and on a cycle, either of which a schema can
+ * legitimately admit, so that becomes an issue too (#358).
+ */
+function encodeJson(value: unknown, payload: Payload<unknown>): string {
+  // The offending value is deliberately not carried onto the issue: it is the thing JSON could not hold, so a
+  // reporter that renders an issue would be the second place to trip over it.
+  try {
+    const json = JSON.stringify(value);
+    if (typeof json === "string") return json;
+  } catch {
+    // Falls through to the one push below. A `BigInt`, a cycle and an `undefined` result are the same answer —
+    // this value does not survive the round trip — and they deserve the same issue.
+  }
+  payload.issues.push({
+    code: "invalid_format",
+    format: "json",
+    input: undefined,
+    message: "Not serializable as JSON.",
+  });
+  return z.NEVER;
+}
+
+/**
+ * sqliteJson: T ↔ JSON string, validated by `schema` on both sides. Decode accepts a JSON string or an
+ * already-parsed value; the result is validated against `schema` before it reaches the app.
  */
 export function sqliteJson<T extends z.ZodType>(schema: T) {
   return z.codec(z.union([z.string(), schema]), schema, {
-    decode: (value, payload): z.input<T> => {
-      if (typeof value !== "string") return value as z.input<T>;
-      try {
-        return JSON.parse(value) as z.input<T>;
-      } catch {
-        payload.issues.push({ code: "invalid_format", format: "json", input: value, message: "Not valid JSON." });
-        return z.NEVER;
-      }
-    },
-    encode: (value, payload): string => {
-      // The offending value is deliberately not carried onto the issue: it is the thing JSON could not
-      // hold, so a reporter that renders an issue would be the second place to trip over it.
-      try {
-        const json = JSON.stringify(value);
-        if (typeof json === "string") return json;
-      } catch {
-        // Falls through to the one push below. A `BigInt`, a cycle and an `undefined` result are the
-        // same answer — this value does not survive the round trip — and they deserve the same issue.
-      }
-      payload.issues.push({
-        code: "invalid_format",
-        format: "json",
-        input: undefined,
-        message: "Not serializable as JSON.",
-      });
-      return z.NEVER;
-    },
+    decode: decodeJson as (value: string | z.output<T>, payload: Payload<string | z.output<T>>) => z.input<T>,
+    encode: encodeJson as (value: z.input<T>, payload: Payload<z.input<T>>) => string,
   });
+}
+
+/**
+ * Whether a schema is a JSON column `sqliteJson` built, or a clone of one (`.describe()`, `.meta()`), read by its
+ * decode. `redact` walks such a column's fields one by one, and treats every other codec as opaque.
+ */
+export function isSqliteJson(schema: z.ZodType): boolean {
+  const def = schema._zod.def as { type: string; transform?: unknown };
+  return def.type === "pipe" && def.transform === decodeJson;
 }
 
 export const MAX_TIMEZONE_LENGTH = 64;

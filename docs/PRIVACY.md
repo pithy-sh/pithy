@@ -24,7 +24,7 @@ A marker does two things in one call. It attaches `.meta({ privacy: "pii" })`, w
 
 **Nothing at runtime changes.** `.brand()` returns the same schema object and `.meta()` a clone that parses exactly as its source, so `Patient.parse(row)` returns the data it did before the marker and no column is added. The input side stays unbranded: `z.input` — the SQLite row, the Kysely table type, a KV write — is what it was. The one thing a brand costs is that a value of the app type must come from a parse, so a `.default()` takes a parsed value, or goes inside the marker: `pii(z.string().default("guest"))`.
 
-**A marker composes with every codec.** `pii(SQLiteDate)`, `phi(SQLiteBoolean)` and a marked field inside `sqliteJson(Profile)` each encode to the row shape, insert through Kysely unchanged and parse back to the unmarked schema's data — proved against a real D1 in `packages/core/src/privacy/codecs.workers.test.ts`. `redact` masks a JSON column with a marked field inside whole; see [the rule](#the-rule).
+**A marker composes with every codec.** `pii(SQLiteDate)`, `phi(SQLiteBoolean)` and a marked field inside `sqliteJson(Profile)` each encode to the row shape, insert through Kysely unchanged and parse back to the unmarked schema's data — proved against a real D1 in `packages/core/src/privacy/codecs.workers.test.ts`. `redact` reads a JSON column field by field; see [the contract](#the-contract).
 
 A marker is read through `.optional()`, `.nullable()`, `.default()` and the other wrappers that are the same field.
 
@@ -76,53 +76,42 @@ HTTP responses are not gated. Returning a user their own email is correct.
 
 `redact(Schema, value)` returns a copy in which every unmarked field is verbatim and every marked one is its class's mask. It reads the app shape — what `Schema.parse(row)` returns — and never mutates its argument. `null` and `undefined` stay as they are.
 
-### The rule
+### The contract
 
-One coarse rule, and it fails closed. `redact`, `classifyPrivacy` and the type `redact` returns all read it, so they agree on every position.
+`redact(schema, value)` promises exact results for a stated set of schema shapes and documents everything else. It does not try to defend against every construction Zod allows, because a schema built to dodge it can be built, and following every such construction costs more than it protects. What it covers, it covers perfectly; what it does not, it masks whole and says so.
 
-- **Structural nodes are walked.** An object — stripped, strict or loose, and its catchall — an array, a record's keys and values, a tuple's items and rest, the wrappers that are the same field (`.optional()`, `.nullable()`, `.default()`, `.catch()`, `.readonly()`, a brand), a union, a discriminated union, an intersection and a `z.lazy`.
-- **At a union or an intersection, a position is masked when any option or side marks it.** No branch is chosen, and none is tested against the value.
-- **Every other node is opaque**: a transform, a pipe, a `z.preprocess`, a codec — `sqliteJson` included — a `z.custom` or a `z.instanceof`, `any`, `unknown`, a set, a map, a promise and a function. An opaque node with a mark anywhere inside it is masked whole, with one placeholder for the strongest class it carries: `secret`, then `phi`, then `pci`, then a class of your own, then `pii`. An opaque node with no mark inside is kept as it is.
-- **An opaque node beside a mark is masked with it.** A transform, an `unknown` or a custom at a position another option or side marks reads or holds the same value, so the position is masked whole. A scalar — a string, a number, a literal, an enum, a date — holds nothing else, and never masks a position by itself. A coercion is not a scalar: `z.coerce.string()` runs `String()` over the same input a marked array beside it reads, so it is masked with it.
+**Redacted exactly.** Every marked field is masked with its class placeholder, every unmarked field is kept as `parse` returned it, nothing is dropped, and `Redacted<T>` is the exact type of the result:
 
-A recursive schema terminates on itself, whether it is written with `z.lazy` or with a getter, so `z.lazy(() => z.object({ e: pii(z.email()), next: Node.optional() }))` is masked at every depth, and `classifyPrivacy` lists its fields once. A lazy is read through the target Zod cached when it parsed, and a getter through the shape Zod froze, so the walk always reads the schema `parse` ran.
+1. Rows and objects: `z.object`, strict, loose or with a catchall, and `pick`, `omit`, `partial` and `extend` of one.
+2. Collections: arrays, tuples including rest elements, records with marked keys or values, `Map` and `Set`.
+3. Wrappers: `optional`, `nullable`, `default`, `catch`, `readonly`, `brand`.
+4. Choices: unions, discriminated unions and intersections. A field is masked when any option or side marks it.
+5. The kit's database codecs: `SQLiteDate`, `SQLiteBoolean` and `sqliteJson(schema)`. A JSON column's inner fields are redacted field by field.
+6. Recursion defined once: `z.lazy(() => Node)`, or a getter that returns the same schema object, such as trees and linked lists.
+7. Values copied out of a parsed row into a plain object, array, `Map` or `Set` described by any of the above.
 
-**Each schema is read once, at any size.** `redact`, `classifyPrivacy`, `hasPrivacy` and `pithy privacy scan` read one record of each schema, kept by the schema object itself, so they agree on every position, and a part many fields share costs once however often it appears. No count of fields or nodes bounds the walk: a schema with no recursion in it is read to the end, however large.
+**Outside the contract.** Custom transforms and pipes, `preprocess`, codecs other than the kit's own, `z.custom`, `any`, `unknown`, and getters that build a new schema on each read. `redact` does not look inside these. When anything beneath one is marked, the whole value is masked with the strongest class it carries, and `Redacted<T>` types that position `unknown`. When nothing beneath it is marked, it is kept as it is. Recursion past a fixed depth is masked whole. None of this ever throws or leaks a raw marked value.
 
-**The one limit is recursion, and past it the walk fails closed.** One path may take 256 recursion steps: each `z.lazy` resolved, each object whose getters build its fields, and each level of a value that comes round to a schema it is already inside. Past that, what lies beyond was not read, so the position is taken to carry the strongest class. `redact` masks it whole as `[secret]`, and `classifyPrivacy` lists it as `{ path, class: "secret", truncated: true }` — the way the type `redact` returns makes a position past its own depth `unknown`. A factory that builds a new schema at every level — a getter or a lazy that calls a function returning a fresh one — reaches the limit, and so does a value nested that deep under a recursive schema. Once one recursion has run out, every position in the rest of it that would take another recursion step is listed closed rather than read, because a factory that builds two lazies at every level has more paths than could ever be read. A field outside that recursion, a field with its own mark, and a field with no recursion below it are read as they are. A schema reads the same whichever schema was read before it. Neither ever throws on a schema `parse` accepts. Build a recursive schema once and refer to it by name.
+**Tested as stated.** An exhaustive matrix over the supported shapes, each nested in each, checks the runtime result and the type. The cases outside the contract are tested for exactly the documented behavior, and the docs carry this list verbatim.
 
-### What it over-masks
+### The edges, exactly
 
-The rule never guesses where a function put a mark, so it masks more than a precise walk would. That is the trade, and it is deliberate.
-
-- **A JSON column with a marked field inside is masked whole.** `sqliteJson(Profile)` is a codec, and a codec's decode is a function: a row comes back `{ id: "u_1", profile: "[pii]" }`, not with `profile.city` kept. Log the column's unmarked fields by name, or keep the marked one in a column of its own.
-- **A transform over a marked input is masked whole**, whatever it returns, and so is a set, a map, a promise or a function that holds a mark.
+- **The strongest class names a whole mask**: `secret`, then `phi`, then `pci`, then a class of your own, then `pii`. A transform over a `pii` and a `phi` field comes back `[phi]`.
+- **A position two classes reach takes the stronger one's placeholder.** Where one option marks `n` as `pci` and another as `pii`, a national ID in `n` comes back `[pci]`, never as a card number's first six and last four. A class's own mask runs only where that class is the only one at the position.
 - **A field only one option marks is masked in every option.** Against `z.union([z.object({ e: pii(z.email()) }), z.object({ e: z.number() })])`, a `{ e: 5 }` comes back `{ e: "[pii]" }`.
-- **A position two classes mark takes the placeholder of the stronger.** Where one option marks `n` as `pci` and another as `pii`, a national ID in `n` comes back `[pci]`, never as a card number's first six and last four. A class's own mask runs only where that class is the only one at the position.
-- **A union of a marked object and a transform, an `unknown` or a loose fallback is masked whole**, because the opaque option holds the same value the object marks.
+- **Nothing the value holds is dropped.** Every key and element comes back, a record's symbol keys included. One no schema at its position names — a key only a transform or an `unknown` could have put there, or a value a `.catch()` fallback handed back where an object was named — is masked with the strongest class the position carries, and kept where it carries none.
+- **A record's or a map's key, and a set's element, is redacted by its schema.** Two that mask alike come back as `[pii]` and `[pii] #2`, so the copy holds as many entries as the value did. An own `__proto__` key is defined on the copy, so it never becomes the copy's prototype.
+- **Recursion is bounded at 256.** A value that comes round to a position it is already inside more often than that is masked whole there as `[secret]`, the strongest class, because the walk stops reading. A `z.lazy` whose insides are built anew at every level reaches the same limit, and is masked whole as `[secret]` too.
+- **A getter Zod has already resolved is a fixed schema.** Zod reads an object's getters once, the first time the shape is read. A getter that builds a new schema each read is opaque where `redact` or `classifyPrivacy` meets it first; where `parse` resolved it first, the schema it settled on is walked like any other, and every mark in it is still masked.
+- **A check is not a node.** `.refine()`, `.superRefine()`, `.check()` and `.overwrite()` leave the schema the kind it was, so a check that writes a marked value into another field is not seen. Move a value with a `.transform()`, which is masked whole over a mark.
 
-### What it cannot see
+**The type is the shape it returns.** A marked position is a `string`. An object maps its fields, an array and a tuple their elements, a record and a map their values, a set its elements, and a brand that is not a privacy class stays on. An opaque position is its own output type, or `unknown` where a mark sits beneath it. Two more positions are `unknown` because TypeScript cannot see their kind: a schema annotated `z.ZodType<T>`, as a self-referencing `z.lazy` must be, and `any`. A recursive schema written with a getter is inferred, and keeps its shape.
 
-**A check is not a node.** `.refine()`, `.superRefine()`, `.check()` and `.overwrite()` leave the schema the kind it was, so a check that writes a marked value into another field is not seen — by `redact`, by `classifyPrivacy` or by the type. The same goes for what a `.catch()` fallback writes into a field its schema names. Move a value with a `.transform()`, which is a node, and it is masked.
-
-### Keys and elements
-
-**Nothing the value holds is dropped.** Every key and element comes back, verbatim or masked, a record's symbol keys included. One that no schema at its position names — a key a `.catch()` fallback added, or a value that does not match its schema, such as the raw input a fallback handed back where an object was named — is masked with the strongest class the position carries, and kept where it carries none. `classifyPrivacy` cannot list it, because the schema does not name it.
-
-**A record keyed by a marked value has each key masked**, and a masked key never takes the name of another key: two keys that mask alike, or a masked key beside a literal `"[pii]"`, come back as `[pii]` and `[pii] #2`. An own `__proto__` key is defined on the copy, so it never becomes the copy's prototype.
-
-**The type is the shape it returns, or `unknown`.** A marked position, and an opaque one with a mark inside, is a `string`. An array stays an array — a branded one too, without its brand — a tuple keeps its length, a record maps its values, and a member of a union of plain objects keeps its own fields with every option's marks applied. Where the type cannot be sure what `redact` returns, it says `unknown` rather than claim a shape, and narrowing is yours:
-
-- **Below a union or an intersection with a loose object, a catchall or an opaque option.** A key one option names can reach another's catchall and be masked. `z.union([z.object({ e: pii(z.email()) }), z.date()])` is `{ e: unknown } | Date`.
-- **At a key outside an object's shape**: a loose object's or a catchall's extra keys.
-- **Past the depth it reads.** It follows 16 levels of schema and searches an opaque node's insides as deep again. A deeper position, and an opaque node whose insides run deeper with no mark found — an unmarked recursive schema inside `sqliteJson` — is `unknown`.
-- **Where the schema's type names no kind**: one annotated `z.ZodType<T>`, as a recursive `z.lazy` must be, or `any`. A recursive schema written with a getter is inferred, and keeps its shape.
-
-`Redacted<typeof User>` names that type for a value already redacted. It takes the schema, not the value's type, because a value's type cannot tell a plain object from what a JSON column or a transform returns, and `redact` masks those whole.
+`Redacted<typeof User>` names that type for a value already redacted. It takes the schema, not the value's type, because a value's type cannot tell a plain object from what a transform returns, and `redact` masks that whole over a mark.
 
 **The mask is a placeholder, not a hash.** `[pii]` loses correlation: two lines about one person look unrelated. A keyed hash would keep it, and an email is low-entropy enough to brute-force from an unkeyed one — so it would need a secret salt, and that would pull `@pithy-sh/secrets` into core. Correlation is what the unmarked id beside it is for.
 
-`classifyPrivacy(Schema)` lists every position `redact` masks and its class — `email`, `address.line1`, `devices[].token`, `byEmail.<key>` for a record keyed by a marked value, and `profile` for a JSON column with a marked field inside, once per class it holds — and `hasPrivacy(Schema, "phi")` is the boolean a route or a guard branches on.
+`classifyPrivacy(Schema)` lists every position `redact` masks and its class — `email`, `address.line1`, `devices[].token`, `profile.phone` inside a JSON column, `byEmail.<key>` for a record keyed by a marked value, `tags[]` for a set — and a position masked whole once per class it holds. `hasPrivacy(Schema, "phi")` is the boolean a route or a guard branches on.
 
 ## Declare what the project handles
 

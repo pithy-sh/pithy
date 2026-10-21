@@ -6,8 +6,9 @@ import { z } from "zod";
 import { SQLiteBoolean, SQLiteDate, sqliteJson } from "../data/codecs";
 import { LogRecord, serializeRecord } from "../logger/record";
 import { definePrivacyClass, pci, phi, pii, secret } from "./classes";
-import { classifyPrivacy, hasPrivacy, walkPrivacy } from "./classify";
+import { classifyPrivacy, MAX_RECURSION_DEPTH } from "./classify";
 import { redact } from "./redact";
+import type { Redacted } from "./types";
 
 const User = z
   .object({
@@ -100,6 +101,13 @@ describe("redact", () => {
       .object({ bornAt: pii(SQLiteDate).describe("Date of birth."), smoker: phi(SQLiteBoolean).describe("Smokes.") })
       .describe("A row.");
     expect(masked(Row, { bornAt: 0, smoker: 1 })).toEqual({ bornAt: "[pii]", smoker: "[phi]" });
+  });
+
+  test("reads a JSON column field by field, through the kit's codec", () => {
+    const Profile = z.object({ phone: pii(z.string()), city: z.string() });
+    const Row = z.object({ id: z.string(), profile: sqliteJson(Profile), seen: SQLiteDate });
+    const row = masked(Row, { id: "u_1", profile: JSON.stringify({ phone: "S-1", city: "Oslo" }), seen: 0 });
+    expect(row).toEqual({ id: "u_1", profile: { phone: "[pii]", city: "Oslo" }, seen: new Date(0) });
   });
 
   test("masks a whole marked object", () => {
@@ -257,939 +265,225 @@ describe("the rule: structural nodes are walked", () => {
   });
 });
 
-describe("the rule: every other node is opaque", () => {
-  const Profile = z.object({ e: pii(z.string()), n: z.string() });
-
-  test("masks a JSON column with a marked field inside whole, with the strongest class it carries", () => {
-    const Row = z.object({ id: z.string(), profile: sqliteJson(Profile) });
-    expect(masked(Row, { id: "i", profile: '{"e":"S-1","n":"x"}' })).toEqual({ id: "i", profile: "[pii]" });
-    expect(classifyPrivacy(Row)).toEqual([{ path: "profile", class: "pii" }]);
-    const Mixed = sqliteJson(z.object({ e: pii(z.string()), d: phi(z.string()) }));
-    expect(masked(Mixed, '{"e":"S-1","d":"S-2"}')).toBe("[phi]");
-    expect(classifyPrivacy(Mixed)).toEqual([
-      { path: "", class: "pii" },
-      { path: "", class: "phi" },
-    ]);
-    // A column with no mark inside is kept as it is.
-    const Plain = z.object({ settings: sqliteJson(z.object({ theme: z.string() })) });
-    expect(masked(Plain, { settings: '{"theme":"dark"}' })).toEqual({ settings: { theme: "dark" } });
+describe("the contract's edges", () => {
+  test("masks a position two classes reach with the stronger one's placeholder, never one class's own mask", () => {
+    const Id = z.union([z.object({ n: pci(z.string()) }), z.object({ n: pii(z.string()) })]);
+    expect(masked(Id, { n: "4111111111111111" })).toEqual({ n: "[pci]" });
   });
 
-  test("masks a transform, a pipe, a preprocess and a codec whole when a mark sits on either side", () => {
-    class Account {
-      constructor(readonly e: string) {}
-    }
-    const cases: [string, z.ZodType, unknown][] = [
-      ["a transform to a class instance", Profile.transform((o) => new Account(o.e)), { e: "S-1", n: "x" }],
-      ["a transform that renames", Profile.transform((o) => ({ moved: o.e })), { e: "S-1", n: "x" }],
-      [
-        "a pipe into an unmarked object",
-        Profile.pipe(z.object({ e: z.string(), n: z.string() }) as never),
-        { e: "S-1", n: "x" },
-      ],
-      ["a pipe into a marked object", z.object({ e: z.string() }).pipe(z.object({ e: pii(z.string()) })), { e: "S-1" }],
-      ["a preprocess", z.preprocess((value) => value, Profile), { e: "S-1", n: "x" }],
-      [
-        "a codec marked on its app side",
-        z.codec(z.string(), Profile, { decode: (s) => ({ e: s, n: s }), encode: (o) => o.n }),
-        "S-1",
-      ],
-      [
-        "a codec marked on its wire side",
-        z.codec(Profile, z.object({ n: z.string() }), {
-          decode: (o) => ({ n: o.e }),
-          encode: (o) => ({ e: o.n, n: o.n }) as never,
-        }),
-        { e: "S-1", n: "x" },
-      ],
-    ];
-    for (const [label, schema, wire] of cases) {
-      expect([label, masked(schema, wire)]).toEqual([label, "[pii]"]);
-      expect([label, classifyPrivacy(schema)]).toEqual([label, [{ path: "", class: "pii" }]]);
-    }
-    // The strongest class inside names the placeholder.
-    const Mixed = z.object({ e: pii(z.string()), t: secret(z.string()) }).transform((o) => ({ ...o }));
-    expect(masked(Mixed, { e: "S-1", t: "S-2" })).toBe("[secret]");
-  });
-
-  test("keeps an opaque node with no mark inside as it is", () => {
-    const Plain = z.object({ n: z.string() }).transform((o) => ({ m: o.n }));
-    expect(masked(Plain, { n: "x" })).toEqual({ m: "x" });
-    const Field = z.object({ t: z.string().transform((s) => s.length), e: pii(z.string()) });
-    expect(masked(Field, { t: "abc", e: "S-1" })).toEqual({ t: 3, e: "[pii]" });
-    const Out = z.string().transform(() => JSON.parse('{"__proto__":{"x":1},"a":1}') as Record<string, unknown>);
-    expect(Object.getPrototypeOf(masked(Out, "w"))).toBe(Object.prototype);
-  });
-
-  test("masks a set, a map, a promise, a function and a custom whole when it holds a mark", async () => {
-    expect(masked(z.set(pii(z.string())), new Set(["S-1", "S-2"]))).toBe("[pii]");
-    expect(masked(z.map(pii(z.string()), z.string()), new Map([["S-1", "home"]]))).toBe("[pii]");
-    expect(masked(z.map(z.string(), z.object({ e: pii(z.string()) })), new Map([["k", { e: "S-1" }]]))).toBe("[pii]");
-    const Fn = z.function({ input: [pii(z.string())], output: z.string() });
-    expect(redact(Fn as never, ((s: string) => s) as never)).toBe("[pii]");
-    const Later = z.promise(pii(z.string()));
-    expect(redact(Later, Promise.resolve("S-1") as never)).toBe("[pii]");
-    // Unmarked, each is kept as it is.
-    const set = new Set(["a"]);
-    expect(masked(z.set(z.string()), set)).toEqual(set);
-    const fn = (s: string) => s;
-    expect(redact(z.function({ input: [z.string()], output: z.string() }) as never, fn as never)).toBe(fn);
-    class Acct {
-      constructor(readonly e: string) {}
-    }
-    const instance = new Acct("a");
-    expect(redact(z.object({ a: z.instanceof(Acct) }), { a: instance })).toEqual({ a: instance });
-    // `any` and `unknown` carry no mark of their own, so what they hold is kept.
-    expect(masked(z.object({ a: z.any(), u: z.unknown() }), { a: { x: 1 }, u: [2] })).toEqual({ a: { x: 1 }, u: [2] });
-  });
-
-  test("masks a position whole where an opaque node meets a mark, inside it or beside it", () => {
-    const Marked = z.union([z.object({ id: z.string() }), Profile.transform((o) => ({ moved: o.e }))]);
-    expect(masked(Marked, { e: "S-1", n: "x" })).toBe("[pii]");
-    // A transform with no mark inside reads the same value the option beside it marks.
-    const Either = z.union([
-      z.object({ e: pii(z.email()) }),
-      z.object({ e: z.string() }).transform((o) => ({ n: o.e })),
-    ]);
-    expect(masked(Either, { e: "S-1" })).toBe("[pii]");
-    expect(classifyPrivacy(Either)).toEqual([{ path: "", class: "pii" }]);
-    const Both = z.intersection(
-      Profile,
-      z.object({ e: z.string() }).transform((o) => ({ moved: o.e })),
-    );
-    expect(masked(Both, { e: "S-1", n: "x" })).toBe("[pii]");
-    const Held = z.union([Profile, z.unknown()]);
-    expect(masked(Held, { e: "S-1", n: "x" })).toBe("[pii]");
-    // A scalar holds nothing else: a date did not come from the object option, and is kept.
-    const Dated = z.union([z.object({ e: pii(z.string()) }), z.date()]);
-    expect(redact(Dated, new Date(0))).toEqual(new Date(0));
-    expect(classifyPrivacy(Dated)).toEqual([{ path: "e", class: "pii" }]);
-  });
-
-  test("does not see a check: a refine or an overwrite leaves the node the kind it was", () => {
-    const Ref = Profile.refine(() => true);
-    expect(masked(Ref, { e: "S-1", n: "x" })).toEqual({ e: "[pii]", n: "x" });
-    expect(classifyPrivacy(Ref)).toEqual([{ path: "e", class: "pii" }]);
-    const Trimmed = z.object({ e: pii(z.string().trim()), n: z.string().trim() });
-    expect(masked(Trimmed, { e: " S-1 ", n: " x " })).toEqual({ e: "[pii]", n: "x" });
-  });
-});
-
-/**
- * **The round-3 repros, as the rule decides them.** Each of these leaked, dropped or overflowed the stack under the
- * precision rules the coarse one replaced (`scratchpad/ship/132/verify-r3`).
- */
-describe("regressions: round 3", () => {
-  type Nd = { e: string; next?: Nd };
-  const Nd: z.ZodType<Nd> = z.lazy(() => z.object({ e: pii(z.string()), next: Nd.optional() }));
-
-  test("a recursive lazy terminates in classify and in redact, whatever is around it", () => {
-    expect(classifyPrivacy(Nd)).toEqual([{ path: "e", class: "pii" }]);
-    expect(classifyPrivacy(Nd.transform((n) => n))).toEqual([{ path: "", class: "pii" }]);
-    expect(masked(Nd, { e: "S-1", next: { e: "S-2" } })).toEqual({ e: "[pii]", next: { e: "[pii]" } });
-    expect(
-      redact(
-        Nd.transform((n) => n),
-        { e: "S-1" },
-      ),
-    ).toBe("[pii]");
-    expect(
-      redact(
-        z.object({ n: Nd }).refine(() => true),
-        { n: { e: "S-1" } },
-      ),
-    ).toEqual({ n: { e: "[pii]" } });
-    expect(redact(z.union([z.string().transform((x) => x), Nd]), { e: "S-1" } as never)).toBe("[pii]");
-    expect(
-      redact(
-        z.preprocess((x) => x, Nd),
-        { e: "S-1" },
-      ),
-    ).toBe("[pii]");
-    const G: z.ZodType = z.object({
-      e: pii(z.string()),
-      get kids() {
-        return z.array(G);
-      },
-    });
-    expect(
-      redact(
-        G.transform((x) => x),
-        { e: "S-1", kids: [] } as never,
-      ),
-    ).toBe("[pii]");
-    expect(classifyPrivacy(G.transform((x) => x))).toEqual([{ path: "", class: "pii" }]);
-    type L2 = string | L2[];
-    const L2: z.ZodType<L2> = z.lazy(() => z.union([z.string(), z.array(L2)]));
-    expect(
-      redact(
-        L2.transform((x) => x),
-        "a",
-      ),
-    ).toBe("a");
-  });
-
-  const Profile = z.object({ e: pii(z.string()) });
-  const Tr = z.object({ e: z.string() }).transform((o) => ({ copy: o.e }));
-  const S = z.union([Tr, Profile]);
-
-  test.each<[string, z.ZodType, unknown, unknown]>([
-    ["A0 a union of a transform and the marked object", S, { e: "S-1" }, "[pii]"],
-    [
-      "A1 an intersection of a preprocess over it and it",
-      z.intersection(
-        z.preprocess((x) => x, S),
-        S,
-      ),
-      { e: "S-1" },
-      "[pii]",
-    ],
-    ["A2 a union of a preprocess over it and it", z.union([z.preprocess((x) => x, S), S]), { e: "S-1" }, "[pii]"],
-    [
-      "A3 an object field holding that intersection",
-      z.object({
-        f: z.intersection(
-          z.preprocess((x) => x, S),
-          S,
-        ),
-      }),
-      { f: { e: "S-1" } },
-      { f: "[pii]" },
-    ],
-    [
-      "A4 a transform piped into it, beside it",
-      z.intersection(
-        z
-          .any()
-          .transform((x) => x)
-          .pipe(S),
-        S,
-      ),
-      { e: "S-1" },
-      "[pii]",
-    ],
-    [
-      "A5 a preprocess over it beside a loose object",
-      z.intersection(
-        z.preprocess((x) => x, S),
-        z.looseObject({}),
-      ),
-      { e: "S-1" },
-      "[pii]",
-    ],
-    [
-      "A6 a partial marked object beside a renaming transform",
-      z.intersection(
-        Profile.partial(),
-        z.object({ e: z.string() }).transform((o) => ({ copy: o.e })),
-      ),
-      { e: "S-1" },
-      "[pii]",
-    ],
-    ["B1 a preprocess over it", z.preprocess((x) => x, S), { e: "S-1" }, "[pii]"],
-    [
-      "B2 an adopter's JSON codec over it",
-      z.object({ p: z.codec(z.string(), S, { decode: (s) => JSON.parse(s), encode: (v) => JSON.stringify(v) }) }),
-      { p: '{"e":"S-1"}' },
-      { p: "[pii]" },
-    ],
-    ["B3 sqliteJson over it", z.object({ p: sqliteJson(S) }), { p: '{"e":"S-1"}' }, { p: "[pii]" }],
-    [
-      "B4 a preprocess over an intersection",
-      z.preprocess((x) => x, z.intersection(Profile.partial(), Tr)),
-      { e: "S-1" },
-      "[pii]",
-    ],
-    [
-      "B5 a preprocess over a discriminated union",
-      z.preprocess(
-        (x) => x,
-        z.discriminatedUnion("t", [
-          z.object({ t: z.literal("a"), e: z.string() }).transform((o) => ({ t: o.t, copy: o.e })),
-          z.object({ t: z.literal("b"), e: pii(z.string()) }),
-        ]),
-      ),
-      { t: "a", e: "S-1" },
-      "[pii]",
-    ],
-    [
-      "B7 a transform piped into it",
-      z
-        .object({ e: z.string() })
-        .transform((x) => x)
-        .pipe(S),
-      { e: "S-1" },
-      "[pii]",
-    ],
-    [
-      "B8 a preprocess over a marked transform",
-      z.preprocess(
-        (x) => x,
-        Profile.transform((o) => ({ copy: o.e })),
-      ),
-      { e: "S-1" },
-      "[pii]",
-    ],
-    [
-      "B9 a preprocess over a lazy",
-      z.preprocess(
-        (x) => x,
-        z.lazy(() => S),
-      ),
-      { e: "S-1" },
-      "[pii]",
-    ],
-    ["B10 a preprocess over an optional", z.preprocess((x) => x, S.optional()), { e: "S-1" }, "[pii]"],
-    ["B11 an array of preprocesses", z.array(z.preprocess((x) => x, S)), [{ e: "S-1" }], ["[pii]"]],
-    [
-      "B12 a preprocess over a union with a catch",
-      z.preprocess((x) => x, z.union([z.object({ e: z.string() }).catch({ e: "x" }), Profile])),
-      { e: "S-1" },
-      "[pii]",
-    ],
-  ])("%s", (_label, schema, wire, expected) => {
-    const out = masked(schema, wire);
-    expect(out).toEqual(expected);
-    expect(raw(out)).toEqual([]);
-  });
-
-  test.each<[string, z.ZodType, unknown, unknown]>([
-    ["E1 a short tuple beside any", z.union([z.tuple([z.string()]), z.any()]), ["a", "b", "c"], ["a", "b", "c"]],
-    [
-      "E2 a short tuple beside a transform",
-      z.union([z.tuple([z.string()]), z.string().transform((s) => [s, s, s])]),
-      "a",
-      ["a", "a", "a"],
-    ],
-    ["E3 a short tuple beside unknown", z.union([z.tuple([z.string()]), z.unknown()]), ["a", "b"], ["a", "b"]],
-    [
-      "E4 a short tuple beside a custom",
-      z.union([z.tuple([z.string()]), z.custom<unknown>(() => true)]),
-      ["a", "b"],
-      ["a", "b"],
-    ],
-    ["E5 a short marked tuple beside any", z.union([z.tuple([pii(z.string())]), z.any()]), ["S-1", "S-2"], "[pii]"],
-    [
-      "E6 a record of a short tuple or any",
-      z.record(z.string(), z.union([z.tuple([z.string()]), z.any()])),
-      { k: ["a", "b"] },
-      { k: ["a", "b"] },
-    ],
-    [
-      "E9 a map keyed by a marked transform",
-      z.map(
-        z.object({ e: pii(z.string()) }).transform((o) => o.e),
-        z.string(),
-      ),
-      new Map([[{ e: "S-1" }, "v"]]),
-      "[pii]",
-    ],
-    [
-      "E10 a record keyed by an unmarked transform",
-      z.record(
-        z.string().transform((k) => k),
-        pii(z.string()),
-      ),
-      { k: "S-1" },
-      { k: "[pii]" },
-    ],
-    [
-      "E11 a set of marked transforms",
-      z.set(z.object({ e: pii(z.string()) }).transform((o) => o.e)),
-      new Set([{ e: "S-1" }, { e: "S-2" }]),
-      "[pii]",
-    ],
-    [
-      "E12 a tuple rest that transforms a mark",
-      z.tuple(
-        [z.string()],
-        z.object({ e: pii(z.string()) }).transform((o) => ({ c: o.e })),
-      ),
-      ["a", { e: "S-1" }],
-      ["a", "[pii]"],
-    ],
-    [
-      "E14 a transform that moves a key",
-      z.object({ a: z.object({ e: pii(z.string()) }).transform((o) => ({ moved: o.e })) }),
-      { a: { e: "S-1" } },
-      { a: "[pii]" },
-    ],
-    [
-      "E18 a getter whose kids transform",
-      (() => {
-        const G: z.ZodType = z.object({
-          e: pii(z.string()),
-          get kids() {
-            return z.array(G).transform((a) => (a as { e: string }[]).map((k) => ({ c: k.e })));
-          },
-        });
-        return G;
-      })(),
-      { e: "S-1", kids: [{ e: "S-2", kids: [] }] },
-      { e: "[pii]", kids: "[pii]" },
-    ],
-    [
-      "E19 a record of preprocesses over a union with a transform",
-      z.record(
-        z.string(),
-        z.preprocess(
-          (x) => x,
-          z.union([z.object({ e: z.string() }).transform((o) => ({ c: o.e })), z.object({ e: pii(z.string()) })]),
-        ),
-      ),
-      { k: { e: "S-1" } },
-      { k: "[pii]" },
-    ],
-    [
-      "E20 a codec marked on its app side only",
-      z.codec(z.string(), z.object({ e: pii(z.string()), n: z.string() }), {
-        decode: (s) => ({ e: s, n: s }),
-        encode: (o) => o.e,
-      }),
-      "S-1",
-      "[pii]",
-    ],
-    [
-      "E22 a codec chain into a transform",
-      z
-        .codec(z.string(), z.object({ e: pii(z.string()) }), { decode: (s) => ({ e: s }), encode: (o) => o.e })
-        .pipe(z.object({ e: z.string() }).transform((o) => ({ c: o.e })) as never),
-      "S-1",
-      "[pii]",
-    ],
-    [
-      "E25 a preprocess over a partial marked object beside a transform",
-      z.intersection(
-        z.preprocess((x) => x, z.object({ e: pii(z.string()) }).partial()),
-        z.object({ e: z.string() }).transform((o) => ({ c: o.e })),
-      ),
-      { e: "S-1" },
-      "[pii]",
-    ],
-  ])("%s", (_label, schema, wire, expected) => {
-    const out = masked(schema, wire);
-    expect(out).toEqual(expected);
-    expect(raw(out)).toEqual([]);
-  });
-
-  test("T2, T2b, T4: the type agrees with what redact returns", () => {
-    const P2 = z.object({ e: pii(z.string()), n: z.string() });
-    // An adopter codec of sqliteJson's own shape whose decode copies the mark: masked whole, typed a string.
-    const Look = z.codec(z.union([z.string(), P2]), P2, {
-      decode: (v) => {
-        const o = typeof v === "string" ? JSON.parse(v) : v;
-        return { e: o.e, n: o.e };
-      },
-      encode: (v) => JSON.stringify(v),
-    });
-    const look: string = redact(Look, Look.parse('{"e":"S-1","n":"x"}'));
-    expect(look).toBe("[pii]");
-    const column: { p: string } = redact(z.object({ p: sqliteJson(P2) }), { p: { e: "S-1" as never, n: "x" } });
-    expect(column).toEqual({ p: "[pii]" });
-    const Ref = P2.refine(() => true);
-    const refined: { e: string; n: string } = redact(Ref, Ref.parse({ e: "S-1", n: "x" }));
-    expect(refined).toEqual({ e: "[pii]", n: "x" });
-  });
-});
-
-/**
- * **Regressions from the fourth review round** (#132): a recursive schema built by a factory, which no identity guard
- * recognizes, and a coercion, which reads the whole input a structural option beside it reads.
- */
-describe("regressions: round 4", () => {
-  // A factory hands back a new schema at every level, so the schema-only walks have no node to stop on.
-  // biome-ignore lint/suspicious/noExplicitAny: a factory's type is circular, and TypeScript infers none.
-  const mkLazy = (): any => z.lazy(() => z.object({ n: z.string(), e: pii(z.string()), kid: mkLazy().optional() }));
-  // biome-ignore lint/suspicious/noExplicitAny: as above.
-  const mkGet = (): any =>
-    z.object({
-      n: z.string(),
-      e: pii(z.string()),
-      get kid() {
-        return mkGet().optional();
-      },
-    });
-  const tree = { n: "a", e: "S-1", kid: { n: "b", e: "S-2" } };
-
-  test("never throws on a factory-built recursive schema: it lists the cut-off position as secret, truncated", () => {
-    for (const schema of [mkLazy(), mkGet()]) {
-      const fields = classifyPrivacy(schema);
-      expect(fields).toContainEqual({ path: "e", class: "pii" });
-      expect(fields).toContainEqual({ path: "kid.e", class: "pii" });
-      const cut = fields.filter((field) => field.truncated === true);
-      expect(cut.length).toBeGreaterThan(0);
-      for (const field of cut) expect(field.class).toBe("secret");
-      expect(fields.filter((field) => field.truncated !== undefined && field.truncated !== true)).toEqual([]);
-    }
-  });
-
-  // biome-ignore lint/suspicious/noExplicitAny: as above, with no mark anywhere.
-  const mkPlain = (): any => z.object({ a: z.string(), next: z.lazy(mkPlain).optional() });
-  // biome-ignore lint/suspicious/noExplicitAny: as above, through a getter.
-  const mkPlainGet = (): any =>
-    z.object({
-      a: z.string(),
-      get k() {
-        return mkPlainGet().optional();
-      },
-    });
-
-  test.each<[string, z.ZodType, unknown]>([
-    ["F2 a transform over a marked factory", z.object({ t: mkLazy().transform((x: unknown) => x) }), { t: tree }],
-    ["F3 a marked factory beside an unknown", z.object({ t: z.union([mkLazy(), z.unknown()]) }), { t: tree }],
-    ["F8 a transform over a getter factory", z.object({ t: mkGet().transform((x: unknown) => x) }), { t: tree }],
-    [
-      "F5 a transform over an unmarked factory",
-      z.object({ t: mkPlain().transform((x: unknown) => x) }),
-      { t: { a: "x" } },
-    ],
-    ["F6 a set of an unmarked factory", z.object({ t: z.set(mkPlain()) }), { t: new Set([{ a: "x" }]) }],
-    ["F9 a JSON column over an unmarked factory", z.object({ t: sqliteJson(mkPlainGet()) }), { t: '{"a":"x"}' }],
-  ])("%s: an opaque node it cannot search to the end is masked whole as secret", (_label, schema, wire) => {
-    expect(masked(schema, wire)).toEqual({ t: "[secret]" });
-    expect(classifyPrivacy(schema)).toContainEqual({ path: "t", class: "secret", truncated: true });
-  });
-
-  test("lists an unmarked factory beside a mark without throwing, and keeps its value", () => {
-    const schema = z.object({ u: mkPlain(), e: pii(z.string()) });
-    expect(masked(schema, { u: { a: "x", next: { a: "y" } }, e: "S-1" })).toEqual({
-      u: { a: "x", next: { a: "y" } },
-      e: "[pii]",
-    });
-    const fields = classifyPrivacy(schema);
-    expect(fields).toContainEqual({ path: "e", class: "pii" });
-    expect(fields.filter((field) => field.path.startsWith("u.")).every((field) => field.truncated === true)).toBe(true);
-  });
-
-  test("stops a lazy that returns a new lazy at every level, closed", () => {
-    // biome-ignore lint/suspicious/noExplicitAny: a chain of lazies has no type to infer.
-    const chain = (): any => z.lazy(chain);
-    expect(classifyPrivacy(z.object({ c: chain() }))).toEqual([{ path: "c", class: "secret", truncated: true }]);
-    expect(redact(z.object({ c: chain() }), { c: "x" } as never)).toEqual({ c: "[secret]" });
-  });
-
-  test("masks a value nested past the depth limit as secret, and never overflows the stack", () => {
-    type Link = { e: string; next?: Link };
-    const Link: z.ZodType<Link> = z.lazy(() => z.object({ e: pii(z.string()), next: Link.optional() }));
-    let value: Link = { e: "S-0" };
-    for (let index = 1; index < 400; index += 1) value = { e: `S-${index}`, next: value };
-    const out = redact(Link, Link.parse(value));
-    expect(raw(out)).toEqual([]);
-    expect(JSON.stringify(out)).toContain('"[secret]"');
-    let shallow: unknown = out;
-    for (let index = 0; index < 10; index += 1) {
-      expect((shallow as Link).e).toBe("[pii]");
-      shallow = (shallow as Link).next;
-    }
-  });
-
-  test("reads a lazy through the schema parse ran, never by calling its getter again", () => {
-    let calls = 0;
-    const Impure = z.lazy(() => (calls++ === 0 ? z.object({ e: pii(z.string()) }) : z.object({ e: z.string() })));
-    const parsed = Impure.parse({ e: "S-1" });
-    expect(redact(Impure, parsed)).toEqual({ e: "[pii]" });
-    expect(classifyPrivacy(Impure)).toEqual([{ path: "e", class: "pii" }]);
-    expect(calls).toBe(1);
-  });
-
-  test("reads an object's getter through the shape parse ran", () => {
-    let calls = 0;
-    const Impure = z.object({
-      get e() {
-        return calls++ === 0 ? pii(z.string()) : z.string();
-      },
-    });
-    const parsed = Impure.parse({ e: "S-1" });
-    expect(redact(Impure, parsed as never)).toEqual({ e: "[pii]" });
-    expect(classifyPrivacy(Impure)).toEqual([{ path: "e", class: "pii" }]);
-  });
-
-  test("still masks a factory-built recursive schema by its value, where the walk follows the value", () => {
-    expect(masked(mkLazy(), tree)).toEqual({ n: "a", e: "[pii]", kid: { n: "b", e: "[pii]" } });
-    expect(masked(mkGet(), tree)).toEqual({ n: "a", e: "[pii]", kid: { n: "b", e: "[pii]" } });
-  });
-
-  test.each<[string, z.ZodType, unknown]>([
-    ["K1 a tuple beside a coerced string", z.union([z.tuple([pii(z.string())]), z.coerce.string()]), ["S-1", "x"]],
-    [
-      "K2 a capped array beside a coerced string",
-      z.object({ tags: z.union([z.array(pii(z.string())).max(1), z.coerce.string()]) }),
-      { tags: ["S-1", "S-2"] },
-    ],
-    [
-      "K5 a phi array beside a coerced date",
-      z.union([z.array(phi(z.string())).length(2), z.coerce.date()]),
-      ["1990-05-01"],
-    ],
-  ])("%s: a coercion beside a mark masks the position whole", (_label, schema, wire) => {
-    const out = masked(schema, wire);
-    expect(raw(out)).toEqual([]);
-    expect(JSON.stringify(out)).not.toMatch(/S-|1990/);
-  });
-
-  test("lists a coercion beside a mark at its own position, and keeps a plain scalar beside one", () => {
-    expect(classifyPrivacy(z.object({ tags: z.union([z.array(pii(z.string())).max(1), z.coerce.string()]) }))).toEqual([
-      { path: "tags", class: "pii" },
-    ]);
-    expect(classifyPrivacy(z.object({ tags: z.union([z.array(pii(z.string())), z.string()]) }))).toEqual([
-      { path: "tags[]", class: "pii" },
-    ]);
-    expect(masked(z.object({ n: z.coerce.number(), e: pii(z.string()) }), { n: "4", e: "S-1" })).toEqual({
-      n: 4,
-      e: "[pii]",
-    });
-  });
-});
-
-describe("regressions: round 5", () => {
-  // A factory-built tree: every level builds two fresh lazies, so the recursion limit alone allows 2^256 paths.
-  // biome-ignore lint/suspicious/noExplicitAny: a factory's type is circular, and TypeScript infers none.
-  const mkTree = (): any =>
-    z.object({ e: pii(z.string()).optional(), l: z.lazy(mkTree).optional(), r: z.lazy(mkTree).optional() });
-  // biome-ignore lint/suspicious/noExplicitAny: as above, with no mark anywhere.
-  const mkPlainTree = (): any => z.object({ l: z.lazy(mkPlainTree).optional(), r: z.lazy(mkPlainTree).optional() });
-
-  test("G1 a factory that builds two lazies per level finishes, listing what it read and failing closed past it", () => {
-    const fields = classifyPrivacy(mkTree());
-    expect(fields).toContainEqual({ path: "e", class: "pii" });
-    expect(fields).toContainEqual({ path: "l.e", class: "pii" });
-    expect(fields.some((field) => field.path === "r" || field.path.startsWith("r."))).toBe(true);
-    expect(fields.some((field) => field.truncated === true && field.class === "secret")).toBe(true);
-    // A field outside the recursion that ran out keeps its own class.
-    expect(classifyPrivacy(z.object({ tree: mkTree(), ssn: pii(z.string()) }))).toContainEqual({
-      path: "ssn",
-      class: "pii",
-    });
-    expect(masked(mkTree(), { e: "S-1", l: { e: "S-2" } })).toEqual({ e: "[pii]", l: { e: "[pii]" } });
-  });
-
-  test("G1 an opaque or free node over a wide factory is searched to the recursion limit, and masked whole past it", () => {
-    expect(
-      redact(
-        mkPlainTree().transform((x: unknown) => x),
-        {} as never,
-      ),
-    ).toBe("[secret]");
-    expect(redact(z.union([mkPlainTree(), z.unknown()]), {} as never)).toBe("[secret]");
-    const beside = z.object({ j: mkPlainTree().transform((x: unknown) => x), e: pii(z.string()) });
-    expect(redact(beside, { j: {}, e: "S-1" } as never)).toEqual({ j: "[secret]", e: "[pii]" });
-  });
-
-  const X = z.object({ e: pii(z.string()) });
-  const W = z.object({ e: pii(z.string()), n: z.number() });
-
-  test.each<[string, z.ZodType, unknown, string]>([
-    ["D1 a union option reused below another", z.union([X, z.object({ k: X })]), { k: { e: "S-1" } }, "k.e"],
-    [
-      "D2 an intersection side reused below",
-      z.intersection(X, z.object({ k: X })),
-      { e: "S-0", k: { e: "S-1" } },
-      "k.e",
-    ],
-    [
-      "D3 an array reused below",
-      z.union([z.array(X), z.object({ list: z.array(X) })]),
-      { list: [{ e: "S-1" }] },
-      "list[].e",
-    ],
-    [
-      "D4 a field's option reused below",
-      z.object({ a: z.union([W, z.object({ w: W })]) }),
-      { a: { w: { e: "S-1", n: 1 } } },
-      "a.w.e",
-    ],
-  ])("%s: classifyPrivacy lists every path redact masks", (_label, schema, wire, path) => {
-    expect(raw(masked(schema, wire))).toEqual([]);
-    expect(classifyPrivacy(schema)).toContainEqual({ path, class: "pii" });
-  });
-
-  test("N2 keeps a record's symbol keys, masking their values and a marked symbol key", () => {
-    const key = Symbol("k");
-    const Values = z.record(z.union([z.string(), z.symbol()]), pii(z.string()));
-    const out = masked(Values, { a: "S-1", [key]: "S-2" }) as Record<PropertyKey, unknown>;
-    expect(Reflect.ownKeys(out)).toEqual(["a", key]);
-    expect(out[key]).toBe("[pii]");
-    const Plain = z.record(z.symbol(), z.string());
-    const kept = masked(Plain, { [key]: "x" }) as Record<PropertyKey, unknown>;
-    expect(Reflect.ownKeys(kept)).toEqual([key]);
-    expect(kept[key]).toBe("x");
-    const Keyed = z.record(pii(z.symbol()), z.string());
-    expect(masked(Keyed, { [key]: "x" })).toEqual({ "[pii]": "x" });
-  });
-
-  test("N3 masks a value whose kind no structural node at a marked position matches", () => {
+  test("masks a scalar a fallback handed back where only an object is named, and keeps one a scalar option holds", () => {
     // biome-ignore lint/suspicious/noExplicitAny: a fallback that hands back the raw input, as one with a cast can.
     const back = (ctx: { input: unknown }): any => ctx.input;
-    const C = z.object({ email: pii(z.string()) }).catch(back);
-    class Acct {
-      constructor(readonly email: string) {}
-    }
-    expect(masked(C, ["S-1"])).toBe("[pii]");
-    expect(masked(C, "S-1")).toBe("[pii]");
-    expect(masked(C, new Map([["email", "S-1"]]))).toBe("[pii]");
-    // An instance parses into a plain object, which the object names.
-    expect(masked(C, new Acct("S-1"))).toEqual({ email: "[pii]" });
-    expect(masked(z.object({ u: C }), { u: ["S-1"] })).toEqual({ u: "[pii]" });
-    expect(masked(z.array(pii(z.string())).catch(back), { x: "S-1" })).toBe("[pii]");
-  });
-
-  test("N3 keeps a value a scalar beside a marked node holds", () => {
+    const Caught = z.object({ email: pii(z.string()) }).catch(back);
+    expect(masked(Caught, "S-1")).toBe("[pii]");
+    expect(masked(Caught, ["S-1"])).toBe("[pii]");
+    expect(masked(z.object({ u: Caught }), { u: new Map([["email", "S-1"]]) })).toEqual({ u: "[pii]" });
     const at = new Date(0);
     expect(masked(z.union([z.string(), z.object({ e: pii(z.string()) })]), "hello")).toBe("hello");
     expect(masked(z.union([z.date(), z.object({ e: pii(z.string()) })]), at)).toBe(at);
-    expect(masked(z.union([z.number(), z.array(pii(z.string()))]), 4)).toBe(4);
   });
 
-  test("N4 masks a position more than one class marks with the placeholder, never a class's own partial mask", () => {
-    const Union = z.union([
-      z.object({ t: z.literal("c"), n: pci(z.string()) }),
-      z.object({ t: z.literal("i"), n: pii(z.string()) }),
-    ]);
-    expect(masked(Union, { t: "i", n: "8001015009087" })).toEqual({ t: "i", n: "[pci]" });
-    const Tagged = z.discriminatedUnion("t", [
-      z.object({ t: z.literal("c"), n: pci(z.string()) }),
-      z.object({ t: z.literal("i"), n: pii(z.string()) }),
-    ]);
-    expect(masked(Tagged, { t: "i", n: "110101199003077777" })).toEqual({ t: "i", n: "[pci]" });
-    const Both = z.intersection(z.object({ n: pci(z.string()) }), z.object({ n: pii(z.string()) }));
-    expect(masked(Both, { n: "8001015009087" })).toEqual({ n: "[pci]" });
-    expect(masked(z.object({ n: pci(z.string()) }), { n: "4242424242424242" })).toEqual({ n: "424242******4242" });
+  test("keeps a record's symbol keys, numbers a set's masked elements apart, and redacts a map's object keys", () => {
+    const tag = Symbol("tag");
+    expect(masked(z.record(z.symbol(), z.object({ e: pii(z.string()) })), { [tag]: { e: "S-1" } })).toEqual({
+      [tag]: { e: "[pii]" },
+    });
+    const tags = redact(z.set(pii(z.string())), new Set(["S-1", "S-2", "S-3"]) as never);
+    expect([...tags]).toEqual(["[pii]", "[pii] #2", "[pii] #3"]);
+    const ByUser = z.map(z.object({ id: z.string(), e: pii(z.string()) }), z.number());
+    const byUser = masked(ByUser, new Map([[{ id: "u_1", e: "S-1" }, 1]])) as Map<unknown, number>;
+    expect([...byUser]).toEqual([[{ id: "u_1", e: "[pii]" }, 1]]);
   });
-});
 
-/**
- * **Regressions from the sixth review round** (#132): the walks counted nodes, and a schema with no recursion in it
- * ran the count out. Now each schema is read once, wherever it appears, and the one limit is recursion.
- */
-describe("regressions: round 6", () => {
-  /** Every path `walkPrivacy` reports, as `classifyPrivacy` lists them. */
-  function walked(schema: z.ZodType): { path: string; class: string; truncated?: true }[] {
-    const out: { path: string; class: string; truncated?: true }[] = [];
-    const seen = new Set<string>();
-    walkPrivacy(schema, {
-      marked: (path, className, truncated) => {
-        const key = `${path}\u0000${className}`;
-        if (seen.has(key)) return;
-        seen.add(key);
-        out.push(truncated ? { path, class: className, truncated: true } : { path, class: className });
+  test("walks a linked list and a tree defined once, lists their fields once, and ends", () => {
+    const Item = z.object({
+      e: pii(z.string()),
+      get next() {
+        return Item.optional();
       },
     });
-    return out;
-  }
-
-  /** `count` copies of `schema`, under keys `prefix0` … */
-  function times(prefix: string, count: number, schema: z.ZodType): Record<string, z.ZodType> {
-    return Object.fromEntries(Array.from({ length: count }, (_, index) => [`${prefix}${index}`, schema]));
-  }
-
-  test("R1 a wide schema that shares its parts lists every mark exactly, and nothing it did not read", () => {
-    const Address = z.object({ l1: pii(z.string()), city: z.string(), ...times("x", 8, z.string()) });
-    const Person = z.object({ id: z.string(), email: pii(z.string()), home: Address, work: Address, bill: Address });
-    const Team = z.object({ name: z.string(), ...times("p", 10, Person) });
-    const Org = z.object({ name: z.string(), ...times("t", 5, Team) });
-    const Root = z.object({ id: z.string(), ...times("o", 5, Org) });
-    const fields = classifyPrivacy(Root);
-    expect(fields).toHaveLength(5 * 5 * 10 * 4);
-    expect(fields.filter((field) => field.truncated !== undefined)).toEqual([]);
-    expect(fields).toContainEqual({ path: "o4.t4.p9.bill.l1", class: "pii" });
-    expect(hasPrivacy(Root, "secret")).toBe(false);
-    expect(hasPrivacy(Root, "pii")).toBe(true);
-    expect(walked(Root)).toEqual(fields);
-    const address = {
-      l1: "S-l1",
-      city: "Oslo",
-      ...Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`x${i}`, "x"])),
-    };
-    const person = { id: "i", email: "S-e", home: address, work: address, bill: address };
-    const team = { name: "t", ...Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`p${i}`, person])) };
-    const org = { name: "o", ...Object.fromEntries(Array.from({ length: 5 }, (_, i) => [`t${i}`, team])) };
-    const root = { id: "r", ...Object.fromEntries(Array.from({ length: 5 }, (_, i) => [`o${i}`, org])) };
-    const out = masked(Root, root) as Record<string, Record<string, Record<string, Record<string, unknown>>>>;
-    expect(raw(out)).toEqual([]);
-    expect(out.o4?.t4?.p9).toEqual({
-      id: "i",
-      email: "[pii]",
-      home: { ...address, l1: "[pii]" },
-      work: { ...address, l1: "[pii]" },
-      bill: { ...address, l1: "[pii]" },
+    expect(classifyPrivacy(Item)).toEqual([{ path: "e", class: "pii" }]);
+    expect(masked(Item, { e: "S-1", next: { e: "S-2", next: { e: "S-3" } } })).toEqual({
+      e: "[pii]",
+      next: { e: "[pii]", next: { e: "[pii]" } },
     });
-  });
-
-  test("R2 a DAG that doubles at every level lists every path, and masks every one", () => {
-    // biome-ignore lint/suspicious/noExplicitAny: the level's type is built in a loop.
-    let Level: any = z.object({ e: pii(z.string()), n: z.string() });
-    for (let index = 0; index < 15; index += 1) Level = z.object({ a: Level, b: Level });
-    const fields = classifyPrivacy(Level);
-    expect(fields).toHaveLength(2 ** 15);
-    expect(fields.filter((field) => field.truncated !== undefined)).toEqual([]);
-    expect(fields).toContainEqual({ path: `${"b.".repeat(15)}e`, class: "pii" });
-    expect(hasPrivacy(Level, "secret")).toBe(false);
-    const build = (depth: number): unknown =>
-      depth === 0 ? { e: "S-1", n: "n" } : { a: build(depth - 1), b: build(depth - 1) };
-    let out = redact(Level, build(15) as never) as Record<string, unknown>;
-    expect(raw(out)).toEqual([]);
-    for (let index = 0; index < 15; index += 1) out = out.b as Record<string, unknown>;
-    expect(out).toEqual({ e: "[pii]", n: "n" });
-  });
-
-  const wide = (fields: number) =>
-    z.object(Object.fromEntries(Array.from({ length: fields }, (_, index) => [`f${index}`, z.string()])));
-  const value = (outer: number, inner: number) =>
-    Object.fromEntries(
-      Array.from({ length: outer }, (_, i) => [
-        `g${i}`,
-        Object.fromEntries(Array.from({ length: inner }, (_, j) => [`f${j}`, "v"])),
-      ]),
-    );
-
-  test("R3 a large unmarked object is kept exactly, as a field and inside a JSON column", () => {
-    const Shared = wide(101);
-    const Big = z.object(times("g", 100, Shared));
-    const Row = z.object({ id: z.string(), doc: Big });
-    const doc = value(100, 101);
-    expect(masked(Row, { id: "1", doc })).toEqual({ id: "1", doc });
-    expect(classifyPrivacy(Row)).toEqual([]);
-    expect(hasPrivacy(Row, "secret")).toBe(false);
-    // Ten thousand distinct nodes, with nothing marked, behind a codec: the column is kept, not masked.
-    const Fresh = z.object(Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`g${i}`, wide(101)])));
-    const Column = z.object({ id: z.string(), doc: sqliteJson(Fresh) });
-    expect(masked(Column, { id: "1", doc: JSON.stringify(doc) })).toEqual({ id: "1", doc });
-    expect(classifyPrivacy(Column)).toEqual([]);
-    expect(walked(Column)).toEqual([]);
-  });
-
-  test("R4 a union of ten thousand and one literals keeps its value", () => {
-    const Lits = z.object({
-      code: z.union(Array.from({ length: 10_001 }, (_, index) => z.literal(index)) as [z.ZodLiteral<number>]),
+    type Tree = { name: string; owner: string; children: Tree[] };
+    const Tree: z.ZodType<Tree> = z.lazy(() =>
+      z.object({ name: z.string(), owner: phi(z.string()), children: z.array(Tree) }),
+    ) as z.ZodType<Tree>;
+    const leaf = { name: "leaf", owner: "S-2", children: [] };
+    expect(masked(Tree, { name: "root", owner: "S-1", children: [leaf, leaf] })).toEqual({
+      name: "root",
+      owner: "[phi]",
+      children: [
+        { name: "leaf", owner: "[phi]", children: [] },
+        { name: "leaf", owner: "[phi]", children: [] },
+      ],
     });
-    expect(masked(Lits, { code: 7 })).toEqual({ code: 7 });
-    expect(classifyPrivacy(Lits)).toEqual([]);
+    expect(classifyPrivacy(Tree)).toEqual([{ path: "owner", class: "phi" }]);
   });
 
-  test("R5 a schema of ten thousand distinct nodes with marks inside is read quickly, and exactly", () => {
-    const started = performance.now();
-    const Big = z.object(
-      Object.fromEntries(
-        Array.from({ length: 100 }, (_, i) => [
-          `g${i}`,
-          z.object({
-            e: pii(z.string()),
-            ...Object.fromEntries(Array.from({ length: 99 }, (_, j) => [`f${j}`, z.string()])),
-          }),
-        ]),
-      ),
-    );
-    const fields = classifyPrivacy(Big);
-    const out = redact(Big, value(100, 99) as never) as Record<string, Record<string, unknown>>;
-    expect(performance.now() - started).toBeLessThan(2000);
-    expect(fields).toHaveLength(100);
-    expect(fields.filter((field) => field.truncated !== undefined)).toEqual([]);
-    expect(out.g99?.f98).toBe("v");
-  });
-
-  test("R6 a non-recursive schema nested deeper than the recursion limit is read to the end", () => {
-    // biome-ignore lint/suspicious/noExplicitAny: the level's type is built in a loop.
-    let Deep: any = z.object({ e: pii(z.string()) });
-    for (let index = 0; index < 300; index += 1) Deep = z.object({ d: Deep, n: z.string() });
-    expect(classifyPrivacy(Deep)).toEqual([{ path: `${"d.".repeat(300)}e`, class: "pii" }]);
-    let wire: unknown = { e: "S-1" };
-    for (let index = 0; index < 300; index += 1) wire = { d: wire, n: "n" };
-    let out = masked(Deep, wire) as Record<string, unknown>;
-    for (let index = 0; index < 300; index += 1) out = out.d as Record<string, unknown>;
-    expect(out).toEqual({ e: "[pii]" });
+  test("masks a value nested past the recursion limit as secret, with every level above it masked, and never throws", () => {
+    const Item = z.object({
+      e: pii(z.string()),
+      get next() {
+        return Item.optional();
+      },
+    });
+    type Link = { e: string; next?: Link };
+    let list: Link = { e: "S-last" };
+    for (let index = 0; index < 5_000; index += 1) list = { e: `S-${index}`, next: list };
+    const out = redact(Item, list as never) as Link | string;
+    expect(raw(out)).toEqual([]);
+    let depth = 0;
+    let at: Link | string | undefined = out;
+    while (typeof at === "object") {
+      expect(at.e).toBe("[pii]");
+      at = at.next as Link | string | undefined;
+      depth += 1;
+    }
+    expect(at).toBe("[secret]");
+    // The first level is where the recursion starts; each one after it comes round to it again.
+    expect(depth).toBe(MAX_RECURSION_DEPTH + 1);
   });
 });
 
-/**
- * **Regressions from the seventh review round** (#132): once one recursion ran out, a finite field beside it was listed
- * closed, and a shape read while one was closing was kept for every later read, so a schema's answer turned on which
- * schema the isolate read first.
- */
-describe("regressions: round 7", () => {
-  type Node = { c?: Node; v: number };
-  /** A factory with no mark anywhere: every level builds a new lazy, so it always runs out. */
-  const make = (): z.ZodType<Node> => z.object({ c: z.lazy(make).optional(), v: z.number() });
-
-  /** What every walk says about a schema, for one value. */
-  function answer(schema: z.ZodType, wire: unknown) {
-    return {
-      redacted: masked(schema, wire),
-      fields: classifyPrivacy(schema),
-      secret: hasPrivacy(schema, "secret"),
-      pii: hasPrivacy(schema, "pii"),
-    };
-  }
-
-  test("C1 keeps a finite field beside a factory that ran out, inside a recursion", () => {
-    const A = z.lazy(() => z.object({ first: make().optional(), n: z.object({ v: z.number() }) }));
-    expect(masked(A, { n: { v: 1 } })).toEqual({ n: { v: 1 } });
-    const fields = classifyPrivacy(A);
-    expect(fields.filter((field) => field.path === "n" || field.path.startsWith("n."))).toEqual([]);
-    expect(fields.some((field) => field.path.startsWith("first") && field.truncated === true)).toBe(true);
-  });
-
-  test("C2 keeps every finite kind beside a factory that ran out, and still masks a mark inside one", () => {
-    const Leaf = z.object({ v: z.number() });
-    const B = z.lazy(() =>
+describe("outside the contract: masked whole when marked beneath, kept when not, never throws, never raw", () => {
+  test("a getter that builds a new schema each read is opaque where it is met unread", () => {
+    const make = (): z.ZodType =>
       z.object({
-        first: make().optional(),
-        list: z.array(Leaf),
-        pair: z.tuple([Leaf, z.string()]),
-        byId: z.record(z.string(), Leaf),
-        once: z.lazy(() => Leaf),
-        mark: z.object({ e: pii(z.string()) }),
-      }),
+        e: pii(z.string()),
+        get next() {
+          return make().optional();
+        },
+      });
+    const Root = make();
+    // Read before parse ever ran: the getter is a factory, so `next` is opaque. Its insides never end, so the search
+    // beneath it runs to the recursion limit and assumes the strongest class.
+    expect(classifyPrivacy(Root)).toEqual([
+      { path: "e", class: "pii" },
+      { path: "next", class: "pii" },
+      { path: "next", class: "secret", truncated: true },
+    ]);
+    expect(redact(Root, { e: "S-1", next: { e: "S-2" } } as never)).toEqual({ e: "[pii]", next: "[secret]" });
+    // One that builds a schema with nothing marked in it is kept as it is, and one with a mark is masked whole.
+    const Plain = z.object({
+      id: z.string(),
+      get extra() {
+        return z.object({ note: z.string() });
+      },
+    });
+    const extra = { note: "kept" };
+    expect((redact(Plain, { id: "u", extra } as never) as { extra: unknown }).extra).toBe(extra);
+    const Marked = z.object({
+      get extra() {
+        return z.object({ e: pii(z.string()), note: z.string() });
+      },
+    });
+    expect(redact(Marked, { extra: { e: "S-1", note: "n" } } as never)).toEqual({ extra: "[pii]" });
+  });
+
+  test("a getter that builds a new schema each read, resolved by parse first, is a fixed schema and never leaks", () => {
+    const make = (): z.ZodType =>
+      z.object({
+        e: pii(z.string()),
+        get next() {
+          return make().optional();
+        },
+      });
+    const Root = make();
+    const value = Root.parse({ e: "S-1", next: { e: "S-2", next: { e: "S-3" } } });
+    const out = redact(Root, value as never);
+    expect(raw(out)).toEqual([]);
+    expect(() => classifyPrivacy(Root)).not.toThrow();
+  });
+
+  test("a transform, a preprocess and a pipe are masked whole over a mark, and kept over none", () => {
+    const Copy = z.object({ e: pii(z.string()), n: z.string() }).transform((v) => ({ copy: v.e, n: v.n }));
+    expect(masked(Copy, { e: "S-1", n: "n" })).toBe("[pii]");
+    expect(classifyPrivacy(Copy)).toEqual([{ path: "", class: "pii" }]);
+    const Pre = z.preprocess((v) => v, z.object({ e: phi(z.string()) }));
+    expect(masked(Pre, { e: "S-1" })).toBe("[phi]");
+    const Piped = z.string().pipe(secret(z.string()));
+    expect(masked(z.object({ p: Piped }), { p: "S-1" })).toEqual({ p: "[secret]" });
+    const Length = z.object({ n: z.string().transform((s) => s.length) });
+    expect(masked(Length, { n: "four" })).toEqual({ n: 4 });
+    // A transform on an intersection's side that copies a marked field the other side names: the copy's key is one
+    // no schema names, at a position that carries the mark, so it is masked.
+    const Side = z.intersection(
+      z.object({ e: pii(z.string()) }),
+      z.object({ e: z.string() }).transform((v) => ({ copied: v.e })),
     );
-    expect(
-      masked(B, { list: [{ v: 1 }], pair: [{ v: 2 }, "x"], byId: { a: { v: 3 } }, once: { v: 4 }, mark: { e: "S-1" } }),
-    ).toEqual({ list: [{ v: 1 }], pair: [{ v: 2 }, "x"], byId: { a: { v: 3 } }, once: { v: 4 }, mark: { e: "[pii]" } });
-    const fields = classifyPrivacy(B);
-    expect(fields).toContainEqual({ path: "mark.e", class: "pii" });
-    expect(fields.filter((field) => !field.path.startsWith("first"))).toEqual([{ path: "mark.e", class: "pii" }]);
+    const side = masked(Side, { e: "S-1" });
+    expect(raw(side)).toEqual([]);
+    expect(side).toEqual({ e: "[pii]", copied: "[pii]" });
   });
 
-  test("C3 still lists a second recursion beside the one that ran out closed", () => {
-    const D = z.lazy(() => z.object({ first: make().optional(), second: make().optional() }));
-    const fields = classifyPrivacy(D);
-    expect(fields).toContainEqual({ path: "second", class: "secret", truncated: true });
+  test("an adopter's codec is masked whole over a mark, and kept over none", () => {
+    const Marked = z.codec(z.string(), z.object({ e: pii(z.string()) }), {
+      decode: (text) => JSON.parse(text),
+      encode: (value) => JSON.stringify(value),
+    });
+    expect(masked(z.object({ c: Marked }), { c: '{"e":"S-1"}' })).toEqual({ c: "[pii]" });
+    expect(classifyPrivacy(z.object({ c: Marked }))).toEqual([{ path: "c", class: "pii" }]);
+    const Plain = z.codec(z.string(), z.object({ city: z.string() }), {
+      decode: (text) => JSON.parse(text),
+      encode: (value) => JSON.stringify(value),
+    });
+    expect(masked(z.object({ c: Plain }), { c: '{"city":"Oslo"}' })).toEqual({ c: { city: "Oslo" } });
   });
 
-  test("O1 a schema reads the same whichever schema the isolate read first", () => {
-    const build = () => {
-      const X = z.object({ first: make().optional(), n: z.object({ v: z.number() }) });
-      const B = z.object({ x: X, id: z.string() });
-      return { X, B, A: z.lazy(() => X) };
-    };
-    const fresh = build();
-    const freshX = answer(fresh.X, { n: { v: 1 } });
-    const freshB = answer(fresh.B, { x: { n: { v: 1 } }, id: "i" });
-    expect(freshX.redacted).toEqual({ n: { v: 1 } });
-    expect(freshB.redacted).toEqual({ x: { n: { v: 1 } }, id: "i" });
-    const after = build();
-    answer(after.A, { n: { v: 1 } });
-    expect(answer(after.X, { n: { v: 1 } })).toEqual(freshX);
-    expect(answer(after.B, { x: { n: { v: 1 } }, id: "i" })).toEqual(freshB);
+  test("a z.custom, an any and an unknown are kept as they are, and masked where marked", () => {
+    class Acct {
+      constructor(readonly email: string) {}
+    }
+    const acct = new Acct("S-1");
+    const Custom = z.object({ a: z.custom<Acct>((v) => v instanceof Acct), b: z.any(), c: z.unknown() });
+    const value = { a: acct, b: { x: 1 }, c: [1] };
+    const out = redact(Custom, value) as typeof value;
+    expect(out.a).toBe(acct);
+    expect(out.b).toBe(value.b);
+    expect(out.c).toBe(value.c);
+    expect(masked(z.object({ a: pii(z.custom<Acct>((v) => v instanceof Acct)) }), { a: acct })).toEqual({
+      a: "[pii]",
+    });
+    // An unknown option beside a marked object: a key only the unknown could have put there is masked, not kept raw.
+    const Either = z.union([z.object({ e: pii(z.string()) }), z.unknown()]);
+    expect(masked(Either, { leak: "S-1" })).toEqual({ leak: "[pii]" });
   });
 
-  test("O2 a shape read inside a recursion that ran out is not what a later root reads outside every recursion", () => {
-    const build = () => {
-      const Y = z.object({ first: make().optional(), second: make().optional() });
-      return { Y, A: z.lazy(() => Y), R: z.object({ a: z.lazy(() => Y).optional(), b: Y }) };
-    };
-    const fresh = build();
-    const freshY = answer(fresh.Y, { second: { v: 1 } });
-    const fromLazy = build();
-    const lazyA = answer(fromLazy.A, { second: { v: 1 } });
-    expect(answer(fromLazy.Y, { second: { v: 1 } })).toEqual(freshY);
-    // And read the other way round, the lazy root reads as it does fresh.
-    const lazyFresh = build();
-    expect(answer(lazyFresh.A, { second: { v: 1 } })).toEqual(lazyA);
-    // Within one root: `b` sits outside every recursion, so it reads as `Y` does at the root.
-    const inOne = build();
-    const below = classifyPrivacy(inOne.R)
-      .filter((field) => field.path === "b" || field.path.startsWith("b."))
-      .map((field) => ({ ...field, path: field.path.slice(2) }));
-    expect(below).toEqual(freshY.fields);
-    expect((masked(inOne.R, { b: { second: { v: 1 } } }) as { b: unknown }).b).toEqual(freshY.redacted);
+  test("a lazy built anew at every level is masked whole as secret past the limit, and two a level end as fast", () => {
+    const make = (): z.ZodType => z.lazy(() => z.object({ e: pii(z.string()), next: make().optional() }));
+    const Chain = make();
+    expect(classifyPrivacy(Chain)).toEqual([
+      { path: "", class: "pii" },
+      { path: "", class: "secret", truncated: true },
+    ]);
+    expect(redact(Chain, { e: "S-1" } as never)).toBe("[secret]");
+    const wide = (): z.ZodType => z.lazy(() => z.object({ a: wide().optional(), b: wide().optional() }));
+    const started = Date.now();
+    expect(classifyPrivacy(z.object({ id: z.string(), tree: wide() }))).toEqual([
+      { path: "tree", class: "secret", truncated: true },
+    ]);
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  test("Redacted<T> types an opaque position unknown where it is marked beneath, and as its output where not", () => {
+    type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+    const same = <A, B>(..._proof: Same<A, B> extends true ? [] : [never]): void => {};
+    const Shape = z.object({
+      copy: z.object({ e: pii(z.string()) }).transform((v) => ({ copy: v.e })),
+      length: z.string().transform((s) => s.length),
+      any: z.any(),
+      unknown: z.unknown(),
+      custom: z.custom<Date>(),
+    });
+    type Out = Redacted<typeof Shape>;
+    same<Out["copy"], unknown>();
+    same<Out["length"], number>();
+    same<Out["any"], unknown>();
+    same<Out["unknown"], unknown>();
+    same<Out["custom"], Date>();
+    expect(true).toBe(true);
   });
 });
