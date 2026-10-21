@@ -161,8 +161,12 @@ describe("redact", () => {
   test("applies every union option the value parses as, so a looser option cannot let a marked key through", () => {
     const Basic = z.object({ id: z.string() });
     const Full = z.object({ id: z.string(), email: pii(z.string()) });
+    // Parse keeps what the first option it parses as keeps: a strip-mode option drops the key, so redact does.
     const U = z.union([Basic, Full]).describe("Either.");
-    expect(redact(U, { id: "u1", email: "a@b.c" } as never)).toEqual({ id: "u1", email: "[pii]" });
+    expect(redact(U, { id: "u1", email: "a@b.c" } as never)).toEqual({ id: "u1" });
+    // A loose option keeps the key raw, so the stricter option's marker is what masks it.
+    const Loose = z.union([Basic.loose(), Full]).describe("Either, loosely.");
+    expect(redact(Loose, { id: "u1", email: "a@b.c" } as never)).toEqual({ id: "u1", email: "[pii]" });
     const Prim = z.union([z.string(), pii(z.number())]).describe("A string or a marked number.");
     expect(redact(Prim, "plain")).toBe("plain");
   });
@@ -192,13 +196,19 @@ describe("redact", () => {
     expect(redact(Both, value)).toEqual({ p: { name: "Ada", email: "[pii]", deep: { a: "x", b: "[secret]" } } });
   });
 
-  test("keeps a nested key any option a union value parses as names", () => {
+  test("keeps a nested key exactly when parse does, and masks it by any option the value parses as", () => {
     const U = z.union([
       z.object({ p: z.object({ x: z.string() }) }),
       z.object({ p: z.object({ y: pii(z.string()) }) }),
     ]);
     const value = { p: { x: "kept", y: "a@b.c", z: "dropped" } };
-    expect(redact(U, value as never)).toEqual({ p: { x: "kept", y: "[pii]" } });
+    expect(U.parse(value)).toEqual({ p: { x: "kept" } });
+    expect(redact(U, value as never)).toEqual({ p: { x: "kept" } });
+    const Loose = z.union([
+      z.object({ p: z.looseObject({ x: z.string() }) }),
+      z.object({ p: z.object({ y: pii(z.string()) }) }),
+    ]);
+    expect(redact(Loose, value as never)).toEqual({ p: { x: "kept", y: "[pii]", z: "dropped" } });
   });
 
   test("drops a key only an option the value does not parse as names, so no side copies it raw", () => {
@@ -206,6 +216,12 @@ describe("redact", () => {
     const Right = z.union([z.object({ b: pii(z.string()), z: z.number() }), z.object({ d: z.string() })]);
     const Both = z.intersection(Left, Right);
     expect(redact(Both, { b: "a@b.c", c: "c", d: "d" } as never)).toEqual({ c: "c", d: "d" });
+  });
+
+  test("does not throw when an option's parse does, and masks by every option instead", () => {
+    // Zod throws, rather than reports, an intersection whose sides parse to values it cannot merge.
+    const U = z.union([z.intersection(z.set(z.string()), z.set(z.string())), z.set(pii(z.string()))]);
+    expect([...redact(U, new Set(["a@b.c"]))]).toEqual(["[pii]"]);
   });
 
   test("keeps a key a loose object's catchall lets through", () => {
