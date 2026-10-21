@@ -85,9 +85,9 @@ One coarse rule, and it fails closed. `redact`, `classifyPrivacy` and the type `
 - **Every other node is opaque**: a transform, a pipe, a `z.preprocess`, a codec — `sqliteJson` included — a `z.custom` or a `z.instanceof`, `any`, `unknown`, a set, a map, a promise and a function. An opaque node with a mark anywhere inside it is masked whole, with one placeholder for the strongest class it carries: `secret`, then `phi`, then `pci`, then a class of your own, then `pii`. An opaque node with no mark inside is kept as it is.
 - **An opaque node beside a mark is masked with it.** A transform, an `unknown` or a custom at a position another option or side marks reads or holds the same value, so the position is masked whole. A scalar — a string, a number, a literal, an enum, a date — holds nothing else, and never masks a position by itself. A coercion is not a scalar: `z.coerce.string()` runs `String()` over the same input a marked array beside it reads, so it is masked with it.
 
-A recursive schema terminates on the lazy itself, whether it is written with `z.lazy` or with a getter, so `z.lazy(() => z.object({ e: pii(z.email()), next: Node.optional() }))` is masked at every depth. A factory that builds a new schema at every level — a getter or a lazy that calls a function returning a fresh one — has no node to stop on, so `classifyPrivacy`, and a `redact` that must read the schema alone, refuse it with `core/internal` past 256 levels rather than never return. Build a recursive schema once and refer to it by name.
+A recursive schema terminates on the lazy itself, whether it is written with `z.lazy` or with a getter, so `z.lazy(() => z.object({ e: pii(z.email()), next: Node.optional() }))` is masked at every depth. A lazy is read through the target Zod cached when it parsed, and a getter through the shape Zod froze, so the walk always reads the schema `parse` ran.
 
-The type `redact` returns reads 16 levels of schema, and searches an opaque node's insides as deep again. An opaque node with something still unread past that is typed a `string`, as `redact` masks it if anything inside is marked.
+**Neither `redact` nor `classifyPrivacy` ever throws on a schema `parse` accepts.** Past 256 levels — positions, lazies resolved and levels searched all count — the walk stops and fails closed: what lies beyond was not read, so the position is taken to carry the strongest class. `redact` masks it whole as `[secret]`, and `classifyPrivacy` lists it as `{ path, class: "secret", truncated: true }`. A factory that builds a new schema at every level — a getter or a lazy that calls a function returning a fresh one — reaches that limit, and so does a value nested past it. Build a recursive schema once and refer to it by name.
 
 ### What it over-masks
 
@@ -108,7 +108,14 @@ The rule never guesses where a function put a mark, so it masks more than a prec
 
 **A record keyed by a marked value has each key masked**, and a masked key never takes the name of another key: two keys that mask alike, or a masked key beside a literal `"[pii]"`, come back as `[pii]` and `[pii] #2`. An own `__proto__` key is defined on the copy, so it never becomes the copy's prototype.
 
-**The type is the shape it returns.** A marked position, and an opaque one with a mark inside, is a `string`. An array stays an array — a branded one too, without its brand — a tuple keeps its length, a record maps its values, and a member of a union keeps its own fields with every option's marks applied.
+**The type is the shape it returns, or `unknown`.** A marked position, and an opaque one with a mark inside, is a `string`. An array stays an array — a branded one too, without its brand — a tuple keeps its length, a record maps its values, and a member of a union of plain objects keeps its own fields with every option's marks applied. Where the type cannot be sure what `redact` returns, it says `unknown` rather than claim a shape, and narrowing is yours:
+
+- **Below a union or an intersection with a loose object, a catchall or an opaque option.** A key one option names can reach another's catchall and be masked. `z.union([z.object({ e: pii(z.email()) }), z.date()])` is `{ e: unknown } | Date`.
+- **At a key outside an object's shape**: a loose object's or a catchall's extra keys.
+- **Past the depth it reads.** It follows 16 levels of schema and searches an opaque node's insides as deep again. A deeper position, and an opaque node whose insides run deeper with no mark found — an unmarked recursive schema inside `sqliteJson` — is `unknown`.
+- **Where the schema's type names no kind**: one annotated `z.ZodType<T>`, as a recursive `z.lazy` must be, or `any`. A recursive schema written with a getter is inferred, and keeps its shape.
+
+`Redacted<T>`, read off a value's own type, is bounded the same way: past 16 levels, a position that may still hold a mark is `unknown`.
 
 **The mask is a placeholder, not a hash.** `[pii]` loses correlation: two lines about one person look unrelated. A keyed hash would keep it, and an email is low-entropy enough to brute-force from an unkeyed one — so it would need a secret salt, and that would pull `@pithy-sh/secrets` into core. Correlation is what the unmarked id beside it is for.
 

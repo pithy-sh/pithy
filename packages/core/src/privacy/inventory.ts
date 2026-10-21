@@ -34,9 +34,10 @@ import { PRIVACY_SOURCES, type PrivacyInventory, type PrivacyInventorySchema } f
  *
  * ## The per-field record
  *
- * `{ path, class }`, from `classifyPrivacy`. It is the extension point #390 builds on: once a field can be
- * marked encrypted at rest, that lands beside `class` on this record, and "which of your PHI fields are
- * encrypted" becomes one more derivation rather than a second thing to maintain.
+ * `{ path, class }`, from `classifyPrivacy`, with `truncated: true` where the walk ran out of depth and assumed
+ * `secret`. It is the extension point #390 builds on: once a field can be marked encrypted at rest, that lands beside
+ * `class` on this record, and "which of your PHI fields are encrypted" becomes one more derivation rather than a
+ * second thing to maintain.
  *
  * ## What it costs
  *
@@ -54,8 +55,8 @@ function kvFields(store: { key: z.ZodType; value: z.ZodType; metadata?: z.ZodTyp
   return parts.flatMap(([part, schema]) =>
     schema
       ? classifyPrivacy(schema).map((field) => ({
+          ...field,
           path: field.path === "" || field.path.startsWith("[") ? `${part}${field.path}` : `${part}.${field.path}`,
-          class: field.class,
         }))
       : [],
   );

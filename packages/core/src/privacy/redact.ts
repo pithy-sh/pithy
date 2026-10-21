@@ -9,6 +9,8 @@ import {
   fieldSchemas,
   keySchemas,
   leafIs,
+  MAX_SCHEMA_DEPTH,
+  PAST_DEPTH,
   type Position,
   position,
   wholeMask,
@@ -66,8 +68,9 @@ import type { RedactedOutput } from "./types";
  * defined on the copy, not assigned, so an own `__proto__` key stays a key and never becomes the copy's prototype.
  *
  * It never mutates its argument, and it never throws on a value that does not match the schema: it masks what it
- * can name and copies the rest. It does throw `core/internal` on a factory-built recursive schema whose insides it
- * must search with no value to follow, because that search would never end (`./classify`).
+ * can name and copies the rest. Nor on any schema `parse` accepts: a factory-built recursive schema, whose insides
+ * would never end, and a value nested past `MAX_SCHEMA_DEPTH` are cut off there and the position is masked whole as
+ * `[secret]`, the strongest class, because what lies past the limit was not read (`./classify`).
  */
 
 /** A plain object — not an array, not a `Date`, not a class instance. */
@@ -97,22 +100,27 @@ function unnamed(at: Position, value: unknown): unknown {
   return className === undefined ? value : `[${className}]`;
 }
 
-/** One position: `schemas` are every schema that reaches it, `value` what is there. */
-function redactAt(schemas: readonly z.ZodType[], value: unknown): unknown {
+/**
+ * One position: `schemas` are every schema that reaches it, `value` what is there, and `depth` how many positions and
+ * lazies deep it sits. Past `MAX_SCHEMA_DEPTH` it is masked whole as the strongest class, and read no further.
+ */
+function redactAt(schemas: readonly z.ZodType[], value: unknown, depth: number): unknown {
   if (value === null || value === undefined || schemas.length === 0) return value;
-  const at = position(schemas);
+  const reached = position(schemas);
+  const below = depth + reached.lazies.length;
+  const at = below > MAX_SCHEMA_DEPTH ? PAST_DEPTH : reached;
   const whole = wholeMask(at);
   if (whole) return whole.placeholder ? `[${whole.className}]` : mask(whole.className, value);
   if (Array.isArray(value)) {
     if (!at.leaves.some((leaf) => leafIs(leaf, "array", "tuple"))) return value;
     return value.map((item, index) => {
       const element = elementSchemas(at.leaves, index);
-      return element.length === 0 ? unnamed(at, item) : redactAt(element, item);
+      return element.length === 0 ? unnamed(at, item) : redactAt(element, item, below + 1);
     });
   }
   if (isPlainObject(value)) {
     if (!at.leaves.some((leaf) => leafIs(leaf, "object", "record"))) return value;
-    return redactedObject(at, value);
+    return redactedObject(at, value, below + 1);
   }
   return value;
 }
@@ -121,19 +129,19 @@ function redactAt(schemas: readonly z.ZodType[], value: unknown): unknown {
  * An object's entries, each value redacted by the schemas that name its key, and each key by every record's key
  * schema. A masked key takes the first name, `[pii]`, `[pii] #2` …, that no kept key and no earlier masked key holds.
  */
-function redactedObject(at: Position, value: Record<string, unknown>): Record<string, unknown> {
+function redactedObject(at: Position, value: Record<string, unknown>, depth: number): Record<string, unknown> {
   const keyed = keySchemas(at.leaves);
   const keyMasked = keyed.length > 0 && wholeMask(position(keyed)) !== undefined;
   const entries = Object.entries(value);
   const taken = new Set<unknown>(keyMasked ? [] : entries.map(([key]) => key));
   const out: Record<string, unknown> = {};
   for (const [key, item] of entries) {
-    const name = keyMasked ? distinct(String(redactAt(keyed, key)), taken) : key;
+    const name = keyMasked ? distinct(String(redactAt(keyed, key, depth)), taken) : key;
     taken.add(name);
     const field = fieldSchemas(at.leaves, key);
     // Defined, not assigned: an own `__proto__` key that parse kept stays a key, and never becomes the prototype.
     Object.defineProperty(out, name, {
-      value: field.length === 0 ? unnamed(at, item) : redactAt(field, item),
+      value: field.length === 0 ? unnamed(at, item) : redactAt(field, item, depth),
       enumerable: true,
       writable: true,
       configurable: true,
@@ -147,5 +155,5 @@ function redactedObject(at: Position, value: Record<string, unknown>): Record<st
  * reads, what it over-masks, and why the mask is a placeholder.
  */
 export function redact<S extends z.ZodType>(schema: S, value: z.output<S>): RedactedOutput<S> {
-  return redactAt([schema], value) as RedactedOutput<S>;
+  return redactAt([schema], value, 0) as RedactedOutput<S>;
 }

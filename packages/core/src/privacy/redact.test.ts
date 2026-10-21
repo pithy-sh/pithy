@@ -4,7 +4,6 @@
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { SQLiteBoolean, SQLiteDate, sqliteJson } from "../data/codecs";
-import { InternalError } from "../error/pithyError";
 import { LogRecord, serializeRecord } from "../logger/record";
 import { definePrivacyClass, pci, phi, pii, secret } from "./classes";
 import { classifyPrivacy } from "./classify";
@@ -712,19 +711,97 @@ describe("regressions: round 4", () => {
     });
   const tree = { n: "a", e: "S-1", kid: { n: "b", e: "S-2" } };
 
-  test("refuses a factory-built recursive schema with an error, never a stack overflow or a hang", () => {
+  test("never throws on a factory-built recursive schema: it lists the cut-off position as secret, truncated", () => {
     for (const schema of [mkLazy(), mkGet()]) {
-      expect(() => classifyPrivacy(schema)).toThrow(InternalError);
-      expect(() => classifyPrivacy(schema)).toThrow(/too deep/);
+      const fields = classifyPrivacy(schema);
+      expect(fields).toContainEqual({ path: "e", class: "pii" });
+      expect(fields).toContainEqual({ path: "kid.e", class: "pii" });
+      const cut = fields.filter((field) => field.truncated === true);
+      expect(cut.length).toBeGreaterThan(0);
+      for (const field of cut) expect(field.class).toBe("secret");
+      expect(fields.filter((field) => field.truncated !== undefined && field.truncated !== true)).toEqual([]);
     }
-    for (const schema of [
-      z.object({ t: mkLazy().transform((x: unknown) => x) }),
-      z.object({ t: mkGet().transform((x: unknown) => x) }),
-      z.object({ t: z.union([mkLazy(), z.unknown()]) }),
-    ]) {
-      expect(() => masked(schema, { t: tree })).toThrow(InternalError);
-      expect(() => classifyPrivacy(schema)).toThrow(InternalError);
+  });
+
+  // biome-ignore lint/suspicious/noExplicitAny: as above, with no mark anywhere.
+  const mkPlain = (): any => z.object({ a: z.string(), next: z.lazy(mkPlain).optional() });
+  // biome-ignore lint/suspicious/noExplicitAny: as above, through a getter.
+  const mkPlainGet = (): any =>
+    z.object({
+      a: z.string(),
+      get k() {
+        return mkPlainGet().optional();
+      },
+    });
+
+  test.each<[string, z.ZodType, unknown]>([
+    ["F2 a transform over a marked factory", z.object({ t: mkLazy().transform((x: unknown) => x) }), { t: tree }],
+    ["F3 a marked factory beside an unknown", z.object({ t: z.union([mkLazy(), z.unknown()]) }), { t: tree }],
+    ["F8 a transform over a getter factory", z.object({ t: mkGet().transform((x: unknown) => x) }), { t: tree }],
+    [
+      "F5 a transform over an unmarked factory",
+      z.object({ t: mkPlain().transform((x: unknown) => x) }),
+      { t: { a: "x" } },
+    ],
+    ["F6 a set of an unmarked factory", z.object({ t: z.set(mkPlain()) }), { t: new Set([{ a: "x" }]) }],
+    ["F9 a JSON column over an unmarked factory", z.object({ t: sqliteJson(mkPlainGet()) }), { t: '{"a":"x"}' }],
+  ])("%s: an opaque node it cannot search to the end is masked whole as secret", (_label, schema, wire) => {
+    expect(masked(schema, wire)).toEqual({ t: "[secret]" });
+    expect(classifyPrivacy(schema)).toContainEqual({ path: "t", class: "secret", truncated: true });
+  });
+
+  test("lists an unmarked factory beside a mark without throwing, and keeps its value", () => {
+    const schema = z.object({ u: mkPlain(), e: pii(z.string()) });
+    expect(masked(schema, { u: { a: "x", next: { a: "y" } }, e: "S-1" })).toEqual({
+      u: { a: "x", next: { a: "y" } },
+      e: "[pii]",
+    });
+    const fields = classifyPrivacy(schema);
+    expect(fields).toContainEqual({ path: "e", class: "pii" });
+    expect(fields.filter((field) => field.path.startsWith("u.")).every((field) => field.truncated === true)).toBe(true);
+  });
+
+  test("stops a lazy that returns a new lazy at every level, closed", () => {
+    // biome-ignore lint/suspicious/noExplicitAny: a chain of lazies has no type to infer.
+    const chain = (): any => z.lazy(chain);
+    expect(classifyPrivacy(z.object({ c: chain() }))).toEqual([{ path: "c", class: "secret", truncated: true }]);
+    expect(redact(z.object({ c: chain() }), { c: "x" } as never)).toEqual({ c: "[secret]" });
+  });
+
+  test("masks a value nested past the depth limit as secret, and never overflows the stack", () => {
+    type Link = { e: string; next?: Link };
+    const Link: z.ZodType<Link> = z.lazy(() => z.object({ e: pii(z.string()), next: Link.optional() }));
+    let value: Link = { e: "S-0" };
+    for (let index = 1; index < 400; index += 1) value = { e: `S-${index}`, next: value };
+    const out = redact(Link, Link.parse(value));
+    expect(raw(out)).toEqual([]);
+    expect(JSON.stringify(out)).toContain('"[secret]"');
+    let shallow: unknown = out;
+    for (let index = 0; index < 10; index += 1) {
+      expect((shallow as Link).e).toBe("[pii]");
+      shallow = (shallow as Link).next;
     }
+  });
+
+  test("reads a lazy through the schema parse ran, never by calling its getter again", () => {
+    let calls = 0;
+    const Impure = z.lazy(() => (calls++ === 0 ? z.object({ e: pii(z.string()) }) : z.object({ e: z.string() })));
+    const parsed = Impure.parse({ e: "S-1" });
+    expect(redact(Impure, parsed)).toEqual({ e: "[pii]" });
+    expect(classifyPrivacy(Impure)).toEqual([{ path: "e", class: "pii" }]);
+    expect(calls).toBe(1);
+  });
+
+  test("reads an object's getter through the shape parse ran", () => {
+    let calls = 0;
+    const Impure = z.object({
+      get e() {
+        return calls++ === 0 ? pii(z.string()) : z.string();
+      },
+    });
+    const parsed = Impure.parse({ e: "S-1" });
+    expect(redact(Impure, parsed as never)).toEqual({ e: "[pii]" });
+    expect(classifyPrivacy(Impure)).toEqual([{ path: "e", class: "pii" }]);
   });
 
   test("still masks a factory-built recursive schema by its value, where the walk follows the value", () => {

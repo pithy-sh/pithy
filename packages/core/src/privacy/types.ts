@@ -50,6 +50,9 @@ export type REDACT_TYPE_DEPTH = 16;
 /** Depth countdown: `Prev[3]` is `2`. Index past the end is `never`, which stops the walk. */
 type Prev = [never, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
 
+/** One level down from `D`, and `never` from `never`: indexing {@link Prev} with `never` is not `never`. */
+type Down<D extends number> = [D] extends [never] ? never : Prev[D];
+
 /** `true` for `any`, so an untyped value is never mistaken for a marked one. */
 type IsAny<T> = 0 extends 1 & T ? true : false;
 
@@ -90,11 +93,11 @@ export type ContainsMarked<T, D extends number = PRIVACY_CHECK_DEPTH> =
         : T extends Opaque
           ? false
           : T extends readonly (infer E)[]
-            ? ContainsMarked<E, Prev[D]>
+            ? ContainsMarked<E, Down<D>>
             : T extends object
               ? true extends IsMarked<keyof T>
                 ? true
-                : true extends { [K in keyof T]-?: ContainsMarked<T[K], Prev[D]> }[keyof T]
+                : true extends { [K in keyof T]-?: ContainsMarked<T[K], Down<D>> }[keyof T]
                   ? true
                   : false
               : false;
@@ -132,55 +135,86 @@ export type UnmarkedString = string & NoPrivacyBrand;
  * `string` in both members. An array maps to an array of its redacted elements, a tuple keeps its length, a plain
  * object maps its fields, and a marked key becomes `string`. A map, a set or a promise holding a mark is a masked
  * `string`, because `redact` masks one whole; one holding none, and any other {@link Opaque} value, is kept as it is.
+ *
+ * **It is coarse where it cannot be sure.** It reads {@link REDACT_TYPE_DEPTH} levels; a position below that which may
+ * still hold a mark is `unknown`, and so is `any`. Narrow it yourself where you know more.
  */
-export type Redacted<T> = RedactedAt<T, T>;
+export type Redacted<T> = RedactedAt<T, T, REDACT_TYPE_DEPTH>;
 
 /**
  * One member `T` of a position, redacted against `C`: every type at that position, across every union member. `C`
- * decides whether the position is masked; `T` decides the shape a member keeps.
+ * decides whether the position is masked; `T` decides the shape a member keeps. `D` is the depth left to read.
  */
-type RedactedAt<T, C> =
+type RedactedAt<T, C, D extends number> =
   IsAny<T> extends true
-    ? T
+    ? unknown
     : true extends IsMarked<C>
       ? string | Extract<T, null | undefined>
-      : true extends CarriesMark<C>
-        ? T extends unknown
-          ? T extends readonly unknown[]
-            ? IsTuple<T> extends true
-              ? RedactedTuple<T, C>
-              : T extends unknown[]
-                ? RedactedAt<T[number], ElementOf<C>>[]
-                : readonly RedactedAt<T[number], ElementOf<C>>[]
-            : T extends ReadonlyMap<unknown, unknown> | ReadonlySet<unknown> | PromiseLike<unknown>
-              ? string
-              : T extends Opaque
-                ? T
-                : T extends object
-                  ? { [K in keyof T as true extends IsMarked<K> ? string : K]: RedactedAt<T[K], FieldOf<C, K>> }
-                  : T
-          : never
-        : T;
+      : Verdict<MarkIn<C, D>> extends false
+        ? T
+        : [D] extends [never]
+          ? unknown
+          : T extends unknown
+            ? T extends readonly unknown[]
+              ? IsTuple<T> extends true
+                ? RedactedTuple<T, C, D>
+                : T extends unknown[]
+                  ? RedactedAt<T[number], ElementOf<C>, Down<D>>[]
+                  : readonly RedactedAt<T[number], ElementOf<C>, Down<D>>[]
+              : T extends ReadonlyMap<unknown, unknown> | ReadonlySet<unknown> | PromiseLike<unknown>
+                ? string
+                : T extends Opaque
+                  ? T
+                  : T extends object
+                    ? {
+                        [K in keyof T as true extends IsMarked<K> ? string : K]: RedactedAt<
+                          T[K],
+                          FieldOf<C, K>,
+                          Down<D>
+                        >;
+                      }
+                    : T
+            : never;
 
-/** Whether any member of `C` carries a privacy brand: in a value, a key, a map's or a set's members, or a promise. */
-type CarriesMark<C> =
-  true extends ContainsMarked<C>
-    ? true
-    : C extends ReadonlyMap<infer K, infer V>
-      ? true extends ContainsMarked<K> | ContainsMarked<V>
+/** A search's answer: `true` when a mark was found, `"deep"` when none was but the search ran out of depth. */
+type Verdict<R> = true extends R ? true : "deep" extends R ? "deep" : false;
+
+/**
+ * Whether any member of `C`, or anything up to `D` levels inside it, carries a privacy brand: in a value, a key, a
+ * map's or a set's members, or a promise. `"deep"` where the depth ran out on something that could still hold one.
+ */
+type MarkIn<C, D extends number> =
+  IsAny<C> extends true
+    ? false
+    : C extends unknown
+      ? true extends IsMarked<C>
         ? true
-        : false
-      : C extends ReadonlySet<infer E>
-        ? ContainsMarked<E>
-        : C extends PromiseLike<infer P>
-          ? ContainsMarked<P>
-          : false;
+        : C extends ReadonlyMap<infer K, infer V>
+          ? MarkIn<K, Down<D>> | MarkIn<V, Down<D>>
+          : C extends ReadonlySet<infer E>
+            ? MarkIn<E, Down<D>>
+            : C extends PromiseLike<infer P>
+              ? MarkIn<P, Down<D>>
+              : C extends Opaque
+                ? false
+                : C extends object
+                  ? [D] extends [never]
+                    ? "deep"
+                    : true extends IsMarked<keyof C>
+                      ? true
+                      : C extends readonly (infer E)[]
+                        ? MarkIn<E, Down<D>>
+                        : { [K in keyof C]-?: MarkIn<C[K], Down<D>> }[keyof C] | false
+                  : false
+      : never;
 
 /**
  * A tuple's positions, redacted. A mapped type over a type parameter is homomorphic, so a tuple keeps its length and
  * its `readonly`; the key-remapping one {@link RedactedAt} uses for an object would turn it into a plain object.
  */
-type RedactedTuple<T extends readonly unknown[], C> = { [K in keyof T]: RedactedAt<T[K], IndexOf<C, K>> };
+type RedactedTuple<T extends readonly unknown[], C, D extends number> = {
+  [K in keyof T]: RedactedAt<T[K], IndexOf<C, K>, Down<D>>;
+};
 
 /**
  * Whether an array type is a tuple: a fixed length, or a first position of its own (`[number, ...string[]]`). A plain
@@ -219,11 +253,19 @@ type FieldOf<C, K> = C extends readonly unknown[] | Opaque
  *   members, each with every option's marks at each position; an intersection intersects its sides the same way.
  * - **A check is not in the type**, as it is not in the rule.
  *
- * It follows a schema {@link REDACT_TYPE_DEPTH} levels of structure deep, and searches an opaque node's insides as
- * deep again; a recursive schema is searched once around its cycle. **An opaque node deeper inside than that is a
- * `string`**, marked or not, because the type cannot tell and `redact` would mask one that is. Below that much
- * structure it reads the output type the way {@link Redacted} does, which masks every marked value
- * {@link PRIVACY_CHECK_DEPTH} levels further and may keep a container `redact` masks whole.
+ * **It is deliberately coarse: a position is `unknown` wherever the type cannot be certain what `redact` returns
+ * there**, and never a different concrete type. Narrowing is the caller's job. A position is `unknown`:
+ *
+ * - **Below a union or an intersection with a loose object, a catchall, or an opaque option.** A key one option names
+ *   may reach another's catchall at runtime, and an opaque option may hold anything, so every position under such a
+ *   union is `unknown`. The union itself keeps its members' outer shape: `{ a: unknown } | Date`. A union of plain
+ *   objects, arrays, records and tuples — a discriminated union included — stays precise.
+ * - **At a key outside an object's shape**: a loose object's or a catchall's extra keys.
+ * - **Past the depth the type reads.** It follows a schema {@link REDACT_TYPE_DEPTH} levels of structure deep, and
+ *   searches an opaque node's insides as deep again; a recursive schema is searched once around its cycle. A position
+ *   deeper than that, and an opaque node whose insides run deeper with no mark found, is `unknown`.
+ * - **Where the schema's type names no kind**: one typed `z.ZodType<T>` — the annotation a recursive `z.lazy` needs —
+ *   or `any`. A recursive schema written with a getter is inferred, and keeps its shape.
  */
 export type RedactedOutput<S> = RedactedPosition<S, S, REDACT_TYPE_DEPTH>;
 
@@ -250,13 +292,13 @@ type Nodes<S, D extends number = REDACT_TYPE_DEPTH> = [D] extends [never]
   ? S
   : S extends unknown
     ? DefOf<S> extends { type: Wrapper; innerType: infer I }
-      ? Nodes<I, Prev[D]>
+      ? Nodes<I, Down<D>>
       : DefOf<S> extends { type: "union"; options: readonly (infer O)[] }
-        ? Nodes<O, Prev[D]>
+        ? Nodes<O, Down<D>>
         : DefOf<S> extends { type: "intersection"; left: infer L; right: infer R }
-          ? Nodes<L, Prev[D]> | Nodes<R, Prev[D]>
+          ? Nodes<L, Down<D>> | Nodes<R, Down<D>>
           : DefOf<S> extends { type: "lazy"; getter: () => infer I }
-            ? Nodes<I, Prev[D]>
+            ? Nodes<I, Down<D>>
             : S
     : never;
 
@@ -270,40 +312,32 @@ type Schema = { readonly _zod: { readonly output: unknown; readonly def: unknown
  * Whether a schema carries a mark anywhere inside it: on its output, or on any schema its definition holds — a pipe's
  * sides, a codec's wire side, an option, an element, a field, a lazy's target. What decides an opaque node.
  *
- * `Seen` is every schema on the way down, so a recursive schema stops where it reaches itself: the second visit has
- * nothing new to say. **It fails closed**: a schema still unread at depth `D` is taken to carry a mark, because
- * `redact` masks an opaque node with one however deep it sits.
+ A schema still unread at depth `D` is `"deep"`: the type cannot tell, and the position it decides is `unknown`. A
+ * recursive schema runs the depth out the same way. There is no "seen this one" guard, on purpose: telling two deeply
+ * nested schema types apart is where TypeScript gives up and calls them the same, which would stop the search on a
+ * schema it never read.
  */
-type HasMark<S, D extends number = REDACT_TYPE_DEPTH, Seen = never> = S extends Schema
-  ? true extends SeenBefore<S, Seen>
-    ? false
-    : [D] extends [never]
+type HasMark<S, D extends number = REDACT_TYPE_DEPTH> = S extends Schema
+  ? [D] extends [never]
+    ? "deep"
+    : true extends IsMarked<Out<S>>
       ? true
-      : true extends IsMarked<Out<S>>
-        ? true
-        : true extends {
-              [K in keyof DefOf<S>]-?: K extends "checks" ? false : SlotHasMark<DefOf<S>[K], Prev[D], Seen | S>;
-            }[keyof DefOf<S>]
-          ? true
-          : false
+      : Verdict<
+          {
+            [K in keyof DefOf<S>]-?: K extends "checks" ? false : SlotHasMark<DefOf<S>[K], Down<D>>;
+          }[keyof DefOf<S>]
+        >
   : false;
 
-/** Whether `S` is one of `Seen`: the same type, not merely assignable to it. */
-type SeenBefore<S, Seen> = Seen extends unknown
-  ? (<T>() => T extends S ? 1 : 2) extends <T>() => T extends Seen ? 1 : 2
-    ? true
-    : false
-  : never;
-
 /** One slot of a definition: a schema, a lazy's getter, a list of schemas, or an object's shape. */
-type SlotHasMark<V, D extends number, Seen> = V extends Schema
-  ? HasMark<V, D, Seen>
+type SlotHasMark<V, D extends number> = V extends Schema
+  ? HasMark<V, D>
   : V extends () => infer R
-    ? HasMark<R, D, Seen>
+    ? HasMark<R, D>
     : V extends readonly (infer E)[]
-      ? HasMark<E, D, Seen>
+      ? HasMark<E, D>
       : V extends object
-        ? { [K in keyof V]-?: V[K] extends Schema ? HasMark<V[K], D, Seen> : false }[keyof V]
+        ? { [K in keyof V]-?: V[K] extends Schema ? HasMark<V[K], D> : false }[keyof V]
         : false;
 
 /** The opaque kinds that only ever hold a scalar, as `./classify` lists them. */
@@ -346,15 +380,65 @@ type In<S> = S extends { readonly _zod: { readonly input: infer I } } ? I : neve
 
 /**
  * Whether a position is masked whole: a marked node, an opaque node with a mark inside, or an opaque node that may hold
- * anything where something else at the position carries a mark.
+ * anything where something else at the position carries a mark. `"deep"` when no mark was found but a search ran out
+ * of depth, so the type cannot tell.
  */
-type MaskedWhole<S> = true extends
+type MaskedWhole<S> = Verdict<
   | IsMarked<Out<S>>
   | IsMarked<Out<Nodes<S>>>
   | OpaqueMarked<Nodes<S>>
   | (true extends FreeAt<Nodes<S>> ? CarriesAt<Nodes<S>> : false)
+>;
+
+/** Whether a union of string literals has more than one member. */
+type IsUnion<T, U = T> = T extends unknown ? ([U] extends [T] ? false : true) : never;
+
+/**
+ * Whether `S` reaches its position through a union or an intersection: the position may hold more than one node.
+ * Read through the wrappers and each lazy, and taken as `true` where the depth runs out.
+ */
+type HasJoin<S, D extends number = REDACT_TYPE_DEPTH> = [D] extends [never]
   ? true
-  : false;
+  : S extends unknown
+    ? DefOf<S> extends { type: "union" | "intersection" }
+      ? true
+      : DefOf<S> extends { type: Wrapper; innerType: infer I }
+        ? HasJoin<I, Down<D>>
+        : DefOf<S> extends { type: "lazy"; getter: () => infer I }
+          ? HasJoin<I, Down<D>>
+          : false
+    : never;
+
+/**
+ * Whether a node lets a key or an element reach a schema the type does not follow: a loose object or one with a
+ * catchall, whose output has a string index, or any opaque node.
+ */
+type Open<N> = N extends unknown
+  ? IsStructural<N> extends true
+    ? DefOf<N> extends { type: "object" }
+      ? string extends keyof Out<N>
+        ? true
+        : false
+      : false
+    : true
+  : never;
+
+/**
+ * Whether the positions below a position are `unknown`: it may be reached by more than one node — `M`, a union's
+ * options or an intersection's sides here or above it — and one of the nodes here is {@link Open}.
+ */
+type Coarse<N, M extends boolean> = M extends true ? (true extends Open<N> ? true : false) : false;
+
+/** Whether a node's schema type names no single kind: one typed `z.ZodType<T>`, whose definition could be any. */
+type Unnamed<N> = N extends unknown
+  ? DefOf<N> extends { type: infer T }
+    ? true extends IsUnion<T>
+      ? true
+      : string extends T
+        ? true
+        : false
+    : true
+  : never;
 
 /** Whether an opaque node among `N` carries a mark. */
 type OpaqueMarked<N> = N extends unknown ? (IsStructural<N> extends true ? false : HasMark<N>) : never;
@@ -369,69 +453,81 @@ type CarriesAt<N> = N extends unknown ? HasMark<N> : never;
  * One member's schema `S` at a position, against `C`, every schema that reaches the position. `C` decides whether the
  * position is masked, and what is at each position below it; `S` decides the shape this member keeps.
  */
-type RedactedPosition<S, C, D extends number> = [S] extends [never]
+type RedactedPosition<S, C, D extends number, M extends boolean = false> = [S] extends [never]
   ? never
   : IsAny<Out<S>> extends true
-    ? Out<S>
+    ? unknown
     : [D] extends [never]
-      ? Redacted<Out<S>>
+      ? unknown
       : MaskedWhole<C> extends true
         ? string | Extract<Out<S>, null | undefined>
-        : Shaped<S, Nodes<C>, D>;
+        : MaskedWhole<C> extends "deep"
+          ? unknown
+          : true extends Unnamed<Nodes<C>>
+            ? unknown
+            : Joined<S, C, D, M extends true ? true : true extends HasJoin<C> ? true : false>;
+
+/** {@link Shaped}, with `M` settled: once a position may hold more than one node, every position below it may too. */
+type Joined<S, C, D extends number, M extends boolean> = Shaped<
+  S,
+  Nodes<C>,
+  Coarse<Nodes<C>, M> extends true ? never : D,
+  M
+>;
 
 /**
  * One schema at a position that is walked into, against `C`, every node at the position: a wrapper keeps what it
- * adds, a union and an intersection keep their form, and a structural node maps by every node's schemas.
+ * adds, a union and an intersection keep their form, and a structural node maps by every node's schemas. `D` is
+ * `never` below a {@link Coarse} position, so every position under it is `unknown`. An opaque node with no mark keeps
+ * its output type, which is exactly what `redact` hands back.
  */
-type Shaped<S, C, D extends number> = S extends unknown
+type Shaped<S, C, D extends number, M extends boolean> = S extends unknown
   ? DefOf<S> extends { type: "optional"; innerType: infer I }
-    ? Shaped<I, C, D> | undefined
+    ? Shaped<I, C, D, M> | undefined
     : DefOf<S> extends { type: "nullable"; innerType: infer I }
-      ? Shaped<I, C, D> | null
+      ? Shaped<I, C, D, M> | null
       : DefOf<S> extends { type: "default" | "prefault" | "nonoptional"; innerType: infer I }
-        ? Exclude<Shaped<I, C, D>, undefined>
+        ? Exclude<Shaped<I, C, D, M>, undefined>
         : DefOf<S> extends { type: "catch"; innerType: infer I }
-          ? Shaped<I, C, D>
+          ? Shaped<I, C, D, M>
           : DefOf<S> extends { type: "readonly"; innerType: infer I }
-            ? Readonly<Shaped<I, C, D>>
+            ? Readonly<Shaped<I, C, D, M>>
             : DefOf<S> extends { type: "lazy"; getter: () => infer I }
-              ? Shaped<I, C, D>
+              ? Shaped<I, C, D, M>
               : DefOf<S> extends { type: "union"; options: readonly (infer O)[] }
-                ? Shaped<O, C, D>
+                ? Shaped<O, C, D, M>
                 : DefOf<S> extends { type: "intersection"; left: infer L; right: infer R }
-                  ? Shaped<L, C, D> & Shaped<R, C, D>
+                  ? Shaped<L, C, D, M> & Shaped<R, C, D, M>
                   : DefOf<S> extends { type: "object"; shape: infer Shape }
                     ? {
                         [K in keyof Out<S>]: K extends keyof Shape
-                          ? RedactedPosition<Shape[K], FieldSchemas<C, K>, Prev[D]>
-                          : Redacted<Out<S>[K]>;
+                          ? RedactedPosition<Shape[K], FieldSchemas<C, K>, Down<D>, M>
+                          : unknown;
                       }
                     : DefOf<S> extends { type: "record"; valueType: infer V }
                       ? {
-                          [K in keyof Out<S> as MaskedWhole<KeySchemas<C>> extends true ? string : K]: RedactedPosition<
-                            V,
-                            FieldSchemas<C, K>,
-                            Prev[D]
-                          >;
+                          [K in keyof Out<S> as MaskedWhole<KeySchemas<C>> extends false
+                            ? K
+                            : string]: RedactedPosition<V, FieldSchemas<C, K>, Down<D>, M>;
                         }
                       : DefOf<S> extends { type: "array"; element: infer E }
-                        ? RedactedPosition<E, ElementSchemas<C, number>, Prev[D]>[]
+                        ? RedactedPosition<E, ElementSchemas<C, number>, Down<D>, M>[]
                         : DefOf<S> extends {
                               type: "tuple";
                               items: infer Items extends readonly unknown[];
                               rest: infer R;
                             }
-                          ? ShapedTuple<Items, R, C, D>
-                          : Redacted<Out<S>>
+                          ? ShapedTuple<Items, R, C, D, M>
+                          : Out<S>
   : never;
 
 /** A tuple's items position by position, then its rest. Mapped over a type parameter, so it stays a tuple. */
-type ShapedTuple<Items extends readonly unknown[], R, C, D extends number> = [R] extends [null]
-  ? TupleItems<Items, C, D>
-  : [...TupleItems<Items, C, D>, ...RedactedPosition<R, ElementSchemas<C, number>, Prev[D]>[]];
+type ShapedTuple<Items extends readonly unknown[], R, C, D extends number, M extends boolean> = [R] extends [null]
+  ? TupleItems<Items, C, D, M>
+  : [...TupleItems<Items, C, D, M>, ...RedactedPosition<R, ElementSchemas<C, number>, Down<D>, M>[]];
 
-type TupleItems<Items extends readonly unknown[], C, D extends number> = {
-  -readonly [K in keyof Items]: RedactedPosition<Items[K], ElementSchemas<C, K>, Prev[D]>;
+type TupleItems<Items extends readonly unknown[], C, D extends number, M extends boolean> = {
+  -readonly [K in keyof Items]: RedactedPosition<Items[K], ElementSchemas<C, K>, Down<D>, M>;
 };
 
 /** The schemas at object key `K`: each object's field there, and each record's value. */

@@ -122,6 +122,28 @@ describe("privacyInventory paths", () => {
   });
 });
 
+describe("privacyInventory, past the depth limit", () => {
+  test("lists a KV value it could not read to the end as secret, and keeps the truncated flag", () => {
+    // biome-ignore lint/suspicious/noExplicitAny: a factory's type is circular, and TypeScript infers none.
+    const factory = (): any => z.object({ a: z.string(), next: z.lazy(factory).optional() });
+    const capability = defineCapability({
+      name: "deep",
+      requiredBindings: [],
+      kvNamespaces: {
+        trees: {
+          binding: "TREES",
+          stores: {
+            tree: { prefix: "t", key: z.object({ id: z.string() }), value: factory().transform((v: unknown) => v) },
+          },
+        },
+      },
+    });
+    expect(privacyInventory([capability]).schemas[0]?.fields).toEqual([
+      { path: "value", class: "secret", truncated: true },
+    ]);
+  });
+});
+
 describe("lazyPrivacyInventory", () => {
   test("walks nothing until it is read, then walks once for the isolate", () => {
     let walks = 0;

@@ -16,6 +16,10 @@ import type { ContainsMarked, Redacted } from "./types";
  * per kind the rule names — every structural kind keeps its shape, every opaque kind with a mark inside is a `string`,
  * and every opaque kind with none keeps its output type — the kinds `redact.grid.test.ts` runs at runtime. The test
  * beside them checks a few of the same shapes by value.
+ *
+ * **Each position is either exactly what `redact` returns there, or `unknown`** — never a different concrete type.
+ * It is `unknown` below a union or an intersection with a loose object, a catchall or an opaque option, past the
+ * depth the type reads, and wherever the schema's type does not name its kind.
  */
 
 type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
@@ -38,9 +42,9 @@ const strict = redact(z.strictObject({ e: E, n: z.number() }), any);
 same<typeof strict, Entry>();
 const loose = redact(z.looseObject({ e: E, n: z.number() }), any);
 same<typeof loose, { [x: string]: unknown; e: string; n: number }>();
+// A key outside the shape is the catchall's, which the type does not follow: `unknown`.
 const catchall = redact(z.object({ n: z.number() }).catchall(E), any);
-// A catchall's keys carry its mask; no type literal can spell a string index beside a number field.
-same<(typeof catchall)["n"], number>();
+same<typeof catchall, { [x: string]: unknown; n: number }>();
 same<ContainsMarked<typeof catchall>, false>();
 const pick = redact(Entry.pick({ e: true }), any);
 same<typeof pick, { e: string }>();
@@ -85,12 +89,27 @@ const tagged = redact(
 same<typeof tagged, { t: "a"; e: string } | { t: "b"; e: string }>();
 const prim = redact(z.union([E, z.number()]), any);
 same<typeof prim, string>();
-// The standard recursive lazy, written with the annotation TypeScript needs.
+// A recursive lazy annotated `z.ZodType<Node>` names no kind, so the type cannot see what redact walks: `unknown`.
 type Node = { e: z.output<typeof E>; next?: Node };
 const Node: z.ZodType<Node> = z.lazy(() => z.object({ e: E, next: Node.optional() }));
 const recursive = redact(Node, any);
-same<typeof recursive.e, string>();
-same<NonNullable<typeof recursive.next>["e"], string>();
+same<typeof recursive, unknown>();
+const generic = redact(z.object({ n: z.string() as z.ZodType<string> }), any);
+same<typeof generic, { n: unknown }>();
+// One written with a getter is inferred, and keeps its shape.
+const Tree = z.object({
+  e: E,
+  get kids() {
+    return z.array(Tree);
+  },
+});
+const tree = redact(Tree, any);
+same<typeof tree.e, string>();
+same<(typeof tree.kids)[number]["e"], string>();
+// A schema typed `any` claims every shape; the type claims none.
+// biome-ignore lint/suspicious/noExplicitAny: the case under test.
+const untyped = redact(z.object({ a: z.string() }) as any, any);
+same<typeof untyped, unknown>();
 
 // Every opaque kind with a mark inside is masked whole, so it is a string.
 const transform = redact(
@@ -154,9 +173,9 @@ same<
   typeof plainOpaque,
   { u: unknown; c: Acct; s: Set<string>; m: Map<string, number>; j: { theme: string }; d: Date }
 >();
-// A scalar holds nothing else, so a date beside a marked object is kept.
+// A scalar holds nothing else, so a date beside a marked object is kept; below that union the type claims nothing.
 const dated = redact(z.union([z.object({ e: E }), z.date()]), any);
-same<typeof dated, { e: string } | Date>();
+same<typeof dated, { e: unknown } | Date>();
 // A check is not in the type, as it is not in the rule: a refine keeps the object it refines.
 const refined = redact(
   Entry.refine(() => true),
@@ -170,7 +189,7 @@ same<typeof coerced, { tags: string }>();
 const coercedDate = redact(z.union([z.array(E).length(2), z.coerce.date()]), any);
 same<typeof coercedDate, string>();
 const plainScalar = redact(z.object({ tags: z.union([z.array(E), z.string()]) }), any);
-same<typeof plainScalar, { tags: string[] | string }>();
+same<typeof plainScalar, { tags: unknown[] | string }>();
 
 // A mark seven levels inside an opaque node still masks it whole, as redact does.
 const d7 = z.object({
@@ -188,11 +207,47 @@ const deepUnknown = redact(deep(z.union([z.object({ e: E }), z.unknown()])), any
 same<typeof deepUnknown, Deep<string>>();
 const deepKept = redact(deep(z.object({ e: E, n: z.number() })), any);
 same<typeof deepKept, Deep<{ e: string; n: number }>>();
-// Past every bound the type never keeps a raw marked value.
+// Fifteen levels down is still read.
 const d15 = redact(deep(deep(z.object({ e: E }))), any);
 same<typeof d15.a.b.c.d.f.g.t.a.b.c.d.f.g.t.e, string>();
 
-// A recursive schema is searched once around its cycle, so an unmarked one inside a codec keeps its type.
+// Below a union or an intersection with a loose object, a catchall or an opaque option, every position is `unknown`:
+// a key the other option names may reach the catchall at runtime, which masks it.
+const u8 = redact(
+  z.union([z.object({ a: z.object({ x: z.string() }) }), z.object({}).catchall(pii(z.object({ x: z.string() })))]),
+  any,
+);
+same<typeof u8, { a: unknown } | { [x: string]: unknown }>();
+const i4 = redact(z.intersection(z.looseObject({}), z.object({ a: z.object({ x: z.string(), e: E }) })), any);
+same<typeof i4, { [x: string]: unknown } & { a: unknown }>();
+const u9 = redact(z.union([z.looseObject({}), z.object({ a: z.object({ x: z.string(), e: E }) })]), any);
+same<typeof u9, { [x: string]: unknown } | { a: unknown }>();
+// A union of plain objects reads every option precisely: the shapes above.
+const plainUnion = redact(z.union([z.object({ a: z.object({ e: E }) }), z.object({ b: z.number() })]), any);
+same<typeof plainUnion, { a: { e: string } } | { b: number }>();
+
+// Past the depth the type reads, a position is `unknown`, never the brand-based guess: redact masks this one whole.
+type Chain<T, N extends unknown[] = []> = N["length"] extends 18 ? T : { n: Chain<T, [...N, 0]> };
+type Level16<T> = T extends { n: { n: { n: { n: { n: { n: { n: { n: infer R } } } } } } } }
+  ? R extends { n: { n: { n: { n: { n: { n: { n: { n: infer Q } } } } } } } }
+    ? Q
+    : never
+  : never;
+const wrap = <S extends z.ZodType>(inner: S) => z.object({ n: inner });
+const d0 = z.object({ e: E }).transform((o) => ({ c: o.e as string }));
+const d6 = wrap(wrap(wrap(wrap(wrap(wrap(d0))))));
+const d18 = wrap(wrap(wrap(wrap(wrap(wrap(wrap(wrap(wrap(wrap(wrap(wrap(d6))))))))))));
+const deep18 = redact(d18, any);
+same<Level16<typeof deep18>["n"], unknown>();
+same<Level16<typeof deep18>, { n: unknown }>();
+// An opaque node whose insides run past the depth the type searches is `unknown`, marked or not.
+const deepPlain = redact(z.object({ p: sqliteJson(deep(deep(deep(z.object({ x: z.string() }))))) }), any);
+same<typeof deepPlain, { p: unknown }>();
+// The value-level type is bounded the same way.
+same<Level16<Redacted<Chain<{ e: z.output<typeof E> }>>>["n"], unknown>();
+
+// A recursive schema inside a codec is searched until the depth runs out: a marked one is a string, as redact masks
+// it, and an unmarked one is `unknown`, because the type cannot tell it from one marked deeper than it reads.
 const Cat = z.object({
   label: z.string(),
   get children() {
@@ -206,8 +261,10 @@ const MarkedCat = z.object({
   },
 });
 const cats = redact(z.object({ j: sqliteJson(Cat), k: sqliteJson(MarkedCat) }), any);
-same<typeof cats, { j: z.output<typeof Cat>; k: string }>();
-same<(typeof cats.j.children)[number]["label"], string>();
+same<typeof cats, { j: unknown; k: string }>();
+// Two nested instances of one generic schema are told apart, so a mark fifteen levels inside a codec is still found.
+const twice = redact(z.object({ p: sqliteJson(deep(deep(z.object({ e: E })))) }), any);
+same<typeof twice, { p: string }>();
 
 // The type of a value already redacted, read off its own type.
 same<
@@ -220,7 +277,7 @@ same<Redacted<{ at: Date; m: Map<string, number> }>, { at: Date; m: Map<string, 
 same<ContainsMarked<typeof array>, false>();
 same<ContainsMarked<typeof tuple>, false>();
 same<ContainsMarked<typeof union>, false>();
-same<ContainsMarked<typeof recursive>, false>();
+same<ContainsMarked<typeof tree>, false>();
 
 /** Never run — the compiler checks the body. A redacted element is as loggable as the redacted whole. */
 function compileOnly(log: Logger): void {
@@ -228,7 +285,7 @@ function compileOnly(log: Logger): void {
   log.info("mapped", { emails: array.map((entry) => entry.e) });
   log.info("pair", { email: tuple[1] });
   log.info("column", { profile: column.profile });
-  log.info("recursive", { node: recursive });
+  log.info("tree", { node: tree });
 }
 
 describe("Redacted<T>", () => {
