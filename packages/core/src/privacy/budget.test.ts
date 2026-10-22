@@ -205,3 +205,23 @@ describe("schemas that build two or three new ones at every level complete, and 
     expect(performance.now() - started).toBeLessThan(5_000);
   });
 });
+
+describe("a value the budget ran out on beneath an opaque node", () => {
+  test("is masked [truncated] though nothing beneath it is marked, and the list assumes every class there", () => {
+    // A transform over an object wider than the budget, with nothing marked: the search beneath it runs out first.
+    const shape: Record<string, z.ZodType> = {};
+    for (let index = 0; index <= MAX_READ_SCHEMAS; index += 1) shape[`f${index}`] = z.object({ x: z.string() });
+    const Wide = z.object({
+      id: z.string(),
+      blob: z
+        .object(shape)
+        .partial()
+        .transform((x) => x),
+    });
+    const value = Wide.parse({ id: "I", blob: { f0: { x: "P" } } });
+    expect(redact(Wide, value as never)).toEqual({ id: "I", blob: "[truncated]" });
+    const listed = classifyPrivacy(Wide);
+    expect(listed.every((field) => field.path === "blob" && field.truncated)).toBe(true);
+    expect(listed.map((field) => field.class).sort()).toEqual([...unreadClasses()].sort());
+  });
+});

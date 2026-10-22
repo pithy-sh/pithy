@@ -627,7 +627,7 @@ function children(schema: z.ZodType): z.ZodType[] {
     if (key === "checks" || key === "getter" || !("value" in descriptor)) continue;
     const slot: unknown = descriptor.value;
     if (isSchema(slot)) found.push(slot);
-    else if (Array.isArray(slot)) found.push(...slot.filter(isSchema));
+    else if (Array.isArray(slot)) for (const each of slot) if (isSchema(each)) found.push(each);
   }
   return found;
 }
@@ -676,7 +676,8 @@ function search(schema: z.ZodType, call: Call): Search {
       for (const own of ownPrivacyClasses(node)) classes.add(own);
       const def = defOf(node);
       if (def.type !== "lazy" && !STRUCTURAL.has(def.type)) {
-        stack.push(...children(node).reverse());
+        const inside = children(node);
+        for (let index = inside.length - 1; index >= 0; index -= 1) stack.push(inside[index] as z.ZodType);
         continue;
       }
       // Past the limit, this path ends here, and only this one.
@@ -692,7 +693,7 @@ function search(schema: z.ZodType, call: Call): Search {
         break;
       }
       if (def.type === "object") readShape(node, call);
-      next.push(...children(node));
+      for (const child of children(node)) next.push(child);
     }
     level = next;
   }
@@ -1113,7 +1114,7 @@ function readPosition(
     get key() {
       return once("key", () => slots(leafList, ["record"], (def) => def.keyType));
     },
-    items: Math.max(0, ...tuples.map((def) => def.items?.length ?? 0)),
+    items: tuples.reduce((most, def) => Math.max(most, def.items?.length ?? 0), 0),
     item: (index) =>
       once(`item:${index}`, () => [
         ...arrays,
@@ -1309,7 +1310,7 @@ export function walkPrivacy(schema: z.ZodType, visitor: PrivacyVisitor, path = "
       continue;
     }
     frame.below = framesBelow(frame, at);
-    queue.push(...frame.below);
+    for (const child of frame.below) queue.push(child);
   }
   const beneath = references ? classesBeneath(walked) : new Map<Position, Map<string, boolean>>();
   // Report, depth first, in the order the schema names each position.
@@ -1335,19 +1336,16 @@ export function walkPrivacy(schema: z.ZodType, visitor: PrivacyVisitor, path = "
         );
       }
     }
-    if (frame.below) stack.push(...[...frame.below].reverse());
+    if (frame.below)
+      for (let index = frame.below.length - 1; index >= 0; index -= 1) stack.push(frame.below[index] as Frame);
   }
 }
-
-const classified = new WeakMap<z.ZodType, readonly PrivacyField[]>();
 
 /**
  * Every position `redact` masks in a schema, and its class — the Art. 30 record for one object, derived rather than
  * maintained. Empty for a schema with no markers. A path reached twice is listed once per class. It never throws.
  */
 export function classifyPrivacy(schema: z.ZodType): PrivacyField[] {
-  const cached = classified.get(schema);
-  if (cached) return [...cached];
   const fields: PrivacyField[] = [];
   const byKey = new Map<string, PrivacyField>();
   walkPrivacy(schema, {
@@ -1361,8 +1359,7 @@ export function classifyPrivacy(schema: z.ZodType): PrivacyField[] {
       fields.push(field);
     },
   });
-  classified.set(schema, fields);
-  return [...fields];
+  return fields;
 }
 
 /** Whether a schema holds a field of `className` at any depth: exactly what {@link classifyPrivacy} lists. */

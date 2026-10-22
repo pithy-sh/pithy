@@ -60,25 +60,26 @@ import type { RedactedOutput } from "./types";
  * way `sqliteJson` is built included), `z.custom`, `any`, `unknown`, `.overwrite()` and `.catch()` with a fallback
  * function. `redact` does not look inside these. When anything beneath one is marked, the whole value is masked with
  * the strongest class it carries, and `Redacted<T>` types that position `unknown`. When nothing beneath it is marked,
- * it is kept as it is, including when it is a union option beside a marked one. A recursion beneath it that reaches the
- * item 6 depth limit counts as possibly marked, so that value is masked whole and typed `unknown`: with the strongest
- * class marked anywhere else beneath it, or as `[truncated]` where none is. None of this ever throws or leaks a raw
- * marked value. `Redacted<T>` cannot see an `.overwrite()`, which keeps the type of the schema it is called on, so it
- * types that position as the shape beneath it. A `.refine` or `.superRefine` that mutates its input is outside the
- * contract; `redact` does not defend against a check written to move a marked value. `redact` copies only the
- * enumerable own properties of a plain object passed through as it is. A value whose kind or prototype does not match
- * what its position's schema expects is not walked either: a value that is not a plain object, such as a class
- * instance, an ORM entity or an object whose prototype is not `Object.prototype`, where an object is expected; a
- * `Date`, an array, a `Map`, a `Set` or a function there, a subclass of one or one carrying fields included; a plain
- * object where an array or a map is expected; an array-like class instance where an array is; an object or an array
- * where only scalars are. A schema expects a plain object, an `Array.prototype` array, a `Map`, a `Set` or a `Date` of
- * its own prototype, or a primitive of the scalar's kind, and a constant `.catch()` fallback's kind is one its schema
- * names. When anything beneath the position is marked, the whole value is masked with the strongest class it carries,
- * at the top level, inside an array and as a field of a row alike, and when nothing is, it is kept as it is. Where a
- * schema at the position names the value's kind, beneath means beneath the schemas of that kind, so a class instance
- * beside a marked string option and an object option that marks nothing is kept. A value of a kind only an opaque node
- * at its position takes is that node's, and kept as it is when nothing beneath that node is marked. `Redacted<T>`,
- * which cannot tell a class instance from a plain object, types it as the schema's shape.
+ * it is kept as it is, including when it is a union option beside a marked one. The one exception is a value the call's
+ * budget ran out on before it resolved: it is masked `[truncated]`, as any class may be marked past the budget (item
+ * 6). A recursion beneath it that reaches the item 6 depth limit counts as possibly marked, so that value is masked
+ * whole and typed `unknown`: with the strongest class marked anywhere else beneath it, or as `[truncated]` where none
+ * is. None of this ever throws or leaks a raw marked value. `Redacted<T>` cannot see an `.overwrite()`, which keeps the
+ * type of the schema it is called on, so it types that position as the shape beneath it. A `.refine` or `.superRefine`
+ * that mutates its input is outside the contract; `redact` does not defend against a check written to move a marked
+ * value. `redact` copies only the enumerable own properties of a plain object passed through as it is. A value whose
+ * kind or prototype does not match what its position's schema expects is not walked either: a value that is not a plain
+ * object, such as a class instance, an ORM entity or an object whose prototype is not `Object.prototype`, where an
+ * object is expected; a `Date`, an array, a `Map`, a `Set` or a function there, a subclass of one or one carrying
+ * fields included; a plain object where an array or a map is expected; an array-like class instance where an array is;
+ * an object or an array where only scalars are. A schema expects a plain object, an `Array.prototype` array, a `Map`, a
+ * `Set` or a `Date` of its own prototype, or a primitive of the scalar's kind, and a constant `.catch()` fallback's
+ * kind is one its schema names. When anything beneath the position is marked, the whole value is masked with the
+ * strongest class it carries, at the top level, inside an array and as a field of a row alike, and when nothing is, it
+ * is kept as it is. Where a schema at the position names the value's kind, beneath means beneath the schemas of that
+ * kind, so a class instance beside a marked string option and an object option that marks nothing is kept. A value of a
+ * kind only an opaque node at its position takes is that node's, and kept as it is when nothing beneath that node is
+ * marked. `Redacted<T>`, which cannot tell a class instance from a plain object, types it as the schema's shape.
  *
  * **Five constructions nothing written to the contract uses** are outside it too. Each is tested for exactly this
  * behavior, none throws, and all but the second and the fourth can keep a marked value as it is:
@@ -192,28 +193,32 @@ function read(value: object, key: PropertyKey): unknown {
   }
 }
 
-/** `name`, or `name #2`, `name #3` … — the first that `taken` does not hold yet. */
-function distinct(name: unknown, taken: { has(key: unknown): boolean }): unknown {
-  if (typeof name !== "string" || !taken.has(name)) return name;
-  let index = 2;
-  while (taken.has(`${name} #${index}`)) index += 1;
-  return `${name} #${index}`;
-}
-
 /** A child's result, and whether it is a mask: only a masked key or element is ever renamed. */
 type Result = { value: unknown; masked: boolean };
 
 /**
  * Keys or elements, each kept or masked, made distinct: every kept one first, as it is, then each masked one at the
- * first name, `[pii]`, `[pii] #2` …, that no kept one and no earlier masked one holds. In the value's order.
+ * first name, `[pii]`, `[pii] #2` …, that no kept one and no earlier masked one holds. In the value's order. Each name
+ * keeps the next number to try, so a thousand keys that mask alike cost a thousand steps, not half a million: every
+ * number below it is already taken, and a name once taken stays taken.
  */
 function distinctAll(results: readonly Result[]): unknown[] {
-  const taken = new Set<unknown>(results.filter((result) => !result.masked).map((result) => result.value));
+  const taken = new Set<unknown>();
+  for (const result of results) if (!result.masked) taken.add(result.value);
+  const next = new Map<string, number>();
   return results.map((result) => {
-    if (!result.masked) return result.value;
-    const name = distinct(result.value, taken);
-    taken.add(name);
-    return name;
+    const name = result.value;
+    if (!result.masked) return name;
+    if (typeof name !== "string" || !taken.has(name)) {
+      taken.add(name);
+      return name;
+    }
+    let index = next.get(name) ?? 2;
+    while (taken.has(`${name} #${index}`)) index += 1;
+    next.set(name, index + 1);
+    const numbered = `${name} #${index}`;
+    taken.add(numbered);
+    return numbered;
   });
 }
 
@@ -287,8 +292,9 @@ function redactAt(step: Extract<Step, { visit: unknown }>, steps: Step[]): void 
       return;
     }
     put(result.value, result.masked);
-    // Popped last to first: what is below runs in order.
-    steps.push(...below.reverse());
+    // Popped last to first: what is below runs in order. One push each, never a spread: a value may hold more
+    // children than a call takes arguments.
+    for (let index = below.length - 1; index >= 0; index -= 1) steps.push(below[index] as Step);
   }
 }
 

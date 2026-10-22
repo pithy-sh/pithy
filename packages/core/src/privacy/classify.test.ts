@@ -239,3 +239,23 @@ describe("hasPrivacy", () => {
     expect(hasPrivacy(z.object({ id: z.string() }), "pii")).toBe(false);
   });
 });
+
+describe("each call keeps nothing for the next", () => {
+  test("a class registered after a read that met a throw is listed by the next call", () => {
+    let marker: ((schema: z.ZodString) => z.ZodType) | undefined;
+    const Row = z.object({
+      id: z.string(),
+      get g() {
+        if (!marker) throw new Error("not yet");
+        return marker(z.string());
+      },
+    });
+    // The getter throws: the field cannot be read, so every class registered so far is assumed there.
+    const first = classifyPrivacy(Row);
+    expect(first.every((field) => field.truncated)).toBe(true);
+    expect(first.some((field) => field.class === "genome_cache")).toBe(false);
+    marker = definePrivacyClass({ name: "genome_cache" });
+    expect(classifyPrivacy(Row)).toContainEqual({ path: "g", class: "genome_cache" });
+    expect(hasPrivacy(Row, "genome_cache")).toBe(true);
+  });
+});
