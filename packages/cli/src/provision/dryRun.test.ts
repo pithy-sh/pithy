@@ -353,7 +353,7 @@ describe("a feature's kit Workers, which a plan names and does not upload", () =
       },
     ]);
     expect(planned.notes).toEqual([
-      "Creates this feature's master key in the Secrets Store first, if it is absent.",
+      "Creates this feature's master key and field key in the Secrets Store first, if they are absent.",
       "Then binds each app Worker to the kit Workers that deploy, and creates the indexes and d1 secrets they need.",
     ]);
   });
@@ -395,6 +395,9 @@ describe("a feature's kit Workers, which a plan names and does not upload", () =
           steps.push("master key");
           return { storeId: "store" };
         },
+        ensureFieldKeys: async () => {
+          steps.push("field keys");
+        },
       },
       indexes: { ensure: async (index) => void steps.push(`index ${index.name}`), remove: async () => false },
       deployHosts: async () => {
@@ -425,7 +428,7 @@ describe("a feature's kit Workers, which a plan names and does not upload", () =
         .filter((host) => featureHostCapabilities(capabilities).includes(host.capability))
         .map((host) => host.script),
     ]);
-    expect(steps).toEqual(["master key", "deploy hosts"]);
+    expect(steps).toEqual(["master key", "field keys", "deploy hosts"]);
     expect(planned.notes.some((note) => note.includes("master key"))).toBe(steps.includes("master key"));
     // Every option the run reads. A new one is a new step: name it in `plannedFeatureHosts`, then here.
     expect([...read].sort()).toEqual([

@@ -208,6 +208,10 @@ const REASON: Record<RotationFailureCode, string> = {
   "at-rest-incomplete": "the at-rest key rotation did not finish",
   "at-rest-unconfirmed": "the at-rest key rotation could not confirm its write through the binding",
   "not-retired": "rotated, and the previous version is kept until what is sealed under it is re-encrypted",
+  "field-key-overdue": "a field-key version was still live when the next rotation came due — see the Field keys block",
+  "field-key-ceiling": "the field-key rotation was refused at four live versions — see the Field keys block",
+  "field-key-unconfirmed": "the field-key rotation could not confirm its write through the binding",
+  "field-key-incomplete": "the field-key rotation did not finish",
 };
 
 /** The block's lines: one per environment, and one more per failed rotation. */

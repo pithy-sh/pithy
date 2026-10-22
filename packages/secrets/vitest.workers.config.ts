@@ -18,7 +18,8 @@ export default defineConfig({
       miniflare: {
         compatibilityDate: COMPATIBILITY_DATE,
         compatibilityFlags: ["nodejs_compat"],
-        d1Databases: ["SECRETS"],
+        // `APP_DB` is an adopter's own database, holding the encrypted columns the field-key rotation re-seals (#390).
+        d1Databases: ["SECRETS", "APP_DB"],
         bindings: { SECRETS_ENCRYPTION_KEYS: devEncryptionKeys() },
       },
     }),

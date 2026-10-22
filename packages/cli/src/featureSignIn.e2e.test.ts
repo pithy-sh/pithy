@@ -602,7 +602,11 @@ describe("a feature deployment, after provision and deploy", () => {
       expect([...account.entries.keys()].filter((name) => !isFeatureOwnedName(identity, name))).toEqual([]);
       // The feature's manager holds no Cloudflare API token, hosts no rotation Workflow and runs no cron (#643).
       const manager = account.hosts.get("replay-f643-feature-address--secrets");
-      expect(manager?.secrets_store_secrets?.map((entry) => entry.binding)).toEqual(["SECRETS_ENCRYPTION_KEYS"]);
+      // Its own master key and its own field key (#390), and no token.
+      expect(manager?.secrets_store_secrets?.map((entry) => entry.binding)).toEqual([
+        "SECRETS_ENCRYPTION_KEYS",
+        "PITHY_FIELD_KEYS",
+      ]);
       expect(manager?.workflows?.map((entry) => entry.class_name)).toEqual(["SecretsWriteWorkflow"]);
       expect(manager?.triggers?.crons ?? []).toEqual([]);
 

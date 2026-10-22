@@ -421,7 +421,11 @@ describe("a feature composing every host-owning capability", () => {
     const manager = result.hosts.find((config) => config.name === `${OWN}secrets`) as
       | (Config & { secrets_store_secrets?: { binding: string }[]; workflows?: { binding: string }[] })
       | undefined;
-    expect(manager?.secrets_store_secrets?.map((entry) => entry.binding)).toEqual(["SECRETS_ENCRYPTION_KEYS"]);
+    // Its own master key and its own field key (#390), and no token.
+    expect(manager?.secrets_store_secrets?.map((entry) => entry.binding)).toEqual([
+      "SECRETS_ENCRYPTION_KEYS",
+      "PITHY_FIELD_KEYS",
+    ]);
     expect(manager?.workflows?.map((entry) => entry.binding)).toEqual(["SECRETS_WRITE"]);
     expect((manager?.triggers as { crons?: string[] } | undefined)?.crons ?? []).toEqual([]);
     expect([...result.stand.entries.keys()].filter((name) => name.includes("cf-api-token"))).toEqual([]);

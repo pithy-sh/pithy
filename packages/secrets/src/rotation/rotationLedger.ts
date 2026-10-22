@@ -95,9 +95,20 @@ export type RotationClosure = z.output<typeof RotationClosure>;
  * `null`, never as itself.
  */
 export const RotationFailure = z
-  .enum(["roll-failed", "not-recorded", "not-rotated", "at-rest-incomplete", "at-rest-unconfirmed", "not-retired"])
+  .enum([
+    "roll-failed",
+    "not-recorded",
+    "not-rotated",
+    "at-rest-incomplete",
+    "at-rest-unconfirmed",
+    "not-retired",
+    "field-key-overdue",
+    "field-key-ceiling",
+    "field-key-unconfirmed",
+    "field-key-incomplete",
+  ])
   .describe(
-    "Why a rotation row closed failed, as a code. `roll-failed`, `not-recorded` and `not-rotated` are a value rotation's. `at-rest-incomplete` and `at-rest-unconfirmed` are the whole-store master-key rotation's. `not-retired` is an unattended value rotation that landed and kept the previous version, because a value sealed under it at rest was not re-encrypted.",
+    "Why a rotation row closed failed, as a code. `roll-failed`, `not-recorded` and `not-rotated` are a value rotation's. `at-rest-incomplete` and `at-rest-unconfirmed` are the whole-store master-key rotation's. `not-retired` is an unattended value rotation that landed and kept the previous version, because a value sealed under it at rest was not re-encrypted. `field-key-overdue` is a field-key version still live when the next rotation came due, `field-key-ceiling` a rotation refused at four live versions, `field-key-unconfirmed` a field-key write the binding never showed, and `field-key-incomplete` a field-key pass that did not finish (#390).",
   );
 
 /**
@@ -131,6 +142,12 @@ const FAILURE_TEXT: Record<RotationFailureCode, string> = {
   // sealed under the previous version at rest was never re-encrypted, so the previous version is still held —
   // nothing is broken, and an owner should find out which dependent is behind before the next rotation.
   "not-retired": "rotated, and the previous version was kept: a value sealed under it was not re-encrypted",
+  // `#390`. The field key: a version due to leave was still live when the next rotation came due, so the guard has
+  // been dirty for a whole period. Its own sentence because it is the one `pithy doctor` reports as an error.
+  "field-key-overdue": "a field-key version was still live when the next rotation came due",
+  "field-key-ceiling": "the field-key rotation was refused: four versions are live",
+  "field-key-unconfirmed": "the field-key rotation could not confirm its write through the binding",
+  "field-key-incomplete": "the field-key rotation did not finish",
 };
 
 /**

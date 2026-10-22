@@ -22,6 +22,7 @@ import { managerWorkflowNames } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { SECRETS_RUNTIME_PERMISSIONS } from "@pithy-sh/secrets/src/manager/managerRegistry";
 import { secretsMigrations } from "@pithy-sh/secrets/src/migrations/secretsMigrations";
 import {
+  fieldKeysSecretName,
   initialMasterKeyConfig,
   masterKeySecretName,
   runtimeTokenName,
@@ -358,6 +359,30 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
       });
     }
     return { storeId: this.#storeId };
+  }
+
+  /**
+   * Mint the env's field key only if absent (#390) — `PITHY_FIELD_KEYS`, what app Workers seal encrypted fields with.
+   * The master key's format and the master key's rule: asked before any key material is generated, created only if
+   * still absent, because a fresh key over an existing one would orphan every sealed field. A feature's is its own.
+   */
+  async ensureFieldKeys(env: ManagedEnvironment): Promise<void> {
+    const name = fieldKeysSecretName(this.#project, env, this.#feature);
+    const store = this.#cf.secrets(this.#storeId);
+    if (
+      !(await store.exists(name)) &&
+      (await store.createSecretIfAbsent(name, JSON.stringify(await initialMasterKeyConfig()))) !== "present"
+    ) {
+      await this.#audit({
+        environment: env,
+        action: "secrets/set",
+        outcome: "success",
+        severity: "warning",
+        resourceType: "secret",
+        resourceId: name,
+        metadata: { name, kind: "field_keys" },
+      });
+    }
   }
 
   /** Run the secrets migrations against the env's D1 over REST (idempotent — applied ones are skipped). */

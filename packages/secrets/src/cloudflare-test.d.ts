@@ -10,6 +10,8 @@
 declare namespace Cloudflare {
   interface Env {
     SECRETS: D1Database;
+    /** An adopter's app database, holding the encrypted columns the field-key rotation re-seals (#390). */
+    APP_DB: D1Database;
     /** The master-key config as a string (the `.dev.vars` shape), set in `vitest.workers.config.ts`. */
     SECRETS_ENCRYPTION_KEYS: string;
   }

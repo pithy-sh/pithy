@@ -39,6 +39,9 @@ class StubProvisioner implements SecretsProvisioner {
     this.calls.push(`key:${env}`);
     return { storeId: `store-${env}` };
   }
+  async ensureFieldKeys(env: ManagedEnvironment) {
+    this.calls.push(`field-keys:${env}`);
+  }
   async migrate(env: ManagedEnvironment, databaseId: string) {
     this.calls.push(`migrate:${env}:${databaseId}`);
   }
@@ -48,7 +51,7 @@ class StubProvisioner implements SecretsProvisioner {
 }
 
 describe("provisionSecrets", () => {
-  test("mints each environment's runtime token first, then provisions both in order: db → key → migrate → deploy", async () => {
+  test("mints each environment's runtime token first, then provisions both in order: db → key → field key → migrate → deploy", async () => {
     const provisioner = new StubProvisioner();
 
     const result = await provisionSecrets(provisioner, DEFAULT_ENVIRONMENTS);
@@ -59,10 +62,12 @@ describe("provisionSecrets", () => {
       "token:prod",
       "db:staging",
       "key:staging",
+      "field-keys:staging",
       "migrate:staging:d1-staging",
       "deploy:staging:d1-staging:store-staging",
       "db:prod",
       "key:prod",
+      "field-keys:prod",
       "migrate:prod:d1-prod",
       "deploy:prod:d1-prod:store-prod",
     ]);

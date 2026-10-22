@@ -955,7 +955,8 @@ describe("provisionFeature / deprovisionFeature", () => {
       const entry = "acme-f69-demo--secrets-encryption-keys";
       // Its own key, under its own name — never staging's, which teardown would then delete. And no token: a
       // feature's manager holds none, so the store gains no token entry and no account token is minted (#643).
-      expect([...entries.keys()].sort()).toEqual([entry]);
+      // Beside it the feature's own field key (#390), in the same format, for its encrypted fields.
+      expect([...entries.keys()].sort()).toEqual(["acme-f69-demo--pithy-field-keys", entry]);
       expect(JSON.parse(entries.get(entry) as string)).toMatchObject({ currentVersion: "1" });
       // `minted: false` — the master key is `json` against `EncryptionConfig`, so it declares no
       // `devValue` and the #321 minter never touches it. The secrets provisioner creates it, above.

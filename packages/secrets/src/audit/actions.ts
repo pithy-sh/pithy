@@ -50,6 +50,18 @@ export const SecretsAuditActions = {
    * `manager/auditLog.ts`.
    */
   versionRetired: "secrets/version_retired",
+  /**
+   * A field-key version was retired (#390): every ciphertext still under it is now unopenable. `pastGuard` in the
+   * metadata says whether an operator retired it with `pithy secrets retire-version --past-guard`, with the stale
+   * counts it was retired over; otherwise the guard read clean and the rotator retired it.
+   */
+  fieldKeyRetired: "secrets/field_key_retired",
+  /**
+   * A field-key version due to leave was held live by the retirement guard (#390), `reasons` naming what held it:
+   * `unrotatable`, `incomplete-coverage` or `stale`. `severity: critical` when it was still live at the next
+   * rotation, which `pithy doctor` reports as an error.
+   */
+  fieldKeyRetirementBlocked: "secrets/field_key_retirement_blocked",
   /** An application stored a keyspace member — created it, or replaced it (`mode` says which). */
   memberWritten: "secrets/member_written",
   /** An application added a version to a keyspace member, keeping the prior one valid. */
