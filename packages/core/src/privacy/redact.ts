@@ -3,7 +3,7 @@
 
 import type { z } from "zod";
 import { privacyClass } from "./classes";
-import { kindOfValue, MAX_RECURSION_DEPTH, type Mask, type Position, rootPosition, TRUNCATED_MASK } from "./classify";
+import { MAX_RECURSION_DEPTH, type Mask, type Position, rootPosition, TRUNCATED_MASK } from "./classify";
 import type { RedactedOutput } from "./types";
 
 /**
@@ -56,17 +56,25 @@ import type { RedactedOutput } from "./types";
  * way `sqliteJson` is built included), `z.custom`, `any`, `unknown`, `.overwrite()` and `.catch()` with a fallback
  * function. `redact` does not look inside these. When anything beneath one is marked, the whole value is masked with
  * the strongest class it carries, and `Redacted<T>` types that position `unknown`. When nothing beneath it is marked,
- * it is kept as it is, including when it is a union option beside a marked one. A recursion beneath it that reaches
- * the item 6 depth limit counts as possibly marked, so that value is masked whole and typed `unknown`: with the
- * strongest class marked anywhere else beneath it, or as `[truncated]` where none is. None of this ever throws or
- * leaks a raw marked value. `Redacted<T>` cannot see an `.overwrite()`, which keeps the type of the schema it is
- * called on, so it types that position as the shape beneath it. A `.refine` or `.superRefine` that mutates its input
- * is outside the contract; `redact` does not defend against a check written to move a marked value. `redact` copies
- * only the enumerable own properties of a plain object passed through as it is. A value that is not a plain object,
- * such as a class instance, an ORM entity or an object whose prototype is not `Object.prototype`, where an object is
- * expected is not walked either: when anything beneath that object is marked, the whole value is masked with the
- * strongest class it carries, inside an array as anywhere, and when nothing is, it is kept as it is. `Redacted<T>`,
- * which cannot tell a class instance from a plain object, types it as the object.
+ * it is kept as it is, including when it is a union option beside a marked one. A recursion beneath it that reaches the
+ * item 6 depth limit counts as possibly marked, so that value is masked whole and typed `unknown`: with the strongest
+ * class marked anywhere else beneath it, or as `[truncated]` where none is. None of this ever throws or leaks a raw
+ * marked value. `Redacted<T>` cannot see an `.overwrite()`, which keeps the type of the schema it is called on, so it
+ * types that position as the shape beneath it. A `.refine` or `.superRefine` that mutates its input is outside the
+ * contract; `redact` does not defend against a check written to move a marked value. `redact` copies only the
+ * enumerable own properties of a plain object passed through as it is. A value whose kind or prototype does not match
+ * what its position's schema expects is not walked either: a value that is not a plain object, such as a class
+ * instance, an ORM entity or an object whose prototype is not `Object.prototype`, where an object is expected; a
+ * `Date`, an array, a `Map`, a `Set` or a function there, a subclass of one or one carrying fields included; a plain
+ * object where an array or a map is expected; an array-like class instance where an array is; an object or an array
+ * where only scalars are. A schema expects a plain object, an `Array.prototype` array, a `Map`, a `Set` or a `Date` of
+ * its own prototype, or a primitive of the scalar's kind, and a constant `.catch()` fallback's kind is one its schema
+ * names. When anything beneath the position is marked, the whole value is masked with the strongest class it carries,
+ * at the top level, inside an array and as a field of a row alike, and when nothing is, it is kept as it is. Where a
+ * schema at the position names the value's kind, beneath means beneath the schemas of that kind, so a class instance
+ * beside a marked string option and an object option that marks nothing is kept. A value of a kind only an opaque node
+ * at its position takes is that node's, and kept as it is when nothing beneath that node is marked. `Redacted<T>`,
+ * which cannot tell a class instance from a plain object, types it as the schema's shape.
  *
  * **Five constructions nothing written to the contract uses** are outside it too. Each is tested for exactly this
  * behavior, none throws, and all but the second and the fourth can keep a marked value as it is:
@@ -76,14 +84,24 @@ import type { RedactedOutput } from "./types";
  * 2. A value that is not a plain object, such as a class instance or an object whose prototype is not
  *    `Object.prototype`, passed through as it is beside an object option is read as one where an object is expected:
  *    masked whole with the strongest class marked beneath that option, and kept as it is where nothing is.
- * 3. An `.overwrite()` or a `.catch()` with a fallback function on a scalar option of a union is read by the
- *    scalar's kind, so an object or an array it makes is kept as it is.
+ * 3. An `.overwrite()` or a `.catch()` with a fallback function on a scalar option of a union is read by the scalar's
+ *    kind, so an object or an array it makes is read as any value of that kind at its position: walked by an object or
+ *    an array option beside it, which can keep it as it is, and masked whole as a value of a kind its position does not
+ *    name where no such option is and anything beneath is marked.
  * 4. Wrappers, choices or intersections nested deeper than the JavaScript stack can follow, and a field cloned by
  *    `.describe()` or `.meta()` more times than Zod can read its metadata back through: `redact` masks the value they
  *    sit in `[truncated]`, `classifyPrivacy`, `hasPrivacy` and `walkPrivacy` list that position with every class,
  *    each `truncated`, and `privacyOf` answers the strongest class, rather than throw.
  * 5. An array, a `Map` or a `Set` passed through as it is is copied by its elements or entries, and no other own
  *    property it holds is copied.
+ *
+ * **Where `redact` masks more than the marks name.** It never masks less, and it masks more in three places, each
+ * tested. A position a search ran out of its budget at is masked with the strongest class, as any class may be marked
+ * past it (item 6). A value whose kind or prototype does not match its position is masked whole over a mark beneath it,
+ * as above. And a lazy whose union reaches itself through another lazy reads as every kind where the cycle is cut, so a
+ * marked option that wraps it applies to every value at its position, an unmarked sibling option's value included: with
+ * `A = z.lazy(() => z.union([z.number(), B]))` and `B = z.lazy(() => z.union([z.string(), A]))`, `z.object({ f:
+ * z.union([z.boolean(), secret(A)]) })` masks `{ f: true }` as `{ f: "[secret]" }`.
  *
  * A read of a value that throws — a getter, a proxy's trap, an iterator — makes that position `[truncated]`, and the
  * walk goes on: `redact` never throws.
@@ -92,13 +110,13 @@ import type { RedactedOutput } from "./types";
  *
  * - **A position two classes reach takes the strongest one's placeholder**, never one class's own mask: a PAN's
  *   first six and last four apply only where `pci` is the only class there.
- * - **An option's marks apply where the value has that option's shape.** An object option's apply to an object
- *   value, an array option's to an array value, and a marked string option's to a string: beside
- *   `z.array(z.string())` an array is walked, and beside `z.number()` a number is kept. A mark reached through no
- *   option applies to every value. A key or an element no option names is kept, and so is a value of a kind no
- *   option names, such as an array a `z.unknown()` beside an object option let through. A record's string key is a
- *   string whatever its schema says, a number key's included, so a key schema that marks any shape but a symbol masks
- *   every string key; a symbol key is masked only by a marked symbol option.
+ * - **An option's marks apply where the value has that option's shape.** An object option's apply to an object value,
+ *   an array option's to an array value, and a marked string option's to a string: beside `z.array(z.string())` an
+ *   array is walked, and beside `z.number()` a number is kept. A mark reached through no option applies to every value.
+ *   A key or an element no option names is kept, and so is a value of a kind only an opaque option takes, such as an
+ *   array a `z.unknown()` beside an object option let through; one of a kind no schema there names is masked whole over
+ *   a mark. A record's string key is a string whatever its schema says, a number key's included, so a key schema that
+ *   marks any shape but a symbol masks every string key; a symbol key is masked only by a marked symbol option.
  * - **A record's or a map's key is redacted by its key schema**, and so is a set's element. Two that mask alike come
  *   back as `[pii]` and `[pii] #2`, so the copy holds as many entries as the value did. Only a masked one is ever
  *   numbered: a kept one stays as it is, even one that reads `[pii]`, and a masked one takes the first name no kept
@@ -132,15 +150,6 @@ function isPlainObject(value: unknown): value is Record<PropertyKey, unknown> {
   if (typeof value !== "object" || value === null) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
-}
-
-/**
- * The mask for an object that is not a plain one, a class instance or one with another prototype, where an object or
- * a record here would walk it: it is never walked, and is masked whole where anything beneath is marked.
- */
-function instanceMask(at: Position, value: unknown): Mask | undefined {
-  if (kindOfValue(value) !== "object" || isPlainObject(value)) return undefined;
-  return at.kinds.has("object") || at.kinds.has("record") ? at.instanceMask : undefined;
 }
 
 /**
@@ -245,16 +254,22 @@ function redactAt(step: Extract<Step, { visit: unknown }>, steps: Step[]): void 
     const below: Step[] = [];
     let result: Result;
     try {
-      // A mark applies to a value of the shape of the option it was reached through, and to no other.
-      const mask = at.maskFor(value) ?? instanceMask(at, value);
+      // A mark applies to a value of the shape of the option it was reached through, and to no other. A value of a
+      // kind or a prototype the schemas here do not expect is never walked: masked whole over a mark, or kept.
+      const mask = at.maskFor(value);
+      const misfit = mask ? undefined : at.misfit(value);
       result = mask
         ? { value: masked(mask, value), masked: true }
-        : {
-            value: redactKind(at, value, below, (child, item, out) => {
-              below.push({ visit: item, at: child, depth: depth + 1, put: out });
-            }),
-            masked: false,
-          };
+        : misfit
+          ? misfit.mask
+            ? { value: masked(misfit.mask, value), masked: true }
+            : { value, masked: false }
+          : {
+              value: redactKind(at, value, below, (child, item, out) => {
+                below.push({ visit: item, at: child, depth: depth + 1, put: out });
+              }),
+              masked: false,
+            };
     } catch {
       // A value whose shape, keys or entries throw when read: a proxy's trap, a getter, an iterator. Masked whole, and
       // nothing read below it is kept.

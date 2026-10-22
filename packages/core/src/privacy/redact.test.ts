@@ -869,22 +869,77 @@ describe("outside the contract, and tested for exactly what it does: five constr
     expect(classifyPrivacy(Marked)).toEqual([{ path: "v", class: "pii" }]);
   });
 
-  test("an object that is not a plain object, where an object with a mark beneath is expected, is masked whole", () => {
-    class UserRow {
+  test("a value whose kind or prototype does not match its position, with a mark beneath, is masked whole", () => {
+    class Entity {
       id = "user-1";
-      email = "S-1@example.com";
+      email = "S-1";
     }
+    class DateEntity extends Date {
+      id = "user-1";
+      email = "S-1";
+    }
+    class ListEntity extends Array {
+      id = "user-1";
+      email = "S-1";
+    }
+    class MapEntity extends Map {
+      id = "user-1";
+      email = "S-1";
+    }
+    class SetEntity extends Set {
+      id = "user-1";
+      email = "S-1";
+    }
+    const fields = { id: "user-1", email: "S-1" };
+    const misfits: [string, () => unknown][] = [
+      ["a class instance", () => new Entity()],
+      ["an object with another prototype", () => Object.assign(Object.create({ kind: "x" }), fields)],
+      ["a class that extends Date", () => new DateEntity()],
+      ["an object made from Date.prototype", () => Object.assign(Object.create(Date.prototype), fields)],
+      ["a class that extends Array", () => new ListEntity()],
+      ["an array with own fields", () => Object.assign([], fields)],
+      ["a class that extends Map", () => new MapEntity()],
+      ["a Map with own fields", () => Object.assign(new Map(), fields)],
+      ["a class that extends Set", () => new SetEntity()],
+      ["a Set with own fields", () => Object.assign(new Set(), fields)],
+      ["a function with own fields", () => Object.assign(() => undefined, fields)],
+      ["a boxed string", () => Object.assign(new String("S-1"), fields)],
+    ];
     const User = z.object({ id: z.string(), email: pii(z.string()) });
-    const row = new UserRow() as unknown as z.output<typeof User>;
-    expect(redact(User, row)).toBe("[pii]");
-    expect(redact(z.array(User), [row])).toEqual(["[pii]"]);
-    expect(redact(z.object({ owner: User }), { owner: row })).toEqual({ owner: "[pii]" });
-    const prototyped = Object.assign(Object.create({ kind: "x" }), { id: "user-1", email: "S-1" });
-    expect(redact(User, prototyped as never)).toBe("[pii]");
+    for (const [label, make] of misfits) {
+      expect([label, redact(User, make() as never)]).toEqual([label, "[pii]"]);
+      expect([label, redact(z.array(User), [make()] as never)]).toEqual([label, ["[pii]"]]);
+      expect([label, redact(z.object({ owner: User }), { owner: make() } as never)]).toEqual([
+        label,
+        { owner: "[pii]" },
+      ]);
+      expect([label, redact(z.object({ rows: z.array(User) }), { rows: [make()] } as never)]).toEqual([
+        label,
+        { rows: ["[pii]"] },
+      ]);
+    }
+    // A plain object where an array or a map is expected, and an array-like instance where an array is.
+    const Users = z.array(z.object({ email: pii(z.string()) }));
+    expect(redact(Users, { email: "S-1" } as never)).toBe("[pii]");
+    expect(redact(z.map(z.string(), pii(z.string())), { k: "S-1" } as never)).toBe("[pii]");
+    const arrayLike = new (class {
+      0 = "S-1";
+      length = 1;
+    })();
+    expect(redact(z.array(pii(z.string())), arrayLike as never)).toBe("[pii]");
+    expect(redact(z.set(pii(z.string())), ["S-1"] as never)).toBe("[pii]");
+    expect(redact(z.record(z.string(), pii(z.string())), new Map([["k", "S-1"]]) as never)).toBe("[pii]");
+    expect(redact(z.object({ rows: Users }), { rows: { email: "S-1" } } as never)).toEqual({ rows: "[pii]" });
+    expect(redact(z.array(Users), [{ email: "S-1" }] as never)).toEqual(["[pii]"]);
+    // An object where a scalar is expected, beside a marked one.
+    expect(redact(z.object({ e: z.union([pii(z.string()), z.number()]) }), { e: { v: "S-1" } } as never)).toEqual({
+      e: "[pii]",
+    });
     // The strongest class beneath it is the mask.
     const Both = z.object({ email: pii(z.string()), token: secret(z.string()) });
-    expect(redact(Both, new UserRow() as never)).toBe("[secret]");
-    // Beside an object option too, construction 2 included.
+    expect(redact(Both, new Entity() as never)).toBe("[secret]");
+    expect(redact(Both, new DateEntity() as never)).toBe("[secret]");
+    // Where the position names its kind, only the schemas of that kind count: beside an object option, construction 2.
     class Patient {
       e = "S-1";
       n = "u";
@@ -899,12 +954,14 @@ describe("outside the contract, and tested for exactly what it does: five constr
     expect(redact(Either, Either.parse(Object.create({}, { e: { value: "S-1", enumerable: true } })) as never)).toBe(
       "[pii]",
     );
+    const Lists = z.union([z.unknown(), z.array(pii(z.string()))]);
+    expect(redact(Lists, new ListEntity() as never)).toBe("[pii]");
     // A plain object beside it is walked.
     const Plain = z.union([z.any(), z.object({ e: pii(z.string()), n: z.string() })]);
     expect(masked(Plain, { e: "S-1", n: "u" })).toEqual({ e: "[pii]", n: "u" });
   });
 
-  test("an object that is not a plain object, where an object with no mark beneath is expected, is kept as it is", () => {
+  test("a value whose kind or prototype does not match its position, with no mark beneath, is kept as it is", () => {
     class Note {
       body = "keep me";
     }
@@ -912,23 +969,39 @@ describe("outside the contract, and tested for exactly what it does: five constr
     const Unmarked = z.object({ body: z.string() });
     expect(redact(Unmarked, note as never)).toBe(note);
     expect(redact(z.union([z.any(), Unmarked]), note as never)).toBe(note);
-    // Beside a marked scalar option, an object option with no mark beneath keeps it too.
+    // Where the position names its kind, a mark on a schema of another kind beside it does not count.
     expect(redact(z.union([pii(z.string()), Unmarked]), note as never)).toBe(note);
-    // A Date, an array, a Map and a Set are not objects of that kind, and are read as they always were.
+    const listed = Object.assign([], { body: "keep me" });
+    expect(redact(Unmarked, listed as never)).toBe(listed);
+    expect(redact(z.array(z.string()), { a: "keep me" } as never)).toEqual({ a: "keep me" });
+    const dated = Object.assign(new Date(0), { body: "keep me" });
+    expect(redact(z.object({ at: z.date(), other: z.object({ e: pii(z.string()) }) }), { at: dated } as never)).toEqual(
+      { at: dated },
+    );
+    // A Date, an array, a Map or a Set an opaque node beside it takes is kept, and so is a Date a date option takes.
     const when = new Date(0);
     expect(redact(z.union([z.date(), z.object({ e: pii(z.string()) })]), when as never)).toBe(when);
+    expect(redact(z.union([z.unknown(), z.object({ e: pii(z.string()) })]), when as never)).toBe(when);
+    const list = ["S-1"];
+    expect(redact(z.union([z.unknown(), z.object({ e: pii(z.string()) })]), list as never)).toBe(list);
   });
 
   test("a scalar option's .overwrite() or .catch() fallback that makes an object or an array is read by the scalar's kind", () => {
+    // Read by the scalar's kind, what it makes is of a kind its position does not name: masked whole over a mark.
     const Overwritten = z.object({
       e: z.union([pii(z.string()).overwrite((value) => ({ was: value }) as never), z.number()]),
     });
-    expect(masked(Overwritten, { e: "S-1" })).toEqual({ e: { was: "S-1" } });
+    expect(masked(Overwritten, { e: "S-1" })).toEqual({ e: "[pii]" });
     const Listed = z.object({ e: z.union([pii(z.string().overwrite((value) => [value] as never)), z.number()]) });
-    expect(masked(Listed, { e: "S-1" })).toEqual({ e: ["S-1"] });
+    expect(masked(Listed, { e: "S-1" })).toEqual({ e: "[pii]" });
     const Caught = z.object({ e: z.union([phi(z.string()).catch((ctx) => ctx.input as never), z.boolean()]) });
-    expect(masked(Caught, { e: { dx: "S-1" } })).toEqual({ e: { dx: "S-1" } });
+    expect(masked(Caught, { e: { dx: "S-1" } })).toEqual({ e: "[phi]" });
     expect(classifyPrivacy(Caught)).toEqual([{ path: "e", class: "phi" }]);
+    // Beside an object option that marks nothing, an object it makes is walked by that option, and kept.
+    const Beside = z.object({
+      e: z.union([pii(z.string()).overwrite((value) => ({ was: value }) as never), z.object({ was: z.string() })]),
+    });
+    expect(masked(Beside, { e: "S-1" })).toEqual({ e: { was: "S-1" } });
     // A string it makes is the scalar's kind, and masked.
     expect(
       masked(z.object({ e: pii(z.string()).overwrite((value) => value.trim() as never) }), { e: " S-1 " }),

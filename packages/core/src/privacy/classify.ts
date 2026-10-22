@@ -212,6 +212,16 @@ function makesValue(def: Def): boolean {
   );
 }
 
+/** The value a constant `.catch()` hands back, or `undefined` for any other node. */
+function constantFallback(def: Def): { value: unknown } | undefined {
+  if (def.type !== "catch" || makesValue(def)) return undefined;
+  try {
+    return { value: (def.catchValue as () => unknown)() };
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * The shapes a value can have, as far as a choice is concerned: what `typeof` says, with an object told apart by what
  * it is. An option's marks apply to a value of a shape the option names, and to no other.
@@ -274,6 +284,26 @@ export function kindOfValue(value: unknown): ValueKind | undefined {
   return value instanceof Date ? "date" : "object";
 }
 
+/** The prototype a value of each kind has where it is what its schema parses: a plain object's, a `Date`'s … */
+const TYPICAL: Partial<Record<ValueKind, object>> = {
+  object: Object.prototype,
+  array: Array.prototype,
+  map: Map.prototype,
+  set: Set.prototype,
+  date: Date.prototype,
+};
+
+/**
+ * Whether a value of `kind` is one its schema parses: a plain object, an `Array.prototype` array, a `Map`, a `Set` or
+ * a `Date` of its own prototype, never a subclass or a class instance. A scalar and a function always are.
+ */
+function isTypical(value: object, kind: ValueKind): boolean {
+  const typical = TYPICAL[kind];
+  if (typical === undefined) return true;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === typical || (kind === "object" && prototype === null);
+}
+
 /** The one shape each kind of schema produces. A record is an object, and a tuple an array. */
 const SCHEMA_KINDS: Readonly<Record<string, ValueKind>> = {
   string: "string",
@@ -292,6 +322,22 @@ const SCHEMA_KINDS: Readonly<Record<string, ValueKind>> = {
   map: "map",
   set: "set",
 };
+
+/**
+ * The kinds a scalar, a literal, an enum or a node that holds no value names, or `undefined` for an opaque node, which
+ * takes a value of any kind and prototype: a transform, a pipe, `z.custom`, `any`, `unknown`, or one that makes its
+ * own value.
+ */
+function scalarKinds(node: z.ZodType): ReadonlySet<ValueKind> | undefined {
+  const def = defOf(node);
+  if (makesValue(def)) return undefined;
+  const one = SCHEMA_KINDS[def.type];
+  if (one !== undefined) return new Set([one]);
+  if (NO_VALUE.has(def.type)) return NO_KIND;
+  if (def.type !== "literal" && def.type !== "enum") return undefined;
+  const values = (node as unknown as { _zod: { values?: ReadonlySet<unknown> } })._zod.values;
+  return values ? new Set([...values].flatMap((value) => [kindOfValue(value)].filter(isKind))) : undefined;
+}
 
 /** The kinds of schema that hold no value a mask could apply to. */
 const NO_VALUE: ReadonlySet<string> = new Set(["null", "undefined", "void", "never"]);
@@ -665,12 +711,14 @@ export interface Position {
    */
   maskFor(value: unknown): Mask | undefined;
   /**
-   * How a value that is an object but not a plain one — a class instance, an object whose prototype is not
-   * `Object.prototype` — is masked where an object or a record here would walk it. It is never walked: with a mark
-   * beneath those objects it is masked whole with the strongest class they carry, as an opaque node is, and with none
-   * it is `undefined` and kept.
+   * Whether a value's kind and prototype miss what the schemas here expect, and how it is masked where they do: a
+   * class instance or a plain object where none of its kind is named, a `Date`, an array, a `Map` or a `Set` of a
+   * subclass or with fields where an object is, an array-like instance where an array is. `undefined` where it fits:
+   * a schema here names its kind and it is typical of that kind, or only an opaque node here takes its kind. A misfit
+   * is never walked. Its mask is the strongest class beneath the schemas here of its kind, or beneath every schema here
+   * where none names it, and `undefined`, to keep it as it is, where nothing there is marked.
    */
-  readonly instanceMask: Mask | undefined;
+  misfit(value: unknown): { readonly mask: Mask | undefined } | undefined;
   /** The structural kinds here — `object`, `array`, `map` … — a value is walked by: none of a shape masked whole. */
   readonly kinds: ReadonlySet<string>;
   /** Whether anything here but a structural node may hold the value: a scalar, an opaque node. */
@@ -799,15 +847,19 @@ function maskOf(reaches: readonly Reach[], leaves: readonly z.ZodType[]): Mask |
 }
 
 /**
- * The mask for a value an object here expects but that is not a plain object: every class beneath those objects, as
- * beneath an opaque node, or `undefined` where none is marked and no read below was cut off.
+ * The mask for a value of a kind or a prototype the schemas here do not expect: every class in `reaches` and beneath
+ * `leaves`, as beneath an opaque node, or `undefined` where none is marked and no read there was cut off or ran out.
  */
-function instanceMaskOf(objects: readonly z.ZodType[]): Mask | undefined {
-  const searches = objects.map(search);
-  const found = new Set(searches.flatMap((each) => [...each.classes]));
-  const truncated = searches.some((each) => each.truncated);
-  if (found.size === 0 && !truncated) return undefined;
-  const assumed = searches.some((each) => each.unread) ? unreadClasses().filter((name) => !found.has(name)) : [];
+function misfitMaskOf(reaches: readonly Reach[], leaves: readonly z.ZodType[]): Mask | undefined {
+  const searches = leaves.map(search);
+  const found = new Set([
+    ...reaches.flatMap((reach) => reach.classes),
+    ...searches.flatMap((each) => [...each.classes]),
+  ]);
+  const truncated = reaches.some((reach) => reach.truncated) || searches.some((each) => each.truncated);
+  const unread = reaches.some((reach) => reach.unread) || searches.some((each) => each.unread);
+  if (found.size === 0 && !truncated && !unread) return undefined;
+  const assumed = unread ? unreadClasses().filter((name) => !found.has(name)) : [];
   const classes = [...found, ...assumed];
   return { className: strongestPrivacyClass(classes) ?? "", own: false, classes, assumed, truncated };
 }
@@ -836,8 +888,13 @@ function readPosition(schemas: readonly z.ZodType[]): {
   const met = new Set<string>();
   const lazyGates = new Set<string>();
   let other = false;
+  // The kinds a scalar here names, and the kinds an opaque node here takes, whatever their prototype.
+  const named = new Set<ValueKind>();
+  const taken = new Set<ValueKind>();
   /** An opaque node: masked whole with every class beneath it, and kept where there is none. */
   const opaque = (node: z.ZodType, gate: ReadonlySet<ValueKind>) => {
+    const own = scalarKinds(node);
+    for (const kind of gate) if (!own || own.has(kind)) (own ? named : taken).add(kind);
     const inside = search(node);
     // A recursion beneath it that reached the limit counts as possibly marked: the value is masked whole.
     if (inside.classes.size > 0 || inside.truncated)
@@ -913,14 +970,20 @@ function readPosition(schemas: readonly z.ZodType[]): {
             truncated: true,
             unread: inside ? inside.unread : !past,
           });
+          for (const kind of gate) taken.add(kind);
           other = true;
           continue;
         }
         cost.spent += 1;
         const inner = lazyInner(node);
         if (inner) next.push([inner, gate, false]);
-      } else if (WRAPPERS.has(def.type) && def.innerType) stack.push([def.innerType, gate, false]);
-      else if (def.type === "union" && def.options) {
+      } else if (WRAPPERS.has(def.type) && def.innerType) {
+        // A constant `.catch()` fallback is a value parse hands back here, so its kind is one the schema names.
+        const fallback = constantFallback(def);
+        const kind = fallback && kindOfValue(fallback.value);
+        if (fallback && kind && gate.has(kind)) (isTypical(fallback.value as object, kind) ? named : taken).add(kind);
+        stack.push([def.innerType, gate, false]);
+      } else if (def.type === "union" && def.options) {
         for (const each of [...def.options].reverse()) stack.push([each, gate, true]);
       } else if (def.type === "intersection") {
         // A value of an intersection has both sides' shapes, so both apply wherever it does.
@@ -953,7 +1016,8 @@ function readPosition(schemas: readonly z.ZodType[]): {
     allLeaves.filter((leaf) => byKind.has(leafKind(leaf))),
   );
   const whole = byKind.size === VALUE_KINDS.length;
-  const signature = [...byKind].map(([kind, each]) => `${kind}=${maskKey(each)}`).join(";");
+  for (const leaf of allLeaves) named.add(leafKind(leaf));
+  const signature = `${[...byKind].map(([kind, each]) => `${kind}=${maskKey(each)}`).join(";")}/${gateKey(named)}/${gateKey(taken)}`;
   const memo = new Map<string, Position | undefined>();
   const once = (slot: string, read: () => readonly z.ZodType[]): Position | undefined => {
     if (!memo.has(slot)) memo.set(slot, positionOf(read()));
@@ -965,7 +1029,7 @@ function readPosition(schemas: readonly z.ZodType[]): {
   const records = slots(leafList, ["record"], (def) => def.valueType);
   const arrays = slots(leafList, ["array"], (def) => def.element);
   const catchalls = objects.flatMap((leaf) => [openCatchall(defOf(leaf))].filter(isSchema));
-  let instanceMask: { mask: Mask | undefined } | undefined;
+  const misfits = new Map<ValueKind, { mask: Mask | undefined }>();
   const position: Position = {
     mask,
     nameMask,
@@ -974,11 +1038,25 @@ function readPosition(schemas: readonly z.ZodType[]): {
       const kind = kindOfValue(value);
       return kind === undefined ? undefined : byKind.get(kind);
     },
-    get instanceMask() {
-      instanceMask ??= {
-        mask: instanceMaskOf(leafList.filter((leaf) => ["object", "record"].includes(defOf(leaf).type))),
-      };
-      return instanceMask.mask;
+    misfit: (value) => {
+      const kind = kindOfValue(value);
+      if (kind === undefined) return undefined;
+      const expected = named.has(kind);
+      if (expected ? isTypical(value as object, kind) : taken.has(kind)) return undefined;
+      let misfit = misfits.get(kind);
+      if (!misfit) {
+        // Where a schema here names its kind, the value is one of those gone wrong; where none does, it could be any.
+        misfit = {
+          mask: expected
+            ? misfitMaskOf(
+                [],
+                leafList.filter((leaf) => leafKind(leaf) === kind),
+              )
+            : misfitMaskOf(reaches, allLeaves),
+        };
+        misfits.set(kind, misfit);
+      }
+      return misfit;
     },
     kinds: new Set(leafList.map((leaf) => defOf(leaf).type)),
     other,

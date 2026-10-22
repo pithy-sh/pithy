@@ -689,4 +689,18 @@ describe("a cutoff ends its own path, and a class known at a position is its pla
       expect(classifyPrivacy(Row)).toEqual([{ path: "a", class: "secret" }]);
     }
   });
+
+  test("a lazy whose union reaches itself through another lazy reads as every kind, so it masks more", () => {
+    // Documented, never a leak: the cycle is cut where it comes round, and the cut reads as every kind, so the marked
+    // option that wraps it applies to every value, an unmarked sibling option's included.
+    const A: z.ZodType = z.lazy(() => z.union([z.number(), B]));
+    const B: z.ZodType = z.lazy(() => z.union([z.string(), A]));
+    const Row = z.object({ f: z.union([z.boolean(), secret(A)]) });
+    expect(redact(Row, Row.parse({ f: true }) as never)).toEqual({ f: "[secret]" });
+    expect(redact(Row, Row.parse({ f: "P-1" }) as never)).toEqual({ f: "[secret]" });
+    // A lazy that reaches itself through one union alone names its kinds, and its sibling keeps its value.
+    const L: z.ZodType = z.lazy(() => z.union([z.null(), z.tuple([z.number(), L])]));
+    const Listed = z.object({ f: z.union([z.boolean(), secret(L)]) });
+    expect(redact(Listed, Listed.parse({ f: true }) as never)).toEqual({ f: true });
+  });
 });
