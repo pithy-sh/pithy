@@ -38,8 +38,8 @@ Walks the storage schemas each Worker under `apps/` composes — every capabilit
 
 | Reads as | When the name ends in |
 |---|---|
-| `pii` | `email`, `phone`, `phone number`, `mobile`, `address`, `ip`, `postal code`, `zip`, `first name`, `last name`, `full name`, `date of birth`, `birth date`, `birthday`, `dob`, `ssn`, `national id`, `passport` |
-| `phi` | `diagnosis`, `medication`, `prescription`, `treatment`, `allergy`, `symptoms`, `medical record`, `mrn`, `blood type` |
+| `pii` | `email`, `phone`, `phone number`, `mobile`, `address`, `ip`, `postal code`, `zip`, `zip code`, `first name`, `last name`, `full name`, `date of birth`, `birth date`, `birthday`, `dob`, `ssn`, `national id`, `passport` |
+| `phi` | `diagnosis`, `diagnoses`, `medication`, `medications`, `prescription`, `prescriptions`, `treatment`, `allergy`, `allergies`, `symptoms`, `medical record`, `mrn`, `blood type` |
 | `pci` | `card number`, `pan`, `cvv`, `cvc` |
 | `secret` | `password`, `password hash`, `passphrase`, `token`, `secret`, `api key`, `otp` |
 
