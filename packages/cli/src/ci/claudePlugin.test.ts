@@ -118,13 +118,24 @@ const { manifest, agent: agentSource, skill: skillSource, readme } = pluginFiles
 describe("the marketplace", () => {
   const marketplace = json<{
     name: string;
-    metadata: { pluginRoot: string };
+    metadata: Record<string, unknown>;
     plugins: { name: string; source: string }[];
   }>(MARKETPLACE);
 
-  test("is the pithy marketplace, rooted at agent-plugins/claude", () => {
+  test("is the pithy marketplace", () => {
     expect(marketplace.name).toBe("pithy");
-    expect(marketplace.metadata.pluginRoot).toBe("./agent-plugins/claude");
+  });
+
+  /**
+   * **Every source is a full path from the repository root, and there is no `metadata.pluginRoot`.** Claude Code
+   * joins `pluginRoot` to a bare source, so installs worked with it, but Anthropic's plugin directory showed no
+   * logo for either plugin while Leed's marketplace, laid out this way, showed its own.
+   */
+  test("names each plugin by its path from the repository root", () => {
+    expect(marketplace.metadata).not.toHaveProperty("pluginRoot");
+    for (const plugin of marketplace.plugins) {
+      expect(plugin.source).toBe(`./agent-plugins/claude/${plugin.name}`);
+    }
   });
 
   test("lists every plugin directory, and every entry is one", () => {
@@ -132,11 +143,18 @@ describe("the marketplace", () => {
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
       .sort();
-    expect(marketplace.plugins.map((plugin) => plugin.source).sort()).toEqual(dirs);
+    expect(marketplace.plugins.map((plugin) => plugin.name).sort()).toEqual(dirs);
     for (const plugin of marketplace.plugins) {
-      expect(json<PluginManifest>(join(PLUGINS, plugin.source, ".claude-plugin", "plugin.json")).name).toBe(
+      expect(json<PluginManifest>(join(REPO_ROOT, plugin.source, ".claude-plugin", "plugin.json")).name).toBe(
         plugin.name,
       );
+    }
+  });
+
+  test("every plugin's icon is a file in that plugin", () => {
+    for (const plugin of marketplace.plugins) {
+      const { icon } = json<{ icon: string }>(join(REPO_ROOT, plugin.source, ".claude-plugin", "plugin.json"));
+      expect(existsSync(join(REPO_ROOT, plugin.source, icon))).toBe(true);
     }
   });
 });

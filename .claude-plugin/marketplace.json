@@ -4,19 +4,18 @@
     "name": "Pithy",
     "url": "https://pithy.sh"
   },
-  "description": "Claude Code plugins for building on Pithy, the Cloudflare-native backend kit.",
   "metadata": {
-    "pluginRoot": "./agent-plugins/claude"
+    "description": "Claude Code plugins for building on Pithy, the Cloudflare-native backend kit."
   },
   "plugins": [
     {
       "name": "pithy",
-      "source": "pithy",
+      "source": "./agent-plugins/claude/pithy",
       "description": "An agent team for building any app on Pithy: a server, a web client, a mobile client and a runner."
     },
     {
       "name": "pithy-games",
-      "source": "pithy-games",
+      "source": "./agent-plugins/claude/pithy-games",
       "description": "A game add-on to the pithy team: game design, a Unity client, and playtests with simulated players. Installs pithy with it."
     }
   ]
