@@ -3,7 +3,7 @@
 
 import type { z } from "zod";
 import { privacyClass } from "./classes";
-import { MAX_RECURSION_DEPTH, type Mask, type Position, rootPosition, TRUNCATED_CLASS } from "./classify";
+import { MAX_RECURSION_DEPTH, type Mask, type Position, rootPosition, TRUNCATED_MASK } from "./classify";
 import type { RedactedOutput } from "./types";
 
 /**
@@ -23,7 +23,8 @@ import type { RedactedOutput } from "./types";
  *
  * **Redacted exactly.** Every marked field is masked with its class placeholder, every unmarked field is kept as
  * `parse` returned it, nothing is dropped, and `Redacted<T>` is the exact type of the result, save the one position
- * item 6 names:
+ * item 6 names: Where a position nests wrappers and choices deeper than the type can follow, `Redacted<T>` types it
+ * `unknown` rather than guess.
  *
  * 1. Rows and objects: `z.object`, strict, loose or with a catchall, and `pick`, `omit`, `partial` and `extend` of one.
  * 2. Collections: arrays, tuples including rest elements, records with marked keys or values, `Map` and `Set`.
@@ -40,7 +41,8 @@ import type { RedactedOutput } from "./types";
  *    and `Redacted<T>` types it `unknown` from that same depth: one limit, shared by the runtime and the type, however
  *    the recursion is written. A self-referencing `z.lazy` has to be annotated `z.ZodType<T>`, which names no kind, so
  *    `Redacted<T>` types it, and every field that holds it, `unknown`. Write the recursion with a getter and the type
- *    keeps its shape to the limit.
+ *    keeps its shape to the limit. A value cut off at the limit is masked `[truncated]`, which is a safety cutoff
+ *    rather than a privacy class, so `classifyPrivacy` does not list it.
  * 7. Values copied out of a parsed row into a plain object, array, `Map` or `Set` described by any of the above.
  *
  * **Outside the contract.** Custom transforms and pipes, `preprocess`, codecs other than the kit's own (one built the
@@ -48,7 +50,8 @@ import type { RedactedOutput } from "./types";
  * anything beneath one is marked, the whole value is masked with the strongest class it carries, and `Redacted<T>`
  * types that position `unknown`. When nothing beneath it is marked, it is kept as it is, including when it is a union
  * option beside a marked one. A recursion beneath it that reaches the item 6 depth limit counts as possibly marked, so
- * that value is masked whole and typed `unknown`. None of this ever throws or leaks a raw marked value.
+ * that value is masked whole as `[truncated]` and typed `unknown`. None of this ever throws or leaks a raw marked
+ * value.
  *
  * ## The edges, exactly
  *
@@ -66,12 +69,12 @@ import type { RedactedOutput } from "./types";
  *   numbered: a kept one stays as it is, even one that reads `[pii]`, and a masked one takes the first name no kept
  *   one holds. Every key is defined on the copy, not assigned, so an own `__proto__` key stays a key.
  * - **The one recursion limit is {@link MAX_RECURSION_DEPTH} levels of nesting**: every object, array, tuple, record,
- *   map and set a position sits inside counts one. A position deeper than that is masked whole as `[secret]`, the
- *   strongest class, and `Redacted<T>` types it `unknown` from the same depth. Nothing tells one recursion from
- *   another, so a lazy, a getter that returns one schema and one that builds a new schema each read all end at the
- *   same level, and the result is a function of the schema and the value alone. The walk keeps its own stack, so a
- *   deep value never overflows the call stack. A recursion beneath an opaque node that reaches the limit masks that
- *   node's value whole as `[secret]` too, and a lazy that builds a new choice each read ends at the limit the same
+ *   map and set a position sits inside counts one. A position deeper than that is masked whole as `[truncated]`, a
+ *   safety cutoff rather than a privacy class, and `Redacted<T>` types it `unknown` from the same depth. Nothing
+ *   tells one recursion from another, so a lazy, a getter that returns one schema and one that builds a new schema
+ *   each read all end at the same level, and the result is a function of the schema and the value alone. The walk
+ *   keeps its own stack, so a deep value never overflows the call stack. A recursion beneath an opaque node that reaches the limit masks that
+ *   node's value whole as `[truncated]` too, and a lazy that builds a new choice each read ends at the limit the same
  *   way: every lazy nested in another counts one. A union of many lazies, none inside another, counts one.
  *
  * ## The placeholder, and why it is not a hash
@@ -92,8 +95,12 @@ function isPlainObject(value: unknown): value is Record<PropertyKey, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
-/** How a mask masks a value: its class's own mask, or the placeholder of the strongest class there. */
+/**
+ * How a mask masks a value: {@link TRUNCATED_MASK} where a recursion here reached the limit, else its class's own mask,
+ * or the placeholder of the strongest class there.
+ */
 function masked(mask: Mask, value: unknown): string {
+  if (mask.truncated) return TRUNCATED_MASK;
   return (mask.own ? privacyClass(mask.className)?.mask(value) : undefined) ?? `[${mask.className}]`;
 }
 
@@ -157,13 +164,13 @@ function walkValue(root: Position, value: unknown): unknown {
 
 /**
  * One value at one position. A position nested deeper than {@link MAX_RECURSION_DEPTH} is masked whole as
- * {@link TRUNCATED_CLASS}, however the recursion that reached it is written. A key or an element no schema names is
+ * {@link TRUNCATED_MASK}, however the recursion that reached it is written. A key or an element no schema names is
  * kept: an option's marks apply only where the value has that option's shape.
  */
 function redactAt(step: Extract<Step, { visit: unknown }>, steps: Step[]): void {
   const { at, depth, visit: value, put } = step;
   if (value === null || value === undefined) put(value, false);
-  else if (depth > MAX_RECURSION_DEPTH) put(`[${TRUNCATED_CLASS}]`, true);
+  else if (depth > MAX_RECURSION_DEPTH) put(TRUNCATED_MASK, true);
   else if (at === undefined) put(value, false);
   else {
     // A mark applies to a value of the shape of the option it was reached through, and to no other.

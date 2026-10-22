@@ -28,13 +28,14 @@ import { type BuiltInPrivacyClass, PRIVACY_META_KEY, strongestPrivacyClass } fro
  *   Nothing inside one is walked. With a mark anywhere beneath it, its position is masked whole with the strongest
  *   class it carries; with none, it is kept, a union option beside a marked one included.
  * - **Recursion is bounded once**, at {@link MAX_RECURSION_DEPTH} levels of nesting: a position deeper than that is
- *   masked whole as {@link TRUNCATED_CLASS}, whatever the recursion is written with. Nothing here tells one kind of
- *   recursion from another, so every answer is a function of the schema and the value alone.
+ *   masked whole as {@link TRUNCATED_MASK}, whatever the recursion is written with. It is a safety cutoff rather than a
+ *   privacy class, so `classifyPrivacy` does not list it and `hasPrivacy` does not see it. Nothing here tells one kind
+ *   of recursion from another, so every answer is a function of the schema and the value alone.
  * - **`classifyPrivacy` reads at most {@link MAX_CLASSIFIED_POSITIONS} distinct positions**, level by level,
  *   shallowest first. A position is read once wherever it sits, so a schema reused in many fields costs one. `redact`
  *   walks a value, which is finite; a list walks the schema, and one that builds two new schemas at every level has
  *   more positions than any list can hold. Such a schema is read whole down to the level the budget runs out on, and
- *   each new position left, none of them above that level, is listed as {@link TRUNCATED_CLASS} with `truncated`. It
+ *   each new position left, none of them above that level, is listed as {@link UNREAD_CLASS} with `truncated`. It
  *   is one of two places the list says more than `redact` masks, and it says the strongest class.
  * - **An intersection is not narrowed.** Where one side narrows a field so it can never hold the type the other side
  *   marks, `classifyPrivacy` may still list that field: the inventory can list more than `redact` masks, and never
@@ -56,10 +57,9 @@ export interface PrivacyField {
   /** The class it was marked with. */
   class: string;
   /**
-   * Set where the walk stopped reading and assumed {@link TRUNCATED_CLASS}: a position nested past
-   * {@link MAX_RECURSION_DEPTH}, a search beneath it that ran that deep, or one left once the walk had read
+   * Set where the list stopped reading and assumed {@link UNREAD_CLASS}: a position left once the walk had read
    * {@link MAX_CLASSIFIED_POSITIONS} distinct positions, level by level. Absent everywhere the schema was read to the
-   * end.
+   * end. A position past {@link MAX_RECURSION_DEPTH} is not listed at all: it is cut off, not classified.
    */
   truncated?: true;
 }
@@ -67,7 +67,7 @@ export interface PrivacyField {
 /**
  * **The one recursion limit**, shared by `redact`, `classifyPrivacy` and `Redacted<T>` (`./types` reads this constant's
  * type). Depth is counted in levels of nesting: every object, array, tuple, record, map and set a position sits inside.
- * A position deeper than this is masked whole as {@link TRUNCATED_CLASS} and typed `unknown`, however the recursion
+ * A position deeper than this is masked whole as {@link TRUNCATED_MASK} and typed `unknown`, however the recursion
  * is written: a `z.lazy`, a getter that returns one schema, or one that builds a new schema each read. No schema
  * written out by hand nests this deep, so only a recursion reaches it. A search for a mark beneath an opaque node
  * stops at the same depth, counting each lazy too, and so does the one `Redacted<T>` makes. So does a read of the
@@ -79,14 +79,23 @@ export const MAX_RECURSION_DEPTH = 256;
 
 /**
  * How many distinct positions {@link classifyPrivacy} reads, level by level, before it lists each new one left as
- * {@link TRUNCATED_CLASS}. A position is read once wherever it sits, so a schema reused in a thousand fields costs one.
+ * {@link UNREAD_CLASS}. A position is read once wherever it sits, so a schema reused in a thousand fields costs one.
  * Far past any schema written out, and past any recursion defined once, which is listed once; only one that builds two
  * new schemas at every level reaches it, and then only below the levels it read whole.
  */
 export const MAX_CLASSIFIED_POSITIONS = 10_000;
 
-/** The class assumed past {@link MAX_RECURSION_DEPTH}: the strongest there is, because nothing past it was read. */
-export const TRUNCATED_CLASS: BuiltInPrivacyClass = "secret";
+/**
+ * What `redact` puts where it stops: a value nested past {@link MAX_RECURSION_DEPTH}, and an opaque value over a
+ * recursion that reaches it. A safety cutoff rather than a privacy class, so no list names it.
+ */
+export const TRUNCATED_MASK = "[truncated]";
+
+/**
+ * The class {@link classifyPrivacy} lists for a position it did not read once {@link MAX_CLASSIFIED_POSITIONS} ran out:
+ * the strongest there is, because nothing there was read. Only the list's budget assumes it; `redact` reads a value.
+ */
+export const UNREAD_CLASS: BuiltInPrivacyClass = "secret";
 
 /** A Zod schema's internal definition, as much of it as the walk reads. */
 interface Def {
@@ -375,7 +384,7 @@ const searched = new WeakMap<z.ZodType, Search>();
 /**
  * Every class marked anywhere beneath a schema, on every side of every node. Depth first, each schema once, and a
  * path more than {@link MAX_RECURSION_DEPTH} levels long, counting each lazy and each structural node, stops the whole
- * search with {@link TRUNCATED_CLASS}: nothing past it could carry a stronger class. Depth first is what keeps a
+ * search and marks it `truncated`: what is past it was never read, so the value is cut off. Depth first is what keeps a
  * schema that builds two new ones at every level linear: the first path runs out, and the search ends.
  */
 function search(schema: z.ZodType): Search {
@@ -407,7 +416,6 @@ function search(schema: z.ZodType): Search {
         .reverse(),
     );
   }
-  if (truncated) classes.add(TRUNCATED_CLASS);
   const found = { classes, truncated };
   searched.set(schema, found);
   return found;
@@ -415,13 +423,16 @@ function search(schema: z.ZodType): Search {
 
 /** How a position is masked whole. */
 export interface Mask {
-  /** The strongest class the position carries: its placeholder is the mask, unless `own`. */
+  /**
+   * The strongest class the position carries: its placeholder is the mask, unless `own` or `truncated`. Empty where a
+   * recursion that reached the limit is all there is.
+   */
   readonly className: string;
-  /** Whether the class's own mask applies: one class, from a marker, and nothing opaque. */
+  /** Whether the class's own mask applies: one class, from a marker, nothing opaque, and nothing cut off. */
   readonly own: boolean;
-  /** Every class the position carries, in the order met. */
+  /** Every class marked at the position, in the order met. Never the cutoff, which is not a class. */
   readonly classes: readonly string[];
-  /** Whether a search ran out of recursion and assumed {@link TRUNCATED_CLASS}. */
+  /** Whether a recursion here reached {@link MAX_RECURSION_DEPTH}: the mask is then {@link TRUNCATED_MASK}. */
   readonly truncated: boolean;
 }
 
@@ -554,11 +565,12 @@ function maskOf(reaches: readonly Reach[], leaves: readonly z.ZodType[]): Mask |
   const classes = [
     ...new Set([...reaches.flatMap((reach) => reach.classes), ...found.flatMap((each) => [...each.classes])]),
   ];
+  const truncated = reaches.some((reach) => reach.truncated) || found.some((each) => each.truncated);
   return {
-    className: strongestPrivacyClass(classes) as string,
-    own: reaches.every((reach) => !reach.opaque) && classes.length === 1,
+    className: strongestPrivacyClass(classes) ?? "",
+    own: !truncated && reaches.every((reach) => !reach.opaque) && classes.length === 1,
     classes,
-    truncated: reaches.some((reach) => reach.truncated) || found.some((each) => each.truncated),
+    truncated,
   };
 }
 
@@ -603,9 +615,9 @@ function readPosition(schemas: readonly z.ZodType[]): {
       lazyGates.add(key);
       if (lazies >= MAX_RECURSION_DEPTH) {
         // A lazy nested in more lazies than the limit: this path, and every one not read yet, whatever its shape,
-        // is assumed the strongest class, as a search is. Nothing is read past the first path that runs out.
+        // is cut off, as a search is. Nothing is read past the first path that runs out.
         for (const left of [gate, ...stack.map(([, unread]) => unread)])
-          if (left.size > 0) reaches.push({ gate: left, classes: [TRUNCATED_CLASS], opaque: true, truncated: true });
+          if (left.size > 0) reaches.push({ gate: left, classes: [], opaque: true, truncated: true });
         other = true;
         break;
       }
@@ -632,7 +644,8 @@ function readPosition(schemas: readonly z.ZodType[]): {
       continue;
     }
     const inside = search(node);
-    if (inside.classes.size > 0)
+    // A recursion beneath it that reached the limit counts as possibly marked: the value is cut off whole.
+    if (inside.classes.size > 0 || inside.truncated)
       reaches.push({ gate, classes: [...inside.classes], opaque: true, truncated: inside.truncated });
     other = true;
   }
@@ -729,7 +742,7 @@ export function rootPosition(schema: z.ZodType): Position {
  * field's name through, so the scan and the inventory walk one tree the same way.
  */
 export interface PrivacyVisitor {
-  /** One masked path and class; `truncated` when a search ran out of recursion there and assumed the class. */
+  /** One masked path and class; `truncated` where the list's budget ran out there and it assumed the class. */
   marked(path: string, className: string, truncated?: boolean): void;
   unmarkedKey?(path: string, key: string): void;
 }
@@ -783,12 +796,13 @@ function framesBelow(frame: Frame, at: Position): Frame[] {
  * Walk a schema tree the way {@link classifyPrivacy} does, from `path`, and report to `visitor`. Exported so a second
  * reader of the tree — the CLI's scan — cannot walk it differently. A position met again below itself is a recursion
  * defined once, and is not walked again: its fields are listed once. A position nested more than
- * {@link MAX_RECURSION_DEPTH} levels deep is masked whole by `redact`, and listed as {@link TRUNCATED_CLASS}.
+ * {@link MAX_RECURSION_DEPTH} levels deep is cut off by `redact` as {@link TRUNCATED_MASK}, which is no class, so it
+ * is not listed.
  *
  * Positions are read level by level, shallowest first, and reported in the schema's own order. Each distinct position
  * counts once against {@link MAX_CLASSIFIED_POSITIONS}, wherever it sits, and only a schema that builds two new ones at
  * every level has more; the new positions left, none of them above the level the budget ran out on, are listed as
- * {@link TRUNCATED_CLASS}.
+ * {@link UNREAD_CLASS}.
  */
 export function walkPrivacy(schema: z.ZodType, visitor: PrivacyVisitor, path = ""): void {
   const root: Frame = { at: rootPosition(schema), path, depth: 0 };
@@ -816,15 +830,12 @@ export function walkPrivacy(schema: z.ZodType, visitor: PrivacyVisitor, path = "
   for (let frame = stack.pop(); frame; frame = stack.pop()) {
     const { at } = frame;
     if (at === undefined) continue;
-    if (frame.depth > MAX_RECURSION_DEPTH) {
-      visitor.marked(frame.path, TRUNCATED_CLASS, true);
-      continue;
-    }
+    // Past the limit a value is cut off, and the cutoff is not a class.
+    if (frame.depth > MAX_RECURSION_DEPTH) continue;
     if (at.mask) {
-      for (const className of at.mask.classes)
-        visitor.marked(frame.path, className, at.mask.truncated && className === TRUNCATED_CLASS);
+      for (const className of at.mask.classes) visitor.marked(frame.path, className);
     } else if (frame.key !== undefined) visitor.unmarkedKey?.(frame.path, frame.key);
-    if (frame.unread) visitor.marked(frame.path, TRUNCATED_CLASS, true);
+    if (frame.unread) visitor.marked(frame.path, UNREAD_CLASS, true);
     if (frame.below) stack.push(...[...frame.below].reverse());
   }
 }

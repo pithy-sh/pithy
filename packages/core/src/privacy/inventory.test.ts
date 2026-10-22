@@ -123,7 +123,7 @@ describe("privacyInventory paths", () => {
 });
 
 describe("privacyInventory, past the depth limit", () => {
-  test("lists a KV value it could not read to the end as secret, and keeps the truncated flag", () => {
+  test("lists no class for a KV value cut off at the recursion limit, as the cutoff is not a privacy class", () => {
     // biome-ignore lint/suspicious/noExplicitAny: a factory's type is circular, and TypeScript infers none.
     const factory = (): any => z.object({ a: z.string(), next: z.lazy(factory).optional() });
     const capability = defineCapability({
@@ -138,9 +138,10 @@ describe("privacyInventory, past the depth limit", () => {
         },
       },
     });
-    expect(privacyInventory([capability]).schemas[0]?.fields).toEqual([
-      { path: "value", class: "secret", truncated: true },
-    ]);
+    const inventory = privacyInventory([capability]);
+    expect(inventory.schemasWalked).toBe(1);
+    expect(inventory.schemas).toEqual([]);
+    expect(inventory.observed).toEqual([]);
   });
 });
 

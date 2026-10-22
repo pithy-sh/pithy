@@ -271,7 +271,7 @@ type OutKind<T> = T extends null | undefined
  * the sides of an intersection, a lazy and the kit's codecs. Every shape for an opaque node. Distributes.
  */
 type KindOf<S, D extends number = REDACT_TYPE_DEPTH> = [D] extends [never]
-  ? ValueKind
+  ? TooDeep
   : S extends unknown
     ? DefOf<S> extends { type: Wrapper; innerType: infer I }
       ? KindOf<I, Down<D>>
@@ -299,7 +299,7 @@ type KindOf<S, D extends number = REDACT_TYPE_DEPTH> = [D] extends [never]
  * through options, the shapes every option on the way has. `never` where nothing here is marked. Distributes.
  */
 type MaskedKinds<S, G = ValueKind, D extends number = REDACT_TYPE_DEPTH> = [D] extends [never]
-  ? G
+  ? TooDeep
   : S extends unknown
     ? IsMarkedNode<S> extends true
       ? G
@@ -316,8 +316,15 @@ type MaskedKinds<S, G = ValueKind, D extends number = REDACT_TYPE_DEPTH> = [D] e
                 : MaskedKinds<KitCodec<S>, G, Down<D>>
     : never;
 
-/** Each union option's marks, narrowed to the shapes that option has. Distributes over the options. */
-type Gated<O, G, D extends number> = O extends unknown ? MaskedKinds<O, Extract<G, KindOf<O>>, D> : never;
+/**
+ * Each union option's marks, narrowed to the shapes that option has. Distributes over the options. An option whose
+ * shapes the type cannot follow to the end leaves the position {@link TooDeep}.
+ */
+type Gated<O, G, D extends number> = O extends unknown
+  ? TooDeep extends KindOf<O>
+    ? TooDeep
+    : MaskedKinds<O, Extract<G, KindOf<O>>, D>
+  : never;
 
 /** A structural node's shape, where a mark masks it whole. */
 type StructuralKind<S> =
@@ -347,7 +354,7 @@ type MaskOut<T, M> = unknown extends T
  * each lazy and the kit's codecs, stopping at a marked node. Distributes over a union of schemas.
  */
 type Nodes<S, D extends number = REDACT_TYPE_DEPTH> = [D] extends [never]
-  ? S
+  ? TooDeep
   : S extends unknown
     ? IsMarkedNode<S> extends true
       ? S
@@ -364,8 +371,20 @@ type Nodes<S, D extends number = REDACT_TYPE_DEPTH> = [D] extends [never]
                 : Nodes<KitCodec<S>, Down<D>>
     : never;
 
-/** How many levels of wrapper, choice and lazy {@link Nodes} flattens. */
+/**
+ * How many levels of wrapper, choice and lazy {@link Nodes} flattens at one position. Past it the position is typed
+ * `unknown`, never guessed: `redact` walks any number of them, so a concrete type there could be wrong.
+ */
 export type REDACT_TYPE_DEPTH = 16;
+
+/**
+ * What {@link Nodes}, {@link MaskedKinds} and {@link KindOf} answer where they run out of {@link REDACT_TYPE_DEPTH}: a
+ * kind no value has and a node no schema is, so a position that holds it is typed `unknown`.
+ */
+type TooDeep = "past-the-type-depth";
+
+/** Whether the type could not follow a position's wrappers and choices to the end. */
+type Unfollowed<C> = TooDeep extends Nodes<C> ? true : TooDeep extends MaskedKinds<C> ? true : false;
 
 /** Whether a node is one the walk goes into. */
 type IsStructural<S> = DefOf<S> extends { type: Structural } ? true : false;
@@ -500,9 +519,11 @@ type At<S, C, D extends Depth> = [S] extends [never]
     ? unknown
     : IsAny<Out<S>> extends true
       ? unknown
-      : Verdict<AnyOpaqueMarked<Nodes<C>>> extends false
-        ? Masked<S, C, D, MaskedKinds<C>>
-        : unknown;
+      : Unfollowed<C> extends true
+        ? unknown
+        : Verdict<AnyOpaqueMarked<Nodes<C>>> extends false
+          ? Masked<S, C, D, MaskedKinds<C>>
+          : unknown;
 
 /**
  * A position whose values of shape `M` are masked: a `string` where every shape is, and otherwise each member keeps
@@ -544,7 +565,11 @@ type MasksStringKeys<N> = [Exclude<KeyMasks<N>, "symbol">] extends [never] ? fal
  * strings and never keep the brand the opaque node's output carries.
  */
 type KeyMasks<N> =
-  Verdict<AnyOpaqueMarked<Nodes<RecordKeys<N>>>> extends false ? MaskedKinds<RecordKeys<N>> : ValueKind;
+  Unfollowed<RecordKeys<N>> extends true
+    ? ValueKind
+    : Verdict<AnyOpaqueMarked<Nodes<RecordKeys<N>>>> extends false
+      ? MaskedKinds<RecordKeys<N>>
+      : ValueKind;
 
 /**
  * One schema at a position that is walked into, against `N`, every node at the position, with the values of a shape

@@ -8,7 +8,7 @@ import { LogRecord, serializeRecord } from "../logger/record";
 import { definePrivacyClass, pci, phi, pii, secret } from "./classes";
 import { classifyPrivacy } from "./classify";
 import { redact } from "./redact";
-import type { ContainsMarked, Redacted } from "./types";
+import type { ContainsMarked, REDACT_TYPE_DEPTH, Redacted } from "./types";
 
 const User = z
   .object({
@@ -272,6 +272,49 @@ describe("the rule: structural nodes are walked", () => {
       .object({ e: pii(z.string()), n: z.number() })
       .catch((ctx) => ({ e: String((ctx.input as { e: string }).e), n: 0, extra: "x" }) as never);
     expect(masked(Caught, { e: "S-1", n: "bad" })).toEqual({ e: "[pii]", n: 0, extra: "x" });
+  });
+
+  test("Redacted<T> types a position unknown where it nests more wrappers and choices than the type follows", () => {
+    type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+    const same = <A, B>(..._proof: Same<A, B> extends true ? [] : [never]): void => {};
+    same<REDACT_TYPE_DEPTH, 16>();
+    // Sixteen wrappers, the most the type follows: the position keeps its exact type.
+    const wrap16 = <T extends z.ZodType>(inner: T) =>
+      inner
+        .optional()
+        .nullable()
+        .optional()
+        .nullable()
+        .optional()
+        .nullable()
+        .optional()
+        .nullable()
+        .optional()
+        .nullable()
+        .optional()
+        .nullable()
+        .optional()
+        .nullable()
+        .optional()
+        .nullable();
+    const Plain16 = z.object({ x: wrap16(z.number()) });
+    const Marked16 = z.object({ x: wrap16(pii(z.number())) });
+    same<Redacted<typeof Plain16>["x"], number | null | undefined>();
+    same<Redacted<typeof Marked16>["x"], string | null | undefined>();
+    // Seventeen: past what the type follows, the position is unknown, never a guessed concrete type.
+    const Plain17 = z.object({ x: wrap16(z.number()).optional() });
+    const Marked17 = z.object({ x: wrap16(pii(z.number())).optional() });
+    same<Redacted<typeof Plain17>["x"], unknown>();
+    // A marked node is read by the brand its output carries, which no number of wrappers hides: it stays exact.
+    same<Redacted<typeof Marked17>["x"], string | null | undefined>();
+    // A choice counts as a level too.
+    const Chosen17 = z.object({ x: z.union([wrap16(z.number()), z.boolean()]) });
+    same<Redacted<typeof Chosen17>["x"], unknown>();
+    // The runtime walks any depth of wrapper: the value is what it was, and the type takes it.
+    const plain: Redacted<typeof Plain17>["x"] = redact(Plain17, Plain17.parse({ x: 5 })).x;
+    expect(plain).toBe(5);
+    expect(redact(Marked17, Marked17.parse({ x: 5 })).x).toBe("[pii]");
+    expect(redact(Chosen17, Chosen17.parse({ x: true })).x).toBe(true);
   });
 });
 
