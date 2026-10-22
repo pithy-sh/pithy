@@ -3,8 +3,8 @@
 
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { commandName } from "@pithy-sh/core/src/cli/command";
+import { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { secretsHealth } from "./admin/health";
-import { EncryptionConfig } from "./crypto/envelope";
 import { secretsRetainedTables, secretsTables } from "./data/tables";
 import { MASTER_KEY_BINDING } from "./env/masterKeyBinding";
 import { secretsAdminRoutes } from "./http/guards";
@@ -69,6 +69,28 @@ export const masterKeyRegistryEntry: SecretRegistryEntry = {
   origin: { kind: "minted", recipe: { kind: "encryptionConfig" } },
   rotation: { kind: "local" },
   notes: `The at-rest master key every other secret is encrypted under. Minted when ${commandName("add")} composes secrets.`,
+};
+
+/**
+ * **The field key, as a registry entry (#390)** — `PITHY_FIELD_KEYS`, what app Workers seal `encrypted()` fields
+ * with. The master key's shape and the master key's origin, and **never the master key**: holding an encrypted field
+ * binds a Worker this key and nothing of the vault's. This feature never adds the master key to a Worker.
+ *
+ * Not in {@link secrets}' own registry. It is bound to a Worker because that Worker *holds an encrypted field*, not
+ * because it composes this capability, so the CLI adds it to exactly those Workers' registries
+ * (`cli/src/provision/secretBindings.ts`). `pithy secrets provision` mints it beside the master key, and the
+ * manager's at-rest cron rotates it on the field key's own period.
+ */
+export const fieldKeysRegistryEntry: SecretRegistryEntry = {
+  backend: "cf-secrets-store",
+  scope: "environment",
+  rotatable: false,
+  bootstrap: true,
+  valueType: "json",
+  schema: EncryptionConfig,
+  origin: { kind: "minted", recipe: { kind: "encryptionConfig" } },
+  rotation: { kind: "local" },
+  notes: `The key app Workers seal encrypted fields with. Minted by ${commandName("secrets provision")} and rotated by the manager every 30 days.`,
 };
 
 /** Sort order of the secrets migrations within the `SECRETS` database. */

@@ -26,7 +26,7 @@ import { type SecretBackend, SecretValueType } from "../registry";
  *
  * **What is bound into the ciphertext is the row's identity** — the table, the owner and the secret name
  * ({@link secretTableContext}) — so a ciphertext lifted into another owner's row does not open, exactly as
- * a system secret's stored name is bound (`../crypto/envelope`).
+ * a system secret's stored name is bound (`../crypto/secretEnvelope`).
  */
 
 /** Longest declared table name. Short enough that `pithy_secrets_<name>_secrets` stays legible in a listing. */

@@ -130,6 +130,9 @@ const DECLARED_ONLY: Record<string, string> = {
  * is the point: the number is a second reader of the same change. `artifacts` (#673) joined with two:
  * `data/tables.ts` and `binding/artifacts.test.ts`. The account lifecycle (#620) moved `auth` by two:
  * `lifecycle/hooks.ts` hands an adopter's hook the request's D1, and `lifecycle/transitions.ts` carries it.
+ * Encrypted fields (#390) moved `core` by one, `privacy/fieldRotation.ts`, which re-seals a column through its D1,
+ * and `secrets` by two: `rotation/fieldKeyRotation.ts` and `manager/fieldKeyWorkflow.ts`, which hand it the
+ * adopter's own databases.
  */
 const IMPORTERS: Record<string, number> = {
   "packages/artifacts": 2,
@@ -137,7 +140,7 @@ const IMPORTERS: Record<string, number> = {
   "packages/auth": 8,
   "packages/cli": 15,
   "packages/cloudflare": 2,
-  "packages/core": 16,
+  "packages/core": 17,
   "packages/email": 9,
   "packages/leaderboard": 5,
   "packages/ledger": 4,
@@ -147,7 +150,7 @@ const IMPORTERS: Record<string, number> = {
   "packages/organization": 7,
   "packages/payments": 18,
   "packages/rating": 2,
-  "packages/secrets": 5,
+  "packages/secrets": 7,
   "packages/storage": 6,
   "packages/support": 8,
   "packages/testers": 7,

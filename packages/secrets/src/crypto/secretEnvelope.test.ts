@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { describe, expect, test } from "vitest";
 import { SecretCryptoError } from "../error/errors";
-import { decryptValue, EncryptionConfig, encryptValue } from "./envelope";
+import { openSecret, sealSecret } from "./secretEnvelope";
 
 function randomKeyB64(): string {
   const key = crypto.getRandomValues(new Uint8Array(32));
@@ -20,19 +21,19 @@ function config(currentVersion = 1, versions?: Record<string, string>): Encrypti
   };
 }
 
-describe("encryptValue / decryptValue", () => {
+describe("sealSecret / openSecret", () => {
   test("round-trips plaintext under the current key version", async () => {
     const cfg = config(1);
-    const envelope = await encryptValue(cfg, "api-token", "super-secret");
+    const envelope = await sealSecret(cfg, "api-token", "super-secret");
     expect(envelope.keyVersion).toBe(1);
     expect(envelope.encryptedValue).not.toContain("super-secret");
-    expect(await decryptValue(cfg, "api-token", envelope)).toBe("super-secret");
+    expect(await openSecret(cfg, "api-token", envelope)).toBe("super-secret");
   });
 
   test("uses a fresh IV per encryption", async () => {
     const cfg = config();
-    const a = await encryptValue(cfg, "k", "x");
-    const b = await encryptValue(cfg, "k", "x");
+    const a = await sealSecret(cfg, "k", "x");
+    const b = await sealSecret(cfg, "k", "x");
     expect(a.iv).not.toBe(b.iv);
     expect(a.encryptedValue).not.toBe(b.encryptedValue);
   });
@@ -40,23 +41,23 @@ describe("encryptValue / decryptValue", () => {
   test("decrypts an old key version during a rotation overlap window", async () => {
     const k1 = randomKeyB64();
     const v1 = config(1, { "1": k1 });
-    const envelope = await encryptValue(v1, "k", "rotate-me");
+    const envelope = await sealSecret(v1, "k", "rotate-me");
     // The at-rest job adds v2 and keeps v1 until every row is re-encrypted.
     const v2 = config(2, { "1": k1, "2": randomKeyB64() });
-    expect(await decryptValue(v2, "k", envelope)).toBe("rotate-me");
+    expect(await openSecret(v2, "k", envelope)).toBe("rotate-me");
   });
 
   test("throws crypto_failed when the key version is absent", async () => {
     const cfg = config(1);
-    const envelope = await encryptValue(cfg, "k", "x");
-    await expect(decryptValue(cfg, "k", { ...envelope, keyVersion: 99 })).rejects.toBeInstanceOf(SecretCryptoError);
+    const envelope = await sealSecret(cfg, "k", "x");
+    await expect(openSecret(cfg, "k", { ...envelope, keyVersion: 99 })).rejects.toBeInstanceOf(SecretCryptoError);
   });
 
   test("throws crypto_failed on tampered ciphertext", async () => {
     const cfg = config(1);
-    const envelope = await encryptValue(cfg, "k", "x");
+    const envelope = await sealSecret(cfg, "k", "x");
     const flipped = (envelope.encryptedValue.startsWith("A") ? "B" : "A") + envelope.encryptedValue.slice(1);
-    await expect(decryptValue(cfg, "k", { ...envelope, encryptedValue: flipped })).rejects.toBeInstanceOf(
+    await expect(openSecret(cfg, "k", { ...envelope, encryptedValue: flipped })).rejects.toBeInstanceOf(
       SecretCryptoError,
     );
   });
@@ -77,28 +78,28 @@ describe("encryptValue / decryptValue", () => {
 describe("the bound name", () => {
   test("a ciphertext sealed for one secret does not open under another", async () => {
     const cfg = config(1);
-    const envelope = await encryptValue(cfg, "billing-webhook-secret", "the-real-value");
+    const envelope = await sealSecret(cfg, "billing-webhook-secret", "the-real-value");
 
     // One master key, the same envelope, a different row. This is the lift-and-move.
-    await expect(decryptValue(cfg, "analytics-webhook-secret", envelope)).rejects.toBeInstanceOf(SecretCryptoError);
-    expect(await decryptValue(cfg, "billing-webhook-secret", envelope)).toBe("the-real-value");
+    await expect(openSecret(cfg, "analytics-webhook-secret", envelope)).rejects.toBeInstanceOf(SecretCryptoError);
+    expect(await openSecret(cfg, "billing-webhook-secret", envelope)).toBe("the-real-value");
   });
 
   test("one keyspace member does not open under another member's key", async () => {
     const cfg = config(1);
     // `<entry>/<key>` is what the store persists for a keyspace member (keyspace.ts).
-    const envelope = await encryptValue(cfg, "connection-signing-key/conn_alice", "alice-private-key");
+    const envelope = await sealSecret(cfg, "connection-signing-key/conn_alice", "alice-private-key");
 
-    await expect(decryptValue(cfg, "connection-signing-key/conn_mallory", envelope)).rejects.toBeInstanceOf(
+    await expect(openSecret(cfg, "connection-signing-key/conn_mallory", envelope)).rejects.toBeInstanceOf(
       SecretCryptoError,
     );
   });
 
   test("the refusal names the context it was attempted under, and is never a raw OperationError", async () => {
     const cfg = config(1);
-    const envelope = await encryptValue(cfg, "right-name", "v");
+    const envelope = await sealSecret(cfg, "right-name", "v");
 
-    const error = await decryptValue(cfg, "wrong-name", envelope).catch((caught: unknown) => caught);
+    const error = await openSecret(cfg, "wrong-name", envelope).catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(SecretCryptoError);
     const payload = (error as SecretCryptoError).payload;
@@ -110,18 +111,18 @@ describe("the bound name", () => {
 
   test("a prefix of another name is a different name — no separator confusion", async () => {
     const cfg = config(1);
-    const envelope = await encryptValue(cfg, "token", "v");
+    const envelope = await sealSecret(cfg, "token", "v");
 
-    await expect(decryptValue(cfg, "token-2", envelope)).rejects.toBeInstanceOf(SecretCryptoError);
-    await expect(decryptValue(cfg, "tok", envelope)).rejects.toBeInstanceOf(SecretCryptoError);
+    await expect(openSecret(cfg, "token-2", envelope)).rejects.toBeInstanceOf(SecretCryptoError);
+    await expect(openSecret(cfg, "tok", envelope)).rejects.toBeInstanceOf(SecretCryptoError);
   });
 
   test("an empty name is refused on both halves rather than binding nothing", async () => {
     const cfg = config(1);
-    await expect(encryptValue(cfg, "", "v")).rejects.toBeInstanceOf(SecretCryptoError);
+    await expect(sealSecret(cfg, "", "v")).rejects.toBeInstanceOf(SecretCryptoError);
 
-    const envelope = await encryptValue(cfg, "k", "v");
-    await expect(decryptValue(cfg, "", envelope)).rejects.toBeInstanceOf(SecretCryptoError);
+    const envelope = await sealSecret(cfg, "k", "v");
+    await expect(openSecret(cfg, "", envelope)).rejects.toBeInstanceOf(SecretCryptoError);
   });
 
   test("an unbound ciphertext does not open — there is no legacy path", async () => {
@@ -144,7 +145,42 @@ describe("the bound name", () => {
     for (const byte of iv) ivBinary += String.fromCharCode(byte);
 
     await expect(
-      decryptValue(cfg, "k", { encryptedValue: btoa(binary), iv: btoa(ivBinary), keyVersion: 1 }),
+      openSecret(cfg, "k", { encryptedValue: btoa(binary), iv: btoa(ivBinary), keyVersion: 1 }),
     ).rejects.toBeInstanceOf(SecretCryptoError);
+  });
+});
+
+/**
+ * **A row sealed before the envelope moved to core opens after it** (#390).
+ *
+ * The ciphertext below was written by `secrets/src/crypto/envelope.ts` as it stood on `main` before the move, under
+ * the fixed key and name beside it. Nothing here re-derives it: if the bound context, the key import or the encoding
+ * changed by a byte, this row stops opening, and so does every row in every vault.
+ */
+describe("the envelope's move to core", () => {
+  const sealedBeforeTheMove = {
+    key: "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+    name: "STRIPE_SECRET_KEY",
+    envelope: {
+      encryptedValue:
+        "bxlpG9nug85+HlYgn99R4eUeUgM0n/ikaETxYA6flCVMo2DnZD7sBbvMXUB5IBSOX0aBaZWtVz6YXBGotPzx+QwdoClTdWpMHw==",
+      iv: "T9oFtMGxQn6kRC/v",
+      keyVersion: 3,
+    },
+    plaintext: '{"currentVersion":"1","versions":{"1":"sk_test_fixture"}}',
+  };
+
+  test("a secrets row sealed by the old module opens under the same key and name", async () => {
+    const cfg = config(3, { "3": sealedBeforeTheMove.key });
+    expect(await openSecret(cfg, sealedBeforeTheMove.name, sealedBeforeTheMove.envelope)).toBe(
+      sealedBeforeTheMove.plaintext,
+    );
+  });
+
+  test("it still binds `pithy.secrets.v1:<name>`, so it does not open under another name", async () => {
+    const cfg = config(3, { "3": sealedBeforeTheMove.key });
+    await expect(openSecret(cfg, "STRIPE_PUBLISHABLE_KEY", sealedBeforeTheMove.envelope)).rejects.toBeInstanceOf(
+      SecretCryptoError,
+    );
   });
 });

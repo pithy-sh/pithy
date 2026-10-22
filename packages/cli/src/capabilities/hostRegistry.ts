@@ -8,6 +8,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
+import type { StampedEncryptedColumns } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import { parse } from "comment-json";
 import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
@@ -113,6 +114,11 @@ export interface HostResolveContext {
   storeId: () => string;
   /** The Cloudflare account id, on the same terms. Only the secrets manager stamps it into its vars. */
   accountId: () => string;
+  /**
+   * The project's encrypted columns and the D1 each lives in (#390), which only the secrets manager is stamped
+   * with. Supplied by `pithy deploy` for a declared environment; absent, nothing is stamped.
+   */
+  encryptedColumns?: () => Promise<StampedEncryptedColumns>;
   /**
    * **The composed capability this host belongs to. Required.**
    *
@@ -712,6 +718,11 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
         // resolution reads its own configuration.
         rotationIntervalDays: ownCapability(context, "secrets", "@pithy-sh/secrets", isSecretsCapability)
           .rotationIntervalDays,
+        // **The encrypted columns, the same stamp `pithy secrets provision` writes (#390).** A feature's manager
+        // rotates nothing and local dev has no manager, so neither is stamped.
+        ...(context.feature || context.env === "dev" || context.encryptedColumns === undefined
+          ? {}
+          : { encryptedColumns: await context.encryptedColumns() }),
         ...featureOf(context),
       });
     },

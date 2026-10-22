@@ -422,6 +422,7 @@ describe("managerWorkflowNames", () => {
       "acme-staging-secrets-write",
       "acme-staging-secrets-rotate",
       "acme-staging-secrets-rotate-value",
+      "acme-staging-secrets-rotate-fields",
     ]);
   });
 });

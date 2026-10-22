@@ -205,7 +205,7 @@ export function plannedFeatureHosts(
   const hosts = featureHostScripts(identity).filter((host) => composed.has(host.capability));
   const notes: string[] = [];
   if (options.store && composed.has("secrets")) {
-    notes.push("Creates this feature's master key in the Secrets Store first, if it is absent.");
+    notes.push("Creates this feature's master key and field key in the Secrets Store first, if they are absent.");
   }
   if (hosts.length > 0) {
     notes.push(

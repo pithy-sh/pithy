@@ -286,6 +286,8 @@ The seam's own manifest entry carries two counts behind the same scope, so a cli
 
 The manifest carries the headline as `privacy`: declared classes, observed classes, a count per class, both deltas, the console gate, and which sources were walked. What `declared` means, why it is an attestation, and how stale one can be is [`docs/PRIVACY.md`](PRIVACY.md).
 
+**Encryption is a second axis on the same records** (#390). Each field record carries `encryptedAtRest`, `true` or `false`, and leaves it out where the core cannot say — so a Worker on an older core reports no encryption data rather than reporting `false`. Each schema lists `encrypted[]`, every encrypted field whether or not it carries a class, `unrotatable` where it rests outside D1. The posture, on both routes, carries `retirement: { blocked, reasons, liveVersions }`, the field key's retirement guard read directly; it is absent on an older core. What each means is [Encrypted fields](PRIVACY.md#encrypted-fields).
+
 ---
 
 ## 13. Capabilities contribute their own admin routes

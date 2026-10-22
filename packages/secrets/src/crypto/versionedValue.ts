@@ -13,7 +13,7 @@ import { SecretCryptoError } from "../error/errors";
  * next version ({@link stagedValue}) and, a cache lifetime later, repoints `currentVersion` at it
  * ({@link promotedValue}). So a version newer than the current one is a successor waiting to be promoted. Values are strings —
  * a `json` secret stores its serialized form, parsed at the read seam. This is the *value*
- * version, distinct from the envelope's encryption-key version (see `envelope.ts`).
+ * version, distinct from the envelope's encryption-key version (see `@pithy-sh/core/src/crypto/envelope`).
  *
  * A version is retired by removing it, after its overlap, by the rotation that replaced it (#602) —
  * see {@link retireVersions}. Nothing about a version records when it will go: the rotation Workflow

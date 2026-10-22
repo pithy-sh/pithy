@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
-import { EncryptionConfig } from "../crypto/envelope";
+import { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { SecretCryptoError, SecretNotFoundError } from "../error/errors";
 import type { ManagedEnvironment } from "../scope";
 // A leaf, so the registry — and the admin response schema that reaches it — can name the binding without

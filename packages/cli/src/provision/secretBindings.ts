@@ -4,12 +4,16 @@
 import type { CreateSecretOutcome } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
 import { RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { FIELD_KEY_ROTATION_DAYS, FIELD_KEYS_BINDING } from "@pithy-sh/core/src/crypto/fieldKeys";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { ProvisionScope, SecretNameScope } from "@pithy-sh/core/src/naming/provisionScope";
-import { isSecretsCapability } from "@pithy-sh/secrets/src/capability";
+import { hasEncryptedFields } from "@pithy-sh/core/src/privacy/encrypted";
+import { fieldKeysRegistryEntry, isSecretsCapability } from "@pithy-sh/secrets/src/capability";
 import { secretBindingName } from "@pithy-sh/secrets/src/env/bindingName";
 import { isMintableSecret, type SecretRegistry, type SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsStore";
+import type { z } from "zod";
+import { capabilityNotComposed } from "../capabilities/notComposed";
 
 /**
  * **The `secrets_store_secrets` stanza nothing wrote.**
@@ -59,10 +63,54 @@ export interface SecretStoreBinding {
  * The `secrets` capability stays the gate. A Worker that declares a `cf-secrets-store` secret and
  * composes no `secrets` has no store to read it from and no `SECRETS` binding to reach one, so there is
  * nothing there to bind.
+ *
+ * **One exception to that gate: the field key (#390).** A Worker that holds an `encrypted()` field seals and opens it
+ * with `PITHY_FIELD_KEYS`, whether or not it composes `secrets`, so it gets that one entry and nothing else of the
+ * vault's — never the master key, which a Worker reaches only by composing `secrets`. A Worker with no encrypted
+ * field does not get it, so only the Workers that need the key hold it.
  */
 export function workerSecretRegistry(capabilities: readonly Capability[]): SecretRegistry | null {
-  if (!capabilities.some(isSecretsCapability)) return null;
-  return aggregateSecretRegistries(capabilities);
+  const fieldKeys = holdsEncryptedField(capabilities) ? { [FIELD_KEYS_BINDING]: fieldKeysRegistryEntry } : null;
+  if (!capabilities.some(isSecretsCapability)) return fieldKeys;
+  return { ...aggregateSecretRegistries(capabilities), ...fieldKeys };
+}
+
+/** Whether any of a Worker's capabilities stores a D1 table holding an `encrypted()` field (#390). */
+export function holdsEncryptedField(capabilities: readonly Capability[]): boolean {
+  return capabilities.some((capability) =>
+    Object.values(capability.databases ?? {}).some((database) =>
+      Object.values(database.tables).some((table) => hasEncryptedFields(table as z.ZodType)),
+    ),
+  );
+}
+
+/**
+ * **A project that holds an encrypted field composes the manager that rotates its key, or a declared environment is
+ * not provisioned (#390).** Provisioning mints `PITHY_FIELD_KEYS` and binds it to every Worker that holds an
+ * encrypted field, whether or not that Worker composes `secrets`. But the rotation, the guard and the doctor's error
+ * all live in the secrets manager, and a project that composes `secrets` nowhere has none: its field key would be
+ * minted once and never rotated, with nothing to say so. A feature is exempt, because it is torn down long before a
+ * rotation would be due.
+ */
+export function assertFieldKeyRotates(
+  projectDir: string,
+  workers: readonly { name: string; dir: string; capabilities: readonly Capability[] }[],
+  capabilities: readonly Capability[],
+): void {
+  const holders = workers.filter((worker) => holdsEncryptedField(worker.capabilities));
+  if (holders.length === 0) return;
+  if (capabilities.some(isSecretsCapability)) return;
+  if (workers.some((worker) => worker.capabilities.some(isSecretsCapability))) return;
+  const names = holders.map((worker) => worker.name).join(", ");
+  throw capabilityNotComposed(
+    "secrets",
+    {
+      message: `${names} ${holders.length === 1 ? "holds" : "hold"} an encrypted field, and nothing in this project composes secrets, so the field key would never rotate.`,
+      action: (add) =>
+        `The secrets manager rotates the field key every ${FIELD_KEY_ROTATION_DAYS} days. Compose it with ${add}, then provision again.`,
+    },
+    { projectDir, workerDirs: holders.map((worker) => worker.dir) },
+  );
 }
 
 /**

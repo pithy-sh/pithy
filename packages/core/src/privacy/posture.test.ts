@@ -18,10 +18,13 @@ const inventory: PrivacyInventory = {
         { path: "email", class: "pii" },
         { path: "diagnosis", class: "phi" },
       ],
+      encrypted: [],
     },
   ],
   counts: { pii: 1, phi: 1 },
   observed: ["pii", "phi"],
+  encryptedFields: 0,
+  unrotatable: 0,
 };
 
 const attested: PrivacyAttestation = {

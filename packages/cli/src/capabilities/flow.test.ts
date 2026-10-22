@@ -5,8 +5,8 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CapabilityManifest, type ConfigOption } from "@pithy-sh/core/src/capability/manifest";
+import { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
-import { EncryptionConfig } from "@pithy-sh/secrets/src/crypto/envelope";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import { readDevSecrets } from "../devSecrets/file";

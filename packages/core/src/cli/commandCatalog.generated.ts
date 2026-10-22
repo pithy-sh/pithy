@@ -1464,6 +1464,33 @@ export const COMMANDS = {
     },
     "groups": []
   },
+  "secrets retire-version": {
+    "positionals": [
+      {
+        "name": "version",
+        "required": true,
+        "variadic": false
+      }
+    ],
+    "flags": {
+      "--env": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--past-guard": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
   "secrets rm": {
     "positionals": [
       {

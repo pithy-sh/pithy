@@ -349,6 +349,40 @@
                             "description": "A storage kind: `d1` tables, or `kv` stores."
                           },
                           "description": "The storage the observed classes were derived from. Anything not listed was not walked; empty when nothing was."
+                        },
+                        "retirement": {
+                          "description": "The field key's retirement guard (#390): whether a version due to leave is held live, and by what. Absent on a Worker whose core predates encrypted fields.",
+                          "type": "object",
+                          "properties": {
+                            "blocked": {
+                              "type": "boolean",
+                              "description": "Whether a version due to leave the window is being held live by one of `reasons`."
+                            },
+                            "reasons": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "unrotatable",
+                                  "incomplete-coverage",
+                                  "stale"
+                                ],
+                                "description": "`unrotatable` — an encrypted field rests outside D1, so nothing can prove it re-sealed. `incomplete-coverage` — a schema source the guard derives from was not read. `stale` — a row still holds an envelope or an index under a version due to leave."
+                              },
+                              "description": "Every reason the guard is not clean now, empty when it is. Read directly: never inferred."
+                            },
+                            "liveVersions": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991,
+                              "description": "How many field-key versions are live. Two is the normal state: current and previous."
+                            }
+                          },
+                          "required": [
+                            "blocked",
+                            "reasons",
+                            "liveVersions"
+                          ]
                         }
                       },
                       "required": [
@@ -1653,6 +1687,40 @@
                             "description": "A storage kind: `d1` tables, or `kv` stores."
                           },
                           "description": "The storage the observed classes were derived from. Anything not listed was not walked; empty when nothing was."
+                        },
+                        "retirement": {
+                          "description": "The field key's retirement guard (#390): whether a version due to leave is held live, and by what. Absent on a Worker whose core predates encrypted fields.",
+                          "type": "object",
+                          "properties": {
+                            "blocked": {
+                              "type": "boolean",
+                              "description": "Whether a version due to leave the window is being held live by one of `reasons`."
+                            },
+                            "reasons": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "unrotatable",
+                                  "incomplete-coverage",
+                                  "stale"
+                                ],
+                                "description": "`unrotatable` — an encrypted field rests outside D1, so nothing can prove it re-sealed. `incomplete-coverage` — a schema source the guard derives from was not read. `stale` — a row still holds an envelope or an index under a version due to leave."
+                              },
+                              "description": "Every reason the guard is not clean now, empty when it is. Read directly: never inferred."
+                            },
+                            "liveVersions": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991,
+                              "description": "How many field-key versions are live. Two is the normal state: current and previous."
+                            }
+                          },
+                          "required": [
+                            "blocked",
+                            "reasons",
+                            "liveVersions"
+                          ]
                         }
                       },
                       "required": [
@@ -1720,6 +1788,15 @@
                                 "sameAs": {
                                   "description": "Set on a reference: the path this field's position was first listed under, once the list reached its cap on paths. The class is marked somewhere beneath both, and the paths beneath this one are those beneath that one.",
                                   "type": "string"
+                                },
+                                "encryptedAtRest": {
+                                  "description": "Whether the field rests encrypted (#390). Absent where the core cannot say — an assumed class, a reference, or a core older than encrypted fields — and never defaulted to false.",
+                                  "type": "boolean"
+                                },
+                                "unrotatable": {
+                                  "description": "Set on an encrypted field whose storage is not D1: it can never be rotated, and it blocks retirement.",
+                                  "type": "boolean",
+                                  "const": true
                                 }
                               },
                               "required": [
@@ -1729,6 +1806,28 @@
                               "description": "One marked field and its class."
                             },
                             "description": "Every marked field in it, in schema order."
+                          },
+                          "encrypted": {
+                            "description": "Every field marked encrypted at rest, classed or not (#390). Absent on a Worker whose core predates encrypted fields.",
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "path": {
+                                  "type": "string",
+                                  "description": "Where the encrypted field sits, on the same paths as `fields[].path`."
+                                },
+                                "unrotatable": {
+                                  "description": "Set where the storage is not D1, so the field can never be rotated.",
+                                  "type": "boolean",
+                                  "const": true
+                                }
+                              },
+                              "required": [
+                                "path"
+                              ],
+                              "description": "One encrypted field."
+                            }
                           }
                         },
                         "required": [
@@ -1997,9 +2096,13 @@
                                           "not-rotated",
                                           "at-rest-incomplete",
                                           "at-rest-unconfirmed",
-                                          "not-retired"
+                                          "not-retired",
+                                          "field-key-overdue",
+                                          "field-key-ceiling",
+                                          "field-key-unconfirmed",
+                                          "field-key-incomplete"
                                         ],
-                                        "description": "Why a rotation row closed failed, as a code. `roll-failed`, `not-recorded` and `not-rotated` are a value rotation's. `at-rest-incomplete` and `at-rest-unconfirmed` are the whole-store master-key rotation's. `not-retired` is an unattended value rotation that landed and kept the previous version, because a value sealed under it at rest was not re-encrypted."
+                                        "description": "Why a rotation row closed failed, as a code. `roll-failed`, `not-recorded` and `not-rotated` are a value rotation's. `at-rest-incomplete` and `at-rest-unconfirmed` are the whole-store master-key rotation's. `not-retired` is an unattended value rotation that landed and kept the previous version, because a value sealed under it at rest was not re-encrypted. `field-key-overdue` is a field-key version still live when the next rotation came due, `field-key-ceiling` a rotation refused at four live versions, `field-key-unconfirmed` a field-key write the binding never showed, and `field-key-incomplete` a field-key pass that did not finish (#390)."
                                       },
                                       {
                                         "type": "null"
@@ -2198,9 +2301,13 @@
                                   "not-rotated",
                                   "at-rest-incomplete",
                                   "at-rest-unconfirmed",
-                                  "not-retired"
+                                  "not-retired",
+                                  "field-key-overdue",
+                                  "field-key-ceiling",
+                                  "field-key-unconfirmed",
+                                  "field-key-incomplete"
                                 ],
-                                "description": "Why a rotation row closed failed, as a code. `roll-failed`, `not-recorded` and `not-rotated` are a value rotation's. `at-rest-incomplete` and `at-rest-unconfirmed` are the whole-store master-key rotation's. `not-retired` is an unattended value rotation that landed and kept the previous version, because a value sealed under it at rest was not re-encrypted."
+                                "description": "Why a rotation row closed failed, as a code. `roll-failed`, `not-recorded` and `not-rotated` are a value rotation's. `at-rest-incomplete` and `at-rest-unconfirmed` are the whole-store master-key rotation's. `not-retired` is an unattended value rotation that landed and kept the previous version, because a value sealed under it at rest was not re-encrypted. `field-key-overdue` is a field-key version still live when the next rotation came due, `field-key-ceiling` a rotation refused at four live versions, `field-key-unconfirmed` a field-key write the binding never showed, and `field-key-incomplete` a field-key pass that did not finish (#390)."
                               },
                               {
                                 "type": "null"

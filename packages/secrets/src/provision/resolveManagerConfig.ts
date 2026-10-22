@@ -2,15 +2,18 @@
 // SPDX-License-Identifier: MIT
 
 import { RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
+import { FIELD_KEYS_BINDING } from "@pithy-sh/core/src/crypto/fieldKeys";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
+import type { EncryptedColumnStamp } from "@pithy-sh/core/src/privacy/encryptedColumns";
 import { workflowHostName } from "@pithy-sh/core/src/workflow/naming";
 import { secretBindingName } from "../env/bindingName";
 import {
   SECRETS_CAPABILITY,
+  secretsFieldKeyRotateWorkflowName,
   secretsRotateWorkflowName,
   secretsValueRotateWorkflowName,
   secretsWriteWorkflowName,
@@ -18,7 +21,7 @@ import {
 import { unattendedRotation } from "../registry";
 import { rotationStoreEntry, type StampedRotation, stampedEntry } from "../rotation/rotationSchedule";
 import { type ManagedEnvironment, managedEnvironments } from "../scope";
-import { masterKeySecretName, runtimeTokenSecretName } from "./provisionSecrets";
+import { fieldKeysSecretName, masterKeySecretName, runtimeTokenSecretName } from "./provisionSecrets";
 
 /**
  * The manager's `wrangler.jsonc` template shape — only the fields provisioning resolves. The
@@ -50,6 +53,20 @@ const ROTATION_BINDING = "AT_REST_ROTATION";
 
 /** The manager's value-rotation Workflow binding (#602) — a feature's manager never hosts this one either. */
 const VALUE_ROTATION_BINDING = "VALUE_ROTATION";
+
+/** The manager's field-key rotation Workflow binding (#390) — a feature's manager runs no cron, so hosts none. */
+const FIELD_KEY_ROTATION_BINDING = "FIELD_KEY_ROTATION";
+
+/**
+ * The encrypted columns a manager is stamped with (#390), and the D1 each lives in: what the field-key rotation
+ * re-seals. The manager never reads `pithy.config.ts`, so this is the only way it learns them.
+ */
+export interface StampedEncryptedColumns {
+  /** The derivation from the project's `encrypted()` markers. */
+  stamp: EncryptedColumnStamp;
+  /** Every D1 a stamped column names, by its binding: bound into the manager beside `SECRETS`. */
+  databases: readonly { binding: string; databaseName: string; databaseId: string }[];
+}
 
 /** The resolved resource ids for one environment's manager deploy. */
 export interface ManagerConfigParams {
@@ -102,6 +119,14 @@ export interface ManagerConfigParams {
    * by construction whether a global secret is its to rotate. Omitted, no manager rotates one.
    */
   globalEnvironment?: ManagedEnvironment;
+  /**
+   * **The encrypted columns, from the project's schemas (#390).** Written into `ENCRYPTED_COLUMNS`, with each D1
+   * they live in bound under its own binding name, so the field-key rotation can find and re-seal the rows still
+   * under a version leaving the window. Omitted, the manager rotates the field key and re-seals nothing — which is
+   * right for a project with no encrypted field, and which its retirement guard reads as incomplete coverage where
+   * there is one, because a column it was never stamped with is a column it never counted.
+   */
+  encryptedColumns?: StampedEncryptedColumns;
 }
 
 /**
@@ -149,6 +174,8 @@ function managerWorkflowName(
       return secretsRotateWorkflowName(project, env, feature);
     case VALUE_ROTATION_BINDING:
       return secretsValueRotateWorkflowName(project, env, feature);
+    case FIELD_KEY_ROTATION_BINDING:
+      return secretsFieldKeyRotateWorkflowName(project, env, feature);
     default:
       throw new InternalError({
         message: "The secrets manager template declares a Workflow provisioning cannot name.",
@@ -187,17 +214,25 @@ export function resolveManagerConfig(
       (entry) => entry.binding !== MANAGER_TOKEN_BINDING,
     );
     resolved.workflows = resolved.workflows.filter(
-      (wf) => wf.binding !== ROTATION_BINDING && wf.binding !== VALUE_ROTATION_BINDING,
+      (wf) =>
+        wf.binding !== ROTATION_BINDING &&
+        wf.binding !== VALUE_ROTATION_BINDING &&
+        wf.binding !== FIELD_KEY_ROTATION_BINDING,
     );
     resolved.triggers = { crons: [] };
   }
   // A declared environment's manager and its D1 share one name. A feature's D1 is the one the feature's own
   // provisioning created for its `SECRETS` binding, named by the feature's scope (#643).
-  resolved.d1_databases = resolved.d1_databases.map((db) => ({
-    ...db,
-    database_name: feature ? featureScope(feature).resource(db.binding, "d1", {}) : name,
-    database_id: databaseId,
-  }));
+  resolved.d1_databases = [
+    ...resolved.d1_databases.map((db) => ({
+      ...db,
+      database_name: feature ? featureScope(feature).resource(db.binding, "d1", {}) : name,
+      database_id: databaseId,
+    })),
+    // Each D1 a stamped encrypted column lives in, under the app's own binding name, so the stamp's `binding`
+    // resolves inside the manager exactly as it does inside the app Worker (#390).
+    ...encryptedDatabases(feature ? undefined : params.encryptedColumns, resolved.d1_databases),
+  ];
   // Both secrets live in the one account-wide store, so every entry gets `storeId` — and **every**
   // entry name is resolved here, never passed through. The template's literals are placeholders: an
   // entry name provisioning did not write is an entry the worker cannot bind, so an unrecognized
@@ -227,10 +262,46 @@ export function resolveManagerConfig(
     ...(rotationIntervalDays === undefined ? {} : { ROTATION_INTERVAL_DAYS: String(rotationIntervalDays) }),
     // JSON in a string var, parsed and re-checked by the manager: see `rotation/rotationSchedule.ts`.
     ...(valueRotations === undefined ? {} : { VALUE_ROTATIONS: JSON.stringify(valueRotations) }),
+    // JSON in a string var, parsed against `EncryptedColumnStamp` by the manager before any SQL is built from it.
+    ...(feature || params.encryptedColumns === undefined
+      ? {}
+      : { ENCRYPTED_COLUMNS: JSON.stringify(params.encryptedColumns.stamp) }),
     ...(feature || params.globalEnvironment === undefined ? {} : { GLOBAL_ENVIRONMENT: params.globalEnvironment }),
   };
 
   return resolved;
+}
+
+/**
+ * The D1 bindings a manager takes for its stamped encrypted columns (#390): one per database a column lives in,
+ * never one the template already binds. A stamped binding with no database to name is refused, because a column the
+ * manager cannot reach is a version it can never prove re-sealed — and deploying past that would hide it.
+ */
+function encryptedDatabases(
+  stamped: StampedEncryptedColumns | undefined,
+  already: readonly { binding: string }[],
+): Array<{ binding: string; database_name: string; database_id: string }> {
+  if (stamped === undefined) return [];
+  const taken = new Set(already.map((db) => db.binding));
+  const bindings = [...new Set(stamped.stamp.columns.map((column) => column.binding))].sort();
+  return bindings.flatMap((binding) => {
+    if (taken.has(binding)) {
+      throw new InternalError({
+        message: `An encrypted table lives in a D1 bound as ${binding}, which the secrets manager binds to its own database.`,
+        action: "Bind the app's database under another name: the manager's SECRETS binding is its vault.",
+        detail: `resolveManagerConfig: stamped binding ${binding} collides with the manager template`,
+      });
+    }
+    const database = stamped.databases.find((db) => db.binding === binding);
+    if (!database) {
+      throw new InternalError({
+        message: `The secrets manager is stamped with an encrypted column in ${binding} and no database id for it.`,
+        action: "Provision the app's database for this environment first, then redeploy the manager.",
+        detail: `resolveManagerConfig: no database for stamped binding ${binding}`,
+      });
+    }
+    return [{ binding, database_name: database.databaseName, database_id: database.databaseId }];
+  });
 }
 
 /**
@@ -277,6 +348,8 @@ function managerStoreEntryName(
     case MANAGER_TOKEN_BINDING:
       // Never reached for a feature: its manager's config has no token binding to resolve (#643).
       return runtimeTokenSecretName(project, env);
+    case FIELD_KEYS_BINDING:
+      return fieldKeysSecretName(project, env, feature);
     default:
       throw new InternalError({
         message: "The secrets manager template declares a Secrets Store binding provisioning never writes.",

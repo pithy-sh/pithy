@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
-import { EncryptionConfig } from "../crypto/envelope";
 import { defineSecretRegistry } from "../registry";
 import { DEV_SECRETS_FILE, initialDevSecret } from "./devSecretsFile";
 import { loadDevSecrets } from "./loadDevSecrets";

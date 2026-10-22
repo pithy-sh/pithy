@@ -649,6 +649,17 @@
       ]
     },
     {
+      "path": "secrets retire-version",
+      "flags": [
+        "--env",
+        "--past-guard",
+        "--pastGuard",
+        "--no-past-guard",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
       "path": "secrets rm",
       "flags": [
         "--env",

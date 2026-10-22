@@ -3,8 +3,8 @@
 
 import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
+import { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { masterKeyRegistryEntry } from "@pithy-sh/secrets/src/capability";
-import { EncryptionConfig } from "@pithy-sh/secrets/src/crypto/envelope";
 import { initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";

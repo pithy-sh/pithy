@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import type { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { MAX_BOUND_PARAMETERS, recordBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { type EncryptionConfig, encryptValue } from "../crypto/envelope";
+import { sealSecret } from "../crypto/secretEnvelope";
 import { appendVersion, currentValue, initialVersionedValue, type VersionedValue } from "../crypto/versionedValue";
 import { secretsTables } from "../data/tables";
 import { secrets_0001_init } from "../migrations/0001_init";
@@ -304,7 +305,7 @@ describe("SystemSecretsStore and a row that will not open (#384)", () => {
 
   /** Seal something that is not a value envelope under this row's own name — it opens, and does not parse. */
   async function sealNonEnvelope(name: string): Promise<void> {
-    const envelope = await encryptValue(config, name, "a plaintext that was never a versioned value");
+    const envelope = await sealSecret(config, name, "a plaintext that was never a versioned value");
     await env.SECRETS.prepare(
       "update pithy_secrets_system_secrets set encrypted_value = ?, iv = ?, key_version = ? where name = ?",
     )

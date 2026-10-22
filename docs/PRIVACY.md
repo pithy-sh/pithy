@@ -195,10 +195,115 @@ The declared classes and the gate's verdict reach the Worker as the `PITHY_PRIVA
 
 `pithy privacy scan` walks the same storage schemas, with the same walk, and reads each field's name. `email`, `phone`, `ipAddress`, `dateOfBirth`, `ssn`, `diagnosis` and the rest are candidates, each with the class it suggests and the marker to apply. A marked field is covered. It exits 0, edits nothing, and fails no build. Which of your fields are regulated is a question for your jurisdiction, your sector and your counsel — Pithy surfaces candidates and the marking stays yours.
 
+## Encrypted fields
+
+A class says what a field **is**. `encrypted()` says how it **rests**: in its own D1 column as an AES-256-GCM envelope, not as plaintext. The two compose, and either may be marked alone, so the inventory reports both and *which of your PHI fields are encrypted at rest?* is a derivation, not a second list.
+
+```ts
+import { phi, pii } from "@pithy-sh/core/src/privacy/classes";
+import { blindIndex, encrypted, encryptedTable } from "@pithy-sh/core/src/privacy/encrypted";
+import { z } from "zod";
+
+export const Patient = encryptedTable(
+  z.object({
+    id: z.string().describe("The patient's stable id, assigned by the app before the insert."),
+    diagnosis: encrypted(phi(z.string().describe("The recorded condition."))),
+    email: encrypted(pii(z.string().describe("Where we write.")), { index: "email" }),
+    emailIndex: blindIndex("email"),
+    notes: encrypted(z.string().describe("Free text the clinician wrote.")).nullable(),
+  }),
+  { name: "patient", key: "id" },
+);
+```
+
+### The round trip is `sealed()`
+
+The codec stays synchronous. An encrypted field's stored side is the envelope as JSON and its parsed side is the envelope object, so `Patient.parse(row)` and `Patient.encode(value)` work as every other table's do. The AES-GCM happens one step above, in a seam you build per request from `env`, which is how the key reaches the encode without a module-level schema ever holding one:
+
+```ts
+import { sealed } from "@pithy-sh/core/src/privacy/sealed";
+
+const patients = sealed(Patient, { keys: c.env.PITHY_FIELD_KEYS });
+
+const record = await patients.seal(value);   // seal each marked field, then Patient.encode
+await db.insertInto("patient").values(record).execute();
+
+const value = await patients.open(row);      // Patient.parse, then open each marked field
+
+const hashes = await patients.match("email", input);   // one per live version
+await db.selectFrom("patient").where("emailIndex", "in", hashes).selectAll().execute();
+```
+
+**Forgetting the seam cannot write plaintext.** `Patient.encode` handed a string where the codec expects an envelope fails validation, and a column holding plaintext does not parse.
+
+**It keeps the class.** An encrypted `phi` field is still `phi`: the inventory lists it, `redact` masks it, and the compiler refuses it on a log line, as an envelope after a parse and as the plaintext after `open`, which carries the wrapped schema's own brand. `redact(patients.opened, value)` masks an opened value.
+
+**`sealed()` refuses at build, naming the schema**: an encrypted field with no `encryptedTable()` declaration, an indexed field with no `blindIndex` column, an index column naming no indexed field, and an encrypted field no path of object keys reaches, such as one inside an array.
+
+### What each ciphertext binds
+
+The AAD is `pithy/enc/1:<name>:<field path>:<pk>`. A ciphertext moved to another field, another row or another table does not open.
+
+- **`<name>` is the name `encryptedTable()` declares**, not the SQL table name, so renaming the table in a migration leaves every row openable.
+- **`<field path>` is the field's path in the schema**: `diagnosis`, or `profile.phone` for a field inside a `sqliteJson` column, which rests as its own envelope at that JSON path. Under `CamelCasePlugin` a column is named for its field, so renaming an encrypted column changes its field path. That is a re-seal migration through `sealed()`, below.
+- **`<pk>` is the primary key**, which the app assigns before the insert, because a seal binds its value. A text id, such as a UUID. `encryptedTable()` refuses an integer key, which SQLite assigns at the insert.
+
+The key is never updated, which is the guarantee. Changing the name, a path or a key is a re-seal migration: read every row with the old schema through `sealed()` and write it with the new one.
+
+### What encryption costs
+
+- **Queryability.** An encrypted column cannot answer `WHERE`, `ORDER BY`, a range or `LIKE`. Only equality comes back, and only through a blind index.
+- **Presence is visible.** An absent optional field rests as SQL `NULL`, not sealed, so `IS NULL` still works and anyone reading the table sees which rows hold nothing.
+- **Length is visible.** GCM does not pad. A field seals its JSON encoding, so a value whose JSON is m bytes rests as 4·⌈(m+16)/3⌉ + 60 bytes under a one-digit key version, one byte more per extra digit. A string of n bytes with nothing to escape has m = n + 2: 84 bytes empty, 220 bytes at 100. A field inside a `sqliteJson` column rests escaped inside that column's JSON, so it takes a few bytes more.
+
+### The blind index, and its leak
+
+`{ index: "exact" }` or `{ index: "email" }` gives a field a sibling `blindIndex("<field>")` column holding `<version>:<hmac>`: an HMAC-SHA256 of the normalized value, under a key HKDF-derived from that version's field key with the label `pithy/blind-index/<normalizer>`. `match()` returns one hash per live version, so a lookup still finds a row mid-rotation.
+
+**The normalizers are the kit's, by name.** `exact` hashes the value as written; `email` applies NFC, trims and lowercases. A name rather than a function, because the rotator re-indexes inside the secrets manager, which runs no code of yours. Changing a field's normalizer changes the derivation label, so old hashes stop matching, and nothing notices. An index value records its version, not its normalizer, so the rotator re-indexes only rows under a version leaving the window. Until every row is rewritten, `match()` misses the old ones: no error, no stale count, no doctor finding. Changing a normalizer is a re-seal migration through `sealed()`, run before the new lookup ships.
+
+**It leaks equality, and that is the trade.** Two rows with the same normalized value have the same index. Ordering, ranges and prefixes do not come back at all.
+
+### D1 is the only destination
+
+A KV `list()` returns keys, never values, so a KV envelope cannot be found by key version: no stale count, no compare-and-swap, no rotation. Encryption that can never rotate reads as the feature and is not, so **a KV store holding an encrypted field is refused at boot**, naming the store, the field and D1, through `.optional()`, `.nullable()`, `.default()` and nesting. A Worker that boots has no such field, so its inventory never lists one. The check that sees past a boot is the CLI's: `pithy deploy` and `pithy secrets provision` derive the encrypted columns from your schemas, and any encrypted field outside D1 lands in the stamp as **unrotatable**. The manager's guard reads that stamp, so the field blocks every retirement, and `retire-version` prints it as `Unrotatable, never re-sealed`.
+
+### The field key, and lazy rotation
+
+Fields seal under `PITHY_FIELD_KEYS`, a versioned key set in the master key's format and never the master key. `pithy secrets provision` mints it beside the master key, binds it to every Worker that holds an encrypted field, and only those, and stamps the secrets manager with the encrypted columns derived from your schemas. A field you mark tomorrow joins rotation on the next deploy, with no registration step. `pithy setup` mints a local one into the dev secrets file. The secrets manager is what rotates the key, so a project with an encrypted field composes `secrets` on some Worker: `pithy provision` refuses a deployed environment otherwise, because a key nothing rotates would be minted once and kept forever.
+
+**Rotation is lazy.** Every write seals under the current version, so a row moves off an old key the next time it is written, and the normal state is two live versions: current and previous. The window is anchored on the current version, never on the two highest numbers: a version a failed confirm left staged above current replaced nothing, so it is never the previous one, and the next rotation promotes it rather than minting past it. Every 30 days the manager's nightly cron adds a version, re-seals the rows still under the version leaving the window, and only those, re-indexing them in the same write, and retires it once the guard reads clean. A stale row is found by `json_extract`, and each re-seal is a compare-and-swap on the version it read, so a row your app re-sealed in between is left alone. A large table is cleared in batches, across nights.
+
+**The guard is clean only when all three hold:** no stamped envelope or index column holds a row under the leaving version, every schema source the stamp was derived from was read, and no encrypted field rests outside D1. On anything else nothing is retired, and rotation and the backfill go on. A version still live when the next rotation is due is a failure, not a backlog: the manager raises an audit event naming what held it, and `pithy doctor` reports it as an error. While four versions are live no version is added. The backfill still runs, and a clean guard still retires, so the ceiling clears once its cause is fixed and the next night's rotation adds a version. On a dirty guard the rotation is refused, naming the blocker.
+
+**Past a dirty guard, only a person retires a version**, with `pithy secrets retire-version <v> --env <env> --past-guard`. It prints the stale counts per column under `<v>`, every unrotatable field and every source the guard could not read, then asks for `<env>/<v>` to be typed back. There is no `--yes`, and off a terminal or under `--json` it refuses with `core/person_required`. Every ciphertext still under that version becomes unopenable, with no remedy. See [`pithy secrets`](commands/secrets.md#the-field-key).
+
+### What the control plane reports
+
+`GET /control-plane/privacy` marks each field record `encryptedAtRest: true` or `false`, and leaves it out where the core cannot say — an assumed class, a reference, or a Worker on a core older than encrypted fields. It is never defaulted to `false`. Each schema also lists `encrypted[]`, every encrypted field whether it carries a class or not, `unrotatable` where it rests outside D1.
+
+The `privacy` block on `GET /control-plane/manifest`, and the posture on `GET /control-plane/privacy`, carry `retirement`: the guard over this Worker's own encrypted columns, read through its own bindings.
+
+| key | meaning |
+|---|---|
+| `retirement.blocked` | Whether a version due to leave the window is being held live. |
+| `retirement.reasons` | Every reason the guard is not clean now: `unrotatable`, `incomplete-coverage`, `stale`. Read directly, never inferred from another field. |
+| `retirement.liveVersions` | How many field-key versions are live. Two is normal. |
+
+`retirement` is absent on a Worker whose core predates encrypted fields.
+
+### The threat model
+
+**What it protects:** a marked value at rest in D1, against anyone who reads the database without the field key — a D1 export, a backup, a dashboard query, a leaked read token. They see envelopes, key versions, approximate lengths, which optional fields are empty, blind-index hashes, and which rows share an indexed value.
+
+**What it does not:** a compromised app Worker, or anyone holding `PITHY_FIELD_KEYS`, reads every encrypted field. The rotator's Workflow journal is not a second copy: no step returns a key, only the key set's version numbers and a SHA-256 digest of it, and a step that needs a key reads it through the binding inside itself, so Workflows visibility plus D1 Read opens nothing. The field key is not the vault's master key, so holding it opens no stored secret. A decrypted value is protected in memory by the class gates above, not by this. Client-side or end-to-end encryption is a different threat model.
+
+**What rotation buys:** a key compromise has a bounded remedy. Rotate, and within one period every row is under a key the attacker does not hold, and the compromised version is retired on evidence — or sooner, past the guard, by an operator who has seen what that costs.
+
 ## What this does not do
 
 - **Record who read what.** The access trail §164.312(b) asks for is a later issue; this ships the declaration it will read.
-- **Encrypt anything at rest.** A class is a claim about what a field *is*; encryption is a claim about how it rests. Nothing here changes a stored value, which is what makes it safe to adopt everywhere at once.
+- **Encrypt anything by itself.** A class is a claim about what a field *is* and changes no stored value, which is what makes it safe to adopt everywhere at once. Encryption is the separate, opt-in claim about how it rests: [Encrypted fields](#encrypted-fields).
 - **Decide what you must mark.** No gate fires on an unmarked field.
 - **Require `@pithy-sh/audit`.** Declaring a class offers it, at a terminal. It never demands it.
 - **Mark the kit's own schemas.** This ships the mechanism; each capability adopts it in turn.

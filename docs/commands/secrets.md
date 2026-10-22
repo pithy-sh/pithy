@@ -17,6 +17,7 @@ pithy secrets edit [--json]
 pithy secrets verify [--env <env>] [--no-sweep] [--json]
 pithy secrets provision [--json]
 pithy secrets deprovision --env <env> [--keys] [--destroy-retained <n>] [--json]
+pithy secrets retire-version <v> --env <env> --past-guard
 ```
 
 **Its Worker deploy is gated.** The Worker is deployed carrying a stamp naming the package version and a hash of its resolved configuration, and a run whose stamp matches both ships nothing. Anything the gate cannot establish — no Worker, no stamp, an unreachable account — deploys. `pithy deploy --env <env>` ships the same Worker without provisioning anything else, and `pithy deploy --env <env> --kit --force` re-uploads it regardless. See [`pithy deploy`](./deploy.md).
@@ -36,7 +37,10 @@ pithy secrets deprovision --env <env> [--keys] [--destroy-retained <n>] [--json]
 | `tables` | `--worker <name>` | Read one Worker's declarations instead of every Worker's under `apps/`. |
 | `verify` | `--env <env>` | Verify one environment instead of every declared one. |
 | `verify` | `--no-sweep` | Skip the Secrets Store listing and verify the stores alone. Sweeping is the default. |
-| all | `--json` | Machine-readable output. Default `false`. |
+| `retire-version` | `<v>` (positional, required) | The field-key version to retire, as the guard lists it. Never the current one. |
+| `retire-version` | `--env <env>` | **Required.** The environment whose field key it is. |
+| `retire-version` | `--past-guard` | **Required, and irreversible.** Retire the version although the guard is not clean. Every ciphertext still under it becomes unopenable. |
+| all but `retire-version` | `--json` | Machine-readable output. Default `false`. `retire-version` declares it only to refuse it. |
 
 `--env` here is the **managed** set — every environment the root `pithy.config.ts` declares, `["staging", "prod"]` unless it says otherwise — not the three `--env` takes elsewhere. `dev` is local-only, so it is refused with a sentence pointing at `pithy dev`, and an environment the project does not declare is refused by name with the ones that are.
 
@@ -307,7 +311,7 @@ Retained 3 rows would be dropped: pithy_secrets_system_secrets on acme-prod-secr
 They exist nowhere else. Back them up, or pass --destroy-retained 3 to drop them.
 ```
 
-A different number refuses too. The count is taken again at the delete itself, so a row written in between is a row it refuses. Then the manager's three Workflows (`<project>-<env>-secrets-write`, `-secrets-rotate` and `-secrets-rotate-value`), the manager Worker, the master key when `--keys` is passed, the database, and the environment's runtime token go, in that order. The Workflows go first because deleting a Worker leaves the Workflows registered against it. The runtime token is per environment, so prod's manager keeps rotating whatever staging's teardown removes. The manager token `runtime` superseded is never touched: nothing revokes it for you, and `pithy doctor` names it.
+A different number refuses too. The count is taken again at the delete itself, so a row written in between is a row it refuses. Then the manager's four Workflows (`<project>-<env>-secrets-write`, `-secrets-rotate`, `-secrets-rotate-value` and `-secrets-rotate-fields`), the manager Worker, the master key when `--keys` is passed, the database, and the environment's runtime token go, in that order. The Workflows go first because deleting a Worker leaves the Workflows registered against it. The runtime token is per environment, so prod's manager keeps rotating whatever staging's teardown removes. The manager token `runtime` superseded is never touched: nothing revokes it for you, and `pithy doctor` names it.
 
 **`provision` says where it got to.** Each environment's manager Worker is named as it is about to be uploaded — `▸ acme-staging-secrets...` — the same plain line `pithy deploy`, `pithy provision` and `pithy email provision` print, from the one seam they all share. A manager the deploy gate skipped as already current says nothing, because nothing was uploaded for it. `--json` silences the lot and still writes exactly one line; a missing TTY does not. `deprovision` deletes over the API and spawns nothing, so it has nothing to narrate.
 
@@ -401,6 +405,28 @@ Each declared table, its keys, its secret names, how many rows hold each, and wh
 ```
 
 The newest version is what the rows say: the CLI cannot read the master key, so a row below the newest version any row in the vault is sealed under is a row a pass did not reach. A table declared and not yet migrated in that environment says so and names `pithy migrate --env <env>`. It reads through the same driver `pithy migrate` uses — the local store for `dev`, the D1 REST API otherwise — and a project declaring no table reads nothing. `pithy doctor` reports the same read as its `Secret tables:` block.
+
+## The field key
+
+Fields marked `encrypted()` seal under their own key, `PITHY_FIELD_KEYS`, never the master key ([Encrypted fields](../PRIVACY.md#encrypted-fields) is the adopter's page). `provision` mints it per environment beside the master key, in the same format, under `<project>-<env>-pithy-field-keys`, and only if absent: a fresh key over an existing one would orphan every sealed field. It binds it to every Worker that holds an encrypted field, whether or not that Worker composes `secrets`, and only those. A feature gets a field key of its own, deleted with it. **The project must compose `secrets` on some Worker**, because the manager is what rotates the key: `pithy provision` refuses a declared environment where a Worker holds an encrypted field and nothing composes it, before anything is created. `pithy deploy` skips any kit Worker whose config binds a Secrets Store entry the store does not hold, naming the entry and the command, so a manager upgraded before `provision` minted its field key is not deployed against nothing.
+
+**The manager is stamped with what it re-seals.** `provision` and `pithy deploy` derive the encrypted columns from every Worker's schemas — the declared name, the field path, the primary key, the D1 binding, the index column and its normalizer — and write them into the manager's `ENCRYPTED_COLUMNS` var, binding the manager to every D1 they live in. An encrypted table with no `encryptedTable()` declaration is refused, naming it. A Worker whose `pithy.config.ts` will not load is stamped as a source the guard could not read.
+
+**The manager's nightly cron rotates it every 30 days**, on its own Workflow, `<project>-<env>-secrets-rotate-fields`, independent of the master key's cadence. A pass adds a version and makes it current, re-seals and re-indexes only the rows still under the version leaving the window, by compare-and-swap, and retires that version once the guard reads clean: no stamped envelope or index column under it, every source read, and no encrypted field outside D1. A dirty guard retires nothing; the nightly backfill carries on clearing what it can. A version still live when the next rotation is due closes the pass `field-key-overdue` and raises the `secrets/field_key_retirement_blocked` audit event naming what held it, and `pithy doctor` fails on it. While four versions are live no version is added, rather than drift toward the Secrets Store's 64 KiB ceiling. The pass still re-seals and retires on a clean guard, so the ceiling clears itself once its cause is fixed; on a dirty guard it closes `field-key-ceiling`. The window is anchored on the current version: a version a failed confirm left staged above it is promoted by the next rotation, never minted past. No step of the Workflow returns a key, so its journal holds version numbers and a digest, never key material. A retirement, past the guard or on a clean one, holds the same single-flight lock as a rotation and writes only over the key set it read, so it never runs beside one.
+
+### `retire-version` — past the guard, by a person
+
+```
+pithy secrets retire-version 1 --env prod --past-guard
+prod: field-key versions live: 3, 2, 1.
+  patients.diagnosis (diagnosis): 4 rows still under version 1.
+  Unrotatable, never re-sealed: app:cache.tokens:value.token.
+  Not read by the guard: apps/billing.
+Retiring version 1 makes every ciphertext still under it unopenable. Nothing brings it back.
+◆  Type prod/1 to retire it:
+```
+
+The rotator retires a version itself when the guard is clean, so this exists only for the other case, and it is the most destructive command the kit owns. It asks the manager for the guard first, because the manager holds the stamp of encrypted columns the guard counts: the stale count per column under `<v>` alone, every unrotatable field and every source it could not read. Then it asks for `<env>/<v>` to be typed back. Anything else retires nothing. There is no `--yes`. Off a terminal, under `--no-input` or `PITHY_NONINTERACTIVE`, or with `--json`, it refuses with `core/person_required`, exit 5, before anything is read, so neither an agent nor a CI script can run it. The current version is refused: it seals every write. The retirement is audited as `secrets/field_key_retired` with `pastGuard: true` and the stale count it was retired over.
 
 ## `verify`
 
@@ -597,6 +623,8 @@ A `keyspace` marker is the one entry an operator must not try to set: its member
 - **`Retained <n> rows would be dropped: … Refused before anything was deleted.`** `deprovision` only. The vault holds rows. Back them up, or pass `--destroy-retained <n>` with the number printed.
 - **`The CF Secrets Store id is missing.`** `provision` and `deprovision` only. Run `pithy add secrets --worker api` to record `SECRETS_STORE_ID`, naming the Worker that composes `secrets` — in a project with several Workers the action names one command per Worker — ``Run `pithy add secrets --worker api` or `pithy add secrets --worker web` to record …`` — because a bare `pithy add secrets` is refused there.
 - **No project name.** Every subcommand that resolves a path or a Workflow requires `name` in the root `pithy.config.ts` and refuses to guess one. A guess would open one checkout's secrets from another's worktree, or dispatch this project's values into another project's manager.
+- **`Retiring a field-key version past its guard needs a person at a terminal.`** `retire-version` only, `core/person_required`, exit 5. Run it at a terminal, without `--json`, `--no-input` or `PITHY_NONINTERACTIVE`, and type the version back.
+- **`The rotator retires a version itself once its guard reads clean.`** `retire-version` without `--past-guard`. Nothing to run while the guard is clean.
 - **`edit` conflicts.** The file changed while you were editing (nothing is written, merge by hand); the editor exited non-zero on changed text (your text is kept, and named); the text came back invalid twice (same).
 
 ## Examples
@@ -631,6 +659,9 @@ pithy secrets edit
 
 # Tear staging down. Prod is not touched; its manager keeps prod's runtime token.
 pithy secrets deprovision --env staging --json
+
+# Retire a field-key version the guard is holding. At a terminal, typing prod/1 back.
+pithy secrets retire-version 1 --env prod --past-guard
 ```
 
 ```json

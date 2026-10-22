@@ -32,6 +32,7 @@ import type { Logger } from "./logger/logger";
 import { bindRequestContext, createWorkerLogger } from "./logger/worker";
 import type { RouteGroup } from "./openapi/document";
 import { recordRouteGroups } from "./openapi/routeGroups";
+import { refuseEncryptedKvStores } from "./privacy/encryptedColumns";
 import { HEALTH_PATH } from "./worker/health";
 import { workerVersion } from "./worker/identity";
 import { registeredWorkflowBinding } from "./workflow/bindings";
@@ -178,6 +179,9 @@ export function createBackend<
   // `@pithy-sh/i18n`'s middleware replaces it per request; nothing else ever does.
   const defaultTranslator = bakedTranslator(catalogFor(messages, DEFAULT_LOCALE));
   const namespaces = composeKv(all);
+  // An encrypted field in a KV store is refused here, at boot (#390): a KV envelope cannot be found by key version,
+  // so it could never be rotated. The refusal names the store, the field and D1.
+  refuseEncryptedKvStores(all);
   const workflows = composeWorkflows(all);
 
   // Each named database implies its D1 binding; each KV namespace implies its KV binding; each

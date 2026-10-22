@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { EncryptionConfig } from "../crypto/envelope";
+import type { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import type { ConfigReader } from "../manager/configReader";
 import { type ConfigStamp, configStamp, type RotationPass } from "../manager/configStamp";
 import type { ConfigEntryFacts, ConfigWriter } from "../manager/configWriter";

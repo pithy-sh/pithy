@@ -159,6 +159,8 @@ interface RunOptions {
   capabilitiesFor?: (dir: string) => Promise<Capability[]>;
   /** `pithy deploy --dry-run`: plan the uploads, make none. */
   dryRun?: boolean;
+  /** Whether the account's Secrets Store holds an entry. Absent: nothing is asked. */
+  secretEntryExists?: (storeId: string, name: string) => Promise<boolean>;
 }
 
 /** One `pithy deploy --kit` run against the fixture — the rows. {@link runReport} for the whole report. */
@@ -177,6 +179,7 @@ async function runReport(options: RunOptions = {}): Promise<KitDeployReport> {
     account: null,
     force: options.force,
     ...(options.dryRun ? { dryRun: true } : {}),
+    ...(options.secretEntryExists ? { secretEntryExists: options.secretEntryExists } : {}),
     workers,
     capabilitiesFor: options.capabilitiesFor ?? (async () => options.composes ?? [EMAIL]),
     readTemplate: options.readTemplate ?? (async () => structuredClone(template)),
@@ -192,6 +195,37 @@ async function runReport(options: RunOptions = {}): Promise<KitDeployReport> {
 }
 
 describe("deployKitWorkers", () => {
+  /**
+   * **A Secrets Store entry the config binds and nothing has written is a skip, never an upload (#390).** Cloudflare
+   * refuses that deploy, and the secrets manager reached it on every upgrade: `pithy deploy` redeployed it bound to
+   * `PITHY_FIELD_KEYS`, which only `pithy secrets provision` mints.
+   */
+  test("skips a Worker that binds a Secrets Store entry the store does not hold, naming it and the command", async () => {
+    const asked: [string, string][] = [];
+    const rows = await run({
+      secretEntryExists: async (storeId, name) => {
+        asked.push([storeId, name]);
+        return false;
+      },
+    });
+    expect(asked).toEqual([["store-1a2b3c", "acme-prod-secrets-encryption-keys"]]);
+    expect(rows).toEqual([
+      {
+        capability: "email",
+        worker: null,
+        outcome: "skipped",
+        reason: expect.stringContaining(
+          "email's Worker binds acme-prod-secrets-encryption-keys, and the Secrets Store has no such entry yet.",
+        ),
+      },
+    ]);
+    expect(rows[0]?.reason).toContain("pithy email provision");
+    expect(deployed).toEqual([]);
+
+    const present = await run({ secretEntryExists: async () => true });
+    expect(present.map((row) => row.outcome)).toEqual(["deployed"]);
+  });
+
   test("deploys a composed capability's Worker, resolved for the target environment", async () => {
     const rows = await run();
     expect(rows).toEqual([

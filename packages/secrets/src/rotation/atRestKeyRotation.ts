@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { remedy } from "@pithy-sh/core/src/cli/command";
+import type { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import type { DatabaseSchema } from "@pithy-sh/core/src/data/db";
 import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { Kysely } from "kysely";
-import type { EncryptionConfig } from "../crypto/envelope";
 import { AT_REST_ROTATION_NAME } from "../data/secretRotations";
 import type { SecretsTables } from "../data/tables";
 import { MASTER_KEY_BINDING } from "../env/masterKeyBinding";

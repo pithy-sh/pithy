@@ -6,10 +6,10 @@ import type {
   CloudflareSecretsStoreManager,
 } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
 import { pithyCommand, remedy } from "@pithy-sh/core/src/cli/command";
+import { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { ConflictError, fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
-import { EncryptionConfig } from "../crypto/envelope";
-import { masterKeySecretName } from "../provision/provisionSecrets";
+import { fieldKeysSecretName, masterKeySecretName } from "../provision/provisionSecrets";
 import { ManagedEnvironment } from "../scope";
 import { configStamp, decodeConfigStamp, encodeConfigStamp, type RotationPass } from "./configStamp";
 import type { ConfigEntryFacts, ConfigWriter } from "./configWriter";
@@ -105,6 +105,28 @@ export class SecretsStoreConfigWriter implements ConfigWriter {
       detail: `rotation write-back: entries ${entries.map((entry) => entry.id).join(", ")} share the name '${this.entryName}'`,
     });
   }
+}
+
+/**
+ * Build the field-key rotation's config writer (#390), targeting `<project>-<env>-pithy-field-keys` — the entry every
+ * app Worker with an encrypted field and this manager bind as `PITHY_FIELD_KEYS`. Validated exactly as
+ * {@link rotationConfigWriter} validates the master key's, for the same reason: the name is the only partition in the
+ * account's one store, and a feature's manager rotates nothing.
+ */
+export function fieldKeysConfigWriter(
+  manager: CloudflareSecretsStoreManager,
+  project: string,
+  environment: string,
+): SecretsStoreConfigWriter {
+  const parsed = ManagedEnvironment.safeParse(environment);
+  if (!parsed.success || parsed.data === FEATURE_ENVIRONMENT) {
+    throw new ValidationError({
+      message: "This secrets manager does not rotate a field key.",
+      action: `${remedy("secrets provision").say((command) => `Redeploy the manager with \`${command}\`.`)} A feature's field key is created once and deleted with it.`,
+      detail: `field-key write-back: ENVIRONMENT=${environment}`,
+    });
+  }
+  return new SecretsStoreConfigWriter(manager, fieldKeysSecretName(project, parsed.data));
 }
 
 /**

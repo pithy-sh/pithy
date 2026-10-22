@@ -13,16 +13,18 @@ import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import { AT_REST_ROTATION_NAME } from "../data/secretRotations";
 import { resolveEncryptionConfig, type SecretBinding, type SecretsStoreEnv } from "../env/bindings";
 import { atRestInstanceId } from "../rotation/atRestKeyRotation";
+import { FieldKeyCommand, type FieldKeyReport } from "../rotation/fieldKeyRotation";
 import { isRotationDue } from "../rotation/keyRotation";
 import { rotationBackedOff } from "../rotation/rotationLedger";
 import type { ManagedEnvironment } from "../scope";
 import { configureSharedSecrets, sharedSecretsStore } from "../sharedSecretsStore";
 import { RotationTracker } from "../store/rotationTracker";
 import { logAuditEmit } from "./auditLog";
+import { type FieldKeyEnv, runFieldKeyWorkflow, scheduleFieldKeyRotation } from "./fieldKeyWorkflow";
 import { managerRegistry } from "./managerRegistry";
 import { secretsWorkflowRetry } from "./retryPolicy";
 import { runRotationWorkflow } from "./rotationWorkflow";
-import { rotationConfigWriter } from "./secretsConfigWriter";
+import { fieldKeysConfigWriter, rotationConfigWriter } from "./secretsConfigWriter";
 import {
   runValueRotationWorkflow,
   scheduleValueRotations,
@@ -34,12 +36,14 @@ import { runWriteWorkflow, type WriteWorkflowPayload, type WriteWorkflowResult }
 /**
  * The prebuilt per-environment secrets manager worker. `pithy add secrets` deploys one per managed
  * environment (`<project>-staging-secrets`, `<project>-prod-secrets`); the user authors no code for it.
- * It hosts three Workflows and a cron:
+ * It hosts four Workflows and a cron:
  *
  *   - `SecretsWriteWorkflow` — the CLI's dispatch target for create/update/remove.
  *   - `AtRestKeyRotationWorkflow` — re-encrypts the store under a fresh master key.
  *   - `SecretValueRotationWorkflow` — replaces one secret's value on its declared period, waits out its
  *     overlap, and retires the version it replaced (#602).
+ *   - `FieldKeyRotationWorkflow` — rotates the field key app Workers seal encrypted fields with, re-seals what
+ *     is leaving, and retires it on a clean guard (#390).
  *   - `scheduled()` — fires the at-rest rotation when its interval has elapsed, and a value rotation for
  *     every secret whose `rotateEveryDays` has.
  *
@@ -56,7 +60,7 @@ const DEFAULT_ROTATION_INTERVAL_DAYS = 30;
 configureSharedSecrets({ registry: managerRegistry });
 
 /** The manager worker's env: the secrets D1 + key binding, the rotation Workflow bindings, CF creds for the write-back. */
-export interface SecretsManagerEnv extends SecretsStoreEnv, ValueRotationEnv {
+export interface SecretsManagerEnv extends SecretsStoreEnv, ValueRotationEnv, FieldKeyEnv {
   /**
    * The at-rest rotation Workflow binding, triggered by the cron.
    *
@@ -197,6 +201,37 @@ export class SecretValueRotationWorkflow extends WorkflowEntrypoint<SecretsManag
 }
 
 /**
+ * The field-key rotation Workflow (#390) — `PITHY_FIELD_KEYS` rotated on its own period, the rows still under a
+ * version leaving the window re-sealed, and that version retired on a clean guard. Also what
+ * `pithy secrets retire-version` dispatches to, for the guard read and the retirement past it.
+ *
+ * Every step runs under {@link secretsWorkflowRetry}. The command is parsed, because it crosses the Workflows REST
+ * API from the CLI, and a `retire` is the most destructive thing this Worker does.
+ */
+export class FieldKeyRotationWorkflow extends WorkflowEntrypoint<SecretsManagerEnv, FieldKeyCommand> {
+  override async run(event: WorkflowEvent<FieldKeyCommand>, step: WorkflowStep): Promise<FieldKeyReport> {
+    const command = FieldKeyCommand.parse(event.payload);
+    const log = createWorkerLogger({ name: "secrets:field-keys", fields: { instanceId: event.instanceId } });
+    const writer = async () => {
+      const secrets = await sharedSecretsStore(this.env, managerRegistry);
+      const manager = new CloudflareSecretsStoreManager({
+        accountId: this.env.CLOUDFLARE_ACCOUNT_ID,
+        apiToken: secrets.get(RUNTIME_TOKEN_SECRET),
+        storeId: this.env.SECRETS_STORE_ID,
+      });
+      return fieldKeysConfigWriter(manager, this.env.PROJECT, this.env.ENVIRONMENT);
+    };
+    return await runFieldKeyWorkflow(
+      this.env,
+      writer,
+      classifiedSteps(step, secretsWorkflowRetry, NonRetryableError),
+      command,
+      { instanceId: event.instanceId, emit: logAuditEmit(log) },
+    );
+  }
+}
+
+/**
  * Start one value rotation through the binding, treating an id that already exists as already started.
  *
  * A manager with a schedule and no binding is refused rather than skipped: it was deployed from a template
@@ -267,6 +302,25 @@ export default {
     const failures: unknown[] = [];
     try {
       await scheduleAtRestRotation(env);
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      // The field key's own period, beside the master key's (#390). Independent of both other halves.
+      await scheduleFieldKeyRotation(env, new Date(), async (id, command) => {
+        if (env.FIELD_KEY_ROTATION === undefined) {
+          throw new InternalError({
+            message: "The secrets manager binds a field key and no Workflow to rotate it.",
+            action: remedy("secrets provision").say((command) => `Redeploy the manager with ${command}.`),
+            detail: `field-key rotation ${id}: the FIELD_KEY_ROTATION binding is absent on this manager`,
+          });
+        }
+        try {
+          await env.FIELD_KEY_ROTATION.create({ id, params: command });
+        } catch (error) {
+          if (!isDuplicateInstance(error)) throw error;
+        }
+      });
     } catch (error) {
       failures.push(error);
     }

@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { RUNTIME_PROFILE, RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
+import type { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
+import { FIELD_KEYS_BINDING } from "@pithy-sh/core/src/crypto/fieldKeys";
 import { assertRetainedAgreed, type RetainedRows } from "@pithy-sh/core/src/migrations/retained";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
-import type { EncryptionConfig } from "../crypto/envelope";
 import { MASTER_KEY_BINDING } from "../env/masterKeyBinding";
 import { generateKeyB64 } from "../rotation/keyRotation";
 import { type DeprovisionTarget, deprovisionTarget, type ManagedEnvironment, managedEnvironments } from "../scope";
@@ -35,6 +36,21 @@ export function masterKeySecretName(project: string, env: ManagedEnvironment, fe
   // shared. The scope composes it, the same call that names the entry the feature's app Worker binds.
   if (feature) return featureScope(feature).secretEntry(MASTER_KEY_BINDING, "environment");
   return resourceNames(project).env(env).secretEntry("secrets-encryption-keys");
+}
+
+/**
+ * The CF Secrets Store entry holding an environment's field key — `<project>-<env>-pithy-field-keys` (#390), bound into
+ * every app Worker that holds an encrypted field and into that environment's manager as `PITHY_FIELD_KEYS`.
+ *
+ * **A different entry from the master key, on purpose.** App Workers seal and open fields with it, so they hold it.
+ * This feature never adds the master key to a Worker: a Worker that holds an encrypted field and composes no `secrets`
+ * is bound this key alone. A feature gets its own, named for the feature, as its master key is.
+ */
+export function fieldKeysSecretName(project: string, env: ManagedEnvironment, feature?: FeatureIdentity): string {
+  if (feature) return featureScope(feature).secretEntry(FIELD_KEYS_BINDING, "environment");
+  // Composed from the binding, exactly as the binding pass composes every store secret an app Worker reads, so the
+  // entry this mints and the entry an app Worker binds cannot be two names.
+  return resourceNames(project).env(env).secretEntry(FIELD_KEYS_BINDING);
 }
 
 /**
@@ -128,6 +144,12 @@ export interface SecretsProvisioner {
    * fresh key would orphan every stored secret).
    */
   ensureMasterKey(env: ManagedEnvironment): Promise<{ storeId: string }>;
+  /**
+   * Mint this environment's field key and store it as `PITHY_FIELD_KEYS` (#390): the key app Workers seal encrypted
+   * fields with, in the master key's own format and never the master key. Idempotent, and for the master key's
+   * reason — a fresh key over an existing one would orphan every sealed field.
+   */
+  ensureFieldKeys(env: ManagedEnvironment): Promise<void>;
   /** Run the `secrets_*` migrations against this environment's D1. Idempotent (already-applied are skipped). */
   migrate(env: ManagedEnvironment, databaseId: string): Promise<void>;
   /** Deploy the prebuilt manager worker for this environment, wired to the resolved resource ids. */
@@ -141,7 +163,7 @@ export interface ProvisionResult {
 
 /**
  * Provision every managed environment in order: ensure each environment's runtime token, then per env
- * create the D1, mint the master key, migrate, deploy the manager. The order matters — the tokens come
+ * create the D1, mint the master key and the field key, migrate, deploy the manager. The order matters — the tokens come
  * first (a bootstrap credential that cannot mint fails fast, before anything else is created), the
  * database and key exist before migrations run, and the manager is deployed last, once its resources and
  * the token it binds are in place. Idempotent end to end (each step is).
@@ -160,6 +182,7 @@ export async function provisionSecrets(
   for (const env of managedEnvironments(environments)) {
     const { databaseId } = await provisioner.ensureDatabase(env);
     const { storeId } = await provisioner.ensureMasterKey(env);
+    await provisioner.ensureFieldKeys(env);
     await provisioner.migrate(env, databaseId);
     await provisioner.deployManager(env, { databaseId, storeId });
     perEnv.push({ env, databaseId, storeId });

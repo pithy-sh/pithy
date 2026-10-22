@@ -1230,3 +1230,38 @@ describe("the finding-list audit", () => {
     expect(seen.get("block.fixed[]")).toBe(2);
   });
 });
+
+/**
+ * **A field-key version still live at the next rotation is a `pithy doctor` error (#390)** — the one rotation
+ * finding that gates. Every other failed rotation, the field key's own unconfirmed write included, reports only.
+ */
+describe("the field key's overdue retirement", () => {
+  const rotations = (reason: string | null) => ({
+    state: "findings" as const,
+    environments: [
+      {
+        env: "prod",
+        state: "read" as const,
+        failed: [{ name: "PITHY_FIELD_KEYS", at: "2026-10-22T03:00:00.000Z", reason: reason as never }],
+      },
+    ],
+  });
+
+  test("an overdue version, and a rotation refused at four, fail the exit with no fix to run", async () => {
+    for (const reason of ["field-key-overdue", "field-key-ceiling"]) {
+      const report = { ...(await healthyWith()), secretRotations: rotations(reason) };
+      const failures = failuresOf(report);
+      expect(failures).toEqual([
+        expect.objectContaining({ check: "secretRotations", fix: null, detail: expect.stringContaining("prod:") }),
+      ]);
+      expect(failures[0]?.detail).toContain("secrets retire-version");
+    }
+  });
+
+  test("any other failed rotation reports and does not gate", async () => {
+    for (const reason of ["field-key-unconfirmed", "not-rotated", null]) {
+      const report = { ...(await healthyWith()), secretRotations: rotations(reason) };
+      expect(failuresOf(report)).toEqual([]);
+    }
+  });
+});

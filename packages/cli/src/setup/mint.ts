@@ -1,8 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { FIELD_KEYS_BINDING } from "@pithy-sh/core/src/crypto/fieldKeys";
+import { fieldKeysRegistryEntry } from "@pithy-sh/secrets/src/capability";
+import { initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { mintMissingDevSecrets } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
+import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { readDevSecrets, writeDevSecrets } from "../devSecrets/file";
 import { resolveDevSecretsFile } from "../devSecrets/location";
 import { settleDevMasterKey } from "../devSecrets/masterKey";
@@ -61,18 +65,34 @@ export async function mintLocalSecrets(options: MintLocalSecretsOptions): Promis
   // No Worker composes `secrets`: no store to open, no key to open it with, and no registry to mint from.
   if (targets.length === 0) return report;
 
-  const key = await settleDevMasterKey(options.projectDir, { paths, ...(options.dryRun ? { dryRun: true } : {}) });
-  if (key.state === "minted") report.minted.push(MASTER_KEY_BINDING);
-  if (key.state === "adopted") report.adopted.push(MASTER_KEY_BINDING);
-  if (key.state === "invalid") {
-    report.refused.push(
-      `${MASTER_KEY_BINDING} is set on this machine but is not a valid master key, so nothing was minted over it. Put a valid one in ${path}.`,
-    );
+  const registry = mergedSecretRegistry(targets);
+  // The master key only where a Worker composes `secrets`: a Worker that holds an encrypted field and nothing else
+  // has no vault to open (#390).
+  if (registry[MASTER_KEY_BINDING]) {
+    const key = await settleDevMasterKey(options.projectDir, { paths, ...(options.dryRun ? { dryRun: true } : {}) });
+    if (key.state === "minted") report.minted.push(MASTER_KEY_BINDING);
+    if (key.state === "adopted") report.adopted.push(MASTER_KEY_BINDING);
+    if (key.state === "invalid") {
+      report.refused.push(
+        `${MASTER_KEY_BINDING} is set on this machine but is not a valid master key, so nothing was minted over it. Put a valid one in ${path}.`,
+      );
+    }
+  }
+
+  // The field key, where a Worker holds an encrypted field (#390): a fresh one per project, never a literal, and
+  // only when the file lacks it, since a fresh key over an existing one leaves every local sealed field unopenable.
+  if (registry[FIELD_KEYS_BINDING] && !(await readDevSecrets(path))[FIELD_KEYS_BINDING]) {
+    if (!options.dryRun) {
+      await writeDevSecrets(path, {
+        [FIELD_KEYS_BINDING]: initialDevSecret(fieldKeysRegistryEntry, await initialMasterKeyConfig()),
+      });
+    }
+    report.minted.push(FIELD_KEYS_BINDING);
   }
 
   // The same mint `pithy dev`'s seeding run makes, over every Worker's registry at once: a name two Workers
   // declare is one value, minted once.
-  const fresh = mintMissingDevSecrets(await readDevSecrets(path), mergedSecretRegistry(targets));
+  const fresh = mintMissingDevSecrets(await readDevSecrets(path), registry);
   const minted = options.dryRun ? Object.keys(fresh) : await writeDevSecrets(path, fresh);
   report.minted.push(...[...minted].sort());
   return report;

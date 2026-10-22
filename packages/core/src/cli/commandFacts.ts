@@ -105,6 +105,7 @@ export const DESTRUCTIVE_COMMANDS = {
   "media deprovision": "the media Worker, and with --storage its bucket",
   remove: "a capability's wiring",
   "secrets deprovision": "the secrets manager, and with --keys the store's keys",
+  "secrets retire-version": "a field-key version, and every ciphertext still sealed under it",
   "secrets rm": "a stored secret",
   "storage deprovision": "the storage Worker, and with --storage its bucket",
   "support deprovision": "the support Workers, and with --storage its attachments",

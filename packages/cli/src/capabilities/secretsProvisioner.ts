@@ -22,6 +22,7 @@ import { managerWorkflowNames } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { SECRETS_RUNTIME_PERMISSIONS } from "@pithy-sh/secrets/src/manager/managerRegistry";
 import { secretsMigrations } from "@pithy-sh/secrets/src/migrations/secretsMigrations";
 import {
+  fieldKeysSecretName,
   initialMasterKeyConfig,
   masterKeySecretName,
   runtimeTokenName,
@@ -34,6 +35,7 @@ import {
   type ManagerWranglerTemplate,
   managerWorkerName,
   resolveManagerConfig,
+  type StampedEncryptedColumns,
 } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import { registeredSecretTables } from "@pithy-sh/secrets/src/rotation/tableRotation";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
@@ -360,6 +362,30 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
     return { storeId: this.#storeId };
   }
 
+  /**
+   * Mint the env's field key only if absent (#390) — `PITHY_FIELD_KEYS`, what app Workers seal encrypted fields with.
+   * The master key's format and the master key's rule: asked before any key material is generated, created only if
+   * still absent, because a fresh key over an existing one would orphan every sealed field. A feature's is its own.
+   */
+  async ensureFieldKeys(env: ManagedEnvironment): Promise<void> {
+    const name = fieldKeysSecretName(this.#project, env, this.#feature);
+    const store = this.#cf.secrets(this.#storeId);
+    if (
+      !(await store.exists(name)) &&
+      (await store.createSecretIfAbsent(name, JSON.stringify(await initialMasterKeyConfig()))) !== "present"
+    ) {
+      await this.#audit({
+        environment: env,
+        action: "secrets/set",
+        outcome: "success",
+        severity: "warning",
+        resourceType: "secret",
+        resourceId: name,
+        metadata: { name, kind: "field_keys" },
+      });
+    }
+  }
+
   /** Run the secrets migrations against the env's D1 over REST (idempotent — applied ones are skipped). */
   async migrate(_env: ManagedEnvironment, databaseId: string): Promise<void> {
     const d1 = this.#cf.d1(databaseId);
@@ -422,13 +448,26 @@ export function buildManagerDeploy(options: {
    * Omitted, the manager is deployed with no schedule and rotates no values.
    */
   schedule?: () => Promise<Pick<ManagerConfigParams, "valueRotations" | "globalEnvironment">>;
+  /**
+   * The encrypted columns the manager is stamped with, per environment (#390): every Worker's `encrypted()` fields,
+   * derived from their schemas, with each database's id. Omitted, nothing is stamped.
+   */
+  encryptedColumns?: (env: ManagedEnvironment) => Promise<StampedEncryptedColumns>;
 }): DeployManager {
   const { accountId, apiToken, cf, project, projectDir } = options;
   return async (env, resolved) => {
     const dir = managerDir(projectDir);
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as ManagerWranglerTemplate;
     const schedule = options.schedule === undefined ? {} : await options.schedule();
-    const config = resolveManagerConfig(template, { env, accountId, project, ...resolved, ...schedule });
+    const encryptedColumns = options.encryptedColumns === undefined ? undefined : await options.encryptedColumns(env);
+    const config = resolveManagerConfig(template, {
+      env,
+      accountId,
+      project,
+      ...resolved,
+      ...schedule,
+      ...(encryptedColumns === undefined ? {} : { encryptedColumns }),
+    });
 
     // **The gate, inherited rather than opted into (#537).** `deployHostWorker` stamps the resolved
     // config with this package's version and a hash of the config itself, compares that against what

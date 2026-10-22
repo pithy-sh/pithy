@@ -234,9 +234,8 @@ export type ControlPlaneMigrationsResponse = z.output<typeof ControlPlaneMigrati
 /**
  * One marked field, as `GET {basePath}/privacy` reports it (#132).
  *
- * **The per-field record, and the extension point.** #390 marks a field encrypted at rest; that lands here
- * beside `class` as one more optional key, so "which of your PHI fields are encrypted" is a derivation over
- * this list rather than a second inventory to keep.
+ * **The per-field record.** Since #390 it says whether the field rests encrypted beside `class`, so "which of
+ * your PHI fields are encrypted" is a derivation over this list rather than a second inventory to keep.
  */
 export const PrivacyFieldView = z
   .object({
@@ -260,6 +259,18 @@ export const PrivacyFieldView = z
       .describe(
         "Set on a reference: the path this field's position was first listed under, once the list reached its cap on paths. The class is marked somewhere beneath both, and the paths beneath this one are those beneath that one.",
       ),
+    encryptedAtRest: z
+      .boolean()
+      .optional()
+      .describe(
+        "Whether the field rests encrypted (#390). Absent where the core cannot say — an assumed class, a reference, or a core older than encrypted fields — and never defaulted to false.",
+      ),
+    unrotatable: z
+      .literal(true)
+      .optional()
+      .describe(
+        "Set on an encrypted field whose storage is not D1: it can never be rotated, and it blocks retirement.",
+      ),
   })
   .describe("One marked field and its class.");
 export type PrivacyFieldView = z.output<typeof PrivacyFieldView>;
@@ -274,6 +285,22 @@ export const PrivacySchemaView = z
     container: z.string().describe("The D1 database name or the KV namespace name it lives in."),
     name: z.string().describe("The table name, or the KV store name."),
     fields: z.array(PrivacyFieldView).describe("Every marked field in it, in schema order."),
+    encrypted: z
+      .array(
+        z
+          .object({
+            path: z.string().describe("Where the encrypted field sits, on the same paths as `fields[].path`."),
+            unrotatable: z
+              .literal(true)
+              .optional()
+              .describe("Set where the storage is not D1, so the field can never be rotated."),
+          })
+          .describe("One encrypted field."),
+      )
+      .optional()
+      .describe(
+        "Every field marked encrypted at rest, classed or not (#390). Absent on a Worker whose core predates encrypted fields.",
+      ),
   })
   .describe("One storage schema and the marked fields it holds.");
 export type PrivacySchemaView = z.output<typeof PrivacySchemaView>;

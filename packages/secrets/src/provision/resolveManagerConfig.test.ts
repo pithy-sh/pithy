@@ -8,7 +8,7 @@ import { describe, expect, test } from "vitest";
 import { defineSecretRegistry } from "../registry";
 import { stampedRotations } from "../rotation/rotationSchedule";
 import type { ManagedEnvironment } from "../scope";
-import { masterKeySecretName, runtimeTokenSecretName } from "./provisionSecrets";
+import { fieldKeysSecretName, masterKeySecretName, runtimeTokenSecretName } from "./provisionSecrets";
 import {
   type ManagerWranglerTemplate,
   managerWorkerName,
@@ -28,11 +28,13 @@ function template(): ManagerWranglerTemplate {
     secrets_store_secrets: [
       { binding: "SECRETS_ENCRYPTION_KEYS", store_id: "<filled-at-provision>", secret_name: "<filled-at-provision>" },
       { binding: "RUNTIME_CF_API_TOKEN", store_id: "<filled-at-provision>", secret_name: "<filled-at-provision>" },
+      { binding: "PITHY_FIELD_KEYS", store_id: "<filled-at-provision>", secret_name: "<filled-at-provision>" },
     ],
     workflows: [
       { binding: "SECRETS_WRITE", name: "pithy-secrets-write", class_name: "SecretsWriteWorkflow" },
       { binding: "AT_REST_ROTATION", name: "pithy-secrets-rotate", class_name: "AtRestKeyRotationWorkflow" },
       { binding: "VALUE_ROTATION", name: "pithy-secrets-rotate-value", class_name: "SecretValueRotationWorkflow" },
+      { binding: "FIELD_KEY_ROTATION", name: "pithy-secrets-rotate-fields", class_name: "FieldKeyRotationWorkflow" },
     ],
     triggers: { crons: ["0 3 * * *"] },
     vars: {
@@ -101,6 +103,7 @@ describe("resolveManagerConfig", () => {
       "acme-staging-secrets-write",
       "acme-staging-secrets-rotate",
       "acme-staging-secrets-rotate-value",
+      "acme-staging-secrets-rotate-fields",
     ]);
     expect(resolved.vars.CLOUDFLARE_ACCOUNT_ID).toBe("acct-9");
     expect(resolved.vars.SECRETS_STORE_ID).toBe("store-abc");
@@ -155,11 +158,13 @@ describe("resolveManagerConfig", () => {
       "acme-prod-secrets-write",
       "acme-prod-secrets-rotate",
       "acme-prod-secrets-rotate-value",
+      "acme-prod-secrets-rotate-fields",
     ]);
     expect(globex.workflows.map((w) => w.name)).toEqual([
       "globex-prod-secrets-write",
       "globex-prod-secrets-rotate",
       "globex-prod-secrets-rotate-value",
+      "globex-prod-secrets-rotate-fields",
     ]);
 
     // And every Secrets Store entry, including the master key each manager decrypts with.
@@ -240,6 +245,8 @@ describe("resolveManagerConfig for a feature", () => {
     // Its own master key, and no Cloudflare API token: branch code never holds account-wide store write (#643).
     expect(resolved.secrets_store_secrets.map((entry) => [entry.binding, entry.secret_name])).toEqual([
       ["SECRETS_ENCRYPTION_KEYS", "acme-f643-feature-address--secrets-encryption-keys"],
+      // Its own field key too (#390): a feature's app Workers seal their encrypted fields under a key of its own.
+      ["PITHY_FIELD_KEYS", "acme-f643-feature-address--pithy-field-keys"],
     ]);
     // Its write Workflow, and no rotation Workflow or cron: a feature's key is created once and deleted with it.
     expect(resolved.workflows.map((workflow) => workflow.name)).toEqual(["acme-f643-feature-address--secrets-write"]);
@@ -322,7 +329,7 @@ describe("resolveManagerConfig — the value-rotation schedule", () => {
   test("binds each Secrets Store secret this manager rotates, and no other", () => {
     const binds = (env: ManagedEnvironment) =>
       resolve(env)
-        .secrets_store_secrets.slice(2)
+        .secrets_store_secrets.slice(3)
         .map((entry) => [entry.binding, entry.secret_name, entry.store_id]);
     // Staging rotates its own link key and never the global secret, so it never binds production's entry.
     expect(binds("staging")).toEqual([["EMAIL_LINK_SIGNING_KEY", "acme-staging-email-link-signing-key", "store-abc"]]);
@@ -341,12 +348,96 @@ describe("resolveManagerConfig — the value-rotation schedule", () => {
       project: "acme",
     });
     expect(resolved.vars).not.toHaveProperty("VALUE_ROTATIONS");
-    expect(resolved.secrets_store_secrets).toHaveLength(2);
+    expect(resolved.secrets_store_secrets).toHaveLength(3);
   });
 
   test("the committed template hosts the value-rotation Workflow", async () => {
     const source = await readFile(new URL("../manager/wrangler.jsonc", import.meta.url), "utf8");
     expect(source).toContain('"SecretValueRotationWorkflow"');
     expect(source).toContain('"VALUE_ROTATION"');
+  });
+});
+
+describe("resolveManagerConfig, the field key and the encrypted columns (#390)", () => {
+  const params = {
+    env: "staging",
+    databaseId: "db-1",
+    storeId: "store-1",
+    accountId: "acct",
+    project: "acme",
+  } as const;
+  const column = {
+    name: "patient",
+    path: "diagnosis",
+    table: "patients",
+    column: "diagnosis",
+    jsonPath: null,
+    primaryKey: "id",
+    binding: "DB",
+    index: null,
+  };
+
+  test("binds the field key to the manager, under the entry every app Worker with an encrypted field binds", () => {
+    const resolved = resolveManagerConfig(template(), params);
+    expect(resolved.secrets_store_secrets.find((entry) => entry.binding === "PITHY_FIELD_KEYS")).toEqual({
+      binding: "PITHY_FIELD_KEYS",
+      store_id: "store-1",
+      secret_name: fieldKeysSecretName("acme", "staging"),
+    });
+    expect(fieldKeysSecretName("acme", "staging")).toBe("acme-staging-pithy-field-keys");
+    // The master key stays where it was, under its own entry.
+    expect(resolved.secrets_store_secrets[0]?.secret_name).toBe(masterKeySecretName("acme", "staging"));
+  });
+
+  test("stamps the columns and binds every D1 they live in, under the app's own binding name", () => {
+    const resolved = resolveManagerConfig(template(), {
+      ...params,
+      encryptedColumns: {
+        stamp: { columns: [column], unread: [], unrotatable: [] },
+        databases: [{ binding: "DB", databaseName: "acme-staging-db", databaseId: "app-db-id" }],
+      },
+    });
+    expect(JSON.parse(resolved.vars.ENCRYPTED_COLUMNS ?? "null")).toEqual({
+      columns: [column],
+      unread: [],
+      unrotatable: [],
+    });
+    expect(resolved.d1_databases).toEqual([
+      { binding: "SECRETS", database_name: "acme-staging-secrets", database_id: "db-1" },
+      { binding: "DB", database_name: "acme-staging-db", database_id: "app-db-id" },
+    ]);
+  });
+
+  test("refuses a stamped column with no database to bind, and one in the manager's own SECRETS binding", () => {
+    expect(() =>
+      resolveManagerConfig(template(), {
+        ...params,
+        encryptedColumns: { stamp: { columns: [column], unread: [], unrotatable: [] }, databases: [] },
+      }),
+    ).toThrow(/no database id/);
+    expect(() =>
+      resolveManagerConfig(template(), {
+        ...params,
+        encryptedColumns: {
+          stamp: { columns: [{ ...column, binding: "SECRETS" }], unread: [], unrotatable: [] },
+          databases: [{ binding: "SECRETS", databaseName: "x", databaseId: "y" }],
+        },
+      }),
+    ).toThrow(/binds to its own database/);
+  });
+
+  test("a feature's manager hosts no field-key rotation and is stamped with no columns", () => {
+    const resolved = resolveManagerConfig(template(), {
+      ...params,
+      env: "feature",
+      feature: { project: "acme", issue: "390", slug: "fields" },
+      encryptedColumns: {
+        stamp: { columns: [column], unread: [], unrotatable: [] },
+        databases: [{ binding: "DB", databaseName: "d", databaseId: "i" }],
+      },
+    } as never);
+    expect(resolved.workflows.map((workflow) => workflow.binding)).toEqual(["SECRETS_WRITE"]);
+    expect(resolved.vars.ENCRYPTED_COLUMNS).toBeUndefined();
+    expect(resolved.d1_databases.map((db) => db.binding)).toEqual(["SECRETS"]);
   });
 });

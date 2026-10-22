@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { EncryptionConfig } from "../crypto/envelope";
+import type { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 
 /**
  * A fresh AES-256 master-key config for a test run, as the string a `SECRETS_ENCRYPTION_KEYS` binding

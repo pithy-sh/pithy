@@ -63,3 +63,10 @@ export type SecretRotation = z.output<typeof SecretRotation>;
  * could choose, so a per-secret query that filters it out cannot be filtering out somebody's real secret.
  */
 export const AT_REST_ROTATION_NAME = "__at_rest_key_rotation__";
+
+/**
+ * The sentinel name a field-key rotation is recorded under (#390): the rotation of `PITHY_FIELD_KEYS`, the key app
+ * Workers seal encrypted fields with. Fenced by `__` like the at-rest sentinel, so no adopter's secret can share it.
+ * `pithy doctor` reads its newest closed row, and a version still live at the next rotation is an error there.
+ */
+export const FIELD_KEY_ROTATION_NAME = "__field_key_rotation__";

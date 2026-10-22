@@ -111,6 +111,11 @@ const DECLARED: readonly Declared[] = [
     via: "`masterKeySecretName(this.#project, env, this.#feature)` three lines above — `resourceNames(project).env(env).secretEntry(…)`, or the feature scope's",
   },
   {
+    // The field key (#390), minted beside the master key in the same format: `ensureFieldKeys`.
+    site: "packages/cli/src/capabilities/secretsProvisioner.ts createSecretIfAbsent(name, JSON.stringify(await initialMasterKeyConfig()))",
+    via: "`fieldKeysSecretName(this.#project, env, this.#feature)` three lines above — `resourceNames(project).env(env).secretEntry(PITHY_FIELD_KEYS)`, or the feature scope's",
+  },
+  {
     site: "packages/cli/src/capabilities/secretsProvisioner.ts putSecret(runtimeTokenSecretName(target.project, target.env), encodeVersionedValue(initialVersionedValue(apiToken)))",
     via: "`runtimeTokenSecretName` — `resourceNames(project).env(env).secretEntry(…)`, composed in the argument",
   },
@@ -141,6 +146,10 @@ const DECLARED: readonly Declared[] = [
   {
     site: "packages/cli/src/feature/provision.ts remove(masterKeySecretName(options.identity.project, FEATURE_ENVIRONMENT, options.identity))",
     via: "`masterKeySecretName` with the feature identity — composed in the argument, and the same call `ensureMasterKey` created it with",
+  },
+  {
+    site: "packages/cli/src/feature/provision.ts remove(fieldKeysSecretName(options.identity.project, FEATURE_ENVIRONMENT, options.identity))",
+    via: "`fieldKeysSecretName` with the feature identity — composed in the argument, and the same call `ensureFieldKeys` created it with (#390)",
   },
   {
     site: "packages/cli/src/provision/store.ts putSecret(name, value)",
@@ -236,7 +245,7 @@ describe("the population this gate ranges over", () => {
     // A tripwire whose input silently became empty passes every assertion about findings. This is the
     // exact-count assertion the draft's analyzer could not have made: it found nothing at all.
     expect(analysis.parsed).toBeGreaterThan(500);
-    expect(analysis.sites).toHaveLength(17);
+    expect(analysis.sites).toHaveLength(19);
   });
 });
 

@@ -15,7 +15,11 @@ import {
 import { featureScope, featureWorkerScriptNames } from "@pithy-sh/core/src/naming/provisionScope";
 import type { SecretDispatcher, SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
 import { partialWriteReport } from "@pithy-sh/secrets/src/cli/partialWrite";
-import { masterKeySecretName, type SecretsProvisioner } from "@pithy-sh/secrets/src/provision/provisionSecrets";
+import {
+  fieldKeysSecretName,
+  masterKeySecretName,
+  type SecretsProvisioner,
+} from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { managerMintedSecrets, mintDeclaredSecrets, storeSecretMinter } from "../capabilities/mintSecrets";
@@ -182,7 +186,7 @@ export interface ProvisionFeatureOptions {
    * **No token.** A feature's manager holds no Cloudflare API token and rotates nothing, so branch code never holds
    * write access to the account's one Secrets Store, where production's master key lives. Nothing here mints one.
    */
-  secrets?: Pick<SecretsProvisioner, "ensureMasterKey">;
+  secrets?: Pick<SecretsProvisioner, "ensureMasterKey" | "ensureFieldKeys">;
   /**
    * **The feature's own secrets manager, as a dispatcher (#643)** — `WorkflowSecretDispatcher` bound to this
    * feature, in a real run. Once the manager is deployed, every mintable `d1` secret is created through it by
@@ -309,6 +313,8 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
   const composesSecrets = featureHostCapabilities(options.capabilities).includes("secrets");
   if (store && options.secrets && composesSecrets) {
     await options.secrets.ensureMasterKey(FEATURE_ENVIRONMENT);
+    // And its own field key (#390), which its app Workers with an encrypted field bind beside it.
+    await options.secrets.ensureFieldKeys(FEATURE_ENVIRONMENT);
   }
 
   // **One record per run, filled by the minter below and read by the seed step (#660).** A feature is
@@ -731,6 +737,8 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
       }
       // The feature's master key, which no Worker's registry declares: the manager binds it (#643).
       await options.store.remove(masterKeySecretName(options.identity.project, FEATURE_ENVIRONMENT, options.identity));
+      // And its field key (#390), which the manager binds whatever the registries say.
+      await options.store.remove(fieldKeysSecretName(options.identity.project, FEATURE_ENVIRONMENT, options.identity));
     }
     // No rate-limit teardown: a feature's namespaces are fixed per limiter and shared by every feature (#643).
     // Nothing to revoke: a feature's manager holds no Cloudflare API token (#643).

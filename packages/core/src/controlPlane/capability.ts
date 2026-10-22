@@ -7,6 +7,7 @@ import type { BindingSpecInput } from "../capability/bindings";
 import { type Capability, defineCapability, type PithyHonoEnv } from "../capability/capability";
 import type { DatabaseSpecMap } from "../data/databases";
 import type { KvNamespaceSpecMap, KvRegistry } from "../kv/namespaces";
+import { readRetirement } from "../privacy/fieldRotation";
 import { lazyPrivacyInventory } from "../privacy/inventory";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "../version.generated";
 import { ENVIRONMENT_VAR } from "../worker/identity";
@@ -261,6 +262,7 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
         composedHealth: () => health,
         composedMigrations: () => migrationDatabases,
         privacyInventory: privacy,
+        retirement: (env) => readRetirement(env, composedCapabilities),
         now,
       });
     },

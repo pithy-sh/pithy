@@ -80,8 +80,23 @@ export function secretsValueRotateWorkflowName(
 }
 
 /**
- * Every Workflow one environment's manager is deployed with — write, at-rest rotation and value rotation, by the
- * three namers above, which the resolved `wrangler.jsonc` is filled from. What `pithy secrets deprovision` deletes
+ * The canonical name of one project's field-key rotation Workflow in one environment —
+ * `<project>-<env>-secrets-rotate-fields` (#390). Started by the manager's own cron, and by
+ * `pithy secrets retire-version` for its guard read and its retirement past the guard.
+ */
+export function secretsFieldKeyRotateWorkflowName(
+  project: string,
+  env: ManagedEnvironment,
+  feature?: FeatureIdentity,
+): string {
+  if (feature)
+    return workflowScriptName({ project, capability: SECRETS_CAPABILITY, job: "rotate-fields", env, feature });
+  return resourceNames(project).env(env).workflow(SECRETS_CAPABILITY, "rotate-fields");
+}
+
+/**
+ * Every Workflow one environment's manager is deployed with — write, at-rest rotation, value rotation and field-key
+ * rotation, by the four namers above, which the resolved `wrangler.jsonc` is filled from. What `pithy secrets deprovision` deletes
  * before the manager, because deleting the Worker leaves them registered (#789).
  */
 export function managerWorkflowNames(project: string, env: ManagedEnvironment): string[] {
@@ -89,6 +104,7 @@ export function managerWorkflowNames(project: string, env: ManagedEnvironment): 
     secretsWriteWorkflowName(project, env),
     secretsRotateWorkflowName(project, env),
     secretsValueRotateWorkflowName(project, env),
+    secretsFieldKeyRotateWorkflowName(project, env),
   ];
 }
 

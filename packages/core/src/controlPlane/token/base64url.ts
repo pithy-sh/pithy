@@ -27,7 +27,7 @@ const BASE64URL_PATTERN = /^[A-Za-z0-9_-]*$/;
 export function base64UrlEncode(bytes: Uint8Array): string {
   // Built one character at a time. `String.fromCharCode(...bytes)` overflows the argument stack on
   // inputs this seam genuinely sees — a request body digest, an exported key — so the loop is the
-  // implementation, not a style choice. (Same reason as `secrets/src/crypto/envelope.ts`.)
+  // implementation, not a style choice. (Same reason as `core/src/crypto/envelope.ts`.)
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
