@@ -92,9 +92,13 @@ export const MAX_RECURSION_DEPTH = 256;
 export const MAX_CLASSIFIED_POSITIONS = 10_000;
 
 /**
- * How many levels one read of a position, or one search beneath a node for a mark, opens, shallowest first, before
- * each path left ends as cut off. Opening a level is what may build a schema — a lazy's target, an object's shape read
- * through its getters — so it is what is counted, never breadth: a union of any width costs none. Far past any schema
+ * How many schemas one read of a position, or one search beneath a node for a mark, opens before each path left ends
+ * as cut off. Opening a node is what may build a schema — a lazy's target, an object's shape read through its getters
+ * — so it is what is counted. Both reads go shallowest first and check the budget between levels, never inside one:
+ * a level begun is read whole, however wide, so a union of any width is read to its end, and a level past the budget
+ * is still read for its marks. A read of the shapes a choice can have, which goes depth first, counts only the lazies
+ * nested in another, so a union of lazies side by side costs it none, and pays again what a schema it met before cost,
+ * so every answer is a function of the schema and the value alone, whatever was read first. Far past any schema
  * written out, and past any recursion that builds one new schema at each level; only one that builds two new ones at
  * every level reaches it, and then only below the levels it read whole. A class found is kept, past it or not.
  */
@@ -219,28 +223,34 @@ const SCHEMA_KINDS: Readonly<Record<string, ValueKind>> = {
 /** The kinds of schema that hold no value a mask could apply to. */
 const NO_VALUE: ReadonlySet<string> = new Set(["null", "undefined", "void", "never"]);
 
-/** A schema's shapes, read to its end, and how many lazies deep the read went below it. */
+/**
+ * A schema's shapes, read to its end, how many lazies deep the read went below it, and the lazies it resolved: `top` on
+ * its own level, `deep` nested in another below it.
+ */
 interface KindsFound {
   readonly kinds: ReadonlySet<ValueKind>;
   readonly reach: number;
+  readonly top: number;
+  readonly deep: number;
 }
 
 const kindsRead = new WeakMap<z.ZodType, KindsFound>();
 
 /**
  * One read of {@link kindsOf}: whether it ran past the limit or out of its budget, how deep it went, the schemas met on
- * their own path, and the budget it draws on, shared with the read of the position that asked.
+ * their own path, every lazy it resolved, and how many of those sat on each level.
  */
 interface KindsRead {
   stopped: boolean;
   deepest: number;
   cycles: number;
-  budget: Budget;
+  resolved: number;
+  onLevel: Map<number, number>;
 }
 
-/** How many more levels a read may open, of {@link MAX_SEARCHED_SCHEMAS}. */
-interface Budget {
-  left: number;
+/** What a read of {@link kindsOf} has spent of {@link MAX_SEARCHED_SCHEMAS}: every lazy it resolved inside another. */
+function spent(read: KindsRead): number {
+  return read.resolved - (read.onLevel.get(0) ?? 0);
 }
 
 /**
@@ -249,12 +259,15 @@ interface Budget {
  * nothing here reads, and for a read that meets a path more than {@link MAX_RECURSION_DEPTH} lazies long: a lazy that
  * builds a new choice each read never meets a schema twice, and every shape is the answer that masks the most. Depth
  * first, and the first path that runs out ends the read, so a lazy that builds two new choices at every level is
- * linear. A schema read to its end is remembered with how deep it went, so a choice reused in many places is read
- * once, and the answer is the same whichever read came first.
+ * linear. Each read has its own budget, and a lazy costs it one only inside another lazy, so a union of lazies of any
+ * width, none inside another, costs none. A schema read to its end is remembered with how deep it went and what it
+ * cost, and a read that meets it again pays that cost, so a choice reused in many places is read once and the answer
+ * is the same whichever read came first. What the read spent is added to `cost`, the read of the position that asked.
  */
-function kindsOf(schema: z.ZodType, budget: Budget): ReadonlySet<ValueKind> {
-  const read: KindsRead = { stopped: false, deepest: 0, cycles: 0, budget };
+function kindsOf(schema: z.ZodType, cost: { spent: number }): ReadonlySet<ValueKind> {
+  const read: KindsRead = { stopped: false, deepest: 0, cycles: 0, resolved: 0, onLevel: new Map() };
   const found = readKinds(schema, 0, read, new Set());
+  cost.spent += spent(read);
   return read.stopped ? EVERY_KIND : found;
 }
 
@@ -268,9 +281,12 @@ function readKinds(schema: z.ZodType, depth: number, read: KindsRead, path: Set<
   read.deepest = Math.max(read.deepest, depth);
   const known = kindsRead.get(schema);
   if (known) {
-    // Read again from here, it would go as deep below as it did before.
-    if (depth + known.reach > MAX_RECURSION_DEPTH) read.stopped = true;
+    // Read again from here, it would go as deep below as it did before, and resolve the lazies it did.
+    const cost = known.deep + (depth > 0 ? known.top : 0);
+    if (depth + known.reach > MAX_RECURSION_DEPTH || spent(read) + cost > MAX_SEARCHED_SCHEMAS) read.stopped = true;
     read.deepest = Math.max(read.deepest, depth + known.reach);
+    read.resolved += known.top + known.deep;
+    read.onLevel.set(depth, (read.onLevel.get(depth) ?? 0) + known.top);
     return read.stopped ? EVERY_KIND : known.kinds;
   }
   const def = defOf(schema);
@@ -286,7 +302,8 @@ function readKinds(schema: z.ZodType, depth: number, read: KindsRead, path: Set<
     read.cycles += 1;
     return EVERY_KIND;
   }
-  const { cycles, deepest } = read;
+  const { cycles, deepest, resolved } = read;
+  const onLevel = read.onLevel.get(depth) ?? 0;
   read.deepest = depth;
   path.add(schema);
   let found: ReadonlySet<ValueKind>;
@@ -298,7 +315,10 @@ function readKinds(schema: z.ZodType, depth: number, read: KindsRead, path: Set<
   const reach = read.deepest - depth;
   read.deepest = Math.max(deepest, read.deepest);
   // An answer that ran to its end and met no schema on its own path is the schema's, whatever reached it.
-  if (!read.stopped && read.cycles === cycles) kindsRead.set(schema, { kinds: found, reach });
+  if (!read.stopped && read.cycles === cycles) {
+    const top = (read.onLevel.get(depth) ?? 0) - onLevel;
+    kindsRead.set(schema, { kinds: found, reach, top, deep: read.resolved - resolved - top });
+  }
   return found;
 }
 
@@ -327,12 +347,13 @@ function readStep(
     return new Set([...left].filter((kind) => right.has(kind)));
   }
   if (def.type === "lazy") {
-    // Out of budget, the answer is every shape: the one that masks the most.
-    if (read.budget.left <= 0) {
+    // Out of budget, the answer is every shape: the one that masks the most. A lazy inside no other costs nothing.
+    if (depth > 0 && spent(read) >= MAX_SEARCHED_SCHEMAS) {
       read.stopped = true;
       return EVERY_KIND;
     }
-    read.budget.left -= 1;
+    read.resolved += 1;
+    read.onLevel.set(depth, (read.onLevel.get(depth) ?? 0) + 1);
     const inner = lazyInner(schema);
     return inner ? readKinds(inner, depth + 1, read, path) : EVERY_KIND;
   }
@@ -415,20 +436,24 @@ const searched = new WeakMap<z.ZodType, Search>();
  * Every class marked anywhere beneath a schema, on every side of every node. Level by level, each level in the order
  * the schema declares it, and each schema once. A path more than {@link MAX_RECURSION_DEPTH} levels long, counting
  * each lazy and each structural node, ends there and marks the search `truncated`; every other path is still read, so
- * a class beside a recursion is found whatever the field order. Shallowest first and at most
- * {@link MAX_SEARCHED_SCHEMAS} levels opened is what keeps a schema that builds two new ones at every level bounded:
- * the levels above the one the budget runs out on are read whole, and each path left ends `truncated` too.
+ * a class beside a recursion is found whatever the field order. Shallowest first, and the budget is checked between
+ * levels, never inside one: a level begun is read whole, however wide, so a union of any width is read to its end.
+ * Once {@link MAX_SEARCHED_SCHEMAS} schemas have been opened, the next level is still read for its marks, nothing on
+ * it is opened, and each path it would have opened ends `truncated` too. That keeps a schema that builds two new ones
+ * at every level bounded, and the levels above the one the budget runs out on are read whole.
  */
 function search(schema: z.ZodType): Search {
   const known = searched.get(schema);
   if (known) return known;
   const classes = new Set<string>();
   let truncated = false;
-  let read = 0;
+  let opened = 0;
   const seen = new Set<z.ZodType>();
   let level: z.ZodType[] = [schema];
   for (let depth = 0; level.length > 0; depth += 1) {
     const next: z.ZodType[] = [];
+    // Checked once a level, so width never cuts a level short: only how many levels a schema builds can.
+    const open = opened < MAX_SEARCHED_SCHEMAS;
     // Reversed, so the classes come out in the order the schema declares them.
     const stack = [...level].reverse();
     for (let node = stack.pop(); node; node = stack.pop()) {
@@ -442,13 +467,13 @@ function search(schema: z.ZodType): Search {
         stack.push(...children(node).reverse());
         continue;
       }
-      // Past the limit or the budget, this path ends here, and only this one. Opening a level is what may build a
-      // schema, so it is what the budget counts: a lazy's target, or an object's shape read through its getters.
-      if (depth + 1 > MAX_RECURSION_DEPTH || read >= MAX_SEARCHED_SCHEMAS) {
+      // Past the limit or the budget, this path ends here, and only this one. Opening a node is what may build a
+      // schema — a lazy's target, an object's shape read through its getters — so it is what the budget counts.
+      if (depth + 1 > MAX_RECURSION_DEPTH || !open) {
         truncated = true;
         continue;
       }
-      read += 1;
+      opened += 1;
       next.push(...children(node));
     }
     level = next;
@@ -629,8 +654,9 @@ function readPosition(schemas: readonly z.ZodType[]): {
   const leaves = new Set<z.ZodType>();
   const lazyGates = new Set<string>();
   let other = false;
-  // One budget for this read and every read of an option's shapes it makes.
-  const budget: Budget = { left: MAX_SEARCHED_SCHEMAS };
+  // Lazies resolved by this read and by each read of an option's shapes, checked between levels, never inside one: a
+  // choice of any width on one level is walked, and only how many levels of new lazies a schema builds can run it out.
+  const cost = { spent: 0 };
   // Each schema with the shapes of value it applies to, every shape until a union option narrows it, and whether it
   // is an option, narrowed to its own shapes when it is read. Level by level, a level for each lazy the schemas sit
   // beneath at this position, each level in the order the schema declares it, so a path that runs out ends alone.
@@ -638,11 +664,12 @@ function readPosition(schemas: readonly z.ZodType[]): {
   let level: Entry[] = schemas.map((schema): Entry => [schema, EVERY_KIND, false]);
   for (let lazies = 0; level.length > 0; lazies += 1) {
     const next: Entry[] = [];
+    const open = cost.spent < MAX_SEARCHED_SCHEMAS;
     const stack = [...level].reverse();
     for (let entry = stack.pop(); entry; entry = stack.pop()) {
       const [node, reached, option] = entry;
       // An option applies where the value has its shape: its marks are narrowed to that shape.
-      const kinds = option ? kindsOf(node, budget) : EVERY_KIND;
+      const kinds = option ? kindsOf(node, cost) : EVERY_KIND;
       const gate = option ? new Set([...reached].filter((kind) => kinds.has(kind))) : reached;
       if (gate.size === 0) continue;
       const own = ownMarker(node);
@@ -659,14 +686,14 @@ function readPosition(schemas: readonly z.ZodType[]): {
         const key = `${idOf(node)}:${[...gate].join(",")}`;
         if (lazyGates.has(key)) continue;
         lazyGates.add(key);
-        if (lazies >= MAX_RECURSION_DEPTH || budget.left <= 0) {
-          // A lazy nested in more lazies than the limit, or one past the budget: this path is cut off, and only this
-          // one. Every level above the budget's last is read whole, as nothing on it waits on another lazy.
+        if (lazies >= MAX_RECURSION_DEPTH || !open) {
+          // A lazy nested in more lazies than the limit, or one on a level past the budget: this path is cut off, and
+          // only this one. Every level above the budget's last is read whole, as nothing on it waits on another lazy.
           reaches.push({ gate, classes: [], opaque: true, truncated: true });
           other = true;
           continue;
         }
-        budget.left -= 1;
+        cost.spent += 1;
         const inner = lazyInner(node);
         if (inner) next.push([inner, gate, false]);
       } else if (WRAPPERS.has(def.type) && def.innerType) stack.push([def.innerType, gate, false]);

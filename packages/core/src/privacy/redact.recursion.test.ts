@@ -3,8 +3,15 @@
 
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
-import { pii, secret } from "./classes";
-import { classifyPrivacy, hasPrivacy, MAX_CLASSIFIED_POSITIONS, MAX_RECURSION_DEPTH, walkPrivacy } from "./classify";
+import { phi, pii, secret } from "./classes";
+import {
+  classifyPrivacy,
+  hasPrivacy,
+  MAX_CLASSIFIED_POSITIONS,
+  MAX_RECURSION_DEPTH,
+  MAX_SEARCHED_SCHEMAS,
+  walkPrivacy,
+} from "./classify";
 import { redact } from "./redact";
 import type { REDACT_RECURSION_DEPTH, Redacted } from "./types";
 
@@ -407,6 +414,57 @@ describe("the limit counts nesting, never breadth", () => {
       expect(redact(Event, value as never)).toEqual({ t: "e0", v: "P-1" });
       expect(classifyPrivacy(Event)).toEqual([]);
     }
+  });
+
+  test("a marked container over a union wider than the search budget carries the class of its last option", () => {
+    const options = Array.from({ length: MAX_SEARCHED_SCHEMAS + 1 }, (_, index) =>
+      z.object({ [`k${index}`]: z.string() }).strict(),
+    );
+    const Marked = pii(z.union([...options, z.object({ last: phi(z.string()) }).strict()] as never));
+    expect(redact(Marked, { last: "S-1" } as never)).toBe("[phi]");
+    expect(classifyPrivacy(Marked)).toEqual([
+      { path: "", class: "pii" },
+      { path: "", class: "phi" },
+    ]);
+    expect(hasPrivacy(Marked, "phi")).toBe(true);
+  });
+
+  test("an opaque node over an unmarked object wider than the search budget is kept verbatim", () => {
+    const shape = Object.fromEntries(
+      Array.from({ length: MAX_SEARCHED_SCHEMAS + 1 }, (_, index) => [`f${index}`, z.object({ x: z.string() })]),
+    );
+    const Row = z.object({
+      id: z.string(),
+      blob: z
+        .object(shape)
+        .partial()
+        .transform((x) => x),
+    });
+    const value = Row.parse({ id: "I-1", blob: { f0: { x: "P-1" } } });
+    expect(redact(Row, value as never)).toEqual({ id: "I-1", blob: { f0: { x: "P-1" } } });
+    expect(classifyPrivacy(Row)).toEqual([]);
+  });
+
+  test("a union of more lazies than the search budget, none nested in another, is walked and kept", () => {
+    const width = MAX_SEARCHED_SCHEMAS + 1;
+    const Row = z.object({
+      c: z.union(Array.from({ length: width }, (_, index) => z.lazy(() => z.literal(`v${index}`))) as never),
+    });
+    expect(redact(Row, Row.parse({ c: `v${width - 1}` }) as never)).toEqual({ c: `v${width - 1}` });
+    expect(classifyPrivacy(Row)).toEqual([]);
+  });
+
+  test("a union of shared lazies reads alike whichever union over them is read first", () => {
+    const width = MAX_SEARCHED_SCHEMAS + 2_000;
+    const read = (first: boolean) => {
+      const lazies = Array.from({ length: width }, (_, index) => z.lazy(() => z.literal(`v${index}`)));
+      const Half = z.object({ c: z.union(lazies.slice(0, width / 2) as never) });
+      const All = z.object({ c: z.union(lazies as never) });
+      if (first) redact(Half, Half.parse({ c: "v1" }) as never);
+      return redact(All, All.parse({ c: `v${width - 1}` }) as never);
+    };
+    expect(read(false)).toEqual({ c: `v${width - 1}` });
+    expect(read(true)).toEqual(read(false));
   });
 
   test("a chain of lazies nested past the limit is masked, one under it is walked", () => {
