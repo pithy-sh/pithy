@@ -250,10 +250,70 @@ describe("one recursion limit, however the recursion is written", () => {
     expect(Date.now() - started).toBeLessThan(5_000);
     expect(listed.length).toBeGreaterThan(0);
     for (const field of listed) {
-      expect(field).toMatchObject({ class: "secret", truncated: true });
+      expect(field.truncated).toBe(true);
       expect(field.path.startsWith("tree.")).toBe(true);
     }
+    // Nothing past the budget was read, so every class may be there: each is listed, and none is assumed away.
+    expect(new Set(listed.map((field) => field.class))).toEqual(new Set(["secret", "phi", "pci", "pii"]));
     expect(MAX_CLASSIFIED_POSITIONS).toBe(10_000);
+  });
+
+  test("classifyPrivacy never lists less than a schema marks: a class below the budget is still found", () => {
+    // Two new schemas at every level, and one phi field twenty levels down: far below the level the budget runs out on.
+    const node = (depth: number): z.ZodType =>
+      z.object({
+        get l() {
+          return node(depth + 1).optional();
+        },
+        get r() {
+          return node(depth + 1).optional();
+        },
+        ...(depth === 20 ? { x: phi(z.string()) } : {}),
+      });
+    const Deep = node(0);
+    let value: Record<string, unknown> = {};
+    const root = value;
+    for (let level = 0; level < 20; level += 1) {
+      const next = {};
+      value.l = next;
+      value = next;
+    }
+    value.x = "S-1";
+    expect(JSON.stringify(redact(Deep, Deep.parse(root) as never))).toContain('"x":"[phi]"');
+    for (const name of ["phi", "secret", "pci", "pii"]) expect(hasPrivacy(Deep, name)).toBe(true);
+    // Every unread position carries the classes it may hold, as a flag beside them.
+    const unread = classifyPrivacy(Deep).filter((field) => field.class === "phi");
+    expect(unread.length).toBeGreaterThan(0);
+    for (const field of unread) expect(field.truncated).toBe(true);
+  });
+
+  test("hasPrivacy answers exactly for each class marked inside the budget", () => {
+    const markers = { secret, phi, pii } as const;
+    for (const [name, mark] of Object.entries(markers)) {
+      // A tree built anew at every level that ends at depth 4, so the walk reads it to its end.
+      const node = (depth: number): z.ZodType =>
+        z.object({
+          ...(depth < 4
+            ? {
+                get l() {
+                  return node(depth + 1).optional();
+                },
+                get r() {
+                  return node(depth + 1).optional();
+                },
+              }
+            : {}),
+          ...(depth === 3 ? { x: mark(z.string()) } : {}),
+        });
+      const Tree = node(0);
+      expect(hasPrivacy(Tree, name)).toBe(true);
+      for (const other of Object.keys(markers).filter((each) => each !== name)) {
+        expect(hasPrivacy(Tree, other)).toBe(false);
+      }
+      const listed = classifyPrivacy(Tree);
+      expect(listed.some((field) => field.truncated)).toBe(false);
+      expect(listed).toContainEqual({ path: "l.r.l.x", class: name });
+    }
   });
 
   test("classifyPrivacy reads a tree built anew level by level, so a shallow branch is listed as redact masks it", () => {

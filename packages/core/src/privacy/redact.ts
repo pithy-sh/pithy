@@ -22,13 +22,18 @@ import type { RedactedOutput } from "./types";
  * it masks whole and says so.
  *
  * **Redacted exactly.** Every marked field is masked with its class placeholder, every unmarked field is kept as
- * `parse` returned it, nothing is dropped, and `Redacted<T>` is the exact type of the result, save two positions it
- * types `unknown` rather than guess: one that nests wrappers and choices deeper than the type can follow, and an
- * intersection with a record on either side, because a record's masked keys rename the other side's keys too.
+ * `parse` returned it, nothing is dropped, and `Redacted<T>` is the exact type of the result, save three positions it
+ * types `unknown` rather than guess: one that nests wrappers and choices deeper than the type can follow, an
+ * intersection with a record on either side, because a record's masked keys rename the other side's keys too, and a
+ * `.catch()` over an object, an array or another structure with a mark beneath, because the type cannot tell a
+ * constant fallback from a function.
  *
  * 1. Rows and objects: `z.object`, strict, loose or with a catchall, and `pick`, `omit`, `partial` and `extend` of one.
+ *    A mark on a whole object does not survive Zod's object methods, `extend`, `safeExtend`, `merge`, `pick`, `omit`,
+ *    `partial`, `required`, `strict` and `catchall`, because each builds a fresh schema: mark the object after
+ *    deriving it. A field marked inside survives every one.
  * 2. Collections: arrays, tuples including rest elements, records with marked keys or values, `Map` and `Set`.
- * 3. Wrappers: `optional`, `nullable`, `default`, `catch`, `readonly`, `brand`.
+ * 3. Wrappers: `optional`, `nullable`, `default`, `catch` with a constant value, `readonly`, `brand`.
  * 4. Choices: unions, discriminated unions and intersections. An option's marks apply where the value has that option's
  *    shape: an object option to an object value, an array option to an array value. A field is masked when any option
  *    or side that applies marks it, and a key no option names is kept. Where one side of an intersection narrows a
@@ -46,12 +51,20 @@ import type { RedactedOutput } from "./types";
  * 7. Values copied out of a parsed row into a plain object, array, `Map` or `Set` described by any of the above.
  *
  * **Outside the contract.** Custom transforms and pipes, `preprocess`, codecs other than the kit's own (one built the
- * way `sqliteJson` is built included), `z.custom`, `any` and `unknown`. `redact` does not look inside these. When
+ * way `sqliteJson` is built included), `z.custom`, `any`, `unknown`, `.overwrite()` and `.catch()` with a fallback
+ * function. `redact` does not look inside these. When
  * anything beneath one is marked, the whole value is masked with the strongest class it carries, and `Redacted<T>`
  * types that position `unknown`. When nothing beneath it is marked, it is kept as it is, including when it is a union
  * option beside a marked one. A recursion beneath it that reaches the item 6 depth limit counts as possibly marked, so
  * that value is masked whole and typed `unknown`: with the strongest class marked anywhere else beneath it, or as
- * `[truncated]` where none is. None of this ever throws or leaks a raw marked value.
+ * `[truncated]` where none is. None of this ever throws or leaks a raw marked value. `Redacted<T>` cannot see an
+ * `.overwrite()`, which keeps the type of the schema it is called on, so it types that position as the shape beneath
+ * it. A `.refine` or `.superRefine` that mutates its input is outside the contract; `redact` does not defend against a
+ * check written to move a marked value. `redact` copies only the enumerable own properties of a value passed through
+ * as it is.
+ *
+ * A read of a value that throws — a getter, a proxy's trap, an iterator — makes that position `[truncated]`, and the
+ * walk goes on: `redact` never throws.
  *
  * ## The edges, exactly
  *
@@ -103,7 +116,28 @@ function isPlainObject(value: unknown): value is Record<PropertyKey, unknown> {
  */
 function masked(mask: Mask, value: unknown): string {
   if (mask.classes.length === 0) return TRUNCATED_MASK;
-  return (mask.own ? privacyClass(mask.className)?.mask(value) : undefined) ?? `[${mask.className}]`;
+  let own: string | undefined;
+  try {
+    own = mask.own ? privacyClass(mask.className)?.mask(value) : undefined;
+  } catch {
+    // A class's own mask is the adopter's code: where it throws, its placeholder stands.
+  }
+  return own ?? `[${mask.className}]`;
+}
+
+/**
+ * What a read of a value put in place of what it could not read: a getter or a proxy trap that threw. Its position is
+ * masked {@link TRUNCATED_MASK}, and the walk goes on.
+ */
+const UNREADABLE: unique symbol = Symbol("unreadable");
+
+/** `value[key]`, or {@link UNREADABLE} where reading it throws. */
+function read(value: object, key: PropertyKey): unknown {
+  try {
+    return (value as Record<PropertyKey, unknown>)[key];
+  } catch {
+    return UNREADABLE;
+  }
 }
 
 /** `name`, or `name #2`, `name #3` … — the first that `taken` does not hold yet. */
@@ -172,22 +206,29 @@ function walkValue(root: Position, value: unknown): unknown {
 function redactAt(step: Extract<Step, { visit: unknown }>, steps: Step[]): void {
   const { at, depth, visit: value, put } = step;
   if (value === null || value === undefined) put(value, false);
-  else if (depth > MAX_RECURSION_DEPTH) put(TRUNCATED_MASK, true);
+  else if (value === UNREADABLE || depth > MAX_RECURSION_DEPTH) put(TRUNCATED_MASK, true);
   else if (at === undefined) put(value, false);
   else {
-    // A mark applies to a value of the shape of the option it was reached through, and to no other.
-    const mask = at.maskFor(value);
-    if (mask) {
-      put(masked(mask, value), true);
+    const below: Step[] = [];
+    let result: Result;
+    try {
+      // A mark applies to a value of the shape of the option it was reached through, and to no other.
+      const mask = at.maskFor(value);
+      result = mask
+        ? { value: masked(mask, value), masked: true }
+        : {
+            value: redactKind(at, value, below, (child, item, out) => {
+              below.push({ visit: item, at: child, depth: depth + 1, put: out });
+            }),
+            masked: false,
+          };
+    } catch {
+      // A value whose shape, keys or entries throw when read: a proxy's trap, a getter, an iterator. Masked whole, and
+      // nothing read below it is kept.
+      put(TRUNCATED_MASK, true);
       return;
     }
-    const below: Step[] = [];
-    put(
-      redactKind(at, value, below, (child, item, out) => {
-        below.push({ visit: item, at: child, depth: depth + 1, put: out });
-      }),
-      false,
-    );
+    put(result.value, result.masked);
     // Popped last to first: what is below runs in order.
     steps.push(...below.reverse());
   }
@@ -201,13 +242,15 @@ function redactKind(at: Position, value: unknown, below: Step[], walk: Walk): un
   const { kinds } = at;
   if (Array.isArray(value)) {
     if (!kinds.has("array") && !kinds.has("tuple")) return value;
-    // `map`, so a hole stays a hole, as it did in the value.
-    const out = value.map(() => undefined) as unknown[];
-    value.forEach((item, index) => {
-      walk(at.item(index), item, (result) => {
+    // Sized, so a hole stays a hole, as it did in the value.
+    const { length } = value;
+    const out = new Array<unknown>(length);
+    for (let index = 0; index < length; index += 1) {
+      if (!(index in value)) continue;
+      walk(at.item(index), read(value, index), (result) => {
         out[index] = result;
       });
-    });
+    }
     return out;
   }
   if (value instanceof Map) {
@@ -263,7 +306,17 @@ function redactKind(at: Position, value: unknown, below: Step[], walk: Walk): un
  */
 function redactObject(at: Position, value: Record<PropertyKey, unknown>, walk: Walk): Record<PropertyKey, unknown> {
   const keyAt = at.key;
-  const keys = Reflect.ownKeys(value).filter((key) => Object.prototype.propertyIsEnumerable.call(value, key));
+  // Only the enumerable own keys are copied, as a spread copies them. A key whose descriptor cannot be read is kept,
+  // and its value masked as unreadable.
+  const unreadable = new Set<PropertyKey>();
+  const keys = Reflect.ownKeys(value).filter((key) => {
+    try {
+      return Object.prototype.propertyIsEnumerable.call(value, key);
+    } catch {
+      unreadable.add(key);
+      return true;
+    }
+  });
   const names = distinctAll(
     keys.map((key): Result => {
       const mask = typeof key === "symbol" ? keyAt?.maskFor(key) : keyAt?.nameMask;
@@ -274,7 +327,7 @@ function redactObject(at: Position, value: Record<PropertyKey, unknown>, walk: W
   keys.forEach((key, index) => {
     const name = names[index] as PropertyKey;
     // Defined, not assigned: an own `__proto__` key that parse kept stays a key, and never becomes the prototype.
-    walk(at.field(key), value[key], (result) => {
+    walk(at.field(key), unreadable.has(key) ? UNREADABLE : read(value, key), (result) => {
       Object.defineProperty(out, name, { value: result, enumerable: true, writable: true, configurable: true });
     });
   });

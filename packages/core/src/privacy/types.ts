@@ -148,6 +148,9 @@ export type Redacted<S extends z.ZodType> = RedactedOutput<S>;
  *   tell one defined once from one built anew, which reaches the limit and is masked; so is a schema annotated
  *   `z.ZodType<T>` beneath it. That is the one place the type says `unknown`, with two more a type cannot see past: a
  *   schema annotated `z.ZodType<T>`, as a self-referencing `z.lazy` must be, names no kind; and `any`.
+ * - **A `.catch()` over a structure is read as the opaque node it may be**: `unknown` where a mark sits beneath it, a
+ *   constant fallback included, as the type cannot tell one from a function, which `redact` masks whole. An
+ *   `.overwrite()` keeps the type of the schema it is called on, so the type cannot see it.
  * - **A position nested deeper than {@link REDACT_RECURSION_DEPTH} levels is `unknown`**, as `redact` masks it whole
  *   from the same depth: every object, array, tuple, record, map and set above it counts one.
  */
@@ -359,18 +362,32 @@ type Nodes<S, D extends number = REDACT_TYPE_DEPTH> = [D] extends [never]
   : S extends unknown
     ? IsMarkedNode<S> extends true
       ? S
-      : DefOf<S> extends { type: Wrapper; innerType: infer I }
-        ? Nodes<I, Down<D>>
-        : DefOf<S> extends { type: "union"; options: readonly (infer O)[] }
-          ? Nodes<O, Down<D>>
-          : DefOf<S> extends { type: "intersection"; left: infer L; right: infer R }
-            ? Nodes<L, Down<D>> | Nodes<R, Down<D>>
-            : DefOf<S> extends { type: "lazy"; getter: () => infer I }
-              ? Nodes<I, Down<D>>
-              : [KitCodec<S>] extends [never]
-                ? S
-                : Nodes<KitCodec<S>, Down<D>>
+      : IsMadeCatch<S> extends true
+        ? S
+        : DefOf<S> extends { type: Wrapper; innerType: infer I }
+          ? Nodes<I, Down<D>>
+          : DefOf<S> extends { type: "union"; options: readonly (infer O)[] }
+            ? Nodes<O, Down<D>>
+            : DefOf<S> extends { type: "intersection"; left: infer L; right: infer R }
+              ? Nodes<L, Down<D>> | Nodes<R, Down<D>>
+              : DefOf<S> extends { type: "lazy"; getter: () => infer I }
+                ? Nodes<I, Down<D>>
+                : [KitCodec<S>] extends [never]
+                  ? S
+                  : Nodes<KitCodec<S>, Down<D>>
     : never;
+
+/**
+ * Whether a schema is a `.catch()` over a structure. A fallback function makes a new value, so `redact` masks it whole
+ * over a mark, as it does a transform; a constant one is walked. The type cannot tell the two apart, so it reads every
+ * such catch as the node it may be: `unknown` where a mark sits beneath it, and its own output where none does.
+ */
+type IsMadeCatch<S> =
+  DefOf<S> extends { type: "catch"; innerType: infer I }
+    ? [Extract<KindOf<I>, "object" | "array" | "map" | "set">] extends [never]
+      ? false
+      : true
+    : false;
 
 /**
  * How many levels of wrapper, choice and lazy {@link Nodes} flattens at one position. Past it the position is typed
@@ -599,7 +616,9 @@ type ShapedNode<S, N, D extends Depth, M> = S extends unknown
       : DefOf<S> extends { type: "default" | "prefault" | "nonoptional"; innerType: infer I }
         ? Exclude<Shaped<I, N, D, M>, undefined>
         : DefOf<S> extends { type: "catch"; innerType: infer I }
-          ? Shaped<I, N, D, M>
+          ? IsMadeCatch<S> extends true
+            ? MaskOut<Out<S>, M>
+            : Shaped<I, N, D, M>
           : DefOf<S> extends { type: "readonly"; innerType: infer I }
             ? z.core.util.MakeReadonly<Shaped<I, N, D, M>>
             : DefOf<S> extends { type: "lazy"; getter: () => infer I }

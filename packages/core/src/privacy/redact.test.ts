@@ -267,11 +267,14 @@ describe("the rule: structural nodes are walked", () => {
     expect(masked(Wrapped, { e: "S-1", n: "n" })).toEqual({ e: "[pii]", n: "n" });
     const Defaulted = z.object({ e: pii(z.string()) }).default({ e: "S-d" } as never);
     expect(masked(Defaulted, undefined)).toEqual({ e: "[pii]" });
-    // A fallback's field is masked where the object marks it, and its extra key, which no schema names, is kept.
-    const Caught = z
+    // A constant fallback's field is masked where the object marks it, and its extra key, which no schema names, is
+    // kept. A fallback function makes a new value, so it is opaque: see "outside the contract".
+    const Caught = z.object({ e: pii(z.string()), n: z.number() }).catch({ e: "S-c", n: 0, extra: "x" } as never);
+    expect(masked(Caught, { e: "S-1", n: "bad" })).toEqual({ e: "[pii]", n: 0, extra: "x" });
+    const Called = z
       .object({ e: pii(z.string()), n: z.number() })
       .catch((ctx) => ({ e: String((ctx.input as { e: string }).e), n: 0, extra: "x" }) as never);
-    expect(masked(Caught, { e: "S-1", n: "bad" })).toEqual({ e: "[pii]", n: 0, extra: "x" });
+    expect(masked(Called, { e: "S-1", n: "bad" })).toBe("[pii]");
   });
 
   test("Redacted<T> types a position unknown where it nests more wrappers and choices than the type follows", () => {
@@ -324,16 +327,14 @@ describe("the contract's edges", () => {
     expect(masked(Id, { n: "4111111111111111" })).toEqual({ n: "[pci]" });
   });
 
-  test("keeps a value of a kind no option names, as a fallback handed back, and one a scalar option holds", () => {
-    // biome-ignore lint/suspicious/noExplicitAny: a fallback that hands back the raw input, as one with a cast can.
-    const back = (ctx: { input: unknown }): any => ctx.input;
-    const Caught = z.object({ email: pii(z.string()) }).catch(back);
-    // The object's marks apply to an object value: a string, an array or a map has none of its shape.
-    expect(masked(Caught, "x")).toBe("x");
-    expect(masked(Caught, ["x"])).toEqual(["x"]);
+  test("keeps a value of a kind no option names, as a constant fallback hands back, and one a scalar option holds", () => {
     const map = new Map([["email", "x"]]);
-    expect(masked(z.object({ u: Caught }), { u: map })).toEqual({ u: map });
-    expect(masked(Caught, { email: "S-1" })).toEqual({ email: "[pii]" });
+    const caught = (fallback: unknown) => z.object({ email: pii(z.string()) }).catch(fallback as never);
+    // The object's marks apply to an object value: a string, an array or a map has none of its shape.
+    expect(masked(caught("x"), 1)).toBe("x");
+    expect(masked(caught(["x"]), 1)).toEqual(["x"]);
+    expect(masked(z.object({ u: caught(map) }), { u: 1 })).toEqual({ u: map });
+    expect(masked(caught("x"), { email: "S-1" })).toEqual({ email: "[pii]" });
     const at = new Date(0);
     expect(masked(z.union([z.string(), z.object({ e: pii(z.string()) })]), "hello")).toBe("hello");
     expect(masked(z.union([z.date(), z.object({ e: pii(z.string()) })]), at)).toBe(at);
@@ -698,6 +699,69 @@ describe("outside the contract: masked whole when marked beneath, kept when not,
     same<Redacted<z.ZodUnion<[typeof Obj, z.ZodCustom<Date>]>>, { e: string } | Date>();
   });
 
+  test("an .overwrite() and a .catch() fallback function make a new value: masked whole over a mark", () => {
+    const Moved = z.object({ e: pii(z.string()), n: z.string() }).overwrite((o) => ({ ...o, n: o.e }));
+    expect(masked(Moved, { e: "S-1", n: "u" })).toBe("[pii]");
+    expect(classifyPrivacy(Moved)).toEqual([{ path: "", class: "pii" }]);
+    const Copied = z
+      .object({ e: pii(z.string()), n: z.number() })
+      .catch((ctx) => ({ e: "x", n: 0, copy: (ctx.input as { e: string }).e }) as never);
+    expect(masked(Copied, { e: "S-1", n: "bad" })).toBe("[pii]");
+    expect(masked(z.object({ id: z.string(), c: Copied.optional() }), { id: "1", c: { e: "S-1", n: 2 } })).toEqual({
+      id: "1",
+      c: "[pii]",
+    });
+    // Over a union, an array and a record the same, in the inventory too.
+    const Listed = z.array(z.object({ e: phi(z.string()) })).overwrite((rows) => rows);
+    expect(masked(Listed, [{ e: "S-1" }])).toBe("[phi]");
+    expect(hasPrivacy(z.object({ rows: Listed }), "phi")).toBe(true);
+    // Over nothing marked, kept as it is.
+    const Plain = z.object({ n: z.string() }).overwrite((o) => ({ ...o, n: o.n.toUpperCase() }));
+    expect(masked(Plain, { n: "u" })).toEqual({ n: "U" });
+    expect(
+      masked(
+        z.object({ n: z.string() }).catch(() => ({ n: "f" })),
+        1,
+      ),
+    ).toEqual({ n: "f" });
+  });
+
+  test("a scalar's .overwrite() and fallback function change nothing: its own mask, or kept", () => {
+    const Card = z.object({ c: pci(z.string()).trim(), n: z.string().toLowerCase(), f: z.string().catch(() => "f") });
+    const out = masked(Card, { c: " 4111111111111111 ", n: "U", f: 1 });
+    expect(out).toEqual({ c: redact(pci(z.string()), "4111111111111111" as never), n: "u", f: "f" });
+    expect(masked(z.object({ c: pci(z.string()).catch(() => "4111111111111111" as never) }), { c: 1 })).toEqual({
+      c: redact(pci(z.string()), "4111111111111111" as never),
+    });
+  });
+
+  test("Redacted<T> types a .catch() over a structure with a mark beneath unknown, a constant one included", () => {
+    type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+    const same = <A, B>(..._proof: Same<A, B> extends true ? [] : [never]): void => {};
+    const Inner = z.object({ e: pii(z.string()), n: z.number() });
+    const Shape = z.object({
+      called: Inner.catch(() => ({ e: "x", n: 0 }) as never),
+      constant: Inner.catch({ e: "x", n: 0 } as never),
+      plain: z.object({ n: z.number() }).catch({ n: 0 }),
+      scalar: pii(z.string()).catch("x" as never),
+      kept: z.number().catch(0),
+    });
+    type Out = Redacted<typeof Shape>;
+    // The type cannot tell a constant fallback from a function, so it never guesses which.
+    same<Out["called"], unknown>();
+    same<Out["constant"], unknown>();
+    same<Out["plain"], { n: number }>();
+    same<Out["scalar"], string>();
+    same<Out["kept"], number>();
+    expect(masked(Shape, { called: 1, constant: 1, plain: 1, scalar: 1, kept: "x" })).toEqual({
+      called: "[pii]",
+      constant: { e: "[pii]", n: 0 },
+      plain: { n: 0 },
+      scalar: "[pii]",
+      kept: 0,
+    });
+  });
+
   test("Redacted<T> types an opaque position unknown where it is marked beneath, and as its output where not", () => {
     type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
     const same = <A, B>(..._proof: Same<A, B> extends true ? [] : [never]): void => {};
@@ -886,5 +950,104 @@ describe("an intersection with a record side", () => {
     const Plain = z.intersection(z.object({ k: z.number() }), z.record(z.string(), z.number()));
     expect(masked(Plain, { k: 5, a: 1 })).toEqual({ k: 5, a: 1 });
     same<Redacted<typeof Plain>, unknown>();
+  });
+});
+
+describe("a value read as it was handed back", () => {
+  // `z.any()` beside an object option hands back the value it was given, accessors and traps included.
+  const Loose = z.union([z.object({ e: pii(z.string()) }), z.any()]);
+  const Held = z.object({ id: z.string(), v: Loose });
+  const boom = (): never => {
+    throw new Error("read");
+  };
+
+  test("never throws: a read that throws is [truncated] there, and the walk goes on", () => {
+    const getter = { k: "u", e: "S-1" };
+    Object.defineProperty(getter, "x", { get: boom, enumerable: true });
+    expect(redact(Loose, getter as never)).toEqual({ k: "u", e: "[pii]", x: "[truncated]" });
+    expect(redact(Held, { id: "1", v: getter } as never)).toEqual({
+      id: "1",
+      v: { k: "u", e: "[pii]", x: "[truncated]" },
+    });
+    const keys = new Proxy({}, { ownKeys: boom });
+    expect(redact(Loose, keys as never)).toBe("[truncated]");
+    expect(redact(Held, { id: "1", v: keys } as never)).toEqual({ id: "1", v: "[truncated]" });
+    const get = new Proxy({ k: "u" }, { get: boom });
+    expect(redact(Held, { id: "1", v: get } as never)).toEqual({ id: "1", v: { k: "[truncated]" } });
+    const described = new Proxy({ k: "u" }, { getOwnPropertyDescriptor: boom });
+    expect(redact(Held, { id: "1", v: described } as never)).toEqual({ id: "1", v: { k: "[truncated]" } });
+    const prototype = new Proxy({}, { getPrototypeOf: boom });
+    expect(redact(Held, { id: "1", v: prototype } as never)).toEqual({ id: "1", v: "[truncated]" });
+    const revocable = Proxy.revocable([], {});
+    revocable.revoke();
+    expect(redact(Held, { id: "1", v: revocable.proxy } as never)).toEqual({ id: "1", v: "[truncated]" });
+  });
+
+  test("never throws on an array, a map or a set whose reads throw", () => {
+    const Rows = z.union([z.array(z.object({ e: pii(z.string()) })), z.any()]);
+    const rows: unknown[] = [{ e: "S-1" }];
+    Object.defineProperty(rows, 1, { get: boom, enumerable: true });
+    expect(redact(Rows, rows as never)).toEqual([{ e: "[pii]" }, "[truncated]"]);
+    expect(redact(z.object({ r: Rows }), { r: new Proxy([], { get: boom }) } as never)).toEqual({
+      r: "[truncated]",
+    });
+    const map = new Map([["a", "S-1"]]);
+    Object.defineProperty(map, Symbol.iterator, { value: boom });
+    const ByKey = z.union([z.any(), z.map(z.string(), pii(z.string()))]);
+    expect(redact(ByKey, map as never)).toBe("[truncated]");
+    expect(redact(z.object({ m: ByKey }), { m: map } as never)).toEqual({ m: "[truncated]" });
+    const set = new Set(["S-1"]);
+    Object.defineProperty(set, Symbol.iterator, { value: boom });
+    const Tags = z.union([z.any(), z.set(pii(z.string()))]);
+    expect(redact(Tags, set as never)).toBe("[truncated]");
+    expect(redact(z.object({ s: Tags }), { s: set } as never)).toEqual({ s: "[truncated]" });
+  });
+
+  test("never throws on a mask that throws: the class's placeholder stands", () => {
+    const brittle = definePrivacyClass({ name: "brittle_mask_test", mask: boom });
+    expect(redact(z.object({ b: brittle(z.string()) }), { b: "S-1" } as never)).toEqual({ b: "[brittle_mask_test]" });
+  });
+
+  test("copies only the enumerable own keys of a value handed back as it is", () => {
+    const value = Object.defineProperty({ k: "u" }, "hidden", { value: "u-hidden", enumerable: false });
+    const parsed = Loose.parse(value);
+    expect(Object.getOwnPropertyNames(parsed)).toEqual(["k", "hidden"]);
+    expect(Object.getOwnPropertyNames(redact(Loose, parsed as never))).toEqual(["k"]);
+  });
+});
+
+describe("a mark on a whole object", () => {
+  type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+  const same = <A, B>(..._proof: Same<A, B> extends true ? [] : [never]): void => {};
+  const Marked = pii(z.object({ a: z.string(), b: z.string() }));
+
+  test("does not survive a Zod object method, which builds a fresh schema: mark after deriving", () => {
+    const derived: z.ZodType[] = [
+      Marked.extend({ c: z.string() }),
+      Marked.safeExtend({ c: z.string() }),
+      Marked.merge(z.object({ c: z.string() })),
+      Marked.pick({ a: true }),
+      Marked.omit({ a: true }),
+      Marked.partial(),
+      Marked.partial().required(),
+      Marked.strict(),
+      Marked.catchall(z.string()),
+    ];
+    for (const schema of derived) {
+      expect(classifyPrivacy(schema)).toEqual([]);
+      expect(classifyPrivacy(pii(schema))).toEqual([{ path: "", class: "pii" }]);
+    }
+    const Extended = Marked.extend({ c: z.string() });
+    same<z.output<typeof Extended>, { a: string; b: string; c: string }>();
+    same<Redacted<typeof Extended>, { a: string; b: string; c: string }>();
+    expect(masked(pii(Extended), { a: "S-1", b: "S-2", c: "S-3" })).toBe("[pii]");
+  });
+
+  test("keeps a field marked inside through every one of them", () => {
+    const Inner = z.object({ a: pii(z.string()), b: z.string() });
+    expect(classifyPrivacy(Inner.extend({ c: z.string() }))).toEqual([{ path: "a", class: "pii" }]);
+    expect(classifyPrivacy(Inner.pick({ a: true }))).toEqual([{ path: "a", class: "pii" }]);
+    expect(classifyPrivacy(Inner.partial())).toEqual([{ path: "a", class: "pii" }]);
+    expect(masked(Inner.strict(), { a: "S-1", b: "u" })).toEqual({ a: "[pii]", b: "u" });
   });
 });

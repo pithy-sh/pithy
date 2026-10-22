@@ -3,7 +3,7 @@
 
 import type { z } from "zod";
 import { isSqliteJson, SQLiteBoolean, SQLiteDate } from "../data/codecs";
-import { type BuiltInPrivacyClass, ownPrivacyClasses, strongestPrivacyClass } from "./classes";
+import { ownPrivacyClasses, privacyClasses, rankPrivacyClasses, strongestPrivacyClass } from "./classes";
 
 /**
  * **Reading a privacy marker off a schema, and every marker off a schema tree** (#132).
@@ -18,13 +18,14 @@ import { type BuiltInPrivacyClass, ownPrivacyClasses, strongestPrivacyClass } fr
  * agree on every one. The contract they keep is stated on #132 and in `docs/PRIVACY.md`:
  *
  * - **Walked exactly**: objects (strict, loose, catchall, and `pick`, `omit`, `partial`, `extend` of one), arrays,
- *   tuples and their rest, records, `Map` and `Set`; the wrappers `optional`, `nullable`, `default`, `catch`,
- *   `readonly` and a brand; unions, discriminated unions and intersections, where an option's marks apply where
+ *   tuples and their rest, records, `Map` and `Set`; the wrappers `optional`, `nullable`, `default`, `catch` with a
+ *   constant value, `readonly` and a brand; unions, discriminated unions and intersections, where an option's marks apply where
  *   the value has that option's shape — a marked string option to a string, never to an array or a number beside
  *   it — and a mark reached through no option applies to every value; the kit's `SQLiteDate`, `SQLiteBoolean` and
  *   `sqliteJson(schema)`, read through to the schema they decode to; and recursion, a `z.lazy` or a getter, to the
  *   one limit below.
- * - **Everything else is opaque**: a transform, a pipe, a preprocess, any other codec, `z.custom`, `any`, `unknown`.
+ * - **Everything else is opaque**: a transform, a pipe, a preprocess, any other codec, `z.custom`, `any`, `unknown`,
+ *   and an `.overwrite()` or a `.catch()` with a fallback function over a structure, which make a new value.
  *   Nothing inside one is walked. With a mark anywhere beneath it, its position is masked whole with the strongest
  *   class it carries; with none, it is kept, a union option beside a marked one included.
  * - **A mark on a container masks it whole**, and the container carries every class marked inside it as well as its
@@ -40,8 +41,9 @@ import { type BuiltInPrivacyClass, ownPrivacyClasses, strongestPrivacyClass } fr
  *   shallowest first. A position is read once wherever it sits, so a schema reused in many fields costs one. `redact`
  *   walks a value, which is finite; a list walks the schema, and one that builds two new schemas at every level has
  *   more positions than any list can hold. Such a schema is read whole down to the level the budget runs out on, and
- *   each new position left, none of them above that level, is listed as {@link UNREAD_CLASS} with `truncated`. It
- *   is one of two places the list says more than `redact` masks, and it says the strongest class.
+ *   each new position left, none of them above that level, is listed with every class registered, each with
+ *   `truncated`: nothing below it was read, so any class may be marked there, and the list never says less than the
+ *   schema marks. It is one of two places the list says more than `redact` masks.
  * - **An intersection is not narrowed.** Where one side narrows a field so it can never hold the type the other side
  *   marks, `classifyPrivacy` may still list that field: the inventory can list more than `redact` masks, and never
  *   less. `z.intersection(z.object({ b: z.number() }), z.object({ b: z.union([pii(z.string()), z.number()]) }))`
@@ -62,7 +64,7 @@ export interface PrivacyField {
   /** The class it was marked with. */
   class: string;
   /**
-   * Set where the list stopped reading and assumed {@link UNREAD_CLASS}: a position left once the walk had read
+   * Set where the list stopped reading and assumed {@link unreadClasses}: a position left once the walk had read
    * {@link MAX_CLASSIFIED_POSITIONS} distinct positions, level by level. Absent everywhere the schema was read to the
    * end. A position past {@link MAX_RECURSION_DEPTH} is not listed at all: it is cut off, not classified.
    */
@@ -84,8 +86,8 @@ export interface PrivacyField {
 export const MAX_RECURSION_DEPTH = 256;
 
 /**
- * How many distinct positions {@link classifyPrivacy} reads, level by level, before it lists each new one left as
- * {@link UNREAD_CLASS}. A position is read once wherever it sits, so a schema reused in a thousand fields costs one.
+ * How many distinct positions {@link classifyPrivacy} reads, level by level, before it lists each new one left with
+ * {@link unreadClasses}. A position is read once wherever it sits, so a schema reused in a thousand fields costs one.
  * Far past any schema written out, and past any recursion defined once, which is listed once; only one that builds two
  * new schemas at every level reaches it, and then only below the levels it read whole.
  */
@@ -111,10 +113,14 @@ export const MAX_SEARCHED_SCHEMAS = 10_000;
 export const TRUNCATED_MASK = "[truncated]";
 
 /**
- * The class {@link classifyPrivacy} lists for a position it did not read once {@link MAX_CLASSIFIED_POSITIONS} ran out:
- * the strongest there is, because nothing there was read. Only the list's budget assumes it; `redact` reads a value.
+ * The classes {@link classifyPrivacy} lists for a position it did not read once {@link MAX_CLASSIFIED_POSITIONS} ran
+ * out: every class registered, strongest first, because nothing there was read and any of them may be marked below
+ * it. So the list never says less than the schema marks, and `hasPrivacy` answers yes for each. Only the list's budget
+ * assumes them; `redact` reads a value.
  */
-export const UNREAD_CLASS: BuiltInPrivacyClass = "secret";
+export function unreadClasses(): string[] {
+  return rankPrivacyClasses(privacyClasses().map((each) => each.name));
+}
 
 /** A Zod schema's internal definition, as much of it as the walk reads. */
 interface Def {
@@ -131,6 +137,8 @@ interface Def {
   catchall?: z.ZodType;
   shape?: Record<PropertyKey, z.ZodType>;
   out?: z.ZodType;
+  catchValue?: unknown;
+  checks?: readonly unknown[];
 }
 
 function defOf(schema: z.ZodType): Def {
@@ -155,6 +163,23 @@ const WRAPPERS: ReadonlySet<string> = new Set([
 /** The kinds a value is walked into. */
 const STRUCTURAL: ReadonlySet<string> = new Set(["object", "array", "tuple", "record", "map", "set"]);
 
+/** The tag Zod puts on the function it wraps a constant `.catch()` value in. */
+const CONSTANT_CATCH = "~constantCatch";
+
+/**
+ * Whether a node hands back a value its own code made rather than the one it read: a `.catch()` with a fallback
+ * function, or an `.overwrite()`. A constant fallback is a value, and is walked as the wrapper it is.
+ */
+function makesValue(def: Def): boolean {
+  if (def.type === "catch") {
+    const fallback = def.catchValue as { [CONSTANT_CATCH]?: unknown } | undefined;
+    if (typeof fallback !== "function" || fallback[CONSTANT_CATCH] !== true) return true;
+  }
+  return (def.checks ?? []).some(
+    (check) => (check as { _zod?: { def?: { check?: unknown } } })._zod?.def?.check === "overwrite",
+  );
+}
+
 /**
  * The shapes a value can have, as far as a choice is concerned: what `typeof` says, with an object told apart by what
  * it is. An option's marks apply to a value of a shape the option names, and to no other.
@@ -171,6 +196,22 @@ export type ValueKind =
   | "array"
   | "map"
   | "set";
+
+/** The shapes a value is walked into. */
+const STRUCTURE: readonly ValueKind[] = ["object", "array", "map", "set"];
+
+/** Whether a value of one of `kinds` could be walked into. */
+function holdsStructure(kinds: ReadonlySet<ValueKind>): boolean {
+  return STRUCTURE.some((kind) => kinds.has(kind));
+}
+
+/**
+ * A node's shapes, as a choice reads them: every shape for one that {@link makesValue} over a structure, as its own
+ * code may hand back anything. A scalar's is still its own: what it makes is the scalar a mark masks or keeps.
+ */
+function widened(def: Def, kinds: ReadonlySet<ValueKind>): ReadonlySet<ValueKind> {
+  return holdsStructure(kinds) && makesValue(def) ? EVERY_KIND : kinds;
+}
 
 /** Every {@link ValueKind}, in the order a mask lists them. */
 const VALUE_KINDS: readonly ValueKind[] = [
@@ -291,7 +332,7 @@ function readKinds(schema: z.ZodType, depth: number, read: KindsRead, path: Set<
   }
   const def = defOf(schema);
   const one = SCHEMA_KINDS[def.type];
-  if (one !== undefined) return new Set([one]);
+  if (one !== undefined) return widened(def, new Set([one]));
   if (NO_VALUE.has(def.type)) return NO_KIND;
   if (def.type === "literal" || def.type === "enum") {
     const values = (schema as unknown as { _zod: { values?: ReadonlySet<unknown> } })._zod.values;
@@ -308,7 +349,7 @@ function readKinds(schema: z.ZodType, depth: number, read: KindsRead, path: Set<
   path.add(schema);
   let found: ReadonlySet<ValueKind>;
   try {
-    found = readStep(schema, def, depth, read, path);
+    found = widened(def, readStep(schema, def, depth, read, path));
   } finally {
     path.delete(schema);
   }
@@ -646,6 +687,14 @@ function readPosition(schemas: readonly z.ZodType[]): {
   const leaves = new Set<z.ZodType>();
   const lazyGates = new Set<string>();
   let other = false;
+  /** An opaque node: masked whole with every class beneath it, and kept where there is none. */
+  const opaque = (node: z.ZodType, gate: ReadonlySet<ValueKind>) => {
+    const inside = search(node);
+    // A recursion beneath it that reached the limit counts as possibly marked: the value is masked whole.
+    if (inside.classes.size > 0 || inside.truncated)
+      reaches.push({ gate, classes: [...inside.classes], opaque: true, truncated: inside.truncated });
+    other = true;
+  };
   // Lazies resolved by this read and by each read of an option's shapes, checked between levels, never inside one: a
   // choice of any width on one level is walked, and only how many levels of new lazies a schema builds can run it out.
   const cost = { spent: 0 };
@@ -673,6 +722,11 @@ function readPosition(schemas: readonly z.ZodType[]): {
       }
       const def = defOf(node);
       const codec = kitCodecOutput(node);
+      if (makesValue(def) && holdsStructure(kindsOf(node, cost))) {
+        // A fallback function or an `.overwrite()` over a structure makes a new value: opaque, as a transform is.
+        opaque(node, gate);
+        continue;
+      }
       if (def.type === "lazy") {
         const key = `${idOf(node)}:${[...gate].join(",")}`;
         if (lazyGates.has(key)) continue;
@@ -696,13 +750,7 @@ function readPosition(schemas: readonly z.ZodType[]): {
       } else if (codec) stack.push([codec, gate, false]);
       else if (STRUCTURAL.has(def.type)) {
         if (gate.has(leafKind(node))) leaves.add(node);
-      } else {
-        const inside = search(node);
-        // A recursion beneath it that reached the limit counts as possibly marked: the value is masked whole.
-        if (inside.classes.size > 0 || inside.truncated)
-          reaches.push({ gate, classes: [...inside.classes], opaque: true, truncated: inside.truncated });
-        other = true;
-      }
+      } else opaque(node, gate);
     }
     level = next;
   }
@@ -858,8 +906,8 @@ function framesBelow(frame: Frame, at: Position): Frame[] {
  *
  * Positions are read level by level, shallowest first, and reported in the schema's own order. Each distinct position
  * counts once against {@link MAX_CLASSIFIED_POSITIONS}, wherever it sits, and only a schema that builds two new ones at
- * every level has more; the new positions left, none of them above the level the budget ran out on, are listed as
- * {@link UNREAD_CLASS}.
+ * every level has more; the new positions left, none of them above the level the budget ran out on, are listed with
+ * {@link unreadClasses}.
  */
 export function walkPrivacy(schema: z.ZodType, visitor: PrivacyVisitor, path = ""): void {
   const root: Frame = { at: rootPosition(schema), path, depth: 0 };
@@ -892,7 +940,7 @@ export function walkPrivacy(schema: z.ZodType, visitor: PrivacyVisitor, path = "
     if (at.mask) {
       for (const className of at.mask.classes) visitor.marked(frame.path, className);
     } else if (frame.key !== undefined) visitor.unmarkedKey?.(frame.path, frame.key);
-    if (frame.unread) visitor.marked(frame.path, UNREAD_CLASS, true);
+    if (frame.unread) for (const className of unreadClasses()) visitor.marked(frame.path, className, true);
     if (frame.below) stack.push(...[...frame.below].reverse());
   }
 }

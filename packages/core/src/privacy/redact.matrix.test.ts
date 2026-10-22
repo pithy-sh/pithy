@@ -47,6 +47,9 @@ const twinCell = () => z.object({ m: z.string(), u: z.string(), d: SQLiteDate, m
 const cellInput = (): unknown => ({ m: secretString(), u: plainString(), d: 1_000, md: MARKED_EPOCH, b: 1 });
 
 /** Each kind, as a schema builder. `key` is a string schema for a key position, marked or not. */
+/** The fallback the matrix's `catch` holds: a constant, never handed back. */
+const UNUSED_FALLBACK = Symbol("unused fallback");
+
 const kinds = {
   object: <I extends z.ZodType, K extends z.ZodType>(i: I, _k: K) => z.object({ x: i, k: z.string() }),
   strict: <I extends z.ZodType, K extends z.ZodType>(i: I, _k: K) => z.strictObject({ x: i }),
@@ -74,10 +77,9 @@ const kinds = {
     i.default(() => {
       throw new Error("The matrix always passes a value.");
     }),
-  catch: <I extends z.ZodType, K extends z.ZodType>(i: I, _k: K) =>
-    i.catch(() => {
-      throw new Error("The matrix always passes a valid value.");
-    }),
+  // A constant fallback, the wrapper the contract walks. One the matrix never reaches: it always passes a valid value,
+  // and a symbol in a result would fail every comparison. A fallback function is opaque: see redact.test.ts.
+  catch: <I extends z.ZodType, K extends z.ZodType>(i: I, _k: K) => i.catch(UNUSED_FALLBACK as never),
   readonly: <I extends z.ZodType, K extends z.ZodType>(i: I, _k: K) => i.readonly(),
   brand: <I extends z.ZodType, K extends z.ZodType>(i: I, _k: K) => i.brand<"Matrix">(),
   union: <I extends z.ZodType, K extends z.ZodType>(i: I, _k: K) => z.union([i, z.number()]),
@@ -98,6 +100,12 @@ const kinds = {
 };
 
 type Kind = keyof typeof kinds;
+
+/**
+ * The kinds the type matrix holds to the twin's output. A `.catch()` over a structure with a mark beneath is typed
+ * `unknown`, as the type cannot tell a constant fallback from a function, so it is tested on its own in redact.test.ts.
+ */
+type TypedKind = Exclude<Kind, "catch">;
 const KINDS = Object.keys(kinds) as Kind[];
 
 /** What each kind puts in a value around its inner one, and the paths of the inner one's marked fields. */
@@ -472,15 +480,15 @@ type Check<A extends Kind, B extends Kind, C extends Kind> = Exact<
 >;
 
 /** Every combination under outer kind `A` whose type is not exact, as `[outer, middle, inner]`; `never` when none. */
-type Inexact<A extends Kind> = {
-  [B in Kind]: { [C in Kind]: Check<A, B, C> extends true ? never : [A, B, C] }[Kind];
-}[Kind];
+type Inexact<A extends TypedKind> = {
+  [B in TypedKind]: { [C in TypedKind]: Check<A, B, C> extends true ? never : [A, B, C] }[TypedKind];
+}[TypedKind];
 
 const exact = <T extends never>(..._proof: [T] extends [never] ? [] : [T]): void => {};
 
 describe("Redacted<T>, for the same matrix", () => {
   test("is exactly the output of the combination built with no marker, for every combination", () => {
-    // One line per outer kind: the compiler holds one set of 729 at a time.
+    // One line per outer kind: the compiler holds one set of 900 at a time.
     exact<Inexact<"object">>();
     exact<Inexact<"strict">>();
     exact<Inexact<"loose">>();
@@ -502,7 +510,6 @@ describe("Redacted<T>, for the same matrix", () => {
     exact<Inexact<"optional">>();
     exact<Inexact<"nullable">>();
     exact<Inexact<"default">>();
-    exact<Inexact<"catch">>();
     exact<Inexact<"readonly">>();
     exact<Inexact<"brand">>();
     exact<Inexact<"union">>();
