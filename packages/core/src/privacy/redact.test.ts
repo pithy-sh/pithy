@@ -847,6 +847,85 @@ describe("outside the contract: masked whole when marked beneath, kept when not,
   });
 });
 
+describe("outside the contract, and tested for exactly what it does: five constructions nothing written to it uses", () => {
+  test("a symbol key in an object shape is not listed, and not searched beneath an opaque node or a mark", () => {
+    const diagnosis = Symbol("diagnosis");
+    const Inner = z.object({ id: z.string(), [diagnosis]: phi(z.string()) } as never) as z.ZodType;
+    const wire = { id: "1", [diagnosis]: "S-1" };
+    // Walked in a row, it is masked, but neither list sees it.
+    const Row = z.object({ v: Inner });
+    expect((redact(Row, Row.parse({ v: wire }) as never) as { v: Record<symbol, unknown> }).v[diagnosis]).toBe("[phi]");
+    expect(classifyPrivacy(Row)).toEqual([]);
+    expect(hasPrivacy(Row, "phi")).toBe(false);
+    // Beneath a transform it is no mark at all, so the value is kept as it is.
+    const Opaque = z.object({ v: Inner.transform((value) => value) });
+    expect((redact(Opaque, Opaque.parse({ v: wire }) as never) as { v: Record<symbol, unknown> }).v[diagnosis]).toBe(
+      "S-1",
+    );
+    expect(classifyPrivacy(Opaque)).toEqual([]);
+    // Beneath a mark, the container is masked with its own class alone.
+    const Marked = z.object({ v: pii(Inner) });
+    expect(redact(Marked, Marked.parse({ v: wire }) as never)).toEqual({ v: "[pii]" });
+    expect(classifyPrivacy(Marked)).toEqual([{ path: "v", class: "pii" }]);
+  });
+
+  test("an object that is not a plain object, passed through as it is beside an object option, is kept as it is", () => {
+    class Patient {
+      e = "S-1";
+      n = "u";
+    }
+    const patient = new Patient();
+    for (const first of [z.any(), z.unknown(), z.instanceof(Patient)]) {
+      const Choice = z.union([first, z.object({ e: pii(z.string()), n: z.string() })]);
+      expect(redact(Choice, Choice.parse(patient) as never)).toBe(patient);
+      expect(classifyPrivacy(Choice)).toEqual([{ path: "e", class: "pii" }]);
+    }
+    const prototyped = Object.create({}, { e: { value: "S-1", enumerable: true } }) as { e: string };
+    const Either = z.union([z.object({ e: pii(z.number()) }), z.any()]);
+    expect(redact(Either, Either.parse(prototyped) as never)).toBe(prototyped);
+    // A plain object beside it is walked.
+    const Plain = z.union([z.any(), z.object({ e: pii(z.string()), n: z.string() })]);
+    expect(masked(Plain, { e: "S-1", n: "u" })).toEqual({ e: "[pii]", n: "u" });
+  });
+
+  test("a scalar option's .overwrite() or .catch() fallback that makes an object or an array is read by the scalar's kind", () => {
+    const Overwritten = z.object({
+      e: z.union([pii(z.string()).overwrite((value) => ({ was: value }) as never), z.number()]),
+    });
+    expect(masked(Overwritten, { e: "S-1" })).toEqual({ e: { was: "S-1" } });
+    const Listed = z.object({ e: z.union([pii(z.string().overwrite((value) => [value] as never)), z.number()]) });
+    expect(masked(Listed, { e: "S-1" })).toEqual({ e: ["S-1"] });
+    const Caught = z.object({ e: z.union([phi(z.string()).catch((ctx) => ctx.input as never), z.boolean()]) });
+    expect(masked(Caught, { e: { dx: "S-1" } })).toEqual({ e: { dx: "S-1" } });
+    expect(classifyPrivacy(Caught)).toEqual([{ path: "e", class: "phi" }]);
+    // A string it makes is the scalar's kind, and masked.
+    expect(
+      masked(z.object({ e: pii(z.string()).overwrite((value) => value.trim() as never) }), { e: " S-1 " }),
+    ).toEqual({
+      e: "[pii]",
+    });
+  });
+
+  test("an array, a Map or a Set passed through as it is is copied without its other own properties", () => {
+    const array = Object.assign(["S-1"], { note: "u" });
+    const map = Object.assign(new Map([["k", "S-1"]]), { note: "u" });
+    const set = Object.assign(new Set(["S-1"]), { note: "u" });
+    const cases: [z.ZodType, object, unknown][] = [
+      [z.union([z.any(), z.array(pii(z.string()))]), array, ["[pii]"]],
+      [z.union([z.any(), z.map(z.string(), pii(z.string()))]), map, new Map([["k", "[pii]"]])],
+      [z.union([z.any(), z.set(pii(z.string()))]), set, new Set(["[pii]"])],
+    ];
+    for (const [schema, value, expected] of cases) {
+      const out = redact(schema, schema.parse(value) as never) as Record<string, unknown>;
+      expect(out).toEqual(expected);
+      expect(out.note).toBeUndefined();
+    }
+    // A plain object passed through as it is keeps every enumerable own property.
+    const Plain = z.union([z.any(), z.object({ e: pii(z.string()) })]);
+    expect(masked(Plain, { e: "S-1", note: "u" })).toEqual({ e: "[pii]", note: "u" });
+  });
+});
+
 describe("a field marked twice", () => {
   type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
   const same = <A, B>(..._proof: Same<A, B> extends true ? [] : [never]): void => {};

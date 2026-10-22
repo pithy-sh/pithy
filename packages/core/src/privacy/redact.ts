@@ -60,8 +60,23 @@ import type { RedactedOutput } from "./types";
  * `[truncated]` where none is. None of this ever throws or leaks a raw marked value. `Redacted<T>` cannot see an
  * `.overwrite()`, which keeps the type of the schema it is called on, so it types that position as the shape beneath
  * it. A `.refine` or `.superRefine` that mutates its input is outside the contract; `redact` does not defend against a
- * check written to move a marked value. `redact` copies only the enumerable own properties of a value passed through
- * as it is.
+ * check written to move a marked value. `redact` copies only the enumerable own properties of a plain object passed
+ * through as it is.
+ *
+ * **Five constructions nothing written to the contract uses** are outside it too. Each is tested for exactly this
+ * behavior, none throws, and all but the fourth can keep a marked value as it is:
+ *
+ * 1. A symbol key in a `z.object` shape is not listed by `classifyPrivacy` or seen by `hasPrivacy`, and beneath an
+ *    opaque node or a mark `redact` does not see a mark on it.
+ * 2. A value that is not a plain object, such as a class instance or an object whose prototype is not
+ *    `Object.prototype`, passed through as it is beside an object option is kept as it is.
+ * 3. An `.overwrite()` or a `.catch()` with a fallback function on a scalar option of a union is read by the
+ *    scalar's kind, so an object or an array it makes is kept as it is.
+ * 4. Wrappers, choices or intersections nested deeper than the JavaScript stack can follow: `redact` masks the
+ *    value they sit in `[truncated]`, and `classifyPrivacy`, `hasPrivacy` and `walkPrivacy` list that position with
+ *    every class, each `truncated`, rather than throw.
+ * 5. An array, a `Map` or a `Set` passed through as it is is copied by its elements or entries, and no other own
+ *    property it holds is copied.
  *
  * A read of a value that throws — a getter, a proxy's trap, an iterator — makes that position `[truncated]`, and the
  * walk goes on: `redact` never throws.
@@ -91,6 +106,8 @@ import type { RedactedOutput } from "./types";
  *   whole with the strongest class found, or as `[truncated]` where none is. A lazy that builds a new choice each read
  *   ends at the limit the same way: every lazy nested in another counts one. A union of many lazies, none inside
  *   another, counts one. A class known at a position is always its mask; `[truncated]` stands only where none is.
+ *   A search that runs out of its budget of schemas never read what lies past it, so it assumes every class
+ *   there, and the value is masked with the strongest.
  *
  * ## The placeholder, and why it is not a hash
  *
@@ -336,6 +353,12 @@ function redactObject(at: Position, value: Record<PropertyKey, unknown>, walk: W
 
 /** The masked view of a value, against the schema it is an instance of. See the module note for the contract. */
 export function redact<S extends z.ZodType>(schema: S, value: z.output<S>): RedactedOutput<S> {
-  const root = rootPosition(schema);
+  let root: Position;
+  try {
+    root = rootPosition(schema);
+  } catch {
+    // A schema that cannot be read, nested deeper than the stack can follow: the whole value is cut off.
+    return (value === null || value === undefined ? value : TRUNCATED_MASK) as RedactedOutput<S>;
+  }
   return walkValue(root, value) as RedactedOutput<S>;
 }

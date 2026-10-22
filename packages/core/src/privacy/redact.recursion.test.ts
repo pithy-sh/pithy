@@ -10,6 +10,7 @@ import {
   MAX_CLASSIFIED_POSITIONS,
   MAX_RECURSION_DEPTH,
   MAX_SEARCHED_SCHEMAS,
+  unreadClasses,
   walkPrivacy,
 } from "./classify";
 import { redact } from "./redact";
@@ -427,21 +428,23 @@ describe("a recursion that builds a new choice each read never runs past the lim
   const twice = (): z.ZodType => z.lazy(() => z.union([twice(), twice()]));
   const both = (): z.ZodType => z.lazy(() => z.intersection(both(), both()));
   const marked = (): z.ZodType => z.lazy(() => z.union([pii(z.number()), z.string(), marked()]));
-  const cases: [string, () => z.ZodType, unknown][] = [
-    ["a lazy over a union with a new lazy", anew, "P-1"],
-    ["the same beside a number", beside, "P-1"],
-    ["two new lazies in a union", twice, "P-1"],
-    ["two new lazies in an intersection", both, "P-1"],
-    ["a marked option at every level", marked, 5],
+  // One new lazy at every level reaches the limit, and is cut off. Two at every level run out of the budget first, and
+  // what lies past it was never read: every class is assumed, so the value is masked with the strongest.
+  const cases: [string, () => z.ZodType, unknown, string][] = [
+    ["a lazy over a union with a new lazy", anew, "P-1", "[truncated]"],
+    ["the same beside a number", beside, "P-1", "[truncated]"],
+    ["two new lazies in a union", twice, "P-1", "[secret]"],
+    ["two new lazies in an intersection", both, "P-1", "[secret]"],
+    ["a marked option at every level", marked, 5, "[pii]"],
   ];
 
-  test.each(cases)("redact, classifyPrivacy, hasPrivacy and walkPrivacy never throw: %s", (_, build, value) => {
+  test.each(cases)("redact, classifyPrivacy, hasPrivacy and walkPrivacy never throw: %s", (_, build, value, mask) => {
     const started = Date.now();
     const schema = build();
     expect(() => redact(schema, value as never)).not.toThrow();
     const out = redact(build(), value as never);
     expect(JSON.stringify(out)).not.toMatch(/S-\d/);
-    expect(out === value || out === "[truncated]" || out === "[pii]").toBe(true);
+    expect(out).toBe(mask);
     expect(() => classifyPrivacy(build())).not.toThrow();
     expect(() => hasPrivacy(build(), "pii")).not.toThrow();
     const walked: string[] = [];
@@ -666,10 +669,11 @@ describe("a cutoff ends its own path, and a class known at a position is its pla
       expect(redact(Marked, { tree: {}, s: "S-1" } as never)).toBe("[secret]");
       expect(hasPrivacy(Marked, "secret")).toBe(true);
     }
-    // Nothing marked beneath it, and it never ends: cut off, and no class.
+    // Nothing marked as far as the search reads, and it never ends: past the budget nothing was read, so any class
+    // may be marked there. Every class is assumed, each listed truncated, and the value masked with the strongest.
     const Row = z.object({ x: two().transform((x) => x) });
-    expect(redact(Row, { x: {} } as never)).toEqual({ x: "[truncated]" });
-    expect(classifyPrivacy(Row)).toEqual([]);
+    expect(redact(Row, { x: {} } as never)).toEqual({ x: "[secret]" });
+    expect(classifyPrivacy(Row)).toEqual(unreadClasses().map((name) => ({ path: "x", class: name, truncated: true })));
     expect(Date.now() - started).toBeLessThan(5_000);
   });
 

@@ -43,7 +43,15 @@ import { ownPrivacyClasses, privacyClasses, rankPrivacyClasses, strongestPrivacy
  *   more positions than any list can hold. Such a schema is read whole down to the level the budget runs out on, and
  *   each new position left, none of them above that level, is listed with every class registered, each with
  *   `truncated`: nothing below it was read, so any class may be marked there, and the list never says less than the
- *   schema marks. It is one of two places the list says more than `redact` masks.
+ *   schema marks. It is one of two places the list says more than `redact` masks. Every other read that runs out of
+ *   {@link MAX_SEARCHED_SCHEMAS} — the search beneath a marked container or an opaque node, and the read of a level of
+ *   lazies — assumes every class past it the same way, each class it did not find listed `truncated`, and `redact`
+ *   masks that value with the strongest. A position the walk cannot read at all, nested deeper than the stack can
+ *   follow, is listed with every class, each `truncated`: nothing here throws.
+ * - **`classifyPrivacy` writes out at most {@link MAX_LISTED_PATHS} paths.** A schema reused in two fields at every
+ *   level has a path per field per level, two to the depth; past the cap a position met again is listed at its own
+ *   path once per class marked beneath it, with `sameAs` the path it was first written out under. Time and memory
+ *   are linear in the schemas a tree holds, never in its paths, and every class is still listed.
  * - **An intersection is not narrowed.** Where one side narrows a field so it can never hold the type the other side
  *   marks, `classifyPrivacy` may still list that field: the inventory can list more than `redact` masks, and never
  *   less. `z.intersection(z.object({ b: z.number() }), z.object({ b: z.union([pii(z.string()), z.number()]) }))`
@@ -64,11 +72,20 @@ export interface PrivacyField {
   /** The class it was marked with. */
   class: string;
   /**
-   * Set where the list stopped reading and assumed {@link unreadClasses}: a position left once the walk had read
-   * {@link MAX_CLASSIFIED_POSITIONS} distinct positions, level by level. Absent everywhere the schema was read to the
-   * end. A position past {@link MAX_RECURSION_DEPTH} is not listed at all: it is cut off, not classified.
+   * Set where the class is assumed rather than found: a position left once the walk had read
+   * {@link MAX_CLASSIFIED_POSITIONS} distinct positions, level by level; a read beneath a position that ran out of
+   * {@link MAX_SEARCHED_SCHEMAS}; or a schema the walk could not read at all, nested deeper than the stack. Each lists
+   * {@link unreadClasses}. Absent everywhere the schema was read to the end. A position past
+   * {@link MAX_RECURSION_DEPTH} is not listed at all: it is cut off, not classified.
    */
   truncated?: true;
+  /**
+   * Set on a reference: the path this field's position was first listed under. Once the walk has written out
+   * {@link MAX_LISTED_PATHS} paths, a position it meets again is listed once per class marked beneath it, with the path
+   * it was first written out under, rather than once per path below it. The paths below `sameAs` are the paths below
+   * this one.
+   */
+  sameAs?: string;
 }
 
 /**
@@ -102,9 +119,21 @@ export const MAX_CLASSIFIED_POSITIONS = 10_000;
  * nested in another, so a union of lazies side by side costs it none, and pays again what a schema it met before cost,
  * so every answer is a function of the schema and the value alone, whatever was read first. Far past any schema
  * written out, and past any recursion that builds one new schema at each level; only one that builds two new ones at
- * every level reaches it, and then only below the levels it read whole. A class found is kept, past it or not.
+ * every level reaches it, and then only below the levels it read whole. A class found is kept, past it or not, and
+ * past it every class is assumed: nothing there was read, so any of them may be marked, and the list never says less.
+ * The searches beneath the lazies one read of a position cuts off share one such budget between them.
  */
 export const MAX_SEARCHED_SCHEMAS = 10_000;
+
+/**
+ * How many paths {@link walkPrivacy} writes out before a position it met already is listed by reference. A schema
+ * reused in two fields at every level of thirty has thirty-one schemas and a billion paths, so a list of every path
+ * cannot be built; past this many, each new position is still read and written out once, and each one met again is
+ * listed at its own path with every class beneath it and `sameAs` the path it was written out under. So the list is
+ * linear in the schemas a tree holds. Far past any table written out: a book of 22 groups of 22 contacts of 22
+ * addresses is written out whole.
+ */
+export const MAX_LISTED_PATHS = 50_000;
 
 /**
  * What `redact` puts where it stops: a value nested past {@link MAX_RECURSION_DEPTH}, and an opaque value over a
@@ -115,8 +144,9 @@ export const TRUNCATED_MASK = "[truncated]";
 /**
  * The classes {@link classifyPrivacy} lists for a position it did not read once {@link MAX_CLASSIFIED_POSITIONS} ran
  * out: every class registered, strongest first, because nothing there was read and any of them may be marked below
- * it. So the list never says less than the schema marks, and `hasPrivacy` answers yes for each. Only the list's budget
- * assumes them; `redact` reads a value.
+ * it. So the list never says less than the schema marks, and `hasPrivacy` answers yes for each. A search that runs out
+ * of {@link MAX_SEARCHED_SCHEMAS} assumes them too, so `redact` masks that value with the strongest; a schema the walk
+ * cannot read at all is listed with them.
  */
 export function unreadClasses(): string[] {
   return rankPrivacyClasses(privacyClasses().map((each) => each.name));
@@ -460,8 +490,14 @@ function children(schema: z.ZodType): z.ZodType[] {
 
 /** What a search found beneath a schema. */
 interface Search {
+  /** Every class it found marked. */
   readonly classes: ReadonlySet<string>;
+  /** Whether a path ended at the recursion limit, or at the budget. */
   readonly truncated: boolean;
+  /** Whether a path ended at {@link MAX_SEARCHED_SCHEMAS}: what lies past it was never read, so any class may. */
+  readonly unread: boolean;
+  /** How many schemas it opened: what a read that asks for many searches pays for each, met before or not. */
+  readonly opened: number;
 }
 
 const searched = new WeakMap<z.ZodType, Search>();
@@ -473,14 +509,16 @@ const searched = new WeakMap<z.ZodType, Search>();
  * a class beside a recursion is found whatever the field order. Shallowest first, and the budget is checked between
  * levels, never inside one: a level begun is read whole, however wide, so a union of any width is read to its end.
  * Once {@link MAX_SEARCHED_SCHEMAS} schemas have been opened, the next level is still read for its marks, nothing on
- * it is opened, and each path it would have opened ends `truncated` too. That keeps a schema that builds two new ones
- * at every level bounded, and the levels above the one the budget runs out on are read whole.
+ * it is opened, and each path it would have opened ends `truncated` and `unread`: what lies past it was never read,
+ * so every class is assumed there. That keeps a schema that builds two new ones at every level bounded, the levels
+ * above the one the budget runs out on are read whole, and the search never says less than the schema marks.
  */
 function search(schema: z.ZodType): Search {
   const known = searched.get(schema);
   if (known) return known;
   const classes = new Set<string>();
   let truncated = false;
+  let unread = false;
   let opened = 0;
   const seen = new Set<z.ZodType>();
   let level: z.ZodType[] = [schema];
@@ -502,8 +540,14 @@ function search(schema: z.ZodType): Search {
       }
       // Past the limit or the budget, this path ends here, and only this one. Opening a node is what may build a
       // schema — a lazy's target, an object's shape read through its getters — so it is what the budget counts.
-      if (depth + 1 > MAX_RECURSION_DEPTH || !open) {
+      if (depth + 1 > MAX_RECURSION_DEPTH) {
         truncated = true;
+        continue;
+      }
+      // Past the budget, nothing below was read, so any class may be marked there: the search assumes every one.
+      if (!open) {
+        truncated = true;
+        unread = true;
         continue;
       }
       opened += 1;
@@ -511,7 +555,7 @@ function search(schema: z.ZodType): Search {
     }
     level = next;
   }
-  const found = { classes, truncated };
+  const found = { classes, truncated, unread, opened };
   searched.set(schema, found);
   return found;
 }
@@ -525,8 +569,16 @@ export interface Mask {
   readonly className: string;
   /** Whether the class's own mask applies: one class, from a marker, nothing opaque, and nothing cut off. */
   readonly own: boolean;
-  /** Every class marked at the position, in the order met. Never the cutoff, which is not a class. */
+  /**
+   * Every class marked at the position, in the order met, then every class a read that ran out of
+   * {@link MAX_SEARCHED_SCHEMAS} assumed. Never the cutoff, which is not a class.
+   */
   readonly classes: readonly string[];
+  /**
+   * The classes in `classes` that no read found, only assumed: a read below ran out of {@link MAX_SEARCHED_SCHEMAS},
+   * so any class may be marked past it. Listed `truncated`.
+   */
+  readonly assumed: readonly string[];
   /**
    * Whether a recursion here reached {@link MAX_RECURSION_DEPTH}, or a read ran out of {@link MAX_SEARCHED_SCHEMAS}: a
    * flag beside the classes, never instead of them. A class known here is still the mask.
@@ -649,6 +701,8 @@ interface Reach {
   /** Whether it came from an opaque node or a recursion that ran out, rather than a marker. */
   readonly opaque: boolean;
   readonly truncated: boolean;
+  /** Whether a read beneath it ran out of {@link MAX_SEARCHED_SCHEMAS}, so every class is assumed. */
+  readonly unread: boolean;
 }
 
 /** The kind of value a structural node holds. */
@@ -659,22 +713,29 @@ function leafKind(leaf: z.ZodType): ValueKind {
 /** The mask made of `reaches` and the structural nodes masked with them, or `undefined` when none applies. */
 function maskOf(reaches: readonly Reach[], leaves: readonly z.ZodType[]): Mask | undefined {
   if (reaches.length === 0) return undefined;
-  const found = leaves.map(search);
-  const classes = [
-    ...new Set([...reaches.flatMap((reach) => reach.classes), ...found.flatMap((each) => [...each.classes])]),
-  ];
-  const truncated = reaches.some((reach) => reach.truncated) || found.some((each) => each.truncated);
+  const searches = leaves.map(search);
+  const found = new Set([
+    ...reaches.flatMap((reach) => reach.classes),
+    ...searches.flatMap((each) => [...each.classes]),
+  ]);
+  // A read that ran out of its budget never saw what lies past it: every class may be marked there.
+  const unread = reaches.some((reach) => reach.unread) || searches.some((each) => each.unread);
+  const assumed = unread ? unreadClasses().filter((name) => !found.has(name)) : [];
+  const classes = [...found, ...assumed];
+  const truncated = reaches.some((reach) => reach.truncated) || searches.some((each) => each.truncated);
   return {
     className: strongestPrivacyClass(classes) ?? "",
     own: !truncated && reaches.every((reach) => !reach.opaque) && classes.length === 1,
     classes,
+    assumed,
     truncated,
   };
 }
 
 /** A mask, written out: two positions with the same leaves and the same masks are one. */
 function maskKey(mask: Mask): string {
-  return `${mask.own ? "own" : "strongest"}:${mask.truncated ? "truncated" : "read"}:${mask.classes.join("|")}`;
+  const read = mask.truncated ? "truncated" : "read";
+  return `${mask.own ? "own" : "strongest"}:${read}:${mask.classes.join("|")}:${mask.assumed.join("|")}`;
 }
 
 /** Flatten a position and decide how it is masked. Its children are read when first asked for. */
@@ -692,12 +753,20 @@ function readPosition(schemas: readonly z.ZodType[]): {
     const inside = search(node);
     // A recursion beneath it that reached the limit counts as possibly marked: the value is masked whole.
     if (inside.classes.size > 0 || inside.truncated)
-      reaches.push({ gate, classes: [...inside.classes], opaque: true, truncated: inside.truncated });
+      reaches.push({
+        gate,
+        classes: [...inside.classes],
+        opaque: true,
+        truncated: inside.truncated,
+        unread: inside.unread,
+      });
     other = true;
   };
   // Lazies resolved by this read and by each read of an option's shapes, checked between levels, never inside one: a
   // choice of any width on one level is walked, and only how many levels of new lazies a schema builds can run it out.
   const cost = { spent: 0 };
+  // What the searches beneath the lazies cut off at the budget have opened between them.
+  let cutSpent = 0;
   // Each schema with the shapes of value it applies to, every shape until a union option narrows it, and whether it
   // is an option, narrowed to its own shapes when it is read. Level by level, a level for each lazy the schemas sit
   // beneath at this position, each level in the order the schema declares it, so a path that runs out ends alone.
@@ -717,7 +786,13 @@ function readPosition(schemas: readonly z.ZodType[]): {
         // A marked container is masked whole, so every class marked inside it is a class it carries, as beneath an
         // opaque node: `pii(z.object({ token: secret(…) }))` is listed `pii` and `secret`, and masked `[secret]`.
         const inside = search(node);
-        reaches.push({ gate, classes: [...inside.classes], opaque: false, truncated: inside.truncated });
+        reaches.push({
+          gate,
+          classes: [...inside.classes],
+          opaque: false,
+          truncated: inside.truncated,
+          unread: inside.unread,
+        });
         continue;
       }
       const def = defOf(node);
@@ -734,7 +809,19 @@ function readPosition(schemas: readonly z.ZodType[]): {
         if (lazies >= MAX_RECURSION_DEPTH || !open) {
           // A lazy nested in more lazies than the limit, or one on a level past the budget: this path is cut off, and
           // only this one. Every level above the budget's last is read whole, as nothing on it waits on another lazy.
-          reaches.push({ gate, classes: [], opaque: true, truncated: true });
+          // Past the limit a value is cut off, and the cutoff is no class. Past the budget, the search beneath it,
+          // bounded on its own, carries every class it finds, and every class where it runs out too.
+          // Those searches share one budget, so a level of ten thousand cut lazies costs what one search does.
+          const past = lazies >= MAX_RECURSION_DEPTH;
+          const inside = past || cutSpent >= MAX_SEARCHED_SCHEMAS ? undefined : search(node);
+          cutSpent += inside?.opened ?? 0;
+          reaches.push({
+            gate,
+            classes: inside ? [...inside.classes] : [],
+            opaque: true,
+            truncated: true,
+            unread: inside ? inside.unread : !past,
+          });
           other = true;
           continue;
         }
@@ -841,14 +928,28 @@ export function rootPosition(schema: z.ZodType): Position {
   return positionOf([schema]) as Position;
 }
 
+/** What a walk says beside one masked path and class. */
+export interface MarkNote {
+  /**
+   * Set where the class is assumed rather than found: a read ran out of its budget there, or the schema could not be
+   * read at all, so any class may be marked below it.
+   */
+  readonly truncated?: true;
+  /**
+   * Set on a reference, once {@link MAX_LISTED_PATHS} paths are written out: the path this position was first listed
+   * under. The class is marked somewhere beneath both, and the paths beneath this one are those beneath that one.
+   */
+  readonly sameAs?: string;
+}
+
 /**
  * What a walk reports. `marked` is called once per masked path and class. `unmarkedKey`, when given, is called for each
  * object key whose position is not masked whole, before the walk steps into it — the hook `pithy privacy scan` reads a
  * field's name through, so the scan and the inventory walk one tree the same way.
  */
 export interface PrivacyVisitor {
-  /** One masked path and class; `truncated` where the list's budget ran out there and it assumed the class. */
-  marked(path: string, className: string, truncated?: boolean): void;
+  /** One masked path and class, with a {@link MarkNote} where the class is assumed or the path is a reference. */
+  marked(path: string, className: string, note?: MarkNote): void;
   unmarkedKey?(path: string, key: string): void;
 }
 
@@ -866,8 +967,13 @@ interface Frame {
   readonly parent?: Frame;
   /** The positions below, once this one is read. */
   below?: Frame[];
-  /** Set when the walk had read {@link MAX_CLASSIFIED_POSITIONS} distinct positions before it came to this new one. */
+  /**
+   * Set when the walk had read {@link MAX_CLASSIFIED_POSITIONS} distinct positions before it came to this new one, or
+   * when its schema could not be read at all: nested deeper than the stack, or a getter that throws.
+   */
   unread?: true;
+  /** Set when {@link MAX_LISTED_PATHS} paths were written out before this one and its position was walked already. */
+  sameAs?: Frame;
 }
 
 /** Whether a frame's position is one it sits below: a recursion defined once, come round. */
@@ -876,25 +982,83 @@ function onLine(frame: Frame): boolean {
   return false;
 }
 
+/**
+ * A frame for the position `read` returns. A schema nested deeper than the stack can follow, or one whose getter
+ * throws, cannot be read: its frame is `unread`, listed with every class, and nothing throws.
+ */
+function frameAt(
+  read: () => Position | undefined,
+  place: { path: string; depth: number; key?: string; parent?: Frame },
+): Frame {
+  try {
+    return { ...place, at: read() };
+  } catch {
+    return { ...place, at: undefined, unread: true };
+  }
+}
+
 /** The frames below a position that is read, in the order the schema names them. */
 function framesBelow(frame: Frame, at: Position): Frame[] {
   const next = frame.depth + 1;
   const below: Frame[] = [];
-  const add = (child: Position | undefined, path: string, depth: number, key?: string) => {
-    below.push(
-      key === undefined ? { at: child, path, depth, parent: frame } : { at: child, path, depth, key, parent: frame },
+  const add = (child: () => Position | undefined, path: string, depth: number, key?: string) => {
+    const found = frameAt(
+      child,
+      key === undefined ? { path, depth, parent: frame } : { path, depth, key, parent: frame },
     );
+    // A slot no schema here holds is no frame: only a position, or one that could not be read, is written out.
+    if (found.at !== undefined || found.unread) below.push(found);
   };
-  for (const key of at.keys) if (typeof key === "string") add(at.field(key), join(frame.path, key), next, key);
-  add(at.catchall, join(frame.path, "*"), next);
+  for (const key of at.keys) if (typeof key === "string") add(() => at.field(key), join(frame.path, key), next, key);
+  add(() => at.catchall, join(frame.path, "*"), next);
   // A key is read where its object is, and never nested below it.
-  add(at.key, join(frame.path, "<key>"), frame.depth);
-  for (let index = 0; index < at.items; index += 1) add(at.item(index), `${frame.path}[${index}]`, next);
-  add(at.rest, `${frame.path}[]`, next);
-  add(at.mapKey, join(frame.path, "<key>"), next);
-  add(at.mapValue, join(frame.path, "*"), next);
-  add(at.element, `${frame.path}[]`, next);
+  add(() => at.key, join(frame.path, "<key>"), frame.depth);
+  for (let index = 0; index < at.items; index += 1) add(() => at.item(index), `${frame.path}[${index}]`, next);
+  add(() => at.rest, `${frame.path}[]`, next);
+  add(() => at.mapKey, join(frame.path, "<key>"), next);
+  add(() => at.mapValue, join(frame.path, "*"), next);
+  add(() => at.element, `${frame.path}[]`, next);
   return below;
+}
+
+/** Every class a frame lists at its own path, each with whether it is only assumed. */
+function ownClasses(frame: Frame): [string, boolean][] {
+  const found: [string, boolean][] = [];
+  const mask = frame.at?.mask;
+  if (mask) for (const name of mask.classes) found.push([name, mask.assumed.includes(name)]);
+  if (frame.unread) for (const name of unreadClasses()) found.push([name, true]);
+  return found;
+}
+
+/**
+ * Every class listed beneath each position the walk read, by the first frame that read it, and whether each is only
+ * assumed. A class found anywhere beneath is found. A position beneath itself, a recursion defined once, is read until
+ * nothing changes, last read first, so a chain of reused schemas settles in one pass.
+ */
+function classesBeneath(walked: ReadonlyMap<Position, Frame>): Map<Position, Map<string, boolean>> {
+  const beneath = new Map<Position, Map<string, boolean>>();
+  for (const at of walked.keys()) beneath.set(at, new Map());
+  const firsts = [...walked].reverse();
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const [at, first] of firsts) {
+      const into = beneath.get(at) as Map<string, boolean>;
+      const merge = (name: string, assumed: boolean) => {
+        const known = into.get(name);
+        if (known === undefined || (known && !assumed)) {
+          into.set(name, assumed);
+          changed = true;
+        }
+      };
+      for (const child of first.below ?? []) {
+        if (child.depth > MAX_RECURSION_DEPTH) continue;
+        for (const [name, assumed] of ownClasses(child)) merge(name, assumed);
+        const below = child.at && beneath.get(child.at);
+        if (below) for (const [name, assumed] of below) merge(name, assumed);
+      }
+    }
+  }
+  return beneath;
 }
 
 /**
@@ -907,40 +1071,65 @@ function framesBelow(frame: Frame, at: Position): Frame[] {
  * Positions are read level by level, shallowest first, and reported in the schema's own order. Each distinct position
  * counts once against {@link MAX_CLASSIFIED_POSITIONS}, wherever it sits, and only a schema that builds two new ones at
  * every level has more; the new positions left, none of them above the level the budget ran out on, are listed with
- * {@link unreadClasses}.
+ * {@link unreadClasses}. Once {@link MAX_LISTED_PATHS} paths are written out, a position met again is a reference: its
+ * path is listed with every class beneath it and the path it was first written out under, and nothing below it is
+ * written out again. So the walk is linear in the schemas a tree holds, however many paths reach them. A schema that
+ * cannot be read at all, nested deeper than the stack or behind a getter that throws, is listed with every class,
+ * each truncated. It never throws.
  */
 export function walkPrivacy(schema: z.ZodType, visitor: PrivacyVisitor, path = ""): void {
-  const root: Frame = { at: rootPosition(schema), path, depth: 0 };
+  const root = frameAt(() => rootPosition(schema), { path, depth: 0 });
   // Read, breadth first, so the budget runs out at the deepest level, never on a shallow branch.
   const queue: Frame[] = [root];
-  // Each position is read once, wherever it sits: a schema reused in many fields costs the budget once.
-  const read = new Set<Position>();
+  // Each position is read once, wherever it sits, by the first frame that met it: a schema reused in many fields
+  // costs the budget once.
+  const walked = new Map<Position, Frame>();
+  let references = false;
   for (let index = 0; index < queue.length; index += 1) {
     const frame = queue[index] as Frame;
     const { at } = frame;
     if (at === undefined || frame.depth > MAX_RECURSION_DEPTH || at.whole) continue;
     if (at.kinds.size === 0 || onLine(frame)) continue;
-    if (!read.has(at)) {
-      if (read.size >= MAX_CLASSIFIED_POSITIONS) {
+    const first = walked.get(at);
+    if (first === undefined) {
+      if (walked.size >= MAX_CLASSIFIED_POSITIONS) {
         frame.unread = true;
         continue;
       }
-      read.add(at);
+      walked.set(at, frame);
+    } else if (queue.length >= MAX_LISTED_PATHS) {
+      // Enough paths are written out: this one stands for the paths below the first, and adds none of its own.
+      frame.sameAs = first;
+      references = true;
+      continue;
     }
     frame.below = framesBelow(frame, at);
     queue.push(...frame.below);
   }
+  const beneath = references ? classesBeneath(walked) : new Map<Position, Map<string, boolean>>();
   // Report, depth first, in the order the schema names each position.
   const stack: Frame[] = [root];
   for (let frame = stack.pop(); frame; frame = stack.pop()) {
-    const { at } = frame;
-    if (at === undefined) continue;
     // Past the limit a value is cut off, and the cutoff is not a class.
     if (frame.depth > MAX_RECURSION_DEPTH) continue;
-    if (at.mask) {
-      for (const className of at.mask.classes) visitor.marked(frame.path, className);
-    } else if (frame.key !== undefined) visitor.unmarkedKey?.(frame.path, frame.key);
-    if (frame.unread) for (const className of unreadClasses()) visitor.marked(frame.path, className, true);
+    const { at } = frame;
+    if (at?.mask) {
+      const { assumed } = at.mask;
+      for (const className of at.mask.classes)
+        visitor.marked(frame.path, className, assumed.includes(className) ? { truncated: true } : undefined);
+    } else if (at !== undefined && frame.key !== undefined) visitor.unmarkedKey?.(frame.path, frame.key);
+    if (frame.unread)
+      for (const className of unreadClasses()) visitor.marked(frame.path, className, { truncated: true });
+    const reference = frame.sameAs;
+    if (reference?.at) {
+      for (const [className, assumed] of beneath.get(reference.at) ?? []) {
+        visitor.marked(
+          frame.path,
+          className,
+          assumed ? { truncated: true, sameAs: reference.path } : { sameAs: reference.path },
+        );
+      }
+    }
     if (frame.below) stack.push(...[...frame.below].reverse());
   }
 }
@@ -957,10 +1146,12 @@ export function classifyPrivacy(schema: z.ZodType): PrivacyField[] {
   const fields: PrivacyField[] = [];
   const byKey = new Map<string, PrivacyField>();
   walkPrivacy(schema, {
-    marked: (path, className, truncated) => {
+    marked: (path, className, note) => {
       const key = `${path}\u0000${className}`;
       if (byKey.has(key)) return;
-      const field: PrivacyField = truncated ? { path, class: className, truncated: true } : { path, class: className };
+      const field: PrivacyField = { path, class: className };
+      if (note?.truncated) field.truncated = true;
+      if (note?.sameAs !== undefined) field.sameAs = note.sameAs;
       byKey.set(key, field);
       fields.push(field);
     },
