@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
-import { pii } from "./classes";
+import { pii, secret } from "./classes";
 import { classifyPrivacy, hasPrivacy, walkPrivacy } from "./classify";
 import { redact } from "./redact";
 
@@ -161,5 +161,126 @@ describe("masked keys and elements that mask alike", () => {
       );
       expect([...redact(Mixed, new Set(order) as never)]).toEqual(expected);
     }
+  });
+});
+
+describe("a union of many object options", () => {
+  const OPTIONS = 1_600;
+  const KEYS = 40_000;
+
+  /** How long `run` takes, the faster of two tries, and what it returned. */
+  function timed<T>(run: () => T): { ms: number; out: T } {
+    let started = performance.now();
+    let out = run();
+    const first = performance.now() - started;
+    started = performance.now();
+    out = run();
+    return { ms: Math.min(first, performance.now() - started), out };
+  }
+
+  test("redacts 40,000 keys at a union of 1,600 objects, one of them loose, in about the time parse takes", () => {
+    const options: z.ZodType[] = [z.looseObject({ id: pii(z.string()) })];
+    for (let index = 0; index < OPTIONS; index += 1) options.push(z.object({ [`k${index}`]: z.string() }));
+    const schema = z.union(options as [z.ZodType, z.ZodType]);
+    const value: Record<string, string> = { id: "S-1" };
+    for (let index = 0; index < KEYS; index += 1) value[`x${index}`] = `v${index}`;
+    const parse = timed(() => schema.parse(value));
+    const run = timed(() => redact(schema, parse.out as never) as Record<string, string>);
+    expect(Object.keys(run.out)).toHaveLength(KEYS + 1);
+    expect(run.out.id).toBe("[pii]");
+    expect(run.out[`x${KEYS - 1}`]).toBe(`v${KEYS - 1}`);
+    // Each key was looked up across every option: seconds here, hundreds of times parse. An index of the options' keys
+    // costs a lookup a key, a small multiple of what parse costs to pass the keys through.
+    expect(run.ms, `${Math.round(run.ms)} ms against ${Math.round(parse.ms)} ms parse`).toBeLessThan(
+      20 * parse.ms + 300,
+    );
+  });
+
+  /**
+   * A union of `count` objects, each naming three keys of its own with one schema behind them all, so the call reads
+   * well inside its budget; or, `tagged`, a discriminated union whose options each hold a tag beside two keys. Each odd
+   * option's first key is marked. Beside it, one object naming every key: the walk has always read that a lookup a key.
+   */
+  function options(count: number, tagged: boolean) {
+    const kept = z.string();
+    const marked = pii(z.string());
+    const shapes: Record<string, z.ZodType>[] = [];
+    const rows: Record<string, string>[] = [];
+    for (let option = 0; option < count; option += 1) {
+      const shape: Record<string, z.ZodType> = tagged ? { t: z.literal(`t${option}`) } : {};
+      const row: Record<string, string> = tagged ? { t: `t${option}` } : {};
+      for (let slot = 0; slot < (tagged ? 2 : 3); slot += 1) {
+        shape[`k${option}_${slot}`] = slot === 0 && option % 2 ? marked : kept;
+        row[`k${option}_${slot}`] = `S-${option}_${slot}`;
+      }
+      shapes.push(shape);
+      rows.push(row);
+    }
+    const schema = tagged
+      ? z.array(z.discriminatedUnion("t", shapes.map((shape) => z.object(shape)) as never))
+      : z.array(z.union(shapes.map((shape) => z.strictObject(shape)) as never));
+    const flatShape: Record<string, z.ZodType> = {};
+    const flatRow: Record<string, string> = {};
+    for (const [index, shape] of shapes.entries()) {
+      for (const [key, each] of Object.entries(shape)) if (key !== "t") flatShape[key] = each;
+      for (const [key, each] of Object.entries(rows[index] as object)) if (key !== "t") flatRow[key] = each;
+    }
+    return { schema, rows, flat: z.array(z.object(flatShape)), flatRows: [flatRow] };
+  }
+
+  test("lists, checks and redacts a union of objects that each name keys of their own in linear time", () => {
+    // A thousand tagged options are what the budget reads whole: each tag is a schema of its own.
+    for (const [name, count, tagged] of [
+      ["union", OPTIONS, false],
+      ["discriminated union", 1_000, true],
+    ] as const) {
+      const { schema, rows, flat, flatRows } = options(count, tagged);
+      const parsed = schema.parse(rows);
+      const flatParsed = flat.parse(flatRows);
+      const listed = timed(() => classifyPrivacy(schema));
+      const has = timed(() => hasPrivacy(schema, "phi"));
+      const out = timed(() => redact(schema, parsed as never) as Record<string, string>[]);
+      expect(
+        listed.out.filter((field) => field.truncated),
+        name,
+      ).toEqual([]);
+      expect(listed.out, name).toHaveLength(count / 2);
+      expect(has.out, name).toBe(false);
+      expect(out.out[1]?.k1_0, name).toBe("[pii]");
+      expect(out.out[1]?.k1_1, name).toBe("S-1_1");
+      // Each key the position names was looked up across every option: a call grew as the square of the options, a
+      // hundred times the flat object here. Indexed, it costs about what the flat object costs.
+      for (const [call, ms, flatMs] of [
+        ["classifyPrivacy", listed.ms, timed(() => classifyPrivacy(flat)).ms],
+        ["hasPrivacy", has.ms, timed(() => hasPrivacy(flat, "phi")).ms],
+        ["redact", out.ms, timed(() => redact(flat, flatParsed as never)).ms],
+      ] as const)
+        expect(ms, `${name} ${call}: ${Math.round(ms)} ms against ${Math.round(flatMs)} ms flat`).toBeLessThan(
+          10 * flatMs + 60,
+        );
+    }
+  });
+
+  test("reads each key through the options in their order, a catchall where an option does not name it", () => {
+    const Open = z.object({ a: z.string() }).catchall(pii(z.string()));
+    const Loose = z.looseObject({ b: secret(z.string()) });
+    const Strict = z.strictObject({ a: secret(z.number()), c: z.string() });
+    const schema = z.union([Open, Loose, Strict, z.record(z.string(), z.boolean())]);
+    // Pinned as the scan across every option read them: the index must read each key to the same schemas.
+    expect(classifyPrivacy(schema)).toEqual([
+      { path: "a", class: "secret" },
+      { path: "b", class: "pii" },
+      { path: "b", class: "secret" },
+      { path: "c", class: "pii" },
+      { path: "*", class: "pii" },
+    ]);
+    expect(redact(schema, { a: "A", b: "B", c: "C", d: "D" } as never)).toEqual({
+      a: "[secret]",
+      b: "[secret]",
+      c: "[pii]",
+      d: "[pii]",
+    });
+    expect(redact(schema, { b: "B", z: 1 } as never)).toEqual({ b: "[secret]", z: "[pii]" });
+    expect(redact(schema, { a: 5, c: "C" } as never)).toEqual({ a: "[secret]", c: "[pii]" });
   });
 });

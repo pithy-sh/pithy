@@ -17,9 +17,9 @@ import { redact } from "./redact";
 /**
  * **The depth limit applies to all nesting, and the list never says less than is marked** (#132, the redaction
  * contract, item 6). Anything nested deeper than {@link MAX_RECURSION_DEPTH} is masked `[truncated]`. A recursion that
- * repeats a schema already read on its path needs no cut in the list: its classes are those of the schemas already
- * read. Where the walk reaches the limit on a chain that keeps producing schemas not yet seen on that path, the list
- * assumes every class there, each `truncated`, as it does where the budget runs out.
+ * repeats a position (the same set of schemas) already read on its path needs no cut in the list: its classes are those
+ * of the position already read. Where the walk reaches the limit on a chain that keeps producing positions not yet seen
+ * on that path, the list assumes every class there, each `truncated`, as it does where the budget runs out.
  */
 
 /** A getter that builds a new schema each read, `depth` levels down to a marked leaf. */
@@ -133,7 +133,7 @@ describe("a chain of new schemas past the limit assumes every class where it is 
   });
 });
 
-describe("a recursion that repeats a schema already read needs no cut in the list", () => {
+describe("a recursion that repeats a position already read needs no cut in the list", () => {
   type Tree = { label: string; children: Tree[] };
   const Tree: z.ZodType<Tree> = z.object({
     label: pii(z.string()),
@@ -166,5 +166,42 @@ describe("a recursion that repeats a schema already read needs no cut in the lis
     schema = z.object({ e: pii(z.string()), a: schema });
     expect(classifyPrivacy(schema)).toEqual([{ path: "e", class: "pii" }]);
     expect(hasPrivacy(schema, "secret")).toBe(false);
+  });
+});
+
+describe("the list compares positions, the sets of schemas a value may hold, not schemas", () => {
+  /** A ring of `length` objects, each built once, whose field `a` holds the next: the first marks `s` where `marked`. */
+  function ring(length: number, marked: boolean): z.ZodType[] {
+    const nodes: z.ZodType[] = [];
+    for (let index = 0; index < length; index += 1) {
+      const shape: Record<string, z.ZodType> = {};
+      Object.defineProperty(shape, "a", { enumerable: true, get: () => nodes[(index + 1) % length] });
+      if (marked && index === 0) shape.s = pii(z.string()).optional();
+      nodes.push(z.object(shape).optional());
+    }
+    return nodes;
+  }
+
+  test("once-defined rings of co-prime lengths side by side meet no position twice, and are cut with every class", () => {
+    // Three rings, 5, 7 and 11 long, side by side in one union: every schema is built once, but the set at each level
+    // repeats only every 385 levels. No position repeats before the limit, so the list cuts there and assumes every
+    // class: more than is marked, never less. One ring alone comes round to its own position and is listed exactly.
+    const [five] = ring(5, true);
+    const [seven] = ring(7, false);
+    const [eleven] = ring(11, false);
+    const Root = z.union([five, seven, eleven] as [z.ZodType, z.ZodType, z.ZodType]);
+    const listed = classifyPrivacy(Root);
+    const depthOf = (field: PrivacyField) => field.path.split(".").length;
+    const found = listed.filter((field) => !field.truncated);
+    expect(found.map((field) => field.class)).toEqual(found.map(() => "pii"));
+    expect(found.map(depthOf).sort((left, right) => left - right)).toEqual(
+      Array.from({ length: 52 }, (_, index) => 1 + 5 * index),
+    );
+    expect(truncated(listed).map((field) => ({ class: field.class, depth: depthOf(field) }))).toEqual(
+      unreadClasses().map((className) => ({ class: className, depth: MAX_RECURSION_DEPTH + 1 })),
+    );
+    expect(hasPrivacy(Root, "phi")).toBe(true);
+    expect(classifyPrivacy(five as z.ZodType)).toEqual([{ path: "s", class: "pii" }]);
+    expect(hasPrivacy(five as z.ZodType, "phi")).toBe(false);
   });
 });

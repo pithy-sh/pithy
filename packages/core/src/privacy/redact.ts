@@ -51,12 +51,16 @@ import type { RedactedOutput } from "./types";
  *    it found there, or as `[truncated]` where it found none, and `classifyPrivacy` lists every class at each position
  *    it has not read, each `truncated`. The depth limit applies to all nesting, not only recursion: anything nested
  *    deeper than the limit is masked `[truncated]`, a safety cutoff rather than a privacy class, and the inventory
- *    assumes every class there unless the chain repeats a schema already read. A recursion that repeats a schema
- *    already read on its path needs no cut: its classes are exactly those of the schemas already read, so a tree or a
- *    linked list defined once is listed exactly, with no `truncated` entry. Where the walk reaches the limit on a chain
- *    that keeps producing schemas not yet seen on that path, a factory recursion or plain nesting deeper than the
- *    limit, `classifyPrivacy` lists every class at that position, each `truncated`, beside any class it found there,
- *    exactly as past the budget, and `hasPrivacy` answers yes for each. So the list never says less than is marked.
+ *    assumes every class there unless the chain repeats a position (the same set of schemas) already read. A recursion
+ *    that repeats a position (the same set of schemas) already read on its path needs no cut: its classes are exactly
+ *    those of the position already read, so a tree or a linked list defined once is listed exactly, with no `truncated`
+ *    entry. A position is every schema that may hold the value there, so recursions defined once that run side by side
+ *    in one union, with cycles of different lengths, can reach the limit before any position repeats, though each
+ *    schema on the chain is one already read: there the inventory assumes every class, each `truncated`, and lists more
+ *    than is marked, never less. Where the walk reaches the limit on a chain that keeps producing positions not yet
+ *    seen on that path, a factory recursion or plain nesting deeper than the limit, `classifyPrivacy` lists every class
+ *    at that position, each `truncated`, beside any class it found there, exactly as past the budget, and `hasPrivacy`
+ *    answers yes for each. So the list never says less than is marked.
  *    `Redacted<T>` types a position past the limit `unknown` from that same depth: one limit, shared by the runtime and
  *    the type, however the nesting is written. A self-referencing `z.lazy` has to be annotated `z.ZodType<T>`, which
  *    names no kind, so `Redacted<T>` types it, and every field that holds it, `unknown`. Write the recursion with a

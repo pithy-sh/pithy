@@ -32,14 +32,15 @@ import { ownPrivacyClasses, privacyClasses, rankPrivacyClasses, strongestPrivacy
  *   own: `pii(z.object({ token: secret(z.string()) }))` is listed `pii` and `secret`, and masked `[secret]`.
  * - **Nesting is bounded once**, at {@link MAX_RECURSION_DEPTH} levels: a position deeper than that is masked whole as
  *   {@link TRUNCATED_MASK}, whatever nests it, a recursion or a schema written out level by level. It is a safety
- *   cutoff rather than a privacy class. A recursion that repeats a schema already read on its path needs no cut in the
- *   list: its classes are those of the schemas already read. Where a read reaches the limit on a chain of schemas not
- *   yet seen on its path, a factory or plain nesting, nothing past it was read, so the list assumes every class there,
- *   each `truncated`, as past the budget, and `hasPrivacy` answers yes for each: the list never says less than is
- *   marked. A path that reaches the limit ends alone: every other path is still read, so a class beside a recursion is
- *   found whatever the field order, and a position masked whole for a class it carries is masked with that class, cut
- *   off below or not. The cutoff is a flag beside the classes, never instead of them. Every answer is a function of the
- *   schema and the value alone.
+ *   cutoff rather than a privacy class. A recursion that repeats a position (the same set of schemas) already read on
+ *   its path needs no cut in the list: its classes are those of the position already read. Recursions defined once
+ *   side by side in a union, with cycles of different lengths, can reach the limit before any position repeats. Where
+ *   a read reaches the limit on a chain of positions not yet seen on its path, a factory or plain nesting, or such a
+ *   union, nothing past it was read, so the list assumes every class there, each `truncated`, as past the budget, and
+ *   `hasPrivacy` answers yes for each: the list never says less than is marked. A path that reaches the limit ends
+ *   alone: every other path is still read, so a class beside a recursion is found whatever the field order, and a
+ *   position masked whole for a class it carries is masked with that class, cut off below or not. The cutoff is a flag
+ *   beside the classes, never instead of them. Every answer is a function of the schema and the value alone.
  * - **One budget per call, {@link MAX_READ_SCHEMAS} schemas.** `redact`, `classifyPrivacy`, `hasPrivacy` and
  *   `walkPrivacy` each read at most that many in one call, and every position and every search in it draws on it: each
  *   schema a read meets counts one, and so does each schema a lazy or an object's shape yields, where a getter runs and
@@ -100,7 +101,7 @@ export interface PrivacyField {
  * It applies to all nesting, not only recursion: a position deeper than this is masked whole as {@link TRUNCATED_MASK}
  * and typed `unknown`, whatever nests it: a `z.lazy`, a getter that returns one schema, one that builds a new schema
  * each read, or a schema written out level by level. The list assumes every class there, unless the chain repeats a
- * schema already read on its path. A search for a mark beneath an opaque node or a marked
+ * position (the same set of schemas) already read on its path. A search for a mark beneath an opaque node or a marked
  * container ends a path at the same depth, counting each lazy too, and reads every other path; so does the one
  * `Redacted<T>` makes. So does a read of the shapes a choice can have, and of the schemas that reach one position, each
  * counting the lazies nested above a schema: a lazy that builds a new choice each read never meets a schema twice. A
@@ -1085,6 +1086,40 @@ function readPosition(
   const records = slots(leafList, ["record"], (def) => def.valueType);
   const arrays = slots(leafList, ["array"], (def) => def.element);
   const catchalls = objects.flatMap((leaf) => [openCatchall(defOf(leaf))].filter(isSchema));
+  // Each object's keys are indexed once, so a key's schemas are looked up, never scanned for across every object here.
+  const open = objects.flatMap((leaf, index) => {
+    const schema = openCatchall(defOf(leaf));
+    return schema ? [{ index, schema }] : [];
+  });
+  let naming: Map<PropertyKey, number[]> | undefined;
+  const namingOf = (): Map<PropertyKey, number[]> => {
+    if (!naming) {
+      naming = new Map();
+      objects.forEach((leaf, index) => {
+        for (const key of Reflect.ownKeys(shapeOf(leaf))) {
+          const list = naming?.get(key);
+          if (list) list.push(index);
+          else naming?.set(key, [index]);
+        }
+      });
+    }
+    return naming;
+  };
+  /** The schemas a key is read by, in the objects' order: an object's own where it names the key, else its catchall. */
+  const namedBy = (name: PropertyKey, indexes: readonly number[]): z.ZodType[] => {
+    const out: z.ZodType[] = [];
+    let next = 0;
+    for (const index of indexes) {
+      for (; next < open.length && (open[next]?.index ?? index) < index; next += 1)
+        out.push(open[next]?.schema as z.ZodType);
+      if (open[next]?.index === index) next += 1;
+      out.push(shapeOf(objects[index] as z.ZodType)[name] as z.ZodType);
+    }
+    for (; next < open.length; next += 1) out.push(open[next]?.schema as z.ZodType);
+    return out;
+  };
+  // Every key no object names is read by the open catchalls alone: one position for all of them.
+  let unnamed: { readonly at: Position | undefined } | undefined;
   const misfits = new Map<ValueKind, { mask: Mask | undefined }>();
   const position: Position = {
     mask,
@@ -1117,14 +1152,17 @@ function readPosition(
     },
     kinds: new Set(leafList.map((leaf) => defOf(leaf).type)),
     other,
-    keys: [...new Set(objects.flatMap((leaf) => Reflect.ownKeys(shapeOf(leaf))))],
+    get keys() {
+      return [...namingOf().keys()];
+    },
     field: (name) => {
       if (!fields.has(name)) {
-        const named = objects.flatMap((leaf) => {
-          const shape = shapeOf(leaf);
-          return Object.hasOwn(shape, name) ? [shape[name] as z.ZodType] : [openCatchall(defOf(leaf))].filter(isSchema);
-        });
-        fields.set(name, positionOf([...named, ...records], call));
+        const indexes = namingOf().get(name);
+        if (indexes) fields.set(name, positionOf([...namedBy(name, indexes), ...records], call));
+        else {
+          unnamed ??= { at: positionOf([...open.map((each) => each.schema), ...records], call) };
+          fields.set(name, unnamed.at);
+        }
       }
       return fields.get(name);
     },
@@ -1214,9 +1252,11 @@ function onLine(frame: Frame): boolean {
 
 /**
  * Whether a frame is cut off at the limit with every class assumed: nested deeper than {@link MAX_RECURSION_DEPTH}, at
- * a position not met on its path. A recursion defined once comes round to a position already read, whose classes are
- * listed where it was read, so it needs no cut. A chain that keeps producing schemas not yet seen, a factory or nesting
- * deeper than the limit, was never read past it: any class may be marked there.
+ * a position not met on its path. A position is a set of schemas, and it is the position that is compared: a recursion
+ * defined once comes round to a position (the same set of schemas) already read, whose classes are listed where it was
+ * read, so it needs no cut. A chain that keeps producing positions not yet seen, a factory, nesting deeper than the
+ * limit, or once-defined cycles of different lengths side by side in a union, was never read past it: any class may be
+ * marked there, though each schema on the chain may be one already read.
  */
 function cutOff(frame: Frame): boolean {
   return frame.depth > MAX_RECURSION_DEPTH && !onLine(frame);
