@@ -3,7 +3,7 @@
 
 import type { z } from "zod";
 import { privacyClass } from "./classes";
-import { MAX_RECURSION_DEPTH, type Position, rootPosition, TRUNCATED_CLASS } from "./classify";
+import { MAX_RECURSION_DEPTH, type Mask, type Position, rootPosition, TRUNCATED_CLASS } from "./classify";
 import type { RedactedOutput } from "./types";
 
 /**
@@ -52,8 +52,11 @@ import type { RedactedOutput } from "./types";
  * - **A position two classes reach takes the strongest one's placeholder**, never one class's own mask: a PAN's
  *   first six and last four apply only where `pci` is the only class there.
  * - **An option's marks apply where the value has that option's shape.** An object option's apply to an object
- *   value, an array option's to an array value. A key or an element no option names is kept, and so is a value of a
- *   kind no option names, such as an array a `z.unknown()` beside an object option let through.
+ *   value, an array option's to an array value, and a marked string option's to a string: beside
+ *   `z.array(z.string())` an array is walked, and beside `z.number()` a number is kept. A mark reached through no
+ *   option applies to every value. A key or an element no option names is kept, and so is a value of a kind no
+ *   option names, such as an array a `z.unknown()` beside an object option let through. A record's key is a string
+ *   whatever its schema says, so a key schema that marks any shape masks every key.
  * - **A record's or a map's key is redacted by its key schema**, and so is a set's element. Two that mask alike come
  *   back as `[pii]` and `[pii] #2`, so the copy holds as many entries as the value did. Every key is defined on the
  *   copy, not assigned, so an own `__proto__` key stays a key.
@@ -82,10 +85,8 @@ function isPlainObject(value: unknown): value is Record<PropertyKey, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
-/** How a masked position masks a value: its class's own mask, or the placeholder of the strongest class there. */
-function masked(at: Position, value: unknown): string {
-  const { mask } = at;
-  if (mask === undefined) return String(value);
+/** How a mask masks a value: its class's own mask, or the placeholder of the strongest class there. */
+function masked(mask: Mask, value: unknown): string {
   return (mask.own ? privacyClass(mask.className)?.mask(value) : undefined) ?? `[${mask.className}]`;
 }
 
@@ -130,8 +131,13 @@ function redactAt(step: Extract<Step, { visit: unknown }>, steps: Step[]): void 
   if (value === null || value === undefined) put(value);
   else if (depth > MAX_RECURSION_DEPTH) put(`[${TRUNCATED_CLASS}]`);
   else if (at === undefined) put(value);
-  else if (at.mask) put(masked(at, value));
   else {
+    // A mark applies to a value of the shape of the option it was reached through, and to no other.
+    const mask = at.maskFor(value);
+    if (mask) {
+      put(masked(mask, value));
+      return;
+    }
     const below: Step[] = [];
     put(
       redactKind(at, value, below, (child, item, out) => {
@@ -208,12 +214,13 @@ function redactKind(at: Position, value: unknown, below: Step[], walk: Walk): un
  * put in when its step runs, and the steps run in key order, so the copy's keys keep the value's order.
  */
 function redactObject(at: Position, value: Record<PropertyKey, unknown>, walk: Walk): Record<PropertyKey, unknown> {
-  const keyMasked = at.key?.mask !== undefined;
+  // An object's key is a string whatever its schema says, so a key schema that marks any shape masks every key.
+  const keyMask = at.key?.mask;
   const keys = Reflect.ownKeys(value).filter((key) => Object.prototype.propertyIsEnumerable.call(value, key));
-  const taken = new Set<unknown>(keyMasked ? [] : keys);
+  const taken = new Set<unknown>(keyMask ? [] : keys);
   const out: Record<PropertyKey, unknown> = {};
   for (const key of keys) {
-    const name = keyMasked ? (distinct(masked(at.key as Position, key), taken) as string) : key;
+    const name = keyMask ? (distinct(masked(keyMask, key), taken) as string) : key;
     taken.add(name);
     // Defined, not assigned: an own `__proto__` key that parse kept stays a key, and never becomes the prototype.
     walk(at.field(key), value[key], (result) => {

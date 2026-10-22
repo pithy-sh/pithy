@@ -181,8 +181,10 @@ describe("the rule: structural nodes are walked", () => {
     // A field only one option marks is masked in every option: the price of never guessing.
     const Either = z.union([z.object({ e: pii(z.email()) }), z.object({ e: z.number() })]);
     expect(masked(Either, { e: 5 })).toEqual({ e: "[pii]" });
+    // A marked scalar option applies where the value has its shape: a number here, and never the string.
     const Prim = z.union([z.string(), pii(z.number())]);
-    expect(redact(Prim, "plain")).toBe("[pii]");
+    expect(redact(Prim, "plain")).toBe("plain");
+    expect(masked(Prim, 5)).toBe("[pii]");
     const Tagged = z.discriminatedUnion("t", [
       z.object({ t: z.literal("a"), e: z.string() }),
       z.object({ t: z.literal("b"), e: pii(z.string()) }),
@@ -292,6 +294,61 @@ describe("the contract's edges", () => {
     const at = new Date(0);
     expect(masked(z.union([z.string(), z.object({ e: pii(z.string()) })]), "hello")).toBe("hello");
     expect(masked(z.union([z.date(), z.object({ e: pii(z.string()) })]), at)).toBe(at);
+  });
+
+  test("applies a marked scalar option only where the value has its shape, at runtime, in the list and in the type", () => {
+    type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+    const same = <A, B>(..._proof: Same<A, B> extends true ? [] : [never]): void => {};
+    // An array option beside a marked string: an array value is walked by the array option, which marks nothing.
+    const Either = z.union([pii(z.string()), z.array(z.string())]);
+    expect(masked(Either, ["P-1"])).toEqual(["P-1"]);
+    expect(masked(Either, "S-1")).toBe("[pii]");
+    expect(classifyPrivacy(Either)).toEqual([{ path: "", class: "pii" }]);
+    same<Redacted<typeof Either>, string | string[]>();
+    // A number beside a marked string, as a field: the number is kept.
+    const Field = z.object({ v: z.union([pii(z.string()), z.number()]) });
+    expect(masked(Field, { v: 42 })).toEqual({ v: 42 });
+    expect(masked(Field, { v: "S-1" })).toEqual({ v: "[pii]" });
+    expect(classifyPrivacy(Field)).toEqual([{ path: "v", class: "pii" }]);
+    same<Redacted<typeof Field>, { v: string | number }>();
+    // A marked object option beside a number masks an object value, and keeps the number.
+    const Obj = z.union([pii(z.object({ e: z.string() })), z.number()]);
+    expect(masked(Obj, 7)).toBe(7);
+    expect(masked(Obj, { e: "S-1" })).toBe("[pii]");
+    same<Redacted<typeof Obj>, string | number>();
+    // A marked array option beside an object option walks the object and masks the array.
+    const Lists = z.union([pii(z.array(z.string())), z.object({ e: pii(z.string()), u: z.string() })]);
+    expect(masked(Lists, ["S-1"])).toBe("[pii]");
+    expect(masked(Lists, { e: "S-1", u: "P-1" })).toEqual({ e: "[pii]", u: "P-1" });
+    expect(classifyPrivacy(Lists)).toEqual([
+      { path: "", class: "pii" },
+      { path: "e", class: "pii" },
+    ]);
+    same<Redacted<typeof Lists>, string | { e: string; u: string }>();
+    // Outside the contract: an unmarked transform or unknown option beside a marked scalar keeps its value.
+    const Doubled = z.union([pii(z.string()), z.number().transform((n) => n * 2)]);
+    expect(masked(Doubled, 3)).toBe(6);
+    expect(masked(Doubled, "S-1")).toBe("[pii]");
+    same<Redacted<typeof Doubled>, string | number>();
+    const Loose = z.object({ f: z.union([pii(z.string()), z.unknown()]) });
+    expect(masked(Loose, { f: [1, 2] })).toEqual({ f: [1, 2] });
+    expect(masked(Loose, { f: "S-1" })).toEqual({ f: "[pii]" });
+    // Nested choices narrow each other: the inner string option applies to neither a number nor an array.
+    const Nested = z.union([z.union([pii(z.string()), z.boolean()]), z.array(z.number())]);
+    expect(masked(Nested, true)).toBe(true);
+    expect(masked(Nested, [1])).toEqual([1]);
+    expect(masked(Nested, "S-1")).toBe("[pii]");
+    same<Redacted<typeof Nested>, string | boolean | number[]>();
+    // A literal and an enum have the shape of their values.
+    const Literal = z.union([pii(z.literal(1)), z.enum(["a", "b"])]);
+    expect(masked(Literal, "a")).toBe("a");
+    expect(masked(Literal, 1)).toBe("[pii]");
+    same<Redacted<typeof Literal>, string>();
+    // A marked date codec applies to a date, never to a string.
+    const Dated = z.union([z.string(), pii(SQLiteDate)]);
+    expect(masked(Dated, "P-1")).toBe("P-1");
+    expect(masked(Dated, 1_000)).toBe("[pii]");
+    same<Redacted<typeof Dated>, string>();
   });
 
   test("keeps a record's symbol keys, numbers a set's masked elements apart, and redacts a map's object keys", () => {

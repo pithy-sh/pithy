@@ -200,4 +200,100 @@ describe("one recursion limit, however the recursion is written", () => {
     }
     expect(MAX_CLASSIFIED_POSITIONS).toBe(10_000);
   });
+
+  test("classifyPrivacy reads a tree built anew level by level, so a shallow branch is listed as redact masks it", () => {
+    const node = (): z.ZodType =>
+      z.object({
+        e: pii(z.string()),
+        u: z.string(),
+        get left() {
+          return node().optional();
+        },
+        get right() {
+          return node().optional();
+        },
+      });
+    const Tree = node();
+    const listed = classifyPrivacy(Tree);
+    const depth = (path: string) => path.split(".").length;
+    // Every level read whole lists its `e` at every path, left or right; the first level past the budget is 13.
+    const truncated = listed.filter((field) => field.truncated);
+    expect(truncated.length).toBeGreaterThan(0);
+    expect(Math.min(...truncated.map((field) => depth(field.path)))).toBe(13);
+    expect(listed).toContainEqual({ path: "right.e", class: "pii" });
+    expect(listed).toContainEqual({ path: "left.right.left.e", class: "pii" });
+    expect(listed.some((field) => field.path === "right" || field.path.startsWith("right.u"))).toBe(false);
+    const out = redact(Tree, Tree.parse({ e: "S-a", u: "P-a", right: { e: "S-b", u: "P-b" } }) as never);
+    expect(out).toEqual({ e: "[pii]", u: "P-a", right: { e: "[pii]", u: "P-b" } });
+    // In the schema's own order, as a schema read to the end is.
+    expect(listed.slice(0, 3)).toEqual([
+      { path: "e", class: "pii" },
+      { path: "left.e", class: "pii" },
+      { path: "left.left.e", class: "pii" },
+    ]);
+  });
+
+  test("Redacted<T> keeps the output of an opaque node with nothing marked beneath, however deep or recursive", () => {
+    const Node = z.object({
+      u: z.string(),
+      get next() {
+        return Node.optional();
+      },
+    });
+    const Row = z.object({ id: z.string(), tree: Node.transform((n) => n), email: pii(z.string()) });
+    const value = Row.parse({ id: "1", tree: { u: "P-1", next: { u: "P-2" } }, email: "S-1" });
+    expect(redact(Row, value)).toEqual({ id: "1", tree: { u: "P-1", next: { u: "P-2" } }, email: "[pii]" });
+    expect(classifyPrivacy(Row)).toEqual([{ path: "email", class: "pii" }]);
+    same<Redacted<typeof Row>["tree"], z.output<typeof Node>>();
+    // Fourteen levels of unmarked objects under a transform, past where a bounded search would stop.
+    const Deep = z
+      .object({
+        a: z.object({
+          a: z.object({
+            a: z.object({
+              a: z.object({
+                a: z.object({
+                  a: z.object({
+                    a: z.object({
+                      a: z.object({
+                        a: z.object({
+                          a: z.object({ a: z.object({ a: z.object({ a: z.object({ a: z.string() }) }) }) }),
+                        }),
+                      }),
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          }),
+        }),
+      })
+      .transform((x) => x);
+    same<Redacted<typeof Deep>, z.output<typeof Deep>>();
+    // And a mark at the bottom of the same depth is still found, and the position typed unknown.
+    const DeepMarked = z
+      .object({
+        a: z.object({
+          a: z.object({
+            a: z.object({
+              a: z.object({
+                a: z.object({
+                  a: z.object({
+                    a: z.object({
+                      a: z.object({
+                        a: z.object({
+                          a: z.object({ a: z.object({ a: z.object({ a: z.object({ a: pii(z.string()) }) }) }) }),
+                        }),
+                      }),
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          }),
+        }),
+      })
+      .transform((x) => x);
+    same<Redacted<typeof DeepMarked>, unknown>();
+  });
 });

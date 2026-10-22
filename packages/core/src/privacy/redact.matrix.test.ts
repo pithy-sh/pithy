@@ -81,6 +81,8 @@ const kinds = {
   readonly: <I extends z.ZodType, K extends z.ZodType>(i: I, _k: K) => i.readonly(),
   brand: <I extends z.ZodType, K extends z.ZodType>(i: I, _k: K) => i.brand<"Matrix">(),
   union: <I extends z.ZodType, K extends z.ZodType>(i: I, _k: K) => z.union([i, z.number()]),
+  // A marked string option beside the inner one: it masks a string, and the inner value, never one, is walked.
+  option: <I extends z.ZodType, K extends z.ZodType>(i: I, k: K) => z.union([i, k]),
   discriminated: <I extends z.ZodType, K extends z.ZodType>(i: I, _k: K) =>
     z.discriminatedUnion("t", [z.object({ t: z.literal("a"), v: i }), z.object({ t: z.literal("b"), w: z.string() })]),
   intersection: <I extends z.ZodType, K extends z.ZodType>(i: I, _k: K) =>
@@ -171,6 +173,7 @@ const shells: Record<Kind, Shell> = {
   readonly: { input: (i) => i(), paths: same },
   brand: { input: (i) => i(), paths: same },
   union: { input: (i) => i(), paths: same },
+  option: { input: (i) => i(), paths: (inner) => ["", ...inner] },
   discriminated: { input: (i) => ({ t: "a", v: i() }), paths: under("v") },
   intersection: { input: (i) => ({ x: i(), y: plainString() }), paths: under("x") },
   json: {
@@ -345,6 +348,7 @@ interface Applied<I extends z.ZodType, K extends z.ZodType & z.core.$ZodRecordKe
   readonly: ReturnType<typeof kinds.readonly<I, K>>;
   brand: ReturnType<typeof kinds.brand<I, K>>;
   union: ReturnType<typeof kinds.union<I, K>>;
+  option: ReturnType<typeof kinds.option<I, K>>;
   discriminated: ReturnType<typeof kinds.discriminated<I, K>>;
   intersection: ReturnType<typeof kinds.intersection<I, K>>;
   json: ReturnType<typeof kinds.json<I, K>>;
@@ -417,6 +421,7 @@ describe("Redacted<T>, for the same matrix", () => {
     exact<Inexact<"readonly">>();
     exact<Inexact<"brand">>();
     exact<Inexact<"union">>();
+    exact<Inexact<"option">>();
     exact<Inexact<"discriminated">>();
     exact<Inexact<"intersection">>();
     exact<Inexact<"json">>();
