@@ -4,7 +4,7 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { masterKeyRegistryEntry } from "@pithy-sh/secrets/src/capability";
+import { fieldKeysRegistryEntry, masterKeyRegistryEntry } from "@pithy-sh/secrets/src/capability";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { afterEach, describe, expect, test } from "vitest";
@@ -132,5 +132,27 @@ describe("mintLocalSecrets", () => {
     await mintLocalSecrets({ projectDir: dir, targets, paths: { env: { PITHY_CONFIG_DIR: config } } });
 
     expect(await readFile(join(dir, "pithy.config.ts"), "utf8")).toBe(before);
+  });
+});
+
+/** **A Worker that holds an encrypted field gets a local field key, and only the field key (#390).** */
+describe("mintLocalSecrets — the field key", () => {
+  test("is minted once, as a key set, for a Worker with an encrypted field and no secrets capability", async () => {
+    projects += 1;
+    const config = await configDir();
+    const { dir } = await clone(`mint-${projects}`);
+    const paths = { env: { PITHY_CONFIG_DIR: config } };
+    const targets: DevSecretsTarget[] = [
+      { name: "api", dir: join(dir, "apps", "api"), registry: { PITHY_FIELD_KEYS: fieldKeysRegistryEntry } },
+    ];
+
+    const first = await mintLocalSecrets({ projectDir: dir, targets, paths });
+    expect(first.minted).toEqual(["PITHY_FIELD_KEYS"]);
+    const file = await readDevSecrets(first.path);
+    // No master key: nothing here composes `secrets`, so there is no vault to open.
+    expect(Object.keys(file)).toEqual(["PITHY_FIELD_KEYS"]);
+    expect(JSON.stringify(file.PITHY_FIELD_KEYS)).toContain("currentVersion");
+
+    expect((await mintLocalSecrets({ projectDir: dir, targets, paths })).minted).toEqual([]);
   });
 });

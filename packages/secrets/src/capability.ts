@@ -73,8 +73,8 @@ export const masterKeyRegistryEntry: SecretRegistryEntry = {
 
 /**
  * **The field key, as a registry entry (#390)** — `PITHY_FIELD_KEYS`, what app Workers seal `encrypted()` fields
- * with. The master key's shape and the master key's origin, and **never the master key**: an app Worker that holds
- * an encrypted field holds this, and only this, so one compromised app Worker cannot open the vault.
+ * with. The master key's shape and the master key's origin, and **never the master key**: holding an encrypted field
+ * binds a Worker this key and nothing of the vault's, so sealing a field never puts the vault's key in a Worker.
  *
  * Not in {@link secrets}' own registry. It is bound to a Worker because that Worker *holds an encrypted field*, not
  * because it composes this capability, so the CLI adds it to exactly those Workers' registries

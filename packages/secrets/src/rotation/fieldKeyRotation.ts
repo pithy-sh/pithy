@@ -190,13 +190,15 @@ async function backfill(
   options: Required<Pick<FieldKeyRotationOptions, "batchSize" | "maxBatches">>,
 ): Promise<void> {
   const due = versionsDue(liveVersions(config));
-  for (const [index, column] of deps.stamp.columns.entries()) {
+  // An index loop rather than `entries()`: a driver body evaluates no nullary call outside a step (#331).
+  for (let index = 0; index < deps.stamp.columns.length; index += 1) {
+    const column = deps.stamp.columns[index] as EncryptedColumn;
     const d1 = deps.database(column.binding);
     if (!d1) continue;
     for (const version of due) {
       for (let batch = 0; batch < options.maxBatches; batch += 1) {
         const result = await step.do(`reseal-${index}-${version}-${batch}`, () =>
-          resealBatch(d1, column satisfies EncryptedColumn, config, version, options.batchSize),
+          resealBatch(d1, column, config, version, options.batchSize),
         );
         // No progress — the column is clear of this version, or only rows that will not open are left.
         if (result.resealed === 0 && result.skipped === 0) break;

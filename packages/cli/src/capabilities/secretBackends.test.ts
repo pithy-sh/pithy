@@ -270,12 +270,14 @@ const MASTER_KEY_BINDING = "SECRETS_ENCRYPTION_KEYS";
 
 describe("a secret's declared backend is where the value actually goes", () => {
   test("the scan finds every declaration there is, named", () => {
-    // Exact, not `> 0`. The kit declares three store-backed secrets: the at-rest master key, the
+    // Exact, not `> 0`. The kit declares four store-backed secrets: the at-rest master key, the
     // application's one runtime token (#728), and — since #596 — email's link-signing key, which the email host and
     // the app Worker both bind. `> 0` was satisfied by finding one of two — and it *was* finding one of
     // two, because `masterKeyRegistryEntry` is a standalone const rather than an inline key and the old
     // regex could not see it. A guard a broken scan still passes is not a guard.
+    // And since #390 the field key, which every Worker holding an encrypted field binds.
     expect(declaredStoreBackedKeys()).toEqual([
+      "PITHY_FIELD_KEYS",
       "RUNTIME_CF_API_TOKEN",
       "SECRETS_ENCRYPTION_KEYS",
       "email-link-signing-key",
@@ -285,7 +287,7 @@ describe("a secret's declared backend is where the value actually goes", () => {
       (total, { source }) => total + source.split(STORE_BACKED).length - 1,
       0,
     );
-    expect(occurrences).toBe(3);
+    expect(occurrences).toBe(4);
     expect(boundStoreBindings().length).toBeGreaterThan(0);
   });
 

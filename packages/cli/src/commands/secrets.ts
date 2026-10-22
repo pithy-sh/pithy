@@ -36,6 +36,7 @@ import {
   storeSecretMinter,
 } from "../capabilities/mintSecrets";
 import { resolveAdd } from "../capabilities/notComposed";
+import { retireVersion } from "../capabilities/retireFieldKey";
 import {
   EXIT_ROLLED_NOT_RECORDED,
   planSecretRotation,
@@ -1454,5 +1455,17 @@ const tables = withContract(
 
 export default defineCommand({
   meta: { name: "secrets", description: "Manage encrypted secrets" },
-  subCommands: { create, update, rotate, rm, ls, tables, edit, verify, provision, deprovision },
+  subCommands: {
+    create,
+    update,
+    rotate,
+    rm,
+    ls,
+    tables,
+    edit,
+    verify,
+    provision,
+    deprovision,
+    "retire-version": retireVersion,
+  },
 });

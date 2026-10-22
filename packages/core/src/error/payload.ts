@@ -437,6 +437,20 @@ const SecretRotationUnsupportedPublic = z
   })
   .describe("This secret cannot be rotated through the surface that was asked (409).");
 
+const SecretConfirmationRequiredPublic = z
+  .object({
+    code: z
+      .literal("secrets/confirmation_required")
+      .describe(
+        "The step retires a field-key version past its guard, which leaves every ciphertext still under it unopenable for good. It asks for the version to be typed back at a terminal and has no flag that answers for a person, so a run under `--json` or off a terminal is refused before anything is read (#390).",
+      ),
+    status: z
+      .literal(403)
+      .describe("Forbidden — only a person at a terminal may confirm this step, however the call is phrased."),
+    ...publicFields,
+  })
+  .describe("Retiring a field-key version past its guard needs a person to type it back (403).");
+
 // --- @pithy-sh/email: job-table email platform codes ---
 
 const EmailTemplateNotFoundPublic = z
@@ -1812,6 +1826,7 @@ export const KitPublicErrorPayload = z
     SecretCryptoFailedPublic,
     SecretRotationUnrecordedPublic,
     SecretRotationUnsupportedPublic,
+    SecretConfirmationRequiredPublic,
     EmailTemplateNotFoundPublic,
     EmailInvalidPayloadPublic,
     EmailInvalidTokenPublic,
@@ -1995,6 +2010,9 @@ const SecretRotationUnrecorded = SecretRotationUnrecordedPublic.extend(internalF
 );
 const SecretRotationUnsupported = SecretRotationUnsupportedPublic.extend(internalFields).describe(
   SecretRotationUnsupportedPublic.description ?? "",
+);
+const SecretConfirmationRequired = SecretConfirmationRequiredPublic.extend(internalFields).describe(
+  SecretConfirmationRequiredPublic.description ?? "",
 );
 const EmailTemplateNotFound = EmailTemplateNotFoundPublic.extend(internalFields).describe(
   EmailTemplateNotFoundPublic.description ?? "",
@@ -2373,6 +2391,7 @@ export const KitErrorPayload = z
     SecretCryptoFailed,
     SecretRotationUnrecorded,
     SecretRotationUnsupported,
+    SecretConfirmationRequired,
     EmailTemplateNotFound,
     EmailInvalidPayload,
     EmailInvalidToken,

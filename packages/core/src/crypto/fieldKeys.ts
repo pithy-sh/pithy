@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { remedy } from "../cli/command";
 import { InternalError } from "../error/pithyError";
 import { EncryptionConfig } from "./envelope";
 
@@ -8,9 +9,11 @@ import { EncryptionConfig } from "./envelope";
  * **The field key: what an app Worker seals its encrypted fields with** (#390).
  *
  * `PITHY_FIELD_KEYS` is an {@link EncryptionConfig}, the same versioned shape as secrets' master key, and it is a
- * **different key on purpose**. `SECRETS_ENCRYPTION_KEYS` never leaves the secrets manager Worker. Field encryption
- * seals and opens inside the adopter's own Workers, so those Workers must hold the key they use, and sharing the master
- * key would let one compromised app Worker open the whole secrets vault. A key of its own limits that to the fields.
+ * **different key on purpose**. Field encryption seals and opens inside the adopter's own Workers, so every Worker that
+ * holds an encrypted field must hold the key it uses. Were that the master key `SECRETS_ENCRYPTION_KEYS`, every such
+ * Worker would hold the key to the whole secrets vault, and one compromised would open it. A key of its own limits
+ * that to the fields: a Worker that holds an encrypted field and composes no `secrets` is bound this key and never
+ * the master key.
  *
  * It is not a second mechanism: `pithy secrets provision` mints it beside the master key, in the same format, binds
  * it to every Worker that holds an encrypted field, and the manager's at-rest cron rotates it every
@@ -43,7 +46,7 @@ export async function resolveFieldKeys(keys: FieldKeys | undefined): Promise<Enc
   if (keys === undefined || keys === null) {
     throw new InternalError({
       message: "This Worker holds an encrypted field and no field key.",
-      action: `Bind ${FIELD_KEYS_BINDING}: run \`pithy secrets provision\`, which binds it to every Worker with an encrypted field.`,
+      action: `Bind ${FIELD_KEYS_BINDING}. ${remedy("secrets provision").say((command) => `${command} binds it to every Worker with an encrypted field.`)}`,
       detail: `${FIELD_KEYS_BINDING} binding is not configured`,
     });
   }

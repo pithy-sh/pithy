@@ -218,14 +218,15 @@ describe("every command declares what it promises", () => {
     expect(groups.filter((node) => contractOf(node.cmd) !== undefined).map(pathOf)).toEqual([]);
   });
 
-  test("a command that takes --json publishes a payload, but for remove, which refuses it", async () => {
+  test("a command that takes --json publishes a payload, but for the two that refuse it", async () => {
     const mismatched: string[] = [];
     for (const node of runnable) {
       const takesJson = Object.hasOwn(await argsOf(node), "json");
       const publishes = contractOf(node.cmd)?.output !== "none";
       if (takesJson !== publishes) mismatched.push(pathOf(node));
     }
-    expect(mismatched).toEqual(["remove"]);
+    // `remove`, and `secrets retire-version`, which only a person at a terminal may run (#390).
+    expect(mismatched).toEqual(["remove", "secrets retire-version"]);
   });
 
   test("a contract names only flags its command declares", async () => {

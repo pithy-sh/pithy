@@ -17,7 +17,11 @@ import { PaymentsConfig } from "@pithy-sh/payments/src/config/config";
 import { resolvePaymentsConfig } from "@pithy-sh/payments/src/provision/resolvePaymentsConfig";
 import { paymentsSecretsRegistry } from "@pithy-sh/payments/src/secret/registry";
 import { secretBindingName } from "@pithy-sh/secrets/src/env/bindingName";
-import { masterKeySecretName, runtimeTokenSecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
+import {
+  fieldKeysSecretName,
+  masterKeySecretName,
+  runtimeTokenSecretName,
+} from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { ManagerWranglerTemplate } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import { resolveManagerConfig } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
@@ -427,6 +431,8 @@ describe("the committed worker templates", () => {
     expect(Object.fromEntries(config.secrets_store_secrets.map((s) => [s.binding, s.secret_name]))).toEqual({
       SECRETS_ENCRYPTION_KEYS: masterKeySecretName(PROJECT, "prod"),
       RUNTIME_CF_API_TOKEN: runtimeTokenSecretName(PROJECT, "prod"),
+      // The field key (#390), under the entry provisioning mints and every app Worker with an encrypted field binds.
+      PITHY_FIELD_KEYS: fieldKeysSecretName(PROJECT, "prod"),
     });
   });
 

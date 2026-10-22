@@ -18,6 +18,7 @@ import { describeEnvironmentDrift } from "./environments";
 import { capabilityReachFix, DoctorFix, localMigrationFix, prerequisiteFix, upgradeFix } from "./findingFixes";
 import type { ProjectHealth, WorkerChecks } from "./health";
 import { describeProjectName } from "./projectName";
+import { fieldKeyRotationErrors } from "./secretRotations";
 import { describeSelfBinding } from "./selfBinding";
 import { serviceBindingDetail, serviceBindingFix } from "./serviceBindings";
 import { describeSettingsFinding } from "./settings";
@@ -75,6 +76,7 @@ export const DoctorCheck = z
     "supportSearchTriggers",
     "devPreferences",
     "settings",
+    "secretRotations",
   ])
   .describe("The block of the report the failure sits in: its `--json` key. `project` covers project health.");
 export type DoctorCheck = z.infer<typeof DoctorCheck>;
@@ -401,6 +403,14 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
     // The state gates whatever it carries, so a `findings` with no answer this names still gets its entry.
     if (failures.length === before)
       add("supportSearchTriggers", `Support search has findings. Run ${pithyCommand("doctor")} for the lines`, null);
+  }
+
+  // A field-key version the retirement guard has held for a whole period (#390), read off the environment's own
+  // ledger, which answered. Every other failed rotation reports and never gates, because its remedy is the next tick
+  // or a human at an issuer; this one is the rotator saying it cannot clear itself. The remedy is a person's: fix
+  // what the guard names, or retire past it at a terminal, so there is no `fix` to run.
+  if (report.secretRotations) {
+    for (const error of fieldKeyRotationErrors(report.secretRotations)) add("secretRotations", error, null);
   }
 
   // And once more, on a file rather than a config. A `dev.json` that will not parse or names no user is a fault

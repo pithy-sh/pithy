@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { commandName } from "@pithy-sh/core/src/cli/command";
+import { FIELD_KEYS_BINDING } from "@pithy-sh/core/src/crypto/fieldKeys";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { readSecretStatus } from "@pithy-sh/secrets/src/admin/status";
+import { FIELD_KEY_ROTATION_NAME } from "@pithy-sh/secrets/src/data/secretRotations";
 import { secretsTables } from "@pithy-sh/secrets/src/data/tables";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
-import type { RotationFailureCode } from "@pithy-sh/secrets/src/rotation/rotationLedger";
+import { type RotationFailureCode, rotationFailureCodeOf } from "@pithy-sh/secrets/src/rotation/rotationLedger";
 import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsStore";
+import { RotationTracker } from "@pithy-sh/secrets/src/store/rotationTracker";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { readProjectDatabases, unprovisionedDatabases, type WorkerScope } from "../migrations/run";
 import type { RemoteSkip } from "./environmentMigrations";
@@ -103,6 +107,23 @@ export async function readFailedRotations(
     (d1) => readSecretStatus(createDatabase(d1, secretsTables), registry, { failures: true }),
   );
   const failed: FailedRotation[] = [];
+  // **The field key's own ledger row (#390).** Recorded under a sentinel no registry declares, so the status read
+  // above never lists it. A version still live when the next rotation came due closes the pass failed, and that is
+  // the one rotation finding this report treats as an error ({@link fieldKeyRotationErrors}).
+  const fieldKey = await readProjectDatabases(
+    { projectDir: options.projectDir, env: options.env, account: options.account, workers: options.workers },
+    "secrets",
+    (d1) => RotationTracker.fromD1(d1).lastClosed(FIELD_KEY_ROTATION_NAME),
+  );
+  for (const read of fieldKey) {
+    const last = read.value;
+    if (last === null || last.status !== "failed" || last.completedAt === null) continue;
+    failed.push({
+      name: FIELD_KEYS_BINDING,
+      at: last.completedAt.toISOString(),
+      reason: rotationFailureCodeOf(last.errorMessage),
+    });
+  }
   for (const read of reads) {
     for (const entry of read.value) {
       if (entry.state !== "readable" || !entry.status.lastFailure) continue;
@@ -200,6 +221,31 @@ export function secretRotationsFix(_answer: EnvironmentSecretRotations): null {
   return null;
 }
 
+/** The field-key codes that are an error, not a finding: the guard has held a version a whole period, or a fourth. */
+const FIELD_KEY_ERRORS: ReadonlySet<RotationFailureCode> = new Set(["field-key-overdue", "field-key-ceiling"]);
+
+/**
+ * **The one rotation finding that fails the exit (#390): a field-key version still live at the next rotation.**
+ * Retirement is lazy and a dirty guard is a backlog for one period, but a version the guard held a whole period is a
+ * failure the rotator cannot clear by itself, and the next step is a person's — fix what the guard names, or retire
+ * it past the guard. One sentence per environment it was read in.
+ */
+export function fieldKeyRotationErrors(check: SecretRotationsCheck): string[] {
+  const errors: string[] = [];
+  for (const answer of check.environments) {
+    if (answer.state !== "read") continue;
+    for (const failure of answer.failed) {
+      if (failure.name !== FIELD_KEYS_BINDING || failure.reason === null || !FIELD_KEY_ERRORS.has(failure.reason)) {
+        continue;
+      }
+      errors.push(
+        `${answer.env}: ${REASON[failure.reason]}. Read the secrets manager's audit events for what holds it, then fix it, or retire the version past the guard with ${commandName("secrets retire-version")} at a terminal`,
+      );
+    }
+  }
+  return errors;
+}
+
 /** What each code means for an operator, in one clause. Every code the ledger can hold has one. */
 const REASON: Record<RotationFailureCode, string> = {
   "roll-failed": "the rotator never answered, so whether the issuer rolled is unknown — check the issuer now",
@@ -208,8 +254,8 @@ const REASON: Record<RotationFailureCode, string> = {
   "at-rest-incomplete": "the at-rest key rotation did not finish",
   "at-rest-unconfirmed": "the at-rest key rotation could not confirm its write through the binding",
   "not-retired": "rotated, and the previous version is kept until what is sealed under it is re-encrypted",
-  "field-key-overdue": "a field-key version was still live when the next rotation came due — see the Field keys block",
-  "field-key-ceiling": "the field-key rotation was refused at four live versions — see the Field keys block",
+  "field-key-overdue": "a field-key version was still live when the next rotation came due",
+  "field-key-ceiling": "the field-key rotation was refused at four live versions",
   "field-key-unconfirmed": "the field-key rotation could not confirm its write through the binding",
   "field-key-incomplete": "the field-key rotation did not finish",
 };

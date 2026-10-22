@@ -9,6 +9,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { runAdd } from "../capabilities/flow";
+import { runRetireVersion } from "../capabilities/retireFieldKey";
 import { readSecretValue } from "../capabilities/secretValue";
 import { chooseSessionAccount } from "../cloudflare/session/connect";
 import { addPrompts, targetWorker } from "../commands/add";
@@ -104,6 +105,12 @@ const SITES: Record<string, PromptSite> = {
   },
   "commands/provision.ts": { prompts: ["confirmPrompt"], kind: "required", gatedBy: "commands/provision.ts" },
   "commands/remove.ts": { prompts: ["dropConfirm"], kind: "required", gatedBy: "commands/remove.ts" },
+  // Retiring a field-key version past its guard has no default and no flag: only a person typing it back (#390).
+  "capabilities/retireFieldKey.ts": {
+    prompts: ["askRetirePhrase"],
+    kind: "required",
+    gatedBy: "capabilities/retireFieldKey.ts",
+  },
   "commands/seed.ts": { prompts: ["resetPrompt", "productionPrompt"], kind: "required", gatedBy: "commands/seed.ts" },
   "commands/token.ts": {
     // `forget` asks only when Cloudflare could not say whether the token was used, and a run that asks
@@ -200,6 +207,11 @@ const REQUIRED: readonly {
   choices?: readonly string[];
   /** The answer is a person's to give: the refusal is `core/person_required`, and its action names `flag`. */
   person?: true;
+  /**
+   * The person's refusal under a code of its own, where the step declares one: `secrets/confirmation_required` for
+   * retiring a field-key version past its guard (#390). Still exit 5, which the exit-class gate holds.
+   */
+  code?: string;
   /** The prompt factory the command hands its gate under `interactive ?`, checked against the source. */
   handedOff?: string;
   run: (interactive: boolean) => unknown;
@@ -315,6 +327,29 @@ const REQUIRED: readonly {
     flag: null,
     person: true,
     run: (interactive) => requireDropConfirmable("auth", { drop: true, interactive, env: "dev" }),
+  },
+  {
+    site: "capabilities/retireFieldKey.ts",
+    prompt: "askRetirePhrase",
+    flag: null,
+    person: true,
+    code: "secrets/confirmation_required",
+    run: (interactive) =>
+      runRetireVersion(
+        { env: "prod", version: "1", pastGuard: true, json: false, interactive },
+        {
+          guard: async () => {
+            throw new Error("read the guard in a run that forbade prompts");
+          },
+          retire: async () => {
+            throw new Error("retired in a run that forbade prompts");
+          },
+          ask: async () => {
+            throw new Error("asked a run that forbade prompts");
+          },
+          write: () => undefined,
+        },
+      ),
   },
   {
     site: "commands/dashboard.ts",
@@ -476,7 +511,7 @@ describe("a required prompt, with input forbidden", () => {
       expect(interactive).toBe(false);
       const payload = await refusalOf(() => row.run(interactive));
       if (row.person) {
-        expect(payload.code).toBe("core/person_required");
+        expect(payload.code).toBe(row.code ?? "core/person_required");
         if (row.flag !== null) expect(payload.action).toContain(row.flag);
         return;
       }

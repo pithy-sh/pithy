@@ -2096,9 +2096,13 @@
                                           "not-rotated",
                                           "at-rest-incomplete",
                                           "at-rest-unconfirmed",
-                                          "not-retired"
+                                          "not-retired",
+                                          "field-key-overdue",
+                                          "field-key-ceiling",
+                                          "field-key-unconfirmed",
+                                          "field-key-incomplete"
                                         ],
-                                        "description": "Why a rotation row closed failed, as a code. `roll-failed`, `not-recorded` and `not-rotated` are a value rotation's. `at-rest-incomplete` and `at-rest-unconfirmed` are the whole-store master-key rotation's. `not-retired` is an unattended value rotation that landed and kept the previous version, because a value sealed under it at rest was not re-encrypted."
+                                        "description": "Why a rotation row closed failed, as a code. `roll-failed`, `not-recorded` and `not-rotated` are a value rotation's. `at-rest-incomplete` and `at-rest-unconfirmed` are the whole-store master-key rotation's. `not-retired` is an unattended value rotation that landed and kept the previous version, because a value sealed under it at rest was not re-encrypted. `field-key-overdue` is a field-key version still live when the next rotation came due, `field-key-ceiling` a rotation refused at four live versions, `field-key-unconfirmed` a field-key write the binding never showed, and `field-key-incomplete` a field-key pass that did not finish (#390)."
                                       },
                                       {
                                         "type": "null"
@@ -2297,9 +2301,13 @@
                                   "not-rotated",
                                   "at-rest-incomplete",
                                   "at-rest-unconfirmed",
-                                  "not-retired"
+                                  "not-retired",
+                                  "field-key-overdue",
+                                  "field-key-ceiling",
+                                  "field-key-unconfirmed",
+                                  "field-key-incomplete"
                                 ],
-                                "description": "Why a rotation row closed failed, as a code. `roll-failed`, `not-recorded` and `not-rotated` are a value rotation's. `at-rest-incomplete` and `at-rest-unconfirmed` are the whole-store master-key rotation's. `not-retired` is an unattended value rotation that landed and kept the previous version, because a value sealed under it at rest was not re-encrypted."
+                                "description": "Why a rotation row closed failed, as a code. `roll-failed`, `not-recorded` and `not-rotated` are a value rotation's. `at-rest-incomplete` and `at-rest-unconfirmed` are the whole-store master-key rotation's. `not-retired` is an unattended value rotation that landed and kept the previous version, because a value sealed under it at rest was not re-encrypted. `field-key-overdue` is a field-key version still live when the next rotation came due, `field-key-ceiling` a rotation refused at four live versions, `field-key-unconfirmed` a field-key write the binding never showed, and `field-key-incomplete` a field-key pass that did not finish (#390)."
                               },
                               {
                                 "type": "null"

@@ -71,6 +71,7 @@ const SHIPPED_WORKFLOWS = [
   "packages/media/src/workflows/worker.ts#MediaVideoTranscribeWorkflow",
   "packages/payments/src/workflows/worker.ts#PaymentsReconcileWorkflow",
   "packages/secrets/src/manager/worker.ts#AtRestKeyRotationWorkflow",
+  "packages/secrets/src/manager/worker.ts#FieldKeyRotationWorkflow",
   "packages/secrets/src/manager/worker.ts#SecretValueRotationWorkflow",
   "packages/secrets/src/manager/worker.ts#SecretsWriteWorkflow",
   "packages/storage/src/workflows/worker.ts#StorageSweepWorkflow",
@@ -96,6 +97,9 @@ const SHIPPED_DELEGATES = [
   // #561. The usage-reporting body. Its class is the adopter's, five lines in their own entry, so the walk
   // meets the kit's half here: one step, and the clock the pass reads is a thunk handed into it.
   "packages/payments/src/workflows/usage.ts#reportPaymentsUsage",
+  // #390. The field-key rotation's shell and its body. The body stages, promotes, re-seals in batches and retires,
+  // each its own step, and the two helpers it hands the step runner to are a read-back poll and the batch loop.
+  "packages/secrets/src/manager/fieldKeyWorkflow.ts#runFieldKeyWorkflow",
   "packages/secrets/src/manager/rotationWorkflow.ts#runRotationWorkflow",
   // #602. The value rotation's body and its manager-side shell. The body sleeps out a secret's overlap and
   // then checks once a day for its dependents to re-encrypt, each check its own step — so a clock read
@@ -109,6 +113,9 @@ const SHIPPED_DELEGATES = [
   "packages/secrets/src/rotation/atRestKeyRotation.ts#confirmedThroughBinding",
   "packages/secrets/src/rotation/atRestKeyRotation.ts#confirmedThroughStamp",
   "packages/secrets/src/rotation/atRestKeyRotation.ts#runAtRestKeyRotation",
+  "packages/secrets/src/rotation/fieldKeyRotation.ts#backfill",
+  "packages/secrets/src/rotation/fieldKeyRotation.ts#confirmed",
+  "packages/secrets/src/rotation/fieldKeyRotation.ts#runFieldKeyCommand",
   "packages/secrets/src/rotation/valueRotation.ts#runValueRotation",
   "packages/testers/src/workflows/pass.ts#runDurableDailyPass",
   "packages/vector/src/workflows/reprocess.ts#reprocessIndex",

@@ -192,7 +192,7 @@ describe("match()", () => {
     expect(hashes).toContain(old.emailIndex);
   });
 
-  test("index values are <version>:<hmac> under a key labelled with the normalizer, so a changed normalizer misses", async () => {
+  test("index values are <version>:<hmac> under a key labeled with the normalizer, so a changed normalizer misses", async () => {
     const config = keys(1, { "1": keyB64() });
     expect(blindIndexLabel("email")).toBe("pithy/blind-index/email");
     const asEmail = await blindIndexValue(config, 1, "email", "ada@example.com");
