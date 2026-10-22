@@ -35,6 +35,7 @@ import {
   type ManagerWranglerTemplate,
   managerWorkerName,
   resolveManagerConfig,
+  type StampedEncryptedColumns,
 } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import { registeredSecretTables } from "@pithy-sh/secrets/src/rotation/tableRotation";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
@@ -447,13 +448,26 @@ export function buildManagerDeploy(options: {
    * Omitted, the manager is deployed with no schedule and rotates no values.
    */
   schedule?: () => Promise<Pick<ManagerConfigParams, "valueRotations" | "globalEnvironment">>;
+  /**
+   * The encrypted columns the manager is stamped with, per environment (#390): every Worker's `encrypted()` fields,
+   * derived from their schemas, with each database's id. Omitted, nothing is stamped.
+   */
+  encryptedColumns?: (env: ManagedEnvironment) => Promise<StampedEncryptedColumns>;
 }): DeployManager {
   const { accountId, apiToken, cf, project, projectDir } = options;
   return async (env, resolved) => {
     const dir = managerDir(projectDir);
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as ManagerWranglerTemplate;
     const schedule = options.schedule === undefined ? {} : await options.schedule();
-    const config = resolveManagerConfig(template, { env, accountId, project, ...resolved, ...schedule });
+    const encryptedColumns = options.encryptedColumns === undefined ? undefined : await options.encryptedColumns(env);
+    const config = resolveManagerConfig(template, {
+      env,
+      accountId,
+      project,
+      ...resolved,
+      ...schedule,
+      ...(encryptedColumns === undefined ? {} : { encryptedColumns }),
+    });
 
     // **The gate, inherited rather than opted into (#537).** `deployHostWorker` stamps the resolved
     // config with this package's version and a hash of the config itself, compares that against what

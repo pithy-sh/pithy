@@ -27,6 +27,7 @@ import { defineCommand } from "citty";
 import { z } from "zod";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import { addAction, withAddFix } from "../capabilities/addCommand";
+import { projectEncryptedColumns } from "../capabilities/encryptedColumns";
 import {
   MintedSecret,
   mintDeclaredSecrets,
@@ -1176,6 +1177,9 @@ const provision = withContract(
                 ...(globalEnvironment === undefined ? {} : { globalEnvironment }),
               };
             },
+            // The encrypted columns the field-key rotation re-seals, from every Worker's schemas (#390). An
+            // encrypted table with no encryptedTable() declaration is refused here, naming it.
+            encryptedColumns: (env) => projectEncryptedColumns({ projectDir, env }),
           }),
           audit: await buildAudit(projectDir, "dev"),
           // The `runtime` profile as each environment composes it (#728): one token, carrying every

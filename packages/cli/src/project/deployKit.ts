@@ -10,6 +10,7 @@ import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { parse } from "comment-json";
 import { z } from "zod";
 import { type AddPlan, addAction } from "../capabilities/addCommand";
+import { projectEncryptedColumns } from "../capabilities/encryptedColumns";
 import {
   deployHostWorker,
   type HostDeployOptions,
@@ -564,6 +565,11 @@ async function deployOneKitWorker(input: {
       databaseId: (binding) => required("database", input.databaseIds, binding),
       storeId: () => requiredVar("SECRETS_STORE_ID", input.storeId),
       accountId: () => requiredVar("CLOUDFLARE_ACCOUNT_ID", input.accountId),
+      // The encrypted columns, for the secrets manager alone (#390): derived from every app Worker's schemas, with
+      // the database ids this environment's stanzas declare. A feature's manager is stamped with none.
+      ...(options.feature || options.env === FEATURE_ENVIRONMENT
+        ? {}
+        : { encryptedColumns: () => projectEncryptedColumns({ projectDir: options.projectDir, env: options.env }) }),
       // **The adopter's own composed capability, which is the entire point of reading `apps/`.**
       // `discoverHostWorkers` already loaded each Worker's `pithy.config.ts` to decide the host set, so
       // the configured object is right here — and passing it is what makes `pithy deploy --kit` ship

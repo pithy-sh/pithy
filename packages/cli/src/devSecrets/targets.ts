@@ -3,12 +3,11 @@
 
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
-import { isSecretsCapability } from "@pithy-sh/secrets/src/capability";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
-import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { loadWorkerConfig, type WorkerConfig } from "../project/config";
 import { resolveWorkers } from "../project/workerScope";
 import { discoverWorkers } from "../project/workers";
+import { workerSecretRegistry } from "../provision/secretBindings";
 import { ownProperties } from "./records";
 
 /**
@@ -106,13 +105,16 @@ export async function resolveDevSecretsTargets(
       return [];
     });
     if (!resolved) continue;
-    if (!resolved.capabilities.some(isSecretsCapability)) continue;
+    // The registry provisioning binds from: the aggregate where `secrets` is composed, and the field key where an
+    // encrypted field is held (#390), so a Worker that seals a field locally finds a key in `.dev.vars`.
+    const registry = workerSecretRegistry(resolved.capabilities);
+    if (registry === null) continue;
     targets.push({
       name: resolved.name,
       dir: resolved.dir,
       // Prototype-free, so `registry[name]` here and in every consumer — `pithy doctor` included — is an
       // own-property lookup for a secret a capability chose to call `constructor`. See {@link ownProperties}.
-      registry: ownProperties(aggregateSecretRegistries(resolved.capabilities)),
+      registry: ownProperties(registry),
     });
   }
   return { targets, unresolvable };

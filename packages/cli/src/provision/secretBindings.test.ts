@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 import { RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
-import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provisionScope";
+import { phi } from "@pithy-sh/core/src/privacy/classes";
+import { encrypted, encryptedTable } from "@pithy-sh/core/src/privacy/encrypted";
 import { media } from "@pithy-sh/media/src/capability";
 import { secrets } from "@pithy-sh/secrets/src/capability";
+import { fieldKeysSecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { SecretRegistry, SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { describe, expect, test } from "vitest";
+import { z } from "zod";
 import { secretsStoreBindings, workerSecretRegistry } from "./secretBindings";
 
 /** A project registry beside the master key the capability merges in for itself. */
@@ -398,6 +402,47 @@ describe("secretsStoreBindings — minting", () => {
       "CONNECTION_KEY_ENCRYPTION_KEY",
       "RELEASE_INGEST_SECRET",
       "STRIPE_SECRET_KEY",
+    ]);
+  });
+});
+
+/**
+ * **The field key is bound to exactly the Workers that hold an encrypted field (#390)** — whether or not they
+ * compose `secrets`, and never with the master key a Worker reaches only by composing it.
+ */
+describe("workerSecretRegistry — the field key", () => {
+  const Patient = encryptedTable(
+    z.object({ id: z.string().describe("id"), diagnosis: encrypted(phi(z.string().describe("The condition."))) }),
+    { name: "patient", key: "id" },
+  );
+  const clinic = (tables: Record<string, z.ZodType>): Capability =>
+    defineCapability({ name: "app", requiredBindings: [], databases: { app: { binding: "DB", tables } } });
+
+  test("a Worker with an encrypted field and no secrets gets the field key and nothing of the vault's", () => {
+    const registry = workerSecretRegistry([clinic({ patients: Patient })]);
+    expect(Object.keys(registry ?? {})).toEqual(["PITHY_FIELD_KEYS"]);
+  });
+
+  test("a Worker composing secrets with an encrypted field gets both", () => {
+    const registry = workerSecretRegistry([secrets({ registry: {} }), clinic({ patients: Patient })]);
+    expect(Object.keys(registry ?? {})).toContain("SECRETS_ENCRYPTION_KEYS");
+    expect(Object.keys(registry ?? {})).toContain("PITHY_FIELD_KEYS");
+  });
+
+  test("a Worker with no encrypted field does not bind it", () => {
+    expect(workerSecretRegistry([clinic({ notes: z.object({ id: z.string().describe("id") }) })])).toBeNull();
+    expect(Object.keys(workerSecretRegistry([secrets({ registry: {} })]) ?? {})).not.toContain("PITHY_FIELD_KEYS");
+  });
+
+  test("provisioning binds it under the entry the manager rotates", async () => {
+    const { bound } = await secretsStoreBindings({
+      registry: workerSecretRegistry([clinic({ patients: Patient })]) ?? {},
+      scope: environmentScope("acme", "staging"),
+      storeId: "store-1",
+      exists: async () => true,
+    });
+    expect(bound).toEqual([
+      { binding: "PITHY_FIELD_KEYS", store_id: "store-1", secret_name: fieldKeysSecretName("acme", "staging") },
     ]);
   });
 });
