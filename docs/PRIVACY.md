@@ -254,19 +254,19 @@ The key is never updated, which is the guarantee. Changing the name, a path or a
 
 - **Queryability.** An encrypted column cannot answer `WHERE`, `ORDER BY`, a range or `LIKE`. Only equality comes back, and only through a blind index.
 - **Presence is visible.** An absent optional field rests as SQL `NULL`, not sealed, so `IS NULL` still works and anyone reading the table sees which rows hold nothing.
-- **Length is visible.** GCM does not pad, so a value of n bytes rests as about 4·⌈(n+16)/3⌉ + 55 bytes.
+- **Length is visible.** GCM does not pad. A field seals its JSON encoding, so a value whose JSON is m bytes rests as 4·⌈(m+16)/3⌉ + 60 bytes under a one-digit key version, one byte more per extra digit. A string of n bytes with nothing to escape has m = n + 2: 84 bytes empty, 220 bytes at 100. A field inside a `sqliteJson` column rests escaped inside that column's JSON, so it takes a few bytes more.
 
 ### The blind index, and its leak
 
 `{ index: "exact" }` or `{ index: "email" }` gives a field a sibling `blindIndex("<field>")` column holding `<version>:<hmac>`: an HMAC-SHA256 of the normalized value, under a key HKDF-derived from that version's field key with the label `pithy/blind-index/<normalizer>`. `match()` returns one hash per live version, so a lookup still finds a row mid-rotation.
 
-**The normalizers are the kit's, by name.** `exact` hashes the value as written; `email` applies NFC, trims and lowercases. A name rather than a function, because the rotator re-indexes inside the secrets manager, which runs no code of yours. Changing a field's normalizer changes the derivation label, so old hashes stop matching: it is a re-index, never a silent miss.
+**The normalizers are the kit's, by name.** `exact` hashes the value as written; `email` applies NFC, trims and lowercases. A name rather than a function, because the rotator re-indexes inside the secrets manager, which runs no code of yours. Changing a field's normalizer changes the derivation label, so old hashes stop matching, and nothing notices. An index value records its version, not its normalizer, so the rotator re-indexes only rows under a version leaving the window. Until every row is rewritten, `match()` misses the old ones: no error, no stale count, no doctor finding. Changing a normalizer is a re-seal migration through `sealed()`, run before the new lookup ships.
 
 **It leaks equality, and that is the trade.** Two rows with the same normalized value have the same index. Ordering, ranges and prefixes do not come back at all.
 
 ### D1 is the only destination
 
-A KV `list()` returns keys, never values, so a KV envelope cannot be found by key version: no stale count, no compare-and-swap, no rotation. Encryption that can never rotate reads as the feature and is not, so **a KV store holding an encrypted field is refused at boot**, naming the store, the field and D1, through `.optional()`, `.nullable()`, `.default()` and nesting. A schema handed somewhere a boot check cannot see is still reported by the inventory as **encrypted but unrotatable**, from its storage kind, and it blocks every retirement.
+A KV `list()` returns keys, never values, so a KV envelope cannot be found by key version: no stale count, no compare-and-swap, no rotation. Encryption that can never rotate reads as the feature and is not, so **a KV store holding an encrypted field is refused at boot**, naming the store, the field and D1, through `.optional()`, `.nullable()`, `.default()` and nesting. A Worker that boots has no such field, so its inventory never lists one. The check that sees past a boot is the CLI's: `pithy deploy` and `pithy secrets provision` derive the encrypted columns from your schemas, and any encrypted field outside D1 lands in the stamp as **unrotatable**. The manager's guard reads that stamp, so the field blocks every retirement, and `retire-version` prints it as `Unrotatable, never re-sealed`.
 
 ### The field key, and lazy rotation
 
