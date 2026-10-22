@@ -6,6 +6,7 @@ import { z } from "zod";
 import { SQLiteBoolean, SQLiteDate, sqliteJson } from "../data/codecs";
 import { definePrivacyClass, pci, phi, pii, secret } from "./classes";
 import { classifyPrivacy, hasPrivacy, privacyOf } from "./classify";
+import { redact } from "./redact";
 
 const Address = z
   .object({
@@ -162,6 +163,19 @@ describe("classifyPrivacy", () => {
     expect(classifyPrivacy(z.object({ marker: genetic(z.string()) }).describe("x"))).toEqual([
       { path: "marker", class: "genetic_classify" },
     ]);
+  });
+
+  test("lists a field an intersection narrows so it can never hold the marked type: more than redact masks, never less", () => {
+    // The left side narrows `b` to a number, so the right side's marked string option can never apply. The inventory
+    // does not reason about narrowing: it lists `b` as `pii`, and `redact` keeps every value parse lets through.
+    const Narrowed = z.intersection(
+      z.object({ b: z.number() }),
+      z.object({ b: z.union([pii(z.string()), z.number()]) }),
+    );
+    expect(Narrowed.safeParse({ b: "x" }).success).toBe(false);
+    expect(classifyPrivacy(Narrowed)).toEqual([{ path: "b", class: "pii" }]);
+    expect(hasPrivacy(Narrowed, "pii")).toBe(true);
+    expect(redact(Narrowed, Narrowed.parse({ b: 3 }))).toEqual({ b: 3 });
   });
 });
 

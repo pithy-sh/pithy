@@ -8,7 +8,7 @@ import { LogRecord, serializeRecord } from "../logger/record";
 import { definePrivacyClass, pci, phi, pii, secret } from "./classes";
 import { classifyPrivacy } from "./classify";
 import { redact } from "./redact";
-import type { Redacted } from "./types";
+import type { ContainsMarked, Redacted } from "./types";
 
 const User = z
   .object({
@@ -707,5 +707,35 @@ describe("outside the contract: masked whole when marked beneath, kept when not,
     same<Out["picked"], unknown>();
     same<Out["own"], string>();
     same<Out["other"], string>();
+  });
+
+  test("Redacted<T> types a record keyed by a pipe into a marked schema by plain string keys, as redact masks them", () => {
+    type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+    const same = <A, B>(..._proof: Same<A, B> extends true ? [] : [never]): void => {};
+    const Shape = z.object({
+      byEmail: z.record(z.email().pipe(pii(z.string())), z.number()),
+      // A union option that is such a pipe masks every key, a symbol's included: it names no single shape.
+      either: z.record(z.union([z.email().pipe(pii(z.string())), z.symbol()]), z.number()),
+      // A pipe with nothing marked beneath it keeps its keys and their type.
+      plain: z.record(z.email().pipe(z.string()), z.number()),
+    });
+    const tag = Symbol("tag");
+    const out = redact(
+      Shape,
+      Shape.parse({ byEmail: { "a@b.co": 1, "c@d.co": 2 }, either: { "e@f.co": 3, [tag]: 4 }, plain: { "g@h.co": 5 } }),
+    );
+    expect(out).toEqual({
+      byEmail: { "[pii]": 1, "[pii] #2": 2 },
+      either: { "[pii]": 3, "[pii] #2": 4 },
+      plain: { "g@h.co": 5 },
+    });
+    expect(Object.getOwnPropertySymbols(out.either)).toEqual([]);
+    type Out = Redacted<typeof Shape>;
+    same<Out["byEmail"], Record<string, number>>();
+    same<Out["either"], Record<string, number>>();
+    same<Out["plain"], Record<string, number>>();
+    const runtimeShape: Out["byEmail"] = { "[pii]": 1 };
+    const unbranded: ContainsMarked<Out> = false;
+    expect([runtimeShape, unbranded]).toEqual([{ "[pii]": 1 }, false]);
   });
 });

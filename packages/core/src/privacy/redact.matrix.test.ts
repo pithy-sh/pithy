@@ -279,6 +279,71 @@ function compare(parsed: unknown, redacted: unknown, path: string, out: string[]
   });
 }
 
+/** One step of a path to a value: a name, an array index, a set element, a key, or a map's value. */
+type Step = { name: string } | { index: number } | "element" | "key" | "value";
+
+/**
+ * Every position at which `redact` put a mask in place of a value `parse` returned, as the steps to it. It reads the
+ * values alone, never the schema, so it is a check on `classifyPrivacy` that shares nothing with it.
+ */
+function maskedAt(parsed: unknown, redacted: unknown, at: readonly Step[], out: Step[][]): void {
+  const isMask = (value: unknown): boolean => typeof value === "string" && /^\[[a-z_]+\]( #\d+)?$/.test(value);
+  if (isMask(redacted) && !Object.is(parsed, redacted)) {
+    out.push([...at]);
+    return;
+  }
+  if (typeof parsed !== "object" || parsed === null || parsed instanceof Date) return;
+  if (typeof redacted !== "object" || redacted === null) return;
+  if (Array.isArray(parsed)) {
+    for (const [index, item] of parsed.entries())
+      maskedAt(item, (redacted as unknown[])[index], [...at, { index }], out);
+    return;
+  }
+  if (parsed instanceof Map || parsed instanceof Set) {
+    const right = [...(redacted as Map<unknown, unknown> | Set<unknown>).entries()];
+    [...parsed.entries()].forEach(([key, item], index) => {
+      const [rightKey, rightItem] = (right[index] ?? []) as [unknown, unknown];
+      if (parsed instanceof Set) maskedAt(item, rightItem, [...at, "element"], out);
+      else {
+        maskedAt(key, rightKey, [...at, "key"], out);
+        maskedAt(item, rightItem, [...at, "value"], out);
+      }
+    });
+    return;
+  }
+  const right = Reflect.ownKeys(redacted);
+  Reflect.ownKeys(parsed).forEach((key, index) => {
+    const rightKey = right[index] as PropertyKey;
+    maskedAt(key, rightKey, [...at, "key"], out);
+    maskedAt(
+      (parsed as Record<PropertyKey, unknown>)[key],
+      (redacted as Record<PropertyKey, unknown>)[rightKey],
+      [...at, { name: String(key) }],
+      out,
+    );
+  });
+}
+
+/**
+ * Whether a path `classifyPrivacy` wrote names the steps to a value: `[]` any element of an array or a set, `[i]` that
+ * index, `<key>` a key, `*` any name or a map's value, and any other segment that name.
+ */
+function names(path: string, steps: readonly Step[]): boolean {
+  const segments = path.match(/\[\]|\[\d+\]|<key>|[^.[<]+/g) ?? [];
+  return (
+    segments.length === steps.length &&
+    segments.every((segment, index) => {
+      const step = steps[index] as Step;
+      if (segment === "[]") return step === "element" || (typeof step === "object" && "index" in step);
+      if (/^\[\d+\]$/.test(segment))
+        return typeof step === "object" && "index" in step && `[${step.index}]` === segment;
+      if (segment === "<key>") return step === "key";
+      if (segment === "*") return step === "value" || (typeof step === "object" && "name" in step);
+      return typeof step === "object" && "name" in step && step.name === segment;
+    })
+  );
+}
+
 /** Every combination of three kinds, outermost first. */
 function* combinations(): Generator<Kind[]> {
   for (const a of KINDS) for (const b of KINDS) for (const c of KINDS) yield [a, b, c];
@@ -316,6 +381,26 @@ describe("the redaction contract, as a matrix of every supported kind nested in 
     }
     expect(failures.slice(0, 20)).toEqual([]);
     expect(ran).toBe(KINDS.length ** 3);
+  });
+});
+
+describe("classifyPrivacy, for the same matrix", () => {
+  test("never omits a position redact masks: the list can say more, and never less", () => {
+    const failures: string[] = [];
+    let masks = 0;
+    for (const chain of combinations()) {
+      const { schema, input } = build(chain);
+      const parsed = schema.parse(input());
+      const at: Step[][] = [];
+      maskedAt(parsed, redact(schema, parsed as never), [], at);
+      masks += at.length;
+      const listed = classifyPrivacy(schema).map((field) => field.path);
+      for (const steps of at)
+        if (!listed.some((path) => names(path, steps)))
+          failures.push(`${chain.join(" > ")}: masked at ${JSON.stringify(steps)}, listed ${listed.join(", ")}`);
+    }
+    expect(failures.slice(0, 20)).toEqual([]);
+    expect(masks).toBeGreaterThan(KINDS.length ** 3);
   });
 });
 

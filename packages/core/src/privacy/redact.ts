@@ -30,7 +30,9 @@ import type { RedactedOutput } from "./types";
  * 3. Wrappers: `optional`, `nullable`, `default`, `catch`, `readonly`, `brand`.
  * 4. Choices: unions, discriminated unions and intersections. An option's marks apply where the value has that option's
  *    shape: an object option to an object value, an array option to an array value. A field is masked when any option
- *    or side that applies marks it, and a key no option names is kept.
+ *    or side that applies marks it, and a key no option names is kept. Where one side of an intersection narrows a
+ *    field so it can never hold the type the other side marks, `classifyPrivacy` may still list that field: the
+ *    inventory can list more than `redact` masks, and never less.
  * 5. The kit's database codecs: `SQLiteDate`, `SQLiteBoolean` and `sqliteJson(schema)`. A JSON column's inner fields
  *    are redacted field by field.
  * 6. Recursion: `z.lazy(() => Node)` and getters, whether a getter returns one schema or builds a new one each read,

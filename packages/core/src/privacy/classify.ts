@@ -35,7 +35,11 @@ import { type BuiltInPrivacyClass, PRIVACY_META_KEY, strongestPrivacyClass } fro
  *   walks a value, which is finite; a list walks the schema, and one that builds two new schemas at every level has
  *   more positions than any list can hold. Such a schema is read whole down to the level the budget runs out on, and
  *   each new position left, none of them above that level, is listed as {@link TRUNCATED_CLASS} with `truncated`. It
- *   is the one place the list says more than `redact` masks, and it says the strongest class.
+ *   is one of two places the list says more than `redact` masks, and it says the strongest class.
+ * - **An intersection is not narrowed.** Where one side narrows a field so it can never hold the type the other side
+ *   marks, `classifyPrivacy` may still list that field: the inventory can list more than `redact` masks, and never
+ *   less. `z.intersection(z.object({ b: z.number() }), z.object({ b: z.union([pii(z.string()), z.number()]) }))`
+ *   lists `b` as `pii`, and `redact` keeps a `b` of `3`.
  *
  * ## What a path looks like
  *

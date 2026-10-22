@@ -36,6 +36,8 @@ type Session = z.output<typeof Session>;
 const user: User = User.parse({ id: "u_1", email: "ada@example.com", diagnosis: "asthma" });
 const session: Session = Session.parse({ token: "tok", user });
 
+const ByEmail = z.record(z.email().pipe(pii(z.string())), z.number()).describe("Counts by address.");
+
 /** Never run — the compiler checks the body. Each refused call names the rule it breaks. */
 function compileOnly(log: Logger, emit: AuditEmit): void {
   // @ts-expect-error a row with a marked field cannot be logged
@@ -80,6 +82,8 @@ function compileOnly(log: Logger, emit: AuditEmit): void {
   log.info(`signup for ${user.id}`);
   void new NotFoundError({ message: "No such user.", action: "Check the id." });
   log.info("index", { byId: {} as Record<string, number> });
+  // A record keyed by a pipe into a marked schema: redact masks every key, so the copy is keyed by plain strings.
+  log.info("index", { byEmail: redact(ByEmail, ByEmail.parse({ "a@b.co": 1 })) });
 }
 
 describe("the type gate", () => {

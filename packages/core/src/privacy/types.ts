@@ -528,7 +528,7 @@ type KeptBrand<X, K> = [K] extends [never] ? X : X & z.core.$brand<K & (string |
 type KeyName<K, N> = K extends typeof z.core.$brand
   ? never
   : K extends symbol
-    ? "symbol" extends MaskedKinds<RecordKeys<N>>
+    ? "symbol" extends KeyMasks<N>
       ? string
       : K
     : MasksStringKeys<N> extends true
@@ -536,7 +536,15 @@ type KeyName<K, N> = K extends typeof z.core.$brand
       : K;
 
 /** Whether a record at the position masks its string keys: its key schema marks any shape but a symbol. */
-type MasksStringKeys<N> = [Exclude<MaskedKinds<RecordKeys<N>>, "symbol">] extends [never] ? false : true;
+type MasksStringKeys<N> = [Exclude<KeyMasks<N>, "symbol">] extends [never] ? false : true;
+
+/**
+ * The shapes of key a record at the position masks. A key schema with an opaque node over a mark, such as
+ * `z.email().pipe(pii(z.string()))`, masks a key of every shape, as `redact` masks it whole, so its keys are plain
+ * strings and never keep the brand the opaque node's output carries.
+ */
+type KeyMasks<N> =
+  Verdict<AnyOpaqueMarked<Nodes<RecordKeys<N>>>> extends false ? MaskedKinds<RecordKeys<N>> : ValueKind;
 
 /**
  * One schema at a position that is walked into, against `N`, every node at the position, with the values of a shape
