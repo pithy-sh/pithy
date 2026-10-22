@@ -28,6 +28,8 @@ A marker does two things in one call. It attaches `.meta({ privacy: "pii" })`, w
 
 A marker is read through `.optional()`, `.nullable()`, `.default()` and the other wrappers that are the same field.
 
+**A marker over another marker adds its class.** `pii(secret(z.string()))` and `secret(pii(z.string()))` are one field carrying both classes: masked `[secret]`, listed `pii` and `secret`, and refused by the compiler as either. The same marker twice is one class.
+
 ## The classes
 
 | Class | What it is | Masks to |
@@ -80,7 +82,7 @@ HTTP responses are not gated. Returning a user their own email is correct.
 
 `redact(schema, value)` promises exact results for a stated set of schema shapes and documents everything else. It does not try to defend against every construction Zod allows, because a schema built to dodge it can be built, and following every such construction costs more than it protects. What it covers, it covers perfectly; what it does not, it masks whole and says so.
 
-**Redacted exactly.** Every marked field is masked with its class placeholder, every unmarked field is kept as `parse` returned it, nothing is dropped, and `Redacted<T>` is the exact type of the result, save the one position item 6 names: Where a position nests wrappers and choices deeper than the type can follow, `Redacted<T>` types it `unknown` rather than guess.
+**Redacted exactly.** Every marked field is masked with its class placeholder, every unmarked field is kept as `parse` returned it, nothing is dropped, and `Redacted<T>` is the exact type of the result, save two positions it types `unknown` rather than guess: one that nests wrappers and choices deeper than the type can follow, and an intersection with a record on either side, because a record's masked keys rename the other side's keys too.
 
 1. Rows and objects: `z.object`, strict, loose or with a catchall, and `pick`, `omit`, `partial` and `extend` of one.
 2. Collections: arrays, tuples including rest elements, records with marked keys or values, `Map` and `Set`.

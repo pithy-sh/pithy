@@ -141,3 +141,21 @@ describe("strongestPrivacyClass", () => {
     expect(strongestPrivacyClass([])).toBeUndefined();
   });
 });
+
+describe("a marker over another marker", () => {
+  test("adds its class to the ones already there, in either order, and the same class twice is one", () => {
+    const outer = pii(secret(z.string().describe("A token.")));
+    const inner = secret(pii(z.string().describe("A token.")));
+    expect(outer.meta()?.privacy).toEqual(["secret", "pii"]);
+    expect(inner.meta()?.privacy).toEqual(outer.meta()?.privacy);
+    expect(outer.meta()).toMatchObject({ description: "A token." });
+    expect(pii(pii(z.string())).meta()?.privacy).toBe("pii");
+    expect(phi(pii(secret(z.string()))).meta()?.privacy).toEqual(["secret", "phi", "pii"]);
+  });
+
+  test("adds an adopter's class the same way", () => {
+    const genetic = definePrivacyClass({ name: "genetic_test_twice" });
+    expect(pii(genetic(z.string())).meta()?.privacy).toEqual(["genetic_test_twice", "pii"]);
+    expect(genetic(pii(z.string())).meta()?.privacy).toEqual(["genetic_test_twice", "pii"]);
+  });
+});

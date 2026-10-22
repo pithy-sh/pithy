@@ -139,8 +139,9 @@ export type Redacted<S extends z.ZodType> = RedactedOutput<S>;
  *   record and a map their values, a set its elements, and a marked key becomes `string`. Each wrapper keeps what it
  *   adds. A union is a union of its members and an intersection intersects its sides, each with every option's and
  *   every side's marks at each position: an array beside a tuple is typed index by index where the tuple names one,
- *   and a record or an open object beside an object types each key the object names. The kit's three codecs are the
- *   schema they decode to, and a JSON column is known by the type `sqliteJson` returns, never by its shape.
+ *   and a record or an open object beside an object types each key the object names. An intersection with a record
+ *   on either side is `unknown`, as a record's masked keys rename the other side's keys too. The kit's three codecs
+ *   are the schema they decode to, and a JSON column is known by the type `sqliteJson` returns, never by its shape.
  * - **An opaque node is its own output**, or `unknown` where a mark sits anywhere beneath it or may, because `redact`
  *   masks it whole there. The search beneath it reads every schema once, to the one recursion limit, so an unmarked
  *   schema of any depth keeps its output. A recursion beneath it is `unknown` however it is written, as a type cannot
@@ -606,13 +607,22 @@ type ShapedNode<S, N, D extends Depth, M> = S extends unknown
               : DefOf<S> extends { type: "union"; options: readonly (infer O)[] }
                 ? Shaped<O, N, D, M>
                 : DefOf<S> extends { type: "intersection"; left: infer L; right: infer R }
-                  ? Shaped<L, N, D, M> & Shaped<R, N, D, M>
+                  ? true extends HoldsRecord<Nodes<L>> | HoldsRecord<Nodes<R>>
+                    ? unknown
+                    : Shaped<L, N, D, M> & Shaped<R, N, D, M>
                   : DefOf<S> extends { type: Structural }
                     ? Walked<S, N, D>
                     : [KitCodec<S>] extends [never]
                       ? MaskOut<Out<S>, M>
                       : Shaped<KitCodec<S>, N, D, M>
   : never;
+
+/**
+ * Whether a record is among `N`, the nodes on one side of an intersection. A record's key schema renames the other
+ * side's keys at runtime, a masked key taking a placeholder name, so neither side's own keys describe the copy: the
+ * intersection is typed `unknown` rather than a narrower type that could be wrong. Distributes.
+ */
+type HoldsRecord<N> = N extends unknown ? (DefOf<N> extends { type: "record" } ? true : false) : never;
 
 /** A structural node, mapped by every node's schemas at the position. */
 type Walked<S, N, D extends Depth, E extends Depth = Deeper<D>> =

@@ -22,9 +22,9 @@ import type { RedactedOutput } from "./types";
  * it masks whole and says so.
  *
  * **Redacted exactly.** Every marked field is masked with its class placeholder, every unmarked field is kept as
- * `parse` returned it, nothing is dropped, and `Redacted<T>` is the exact type of the result, save the one position
- * item 6 names: Where a position nests wrappers and choices deeper than the type can follow, `Redacted<T>` types it
- * `unknown` rather than guess.
+ * `parse` returned it, nothing is dropped, and `Redacted<T>` is the exact type of the result, save two positions it
+ * types `unknown` rather than guess: one that nests wrappers and choices deeper than the type can follow, and an
+ * intersection with a record on either side, because a record's masked keys rename the other side's keys too.
  *
  * 1. Rows and objects: `z.object`, strict, loose or with a catchall, and `pick`, `omit`, `partial` and `extend` of one.
  * 2. Collections: arrays, tuples including rest elements, records with marked keys or values, `Map` and `Set`.

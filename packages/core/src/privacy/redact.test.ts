@@ -6,7 +6,7 @@ import { z } from "zod";
 import { SQLiteBoolean, SQLiteDate, sqliteJson } from "../data/codecs";
 import { LogRecord, serializeRecord } from "../logger/record";
 import { definePrivacyClass, pci, phi, pii, secret } from "./classes";
-import { classifyPrivacy } from "./classify";
+import { classifyPrivacy, hasPrivacy } from "./classify";
 import { redact } from "./redact";
 import type { ContainsMarked, REDACT_TYPE_DEPTH, Redacted } from "./types";
 
@@ -780,5 +780,111 @@ describe("outside the contract: masked whole when marked beneath, kept when not,
     const runtimeShape: Out["byEmail"] = { "[pii]": 1 };
     const unbranded: ContainsMarked<Out> = false;
     expect([runtimeShape, unbranded]).toEqual([{ "[pii]": 1 }, false]);
+  });
+});
+
+describe("a field marked twice", () => {
+  type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+  const same = <A, B>(..._proof: Same<A, B> extends true ? [] : [never]): void => {};
+
+  test("carries both classes: masked with the strongest, and listed with every one", () => {
+    const Row = z.object({
+      id: z.string(),
+      token: pii(secret(z.string())),
+      dx: pii(phi(z.string())),
+      box: pii(phi(z.object({ a: z.string() }))),
+    });
+    expect(masked(Row, { id: "u1", token: "S-1", dx: "S-2", box: { a: "S-3" } })).toEqual({
+      id: "u1",
+      token: "[secret]",
+      dx: "[phi]",
+      box: "[phi]",
+    });
+    const listed = classifyPrivacy(Row);
+    expect(listed).toEqual(
+      expect.arrayContaining([
+        { path: "token", class: "secret" },
+        { path: "token", class: "pii" },
+        { path: "dx", class: "phi" },
+        { path: "dx", class: "pii" },
+        { path: "box", class: "phi" },
+        { path: "box", class: "pii" },
+      ]),
+    );
+    expect(listed).toHaveLength(6);
+    expect(hasPrivacy(Row, "secret")).toBe(true);
+    expect(hasPrivacy(Row, "phi")).toBe(true);
+    same<Redacted<typeof Row>, { id: string; token: string; dx: string; box: string }>();
+  });
+
+  test("is the same in either order, through wrappers, and the same class twice is one", () => {
+    const shapes = {
+      outer: z.object({ v: pii(secret(z.string())) }),
+      inner: z.object({ v: secret(pii(z.string())) }),
+      wrapped: z.object({ v: pii(secret(z.string()).optional()) }),
+      wrappedOutside: z.object({ v: pii(secret(z.string())).optional().nullable() }),
+      wrappedInside: z.object({ v: secret(pii(z.string().optional()).nullable()) }),
+    };
+    for (const Row of Object.values(shapes)) {
+      expect(masked(Row, { v: "S-1" })).toEqual({ v: "[secret]" });
+      expect([...classifyPrivacy(Row)].sort((a, b) => a.class.localeCompare(b.class))).toEqual([
+        { path: "v", class: "pii" },
+        { path: "v", class: "secret" },
+      ]);
+    }
+    expect(classifyPrivacy(shapes.outer)).toEqual(classifyPrivacy(shapes.inner));
+    const Twice = z.object({ v: pii(pii(z.string())) });
+    expect(masked(Twice, { v: "S-1" })).toEqual({ v: "[pii]" });
+    expect(classifyPrivacy(Twice)).toEqual([{ path: "v", class: "pii" }]);
+  });
+
+  test("takes the strongest placeholder, never one class's own mask: a card marked pii too is [pci]", () => {
+    const Card = z.object({ pan: pii(pci(z.string())) });
+    expect(masked(Card, { pan: "4242424242424242" })).toEqual({ pan: "[pci]" });
+    expect(masked(z.object({ pan: pci(pci(z.string())) }), { pan: "4242424242424242" })).toEqual({
+      pan: "424242******4242",
+    });
+  });
+
+  test("carries an adopter's class the same way, in either order", () => {
+    const genetic = definePrivacyClass({ name: "genetic_redact_twice", mask: () => "[genome]" });
+    for (const Row of [z.object({ s: pii(genetic(z.string())) }), z.object({ s: genetic(pii(z.string())) })]) {
+      expect(masked(Row, { s: "S-1" })).toEqual({ s: "[genetic_redact_twice]" });
+      expect(hasPrivacy(Row, "genetic_redact_twice")).toBe(true);
+      expect(hasPrivacy(Row, "pii")).toBe(true);
+    }
+    const Once = z.object({ s: genetic(genetic(z.string())) });
+    expect(masked(Once, { s: "S-1" })).toEqual({ s: "[genome]" });
+  });
+});
+
+describe("an intersection with a record side", () => {
+  type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+  const same = <A, B>(..._proof: Same<A, B> extends true ? [] : [never]): void => {};
+  const Keyed = z.record(pii(z.string()), z.union([z.string(), z.number()]));
+
+  test("is typed unknown in either order, as a record's masked keys rename the other side's too", () => {
+    const Row = z.intersection(z.object({ k: z.number() }), Keyed);
+    const Rev = z.intersection(Keyed, z.object({ k: z.number() }));
+    const Loose = z.intersection(z.looseObject({ k: z.number() }), Keyed);
+    const Two = z.intersection(Keyed, z.record(z.string(), z.union([z.number(), z.string()])));
+    for (const Schema of [Row, Rev, Loose, Two]) {
+      const out = masked(Schema, { k: 5, a: "S-1" }) as Record<string, unknown>;
+      expect(Object.values(out).sort()).toEqual([5, "S-1"].sort());
+      expect(Object.keys(out).sort()).toEqual(["[pii]", "[pii] #2"]);
+    }
+    same<Redacted<typeof Row>, unknown>();
+    same<Redacted<typeof Rev>, unknown>();
+    same<Redacted<typeof Loose>, unknown>();
+    same<Redacted<typeof Two>, unknown>();
+    // Through a wrapper and in a field, the position is unknown and nothing around it changes.
+    const Held = z.object({ id: z.string(), tally: Row.optional() });
+    same<Redacted<typeof Held>, { id: string; tally?: unknown }>();
+  });
+
+  test("is typed unknown with an unmarked record too: one rule, never a narrower type", () => {
+    const Plain = z.intersection(z.object({ k: z.number() }), z.record(z.string(), z.number()));
+    expect(masked(Plain, { k: 5, a: 1 })).toEqual({ k: 5, a: 1 });
+    same<Redacted<typeof Plain>, unknown>();
   });
 });

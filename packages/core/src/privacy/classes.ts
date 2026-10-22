@@ -20,6 +20,10 @@ import { ConflictError, ValidationError } from "../error/pithyError";
  * **inferred type** — that is what makes a log call carrying the value fail to compile. The brand lands on the
  * field, not on the object, so extracting the field does not launder it: `user.email` is as branded as `user`.
  *
+ * **A marker over another marker adds its class.** `pii(secret(x))` and `secret(pii(x))` are the same field: it
+ * carries both classes, in its `meta` (as a list, strongest first) and in its type (both brands). It is masked with the
+ * strongest one's placeholder and listed once per class. The same marker twice is one class.
+ *
  * **The brand key is `privacy:<class>`, not the bare class name.** An adopter's own `.brand<"pii">()` for some
  * unrelated purpose must not trip a gate it never opted into, and an adopter's `UserId` brand must not either:
  * the gate reads a brand under the `privacy:` namespace and nothing else, which is the federated-key rule
@@ -174,27 +178,49 @@ export function privacyClasses(): PrivacyClass[] {
 const STRENGTH: readonly BuiltInPrivacyClass[] = ["secret", "phi", "pci"];
 
 /**
- * The strongest of `names`, the class a value is masked with when it carries several and is masked whole: `secret`,
- * then `phi`, then `pci`, then an adopter's class, then `pii`. An adopter registers a class because its data is more
- * specific than `pii`, so it ranks above it; adopter classes rank among themselves by name. `undefined` for none.
+ * `names` from the strongest to the weakest, each once: `secret`, then `phi`, then `pci`, then each adopter class, then
+ * `pii`. An adopter registers a class because its data is more specific than `pii`, so it ranks above it; adopter
+ * classes rank among themselves by name. The order a marker records several classes in, whatever order they came.
+ */
+export function rankPrivacyClasses(names: Iterable<string>): string[] {
+  const all = [...new Set(names)];
+  const builtIn = STRENGTH.filter((name) => all.includes(name));
+  const adopter = all.filter((name) => name !== "pii" && !(STRENGTH as readonly string[]).includes(name)).sort();
+  return [...builtIn, ...adopter, ...(all.includes("pii") ? ["pii"] : [])];
+}
+
+/**
+ * The strongest of `names`, the class a value is masked with when it carries several and is masked whole. See
+ * {@link rankPrivacyClasses}. `undefined` for none.
  */
 export function strongestPrivacyClass(names: Iterable<string>): string | undefined {
-  const all = [...new Set(names)];
-  const builtIn = STRENGTH.find((name) => all.includes(name));
-  if (builtIn) return builtIn;
-  const adopter = all.filter((name) => name !== "pii").sort()[0];
-  return adopter ?? (all.includes("pii") ? "pii" : undefined);
+  return rankPrivacyClasses(names)[0];
+}
+
+/**
+ * The classes a schema's own `privacy` meta records: one class as its name, several as a list, strongest first. Read
+ * from this exact schema, never through a wrapper. Empty where it records none.
+ */
+export function ownPrivacyClasses(schema: z.ZodType): string[] {
+  const value = (schema.meta() as Record<string, unknown> | undefined)?.[PRIVACY_META_KEY];
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return rankPrivacyClasses(value.filter((one): one is string => typeof one === "string"));
+  return [];
 }
 
 /** Mark a schema with a class: the introspectable `meta`, and the type-level brand. */
 function marker<const C extends string>(name: C): PrivacyMarker<C> {
-  const mark = <S extends z.ZodType>(schema: S): Marked<S, C> =>
+  const mark = <S extends z.ZodType>(schema: S): Marked<S, C> => {
     // `.meta()` clones and registers; the clone inherits its parent's metadata (the description included),
-    // so `{ privacy }` lands beside whatever the schema already said about itself. `.brand()` returns the
-    // same object — the brand is a type and nothing else.
-    schema
-      .meta({ ...(schema.meta() ?? {}), [PRIVACY_META_KEY]: name })
+    // so `{ privacy }` lands beside whatever the schema already said about itself. A class already there is kept:
+    // `pii(secret(x))` is one node carrying both, recorded strongest first whatever the order, and one class twice
+    // is one. `.brand()` returns the same object — the brand is a type and nothing else.
+    const classes = rankPrivacyClasses([...ownPrivacyClasses(schema), name]);
+    const recorded = classes.length === 1 ? name : classes;
+    return schema
+      .meta({ ...(schema.meta() ?? {}), [PRIVACY_META_KEY]: recorded })
       .brand<`${typeof PRIVACY_BRAND_PREFIX}${C}`>() as Marked<S, C>;
+  };
   return Object.assign(mark, { className: name });
 }
 

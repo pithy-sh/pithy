@@ -3,7 +3,7 @@
 
 import type { z } from "zod";
 import { isSqliteJson, SQLiteBoolean, SQLiteDate } from "../data/codecs";
-import { type BuiltInPrivacyClass, PRIVACY_META_KEY, strongestPrivacyClass } from "./classes";
+import { type BuiltInPrivacyClass, ownPrivacyClasses, strongestPrivacyClass } from "./classes";
 
 /**
  * **Reading a privacy marker off a schema, and every marker off a schema tree** (#132).
@@ -365,21 +365,14 @@ function isKind(kind: ValueKind | undefined): kind is ValueKind {
   return kind !== undefined;
 }
 
-/** The `privacy` meta on this exact schema, or `null`. */
-function ownMarker(schema: z.ZodType): string | null {
-  const meta = schema.meta() as Record<string, unknown> | undefined;
-  const value = meta?.[PRIVACY_META_KEY];
-  return typeof value === "string" ? value : null;
-}
-
 /**
  * The class a field was marked with, read through its wrappers — `pii(z.string()).optional()` is `pii` — or
- * `null` when nothing along the chain carries one.
+ * `null` when nothing along the chain carries one. A field marked twice, `pii(secret(x))`, is its strongest class.
  */
 export function privacyOf(schema: z.ZodType): string | null {
   for (let node: z.ZodType | undefined = schema; node; ) {
-    const found = ownMarker(node);
-    if (found !== null) return found;
+    const found = strongestPrivacyClass(ownPrivacyClasses(node));
+    if (found !== undefined) return found;
     const def = defOf(node);
     node = WRAPPERS.has(def.type) ? def.innerType : undefined;
   }
@@ -460,8 +453,7 @@ function search(schema: z.ZodType): Search {
       if (seen.has(node)) continue;
       seen.add(node);
       // A mark does not end the search: a container marked whole carries every class marked inside it too.
-      const own = ownMarker(node);
-      if (own !== null) classes.add(own);
+      for (const own of ownPrivacyClasses(node)) classes.add(own);
       const def = defOf(node);
       if (def.type !== "lazy" && !STRUCTURAL.has(def.type)) {
         stack.push(...children(node).reverse());
@@ -672,8 +664,7 @@ function readPosition(schemas: readonly z.ZodType[]): {
       const kinds = option ? kindsOf(node, cost) : EVERY_KIND;
       const gate = option ? new Set([...reached].filter((kind) => kinds.has(kind))) : reached;
       if (gate.size === 0) continue;
-      const own = ownMarker(node);
-      if (own !== null) {
+      if (ownPrivacyClasses(node).length > 0) {
         // A marked container is masked whole, so every class marked inside it is a class it carries, as beneath an
         // opaque node: `pii(z.object({ token: secret(…) }))` is listed `pii` and `secret`, and masked `[secret]`.
         const inside = search(node);

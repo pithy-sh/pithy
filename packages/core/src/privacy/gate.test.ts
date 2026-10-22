@@ -127,3 +127,24 @@ describe("the type gate", () => {
     expect([contains, detail]).toEqual([false, "user [pii]"]);
   });
 });
+
+const Twice = z.object({ id: z.string(), token: pii(secret(z.string())) }).describe("A row marked twice.");
+const twice = Twice.parse({ id: "u_1", token: "tok" });
+
+/** Never run: a field marked twice is refused like one marked once, and its redacted copy is taken. */
+function compileTwice(log: Logger): void {
+  // @ts-expect-error a field carrying two classes is refused as a value
+  log.info("m", { token: twice.token });
+  // @ts-expect-error and inside the row
+  log.info("m", { twice });
+  log.info("m", { twice: redact(Twice, twice) });
+}
+
+describe("a field marked twice, at the gate", () => {
+  test("carries both brands, and its redacted copy carries none", () => {
+    const both: IsMarked<typeof twice.token> = true;
+    const none: ContainsMarked<Redacted<typeof Twice>> = false;
+    expect([both, none, typeof compileTwice]).toEqual([true, false, "function"]);
+    expect(redact(Twice, twice)).toEqual({ id: "u_1", token: "[secret]" });
+  });
+});
