@@ -41,19 +41,26 @@ import type { RedactedOutput } from "./types";
  *    inventory can list more than `redact` masks, and never less.
  * 5. The kit's database codecs: `SQLiteDate`, `SQLiteBoolean` and `sqliteJson(schema)`. A JSON column's inner fields
  *    are redacted field by field.
- * 6. Recursion: `z.lazy(() => Node)` and getters, whether a getter returns one schema or builds a new one each read,
- *    such as trees and linked lists. Walked exactly to a fixed recursion depth, unless the call's budget ends the walk
- *    sooner. One call of `redact`, `classifyPrivacy`, `hasPrivacy` or `walkPrivacy` reads at most 10,000 schemas, and
- *    every position and every search in it draws on that one budget, so its time and memory are bounded by the budget
- *    and by what the schema's own getters build, whatever the schema does. A schema that builds new ones as it is read
- *    can spend it first. Past the budget the call fails closed: `redact` masks each position it has not resolved whole,
- *    with the strongest class it found there, or as `[truncated]` where it found none, and `classifyPrivacy` lists
- *    every class at each position it has not read, each `truncated`. Past the depth the position is masked whole, and
- *    `Redacted<T>` types it `unknown` from that same depth: one limit, shared by the runtime and the type, however the
- *    recursion is written. A self-referencing `z.lazy` has to be annotated `z.ZodType<T>`, which names no kind, so
- *    `Redacted<T>` types it, and every field that holds it, `unknown`. Write the recursion with a getter and the type
- *    keeps its shape to the limit. A value cut off at the limit is masked `[truncated]`, which is a safety cutoff
- *    rather than a privacy class, so `classifyPrivacy` does not list it.
+ * 6. Recursion and depth: `z.lazy(() => Node)` and getters, whether a getter returns one schema or builds a new one
+ *    each read, such as trees and linked lists. Walked exactly to a fixed depth, 256 levels of nesting, unless the
+ *    call's budget ends the walk sooner. One call of `redact`, `classifyPrivacy`, `hasPrivacy` or `walkPrivacy` reads
+ *    at most 10,000 schemas, and every position and every search in it draws on that one budget. A call's time and
+ *    memory grow linearly with the size of the schema and the value, and are bounded beyond that by the budget and by
+ *    what the schema's own getters build. A schema that builds new ones as it is read can spend the budget first. Past
+ *    the budget the call fails closed: `redact` masks each position it has not resolved whole, with the strongest class
+ *    it found there, or as `[truncated]` where it found none, and `classifyPrivacy` lists every class at each position
+ *    it has not read, each `truncated`. The depth limit applies to all nesting, not only recursion: anything nested
+ *    deeper than the limit is masked `[truncated]`, a safety cutoff rather than a privacy class, and the inventory
+ *    assumes every class there unless the chain repeats a schema already read. A recursion that repeats a schema
+ *    already read on its path needs no cut: its classes are exactly those of the schemas already read, so a tree or a
+ *    linked list defined once is listed exactly, with no `truncated` entry. Where the walk reaches the limit on a chain
+ *    that keeps producing schemas not yet seen on that path, a factory recursion or plain nesting deeper than the
+ *    limit, `classifyPrivacy` lists every class at that position, each `truncated`, beside any class it found there,
+ *    exactly as past the budget, and `hasPrivacy` answers yes for each. So the list never says less than is marked.
+ *    `Redacted<T>` types a position past the limit `unknown` from that same depth: one limit, shared by the runtime and
+ *    the type, however the nesting is written. A self-referencing `z.lazy` has to be annotated `z.ZodType<T>`, which
+ *    names no kind, so `Redacted<T>` types it, and every field that holds it, `unknown`. Write the recursion with a
+ *    getter and the type keeps its shape to the limit.
  * 7. Values copied out of a parsed row into a plain object, array, `Map` or `Set` described by any of the above.
  *
  * **Outside the contract.** Custom transforms and pipes, `preprocess`, codecs other than the kit's own (one built the
@@ -100,8 +107,9 @@ import type { RedactedOutput } from "./types";
  * 5. An array, a `Map` or a `Set` passed through as it is is copied by its elements or entries, and no other own
  *    property it holds is copied.
  *
- * **Where `redact` masks more than the marks name.** It never masks less, and it masks more in four places, each
- * tested. A position the call ran out of its budget before it resolved is masked whole, with the strongest class found
+ * **Where `redact` masks more than the marks name.** It never masks less, and it masks more in five places, each
+ * tested. Anything nested deeper than the depth limit is masked `[truncated]`, marked or not (item 6). A position the
+ * call ran out of its budget before it resolved is masked whole, with the strongest class found
  * there or as `[truncated]`, as any class may be marked past it (item 6). A value whose kind or prototype does not
  * match its position is masked whole over a mark beneath it, as above. A lazy whose union reaches itself through
  * another lazy reads as every kind where the cycle is cut, so a marked option that wraps it applies to every value at
@@ -130,8 +138,8 @@ import type { RedactedOutput } from "./types";
  *   back as `[pii]` and `[pii] #2`, so the copy holds as many entries as the value did. Only a masked one is ever
  *   numbered: a kept one stays as it is, even one that reads `[pii]`, and a masked one takes the first name no kept
  *   one holds. Every key is defined on the copy, not assigned, so an own `__proto__` key stays a key.
- * - **The one recursion limit is {@link MAX_RECURSION_DEPTH} levels of nesting**: every object, array, tuple, record,
- *   map and set a position sits inside counts one. A position deeper than that is masked whole as `[truncated]`, a
+ * - **The one recursion limit is {@link MAX_RECURSION_DEPTH} levels of nesting**, and it applies to all nesting, not
+ *   only recursion: every object, array, tuple, record, map and set a position sits inside counts one. A position deeper than that is masked whole as `[truncated]`, a
  *   safety cutoff rather than a privacy class, and `Redacted<T>` types it `unknown` from the same depth. Nothing tells
  *   one recursion from another, so a lazy, a getter that returns one schema and one that builds a new schema each read
  *   all end at the same level, and the result is a function of the schema and the value alone. The walk keeps its own

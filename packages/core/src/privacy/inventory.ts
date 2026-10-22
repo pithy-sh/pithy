@@ -34,11 +34,10 @@ import { PRIVACY_SOURCES, type PrivacyInventory, type PrivacyInventorySchema } f
  *
  * ## The per-field record
  *
- * `{ path, class }`, from `classifyPrivacy`, with `truncated: true` where a read ran out of its budget and it assumed
- * every class, and `sameAs` on a reference: a position written out under another path once the list reached its cap
- * on paths, listed once per class marked beneath it. The counts count each record, a reference included. A value
- * `redact` cuts off at the recursion limit is masked `[truncated]`, a safety cutoff rather than a privacy class, so
- * it is not listed. It is the extension point #390 builds on: once a field can be marked encrypted at rest, that lands beside
+ * `{ path, class }`, from `classifyPrivacy`, with `truncated: true` where a read ran out of its budget, or was cut at
+ * the depth limit on a chain of schemas not yet read, and it assumed every class, and `sameAs` on a reference: a
+ * position written out under another path once the list reached its cap on paths, listed once per class marked
+ * beneath it. The counts count each record, a reference included. It is the extension point #390 builds on: once a field can be marked encrypted at rest, that lands beside
  * `class` on this record, and "which of your PHI fields are encrypted" becomes one more derivation rather than a
  * second thing to maintain.
  *

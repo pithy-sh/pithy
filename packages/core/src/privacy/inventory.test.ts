@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { type Capability, defineCapability } from "../capability/capability";
 import { phi, pii, secret } from "./classes";
+import { unreadClasses } from "./classify";
 import { lazyPrivacyInventory, privacyInventory } from "./inventory";
 import { PRIVACY_SOURCES } from "./report";
 
@@ -148,7 +149,7 @@ describe("privacyInventory references", () => {
 });
 
 describe("privacyInventory, past the depth limit", () => {
-  test("lists no class for a KV value cut off at the recursion limit, as the cutoff is not a privacy class", () => {
+  test("lists every class, assumed, for a KV value built anew past the recursion limit, and none for one defined once", () => {
     // biome-ignore lint/suspicious/noExplicitAny: a factory's type is circular, and TypeScript infers none.
     const factory = (): any => z.object({ a: z.string(), next: z.lazy(factory).optional() });
     const capability = defineCapability({
@@ -165,8 +166,33 @@ describe("privacyInventory, past the depth limit", () => {
     });
     const inventory = privacyInventory([capability]);
     expect(inventory.schemasWalked).toBe(1);
-    expect(inventory.schemas).toEqual([]);
-    expect(inventory.observed).toEqual([]);
+    // Nothing past the limit was read, so any class may be marked there: each is listed, and observed.
+    const every = unreadClasses();
+    expect(inventory.schemas).toEqual([
+      {
+        capability: "deep",
+        storage: "kv",
+        container: "trees",
+        name: "tree",
+        fields: every.map((name) => ({ path: "value", class: name, truncated: true })),
+      },
+    ]);
+    expect([...inventory.observed].sort()).toEqual([...every].sort());
+    // Defined once, the recursion comes round to a schema already read: nothing is assumed.
+    const Once: z.ZodType = z.object({ a: z.string(), next: z.lazy(() => Once).optional() });
+    const once = defineCapability({
+      name: "once",
+      requiredBindings: [],
+      kvNamespaces: {
+        trees: {
+          binding: "TREES",
+          stores: {
+            tree: { prefix: "t", key: z.object({ id: z.string() }), value: Once.transform((v: unknown) => v) },
+          },
+        },
+      },
+    });
+    expect(privacyInventory([once]).schemas).toEqual([]);
   });
 });
 

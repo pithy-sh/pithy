@@ -68,6 +68,17 @@ const freshLazy = (): z.ZodType<Link> => z.lazy(() => z.object({ e: pii(z.string
 /** One node of a list, `depth` levels down, as `redact` returns it, with its fields past the limit: a cutoff, no class. */
 const lastNode = { e: "[truncated]", next: "[truncated]" };
 
+/**
+ * What the list says at `path` where it found `found` and was cut at the limit on a chain of new schemas: the classes
+ * it found, then every other class, assumed and `truncated`, since nothing past the cut was read.
+ */
+const assumedBeside = (path: string, found: readonly string[]) => [
+  ...found.map((name) => ({ path, class: name })),
+  ...unreadClasses()
+    .filter((name) => !found.includes(name))
+    .map((name) => ({ path, class: name, truncated: true })),
+];
+
 describe("one recursion limit, however the recursion is written", () => {
   test("the runtime and the type read one constant", () => {
     same<REDACT_RECURSION_DEPTH, typeof MAX_RECURSION_DEPTH>();
@@ -156,7 +167,7 @@ describe("one recursion limit, however the recursion is written", () => {
     expect(long).not.toMatch(/S-\d/);
   });
 
-  test("the cutoff is [truncated], no class, and reads alike for a recursion defined once and one built anew", () => {
+  test("the cutoff is [truncated] alike for a recursion defined once and one built anew, and only a new one assumes", () => {
     type Plain = { e: string; next?: Plain };
     const Once: z.ZodType<Plain> = z.object({
       e: z.string(),
@@ -182,10 +193,13 @@ describe("one recursion limit, however the recursion is written", () => {
     expect(built).toEqual(once);
     // The node at the limit is walked, and its fields, one level past it, are cut off.
     expect(nth(once)).toBe("[truncated]");
-    for (const schema of [Once, anew()]) {
-      expect(classifyPrivacy(schema)).toEqual([]);
-      expect(hasPrivacy(schema, "secret")).toBe(false);
-    }
+    // Defined once, it comes round to a schema already read, so the list names nothing it did not read.
+    expect(classifyPrivacy(Once)).toEqual([]);
+    expect(hasPrivacy(Once, "secret")).toBe(false);
+    // Built anew, it was never read past the limit, so every class is assumed at the cut, and nowhere else.
+    const cut = [...Array(MAX_RECURSION_DEPTH).fill("next")].join(".");
+    expect(classifyPrivacy(anew())).toEqual([...assumedBeside(`${cut}.e`, []), ...assumedBeside(`${cut}.next`, [])]);
+    expect(hasPrivacy(anew(), "secret")).toBe(true);
   });
 
   test("numbers the [truncated] elements of a set apart, so the copy holds as many as the value did", () => {
@@ -227,15 +241,16 @@ describe("one recursion limit, however the recursion is written", () => {
     expect(aFirst.B.redact).toEqual({ id: "P-1", n: { e: "[pii]", next: { e: "[pii]" } } });
   });
 
-  test("classifyPrivacy lists a recursion defined once once, one built anew to the limit, and no class past it", () => {
+  test("classifyPrivacy lists a recursion defined once once, one built anew to the limit, and every class past it", () => {
     expect(classifyPrivacy(Item)).toEqual([{ path: "e", class: "pii" }]);
     expect(classifyPrivacy(Lazy)).toEqual([{ path: "e", class: "pii" }]);
     const path = (depth: number, key: string) => [...Array(depth).fill("next"), key].join(".");
-    // The cutoff past the limit is `[truncated]`, a safety cutoff rather than a privacy class: nothing lists it.
-    const expected = Array.from({ length: MAX_RECURSION_DEPTH }, (_, depth) => ({
-      path: path(depth, "e"),
-      class: "pii",
-    }));
+    // Past the limit a new schema was never read, so the cut assumes every class there, beside the one it found.
+    const expected = [
+      ...Array.from({ length: MAX_RECURSION_DEPTH }, (_, depth) => ({ path: path(depth, "e"), class: "pii" })),
+      ...assumedBeside(path(MAX_RECURSION_DEPTH, "e"), ["pii"]),
+      ...assumedBeside(path(MAX_RECURSION_DEPTH, "next"), []),
+    ];
     expect(classifyPrivacy(fresh())).toEqual(expected);
     expect(classifyPrivacy(freshLazy())).toEqual(expected);
     const parsed = fresh();
@@ -454,15 +469,15 @@ describe("a recursion that builds a new choice each read never runs past the lim
     expect(Date.now() - started).toBeLessThan(5_000);
   });
 
-  test("a string past an endless chain of new lazies is cut off as [truncated], and no class is listed for it", () => {
+  test("a string past an endless chain of new lazies is cut off as [truncated], and every class is assumed there", () => {
     expect(redact(anew(), "P-1" as never)).toBe("[truncated]");
     expect(redact(beside(), 5 as never)).toBe("[truncated]");
-    expect(classifyPrivacy(anew())).toEqual([]);
-    expect(hasPrivacy(beside(), "secret")).toBe(false);
-    // A marked number at every level, and the limit reached: the class is known, so it is the placeholder.
+    expect(classifyPrivacy(anew())).toEqual(assumedBeside("", []));
+    expect(hasPrivacy(beside(), "secret")).toBe(true);
+    // A marked number at every level, and the limit reached: the class is known, so it is the placeholder, and the
+    // list names it found beside every class it assumes past the cut.
     expect(redact(marked(), 5 as never)).toBe("[pii]");
-    expect(hasPrivacy(marked(), "pii")).toBe(true);
-    expect(hasPrivacy(marked(), "secret")).toBe(false);
+    expect(classifyPrivacy(marked())).toEqual(assumedBeside("", ["pii"]));
   });
 });
 
@@ -559,7 +574,8 @@ describe("the limit counts nesting, never breadth", () => {
     expect(redact(under, under.parse({ v: "P-1" }) as never)).toEqual({ v: "P-1" });
     const past = z.object({ v: chain(MAX_RECURSION_DEPTH + 44) });
     expect(redact(past, past.parse({ v: "P-1" }) as never)).toEqual({ v: "[truncated]" });
-    expect(classifyPrivacy(past)).toEqual([]);
+    expect(classifyPrivacy(past)).toEqual(assumedBeside("v", []));
+    expect(classifyPrivacy(under)).toEqual([]);
   });
 
   test("classifyPrivacy lists a finite schema that reuses one object in many fields to the end", () => {
@@ -589,12 +605,12 @@ describe("a recursion beneath an opaque node that reaches the limit counts as po
       },
     });
 
-  test("its value is masked whole as [truncated], listed as no class, and typed unknown", () => {
+  test("its value is masked whole as [truncated], listed with every class assumed, and typed unknown", () => {
     const Row = z.object({ id: z.string(), d: built().transform((x) => x) });
     const value = Row.parse({ id: "1", d: { v: "P-1", next: { v: "P-2" } } });
     expect(redact(Row, value)).toEqual({ id: "1", d: "[truncated]" });
-    expect(classifyPrivacy(Row)).toEqual([]);
-    expect(hasPrivacy(Row, "secret")).toBe(false);
+    expect(classifyPrivacy(Row)).toEqual(assumedBeside("d", []));
+    expect(hasPrivacy(Row, "secret")).toBe(true);
     same<Redacted<typeof Row>["d"], unknown>();
     const proof: Redacted<typeof Row>["d"] = redact(Row, value).d;
     expect(proof).toBe("[truncated]");
@@ -603,12 +619,10 @@ describe("a recursion beneath an opaque node that reaches the limit counts as po
   test("so is a lazy beneath one, whose annotated type the search cannot see inside", () => {
     const Row = z.object({ d: freshLazy().transform((x) => x), l: Lazy.transform((x) => x) });
     const value = Row.parse({ d: { e: "S-1" }, l: { e: "S-2" } });
-    // A class known beneath it is its placeholder, cut off or not; the cutoff itself is not a class.
+    // A class known beneath it is its placeholder, cut off or not. Built anew, the search never read past the limit,
+    // so it assumes every other class; defined once, it came round to a schema it had read.
     expect(redact(Row, value)).toEqual({ d: "[pii]", l: "[pii]" });
-    expect(classifyPrivacy(Row)).toEqual([
-      { path: "d", class: "pii" },
-      { path: "l", class: "pii" },
-    ]);
+    expect(classifyPrivacy(Row)).toEqual([...assumedBeside("d", ["pii"]), { path: "l", class: "pii" }]);
     same<Redacted<typeof Row>["d"], unknown>();
     same<Redacted<typeof Row>["l"], unknown>();
   });
@@ -632,44 +646,45 @@ describe("a cutoff ends its own path, and a class known at a position is its pla
   type Plain = { v: string; next?: Plain };
   const Lazy: z.ZodType<Plain> = z.lazy(() => z.object({ v: z.string(), next: Lazy.optional() }));
   const builtLazy = (): z.ZodType<Plain> => z.lazy(() => z.object({ v: z.string(), next: builtLazy().optional() }));
-  const styles: [string, () => z.ZodType][] = [
-    ["getter, one schema", () => Once],
-    ["getter, a new schema each read", built],
-    ["lazy, defined once", () => Lazy],
-    ["lazy, built anew", builtLazy],
+  // Whether each is built anew: a search beneath one never reads past the limit, so it assumes every class there.
+  const styles: [string, () => z.ZodType, boolean][] = [
+    ["getter, one schema", () => Once, false],
+    ["getter, a new schema each read", built, true],
+    ["lazy, defined once", () => Lazy, false],
+    ["lazy, built anew", builtLazy, true],
   ];
+  /** What the list says at `path` for `found`: with every other class assumed where the style is built anew. */
+  const listedAt = (path: string, found: string[], anew: boolean) =>
+    anew ? assumedBeside(path, found) : found.map((name) => ({ path, class: name }));
   const tree = { v: "P-1", next: { v: "P-2" } };
 
-  test.each(styles)("a marked container over it is masked with its class, one level deep: %s", (_, style) => {
+  test.each(styles)("a marked container over it is masked with its class, one level deep: %s", (_, style, anew) => {
     const Marked = pii(style());
     expect(redact(Marked, tree as never)).toBe("[pii]");
-    expect(classifyPrivacy(Marked)).toEqual([{ path: "", class: "pii" }]);
+    expect(classifyPrivacy(Marked)).toEqual(listedAt("", ["pii"], anew));
     const Rows = z.array(z.object({ id: z.string(), t: pii(style()) }));
     expect(redact(Rows, [{ id: "1", t: tree }] as never)).toEqual([{ id: "1", t: "[pii]" }]);
-    expect(classifyPrivacy(Rows)).toEqual([{ path: "[].t", class: "pii" }]);
+    expect(classifyPrivacy(Rows)).toEqual(listedAt("[].t", ["pii"], anew));
   });
 
-  test.each(styles)("a class beside it is carried whatever the field order: %s", (_, style) => {
+  test.each(styles)("a class beside it is carried whatever the field order: %s", (_, style, anew) => {
     const value = { tree, s: "S-1" };
     const first = pii(z.object({ tree: style(), s: secret(z.string()) }));
     const last = pii(z.object({ s: secret(z.string()), tree: style() }));
     for (const Marked of [first, last]) {
       expect(redact(Marked, value as never)).toBe("[secret]");
-      expect(classifyPrivacy(Marked)).toEqual([
-        { path: "", class: "pii" },
-        { path: "", class: "secret" },
-      ]);
+      expect(classifyPrivacy(Marked)).toEqual(listedAt("", ["pii", "secret"], anew));
       expect(hasPrivacy(Marked, "secret")).toBe(true);
     }
   });
 
-  test.each(styles)("beneath an opaque node, the strongest class found is its placeholder: %s", (_, style) => {
+  test.each(styles)("beneath an opaque node, the strongest class found is its placeholder: %s", (_, style, anew) => {
     const value = { x: { tree, s: "S-1" } };
     const first = z.object({ x: z.object({ tree: style(), s: secret(z.string()) }).transform((x) => x) });
     const last = z.object({ x: z.object({ s: secret(z.string()), tree: style() }).transform((x) => x) });
     for (const Row of [first, last]) {
       expect(redact(Row, value as never)).toEqual({ x: "[secret]" });
-      expect(classifyPrivacy(Row)).toEqual([{ path: "x", class: "secret" }]);
+      expect(classifyPrivacy(Row)).toEqual(listedAt("x", ["secret"], anew));
       expect(hasPrivacy(Row, "secret")).toBe(true);
     }
   });
@@ -707,9 +722,9 @@ describe("a cutoff ends its own path, and a class known at a position is its pla
       z.object({ a: z.union([secret(z.number()), anew()]) }),
     ]) {
       expect(redact(Row, { a: 5 } as never)).toEqual({ a: "[secret]" });
-      // A string reaches the endless chain and no class: it is cut off.
+      // A string reaches the endless chain and no class: it is cut off, and every class is assumed past the cut.
       expect(redact(Row, { a: "P-1" } as never)).toEqual({ a: "[truncated]" });
-      expect(classifyPrivacy(Row)).toEqual([{ path: "a", class: "secret" }]);
+      expect(classifyPrivacy(Row)).toEqual(assumedBeside("a", ["secret"]));
     }
   });
 

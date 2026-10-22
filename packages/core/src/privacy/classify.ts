@@ -30,23 +30,26 @@ import { ownPrivacyClasses, privacyClasses, rankPrivacyClasses, strongestPrivacy
  *   class it carries; with none, it is kept, a union option beside a marked one included.
  * - **A mark on a container masks it whole**, and the container carries every class marked inside it as well as its
  *   own: `pii(z.object({ token: secret(z.string()) }))` is listed `pii` and `secret`, and masked `[secret]`.
- * - **Recursion is bounded once**, at {@link MAX_RECURSION_DEPTH} levels of nesting: a position deeper than that is
- *   masked whole as {@link TRUNCATED_MASK}, whatever the recursion is written with. It is a safety cutoff rather than a
- *   privacy class, so `classifyPrivacy` does not list it and `hasPrivacy` does not see it. A path that reaches it ends
- *   alone: every other path is still read, so a class beside a recursion is found whatever the field order, and a
- *   position masked whole for a class it carries is masked with that class, cut off below or not. The cutoff is a flag
- *   beside the classes, never instead of them. Nothing here tells one kind of recursion from another, so every answer
- *   is a function of the schema and the value alone.
+ * - **Nesting is bounded once**, at {@link MAX_RECURSION_DEPTH} levels: a position deeper than that is masked whole as
+ *   {@link TRUNCATED_MASK}, whatever nests it, a recursion or a schema written out level by level. It is a safety
+ *   cutoff rather than a privacy class. A recursion that repeats a schema already read on its path needs no cut in the
+ *   list: its classes are those of the schemas already read. Where a read reaches the limit on a chain of schemas not
+ *   yet seen on its path, a factory or plain nesting, nothing past it was read, so the list assumes every class there,
+ *   each `truncated`, as past the budget, and `hasPrivacy` answers yes for each: the list never says less than is
+ *   marked. A path that reaches the limit ends alone: every other path is still read, so a class beside a recursion is
+ *   found whatever the field order, and a position masked whole for a class it carries is masked with that class, cut
+ *   off below or not. The cutoff is a flag beside the classes, never instead of them. Every answer is a function of the
+ *   schema and the value alone.
  * - **One budget per call, {@link MAX_READ_SCHEMAS} schemas.** `redact`, `classifyPrivacy`, `hasPrivacy` and
  *   `walkPrivacy` each read at most that many in one call, and every position and every search in it draws on it: each
  *   schema a read meets counts one, and so does each schema a lazy or an object's shape yields, where a getter runs and
- *   may build one. So a call's time and memory are bounded by the budget and by what the schema's own getters build,
- *   whatever the schema does. Reads go shallowest first, so a class above the point the budget runs out on is found and
+ *   may build one. So a call's time and memory grow linearly with the size of the schema and the value, and are bounded
+ *   beyond that by the budget and by what the schema's own getters build. Reads go shallowest first, so a class above the point the budget runs out on is found and
  *   kept. Past it the call fails closed: `redact` masks each position it has not resolved whole, with the strongest
  *   class it found there or {@link TRUNCATED_MASK} where it found none, and the list names every class at each position
  *   it has not read, each `truncated`: nothing there was read, so any class may be marked there, and the list never
- *   says less than the schema marks. It is one of four places the list says more than `redact` masks, beside the
- *   classes a cut assumes, a reference's own path and an intersection that narrows. A position read once is read once
+ *   says less than the schema marks. It is one of five places the list says more than `redact` masks, beside a position
+ *   cut at the depth limit, the classes a cut assumes, a reference's own path and an intersection that narrows. A position read once is read once
  *   wherever it sits in the call, so a schema reused in many fields costs one, and each call starts with the whole
  *   budget and keeps nothing for the next, so every answer is a function of the schema and the value alone. A position
  *   the walk cannot read at all, nested deeper than the stack can follow, is listed with every class, each `truncated`:
@@ -77,9 +80,9 @@ export interface PrivacyField {
   class: string;
   /**
    * Set where the class is assumed rather than found: a position the call ran out of {@link MAX_READ_SCHEMAS} before it
-   * read, or a read beneath a position that ran out of it, or a schema the walk could not read at all, nested deeper
-   * than the stack. Each lists {@link unreadClasses}. Absent everywhere the schema was read to the end. A position past
-   * {@link MAX_RECURSION_DEPTH} is not listed at all: it is cut off, not classified.
+   * read, or a read beneath a position that ran out of it, a position cut at {@link MAX_RECURSION_DEPTH} on a chain of
+   * schemas not yet seen on its path, or a schema the walk could not read at all, nested deeper than the stack. Each
+   * lists {@link unreadClasses}. Absent everywhere the schema was read to the end.
    */
   truncated?: true;
   /**
@@ -94,9 +97,10 @@ export interface PrivacyField {
 /**
  * **The one recursion limit**, shared by `redact`, `classifyPrivacy` and `Redacted<T>` (`./types` reads this constant's
  * type). Depth is counted in levels of nesting: every object, array, tuple, record, map and set a position sits inside.
- * A position deeper than this is masked whole as {@link TRUNCATED_MASK} and typed `unknown`, however the recursion is
- * written: a `z.lazy`, a getter that returns one schema, or one that builds a new schema each read. No schema written
- * out by hand nests this deep, so only a recursion reaches it. A search for a mark beneath an opaque node or a marked
+ * It applies to all nesting, not only recursion: a position deeper than this is masked whole as {@link TRUNCATED_MASK}
+ * and typed `unknown`, whatever nests it: a `z.lazy`, a getter that returns one schema, one that builds a new schema
+ * each read, or a schema written out level by level. The list assumes every class there, unless the chain repeats a
+ * schema already read on its path. A search for a mark beneath an opaque node or a marked
  * container ends a path at the same depth, counting each lazy too, and reads every other path; so does the one
  * `Redacted<T>` makes. So does a read of the shapes a choice can have, and of the schemas that reach one position, each
  * counting the lazies nested above a schema: a lazy that builds a new choice each read never meets a schema twice. A
@@ -111,8 +115,8 @@ export const MAX_RECURSION_DEPTH = 256;
  * does each schema a lazy or an object's shape yields: a lazy's target, and each field of a shape, where a getter runs
  * and may build a new schema. A schema met again in the same read costs nothing. So a call reads at most this many
  * schemas, and runs at most this many of the schema's own getters beyond the fields of the one object it was reading
- * when the budget ran out: its time and memory are bounded by that, and by what one of those getters builds, whatever
- * the schema does. Past it the call fails closed: what it has not read, it assumes. `redact` masks each position it has
+ * when the budget ran out. So its time and memory grow linearly with the size of the schema and the value, and are
+ * bounded beyond that by the budget and by what one of those getters builds. Past it the call fails closed: what it has not read, it assumes. `redact` masks each position it has
  * not resolved whole, with the strongest class it found there or {@link TRUNCATED_MASK} where it found none; the list
  * names every class at each position it has not read, each `truncated`. Far past any schema written out by hand, and
  * past any recursion defined once: only a schema that builds new ones as it is read, or one wider than any written out,
@@ -134,7 +138,7 @@ export const MAX_LISTED_PATHS = 50_000;
 /**
  * What `redact` puts where it stops: a value nested past {@link MAX_RECURSION_DEPTH}, an opaque value over a recursion
  * that reaches it, and a position the call ran out of {@link MAX_READ_SCHEMAS} before it read, where no class was
- * found. A safety cutoff rather than a privacy class, so no list names it.
+ * found. A safety cutoff rather than a privacy class, so it is never a placeholder for one.
  */
 export const TRUNCATED_MASK = "[truncated]";
 
@@ -142,7 +146,8 @@ export const TRUNCATED_MASK = "[truncated]";
  * The classes {@link classifyPrivacy} lists for a position it did not read: every class registered, strongest first,
  * because nothing there was read and any of them may be marked below it. So the list never says less than the schema
  * marks, and `hasPrivacy` answers yes for each. A read that runs out of {@link MAX_READ_SCHEMAS} assumes them where it
- * stopped, and a schema the walk cannot read at all is listed with them.
+ * stopped, a cut at {@link MAX_RECURSION_DEPTH} on a chain of schemas not yet seen assumes them where it cut, and a
+ * schema the walk cannot read at all is listed with them.
  */
 export function unreadClasses(): string[] {
   return rankPrivacyClasses(privacyClasses().map((each) => each.name));
@@ -638,15 +643,21 @@ interface Search {
   readonly classes: ReadonlySet<string>;
   /** Whether a path ended at the recursion limit, or the search at the budget. */
   readonly truncated: boolean;
-  /** Whether the search ended at the call's {@link MAX_READ_SCHEMAS}: what lies past it was never read. */
+  /**
+   * Whether every class is assumed beneath it: the search ended at the call's {@link MAX_READ_SCHEMAS}, or a path of
+   * schemas it had not met reached {@link MAX_RECURSION_DEPTH}. Either way, what lies past it was never read.
+   */
   readonly unread: boolean;
 }
 
 /**
  * Every class marked anywhere beneath a schema, on every side of every node. Level by level, each level in the order
  * the schema declares it, and each schema once. A path more than {@link MAX_RECURSION_DEPTH} levels long, counting
- * each lazy and each structural node, ends there and marks the search `truncated`; every other path is still read, so
- * a class beside a recursion is found whatever the field order. Each schema it meets costs one of the call's
+ * each lazy and each structural node, ends there and marks the search `truncated` and `unread`; every other path is
+ * still read, so a class beside a recursion is found whatever the field order. Each schema is met once, so a recursion
+ * defined once comes round to a schema already read and never reaches the limit: only a chain of schemas not met
+ * before does, a factory or nesting deeper than the limit, and past it any class may be marked, so every one is
+ * assumed there. Each schema it meets costs one of the call's
  * {@link MAX_READ_SCHEMAS}, so shallowest first, a class above the point the budget runs out on is found. There the
  * search ends `truncated` and `unread`: what lies past it was never read, so every class is assumed there, and the
  * search never says less than the schema marks. Remembered for the call, so a schema searched again costs nothing.
@@ -657,9 +668,10 @@ function search(schema: z.ZodType, call: Call): Search {
   const classes = new Set<string>();
   let truncated = false;
   let unread = false;
+  let spent = false;
   const seen = new Set<z.ZodType>();
   let level: z.ZodType[] = [schema];
-  for (let depth = 0; level.length > 0 && !unread; depth += 1) {
+  for (let depth = 0; level.length > 0 && !spent; depth += 1) {
     const next: z.ZodType[] = [];
     // Reversed, so the classes come out in the order the schema declares them.
     const stack = [...level].reverse();
@@ -669,6 +681,7 @@ function search(schema: z.ZodType, call: Call): Search {
       if (!take(call)) {
         truncated = true;
         unread = true;
+        spent = true;
         break;
       }
       seen.add(node);
@@ -680,9 +693,10 @@ function search(schema: z.ZodType, call: Call): Search {
         for (let index = inside.length - 1; index >= 0; index -= 1) stack.push(inside[index] as z.ZodType);
         continue;
       }
-      // Past the limit, this path ends here, and only this one.
+      // Past the limit, this path ends here, and only this one. Every schema on it was new, so any class may be past it.
       if (depth + 1 > MAX_RECURSION_DEPTH) {
         truncated = true;
+        unread = true;
         continue;
       }
       // Opening a node is what may build a schema — a lazy's target, an object's shape read through its getters — so
@@ -690,6 +704,7 @@ function search(schema: z.ZodType, call: Call): Search {
       if (!take(call)) {
         truncated = true;
         unread = true;
+        spent = true;
         break;
       }
       if (def.type === "object") readShape(node, call);
@@ -714,12 +729,14 @@ export interface Mask {
   readonly own: boolean;
   /**
    * Every class marked at the position, in the order met, then every class a read that ran out of
-   * {@link MAX_READ_SCHEMAS} assumed. Never the cutoff, which is not a class.
+   * {@link MAX_READ_SCHEMAS}, or reached {@link MAX_RECURSION_DEPTH} on a chain of schemas not yet seen, assumed. Never
+   * the cutoff, which is not a class.
    */
   readonly classes: readonly string[];
   /**
-   * The classes in `classes` that no read found, only assumed: a read here ran out of {@link MAX_READ_SCHEMAS}, so any
-   * class may be marked past it. Listed `truncated`.
+   * The classes in `classes` that no read found, only assumed: a read here ran out of {@link MAX_READ_SCHEMAS}, or
+   * reached {@link MAX_RECURSION_DEPTH} on a chain of schemas not yet seen, so any class may be marked past it. Listed
+   * `truncated`.
    */
   readonly assumed: readonly string[];
   /**
@@ -835,7 +852,10 @@ interface Reach {
   /** Whether it came from an opaque node or a recursion that ran out, rather than a marker. */
   readonly opaque: boolean;
   readonly truncated: boolean;
-  /** Whether a read here or beneath it ran out of {@link MAX_READ_SCHEMAS}, so every class is assumed. */
+  /**
+   * Whether every class is assumed here: a read here or beneath it ran out of {@link MAX_READ_SCHEMAS}, or reached
+   * {@link MAX_RECURSION_DEPTH} on a chain of schemas it had not met.
+   */
   readonly unread: boolean;
 }
 
@@ -934,11 +954,11 @@ function readPosition(
   };
   /**
    * A schema the call ran out of its budget before it read, or a lazy nested past the limit: cut off, and only this
-   * path. Nothing beneath it was read. Past the limit a value is cut off, and the cutoff is no class; past the budget
-   * any class may be marked there, so every one is assumed.
+   * path. Nothing beneath it was read, so any class may be marked there, and every one is assumed. A lazy is met once
+   * per position, so only a chain of lazies not met before, each built anew, reaches the limit.
    */
-  const cut = (gate: ReadonlySet<ValueKind>, unread: boolean) => {
-    reaches.push({ gate, classes: [], opaque: true, truncated: true, unread });
+  const cut = (gate: ReadonlySet<ValueKind>) => {
+    reaches.push({ gate, classes: [], opaque: true, truncated: true, unread: true });
     for (const kind of gate) taken.add(kind);
     other = true;
   };
@@ -957,7 +977,7 @@ function readPosition(
       met.add(seen);
       // Each schema read costs one of the call's budget. Past it, this schema was never read.
       if (!take(call)) {
-        cut(reached, true);
+        cut(reached);
         continue;
       }
       // An option applies where the value has its shape: its marks are narrowed to that shape.
@@ -991,12 +1011,12 @@ function readPosition(
         lazyGates.add(key);
         // A lazy nested in more lazies than the limit: this path is cut off, and only this one.
         if (lazies >= MAX_RECURSION_DEPTH) {
-          cut(gate, false);
+          cut(gate);
           continue;
         }
         // Resolving it runs its getter, which may build a schema: the call pays for it as for a read.
         if (!take(call)) {
-          cut(gate, true);
+          cut(gate);
           continue;
         }
         const inner = lazyInner(node);
@@ -1018,7 +1038,7 @@ function readPosition(
         // An object's shape is read here, once, and paid for by the field: its getters may build what it holds.
         if (def.type === "object") {
           if (!take(call)) {
-            cut(gate, true);
+            cut(gate);
             continue;
           }
           readShape(node, call);
@@ -1193,6 +1213,16 @@ function onLine(frame: Frame): boolean {
 }
 
 /**
+ * Whether a frame is cut off at the limit with every class assumed: nested deeper than {@link MAX_RECURSION_DEPTH}, at
+ * a position not met on its path. A recursion defined once comes round to a position already read, whose classes are
+ * listed where it was read, so it needs no cut. A chain that keeps producing schemas not yet seen, a factory or nesting
+ * deeper than the limit, was never read past it: any class may be marked there.
+ */
+function cutOff(frame: Frame): boolean {
+  return frame.depth > MAX_RECURSION_DEPTH && !onLine(frame);
+}
+
+/**
  * A frame for the position `read` returns. A schema nested deeper than the stack can follow, or one whose getter
  * throws, cannot be read: its frame is `unread`, listed with every class, and nothing throws.
  */
@@ -1231,13 +1261,13 @@ function framesBelow(frame: Frame, at: Position): Frame[] {
   return below;
 }
 
-/** Every class a frame lists at its own path, each with whether it is only assumed. */
+/** Every class a frame lists at its own path, once each, with whether it is only assumed. */
 function ownClasses(frame: Frame): [string, boolean][] {
-  const found: [string, boolean][] = [];
+  const found = new Map<string, boolean>();
   const mask = frame.at?.mask;
-  if (mask) for (const name of mask.classes) found.push([name, mask.assumed.includes(name)]);
-  if (frame.unread) for (const name of unreadClasses()) found.push([name, true]);
-  return found;
+  if (mask) for (const name of mask.classes) found.set(name, mask.assumed.includes(name));
+  if (frame.unread || cutOff(frame)) for (const name of unreadClasses()) if (!found.has(name)) found.set(name, true);
+  return [...found];
 }
 
 /**
@@ -1261,8 +1291,10 @@ function classesBeneath(walked: ReadonlyMap<Position, Frame>): Map<Position, Map
         }
       };
       for (const child of first.below ?? []) {
-        if (child.depth > MAX_RECURSION_DEPTH) continue;
+        // Past the limit only a cut lists anything, and nothing beneath it is read.
+        if (child.depth > MAX_RECURSION_DEPTH && !cutOff(child)) continue;
         for (const [name, assumed] of ownClasses(child)) merge(name, assumed);
+        if (child.depth > MAX_RECURSION_DEPTH) continue;
         const below = child.at && beneath.get(child.at);
         if (below) for (const [name, assumed] of below) merge(name, assumed);
       }
@@ -1275,8 +1307,8 @@ function classesBeneath(walked: ReadonlyMap<Position, Frame>): Map<Position, Map
  * Walk a schema tree the way {@link classifyPrivacy} does, from `path`, and report to `visitor`. Exported so a second
  * reader of the tree — the CLI's scan — cannot walk it differently. A position met again below itself is a recursion
  * defined once, and is not walked again: its fields are listed once. A position nested more than
- * {@link MAX_RECURSION_DEPTH} levels deep is cut off by `redact` as {@link TRUNCATED_MASK}, which is no class, so it
- * is not listed.
+ * {@link MAX_RECURSION_DEPTH} levels deep is cut off by `redact` as {@link TRUNCATED_MASK}; where it is a position not
+ * met on its path, nothing past it was read, so it is listed with every class, each truncated.
  *
  * Positions are read level by level, shallowest first, and reported in the schema's own order, all in one call with one
  * {@link MAX_READ_SCHEMAS}. Each distinct position is read once, wherever it sits; every level above the one the budget
@@ -1316,16 +1348,15 @@ export function walkPrivacy(schema: z.ZodType, visitor: PrivacyVisitor, path = "
   // Report, depth first, in the order the schema names each position.
   const stack: Frame[] = [root];
   for (let frame = stack.pop(); frame; frame = stack.pop()) {
-    // Past the limit a value is cut off, and the cutoff is not a class.
-    if (frame.depth > MAX_RECURSION_DEPTH) continue;
     const { at } = frame;
-    if (at?.mask) {
-      const { assumed } = at.mask;
-      for (const className of at.mask.classes)
-        visitor.marked(frame.path, className, assumed.includes(className) ? { truncated: true } : undefined);
-    } else if (at !== undefined && frame.key !== undefined) visitor.unmarkedKey?.(frame.path, frame.key);
-    if (frame.unread)
-      for (const className of unreadClasses()) visitor.marked(frame.path, className, { truncated: true });
+    if (frame.depth <= MAX_RECURSION_DEPTH && at !== undefined && at.mask === undefined && frame.key !== undefined)
+      visitor.unmarkedKey?.(frame.path, frame.key);
+    // Past the limit a value is cut off as `[truncated]`: on a chain of new schemas every class is assumed there, and
+    // a recursion defined once, come round, lists nothing it has not listed where it was read.
+    if (frame.depth <= MAX_RECURSION_DEPTH || cutOff(frame))
+      for (const [className, assumed] of ownClasses(frame))
+        visitor.marked(frame.path, className, assumed ? { truncated: true } : undefined);
+    if (frame.depth > MAX_RECURSION_DEPTH) continue;
     const reference = frame.sameAs;
     if (reference?.at) {
       for (const [className, assumed] of beneath.get(reference.at) ?? []) {
