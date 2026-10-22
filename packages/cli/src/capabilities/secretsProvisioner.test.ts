@@ -7,6 +7,7 @@ import { decodeVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValu
 import { secretsRotateWorkflowName, secretsWriteWorkflowName } from "@pithy-sh/secrets/src/manager/dispatcher";
 import {
   deprovisionSecrets,
+  fieldKeysSecretName,
   masterKeySecretName,
   runtimeTokenName,
   runtimeTokenSecretName,
@@ -276,6 +277,80 @@ describe("CloudflareSecretsProvisioner", () => {
 
     await provisioner.ensureRuntimeToken("staging");
     expect(events).toEqual([]);
+  });
+
+  /**
+   * **The field key, on the master key's rule (#390).** Minted only when absent: a fresh key over an existing one
+   * orphans every sealed field. Audited only when this run created it, and under its own entry, never the master
+   * key's.
+   */
+  test("ensureFieldKeys mints the env's field key only when absent, as a key set, and never by overwriting", async () => {
+    const { cf, exists, putSecret, createSecretIfAbsent } = fakeCf();
+    exists.mockResolvedValue(false);
+    const provisioner = new CloudflareSecretsProvisioner(provisionerOptions(cf));
+
+    await provisioner.ensureFieldKeys("prod");
+    expect(exists).toHaveBeenCalledWith(fieldKeysSecretName(PROJECT, "prod"));
+    expect(createSecretIfAbsent).toHaveBeenCalledTimes(1);
+    const [name, value] = createSecretIfAbsent.mock.calls[0] as unknown as [string, string];
+    expect(name).toBe(fieldKeysSecretName(PROJECT, "prod"));
+    expect(name).not.toBe(masterKeySecretName(PROJECT, "prod"));
+    expect(Object.keys(JSON.parse(value)).sort()).toEqual(["currentVersion", "lastRotatedAt", "versions"]);
+    expect(putSecret).not.toHaveBeenCalled();
+  });
+
+  test("ensureFieldKeys leaves an existing field key untouched, and generates nothing for it", async () => {
+    const { cf, exists, putSecret, createSecretIfAbsent } = fakeCf();
+    exists.mockResolvedValue(true);
+    const provisioner = new CloudflareSecretsProvisioner(provisionerOptions(cf));
+
+    await provisioner.ensureFieldKeys("staging");
+    expect(putSecret).not.toHaveBeenCalled();
+    expect(createSecretIfAbsent).not.toHaveBeenCalled();
+  });
+
+  test("ensureFieldKeys audits secrets/set only when it actually mints, never on a race it lost", async () => {
+    const { cf, exists, createSecretIfAbsent } = fakeCf();
+    exists.mockResolvedValue(false);
+    const events: CliAuditEvent[] = [];
+    const provisioner = new CloudflareSecretsProvisioner({
+      ...provisionerOptions(cf),
+      audit: async (event) => void events.push(event),
+    });
+
+    await provisioner.ensureFieldKeys("prod");
+    expect(events).toEqual([
+      expect.objectContaining({
+        action: "secrets/set",
+        severity: "warning",
+        environment: "prod",
+        resourceId: fieldKeysSecretName(PROJECT, "prod"),
+        metadata: { name: fieldKeysSecretName(PROJECT, "prod"), kind: "field_keys" },
+      }),
+    ]);
+
+    // Absent when asked, present by the create: another run minted it first, and this one wrote nothing.
+    events.length = 0;
+    createSecretIfAbsent.mockResolvedValueOnce("present");
+    await provisioner.ensureFieldKeys("prod");
+    expect(events).toEqual([]);
+
+    exists.mockResolvedValue(true);
+    await provisioner.ensureFieldKeys("prod");
+    expect(events).toEqual([]);
+  });
+
+  test("ensureFieldKeys names a feature's own field key", async () => {
+    const feature = { project: PROJECT, issue: "643", slug: "feature-address" };
+    const { cf, exists, createSecretIfAbsent } = fakeCf();
+    exists.mockResolvedValue(false);
+    const provisioner = new CloudflareSecretsProvisioner({ ...provisionerOptions(cf), feature });
+
+    await provisioner.ensureFieldKeys("feature");
+    expect(createSecretIfAbsent).toHaveBeenCalledWith(
+      fieldKeysSecretName(PROJECT, "feature", feature),
+      expect.stringContaining("currentVersion"),
+    );
   });
 
   test("ensureMasterKey audits secrets/set only when it actually mints a new key", async () => {

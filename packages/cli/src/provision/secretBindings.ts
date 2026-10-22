@@ -4,7 +4,7 @@
 import type { CreateSecretOutcome } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
 import { RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { FIELD_KEYS_BINDING } from "@pithy-sh/core/src/crypto/fieldKeys";
+import { FIELD_KEY_ROTATION_DAYS, FIELD_KEYS_BINDING } from "@pithy-sh/core/src/crypto/fieldKeys";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { ProvisionScope, SecretNameScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { hasEncryptedFields } from "@pithy-sh/core/src/privacy/encrypted";
@@ -13,6 +13,7 @@ import { secretBindingName } from "@pithy-sh/secrets/src/env/bindingName";
 import { isMintableSecret, type SecretRegistry, type SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import type { z } from "zod";
+import { capabilityNotComposed } from "../capabilities/notComposed";
 
 /**
  * **The `secrets_store_secrets` stanza nothing wrote.**
@@ -80,6 +81,35 @@ export function holdsEncryptedField(capabilities: readonly Capability[]): boolea
     Object.values(capability.databases ?? {}).some((database) =>
       Object.values(database.tables).some((table) => hasEncryptedFields(table as z.ZodType)),
     ),
+  );
+}
+
+/**
+ * **A project that holds an encrypted field composes the manager that rotates its key, or a declared environment is
+ * not provisioned (#390).** Provisioning mints `PITHY_FIELD_KEYS` and binds it to every Worker that holds an
+ * encrypted field, whether or not that Worker composes `secrets`. But the rotation, the guard and the doctor's error
+ * all live in the secrets manager, and a project that composes `secrets` nowhere has none: its field key would be
+ * minted once and never rotated, with nothing to say so. A feature is exempt, because it is torn down long before a
+ * rotation would be due.
+ */
+export function assertFieldKeyRotates(
+  projectDir: string,
+  workers: readonly { name: string; dir: string; capabilities: readonly Capability[] }[],
+  capabilities: readonly Capability[],
+): void {
+  const holders = workers.filter((worker) => holdsEncryptedField(worker.capabilities));
+  if (holders.length === 0) return;
+  if (capabilities.some(isSecretsCapability)) return;
+  if (workers.some((worker) => worker.capabilities.some(isSecretsCapability))) return;
+  const names = holders.map((worker) => worker.name).join(", ");
+  throw capabilityNotComposed(
+    "secrets",
+    {
+      message: `${names} ${holders.length === 1 ? "holds" : "hold"} an encrypted field, and nothing in this project composes secrets, so the field key would never rotate.`,
+      action: (add) =>
+        `The secrets manager rotates the field key every ${FIELD_KEY_ROTATION_DAYS} days. Compose it with ${add}, then provision again.`,
+    },
+    { projectDir, workerDirs: holders.map((worker) => worker.dir) },
   );
 }
 

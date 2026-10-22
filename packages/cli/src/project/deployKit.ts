@@ -188,7 +188,15 @@ export interface DeployKitOptions {
    * neither, the feature owns nothing a config could bind by id, and a host binding one is refused.
    */
   featureOwned?: (identity: FeatureIdentity, capabilities: readonly Capability[]) => Promise<FeatureOwnedIds>;
+  /**
+   * Test seam: whether the account's Secrets Store holds an entry. Defaults to asking the store under the resolved
+   * credentials; with none, nothing is asked and wrangler's own refusal is the check, as before.
+   */
+  secretEntryExists?: SecretEntryExists;
 }
+
+/** Whether the Secrets Store `storeId` holds an entry named `name`. A read: it never writes. */
+export type SecretEntryExists = (storeId: string, name: string) => Promise<boolean>;
 
 /** The `env.<name>` stanza slice this reads: the resource bindings, and whatever names an address. */
 interface KitStanza extends AddressStanza {
@@ -300,6 +308,35 @@ function failureReason(error: unknown): string {
   return action ? `${message} ${action}` : message;
 }
 
+/** The account's Secrets Store, asked whether an entry exists, under one client built on first use. */
+function storeEntryReader(credentials: { accountId: string; apiToken: string }): SecretEntryExists {
+  let clients: ReturnType<typeof cloudflareClients> | undefined;
+  return async (storeId, name) => {
+    clients ??= cloudflareClients(credentials);
+    return (await clients).secrets(storeId).exists(name);
+  };
+}
+
+/**
+ * **Every Secrets Store entry a kit Worker's config binds must exist, or the Worker is not deployed.** Cloudflare
+ * refuses a deploy whose `secrets_store_secrets` entry names a secret that is not there — `secretsStoreBindings`
+ * states the same rule for an app Worker. Without this, a project that upgraded and ran `pithy deploy` redeployed
+ * the secrets manager against `PITHY_FIELD_KEYS`, an entry only `pithy secrets provision` mints (#390). The ids and
+ * vars above are checked the same way, so this is a skip that names the command, never a failed upload.
+ */
+async function absentStoreEntries(
+  config: WorkflowHostTemplate,
+  exists: SecretEntryExists | undefined,
+): Promise<string[]> {
+  if (!exists) return [];
+  const absent: string[] = [];
+  for (const entry of config.secrets_store_secrets ?? []) {
+    if (!isId(entry.store_id) || !isId(entry.secret_name)) continue;
+    if (!(await exists(entry.store_id, entry.secret_name))) absent.push(entry.secret_name);
+  }
+  return [...new Set(absent)].sort();
+}
+
 /** The row a capability gets when this project cannot deploy its Worker yet. */
 function skipped(capability: string, reason: string): KitWorkerDeploy {
   return { capability, worker: null, outcome: "skipped", reason };
@@ -375,6 +412,7 @@ async function runKitDeploy(options: DeployKitOptions, { rows, problems, planned
   // No credentials means no stamp can be read, which the gate treats as doubt and therefore deploys —
   // wrangler still authenticates on its own OAuth login, exactly as `pithy deploy` always could.
   const readVars = options.readVars ?? (credentials ? await workersVarsReader(credentials) : undefined);
+  const secretEntryExists = options.secretEntryExists ?? (credentials ? storeEntryReader(credentials) : undefined);
 
   // What a feature's hosts may bind by id: its own databases and namespaces, and nothing else (#643).
   let owned: FeatureOwnedIds | undefined;
@@ -413,6 +451,7 @@ async function runKitDeploy(options: DeployKitOptions, { rows, problems, planned
       stanza: stanzas.get(host.sourceDir),
       storeId: options.ids?.storeId ?? vars.SECRETS_STORE_ID,
       accountId: options.ids?.accountId ?? vars.CLOUDFLARE_ACCOUNT_ID,
+      ...(secretEntryExists ? { secretEntryExists } : {}),
     });
     if ("planned" in row) {
       planned.push(row.planned);
@@ -501,6 +540,8 @@ async function deployOneKitWorker(input: {
   stanza: KitStanza | undefined;
   storeId: string | undefined;
   accountId: string | undefined;
+  /** Whether a Secrets Store entry exists. Absent: nothing is asked. */
+  secretEntryExists?: SecretEntryExists;
 }): Promise<KitWorkerDeploy | { planned: PlannedKitUpload }> {
   const { host, options } = input;
   const capability = host.capability;
@@ -608,6 +649,13 @@ async function deployOneKitWorker(input: {
   if (shortfall) return skipped(capability, shortfall);
 
   try {
+    const absent = await absentStoreEntries(config, input.secretEntryExists);
+    if (absent.length > 0) {
+      return skipped(
+        capability,
+        `${capability}'s Worker binds ${absent.join(", ")}, and the Secrets Store has no such ${absent.length === 1 ? "entry" : "entries"} yet. ${provision}`,
+      );
+    }
     // The peers this composition hands a host that composes nothing — the ledger to payments' reconcile host,
     // auth to testers' — written as the entry it deploys from. Undefined for every other host (#645).
     const entry = hostEntrySource(options.projectDir, host.spec, host.composed, host.siblings);

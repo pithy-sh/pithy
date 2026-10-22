@@ -12,7 +12,9 @@ import { deriveEncryptedColumns, type EncryptedColumnStamp } from "@pithy-sh/cor
 import { sealed } from "@pithy-sh/core/src/privacy/sealed";
 import { beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
+import { FIELD_KEY_ROTATION_NAME } from "../data/secretRotations";
 import { secretsTables } from "../data/tables";
+import type { ConfigReader } from "../manager/configReader";
 import { secrets_0001_init } from "../migrations/0001_init";
 import { RotationTracker } from "../store/rotationTracker";
 import { StubConfigStore } from "../test-utils/stubConfigWriter";
@@ -209,12 +211,50 @@ describe("rotate", () => {
     const config = keySet([1, 2, 3, 4]);
     await insert(keySet([1], { "1": config.versions["1"] as string }), "p0");
     const store = new StubConfigStore({ bound: config });
-    const report = await runFieldKeyCommand(deps(config, store), syncStep, { mode: "rotate" }, fast);
+    const report = await runFieldKeyCommand(
+      deps(config, store, { stamp: { ...stamp(), unread: ["apps/billing"] } }),
+      syncStep,
+      { mode: "rotate" },
+      fast,
+    );
     expect(report.outcome).toBe("refused");
     expect(store.writes).toEqual([]);
-    expect(report.verdict.reasons).toEqual(["stale"]);
-    expect(events).toMatchObject([{ action: "secrets/field_key_retirement_blocked", metadata: { reasons: "stale" } }]);
+    expect(report.liveVersions).toEqual([4, 3, 2, 1]);
+    expect(report.verdict.reasons).toEqual(["incomplete-coverage"]);
+    expect(events).toMatchObject([
+      {
+        action: "secrets/field_key_retirement_blocked",
+        severity: "critical",
+        metadata: { reasons: "incomplete-coverage" },
+      },
+    ]);
     expect((await lastLedgerRow())?.error_message).toBe("the field-key rotation was refused: four versions are live");
+  });
+
+  test("at the ceiling it still re-seals and retires on a clean guard, so the refusal clears itself", async () => {
+    const config = keySet([1, 2, 3, 4]);
+    await insert(keySet([1], { "1": config.versions["1"] as string }), "p0");
+    await insert(keySet([2], { "2": config.versions["2"] as string }), "p1");
+    const store = new StubConfigStore({ bound: config });
+    const report = await runFieldKeyCommand(deps(config, store), syncStep, { mode: "rotate" }, fast);
+    // No version added: the one write is the retirement of the two the backfill cleared.
+    expect(store.writes.map((write) => Object.keys(write.config.versions).sort())).toEqual([["3", "4"]]);
+    expect(report.outcome).toBe("backfilled");
+    expect(report.retired).toEqual([2, 1]);
+    expect(report.liveVersions).toEqual([4, 3]);
+    const rows = await app.selectFrom("patients").selectAll().orderBy("id").execute();
+    expect(rows.map((row) => JSON.parse(row.diagnosis as string).keyVersion)).toEqual([4, 4]);
+    expect((await lastLedgerRow())?.status).toBe("success");
+    // And the next rotation adds a version again.
+    events.length = 0;
+    const next = await runFieldKeyCommand(
+      deps(store.boundConfig, store),
+      syncStep,
+      { mode: "rotate" },
+      { ...fast, now: new Date("2026-10-02T03:00:00.000Z") },
+    );
+    expect(next.outcome).toBe("rotated");
+    expect(next.liveVersions).toEqual([5, 4]);
   });
 
   test("a write the binding never shows aborts before anything is re-sealed", async () => {
@@ -277,5 +317,187 @@ describe("backfill, guard and retire", () => {
     expect(events).toMatchObject([
       { action: "secrets/field_key_retired", severity: "critical", metadata: { pastGuard: true } },
     ]);
+  });
+});
+
+/**
+ * **A resumed instance decides from what it journalled, never from the binding as it reads now.** A Workflow body
+ * re-runs from the top on every resume, and the shell re-resolves `PITHY_FIELD_KEYS` each time, so by the resume
+ * after a read-back sleep the binding already shows the staged version.
+ */
+describe("a resumed instance", () => {
+  /** The interruption a resumed Workflow is the recovery from. Not a `PithyError`: this is the platform. */
+  class Interrupted extends Error {}
+
+  /** The journal: a completed step returns what it returned first, and a named step kills the instance once. */
+  function journalledStep(journal: Map<string, unknown>, dies: string[] = []): StepRunner {
+    const armed = new Set(dies);
+    return {
+      async do<T>(name: string, fn: () => Promise<T>): Promise<T> {
+        if (journal.has(name)) return journal.get(name) as T;
+        if (armed.has(name)) {
+          armed.delete(name);
+          throw new Interrupted(`the pass died before ${name}`);
+        }
+        const result = await fn();
+        journal.set(name, result);
+        return result;
+      },
+      sleep: async () => undefined,
+    };
+  }
+
+  test("is not overdue on a normal first rotation because the binding now shows the staged version", async () => {
+    const config = keySet([1, 2]);
+    const store = new StubConfigStore({ bound: config });
+    const journal = new Map<string, unknown>();
+    const dirty = { stamp: { ...stamp(), unread: ["apps/billing"] } };
+    await expect(
+      runFieldKeyCommand(
+        deps(config, store, dirty),
+        journalledStep(journal, ["write-promoted", "mark-failure"]),
+        { mode: "rotate" },
+        fast,
+      ),
+    ).rejects.toBeInstanceOf(Interrupted);
+    // The resume: the shell resolves the binding again, which now holds versions 1, 2 and 3.
+    expect(Object.keys(store.boundConfig.versions).sort()).toEqual(["1", "2", "3"]);
+    const report = await runFieldKeyCommand(
+      deps(store.boundConfig, store, dirty),
+      journalledStep(journal),
+      { mode: "rotate" },
+      fast,
+    );
+    expect(report.liveVersions).toEqual([3, 2, 1]);
+    expect(events).toMatchObject([{ action: "secrets/field_key_retirement_blocked", severity: "warning" }]);
+    expect((await lastLedgerRow())?.status).toBe("success");
+  });
+
+  test(`is not refused at the ceiling by the version it staged itself`, async () => {
+    const config = keySet([1, 2, 3]);
+    const store = new StubConfigStore({ bound: config });
+    const journal = new Map<string, unknown>();
+    await expect(
+      runFieldKeyCommand(
+        deps(config, store),
+        journalledStep(journal, ["write-promoted", "mark-failure"]),
+        { mode: "rotate" },
+        fast,
+      ),
+    ).rejects.toBeInstanceOf(Interrupted);
+    expect(Object.keys(store.boundConfig.versions)).toHaveLength(MAX_LIVE_FIELD_KEY_VERSIONS);
+    const report = await runFieldKeyCommand(
+      deps(store.boundConfig, store),
+      journalledStep(journal),
+      { mode: "rotate" },
+      fast,
+    );
+    expect(report.outcome).toBe("rotated");
+    expect(report.liveVersions).toEqual([4, 3]);
+    expect((await lastLedgerRow())?.status).toBe("success");
+  });
+
+  test("a retire resumed after its write finishes rather than refusing the version it already retired", async () => {
+    const config = keySet([1, 2, 3]);
+    const store = new StubConfigStore({ bound: config });
+    const journal = new Map<string, unknown>();
+    const command = { mode: "retire", version: 1, pastGuard: true } as const;
+    await expect(
+      runFieldKeyCommand(
+        deps(config, store),
+        journalledStep(journal, ["retire-close", "retire-failure"]),
+        command,
+        fast,
+      ),
+    ).rejects.toBeInstanceOf(Interrupted);
+    const report = await runFieldKeyCommand(deps(store.boundConfig, store), journalledStep(journal), command, fast);
+    expect(report.retired).toEqual([1]);
+    expect(store.writes).toHaveLength(1);
+    expect(events.filter((event) => event.action === "secrets/field_key_retired")).toHaveLength(1);
+    expect((await lastLedgerRow())?.status).toBe("success");
+  });
+});
+
+/**
+ * **Every write of the key set holds the ledger's single-flight lock, and writes over the set it read.** The entry
+ * takes a full-value replace, so a retire that read `{1,2,3}` and wrote `{2,3}` after a rotation promoted 4 would
+ * delete version 4 under every row sealed with it — the lost update `#647` closed for the master key.
+ */
+describe("one writer at a time", () => {
+  const tracker = () => RotationTracker.fromD1(env.SECRETS);
+
+  test("a retire while a rotation holds the ledger is refused and writes nothing", async () => {
+    const config = keySet([1, 2, 3]);
+    const store = new StubConfigStore({ bound: config });
+    await tracker().claimRotation(FIELD_KEY_ROTATION_NAME, "cron", "field-keys-rotate");
+    await expect(
+      runFieldKeyCommand(deps(config, store), syncStep, { mode: "retire", version: 1, pastGuard: true }, fast),
+    ).rejects.toThrow(/already running/);
+    expect(store.writes).toEqual([]);
+  });
+
+  test("a backfill while a rotation holds the ledger re-seals and retires nothing", async () => {
+    const config = keySet([1, 2, 3]);
+    const store = new StubConfigStore({ bound: config });
+    await tracker().claimRotation(FIELD_KEY_ROTATION_NAME, "cron", "field-keys-rotate");
+    const report = await runFieldKeyCommand(deps(config, store), syncStep, { mode: "backfill" }, fast);
+    expect(report.retired).toEqual([]);
+    expect(store.writes).toEqual([]);
+  });
+
+  test("a rotation while a retire holds the ledger is refused", async () => {
+    const config = keySet([1, 2, 3]);
+    const store = new StubConfigStore({ bound: config });
+    await tracker().claimRotation(FIELD_KEY_ROTATION_NAME, "manual", "field-keys-retire");
+    await expect(runFieldKeyCommand(deps(config, store), syncStep, { mode: "rotate" }, fast)).rejects.toThrow(
+      /already running/,
+    );
+    expect(store.writes).toEqual([]);
+  });
+
+  test("a retire whose key set changed before its write refuses, writes nothing and closes its row", async () => {
+    const config = keySet([1, 2, 3]);
+    const store = new StubConfigStore({ bound: config });
+    // The binding moves between the read the retire decided from and its write: a rotation promoted version 4.
+    const moved: EncryptionConfig = {
+      ...config,
+      currentVersion: "4",
+      versions: { ...config.versions, "4": keyB64() },
+    };
+    let reads = 0;
+    const reader: ConfigReader = {
+      read: async () => {
+        reads += 1;
+        return reads === 1 ? config : moved;
+      },
+    };
+    await expect(
+      runFieldKeyCommand(
+        deps(config, store, { reader }),
+        syncStep,
+        { mode: "retire", version: 1, pastGuard: true },
+        fast,
+      ),
+    ).rejects.toThrow(/changed/);
+    expect(store.writes).toEqual([]);
+    expect((await lastLedgerRow())?.status).toBe("failed");
+  });
+
+  test("a backfill whose key set changed before its retirement refuses and writes nothing", async () => {
+    const config = keySet([1, 2, 3]);
+    const store = new StubConfigStore({ bound: config });
+    const moved: EncryptionConfig = { ...config, versions: { ...config.versions, "4": keyB64() } };
+    let reads = 0;
+    const reader: ConfigReader = {
+      read: async () => {
+        reads += 1;
+        return reads === 1 ? config : moved;
+      },
+    };
+    await expect(
+      runFieldKeyCommand(deps(config, store, { reader }), syncStep, { mode: "backfill" }, fast),
+    ).rejects.toThrow(/changed/);
+    expect(store.writes).toEqual([]);
+    expect((await lastLedgerRow())?.status).toBe("failed");
   });
 });

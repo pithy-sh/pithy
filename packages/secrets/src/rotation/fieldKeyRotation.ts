@@ -39,8 +39,9 @@ import type { RotationFailureCode } from "./rotationLedger";
  * The normal state is two live versions, current and previous: every write seals under current, so a row moves off
  * an old key the next time it is written. A version still live when the next rotation is due is a **failure, not a
  * backlog**: an audit event names what blocked it, and the pass closes `field-key-overdue`, which `pithy doctor`
- * reports as an error. A rotation is refused outright while {@link MAX_LIVE_FIELD_KEY_VERSIONS} are live, naming the
- * blocker, rather than drift toward the Secrets Store's 64 KiB ceiling.
+ * reports as an error. No version is added while {@link MAX_LIVE_FIELD_KEY_VERSIONS} are live, rather than drift
+ * toward the Secrets Store's 64 KiB ceiling: that pass still re-seals and retires on a clean guard, and otherwise is
+ * refused, naming the blocker.
  *
  * `SECRETS_ENCRYPTION_KEYS`, and the way secrets' own rows rotate, are untouched: this is a separate key in the same
  * format, rotated by the same cron, through its own Workflow.
@@ -110,7 +111,10 @@ export type FieldKeyReport = z.output<typeof FieldKeyReport>;
 
 /** Everything a field-key pass needs, injected so the core is testable without Cloudflare wiring. */
 export interface FieldKeyRotationDeps {
-  /** The current field key, resolved from the manager's `PITHY_FIELD_KEYS` binding. */
+  /**
+   * The field key the instance was started over, resolved from the manager's `PITHY_FIELD_KEYS` binding. Re-resolved
+   * on every resume, so nothing decides from it: a pass reads the key set through {@link reader} in a step.
+   */
   config: EncryptionConfig;
   /** The encrypted columns the manager was stamped with. */
   stamp: EncryptedColumnStamp;
@@ -151,6 +155,73 @@ function withoutVersions(config: EncryptionConfig, retire: readonly number[]): E
     versions: Object.fromEntries(Object.entries(config.versions).filter(([version]) => !drop.has(version))),
     lastRotatedAt: config.lastRotatedAt,
   };
+}
+
+/** Whether two key sets name the same pointer and hold the same versions under the same keys. Compared, never echoed. */
+function sameKeySet(left: EncryptionConfig, right: EncryptionConfig): boolean {
+  if (left.currentVersion !== right.currentVersion) return false;
+  const leftVersions = Object.keys(left.versions);
+  if (leftVersions.length !== Object.keys(right.versions).length) return false;
+  return leftVersions.every((version) => left.versions[version] === right.versions[version]);
+}
+
+/**
+ * Write `next` over the key set a decision was made from, and only over that one. The entry takes a full-value
+ * replace with no conditional write, so this re-reads it through the binding inside the write's own step and
+ * refuses when it moved: a retirement computed from `{1,2,3}` and written after a rotation promoted 4 would delete
+ * version 4 under every row sealed with it.
+ */
+async function writeOver(
+  deps: FieldKeyRotationDeps,
+  read: EncryptionConfig,
+  next: EncryptionConfig,
+  pass: RotationPass,
+): Promise<void> {
+  if (!sameKeySet(await deps.reader.read(), read)) {
+    throw new ConflictError({
+      message: "The field key changed after this pass read it, so nothing was written.",
+      action: "Nothing to undo. Run it again: the next pass reads the key set as it is now.",
+      detail: `field-key rotation: the ${FIELD_KEYS_BINDING} key set changed between this pass's read and its write`,
+    });
+  }
+  await deps.writer.write(next, pass);
+}
+
+/**
+ * Open this pass's ledger row only where none is open: the row is the single-flight lock (`#647`), held by every
+ * pass that writes the key set — a rotation, a backfill's retirement, and a retirement past the guard. `null` is a
+ * pass already holding it.
+ */
+function claimPass(
+  deps: FieldKeyRotationDeps,
+  trigger: "cron" | "manual",
+  rotatedBy: string,
+  keySetSize: number,
+  reclaimAs: string | undefined,
+): Promise<number | null> {
+  return deps.tracker.claimRotation(FIELD_KEY_ROTATION_NAME, trigger, rotatedBy, { keySetSize }, reclaimAs);
+}
+
+/** The refusal a pass raises when another holds the ledger. */
+function alreadyRunning(): ConflictError {
+  return new ConflictError({
+    message: "A field-key rotation is already running for this environment.",
+    action: "Nothing to run. Wait for the running pass to finish; the next scheduled one starts after it.",
+    detail: "field-key rotation: the ledger already holds an open pass",
+  });
+}
+
+/** The audit event for a version retired on a clean guard. */
+async function emitRetired(deps: FieldKeyRotationDeps, due: readonly number[]): Promise<void> {
+  await deps.emit({
+    action: SecretsAuditActions.fieldKeyRetired,
+    outcome: "success",
+    severity: "warning",
+    actorType: "system",
+    resourceType: "secret",
+    resourceId: FIELD_KEYS_BINDING,
+    metadata: { versions: due.join(","), pastGuard: false },
+  });
 }
 
 /** The guard over every stamped column, with each column's count. Never throws: an unreadable count is coverage. */
@@ -255,9 +326,15 @@ async function emitBlocked(
 /**
  * Run one field-key command in durable steps. See the module note for the order and why it is the order.
  *
+ * **Every decision reads the `key-set` step, never `deps.config`.** A Workflow body re-runs from the top on every
+ * resume and the shell resolves the binding again each time, so after a read-back sleep `deps.config` already holds
+ * the version this pass staged. The step journals the set the pass first read, and the start versions, the overdue
+ * call, the ceiling and every retirement are computed from it. Every audit event is a step, so a resume does not
+ * send it twice.
+ *
  * `guard` writes nothing. `retire` retires one version an operator typed back, past whatever the guard says, and
- * refuses the current one. `backfill` re-seals and retires on a clean guard, and opens a ledger row only when it
- * retires. `rotate` is the whole sequence, single-flight on the ledger.
+ * refuses the current one. `backfill` re-seals and retires on a clean guard. `rotate` is the whole sequence. Every
+ * write of the key set is single-flight on the ledger, and the retirements write only over the set they read.
  */
 export async function runFieldKeyCommand(
   deps: FieldKeyRotationDeps,
@@ -289,100 +366,167 @@ export async function runFieldKeyCommand(
     };
   };
 
-  if (command.mode === "guard") return report("guard", deps.config, []);
+  if (command.mode === "guard") {
+    const read = await step.do("key-set", () => deps.reader.read());
+    return report("guard", read, []);
+  }
 
   if (command.mode === "retire") {
-    if (String(command.version) === deps.config.currentVersion) {
+    const read = await step.do("key-set", () => deps.reader.read());
+    if (String(command.version) === read.currentVersion) {
       throw new ValidationError({
         message: `Version ${command.version} is the field key's current version, which seals every write.`,
         action: "Retire an older version. The current one is retired only after the next rotation replaces it.",
       });
     }
-    if (deps.config.versions[String(command.version)] === undefined) {
+    if (read.versions[String(command.version)] === undefined) {
       throw new ValidationError({
         message: `Version ${command.version} is not a live field-key version.`,
-        action: `Name one of ${liveVersions(deps.config).join(", ")}.`,
+        action: `Name one of ${liveVersions(read).join(", ")}.`,
       });
     }
-    const before = await step.do("retire-guard", () => readGuard(deps, liveVersions(deps.config)));
-    const rotationId = await step.do("retire-start", () =>
-      deps.tracker.startRotation(FIELD_KEY_ROTATION_NAME, "manual", rotatedBy),
-    );
-    const retired = withoutVersions(deps.config, [command.version]);
-    await step.do("retire-write", () => deps.writer.write(retired, { rotationId, at: now }));
-    await deps.emit({
-      action: SecretsAuditActions.fieldKeyRetired,
-      outcome: "success",
-      severity: "critical",
-      actorType: "system",
-      resourceType: "secret",
-      resourceId: FIELD_KEYS_BINDING,
-      metadata: {
-        version: command.version,
-        pastGuard: true,
-        stale: before.columns.reduce((sum, column) => sum + (column.stale ?? 0), 0),
-        reasons: before.verdict.reasons.join(","),
-      },
+    const before = await step.do("retire-guard", () => readGuard(deps, liveVersions(read)));
+    const rotationId = await step.do("retire-start", async () => {
+      const claimed = await claimPass(deps, "manual", rotatedBy, Object.keys(read.versions).length, options.rotatedBy);
+      if (claimed === null) throw alreadyRunning();
+      return claimed;
     });
-    await step.do("retire-close", () => deps.tracker.markSuccess(rotationId));
+    const retired = withoutVersions(read, [command.version]);
+    try {
+      await step.do("retire-write", () => writeOver(deps, read, retired, { rotationId, at: now }));
+      await step.do("retire-audit", () =>
+        deps.emit({
+          action: SecretsAuditActions.fieldKeyRetired,
+          outcome: "success",
+          severity: "critical",
+          actorType: "system",
+          resourceType: "secret",
+          resourceId: FIELD_KEYS_BINDING,
+          metadata: {
+            version: command.version,
+            pastGuard: true,
+            stale: before.columns.reduce((sum, column) => sum + (column.stale ?? 0), 0),
+            reasons: before.verdict.reasons.join(","),
+          },
+        }),
+      );
+      await step.do("retire-close", () => deps.tracker.markSuccess(rotationId));
+    } catch (cause) {
+      await step.do("retire-failure", () => deps.tracker.markFailure(rotationId, "field-key-incomplete"));
+      throw cause;
+    }
     return report("retired", retired, [command.version]);
   }
 
   if (command.mode === "backfill") {
-    await backfill(deps, step, deps.config, tuning);
-    const versions = liveVersions(deps.config);
+    const read = await step.do("key-set", () => deps.reader.read());
+    await backfill(deps, step, read, tuning);
+    const versions = liveVersions(read);
     const due = versionsDue(versions);
     const guard = await step.do("backfill-guard", () => readGuard(deps, versions));
-    if (due.length === 0 || guard.verdict.reasons.length > 0) return report("backfilled", deps.config, []);
+    if (due.length === 0 || guard.verdict.reasons.length > 0) return report("backfilled", read, []);
+    // A pass already holding the ledger is a rotation or a retirement, and it retires what is due itself.
     const rotationId = await step.do("backfill-start", () =>
-      deps.tracker.startRotation(FIELD_KEY_ROTATION_NAME, "cron", rotatedBy),
+      claimPass(deps, "cron", rotatedBy, versions.length, options.rotatedBy),
     );
-    const retired = withoutVersions(deps.config, due);
-    await step.do("backfill-retire", () => deps.writer.write(retired, { rotationId, at: now }));
-    await step.do("backfill-close", () => deps.tracker.markSuccess(rotationId));
-    await deps.emit({
-      action: SecretsAuditActions.fieldKeyRetired,
-      outcome: "success",
-      severity: "warning",
-      actorType: "system",
-      resourceType: "secret",
-      resourceId: FIELD_KEYS_BINDING,
-      metadata: { versions: due.join(","), pastGuard: false },
-    });
+    if (rotationId === null) return report("backfilled", read, []);
+    const retired = withoutVersions(read, due);
+    try {
+      await step.do("backfill-retire", () => writeOver(deps, read, retired, { rotationId, at: now }));
+      await step.do("backfill-audit", () => emitRetired(deps, due));
+      await step.do("backfill-close", () => deps.tracker.markSuccess(rotationId));
+    } catch (cause) {
+      await step.do("backfill-failure", () => deps.tracker.markFailure(rotationId, "field-key-incomplete"));
+      throw cause;
+    }
     return report("backfilled", retired, due);
   }
 
   // rotate
   const rotationId = await step.do("start", async () => {
-    const claimed = await deps.tracker.claimRotation(
-      FIELD_KEY_ROTATION_NAME,
+    const claimed = await claimPass(
+      deps,
       "cron",
       rotatedBy,
-      { keySetSize: Object.keys(deps.config.versions).length },
+      Object.keys(deps.config.versions).length,
       options.rotatedBy,
     );
-    if (claimed === null) {
-      throw new ConflictError({
-        message: "A field-key rotation is already running for this environment.",
-        action: "Nothing to run. Wait for the running pass to finish; the next scheduled one starts after it.",
-        detail: "field-key rotation: the ledger already holds an open pass",
-      });
-    }
+    if (claimed === null) throw alreadyRunning();
     return claimed;
   });
   const pass: RotationPass = { rotationId, at: now };
   let failure: RotationFailureCode = "field-key-incomplete";
   try {
-    const startVersions = liveVersions(deps.config);
+    // Read after the claim, so no other writer can move it between this read and this pass's writes.
+    const read = await step.do("key-set", () => deps.reader.read());
+    const startVersions = liveVersions(read);
     // A version past the window at the start of a rotation is one the previous period could not retire.
     const overdue = versionsDue(startVersions).length > 0;
-    if (startVersions.length >= MAX_LIVE_FIELD_KEY_VERSIONS) {
-      const guard = await step.do("ceiling-guard", () => readGuard(deps, startVersions));
-      await emitBlocked(deps, guard.verdict, versionsDue(startVersions), true);
+    // At the ceiling no version is added, but the backfill and a clean retirement still run: that is the only way
+    // the rows holding the old versions are re-sealed, so a refusal that skipped them would refuse forever.
+    const atCeiling = startVersions.length >= MAX_LIVE_FIELD_KEY_VERSIONS;
+    let current = read;
+
+    if (!atCeiling) {
+      // 1. Add a version: staged, confirmed, promoted, confirmed.
+      const staged = await step.do("stage-next-key", async () => {
+        const next = String(highestVersion(read) + 1);
+        return {
+          next,
+          config: {
+            currentVersion: read.currentVersion,
+            versions: { ...read.versions, [next]: await generateKeyB64() },
+            lastRotatedAt: read.lastRotatedAt,
+          } satisfies EncryptionConfig,
+        };
+      });
+      await step.do("write-staged", () => deps.writer.write(staged.config, pass));
+      failure = "field-key-unconfirmed";
+      await confirmed(
+        step,
+        deps.reader,
+        "confirm-staged",
+        (shown) => shown.versions[staged.next] !== undefined,
+        attempts,
+        delayMs,
+      );
+      current = { ...staged.config, currentVersion: staged.next, lastRotatedAt: now.toISOString() };
+      const promoted = current;
+      await step.do("write-promoted", () => deps.writer.write(promoted, pass));
+      await confirmed(
+        step,
+        deps.reader,
+        "confirm-promoted",
+        (shown) => shown.currentVersion === staged.next,
+        attempts,
+        delayMs,
+      );
+      failure = "field-key-incomplete";
+    }
+
+    // 2. Re-seal only what is leaving.
+    await backfill(deps, step, current, tuning);
+
+    // 3. Retire it on a clean guard, and never otherwise.
+    const versions = liveVersions(current);
+    const due = versionsDue(versions);
+    const guard = await step.do("guard", () => readGuard(deps, versions));
+    let retired: number[] = [];
+    if (due.length > 0 && guard.verdict.reasons.length === 0) {
+      const remaining = withoutVersions(current, due);
+      await step.do("retire", () => deps.writer.write(remaining, pass));
+      await step.do("retire-audit", () => emitRetired(deps, due));
+      current = remaining;
+      retired = due;
+    } else if (due.length > 0) {
+      await step.do("blocked-audit", () => emitBlocked(deps, guard.verdict, due, overdue));
+    }
+
+    if (atCeiling && retired.length === 0) {
       await step.do("mark-ceiling", () => deps.tracker.markFailure(rotationId, "field-key-ceiling"));
       return {
         outcome: "refused",
-        liveVersions: startVersions,
+        liveVersions: versions,
         retired: [],
         verdict: guard.verdict,
         columns: guard.columns,
@@ -390,75 +534,12 @@ export async function runFieldKeyCommand(
         unread: [...deps.stamp.unread],
       };
     }
-
-    // 1. Add a version: staged, confirmed, promoted, confirmed.
-    const staged = await step.do("stage-next-key", async () => {
-      const next = String(highestVersion(deps.config) + 1);
-      return {
-        next,
-        config: {
-          currentVersion: deps.config.currentVersion,
-          versions: { ...deps.config.versions, [next]: await generateKeyB64() },
-          lastRotatedAt: deps.config.lastRotatedAt,
-        } satisfies EncryptionConfig,
-      };
-    });
-    await step.do("write-staged", () => deps.writer.write(staged.config, pass));
-    failure = "field-key-unconfirmed";
-    await confirmed(
-      step,
-      deps.reader,
-      "confirm-staged",
-      (read) => read.versions[staged.next] !== undefined,
-      attempts,
-      delayMs,
-    );
-    const promoted: EncryptionConfig = {
-      ...staged.config,
-      currentVersion: staged.next,
-      lastRotatedAt: now.toISOString(),
-    };
-    await step.do("write-promoted", () => deps.writer.write(promoted, pass));
-    await confirmed(
-      step,
-      deps.reader,
-      "confirm-promoted",
-      (read) => read.currentVersion === staged.next,
-      attempts,
-      delayMs,
-    );
-    failure = "field-key-incomplete";
-
-    // 2. Re-seal only what is leaving.
-    await backfill(deps, step, promoted, tuning);
-
-    // 3. Retire it on a clean guard, and never otherwise.
-    const versions = liveVersions(promoted);
-    const due = versionsDue(versions);
-    const guard = await step.do("guard", () => readGuard(deps, versions));
-    let current = promoted;
-    let retired: number[] = [];
-    if (due.length > 0 && guard.verdict.reasons.length === 0) {
-      current = withoutVersions(promoted, due);
-      retired = due;
-      await step.do("retire", () => deps.writer.write(current, pass));
-      await deps.emit({
-        action: SecretsAuditActions.fieldKeyRetired,
-        outcome: "success",
-        severity: "warning",
-        actorType: "system",
-        resourceType: "secret",
-        resourceId: FIELD_KEYS_BINDING,
-        metadata: { versions: due.join(","), pastGuard: false },
-      });
-    } else if (due.length > 0) {
-      await emitBlocked(deps, guard.verdict, due, overdue);
-    }
     // A version that was already overdue and is still live is a failure, not a backlog.
     const stillOverdue = overdue && versionsDue(liveVersions(current)).length > 0;
     if (stillOverdue) await step.do("mark-overdue", () => deps.tracker.markFailure(rotationId, "field-key-overdue"));
     else await step.do("mark-success", () => deps.tracker.markSuccess(rotationId));
-    return report("rotated", current, retired);
+    // At the ceiling the pass added no version: it cleared the backlog, and the next night's rotation adds one.
+    return report(atCeiling ? "backfilled" : "rotated", current, retired);
   } catch (cause) {
     await step.do("mark-failure", () => deps.tracker.markFailure(rotationId, failure));
     throw cause;

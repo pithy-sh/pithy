@@ -7,8 +7,12 @@ import { join } from "node:path";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provisionScope";
+import { phi } from "@pithy-sh/core/src/privacy/classes";
+import { encrypted, encryptedTable } from "@pithy-sh/core/src/privacy/encrypted";
+import { secrets } from "@pithy-sh/secrets/src/capability";
 import { parse, stringify } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { z } from "zod";
 import { appendBinding, WRANGLER_KEYS, type WranglerStanza } from "../project/bindingEntries";
 import { provisionEnvironment } from "./environment";
 import { featureConfigPath } from "./featureConfig";
@@ -121,6 +125,46 @@ describe("provisionEnvironment, for a declared environment", () => {
       ["r2", "replay-staging-assets", true],
     ]);
     expect([...stores.d1.keys()]).toEqual(["replay-staging-db"]);
+  });
+
+  /**
+   * **A field key nothing rotates is refused before anything is created (#390).** The rotation lives in the secrets
+   * manager, so a project with an encrypted field and no `secrets` anywhere would hold a key minted once and never
+   * rotated, with nothing to report it.
+   */
+  test("refuses a project that holds an encrypted field and composes secrets nowhere", async () => {
+    const Patient = encryptedTable(
+      z.object({ id: z.string().describe("id"), diagnosis: encrypted(phi(z.string().describe("The condition."))) }),
+      { name: "patient", key: "id" },
+    );
+    const clinic = defineCapability({
+      name: "clinic",
+      requiredBindings: [{ type: "d1", name: "DB" }] satisfies BindingSpecInput[],
+      databases: { app: { binding: "DB", tables: { patients: Patient } } },
+    });
+    const { stores, provisioners } = fakeProvisioners();
+    const run = (capabilities: Parameters<typeof provisionEnvironment>[0]["capabilities"]) =>
+      provisionEnvironment({
+        projectDir: dir,
+        scope,
+        capabilities,
+        provisioners,
+        resolveWorkers: async () => [{ name: "replay-board", dir: workerDir, capabilities }],
+        ...noBackend,
+      });
+
+    await expect(run([clinic])).rejects.toMatchObject({
+      payload: {
+        message:
+          "replay-board holds an encrypted field, and nothing in this project composes secrets, so the field key would never rotate.",
+        action: expect.stringContaining("The secrets manager rotates the field key every 30 days."),
+      },
+    });
+    expect([...stores.d1.keys()]).toEqual([]);
+
+    // Composing secrets is the whole answer.
+    const report = await run([clinic, secrets({ registry: {} })]);
+    expect(report.resources.map((resource) => resource.binding)).toContain("DB");
   });
 
   test("creates nothing for a binding this Worker declines", async () => {

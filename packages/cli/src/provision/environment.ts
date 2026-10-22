@@ -28,6 +28,7 @@ import { seedProject } from "../seed/run";
 import type { MintedThisRun } from "./mintedThisRun";
 import { AUDIT_RESOURCE_TYPE, ProvisionAuditActions, type ResourceProvisioners } from "./resources";
 import {
+  assertFieldKeyRotates,
   bindingSecrets,
   type MissingSecretBinding,
   type SecretStoreBinding,
@@ -603,6 +604,8 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   // **No Worker may declare a rate-limit namespace in the feature range, for any environment (#643)** — checked
   // before a resource is created. A feature of any project in the account can be allocated one.
   assertNoDeclaredFeatureIds(await Promise.all(workers.map(readWorkerRatelimits)));
+  // Before a resource is created, too: a field key nothing rotates is refused, never minted.
+  if (scope.source) assertFieldKeyRotates(options.projectDir, workers, options.capabilities);
   const { bindings, declines, wantedPerWorker, manifestFaults } = await provisionTargets({
     projectDir: options.projectDir,
     capabilities: options.capabilities,
