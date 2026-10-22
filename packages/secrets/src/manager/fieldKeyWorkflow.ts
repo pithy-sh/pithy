@@ -117,7 +117,7 @@ export async function scheduleFieldKeyRotation(
     await start(fieldKeyInstanceId("rotate", config.currentVersion, now), { mode: "rotate" });
     return;
   }
-  if (versionsDue(liveVersions(config)).length > 0) {
+  if (versionsDue(liveVersions(config), Number(config.currentVersion)).length > 0) {
     await start(fieldKeyInstanceId("backfill", config.currentVersion, now), { mode: "backfill" });
   }
 }

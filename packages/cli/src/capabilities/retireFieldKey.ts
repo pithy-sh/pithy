@@ -22,8 +22,9 @@ import { formatDone, withErrorReporting } from "../terminal/output";
  * command exists only for the other case, and it is built so that nothing but a person who has read the cost can
  * run it:
  *
- * - **It shows what the guard could not see first** — the stale count per column, every unrotatable field, and every
- *   schema source the guard could not read — read from the manager, which holds the stamp of encrypted columns.
+ * - **It shows what the guard could not see first** — the stale count per column under `<v>`, every unrotatable
+ *   field, and every schema source the guard could not read — read from the manager, which holds the stamp of
+ *   encrypted columns.
  * - **Then it asks for `<env>/<v>` to be typed back.** There is no `--yes`. Anything else typed retires nothing.
  * - **Off a terminal or under `--json` it refuses with `core/person_required`**, exit 5, before anything is read,
  *   so neither an agent nor a CI script can run it.
@@ -31,8 +32,8 @@ import { formatDone, withErrorReporting } from "../terminal/output";
 
 /** What the command needs from the world: the manager's two answers, a prompt, and a place to write. */
 export interface RetireVersionDeps {
-  /** Read the guard and the stale counts, writing nothing. */
-  guard(): Promise<FieldKeyReport>;
+  /** Read the guard and the stale counts under `version`, writing nothing. */
+  guard(version: number): Promise<FieldKeyReport>;
   /** Retire the version past the guard. */
   retire(version: number): Promise<FieldKeyReport>;
   /** Ask a question at the terminal and return what was typed, or `null` when the prompt was canceled. */
@@ -68,12 +69,12 @@ function personRequired(env: string, version: string): PersonRequiredError {
 export function retireGuardLines(report: FieldKeyReport, env: string, version: number): string[] {
   const lines = [`${env}: field-key versions live: ${report.liveVersions.join(", ")}.`];
   const stale = report.columns.filter((column) => column.stale !== 0);
-  if (stale.length === 0) lines.push("No stamped column still holds a row under a version due to leave.");
+  if (stale.length === 0) lines.push(`No stamped column still holds a row under version ${version}.`);
   for (const column of stale) {
     lines.push(
       column.stale === null
         ? `  ${column.table}.${column.column} (${column.path}): could not be counted.`
-        : `  ${column.table}.${column.column} (${column.path}): ${column.stale} ${column.stale === 1 ? "row" : "rows"} still under a version due to leave.`,
+        : `  ${column.table}.${column.column} (${column.path}): ${column.stale} ${column.stale === 1 ? "row" : "rows"} still under version ${version}.`,
     );
   }
   for (const field of report.unrotatable) lines.push(`  Unrotatable, never re-sealed: ${field}.`);
@@ -105,7 +106,15 @@ export async function runRetireVersion(
     });
   }
   const version = Number(options.version);
-  const report = await deps.guard();
+  const report = await deps.guard(version);
+  // The counts are what the operator decides from, so they must be the named version's and nobody else's.
+  if (report.counted.length !== 1 || report.counted[0] !== version) {
+    throw new UpstreamError({
+      message: `The ${options.env} secrets manager did not count the rows under version ${version}.`,
+      action: `Redeploy the manager with ${commandName("secrets provision")}, then run this again.`,
+      detail: `retire-version: the guard counted [${report.counted.join(", ")}], not [${version}]`,
+    });
+  }
   if (!report.liveVersions.includes(version)) {
     throw new ValidationError({
       message: `Version ${version} is not a live field-key version in ${options.env}.`,
@@ -178,7 +187,7 @@ export const retireVersion = withContract(
         const retired = await runRetireVersion(
           { ...options, env },
           {
-            guard: () => dispatch({ mode: "guard" }),
+            guard: (version) => dispatch({ mode: "guard", version }),
             retire: (version) => dispatch({ mode: "retire", version, pastGuard: true }),
             ask: askRetirePhrase,
             write: (line) => void process.stdout.write(`${line}\n`),

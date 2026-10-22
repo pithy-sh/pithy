@@ -39,6 +39,8 @@ export type RetirementVerdict = z.output<typeof RetirementVerdict>;
 export interface RetirementInput {
   /** Every live version, newest first. */
   versions: readonly number[];
+  /** The version every write seals under. Absent where the key set could not be read: then nothing is due. */
+  current?: number | undefined;
   /** Rows still under any version due to leave, summed over every stamped envelope and index column. */
   stale: number;
   /** Whether every schema source the stamp derives from was read. */
@@ -48,11 +50,32 @@ export interface RetirementInput {
 }
 
 /**
- * The versions due to leave the window: every live version older than the newest two. Current and previous are the
- * normal state, and the previous version is still sealing rows lazily, so only an older one is due.
+ * The version `current` replaced: the highest live version below it. A version above current is staged and never
+ * promoted, so it replaced nothing and is never the previous one.
  */
-export function versionsDue(versions: readonly number[]): number[] {
-  return [...versions].sort((left, right) => right - left).slice(2);
+export function previousVersion(versions: readonly number[], current: number): number | undefined {
+  const below = versions.filter((version) => version < current);
+  return below.length === 0 ? undefined : Math.max(...below);
+}
+
+/**
+ * The versions staged over `current` and never promoted, oldest first. A rotation whose confirm failed leaves one in
+ * the entry; the next rotation promotes it rather than minting past it, so the window stays anchored on current.
+ */
+export function stagedVersions(versions: readonly number[], current: number): number[] {
+  return versions.filter((version) => version > current).sort((left, right) => left - right);
+}
+
+/**
+ * The versions due to leave the window: every live version older than the one `current` replaced. Current and
+ * previous are the normal state, and the previous version is still sealing rows lazily, so only an older one is
+ * due. Anchored on the pointer, never on the two highest numbers: a version staged over current and never promoted
+ * would otherwise take the previous slot, and make the version that was current, or current itself, due.
+ */
+export function versionsDue(versions: readonly number[], current: number): number[] {
+  const previous = previousVersion(versions, current);
+  if (previous === undefined) return [];
+  return versions.filter((version) => version < previous).sort((left, right) => right - left);
 }
 
 /**
@@ -67,7 +90,7 @@ export function retirementVerdict(input: RetirementInput): RetirementVerdict {
   if (!input.coverageComplete) reasons.push("incomplete-coverage");
   if (input.stale > 0) reasons.push("stale");
   return {
-    blocked: versionsDue(input.versions).length > 0 && reasons.length > 0,
+    blocked: input.current !== undefined && versionsDue(input.versions, input.current).length > 0 && reasons.length > 0,
     reasons,
     liveVersions: input.versions.length,
   };

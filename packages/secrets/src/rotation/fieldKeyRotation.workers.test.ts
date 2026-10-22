@@ -501,3 +501,127 @@ describe("one writer at a time", () => {
     expect((await lastLedgerRow())?.status).toBe("failed");
   });
 });
+
+/**
+ * **The window is anchored on the current version** (#390 review). A rotation whose confirm failed leaves its staged
+ * version in the entry above current. Counting the two highest numbers would make that key, which nothing sealed
+ * under, the previous version, and the version that was current due.
+ */
+describe("a staged version left by a failed confirm", () => {
+  function staged(versions: number[], current: number): EncryptionConfig {
+    return { ...keySet(versions), currentVersion: String(current) };
+  }
+
+  test("is promoted by the next rotation, never minted past, and the version that was current stays live", async () => {
+    const config = staged([1, 2, 3], 2);
+    await insert(keySet([2], { "2": config.versions["2"] as string }), "p2");
+    const store = new StubConfigStore({ bound: config });
+    const report = await runFieldKeyCommand(deps(config, store), syncStep, { mode: "rotate" }, fast);
+    // No staged write: the one already in the entry is promoted, then version 1 is retired on a clean guard.
+    expect(store.writes.map((write) => write.config.currentVersion)).toEqual(["3", "3"]);
+    expect(store.writes[0]?.config.versions["3"]).toBe(config.versions["3"]);
+    expect(report.liveVersions).toEqual([3, 2]);
+    expect(report.retired).toEqual([1]);
+    // The row under version 2, the version that was current, was neither re-sealed nor orphaned.
+    const row = await app.selectFrom("patients").select("diagnosis").executeTakeFirstOrThrow();
+    expect(JSON.parse(row.diagnosis as string).keyVersion).toBe(2);
+  });
+
+  test("two of them at the ceiling are not a refusal: the lower is promoted, and current is never due", async () => {
+    const config = staged([1, 2, 3, 4], 2);
+    const store = new StubConfigStore({ bound: config });
+    const report = await runFieldKeyCommand(deps(config, store), syncStep, { mode: "rotate" }, fast);
+    expect(report.outcome).toBe("rotated");
+    expect(report.retired).toEqual([1]);
+    expect(report.liveVersions).toEqual([4, 3, 2]);
+    expect(store.boundConfig.currentVersion).toBe("3");
+    expect((await lastLedgerRow())?.status).toBe("success");
+  });
+
+  test("a backfill over it has nothing due, and retires nothing", async () => {
+    const config = staged([1, 2, 3], 2);
+    const store = new StubConfigStore({ bound: config });
+    const report = await runFieldKeyCommand(deps(config, store), syncStep, { mode: "backfill" }, fast);
+    expect(report.retired).toEqual([]);
+    expect(report.counted).toEqual([]);
+    expect(store.writes).toEqual([]);
+  });
+});
+
+/**
+ * **The counts an operator retires over are the named version's** (#390 review). At the normal state nothing is
+ * due, so counts over the versions due to leave would read clean while every row sits under the version named.
+ */
+describe("the guard over a named version", () => {
+  test("counts the rows under that version alone, at the normal state of two live versions", async () => {
+    const config = keySet([2, 3]);
+    await insert(keySet([2], { "2": config.versions["2"] as string }), "p2");
+    const store = new StubConfigStore({ bound: config });
+    const report = await runFieldKeyCommand(deps(config, store), syncStep, { mode: "guard", version: 2 }, fast);
+    expect(report.counted).toEqual([2]);
+    expect(report.columns.map((column) => column.stale)).toEqual([1, 1]);
+    expect(store.writes).toEqual([]);
+  });
+
+  test("leaves out the rows under an older version", async () => {
+    const config = keySet([1, 2, 3, 4]);
+    await insert(keySet([1], { "1": config.versions["1"] as string }), "p1");
+    const store = new StubConfigStore({ bound: config });
+    const report = await runFieldKeyCommand(deps(config, store), syncStep, { mode: "guard", version: 2 }, fast);
+    expect(report.columns.map((column) => column.stale)).toEqual([0, 0]);
+  });
+
+  test("a retirement past it audits the stale count under the version it retired", async () => {
+    const config = keySet([2, 3]);
+    await insert(keySet([2], { "2": config.versions["2"] as string }), "p2");
+    const store = new StubConfigStore({ bound: config });
+    await runFieldKeyCommand(deps(config, store), syncStep, { mode: "retire", version: 2, pastGuard: true }, fast);
+    expect(events).toMatchObject([{ action: "secrets/field_key_retired", metadata: { version: 2, stale: 2 } }]);
+  });
+});
+
+/**
+ * **No step journals a key** (#390 review). A Workflow keeps every step's output for the instance's retention, and
+ * that journal outlives a key's retirement, so a step that returned the key set would open every field to anyone
+ * with D1 Read and Workflows visibility, and no Secrets Store Read.
+ */
+describe("the journal", () => {
+  function recordingStep(outputs: unknown[]): StepRunner {
+    return {
+      async do<T>(_name: string, fn: () => Promise<T>): Promise<T> {
+        const result = await fn();
+        outputs.push(result);
+        return result;
+      },
+      sleep: async () => undefined,
+    };
+  }
+
+  /** Every key the pass ever held: the set it started over and every set it wrote. */
+  function everyKey(config: EncryptionConfig, store: StubConfigStore): string[] {
+    return [config, ...store.writes.map((write) => write.config)].flatMap((set) => Object.values(set.versions));
+  }
+
+  test("holds no key in any mode", async () => {
+    const commands = [
+      { mode: "guard" },
+      { mode: "guard", version: 1 },
+      { mode: "backfill" },
+      { mode: "rotate" },
+      { mode: "retire", version: 1, pastGuard: true },
+    ] as const;
+    for (const command of commands) {
+      await env.SECRETS.prepare("delete from pithy_secrets_rotations").run();
+      const config = keySet([1, 2, 3]);
+      await env.APP_DB.prepare("delete from patients").run();
+      await insert(keySet([1], { "1": config.versions["1"] as string }), "p1");
+      const store = new StubConfigStore({ bound: config });
+      const outputs: unknown[] = [];
+      await runFieldKeyCommand(deps(config, store), recordingStep(outputs), command, fast);
+      const journal = JSON.stringify(outputs);
+      const keys = everyKey(config, store);
+      expect(keys.length).toBeGreaterThan(0);
+      for (const key of keys) expect(journal, command.mode).not.toContain(key);
+    }
+  });
+});

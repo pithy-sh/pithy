@@ -12,6 +12,7 @@ const guard: FieldKeyReport = {
   liveVersions: [3, 2, 1],
   retired: [],
   verdict: { blocked: true, reasons: ["stale", "unrotatable", "incomplete-coverage"], liveVersions: 3 },
+  counted: [1],
   columns: [
     { table: "patients", column: "diagnosis", path: "diagnosis", stale: 4 },
     { table: "patients", column: "email", path: "email", stale: 0 },
@@ -21,13 +22,14 @@ const guard: FieldKeyReport = {
   unread: ["apps/billing"],
 };
 
-function harness(answer: string | null) {
+/** The manager's side: it counts the version it was asked about, unless `counted` says it did not. */
+function harness(answer: string | null, report: FieldKeyReport = guard, counted?: number[]) {
   const calls: string[] = [];
   const lines: string[] = [];
   const deps: RetireVersionDeps = {
-    guard: async () => {
-      calls.push("guard");
-      return guard;
+    guard: async (version) => {
+      calls.push(`guard ${version}`);
+      return { ...report, counted: counted ?? [version] };
     },
     retire: async (version) => {
       calls.push(`retire ${version}`);
@@ -54,13 +56,26 @@ describe("pithy secrets retire-version --past-guard", () => {
     const { deps, calls, lines } = harness("prod/1");
     const report = await runRetireVersion(asked, deps);
     expect(report?.retired).toEqual([1]);
-    expect(calls).toEqual(["guard", "ask Type prod/1 to retire it:", "retire 1"]);
-    expect(lines).toContain("  patients.diagnosis (diagnosis): 4 rows still under a version due to leave.");
+    expect(calls).toEqual(["guard 1", "ask Type prod/1 to retire it:", "retire 1"]);
+    expect(lines).toContain("  patients.diagnosis (diagnosis): 4 rows still under version 1.");
     expect(lines).toContain("  visits.notes (notes): could not be counted.");
     expect(lines).toContain("  Unrotatable, never re-sealed: app:cache.tokens:value.token.");
     expect(lines).toContain("  Not read by the guard: apps/billing.");
     expect(lines.join("\n")).not.toContain("patients.email");
     expect(retirePhrase("prod", 1)).toBe("prod/1");
+  });
+
+  test("names the version it counted, so a clean count reads as clean for that version alone", async () => {
+    const clean = { ...guard, columns: guard.columns.map((column) => ({ ...column, stale: 0 })) };
+    const { deps, lines } = harness("prod/1", clean);
+    await runRetireVersion(asked, deps);
+    expect(lines).toContain("No stamped column still holds a row under version 1.");
+  });
+
+  test("refuses a report counted over anything but the version it names, and asks nothing", async () => {
+    const { deps, calls } = harness("prod/1", guard, []);
+    expect(await codeOf(runRetireVersion(asked, deps))).toBe("core/upstream_failed");
+    expect(calls).toEqual(["guard 1"]);
   });
 
   test("anything but the phrase retires nothing: a near miss, another environment's, and a cancel", async () => {
@@ -89,7 +104,7 @@ describe("pithy secrets retire-version --past-guard", () => {
     expect(await codeOf(runRetireVersion({ ...asked, version: "one" }, deps))).toBe("validation/invalid_input");
     expect(calls).toEqual([]);
     expect(await codeOf(runRetireVersion({ ...asked, version: "9" }, deps))).toBe("validation/invalid_input");
-    expect(calls).toEqual(["guard"]);
+    expect(calls).toEqual(["guard 9"]);
   });
 });
 

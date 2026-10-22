@@ -206,14 +206,17 @@ export async function readRetirement(
   const keys = env[FIELD_KEYS_BINDING];
   let coverageComplete = true;
   let versions: number[] = [];
+  let current: number | undefined;
   if (stamp.columns.length > 0 || keys !== undefined) {
     try {
-      versions = liveVersions(await resolveFieldKeys(keys as FieldKeys | undefined));
+      const config = await resolveFieldKeys(keys as FieldKeys | undefined);
+      versions = liveVersions(config);
+      current = Number(config.currentVersion);
     } catch {
       coverageComplete = false;
     }
   }
-  const due = versionsDue(versions);
+  const due = current === undefined ? [] : versionsDue(versions, current);
   let stale = 0;
   for (const column of stamp.columns) {
     const d1 = env[column.binding];
@@ -227,5 +230,5 @@ export async function readRetirement(
       coverageComplete = false;
     }
   }
-  return retirementVerdict({ versions, stale, coverageComplete, unrotatable: stamp.unrotatable.length });
+  return retirementVerdict({ versions, current, stale, coverageComplete, unrotatable: stamp.unrotatable.length });
 }
