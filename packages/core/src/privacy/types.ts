@@ -196,22 +196,29 @@ type KitCodec<S> = S extends typeof SQLiteDate | typeof SQLiteBoolean
 /**
  * Whether a schema is a marked node: every value its output holds, `null` and `undefined` aside, carries a privacy
  * brand, and the brand is its own. A union with one marked option among others is not one; it is read option by
- * option. Nor is a pipe whose output takes every privacy brand it has from what it pipes into, such as
+ * option. Nor is a pipe whose every output value takes every privacy brand it has from what it pipes into, such as
  * `z.email().pipe(pii(z.string()))` or a transform that returns a marked value: the mark is beneath an opaque node, so
- * `redact` masks it whole and the type is `unknown`. A marker on the pipe itself is the pipe's own.
+ * `redact` masks it whole and the type is `unknown`. A marker on the pipe itself is the pipe's own, though one option
+ * of what it pipes into carries the same class: `pii(sqliteJson(z.union([pii(z.boolean()), z.array(z.number())])))`
+ * brands its array with `pii` too, and only the pipe's own marker can have put it there.
  */
 type IsMarkedNode<S> = [Exclude<Out<S>, null | undefined>] extends [never]
   ? false
   : false extends IsMarked<Exclude<Out<S>, null | undefined>>
     ? false
     : DefOf<S> extends { type: "pipe"; out: infer O }
-      ? [Exclude<PrivacyBrands<Out<S>>, PrivacyBrands<Out<O>>>] extends [never]
-        ? false
-        : true
+      ? true extends LacksBrand<Exclude<Out<O>, null | undefined>, PrivacyBrands<Out<S>>>
+        ? true
+        : [Exclude<Out<O>, null | undefined>] extends [never]
+          ? true
+          : false
       : true;
 
 /** The privacy brand keys on `T`'s output. Distributes. */
 type PrivacyBrands<T> = T extends { readonly [z.core.$brand]: infer M } ? Extract<keyof M, `privacy:${string}`> : never;
+
+/** Whether some member of `T` lacks a privacy brand in `B`. Distributes. */
+type LacksBrand<T, B> = T extends unknown ? ([Exclude<B, PrivacyBrands<T>>] extends [never] ? false : true) : never;
 
 /** The shape each kind of schema produces, as `kindsOf` reads it at runtime. */
 interface SchemaKinds {
@@ -524,9 +531,12 @@ type KeyName<K, N> = K extends typeof z.core.$brand
     ? "symbol" extends MaskedKinds<RecordKeys<N>>
       ? string
       : K
-    : [Exclude<MaskedKinds<RecordKeys<N>>, "symbol">] extends [never]
-      ? K
-      : string;
+    : MasksStringKeys<N> extends true
+      ? string
+      : K;
+
+/** Whether a record at the position masks its string keys: its key schema marks any shape but a symbol. */
+type MasksStringKeys<N> = [Exclude<MaskedKinds<RecordKeys<N>>, "symbol">] extends [never] ? false : true;
 
 /**
  * One schema at a position that is walked into, against `N`, every node at the position, with the values of a shape
@@ -594,7 +604,17 @@ type Walked<S, N, D extends Depth, E extends Depth = Deeper<D>> =
             NamedKeys<N>,
             E
           >
-        : { [K in keyof Out<S> as KeyName<K, N>]: At<V, Fields<N, K>, E> }
+        : // A finite key set whose string keys are masked: each comes back a placeholder, so they are keyed by string.
+          // Mapped over the renamed keys themselves, as a remap drops a branded literal key rather than renaming it.
+          MasksStringKeys<N> extends true
+          ? {
+              [K in KeyName<keyof Out<S>, N>]: At<
+                V,
+                Fields<N, K extends symbol ? K : Exclude<keyof Out<S>, symbol>>,
+                E
+              >;
+            }
+          : { [K in keyof Out<S> as KeyName<K, N>]: At<V, Fields<N, K>, E> }
       : DefOf<S> extends { type: "array"; element: infer El }
         ? Beyond<El, N, [], E>
         : DefOf<S> extends {
@@ -675,14 +695,18 @@ type Fields<N, K> = N extends unknown
 
 /**
  * An object's catchall when it lets an extra key through, or `never`. Zod's object type keeps the catchall only in
- * its config, `$catchall<T>`, and TypeScript reads `T` back out of that alias. A loose object's is `unknown`'s.
+ * its config, `$catchall<T>`, and TypeScript reads `T` back out of that alias. A loose object's config is `$loose`,
+ * which names no schema, so its catchall is `z.unknown()`, as Zod parses it: read out of `$loose`, `T` would be a
+ * schema of no kind, which the search beneath it reads as one that may be marked.
  */
 type OpenCatchall<N> = N extends { readonly _zod: { readonly config: infer Config } }
   ? Config extends { readonly out: infer O }
     ? string extends keyof O
-      ? Config extends z.core.$catchall<infer T>
-        ? T
-        : never
+      ? [z.core.$loose] extends [Config]
+        ? z.ZodUnknown
+        : Config extends z.core.$catchall<infer T>
+          ? T
+          : never
       : never
     : never
   : never;

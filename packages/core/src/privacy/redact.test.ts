@@ -503,6 +503,48 @@ describe("the contract's edges", () => {
     });
     expect(classifyPrivacy(Kin)).toEqual([{ path: "email", class: "pii" }]);
   });
+
+  test("types a marked JSON column as a string, though an option inside it carries the same mark", () => {
+    type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+    const same = <A, B>(..._proof: Same<A, B> extends true ? [] : [never]): void => {};
+    const Row = z.object({ col: pii(sqliteJson(z.union([pii(z.boolean()), z.array(z.number())]))) });
+    expect(masked(Row, { col: "[1,2]" })).toEqual({ col: "[pii]" });
+    expect(classifyPrivacy(Row)).toEqual([{ path: "col", class: "pii" }]);
+    same<Redacted<typeof Row>, { col: string }>();
+    const Scalar = z.object({ col: pii(sqliteJson(z.union([pii(z.string()), z.number()]))) });
+    expect(masked(Scalar, { col: "7" })).toEqual({ col: "[pii]" });
+    same<Redacted<typeof Scalar>, { col: string }>();
+    // A pipe whose every output already carries the mark it pipes into is still the opaque node it was.
+    const Piped = z.object({ p: z.string().pipe(secret(z.string())) });
+    same<Redacted<typeof Piped>, { p: unknown }>();
+  });
+
+  test("types a record keyed by a marked enum or literal as one with string keys and its values kept", () => {
+    type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+    const same = <A, B>(..._proof: Same<A, B> extends true ? [] : [never]): void => {};
+    const Tally = z.record(pii(z.enum(["US", "CA"])), z.number());
+    expect(masked(Tally, { US: 1, CA: 2 })).toEqual({ "[pii]": 1, "[pii] #2": 2 });
+    same<Redacted<typeof Tally>, { [key: string]: number }>();
+    const One = z.record(pii(z.literal("a")), z.number());
+    expect(masked(One, { a: 1 })).toEqual({ "[pii]": 1 });
+    same<Redacted<typeof One>, { [key: string]: number }>();
+    const Nested = z.object({ tally: Tally });
+    same<Redacted<typeof Nested>, { tally: { [key: string]: number } }>();
+    // An unmarked enum key keeps its keys.
+    const Plain = z.record(z.enum(["US", "CA"]), z.number());
+    same<Redacted<typeof Plain>, { US: number; CA: number }>();
+  });
+
+  test("types a field one object marks as a string, though a loose object sits beside it", () => {
+    type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+    const same = <A, B>(..._proof: Same<A, B> extends true ? [] : [never]): void => {};
+    const Both = z.intersection(z.object({ a: pii(z.string()) }), z.looseObject({}));
+    expect(masked(Both, { a: "S-1", z: 1 })).toEqual({ a: "[pii]", z: 1 });
+    same<Redacted<typeof Both>["a"], string>();
+    const Either = z.union([z.object({ a: pii(z.string()) }), z.looseObject({})]);
+    expect(masked(Either, { a: "S-1" })).toEqual({ a: "[pii]" });
+    same<Extract<Redacted<typeof Either>, { a: unknown }>["a"], string>();
+  });
 });
 
 describe("outside the contract: masked whole when marked beneath, kept when not, never throws, never raw", () => {
