@@ -47,7 +47,7 @@ A marker is read through `.optional()`, `.nullable()`, `.default()` and the othe
 
 ## What the compiler refuses, exactly
 
-The logger's message, fields and child names, `c.var.emit`'s `metadata`, and the `message`, `action` and `detail` of every `PithyError` refuse a marked value at compile time.
+The logger's message, fields and child names, `c.var.emit`'s `metadata`, and the `message`, `action` and `detail` of every `PithyError` refuse a marked value at compile time. That holds on every package's own error vehicle and on `defineErrorPayload`, and `packages/cli/src/ci/errorArgs.test.ts` fails any error args type that declares one of the three as a plain `string`.
 
 ```ts
 log.info("signup", { user });                        // refused: a row with a marked field
@@ -56,6 +56,7 @@ log.info("signup", { id: user.id });                 // compiles: unmarked
 log.info("signup", { user: redact(Patient, user) }); // compiles: { id: "u_1", email: "[pii]", diagnosis: "[phi]" }
 log.info(user.email);                                // refused: a marked message
 new InternalError({ detail: user.email });           // refused
+new EmailInvalidPayloadError({ message: user.email }); // refused: a package's vehicle, same rule
 ```
 
 What is checked:

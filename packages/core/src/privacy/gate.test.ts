@@ -4,6 +4,8 @@
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { AuditEmit } from "../audit/recorder";
+import { ControlPlaneNotConnectedError } from "../controlPlane/error/errors";
+import { defineErrorPayload } from "../error/extend";
 import { InternalError, NotFoundError, PithyError, ValidationError } from "../error/pithyError";
 import { createLogger, type Logger, noopLogger } from "../logger/logger";
 import type { LogRecord } from "../logger/record";
@@ -70,6 +72,16 @@ function compileOnly(log: Logger, emit: AuditEmit): void {
   void new InternalError({ action: user.diagnosis });
   // @ts-expect-error nor a message on a payload handed to PithyError directly
   void new PithyError({ code: "core/internal", status: 500, message: user.email });
+  // @ts-expect-error nor a message on an adopter's own payload
+  void defineErrorPayload({ code: "shop/out_of_stock", status: 409, message: user.email });
+  // @ts-expect-error nor its action
+  void defineErrorPayload({ code: "shop/out_of_stock", status: 409, message: "x", action: user.email });
+  // @ts-expect-error nor its detail
+  void defineErrorPayload({ code: "shop/out_of_stock", status: 409, message: "x", detail: user.email });
+  // @ts-expect-error nor a message on a package's own vehicle, which declares its own args type
+  void new ControlPlaneNotConnectedError({ message: user.email });
+  // @ts-expect-error nor that vehicle's action
+  void new ControlPlaneNotConnectedError({ action: user.diagnosis });
   // @ts-expect-error a record keyed by a marked value holds the value in its keys
   log.info("index", { byEmail: {} as Record<User["email"], number> });
 

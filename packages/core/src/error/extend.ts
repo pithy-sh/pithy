@@ -96,9 +96,9 @@ export function defineErrorPayload<const Code extends `${string}/${string}`>(
     /** The HTTP status this code maps to. A 4xx or a 5xx — an error is not a success. */
     status: number;
     /** Public, safe-to-expose summary. Sent to clients and shown in the terminal. */
-    message: string;
-    /** Operator remediation hint. Becomes the CLI action line. Never sent to a client. */
-    action?: string;
+    message: UnmarkedString;
+    /** Operator remediation hint. Becomes the CLI action line. Never sent to a client. Never a marked value (#132). */
+    action?: UnmarkedString;
     /** Internal context for logs + audit. NEVER serialized to clients — the HTTP codec strips it. Never a marked value (#132). */
     detail?: UnmarkedString;
     /**

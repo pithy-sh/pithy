@@ -21,8 +21,8 @@ import type { UnmarkedString } from "../../privacy/types";
  */
 
 interface ControlPlaneErrorArgs {
-  message?: string;
-  action?: string;
+  message?: UnmarkedString;
+  action?: UnmarkedString;
   detail?: UnmarkedString;
   /**
    * Values a translating client interpolates into its own wording for this code. Client-facing, so —

@@ -11,8 +11,8 @@ import type { UnmarkedString } from "@pithy-sh/core/src/privacy/types";
  * throws one of these, never a plain `new Error`.
  */
 interface MatchmakingErrorArgs {
-  message?: string;
-  action?: string;
+  message?: UnmarkedString;
+  action?: UnmarkedString;
   detail?: UnmarkedString;
   /**
    * Values a translating client interpolates into its own wording for this code. Client-facing, so —

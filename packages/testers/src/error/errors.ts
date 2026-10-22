@@ -20,8 +20,8 @@ import type { UnmarkedString } from "@pithy-sh/core/src/privacy/types";
 
 /** The variable parts every testers error accepts; the `code` and `status` are fixed by the subclass. */
 interface TestersErrorArgs {
-  message?: string;
-  action?: string;
+  message?: UnmarkedString;
+  action?: UnmarkedString;
   detail?: UnmarkedString;
   /**
    * Values a translating client interpolates into its own wording for this code. Client-facing, so —

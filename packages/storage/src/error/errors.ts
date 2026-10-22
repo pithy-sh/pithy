@@ -16,8 +16,8 @@ import type { UnmarkedString } from "@pithy-sh/core/src/privacy/types";
  */
 
 interface StorageErrorArgs {
-  message?: string;
-  action?: string;
+  message?: UnmarkedString;
+  action?: UnmarkedString;
   detail?: UnmarkedString;
   /**
    * Values a translating client interpolates into its own wording for this code. Client-facing, so —

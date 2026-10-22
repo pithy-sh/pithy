@@ -19,9 +19,9 @@ import type { UnmarkedString } from "@pithy-sh/core/src/privacy/types";
 /** Variable parts each subclass accepts; `code`/`status` are fixed by the subclass. */
 interface OrganizationErrorArgs {
   /** Override the public, safe-to-expose message. */
-  message?: string;
+  message?: UnmarkedString;
   /** A remediation hint (CLI action line). */
-  action?: string;
+  action?: UnmarkedString;
   /** Internal context for logs and audit. Never serialized to clients. */
   detail?: UnmarkedString;
   /** Values a translating client interpolates into its own wording for this code. */
