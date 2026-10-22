@@ -351,6 +351,41 @@ describe("the contract's edges", () => {
     same<Redacted<typeof Dated>, string>();
   });
 
+  test("masks a record's string keys by every mark but a symbol's, and its symbol keys by a symbol's alone", () => {
+    type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+    const same = <A, B>(..._proof: Same<A, B> extends true ? [] : [never]): void => {};
+    const sym = Symbol("k");
+    // A symbol key matched only the unmarked `z.symbol()` option: it comes back as it went in.
+    const Names = z.record(z.union([pii(z.string()), z.symbol()]), z.string());
+    const names = masked(Names, { [sym]: "P-1", "S-1": "P-2" }) as Record<PropertyKey, unknown>;
+    expect(Reflect.ownKeys(names)).toEqual(["[pii]", sym]);
+    expect(names[sym]).toBe("P-1");
+    expect(names["[pii]"]).toBe("P-2");
+    same<Redacted<typeof Names>, { [key: string]: string; [key: symbol]: string }>();
+    // A marked symbol option masks a symbol key, and leaves a string key alone.
+    const Tags = z.record(z.union([z.string(), pii(z.symbol())]), z.string());
+    const tags = masked(Tags, { [sym]: "P-1", "P-k": "P-2" }) as Record<PropertyKey, unknown>;
+    expect(Reflect.ownKeys(tags)).toEqual(["P-k", "[pii]"]);
+    expect(tags["[pii]"]).toBe("P-1");
+    same<Redacted<typeof Tags>, { [key: string]: string }>();
+    // A number key is a string at runtime, so a marked number option still masks every string key.
+    const Numbered = z.record(z.union([pii(z.number()), z.string()]), z.string());
+    expect(Reflect.ownKeys(masked(Numbered, { "5": "P-1", "P-k": "P-2" }) as object)).toEqual(["[pii]", "[pii] #2"]);
+  });
+
+  test("keeps a string beside a marked option of another shape, however many values that option names", () => {
+    // A choice is read for its shapes to the end, never to a count of schemas: nothing here recurses.
+    const literals = (n: number) =>
+      z.union(
+        Array.from({ length: n }, (_, index) => z.literal(index)) as [z.ZodLiteral<number>, z.ZodLiteral<number>],
+      );
+    for (const n of [9_998, 10_001, 20_000]) {
+      const U = z.object({ c: z.union([pii(literals(n)), z.string()]) });
+      expect(masked(U, { c: "P-1" })).toEqual({ c: "P-1" });
+      expect(masked(U, { c: 7 })).toEqual({ c: "[pii]" });
+    }
+  });
+
   test("keeps a record's symbol keys, numbers a set's masked elements apart, and redacts a map's object keys", () => {
     const tag = Symbol("tag");
     expect(masked(z.record(z.symbol(), z.object({ e: pii(z.string()) })), { [tag]: { e: "S-1" } })).toEqual({
@@ -595,5 +630,40 @@ describe("outside the contract: masked whole when marked beneath, kept when not,
     same<Out["unknown"], unknown>();
     same<Out["custom"], Date>();
     expect(true).toBe(true);
+  });
+
+  test("Redacted<T> types a pipe into a marked schema unknown, as redact masks it whole", () => {
+    type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+    const same = <A, B>(..._proof: Same<A, B> extends true ? [] : [never]): void => {};
+    const Inner = z.object({ m: pii(z.string()) });
+    const Shape = z.object({
+      email: z.email().pipe(pii(z.string())),
+      twice: z.string().pipe(z.string()).pipe(pii(z.string())),
+      mapped: z
+        .string()
+        .transform((s) => s)
+        .pipe(pii(z.string())),
+      picked: Inner.transform((v) => v.m),
+      // A marker on the pipe itself is the pipe's own mark: a marked node, typed `string`.
+      own: pii(z.email().pipe(z.string())),
+      other: phi(z.string().pipe(pii(z.string()))),
+    });
+    const wire = { email: "a@b.co", twice: "S-1", mapped: "S-2", picked: { m: "S-3" }, own: "c@d.co", other: "S-4" };
+    const out = redact(Shape, Shape.parse(wire));
+    expect(out).toEqual({
+      email: "[pii]",
+      twice: "[pii]",
+      mapped: "[pii]",
+      picked: "[pii]",
+      own: "[pii]",
+      other: "[phi]",
+    });
+    type Out = Redacted<typeof Shape>;
+    same<Out["email"], unknown>();
+    same<Out["twice"], unknown>();
+    same<Out["mapped"], unknown>();
+    same<Out["picked"], unknown>();
+    same<Out["own"], string>();
+    same<Out["other"], string>();
   });
 });

@@ -347,6 +347,44 @@ describe("a recursion that builds a new choice each read never runs past the lim
   });
 });
 
+describe("the limit counts nesting, never breadth", () => {
+  test("a union of more lazy options than the limit, none nested in another, is walked and kept", () => {
+    for (const n of [250, MAX_RECURSION_DEPTH + 4, 600]) {
+      const options = Array.from({ length: n }, (_, index) =>
+        z.lazy(() => z.object({ t: z.literal(`e${index}`), v: z.string() })),
+      );
+      const Event = z.union(options as unknown as [z.ZodType, z.ZodType]);
+      const value = Event.parse({ t: "e0", v: "P-1" });
+      expect(redact(Event, value as never)).toEqual({ t: "e0", v: "P-1" });
+      expect(classifyPrivacy(Event)).toEqual([]);
+    }
+  });
+
+  test("a chain of lazies nested past the limit is masked, one under it is walked", () => {
+    const chain = (n: number): z.ZodType => (n === 0 ? z.string() : z.lazy(() => chain(n - 1)));
+    const under = z.object({ v: chain(MAX_RECURSION_DEPTH - 6) });
+    expect(redact(under, under.parse({ v: "P-1" }) as never)).toEqual({ v: "P-1" });
+    const past = z.object({ v: chain(MAX_RECURSION_DEPTH + 44) });
+    expect(redact(past, past.parse({ v: "P-1" }) as never)).toEqual({ v: "[secret]" });
+  });
+
+  test("classifyPrivacy lists a finite schema that reuses one object in many fields to the end", () => {
+    const fields = <T extends z.ZodType>(n: number, make: () => T) =>
+      Object.fromEntries(Array.from({ length: n }, (_, index) => [`f${index}`, make()]));
+    // 22 groups of 22 contacts of 22 addresses: 10,648 addresses, every one the same schema, nothing recursive.
+    const Address = z.object({ id: z.string(), line: pii(z.string()) });
+    const Contact = z.object(fields(22, () => Address));
+    const Group = z.object(fields(22, () => Contact));
+    const Book = z.object(fields(22, () => Group));
+    const listed = classifyPrivacy(Book);
+    expect(listed.filter((field) => field.truncated)).toEqual([]);
+    expect(listed).toHaveLength(22 ** 3);
+    expect(listed).toContainEqual({ path: "f19.f13.f11.line", class: "pii" });
+    expect(listed.every((field) => field.class === "pii" && field.path.endsWith(".line"))).toBe(true);
+    expect(hasPrivacy(Book, "secret")).toBe(false);
+  });
+});
+
 describe("a recursion beneath an opaque node that reaches the limit counts as possibly marked", () => {
   /** A getter that builds a new schema each read, nothing marked in it. */
   const built = () =>

@@ -195,13 +195,23 @@ type KitCodec<S> = S extends typeof SQLiteDate | typeof SQLiteBoolean
 
 /**
  * Whether a schema is a marked node: every value its output holds, `null` and `undefined` aside, carries a privacy
- * brand. A union with one marked option among others is not one; it is read option by option.
+ * brand, and the brand is its own. A union with one marked option among others is not one; it is read option by
+ * option. Nor is a pipe whose output takes every privacy brand it has from what it pipes into, such as
+ * `z.email().pipe(pii(z.string()))` or a transform that returns a marked value: the mark is beneath an opaque node, so
+ * `redact` masks it whole and the type is `unknown`. A marker on the pipe itself is the pipe's own.
  */
 type IsMarkedNode<S> = [Exclude<Out<S>, null | undefined>] extends [never]
   ? false
   : false extends IsMarked<Exclude<Out<S>, null | undefined>>
     ? false
-    : true;
+    : DefOf<S> extends { type: "pipe"; out: infer O }
+      ? [Exclude<PrivacyBrands<Out<S>>, PrivacyBrands<Out<O>>>] extends [never]
+        ? false
+        : true
+      : true;
+
+/** The privacy brand keys on `T`'s output. Distributes. */
+type PrivacyBrands<T> = T extends { readonly [z.core.$brand]: infer M } ? Extract<keyof M, `privacy:${string}`> : never;
 
 /** The shape each kind of schema produces, as `kindsOf` reads it at runtime. */
 interface SchemaKinds {
@@ -452,9 +462,6 @@ type SlotSchemas<V> = V extends Schema
         ? { [K in keyof V]-?: V[K] extends Schema ? V[K] : never }[keyof V]
         : never;
 
-/** Whether any node among `N` is marked. Distributes. */
-type AnyMarked<N> = N extends unknown ? IsMarkedNode<N> : never;
-
 /** Whether an opaque node among `N` carries a mark beneath it, or may. Distributes. */
 type AnyOpaqueMarked<N> = N extends unknown
   ? IsMarkedNode<N> extends true
@@ -507,8 +514,19 @@ type Rebrand<S, X> =
 /** `X` with the brands `K`, or `X` itself where there are none. */
 type KeptBrand<X, K> = [K] extends [never] ? X : X & z.core.$brand<K & (string | number | symbol)>;
 
-/** Keys renamed to `string` where a record at the position masks its keys. */
-type KeyName<K, N> = K extends typeof z.core.$brand ? never : true extends AnyMarked<Nodes<RecordKeys<N>>> ? string : K;
+/**
+ * Keys renamed to `string` where a record at the position masks them: a string key, a number key's included, where its
+ * key schema marks any shape but a symbol, and a symbol key where it marks a symbol.
+ */
+type KeyName<K, N> = K extends typeof z.core.$brand
+  ? never
+  : K extends symbol
+    ? "symbol" extends MaskedKinds<RecordKeys<N>>
+      ? string
+      : K
+    : [Exclude<MaskedKinds<RecordKeys<N>>, "symbol">] extends [never]
+      ? K
+      : string;
 
 /**
  * One schema at a position that is walked into, against `N`, every node at the position, with the values of a shape

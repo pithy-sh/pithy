@@ -56,8 +56,9 @@ import type { RedactedOutput } from "./types";
  *   value, an array option's to an array value, and a marked string option's to a string: beside
  *   `z.array(z.string())` an array is walked, and beside `z.number()` a number is kept. A mark reached through no
  *   option applies to every value. A key or an element no option names is kept, and so is a value of a kind no
- *   option names, such as an array a `z.unknown()` beside an object option let through. A record's key is a string
- *   whatever its schema says, so a key schema that marks any shape masks every key.
+ *   option names, such as an array a `z.unknown()` beside an object option let through. A record's string key is a
+ *   string whatever its schema says, a number key's included, so a key schema that marks any shape but a symbol masks
+ *   every string key; a symbol key is masked only by a marked symbol option.
  * - **A record's or a map's key is redacted by its key schema**, and so is a set's element. Two that mask alike come
  *   back as `[pii]` and `[pii] #2`, so the copy holds as many entries as the value did. Only a masked one is ever
  *   numbered: a kept one stays as it is, even one that reads `[pii]`, and a masked one takes the first name no kept
@@ -69,7 +70,7 @@ import type { RedactedOutput } from "./types";
  *   same level, and the result is a function of the schema and the value alone. The walk keeps its own stack, so a
  *   deep value never overflows the call stack. A recursion beneath an opaque node that reaches the limit masks that
  *   node's value whole as `[secret]` too, and a lazy that builds a new choice each read ends at the limit the same
- *   way: every lazy counts one.
+ *   way: every lazy nested in another counts one. A union of many lazies, none inside another, counts one.
  *
  * ## The placeholder, and why it is not a hash
  *
@@ -244,24 +245,28 @@ function redactKind(at: Position, value: unknown, below: Step[], walk: Walk): un
 }
 
 /**
- * An object's entries, each value redacted at its key's position and each key at a record's key position. A masked
- * key takes the first name, `[pii]`, `[pii] #2` …, that no kept key and no earlier masked key holds. Each value is
- * put in when its step runs, and the steps run in key order, so the copy's keys keep the value's order.
+ * An object's entries, each value redacted at its key's position and each key at a record's key position: a string
+ * key by every mark there but a symbol's, since it is a string whatever its schema says, and a symbol key by a
+ * symbol's alone. A masked key takes the first name, `[pii]`, `[pii] #2` …, that no kept key and no earlier masked
+ * key holds. Each value is put in when its step runs, and the steps run in key order, so the copy keeps the value's.
  */
 function redactObject(at: Position, value: Record<PropertyKey, unknown>, walk: Walk): Record<PropertyKey, unknown> {
-  // An object's key is a string whatever its schema says, so a key schema that marks any shape masks every key.
-  const keyMask = at.key?.mask;
+  const keyAt = at.key;
   const keys = Reflect.ownKeys(value).filter((key) => Object.prototype.propertyIsEnumerable.call(value, key));
-  const taken = new Set<unknown>(keyMask ? [] : keys);
+  const names = distinctAll(
+    keys.map((key): Result => {
+      const mask = typeof key === "symbol" ? keyAt?.maskFor(key) : keyAt?.nameMask;
+      return mask ? { value: masked(mask, key), masked: true } : { value: key, masked: false };
+    }),
+  ) as PropertyKey[];
   const out: Record<PropertyKey, unknown> = {};
-  for (const key of keys) {
-    const name = keyMask ? (distinct(masked(keyMask, key), taken) as string) : key;
-    taken.add(name);
+  keys.forEach((key, index) => {
+    const name = names[index] as PropertyKey;
     // Defined, not assigned: an own `__proto__` key that parse kept stays a key, and never becomes the prototype.
     walk(at.field(key), value[key], (result) => {
       Object.defineProperty(out, name, { value: result, enumerable: true, writable: true, configurable: true });
     });
-  }
+  });
   return out;
 }
 
