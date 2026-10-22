@@ -82,6 +82,8 @@ What is left out is left out because wrangler would refuse the file: a `vectoriz
 
 **Bootstrap what is left.** Dev-only values a capability needs to boot — the master key `pithy add secrets` mints, the session secret `auth` needs — land in `$PITHY_CONFIG_DIR/<project>/secrets.jsonc`, outside every checkout. What only a provision command can supply comes back as a note instead.
 
+**`pithy add audit` offers a privacy declaration, once, at a terminal.** *Declare the privacy classes this project handles too?* — asked only when the root `pithy.config.ts` declares none, and defaulting to no. Yes runs [`pithy privacy enable`](privacy.md), which asks which classes. No leaves the project as it was. An audit trail records who touched what, and a declaration says what there is to touch, so each command offers the other. `--json` and a run that cannot ask are never offered anything.
+
 `add` runs against no Cloudflare account. It writes config and local D1 only. Bindings whose resources live in the account (`pithy storage provision`, `pithy secrets provision`, `pithy vector provision`) are named in `notes` rather than created here. It emits `capability/added` at `info` severity, on success and on failure alike, but against `dev`, whose emitter is inert: an add changes nothing shared, so nothing is recorded, and no Cloudflare credentials are read for it. A shell exporting another account's credentials therefore does not refuse an `add`.
 
 **The project needs a `name`.** It leads every resource name `add` proposes, and it claims the database the closing dev migration writes to. A project without one is told to set it before anything is installed, rather than left half-configured around an unowned database.

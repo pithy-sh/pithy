@@ -6,7 +6,13 @@ import type { PithyHonoEnv } from "../../capability/capability";
 import { describeRoute } from "../../http/routeSpec";
 import { validate } from "../../http/validation";
 import { type AdminRoute, ControlPlaneManifest } from "../discovery/adminRoute";
-import { ANY_VERIFIED_CALLER, KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE, MIGRATIONS_READ_SCOPE } from "../scope/scope";
+import {
+  ANY_VERIFIED_CALLER,
+  KEYS_ROTATE_SCOPE,
+  MANIFEST_READ_SCOPE,
+  MIGRATIONS_READ_SCOPE,
+  PRIVACY_READ_SCOPE,
+} from "../scope/scope";
 import { requireControlPlane } from "./guard";
 import {
   type ControlPlaneHandlerDeps,
@@ -15,12 +21,14 @@ import {
   manifestHandler,
   migrationsHandler,
   pingHandler,
+  privacyHandler,
   registerKeyHandler,
 } from "./handlers";
 import {
   ControlPlaneKeysResponse,
   ControlPlaneMigrationsResponse,
   ControlPlanePingResponse,
+  ControlPlanePrivacyResponse,
   ExpireKeyResponse,
   RegisterKeyResponse,
 } from "./responses";
@@ -35,6 +43,7 @@ import { ExpireKeyParams, ExpireKeyRequest, RegisterKeyRequest } from "./schemas
  *   POST /control-plane/keys                  → register a key               (keys:rotate)
  *   POST /control-plane/keys/:keyId/expire    → retire a superseded key      (keys:rotate)
  *   GET  /control-plane/migrations            → where each database stands   (migrations:read)
+ *   GET  /control-plane/privacy               → what each schema holds        (privacy:read)
  *
  * Every one is `control-plane` and default-denied — with no connection registered they all answer 403,
  * and that is the shipped state of a Worker nobody has connected.
@@ -99,6 +108,13 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
       scope: MIGRATIONS_READ_SCOPE,
       summary:
         "What each bound database has applied, what is pending, what is undeclared, and which run put it there. Undeclared is relative to this Worker.",
+    },
+    {
+      method: "GET",
+      path: `${basePath}/privacy`,
+      scope: PRIVACY_READ_SCOPE,
+      summary:
+        "Every stored schema holding a privacy-marked field, each field's path and class, and where it lives. Derived from the running code.",
     },
   ];
 }
@@ -183,5 +199,19 @@ export function registerControlPlaneRoutes(
     }),
     requireControlPlane(MIGRATIONS_READ_SCOPE),
     migrationsHandler(deps),
+  );
+
+  app.get(
+    `${basePath}/privacy`,
+    describeRoute({
+      summary: "Report every stored field marked with a privacy class.",
+      description:
+        "Every D1 table and KV store this Worker composed that holds a privacy-marked field, with each field's path, its class and where it is stored, beside the declared-and-observed posture. Derived at runtime from the deployed schemas. Read-only.",
+      verification: "control-plane",
+      scopes: [PRIVACY_READ_SCOPE],
+      responses: { 200: ControlPlanePrivacyResponse },
+    }),
+    requireControlPlane(PRIVACY_READ_SCOPE),
+    privacyHandler(deps),
   );
 }

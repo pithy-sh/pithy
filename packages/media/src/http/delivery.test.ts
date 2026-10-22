@@ -70,7 +70,7 @@ function harness(granted: string[] = [MEDIA_DELIVERY_READ_SCOPE], source: Partia
     c.set("auth", null);
     c.set("controlPlane", null);
     c.set("controlPlaneVerifier", verify);
-    c.set("emit", async (event) => {
+    c.set("emit", async (event: AuditEventInput) => {
       events.push(event);
     });
     c.set("log", noopLogger);

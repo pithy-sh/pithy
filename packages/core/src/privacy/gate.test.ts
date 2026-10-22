@@ -1,0 +1,162 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
+import { describe, expect, test } from "vitest";
+import { z } from "zod";
+import type { AuditEmit } from "../audit/recorder";
+import { ControlPlaneNotConnectedError } from "../controlPlane/error/errors";
+import { defineErrorPayload } from "../error/extend";
+import { InternalError, NotFoundError, PithyError, ValidationError } from "../error/pithyError";
+import { createLogger, type Logger, noopLogger } from "../logger/logger";
+import type { LogRecord } from "../logger/record";
+import { phi, pii, secret } from "./classes";
+import { redact } from "./redact";
+import type { ContainsMarked, IsMarked, Redacted, UnmarkedString } from "./types";
+
+/**
+ * **The type gate, held by the compiler** (#132).
+ *
+ * Every `@ts-expect-error` below is an assertion `bun run typecheck` makes: a line that stops failing fails the
+ * build, because an unused `@ts-expect-error` is itself an error. The runtime tests beside them prove the calls
+ * that are meant to compile still do what they did.
+ */
+
+const User = z
+  .object({
+    id: z.string().describe("The user's stable id."),
+    email: pii(z.string().describe("The address sign-in links are sent to.")),
+    diagnosis: phi(z.string().describe("The recorded condition.")),
+  })
+  .describe("A user.");
+type User = z.output<typeof User>;
+
+const Session = z
+  .object({ token: secret(z.string().describe("The bearer.")), user: User.describe("Who it is.") })
+  .describe("A session.");
+type Session = z.output<typeof Session>;
+
+const user: User = User.parse({ id: "u_1", email: "ada@example.com", diagnosis: "asthma" });
+const session: Session = Session.parse({ token: "tok", user });
+
+const ByEmail = z.record(z.email().pipe(pii(z.string())), z.number()).describe("Counts by address.");
+
+/** Never run — the compiler checks the body. Each refused call names the rule it breaks. */
+function compileOnly(log: Logger, emit: AuditEmit): void {
+  // @ts-expect-error a row with a marked field cannot be logged
+  log.info("signup", { user });
+  // @ts-expect-error the brand is on the field, so extracting it does not launder it
+  log.info("signup", { email: user.email });
+  // @ts-expect-error two levels down: a session holding a user holding an email
+  log.warn("session", { session });
+  // @ts-expect-error inside a literal object
+  log.error("signup", { who: { email: user.email } });
+  // @ts-expect-error inside an array
+  log.debug("batch", { users: [user] });
+  // @ts-expect-error bound fields on a child are a log call too
+  log.child("signup", { user });
+  // @ts-expect-error audit metadata is a long-lived internal surface
+  void emit({ action: "auth/signup", outcome: "success", actorType: "user", metadata: { email: user.email } });
+  // @ts-expect-error a marked value is not an error detail
+  void new InternalError({ detail: user.email });
+  // @ts-expect-error on every subclass, because they share the one argument type
+  void new NotFoundError({ detail: user.diagnosis });
+  // @ts-expect-error nor on a payload handed to PithyError directly
+  void new PithyError({ code: "core/internal", status: 500, message: "x", detail: user.email });
+  // @ts-expect-error a marked value is not a log message, which every record carries as `msg`
+  log.info(user.email);
+  // @ts-expect-error nor a logger's name, which every record the child emits carries
+  log.child(user.email);
+  // @ts-expect-error nor an error's message, which rides into every log line that holds the error
+  void new NotFoundError({ message: user.email });
+  // @ts-expect-error nor its action
+  void new InternalError({ action: user.diagnosis });
+  // @ts-expect-error nor a message on a payload handed to PithyError directly
+  void new PithyError({ code: "core/internal", status: 500, message: user.email });
+  // @ts-expect-error nor a message on an adopter's own payload
+  void defineErrorPayload({ code: "shop/out_of_stock", status: 409, message: user.email });
+  // @ts-expect-error nor its action
+  void defineErrorPayload({ code: "shop/out_of_stock", status: 409, message: "x", action: user.email });
+  // @ts-expect-error nor its detail
+  void defineErrorPayload({ code: "shop/out_of_stock", status: 409, message: "x", detail: user.email });
+  // @ts-expect-error nor a message on a package's own vehicle, which declares its own args type
+  void new ControlPlaneNotConnectedError({ message: user.email });
+  // @ts-expect-error nor that vehicle's action
+  void new ControlPlaneNotConnectedError({ action: user.diagnosis });
+  // @ts-expect-error a record keyed by a marked value holds the value in its keys
+  log.info("index", { byEmail: {} as Record<User["email"], number> });
+
+  log.info("signup", { id: user.id });
+  log.info("signup", { user: redact(User, user) });
+  log.child("signup", { userId: user.id }).info("done");
+  void emit({ action: "auth/signup", outcome: "success", actorType: "user", metadata: { userId: user.id } });
+  void new ValidationError({ detail: `user ${user.id} sent a bad form` });
+  void new InternalError({ detail: "plain" });
+  log.info(`signup for ${user.id}`);
+  void new NotFoundError({ message: "No such user.", action: "Check the id." });
+  log.info("index", { byId: {} as Record<string, number> });
+  // A record keyed by a pipe into a marked schema: redact masks every key, so the copy is keyed by plain strings.
+  log.info("index", { byEmail: redact(ByEmail, ByEmail.parse({ "a@b.co": 1 })) });
+}
+
+describe("the type gate", () => {
+  test("is a compile-time gate: the calls it allows still log exactly what they did", () => {
+    const records: LogRecord[] = [];
+    const log = createLogger({ level: "debug", sink: (record) => records.push(record), now: () => 1 });
+    log.info("signup", { id: user.id, user: redact(User, user) });
+    expect(records[0]?.fields).toEqual({ id: "u_1", user: { id: "u_1", email: "[pii]", diagnosis: "[phi]" } });
+    expect(typeof compileOnly).toBe("function");
+    noopLogger.info("unchanged", { id: user.id });
+  });
+
+  test("reads a privacy brand and nothing else", () => {
+    const branded: IsMarked<User["email"]> = true;
+    const plain: IsMarked<string> = false;
+    const otherBrand: IsMarked<string & z.core.$brand<"UserId">> = false;
+    const anyValue: IsMarked<ReturnType<typeof JSON.parse>> = false;
+    const deep: ContainsMarked<{ a: { b: { c: User } } }> = true;
+    // Six levels below the field is the last one inspected; a seventh is not. See PRIVACY_CHECK_DEPTH.
+    const sixth: ContainsMarked<{ l1: { l2: { l3: { l4: { l5: { email: User["email"] } } } } } }> = true;
+    const seventh: ContainsMarked<{ l1: { l2: { l3: { l4: { l5: { l6: { email: User["email"] } } } } } } }> = false;
+    const unknownValue: ContainsMarked<unknown> = false;
+    const errorValue: ContainsMarked<Error> = false;
+    expect([branded, plain, otherBrand, anyValue, deep, sixth, seventh, unknownValue, errorValue]).toEqual([
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+    ]);
+  });
+
+  test("a redacted value carries no brand, and a detail takes an unmarked string", () => {
+    const masked: Redacted<typeof User> = redact(User, user);
+    const contains: ContainsMarked<typeof masked> = false;
+    const detail: UnmarkedString = `user ${masked.email}`;
+    expect([contains, detail]).toEqual([false, "user [pii]"]);
+  });
+});
+
+const Twice = z.object({ id: z.string(), token: pii(secret(z.string())) }).describe("A row marked twice.");
+const twice = Twice.parse({ id: "u_1", token: "tok" });
+
+/** Never run: a field marked twice is refused like one marked once, and its redacted copy is taken. */
+function compileTwice(log: Logger): void {
+  // @ts-expect-error a field carrying two classes is refused as a value
+  log.info("m", { token: twice.token });
+  // @ts-expect-error and inside the row
+  log.info("m", { twice });
+  log.info("m", { twice: redact(Twice, twice) });
+}
+
+describe("a field marked twice, at the gate", () => {
+  test("carries both brands, and its redacted copy carries none", () => {
+    const both: IsMarked<typeof twice.token> = true;
+    const none: ContainsMarked<Redacted<typeof Twice>> = false;
+    expect([both, none, typeof compileTwice]).toEqual([true, false, "function"]);
+    expect(redact(Twice, twice)).toEqual({ id: "u_1", token: "[secret]" });
+  });
+});

@@ -616,6 +616,8 @@ const RAW_COMPOSERS: Readonly<Record<string, string>> = {
     "Reads the capability's config as one project-wide declaration; a config that differs by environment is answered from the composition for none, which is a limit of this entry.",
   "commands/payments.ts":
     "Reads the capability's config as one project-wide declaration; a config that differs by environment is answered from the composition for none, which is a limit of this entry.",
+  "commands/privacy.ts":
+    "Reads each Worker's storage schemas once, unstamped: a privacy marker is part of a schema's declaration, not a value per environment, and scan and the audit offer only read which fields are marked and whether audit is composed (#132).",
   "commands/secrets.ts":
     "Merges the secret registry, which is per project with one value per name; which names each environment reaches is secretApplicability's.",
   "commands/storage.ts":
@@ -655,6 +657,10 @@ const SEALED: Readonly<Record<string, string>> = {
     "Returns the pithy media command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
   "commands/payments.ts#default":
     "Returns the pithy payments command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
+  "commands/privacy.ts#default":
+    "Returns the pithy privacy command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
+  "commands/privacy.ts#composesAudit":
+    "Returns whether any Worker composes audit, a boolean; no composition leaves it.",
   "commands/payments.ts#reconcilePlan":
     "Returns a dry run's plan, built from three strings and a count the deployed Workflow reported; it composes nothing and reads nothing.",
   "commands/secrets.ts#default":

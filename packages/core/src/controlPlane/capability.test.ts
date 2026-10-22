@@ -72,17 +72,19 @@ describe("controlplane capability", () => {
       "GET /admin/cp/manifest",
       "GET /admin/cp/migrations",
       "GET /admin/cp/ping",
+      "GET /admin/cp/privacy",
       "POST /admin/cp/keys",
       "POST /admin/cp/keys/:keyId/expire",
     ]);
   });
 
-  test("registers exactly the six seam routes", () => {
+  test("registers exactly the seven seam routes", () => {
     expect(registeredRoutes(controlplane())).toEqual([
       "GET /control-plane/keys",
       "GET /control-plane/manifest",
       "GET /control-plane/migrations",
       "GET /control-plane/ping",
+      "GET /control-plane/privacy",
       "POST /control-plane/keys",
       "POST /control-plane/keys/:keyId/expire",
     ]);

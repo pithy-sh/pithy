@@ -4,6 +4,7 @@
 import { commandName } from "../../cli/command";
 import { PithyError } from "../../error/pithyError";
 import type { MessageParams } from "../../i18n/catalog";
+import type { UnmarkedString } from "../../privacy/types";
 
 /**
  * The `control-plane` strategy's throw sugar. The `controlplane/*` codes live in core's closed
@@ -20,9 +21,9 @@ import type { MessageParams } from "../../i18n/catalog";
  */
 
 interface ControlPlaneErrorArgs {
-  message?: string;
-  action?: string;
-  detail?: string;
+  message?: UnmarkedString;
+  action?: UnmarkedString;
+  detail?: UnmarkedString;
   /**
    * Values a translating client interpolates into its own wording for this code. Client-facing, so —
    * unlike `action` and `detail` — these cross the boundary with `message`.

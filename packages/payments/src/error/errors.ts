@@ -3,6 +3,7 @@
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
+import type { UnmarkedString } from "@pithy-sh/core/src/privacy/types";
 
 /**
  * `@pithy-sh/payments` throw sugar. The `payments/*` codes live in core's closed `KitErrorPayload` union
@@ -22,9 +23,9 @@ import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
  */
 
 interface PaymentsErrorArgs {
-  message?: string;
-  action?: string;
-  detail?: string;
+  message?: UnmarkedString;
+  action?: UnmarkedString;
+  detail?: UnmarkedString;
   /**
    * Values a translating client interpolates into its own wording for this code. Client-facing, so —
    * unlike `action` and `detail` — these cross the boundary with `message`.

@@ -4,6 +4,7 @@
 import { commandName } from "@pithy-sh/core/src/cli/command";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
+import type { UnmarkedString } from "@pithy-sh/core/src/privacy/types";
 
 /**
  * The `testers/*` throw vehicles.
@@ -19,9 +20,9 @@ import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
 
 /** The variable parts every testers error accepts; the `code` and `status` are fixed by the subclass. */
 interface TestersErrorArgs {
-  message?: string;
-  action?: string;
-  detail?: string;
+  message?: UnmarkedString;
+  action?: UnmarkedString;
+  detail?: UnmarkedString;
   /**
    * Values a translating client interpolates into its own wording for this code. Client-facing, so —
    * unlike `action` and `detail` — these cross the boundary with `message`.

@@ -4,13 +4,15 @@
 import { env } from "cloudflare:test";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
-import type { z } from "zod";
+import { z } from "zod";
 import { defineCapability } from "../../capability/capability";
 import { createBackend } from "../../createBackend";
 import { createDatabase } from "../../data/db";
 import { InternalError } from "../../error/pithyError";
 import { MIGRATION_GROUP_TABLE, MIGRATION_TABLE } from "../../migrations/bookkeeping";
 import { recordMigrationGroup } from "../../migrations/groups";
+import { phi, pii, secret } from "../../privacy/classes";
+import { PRIVACY_ATTESTATION_VAR, type PrivacyAttestation } from "../../privacy/posture";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "../../version.generated";
 import { controlplane } from "../capability";
 import { ControlPlaneConnection, type Ed25519PublicJwk, type RegisteredKey } from "../data/connection";
@@ -22,7 +24,7 @@ import { namedHealthValues } from "../discovery/healthSummary";
 import { controlplane_0001_init } from "../migrations/0001_init";
 import { controlplane_0002_management_origin } from "../migrations/0002_management_origin";
 import { controlplane_0003_connection_principal } from "../migrations/0003_connection_principal";
-import { KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE, MIGRATIONS_READ_SCOPE } from "../scope/scope";
+import { KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE, MIGRATIONS_READ_SCOPE, PRIVACY_READ_SCOPE } from "../scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "../token/mint";
 import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_CREATED_HEADER, CONTROL_PLANE_VERSION_HEADER } from "../wire";
 import { requireControlPlane } from "./guard";
@@ -30,6 +32,7 @@ import {
   ControlPlaneKeysResponse,
   ControlPlaneMigrationsResponse,
   ControlPlanePingResponse,
+  ControlPlanePrivacyResponse,
   ExpireKeyResponse,
   type PublicKeyView,
   RegisterKeyResponse,
@@ -314,6 +317,7 @@ function everyRoute(): { method: string; path: string; scope: string; body?: unk
     { method: "GET", path: "/control-plane/manifest", scope: MANIFEST_READ_SCOPE },
     { method: "GET", path: "/control-plane/keys", scope: KEYS_ROTATE_SCOPE },
     { method: "GET", path: "/control-plane/migrations", scope: MIGRATIONS_READ_SCOPE },
+    { method: "GET", path: "/control-plane/privacy", scope: PRIVACY_READ_SCOPE },
     {
       method: "POST",
       path: "/control-plane/keys",
@@ -351,7 +355,7 @@ beforeEach(async () => {
 });
 
 describe("a Worker nobody has connected", () => {
-  test("denies every one of the six routes with controlplane/not_connected", async () => {
+  test("denies every one of the seven routes with controlplane/not_connected", async () => {
     // The shipped state. The seam is composed, the table exists, and there is no flag that opens it —
     // `pithy dashboard connect` is the deliberate second step, and until then a perfectly well-formed,
     // correctly signed credential gets 403 on every route.
@@ -535,6 +539,7 @@ describe("GET /control-plane/manifest", () => {
       "GET /control-plane/manifest",
       "GET /control-plane/migrations",
       "GET /control-plane/ping",
+      "GET /control-plane/privacy",
       "POST /control-plane/keys",
       "POST /control-plane/keys/:keyId/expire",
     ]);
@@ -1315,5 +1320,236 @@ describe("GET /control-plane/migrations", () => {
     );
     const seam = manifest.capabilities.find((capability) => capability.name === "controlplane");
     expect(seam?.health).toEqual({ state: "unavailable" });
+  });
+});
+
+describe("privacy over the control plane (#132)", () => {
+  /** A table with two marked fields and one that is not, and a KV store whose value carries a token. */
+  const Patient = z
+    .object({
+      id: z.string().describe("The patient's id."),
+      email: pii(z.string().describe("Where reminders go.")),
+      diagnosis: phi(z.string().describe("The recorded condition.")),
+    })
+    .describe("A patient.");
+
+  /** The same table after an adopter quietly removed the `phi()` marker. */
+  const Unmarked = z
+    .object({
+      id: z.string().describe("The patient's id."),
+      email: pii(z.string().describe("Where reminders go.")),
+      diagnosis: z.string().describe("The recorded condition."),
+    })
+    .describe("A patient, its diagnosis unmarked.");
+
+  function clinic(patients: z.ZodType) {
+    return defineCapability({
+      name: "clinic",
+      requiredBindings: [],
+      databases: { app: { binding: "DB", tables: { patients } } },
+      kvNamespaces: {
+        sessions: {
+          binding: "SESSIONS",
+          stores: {
+            portal: {
+              prefix: "clinic",
+              key: z.object({ id: z.string() }),
+              value: z.object({ token: secret(z.string()) }),
+            },
+          },
+        },
+      },
+    });
+  }
+
+  const marked = createBackend({ capabilities: [controlplane(), clinic(Patient)] });
+  const unmarked = createBackend({ capabilities: [controlplane(), clinic(Unmarked)] });
+
+  const ATTESTED: PrivacyAttestation = {
+    classes: ["pii", "phi"],
+    consoleGate: "enforced",
+    reason: null,
+    attestedAt: "2026-10-20T12:00:00.000Z",
+  };
+
+  const GRANTED = [MANIFEST_READ_SCOPE, KEYS_ROTATE_SCOPE, PRIVACY_READ_SCOPE];
+
+  async function on(
+    worker: typeof marked,
+    path: string,
+    scope: string,
+    bindings: Record<string, unknown> = { ...BINDINGS, [PRIVACY_ATTESTATION_VAR]: JSON.stringify(ATTESTED) },
+  ): Promise<Response> {
+    return worker.request(
+      `http://worker.example${path}`,
+      { method: "GET", headers: { [CONTROL_PLANE_HEADER]: await mint(alice, { scope }) } },
+      bindings,
+    );
+  }
+
+  test("GET /privacy is denied without privacy:read, while manifest:read still succeeds", async () => {
+    await connect([registered(alice)]);
+    const denied = await on(marked, "/control-plane/privacy", PRIVACY_READ_SCOPE);
+    expect(denied.status).toBe(403);
+    expect((await denial(denied)).error.code).toBe("controlplane/insufficient_scope");
+    expect((await on(marked, "/control-plane/manifest", MANIFEST_READ_SCOPE)).status).toBe(200);
+  });
+
+  test("GET /privacy returns every schema, marked path, class and storage kind, as its schema declares", async () => {
+    await connect([registered(alice)], GRANTED);
+    const response = await on(marked, "/control-plane/privacy", PRIVACY_READ_SCOPE);
+    expect(response.status).toBe(200);
+    const raw = await body<unknown>(response);
+    // Parsed and compared: a field the schema does not name would be stripped and show as a difference.
+    expect(ControlPlanePrivacyResponse.parse(raw)).toEqual(raw);
+    const json = ControlPlanePrivacyResponse.parse(raw);
+    expect(json.schemas).toEqual([
+      {
+        capability: "clinic",
+        storage: "d1",
+        container: "app",
+        name: "patients",
+        fields: [
+          { path: "email", class: "pii" },
+          { path: "diagnosis", class: "phi" },
+        ],
+      },
+      {
+        capability: "clinic",
+        storage: "kv",
+        container: "sessions",
+        name: "portal",
+        fields: [{ path: "value.token", class: "secret" }],
+      },
+    ]);
+    expect(json.posture).toMatchObject({
+      declared: ["pii", "phi"],
+      observed: ["secret", "pii", "phi"],
+      observedNotDeclared: ["secret"],
+      consoleGate: "enforced",
+    });
+  });
+
+  test("the manifest reports declared, observed, counts and the gate — and never a field name", async () => {
+    await connect([registered(alice)]);
+    const response = await on(marked, "/control-plane/manifest", MANIFEST_READ_SCOPE);
+    const text = await response.text();
+    const json = ControlPlaneManifest.parse(JSON.parse(text));
+    expect(json.privacy).toEqual({
+      declared: ["pii", "phi"],
+      observed: ["secret", "pii", "phi"],
+      counts: { secret: 1, pii: 1, phi: 1 },
+      observedNotDeclared: ["secret"],
+      declaredNotObserved: [],
+      consoleGate: "enforced",
+      consoleGateReason: null,
+      attestedAt: ATTESTED.attestedAt,
+      sources: ["d1", "kv"],
+    });
+    expect(text).not.toContain("diagnosis");
+  });
+
+  test("a project that declared nothing says so, and a Worker with no attestation says that", async () => {
+    await connect([registered(alice)]);
+    const none: PrivacyAttestation = { ...ATTESTED, classes: [], consoleGate: "not_required" };
+    const declaredNothing = ControlPlaneManifest.parse(
+      await body<unknown>(
+        await on(marked, "/control-plane/manifest", MANIFEST_READ_SCOPE, {
+          ...BINDINGS,
+          [PRIVACY_ATTESTATION_VAR]: JSON.stringify(none),
+        }),
+      ),
+    );
+    expect(declaredNothing.privacy).toMatchObject({
+      declared: [],
+      observed: null,
+      counts: null,
+      consoleGate: "not_required",
+      sources: [],
+    });
+
+    const unattested = ControlPlaneManifest.parse(
+      await body<unknown>(await on(marked, "/control-plane/manifest", MANIFEST_READ_SCOPE, BINDINGS)),
+    );
+    expect(unattested.privacy).toMatchObject({ declared: null, consoleGate: "unattested", attestedAt: null });
+  });
+
+  test("removing a phi() marker removes the field from the report, with nothing in between", async () => {
+    await connect([registered(alice)], GRANTED);
+    const before = ControlPlanePrivacyResponse.parse(
+      await body<unknown>(await on(marked, "/control-plane/privacy", PRIVACY_READ_SCOPE)),
+    );
+    const after = ControlPlanePrivacyResponse.parse(
+      await body<unknown>(await on(unmarked, "/control-plane/privacy", PRIVACY_READ_SCOPE)),
+    );
+    expect(before.posture.counts?.phi).toBe(1);
+    expect(after.posture.counts?.phi).toBeUndefined();
+    expect(after.posture.declaredNotObserved).toEqual(["phi"]);
+    expect(after.schemas[0]?.fields).toEqual([{ path: "email", class: "pii" }]);
+  });
+
+  test("GET /privacy sends truncated and sameAs as its schema declares, so a validating client keeps both", async () => {
+    /** A lazy whose target is a union of two new lazies, fifteen deep: the read runs out and assumes every class. */
+    const lazies = (at: number): z.ZodType =>
+      z.lazy(() => (at === 15 ? z.object({ x: phi(z.string()) }) : z.union([lazies(at + 1), lazies(at + 1)])));
+    /** One schema reused in two fields at every level of twenty: past the cap, a position met again is a reference. */
+    let shared: z.ZodType = z.object({ e: pii(z.string()) });
+    for (let level = 0; level < 20; level += 1) shared = z.object({ a: shared.optional(), b: shared.optional() });
+    const archive = defineCapability({
+      name: "archive",
+      requiredBindings: [],
+      databases: { app: { binding: "DB", tables: { cuts: z.object({ id: z.string(), t: lazies(0) }) } } },
+      kvNamespaces: {
+        sessions: {
+          binding: "SESSIONS",
+          stores: { tree: { prefix: "archive", key: z.object({ id: z.string() }), value: z.object({ t: shared }) } },
+        },
+      },
+    });
+    const worker = createBackend({ capabilities: [controlplane(), archive] });
+    await connect([registered(alice)], GRANTED);
+    const response = await worker.request(
+      "http://worker.example/control-plane/privacy",
+      { method: "GET", headers: { [CONTROL_PLANE_HEADER]: await mint(alice, { scope: PRIVACY_READ_SCOPE }) } },
+      { ...BINDINGS, [PRIVACY_ATTESTATION_VAR]: JSON.stringify(ATTESTED) },
+    );
+    const raw = await body<unknown>(response);
+    // Parsed and compared: a key the schema does not name would be stripped and show as a difference.
+    expect(ControlPlanePrivacyResponse.parse(raw)).toEqual(raw);
+    const fields = ControlPlanePrivacyResponse.parse(raw).schemas.flatMap((schema) => schema.fields);
+    expect(fields).toContainEqual({ path: "t", class: "secret", truncated: true });
+    expect(fields.some((field) => field.sameAs?.startsWith("value.t."))).toBe(true);
+  });
+
+  test("advertises the route with its scope, like every other admin route", async () => {
+    await connect([registered(alice)]);
+    const json = ControlPlaneManifest.parse(
+      await body<unknown>(await on(marked, "/control-plane/manifest", MANIFEST_READ_SCOPE)),
+    );
+    const seam = json.capabilities.find((capability) => capability.name === "controlplane");
+    expect(seam?.adminRoutes.find((route) => route.path === "/control-plane/privacy")).toMatchObject({
+      method: "GET",
+      scope: PRIVACY_READ_SCOPE,
+    });
+  });
+
+  test("the manifest carries the version's creation time beside its id, and null without the binding", async () => {
+    await connect([registered(alice)]);
+    const withBinding = ControlPlaneManifest.parse(
+      await body<unknown>(
+        await on(marked, "/control-plane/manifest", MANIFEST_READ_SCOPE, {
+          ...BINDINGS,
+          CF_VERSION_METADATA: { id: "v-1", tag: "", timestamp: "2026-10-20T11:59:00.000Z" },
+        }),
+      ),
+    );
+    expect(withBinding.version).toBe("v-1");
+    expect(withBinding.versionCreatedAt).toBe("2026-10-20T11:59:00.000Z");
+
+    const without = ControlPlaneManifest.parse(
+      await body<unknown>(await on(marked, "/control-plane/manifest", MANIFEST_READ_SCOPE, BINDINGS)),
+    );
+    expect(without.version).toBeNull();
+    expect(without.versionCreatedAt).toBeNull();
   });
 });

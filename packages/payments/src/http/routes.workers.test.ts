@@ -585,7 +585,7 @@ function makeApp(input: PaymentsConfigInput = CATALOG, options: AppOptions = {})
         layers: [],
       }),
     );
-    c.set("emit", async (event) => {
+    c.set("emit", async (event: AuditEventInput) => {
       emitted.push(event);
       if (options.emit) await options.emit(event);
     });
@@ -2712,7 +2712,7 @@ describe("a Worker composing payments() beside ledger()", () => {
       c.set("auth", null);
       c.set("controlPlaneVerifier", null);
       c.set("t", createTranslator({ catalogLocale: DEFAULT_LOCALE, formattingLocale: DEFAULT_LOCALE, layers: [] }));
-      c.set("emit", async (event) => {
+      c.set("emit", async (event: AuditEventInput) => {
         emitted.push(event);
       });
       await next();

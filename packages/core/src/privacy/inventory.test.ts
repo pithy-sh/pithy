@@ -1,0 +1,212 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
+import { describe, expect, test } from "vitest";
+import { z } from "zod";
+import { type Capability, defineCapability } from "../capability/capability";
+import { phi, pii, secret } from "./classes";
+import { unreadClasses } from "./classify";
+import { lazyPrivacyInventory, privacyInventory } from "./inventory";
+import { PRIVACY_SOURCES } from "./report";
+
+const Patients = z
+  .object({
+    id: z.string().describe("id"),
+    email: pii(z.string().describe("email")),
+    diagnosis: phi(z.string().describe("diagnosis")),
+  })
+  .describe("patients");
+const Notes = z.object({ id: z.string().describe("id"), body: z.string().describe("body") }).describe("notes");
+
+function app(tables: Record<string, z.ZodType> = { patients: Patients, notes: Notes }): Capability {
+  return defineCapability({
+    name: "app",
+    requiredBindings: [],
+    databases: { app: { binding: "DB", tables } },
+    kvNamespaces: {
+      sessions: {
+        binding: "SESSIONS",
+        stores: {
+          session: {
+            prefix: "app",
+            key: z.object({ email: pii(z.string()) }),
+            value: z.object({ token: secret(z.string()), plan: z.string() }),
+            metadata: z.object({ ip: pii(z.string()) }),
+          },
+          counter: { prefix: "count", key: z.object({ id: z.string() }), value: z.number() },
+        },
+      },
+    },
+  });
+}
+
+describe("privacyInventory", () => {
+  test("walks every composed capability's D1 tables and KV stores, naming each marked field", () => {
+    const inventory = privacyInventory([app()]);
+    expect(inventory.sources).toEqual([...PRIVACY_SOURCES]);
+    expect(inventory.schemas).toEqual([
+      {
+        capability: "app",
+        storage: "d1",
+        container: "app",
+        name: "patients",
+        fields: [
+          { path: "email", class: "pii" },
+          { path: "diagnosis", class: "phi" },
+        ],
+      },
+      {
+        capability: "app",
+        storage: "kv",
+        container: "sessions",
+        name: "session",
+        fields: [
+          { path: "key.email", class: "pii" },
+          { path: "value.token", class: "secret" },
+          { path: "metadata.ip", class: "pii" },
+        ],
+      },
+    ]);
+    expect(inventory.schemasWalked).toBe(4);
+  });
+
+  test("counts fields per class, and lists the classes it observed in the built-in order", () => {
+    const inventory = privacyInventory([app()]);
+    expect(inventory.counts).toEqual({ secret: 1, pii: 3, phi: 1 });
+    expect(inventory.observed).toEqual(["secret", "pii", "phi"]);
+  });
+
+  test("reflects the code: an unmarked field is simply not there", () => {
+    const unmarked = z
+      .object({ id: z.string().describe("id"), email: z.string().describe("email"), diagnosis: z.string() })
+      .describe("patients");
+    const inventory = privacyInventory([app({ patients: unmarked })]);
+    expect(inventory.counts.phi).toBeUndefined();
+    expect(inventory.schemas.map((schema) => schema.name)).toEqual(["session"]);
+  });
+
+  test("is empty, and says what it covered, for a Worker with no storage", () => {
+    const inventory = privacyInventory([defineCapability({ name: "bare", requiredBindings: [] })]);
+    expect(inventory).toEqual({
+      sources: [...PRIVACY_SOURCES],
+      schemasWalked: 0,
+      schemas: [],
+      counts: {},
+      observed: [],
+    });
+  });
+});
+
+describe("privacyInventory paths", () => {
+  test("joins a KV part to an element path the way classifyPrivacy and the scan write it", () => {
+    const capability = defineCapability({
+      name: "list",
+      requiredBindings: [],
+      kvNamespaces: {
+        lists: {
+          binding: "LISTS",
+          stores: {
+            members: {
+              prefix: "m",
+              key: z.object({ id: z.string() }),
+              value: z.array(z.object({ email: pii(z.string()) })),
+              metadata: z.tuple([z.string(), pii(z.string())]),
+            },
+          },
+        },
+      },
+    });
+    expect(privacyInventory([capability]).schemas[0]?.fields).toEqual([
+      { path: "value[].email", class: "pii" },
+      { path: "metadata[1]", class: "pii" },
+    ]);
+  });
+});
+
+describe("privacyInventory references", () => {
+  test("every sameAs in a KV inventory names a path the same report lists", () => {
+    let node: z.ZodType = z.object({ e: pii(z.string()) });
+    for (let level = 0; level < 20; level += 1) node = z.object({ a: node.optional(), b: node.optional() });
+    const capability = defineCapability({
+      name: "shared",
+      requiredBindings: [],
+      kvNamespaces: {
+        cache: {
+          binding: "CACHE",
+          stores: { profile: { prefix: "p", key: z.object({ id: z.string() }), value: z.object({ t: node }) } },
+        },
+      },
+    });
+    const fields = privacyInventory([capability]).schemas[0]?.fields ?? [];
+    const listed = fields.filter((field) => field.sameAs === undefined).map((field) => field.path);
+    const references = fields.filter((field) => field.sameAs !== undefined);
+    expect(references.length).toBeGreaterThan(0);
+    for (const { sameAs } of references) {
+      expect(sameAs?.startsWith("value.")).toBe(true);
+      expect(listed.some((path) => path === sameAs || path.startsWith(`${sameAs}.`))).toBe(true);
+    }
+  });
+});
+
+describe("privacyInventory, past the depth limit", () => {
+  test("lists every class, assumed, for a KV value built anew past the recursion limit, and none for one defined once", () => {
+    // biome-ignore lint/suspicious/noExplicitAny: a factory's type is circular, and TypeScript infers none.
+    const factory = (): any => z.object({ a: z.string(), next: z.lazy(factory).optional() });
+    const capability = defineCapability({
+      name: "deep",
+      requiredBindings: [],
+      kvNamespaces: {
+        trees: {
+          binding: "TREES",
+          stores: {
+            tree: { prefix: "t", key: z.object({ id: z.string() }), value: factory().transform((v: unknown) => v) },
+          },
+        },
+      },
+    });
+    const inventory = privacyInventory([capability]);
+    expect(inventory.schemasWalked).toBe(1);
+    // Nothing past the limit was read, so any class may be marked there: each is listed, and observed.
+    const every = unreadClasses();
+    expect(inventory.schemas).toEqual([
+      {
+        capability: "deep",
+        storage: "kv",
+        container: "trees",
+        name: "tree",
+        fields: every.map((name) => ({ path: "value", class: name, truncated: true })),
+      },
+    ]);
+    expect([...inventory.observed].sort()).toEqual([...every].sort());
+    // Defined once, the recursion comes round to a schema already read: nothing is assumed.
+    const Once: z.ZodType = z.object({ a: z.string(), next: z.lazy(() => Once).optional() });
+    const once = defineCapability({
+      name: "once",
+      requiredBindings: [],
+      kvNamespaces: {
+        trees: {
+          binding: "TREES",
+          stores: {
+            tree: { prefix: "t", key: z.object({ id: z.string() }), value: Once.transform((v: unknown) => v) },
+          },
+        },
+      },
+    });
+    expect(privacyInventory([once]).schemas).toEqual([]);
+  });
+});
+
+describe("lazyPrivacyInventory", () => {
+  test("walks nothing until it is read, then walks once for the isolate", () => {
+    let walks = 0;
+    const inventory = lazyPrivacyInventory(() => {
+      walks += 1;
+      return [app()];
+    });
+    expect(walks).toBe(0);
+    const first = inventory();
+    const second = inventory();
+    expect(walks).toBe(1);
+    expect(second).toBe(first);
+  });
+});

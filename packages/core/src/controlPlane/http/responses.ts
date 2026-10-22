@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
+import { PrivacyPosture } from "../../privacy/posture";
+import { PRIVACY_SOURCES } from "../../privacy/report";
 import { ConnectionPrincipal, ConnectionPurpose, ControlPlaneActorKind, Ed25519PublicJwk } from "../data/connection";
 
 /**
@@ -228,3 +230,74 @@ export const ControlPlaneMigrationsResponse = z
   })
   .describe("What is applied, pending and undeclared in each bound database, and which run put it there.");
 export type ControlPlaneMigrationsResponse = z.output<typeof ControlPlaneMigrationsResponse>;
+
+/**
+ * One marked field, as `GET {basePath}/privacy` reports it (#132).
+ *
+ * **The per-field record, and the extension point.** #390 marks a field encrypted at rest; that lands here
+ * beside `class` as one more optional key, so "which of your PHI fields are encrypted" is a derivation over
+ * this list rather than a second inventory to keep.
+ */
+export const PrivacyFieldView = z
+  .object({
+    path: z
+      .string()
+      .describe(
+        "Where the field sits. A D1 column path (`email`, `address.line1`, `profile.phone` inside a JSON column), or a KV entry's part first (`key.email`, `value.token`, `metadata.ip`, or `value` for a whole marked value). An array element is `[]`, a record's value `*`.",
+      ),
+    class: z
+      .string()
+      .describe("The privacy class it is marked with: `secret`, `pii`, `phi`, `pci`, or an adopter's own."),
+    truncated: z
+      .literal(true)
+      .optional()
+      .describe(
+        "Set where the class is assumed rather than found: a read ran out of its budget there, or the schema could not be read at all, so any class may be marked below it. Absent where the schema was read to the end.",
+      ),
+    sameAs: z
+      .string()
+      .optional()
+      .describe(
+        "Set on a reference: the path this field's position was first listed under, once the list reached its cap on paths. The class is marked somewhere beneath both, and the paths beneath this one are those beneath that one.",
+      ),
+  })
+  .describe("One marked field and its class.");
+export type PrivacyFieldView = z.output<typeof PrivacyFieldView>;
+
+/** One storage schema holding at least one marked field. */
+export const PrivacySchemaView = z
+  .object({
+    capability: z
+      .string()
+      .describe("The capability that declared the schema, as the manifest's `capabilities[]` names it."),
+    storage: z.enum(PRIVACY_SOURCES).describe("Where it is stored: a `d1` table or a `kv` store."),
+    container: z.string().describe("The D1 database name or the KV namespace name it lives in."),
+    name: z.string().describe("The table name, or the KV store name."),
+    fields: z.array(PrivacyFieldView).describe("Every marked field in it, in schema order."),
+  })
+  .describe("One storage schema and the marked fields it holds.");
+export type PrivacySchemaView = z.output<typeof PrivacySchemaView>;
+
+/**
+ * `GET /control-plane/privacy` — the full inventory, behind `privacy:read` (#132).
+ *
+ * Derived at runtime from the schemas this Worker composed, walked once per isolate. The manifest's `privacy`
+ * block is the headline; this is the detail, and it names fields, which is why it has a scope of its own.
+ */
+export const ControlPlanePrivacyResponse = z
+  .object({
+    environment: z.string().describe("The environment this Worker answers for."),
+    posture: PrivacyPosture.describe("The declared and observed classes, the delta, and the console gate."),
+    schemasWalked: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe("How many storage schemas were walked, marked or not, across the sources `posture.sources` names."),
+    schemas: z
+      .array(PrivacySchemaView)
+      .describe("Every schema holding a marked field, in composition order. A schema with none is not listed."),
+  })
+  .describe(
+    "Every schema this Worker stores that holds a marked field, each field's path and class, and where it lives.",
+  );
+export type ControlPlanePrivacyResponse = z.output<typeof ControlPlanePrivacyResponse>;

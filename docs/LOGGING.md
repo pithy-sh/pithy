@@ -34,6 +34,8 @@ Reach for `c.var.log` in a request. Everywhere else — a Workflow, a Durable Ob
 
 `pithy init` scaffolds both plugins and both `biome.jsonc` entries into a new project, scoped to `apps/*/src/**/*.ts` — the Worker's own program. Those files are yours. Narrow them, widen them, or drop an entry and delete its plugin with it.
 
+**A project that declares a privacy class is held to more than the plugin.** `pithy deploy` reads Biome's `suspicious/noConsole` and refuses while it is not `error`, because a `console.log` goes around every privacy gate the logger has; `pithy privacy enable` writes the rule beside the plugin, on each Worker's source in every language Biome lints rather than the plugin's `.ts` alone. The plugin is the scaffolded habit, and the rule is what the deploy can read. [`docs/PRIVACY.md`](PRIVACY.md) has the three states.
+
 ## Mode 1 — local diagnostics
 
 One unified diagnostic layer for the CLI process and a Worker under `pithy dev`. Human-readable and colorized for a person at a terminal, or a `--json` structured line stream for agents and CI.
@@ -70,6 +72,8 @@ The scaffolded `wrangler.jsonc` sets `ENVIRONMENT` per environment (`dev` / `sta
 A log is an **internal** surface. The logger carries the full `ErrorPayload` — `detail` included — because a log lives on the same side of the boundary as audit detail. This is the inverse of the HTTP codec, which strips `action` and `detail` as the single client boundary — a log is read by the operator both were written for.
 
 The logger must never be wired to a client-facing surface. A meta-test pins it: the HTTP and terminal error surfaces do not import the logger.
+
+**Internal is not unlimited.** A field marked with a privacy class — `pii()`, `phi()`, `secret()`, `pci()` — does not compile into a log call's message or fields, nor into an audit event's `metadata` or an error's `message`, `action` or `detail`, because each of those outlives the request and some outlive the year. Pass `redact(Schema, value)`, or the unmarked id. What the compiler checks and what it cannot see is [`docs/PRIVACY.md`](PRIVACY.md).
 
 ## Tail / Logpush
 

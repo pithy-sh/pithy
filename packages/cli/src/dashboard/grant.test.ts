@@ -92,6 +92,16 @@ describe("defaultGrant", () => {
     expect(defaultGrant([capability])).toEqual([...SEAM_SCOPES, "vector:indexes:read"]);
   });
 
+  test("offers privacy:read, grantable on its own, as a read — every route requiring it is a GET (#132)", () => {
+    const privacy = grantableScopes([controlplane()]).find((entry) => entry.scope === "privacy:read");
+    expect(privacy?.read).toBe(true);
+    expect(defaultGrant([controlplane()])).toContain("privacy:read");
+    // Separately grantable: a connection can be granted the manifest without the field names.
+    expect(resolveScopeRequest(readScopeRequest(["manifest:read"]), grantableScopes([controlplane()]))).toEqual([
+      "manifest:read",
+    ]);
+  });
+
   test("adds every declared read, so a fresh connection opens to panes that read", () => {
     const audit = capabilityWith("audit", [
       { method: "GET", path: "/audit/events", scope: "audit:events:read", summary: "Page the trail." },
@@ -251,6 +261,7 @@ describe("--scope all resolves to the list the prompt renders", () => {
     "manifest:read",
     "keys:rotate",
     "migrations:read",
+    "privacy:read",
     "audit:events:read",
     "audit:events:read_detail",
     "support:tickets:read",
@@ -281,6 +292,7 @@ describe("--scope all resolves to the list the prompt renders", () => {
       "manifest:read",
       "keys:rotate",
       "migrations:read",
+      "privacy:read",
       "audit:events:read",
       "audit:events:read_detail",
       "support:tickets:read",
@@ -295,6 +307,7 @@ describe("--scope all resolves to the list the prompt renders", () => {
       "manifest:read",
       "keys:rotate",
       "migrations:read",
+      "privacy:read",
     ]);
   });
 
@@ -306,6 +319,7 @@ describe("--scope all resolves to the list the prompt renders", () => {
       "manifest:read",
       "keys:rotate",
       "migrations:read",
+      "privacy:read",
       "audit:events:read",
       "audit:events:read_detail",
       "support:tickets:read",
@@ -366,6 +380,7 @@ describe("decideGrant", () => {
       "manifest:read",
       "keys:rotate",
       "migrations:read",
+      "privacy:read",
       "audit:events:read",
       "audit:events:read_detail",
       "support:tickets:read",
@@ -414,6 +429,7 @@ describe("decideGrant", () => {
       "manifest:read",
       "keys:rotate",
       "migrations:read",
+      "privacy:read",
       "audit:events:read",
       "audit:events:read_detail",
       "support:tickets:read",
@@ -423,6 +439,7 @@ describe("decideGrant", () => {
       "manifest:read",
       "keys:rotate",
       "migrations:read",
+      "privacy:read",
       "audit:events:read",
       "audit:events:read_detail",
       "support:tickets:read",

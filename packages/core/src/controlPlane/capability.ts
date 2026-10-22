@@ -7,6 +7,7 @@ import type { BindingSpecInput } from "../capability/bindings";
 import { type Capability, defineCapability, type PithyHonoEnv } from "../capability/capability";
 import type { DatabaseSpecMap } from "../data/databases";
 import type { KvNamespaceSpecMap, KvRegistry } from "../kv/namespaces";
+import { lazyPrivacyInventory } from "../privacy/inventory";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "../version.generated";
 import { ENVIRONMENT_VAR } from "../worker/identity";
 import { ControlPlaneConfig, type ControlPlaneConfigInput } from "./config/config";
@@ -146,6 +147,12 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
   // Worker's sets and this Worker holds only its own, so `pending` and `undeclared` can differ there.
   let migrationDatabases: readonly ComposedMigrationDatabase[] = [];
 
+  // Every capability this Worker composed, kept so the privacy inventory can walk their storage schemas
+  // (#132) — lazily, on the first control-plane read, and once for the isolate. Capturing the list costs
+  // nothing; walking it is deferred, so a Worker whose control plane is never called never walks.
+  let composedCapabilities: readonly Capability[] = [];
+  const privacy = lazyPrivacyInventory(() => composedCapabilities);
+
   const capability = defineCapability({
     name: "controlplane",
     // `@pithy-sh/core`'s version, stamped by `scripts/stampVersions.ts` — a Worker cannot read its own
@@ -209,6 +216,7 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
       }));
       health = capabilityHealthSources(capabilities);
       migrationDatabases = composeMigrationDatabases(capabilities);
+      composedCapabilities = [...capabilities];
     },
     middleware: [
       (app) => {
@@ -252,6 +260,7 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
         composedCapabilities: () => composed,
         composedHealth: () => health,
         composedMigrations: () => migrationDatabases,
+        privacyInventory: privacy,
         now,
       });
     },

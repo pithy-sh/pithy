@@ -17,6 +17,7 @@ import { assertProjectDeclaresNoFeatureIds } from "../feature/ratelimits";
 import { establishedPending } from "../migrations/pendingCount";
 import { planMigrateProject, readProjectLedger } from "../migrations/run";
 import { DRY_RUN_ARG, PlanKey, planText } from "../plan/plan";
+import { type DeployPrivacy, deployPrivacy, unverifiableGateLine } from "../privacy/deployGate";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import {
   deployFailureExit,
@@ -236,6 +237,28 @@ const DeployEvents = eventsRecord("deploy", {
   },
 });
 
+/** What a deploy attested about privacy (#132): the declared classes, and the console gate's verdict. */
+const DeployedPrivacy = z
+  .object({
+    declared: z
+      .array(z.string().describe("A class name."))
+      .describe("The classes the root `pithy.config.ts` declares. Empty when it declares none."),
+    consoleGate: z
+      .enum(["enforced", "unverifiable", "not_required"])
+      .describe(
+        "`enforced`, `unverifiable` (no Biome config Pithy could read — deployed, and reported as unverified), or `not_required` (no class declared). A gate that is off refuses the deploy instead.",
+      ),
+    reason: z.string().nullable().describe("Why the gate is `unverifiable`, in one sentence. Null otherwise."),
+  })
+  .describe("The privacy attestation this deploy wrote into each Worker as `PITHY_PRIVACY`.");
+
+/** The payload's view of a deploy's privacy attestation. */
+function privacyView(privacy: DeployPrivacy | undefined): z.output<typeof DeployedPrivacy> | null {
+  if (!privacy) return null;
+  const { classes, consoleGate, reason } = privacy.attestation;
+  return { declared: classes, consoleGate, reason };
+}
+
 /** `pithy deploy --json`: what each half shipped. `docs/commands/deploy.md`. */
 const DeployPayload = z
   .object({
@@ -263,6 +286,11 @@ const DeployPayload = z
       .nullable()
       .describe("What stopped the kit half knowing its set. Non-empty fails the run. `null` when it did not run."),
     dryRun: z.boolean().describe("Whether this was `--dry-run`. Nothing was uploaded when it is `true`."),
+    privacy: DeployedPrivacy.nullable()
+      .optional()
+      .describe(
+        "What this deploy attested about privacy into each Worker under `apps/`, or `null` when that half did not run.",
+      ),
     plan: PlanKey,
     next: NextKey,
     offers: OffersKey,
@@ -328,6 +356,13 @@ export default withContract(
             const { seed } = await loadProject(projectDir);
             await assertEnvironmentProvisioned(projectDir, env, seed?.productionEnvironments);
           }
+          // **The console gate (#132): a project that declared a privacy class does not ship with `console`
+          // open.** Read once, for the Workers under `apps/` — the kit's carry no adopter code — and before
+          // anything is built, so it is the project's one refusal rather than a failed row per Worker. A gate
+          // Pithy cannot read deploys, and says so before the first upload.
+          const privacy = selection.apps
+            ? await deployPrivacy({ projectDir, config: await loadProject(projectDir) })
+            : undefined;
           // And the other half of "is this environment ready to be real": does its config name every origin
           // it will answer on (#253). Refused here for the same reason the binding check is — deploy knows
           // the environment and the config, and this is the last moment before a staging Worker starts
@@ -353,7 +388,7 @@ export default withContract(
           // deploy` authenticates on its own OAuth login and always could.
           cloudflareEnv({ account });
           if (args["dry-run"]) {
-            await planDeploy({ projectDir, env, account, selection, force: args.force, json: args.json });
+            await planDeploy({ projectDir, env, account, selection, force: args.force, json: args.json, privacy });
             return;
           }
           const pending = env ? await pendingFor(projectDir, env, account) : undefined;
@@ -365,6 +400,8 @@ export default withContract(
           // is what tells an operator the run is alive. `--json` still writes one line and nothing else.
           const warning = env && !args.json ? pendingWarning(pending, env) : undefined;
           if (warning) process.stdout.write(`${warning}\n`);
+          const unverified = privacy && !args.json ? unverifiableGateLine(privacy) : undefined;
+          if (unverified) process.stdout.write(`${unverified}\n`);
 
           // **The kit's Workers, gated.** Separately from the adopter's, so CI reads two exit-worthy facts rather
           // than one. `dev` is not a target here at all — see {@link KIT_IS_LOCAL_IN_DEV}.
@@ -390,7 +427,9 @@ export default withContract(
           const kitEarly = kitFirst ? await deployKit() : null;
 
           // **The adopter's Workers, ungated.** Their code is the thing that changed.
-          const deploys = selection.apps ? await deployProject({ projectDir, account, env, audit }) : [];
+          const deploys = selection.apps
+            ? await deployProject({ projectDir, account, env, audit, privacy: privacy?.attestation })
+            : [];
           // A deploy that shipped but is not the thing answering at the declared address is a failure too,
           // and it fails the pipeline rather than printing a line nobody reads. Two shapes count: a
           // *consistent* mismatch, and nothing answering at all (#264). A gradual rollout and a Worker that
@@ -420,6 +459,7 @@ export default withContract(
                 // never even saw. `null` when the kit half did not run, exactly as `kit` is.
                 kitProblems: kit?.problems ?? null,
                 dryRun: false,
+                privacy: privacyView(privacy),
                 next,
                 offers,
               })}\n`,
@@ -476,6 +516,8 @@ interface PlanDeployOptions {
   selection: { apps: boolean; kit: boolean };
   force: boolean;
   json: boolean;
+  /** The privacy attestation the real deploy would write, so the dry run's argv is the deploy's (#132). */
+  privacy: DeployPrivacy | undefined;
 }
 
 /**
@@ -502,7 +544,9 @@ async function planDeploy(options: PlanDeployOptions): Promise<void> {
       env: env as string,
     }),
   );
-  const deploys = selection.apps ? await deployProject({ projectDir, account, env, dryRun: true }) : [];
+  const deploys = selection.apps
+    ? await deployProject({ projectDir, account, env, dryRun: true, privacy: options.privacy?.attestation })
+    : [];
   const runKit = selection.kit && env !== undefined && env !== LOCAL_ENVIRONMENT;
   const kit: KitDeployReport | null = runKit
     ? await deployKitWorkers({
@@ -531,11 +575,14 @@ async function planDeploy(options: PlanDeployOptions): Promise<void> {
         kit: kit?.workers ?? null,
         kitProblems: kit?.problems ?? null,
         dryRun: true,
+        privacy: privacyView(options.privacy),
         plan,
       })}\n`,
     );
   } else {
     for (const problem of kit?.problems ?? []) process.stdout.write(`${summarizeKitProblem(problem)}\n`);
+    const unverified = options.privacy ? unverifiableGateLine(options.privacy) : undefined;
+    if (unverified) process.stdout.write(`${unverified}\n`);
     if (selection.kit && !runKit) {
       process.stdout.write(`${env === LOCAL_ENVIRONMENT ? KIT_IS_LOCAL_IN_DEV : NO_ENV_FOR_KIT}\n`);
     }

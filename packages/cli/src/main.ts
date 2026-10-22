@@ -34,6 +34,7 @@ const COMMANDS = {
   ui: { group: "Project", load: () => import("./commands/ui").then((m) => m.default) },
   upgrade: { group: "Project", load: () => import("./commands/upgrade").then((m) => m.default) },
   contract: { group: "Project", load: () => import("./commands/contract").then((m) => m.default) },
+  privacy: { group: "Project", load: () => import("./commands/privacy").then((m) => m.default) },
 
   // Develop — the local loop. `setup` first: it is the first command a fresh clone runs.
   setup: { group: "Develop", load: () => import("./commands/setup").then((m) => m.default) },

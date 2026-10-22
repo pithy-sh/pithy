@@ -61,12 +61,24 @@ function vehicleFiles(): { path: string; source: string }[] {
     .filter((file) => /interface\s+\w*ErrorArgs\b/.test(file.source));
 }
 
-/** The fields one `interface …ErrorArgs { … }` block declares. */
-function declaredFields(source: string): { name: string; fields: string[] }[] {
-  const found: { name: string; fields: string[] }[] = [];
+/**
+ * The fields that ride into logs and audit rows, and so refuse a marked value (#132). `message` reaches the
+ * client too. Each must be typed `UnmarkedString`: a clone that writes `string` compiles a marked value
+ * straight through, and nothing else in the tree says so.
+ */
+const UNMARKED_FIELDS = ["message", "action", "detail"] as const;
+
+/** The fields one `interface …ErrorArgs { … }` block declares, each with its declared type. */
+function declaredFields(source: string): { name: string; fields: string[]; types: Record<string, string> }[] {
+  const found: { name: string; fields: string[]; types: Record<string, string> }[] = [];
   for (const match of source.matchAll(/interface\s+(\w*ErrorArgs)\s*\{([^}]*)\}/g)) {
     const [, name = "", body = ""] = match;
-    found.push({ name, fields: [...body.matchAll(/^\s*(\w+)\??\s*:/gm)].map((field) => field[1] ?? "") });
+    const declared = [...body.matchAll(/^\s*(\w+)\??\s*:\s*([^;]*);/gm)];
+    found.push({
+      name,
+      fields: declared.map((field) => field[1] ?? ""),
+      types: Object.fromEntries(declared.map((field) => [field[1] ?? "", (field[2] ?? "").trim()])),
+    });
   }
   return found;
 }
@@ -108,6 +120,20 @@ describe("every throw vehicle accepts every field the payload carries", () => {
         .map((args) => `${file.path.slice(file.path.indexOf("packages/"))} — ${args.name}`),
     );
     expect(missing, `these cannot accept \`${field}\`:\n${missing.join("\n")}`).toEqual([]);
+  });
+
+  test.each(UNMARKED_FIELDS)("every `*ErrorArgs` types `%s` as `UnmarkedString`", (field) => {
+    const loose = files.flatMap((file) =>
+      declaredFields(file.source)
+        .filter((args) => args.fields.includes(field) && !/^UnmarkedString\b/.test(args.types[field] ?? ""))
+        .map((args) => `${file.path.slice(file.path.indexOf("packages/"))} — ${args.name}: ${args.types[field]}`),
+    );
+    expect(loose, `these accept a marked \`${field}\`:\n${loose.join("\n")}`).toEqual([]);
+  });
+
+  test("the type reader sees a loose field and a gated one", () => {
+    const [args] = declaredFields("interface AErrorArgs {\n  message?: string;\n  detail?: UnmarkedString;\n}");
+    expect(args?.types).toEqual({ message: "string", detail: "UnmarkedString" });
   });
 
   // The canary, because the assertion below is that a list is empty and a detector that stopped matching

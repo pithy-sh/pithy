@@ -1234,6 +1234,33 @@ export const COMMANDS = {
     },
     "groups": []
   },
+  "privacy enable": {
+    "positionals": [],
+    "flags": {
+      "--class": {
+        "type": "string",
+        "required": false,
+        "repeatable": true
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
+  "privacy scan": {
+    "positionals": [],
+    "flags": {
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
   "provision": {
     "positionals": [],
     "flags": {
@@ -2715,6 +2742,7 @@ export const GROUPS = [
   "feature",
   "media",
   "payments",
+  "privacy",
   "secrets",
   "storage",
   "support",

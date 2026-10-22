@@ -328,7 +328,7 @@ function harness(granted: string[] = [SECRETS_STATUS_READ_SCOPE], environment = 
     c.set("auth", null);
     c.set("controlPlane", null);
     c.set("controlPlaneVerifier", verify);
-    c.set("emit", async (event) => {
+    c.set("emit", async (event: AuditEventInput) => {
       events.push(event);
     });
     c.set("log", noopLogger);

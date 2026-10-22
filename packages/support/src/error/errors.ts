@@ -3,6 +3,7 @@
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
+import type { UnmarkedString } from "@pithy-sh/core/src/privacy/types";
 
 /**
  * `@pithy-sh/support` throw sugar. The `support/*` codes live in core's closed `KitErrorPayload` union
@@ -18,11 +19,11 @@ import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
 /** Variable parts each subclass accepts; `code`/`status` are fixed by the subclass. */
 interface SupportErrorArgs {
   /** Override the public, safe-to-expose message. */
-  message?: string;
+  message?: UnmarkedString;
   /** A remediation hint (CLI action line). */
-  action?: string;
+  action?: UnmarkedString;
   /** Internal context for logs + audit. Never serialized to clients. */
-  detail?: string;
+  detail?: UnmarkedString;
   /**
    * Values a translating client interpolates into its own wording for this code. Client-facing, so —
    * unlike `action` and `detail` — these cross the boundary with `message`.

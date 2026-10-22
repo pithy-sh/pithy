@@ -1,0 +1,423 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
+import type { z } from "zod";
+import { privacyClass } from "./classes";
+import { MAX_RECURSION_DEPTH, type Mask, type Position, rootPosition, TRUNCATED_MASK } from "./classify";
+import type { RedactedOutput } from "./types";
+
+/**
+ * **The masked view: safe for a log, an audit record and an error detail** (#132).
+ *
+ * `redact(User, user)` walks the schema and the value together and returns a copy in which every unmarked field
+ * is verbatim and every marked one is its class's mask — `[pii]`, `[phi]`, `[secret]`, a PAN's first six and
+ * last four, or whatever an adopter's class says. The result carries no brand, so it compiles into every
+ * surface the type gate guards.
+ *
+ * ## The contract
+ *
+ * `redact(schema, value)` promises exact results for a stated set of schema shapes and documents everything else. It
+ * does not try to defend against every construction Zod allows, because a schema built to dodge it can be built, and
+ * following every such construction costs more than it protects. What it covers, it covers perfectly; what it does not,
+ * it masks whole and says so.
+ *
+ * **Redacted exactly.** Every marked field is masked with its class placeholder, every unmarked field is kept as
+ * `parse` returned it, nothing is dropped, and `Redacted<T>` is the exact type of the result, save three positions it
+ * types `unknown` rather than guess: one that nests wrappers and choices deeper than the type can follow, an
+ * intersection with a record on either side, because a record's masked keys rename the other side's keys too, and a
+ * `.catch()` over an object, an array or another structure with a mark beneath, because the type cannot tell a
+ * constant fallback from a function.
+ *
+ * 1. Rows and objects: `z.object`, strict, loose or with a catchall, and `pick`, `omit`, `partial` and `extend` of one.
+ *    A mark on a whole object does not survive Zod's object methods, `extend`, `safeExtend`, `merge`, `pick`, `omit`,
+ *    `partial`, `required`, `strict` and `catchall`, because each builds a fresh schema: mark the object after
+ *    deriving it. A field marked inside survives every one.
+ * 2. Collections: arrays, tuples including rest elements, records with marked keys or values, `Map` and `Set`.
+ * 3. Wrappers: `optional`, `nullable`, `default`, `catch` with a constant value, `readonly`, `brand`.
+ * 4. Choices: unions, discriminated unions and intersections. An option's marks apply where the value has that option's
+ *    shape: an object option to an object value, an array option to an array value. A field is masked when any option
+ *    or side that applies marks it, and a key no option names is kept. Where one side of an intersection narrows a
+ *    field so it can never hold the type the other side marks, `classifyPrivacy` may still list that field: the
+ *    inventory can list more than `redact` masks, and never less.
+ * 5. The kit's database codecs: `SQLiteDate`, `SQLiteBoolean` and `sqliteJson(schema)`. A JSON column's inner fields
+ *    are redacted field by field.
+ * 6. Recursion and depth: `z.lazy(() => Node)` and getters, whether a getter returns one schema or builds a new one
+ *    each read, such as trees and linked lists. Walked exactly to a fixed depth, 256 levels of nesting, unless the
+ *    call's budget ends the walk sooner. One call of `redact`, `classifyPrivacy`, `hasPrivacy` or `walkPrivacy` reads
+ *    at most 10,000 schemas, and every position and every search in it draws on that one budget. A call's time and
+ *    memory grow linearly with the size of the schema and the value, and are bounded beyond that by the budget and by
+ *    what the schema's own getters build. A schema that builds new ones as it is read can spend the budget first. Past
+ *    the budget the call fails closed: `redact` masks each position it has not resolved whole, with the strongest class
+ *    it found there, or as `[truncated]` where it found none, and `classifyPrivacy` lists every class at each position
+ *    it has not read, each `truncated`. The depth limit applies to all nesting, not only recursion: anything nested
+ *    deeper than the limit is masked `[truncated]`, a safety cutoff rather than a privacy class, and the inventory
+ *    assumes every class there unless the chain repeats a position (the same set of schemas) already read. A recursion
+ *    that repeats a position (the same set of schemas) already read on its path needs no cut: its classes are exactly
+ *    those of the position already read, so a tree or a linked list defined once is listed exactly, with no `truncated`
+ *    entry. A position is every schema that may hold the value there, so recursions defined once that run side by side
+ *    in one union, with cycles of different lengths, can reach the limit before any position repeats, though each
+ *    schema on the chain is one already read: there the inventory assumes every class, each `truncated`, and lists more
+ *    than is marked, never less. Where the walk reaches the limit on a chain that keeps producing positions not yet
+ *    seen on that path, a factory recursion or plain nesting deeper than the limit, `classifyPrivacy` lists every class
+ *    at that position, each `truncated`, beside any class it found there, exactly as past the budget, and `hasPrivacy`
+ *    answers yes for each. So the list never says less than is marked.
+ *    `Redacted<T>` types a position past the limit `unknown` from that same depth: one limit, shared by the runtime and
+ *    the type, however the nesting is written. A self-referencing `z.lazy` has to be annotated `z.ZodType<T>`, which
+ *    names no kind, so `Redacted<T>` types it, and every field that holds it, `unknown`. Write the recursion with a
+ *    getter and the type keeps its shape to the limit.
+ * 7. Values copied out of a parsed row into a plain object, array, `Map` or `Set` described by any of the above.
+ *
+ * **Outside the contract.** Custom transforms and pipes, `preprocess`, codecs other than the kit's own (one built the
+ * way `sqliteJson` is built included), `z.custom`, `any`, `unknown`, `.overwrite()` and `.catch()` with a fallback
+ * function. `redact` does not look inside these. When anything beneath one is marked, the whole value is masked with
+ * the strongest class it carries, and `Redacted<T>` types that position `unknown`. When nothing beneath it is marked,
+ * it is kept as it is, including when it is a union option beside a marked one. The one exception is a value the call's
+ * budget ran out on before it resolved: it is masked `[truncated]`, as any class may be marked past the budget (item
+ * 6). A recursion beneath it that reaches the item 6 depth limit counts as possibly marked, so that value is masked
+ * whole and typed `unknown`: with the strongest class marked anywhere else beneath it, or as `[truncated]` where none
+ * is. None of this ever throws or leaks a raw marked value. `Redacted<T>` cannot see an `.overwrite()`, which keeps the
+ * type of the schema it is called on, so it types that position as the shape beneath it. A `.refine` or `.superRefine`
+ * that mutates its input is outside the contract; `redact` does not defend against a check written to move a marked
+ * value. `redact` copies only the enumerable own properties of a plain object passed through as it is. A value whose
+ * kind or prototype does not match what its position's schema expects is not walked either: a value that is not a plain
+ * object, such as a class instance, an ORM entity or an object whose prototype is not `Object.prototype`, where an
+ * object is expected; a `Date`, an array, a `Map`, a `Set` or a function there, a subclass of one or one carrying
+ * fields included; a plain object where an array or a map is expected; an array-like class instance where an array is;
+ * an object or an array where only scalars are. A schema expects a plain object, an `Array.prototype` array, a `Map`, a
+ * `Set` or a `Date` of its own prototype, or a primitive of the scalar's kind, and a constant `.catch()` fallback's
+ * kind is one its schema names. When anything beneath the position is marked, the whole value is masked with the
+ * strongest class it carries, at the top level, inside an array and as a field of a row alike, and when nothing is, it
+ * is kept as it is. Where a schema at the position names the value's kind, beneath means beneath the schemas of that
+ * kind, so a class instance beside a marked string option and an object option that marks nothing is kept. A value of a
+ * kind only an opaque node at its position takes is that node's, and kept as it is when nothing beneath that node is
+ * marked. `Redacted<T>`, which cannot tell a class instance from a plain object, types it as the schema's shape.
+ *
+ * **Five constructions nothing written to the contract uses** are outside it too. Each is tested for exactly this
+ * behavior, none throws, and all but the second and the fourth can keep a marked value as it is:
+ *
+ * 1. A symbol key in a `z.object` shape is not listed by `classifyPrivacy` or seen by `hasPrivacy`, and beneath an
+ *    opaque node or a mark `redact` does not see a mark on it.
+ * 2. A value that is not a plain object, such as a class instance or an object whose prototype is not
+ *    `Object.prototype`, passed through as it is beside an object option is read as one where an object is expected:
+ *    masked whole with the strongest class marked beneath that option, and kept as it is where nothing is.
+ * 3. An `.overwrite()` or a `.catch()` with a fallback function on a scalar option of a union is read by the scalar's
+ *    kind, so an object or an array it makes is read as any value of that kind at its position: walked by an object or
+ *    an array option beside it, which can keep it as it is, and masked whole as a value of a kind its position does not
+ *    name where no such option is and anything beneath is marked.
+ * 4. Wrappers, choices or intersections nested deeper than the JavaScript stack can follow, and a field cloned by
+ *    `.describe()` or `.meta()` more times than Zod can read its metadata back through: `redact` masks the value they
+ *    sit in `[truncated]`, `classifyPrivacy`, `hasPrivacy` and `walkPrivacy` list that position with every class,
+ *    each `truncated`, and `privacyOf` answers the strongest class, rather than throw.
+ * 5. An array, a `Map` or a `Set` passed through as it is is copied by its elements or entries, and no other own
+ *    property it holds is copied.
+ *
+ * **Where `redact` masks more than the marks name.** It never masks less, and it masks more in five places, each
+ * tested. Anything nested deeper than the depth limit is masked `[truncated]`, marked or not (item 6). A position the
+ * call ran out of its budget before it resolved is masked whole, with the strongest class found
+ * there or as `[truncated]`, as any class may be marked past it (item 6). A value whose kind or prototype does not
+ * match its position is masked whole over a mark beneath it, as above. A lazy whose union reaches itself through
+ * another lazy reads as every kind where the cycle is cut, so a marked option that wraps it applies to every value at
+ * its position, an unmarked sibling option's value included: with `A = z.lazy(() => z.union([z.number(), B]))` and `B =
+ * z.lazy(() => z.union([z.string(), A]))`, `z.object({ f: z.union([z.boolean(), secret(A)]) })` masks `{ f: true }` as
+ * `{ f: "[secret]" }`. And a loose record passes a key its key schema does not match through unvalidated, and `redact`
+ * reads that entry at the record's own positions, so the value mark masks its value and the key mark its key:
+ * `z.looseRecord(z.string().regex(/^a/), pii(z.string()))` masks `{ a1: "ada", b: "bob" }` as `{ a1: "[pii]", b:
+ * "[pii]" }`.
+ *
+ * A read of a value that throws — a getter, a proxy's trap, an iterator — makes that position `[truncated]`, and the
+ * walk goes on: `redact` never throws.
+ *
+ * ## The edges, exactly
+ *
+ * - **A position two classes reach takes the strongest one's placeholder**, never one class's own mask: a PAN's
+ *   first six and last four apply only where `pci` is the only class there.
+ * - **An option's marks apply where the value has that option's shape.** An object option's apply to an object value,
+ *   an array option's to an array value, and a marked string option's to a string: beside `z.array(z.string())` an
+ *   array is walked, and beside `z.number()` a number is kept. A mark reached through no option applies to every value.
+ *   A key or an element no option names is kept, and so is a value of a kind only an opaque option takes, such as an
+ *   array a `z.unknown()` beside an object option let through; one of a kind no schema there names is masked whole over
+ *   a mark. A record's string key is a string whatever its schema says, a number key's included, so a key schema that
+ *   marks any shape but a symbol masks every string key; a symbol key is masked only by a marked symbol option.
+ * - **A record's or a map's key is redacted by its key schema**, and so is a set's element. Two that mask alike come
+ *   back as `[pii]` and `[pii] #2`, so the copy holds as many entries as the value did. Only a masked one is ever
+ *   numbered: a kept one stays as it is, even one that reads `[pii]`, and a masked one takes the first name no kept
+ *   one holds. Every key is defined on the copy, not assigned, so an own `__proto__` key stays a key.
+ * - **The one recursion limit is {@link MAX_RECURSION_DEPTH} levels of nesting**, and it applies to all nesting, not
+ *   only recursion: every object, array, tuple, record, map and set a position sits inside counts one. A position deeper than that is masked whole as `[truncated]`, a
+ *   safety cutoff rather than a privacy class, and `Redacted<T>` types it `unknown` from the same depth. Nothing tells
+ *   one recursion from another, so a lazy, a getter that returns one schema and one that builds a new schema each read
+ *   all end at the same level, and the result is a function of the schema and the value alone. The walk keeps its own
+ *   stack, so a deep value never overflows the call stack. A recursion beneath an opaque node or a marked container
+ *   that reaches the limit ends that path alone: every other path beneath is read, and the value is masked whole with
+ *   the strongest class found, or as `[truncated]` where none is. A lazy that builds a new choice each read ends at the
+ *   limit the same way: every lazy nested in another counts one. A union of many lazies, none inside another, counts
+ *   one. A class known at a position is always its mask; `[truncated]` stands only where none is.
+ * - **One budget per call, `MAX_READ_SCHEMAS` schemas**, shared by every position and every search in it. Past it
+ *   nothing was read, so any class may be marked there: each position not yet resolved is masked whole with the
+ *   strongest class found there, or as `[truncated]` where none was, never with a class only assumed.
+ *
+ * ## The placeholder, and why it is not a hash
+ *
+ * `[pii]` loses correlation: two log lines about one person look unrelated. A keyed per-class hash would keep it,
+ * and an email is low-entropy enough to brute-force from an unkeyed one — so the hash would need a secret salt,
+ * which would pull `@pithy-sh/secrets` into core. The placeholder is the v1 answer, and correlation is what the
+ * unmarked id beside it is for.
+ *
+ * It reads the app shape — what `Schema.parse(row)` returns — and never mutates its argument. `null` and `undefined`
+ * stay as they are, because an absent value discloses nothing.
+ */
+
+/** A plain object — not an array, not a `Date`, not a class instance. */
+function isPlainObject(value: unknown): value is Record<PropertyKey, unknown> {
+  if (typeof value !== "object" || value === null) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+/**
+ * How a mask masks a value: its class's own mask, or the placeholder of the strongest class found there, cut off or
+ * not. {@link TRUNCATED_MASK} only where no class was found: a recursion here reached the limit, or the call ran out of
+ * its budget before it read one, and a class it only assumed is never the placeholder.
+ */
+function masked(mask: Mask, value: unknown): string {
+  if (mask.className === "") return TRUNCATED_MASK;
+  let own: string | undefined;
+  try {
+    own = mask.own ? privacyClass(mask.className)?.mask(value) : undefined;
+  } catch {
+    // A class's own mask is the adopter's code: where it throws, its placeholder stands.
+  }
+  return own ?? `[${mask.className}]`;
+}
+
+/**
+ * What a read of a value put in place of what it could not read: a getter or a proxy trap that threw. Its position is
+ * masked {@link TRUNCATED_MASK}, and the walk goes on.
+ */
+const UNREADABLE: unique symbol = Symbol("unreadable");
+
+/** `value[key]`, or {@link UNREADABLE} where reading it throws. */
+function read(value: object, key: PropertyKey): unknown {
+  try {
+    return (value as Record<PropertyKey, unknown>)[key];
+  } catch {
+    return UNREADABLE;
+  }
+}
+
+/** A child's result, and whether it is a mask: only a masked key or element is ever renamed. */
+type Result = { value: unknown; masked: boolean };
+
+/**
+ * Keys or elements, each kept or masked, made distinct: every kept one first, as it is, then each masked one at the
+ * first name, `[pii]`, `[pii] #2` …, that no kept one and no earlier masked one holds. In the value's order. Each name
+ * keeps the next number to try, so a thousand keys that mask alike cost a thousand steps, not half a million: every
+ * number below it is already taken, and a name once taken stays taken.
+ */
+function distinctAll(results: readonly Result[]): unknown[] {
+  const taken = new Set<unknown>();
+  for (const result of results) if (!result.masked) taken.add(result.value);
+  const next = new Map<string, number>();
+  return results.map((result) => {
+    const name = result.value;
+    if (!result.masked) return name;
+    if (typeof name !== "string" || !taken.has(name)) {
+      taken.add(name);
+      return name;
+    }
+    let index = next.get(name) ?? 2;
+    while (taken.has(`${name} #${index}`)) index += 1;
+    next.set(name, index + 1);
+    const numbered = `${name} #${index}`;
+    taken.add(numbered);
+    return numbered;
+  });
+}
+
+/**
+ * One step of the walk. `visit` redacts one value at one position, `depth` levels of nesting down, and hands the
+ * result to `put`; `after` runs once every step above it on the stack is done, to fill a map or a set in order. The
+ * walk keeps its own stack rather than the call stack, so a deep value never overflows it.
+ */
+type Step = { visit: unknown; at: Position | undefined; depth: number; put: Put } | { after: () => void };
+
+/** Where a result goes, and whether it is a mask. */
+type Put = (result: unknown, masked: boolean) => void;
+
+/** How a child is handed to the walk: its position, its value, and where its result goes. */
+type Walk = (child: Position | undefined, item: unknown, put: Put) => void;
+
+/** The walk: every value at its position, depth first and in order. */
+function walkValue(root: Position, value: unknown): unknown {
+  let result: unknown;
+  const steps: Step[] = [
+    {
+      visit: value,
+      at: root,
+      depth: 0,
+      put: (out) => {
+        result = out;
+      },
+    },
+  ];
+  for (let step = steps.pop(); step; step = steps.pop()) {
+    if ("after" in step) step.after();
+    else redactAt(step, steps);
+  }
+  return result;
+}
+
+/**
+ * One value at one position. A position nested deeper than {@link MAX_RECURSION_DEPTH} is masked whole as
+ * {@link TRUNCATED_MASK}, however the recursion that reached it is written. A key or an element no schema names is
+ * kept: an option's marks apply only where the value has that option's shape.
+ */
+function redactAt(step: Extract<Step, { visit: unknown }>, steps: Step[]): void {
+  const { at, depth, visit: value, put } = step;
+  if (value === null || value === undefined) put(value, false);
+  else if (value === UNREADABLE || depth > MAX_RECURSION_DEPTH) put(TRUNCATED_MASK, true);
+  else if (at === undefined) put(value, false);
+  else {
+    const below: Step[] = [];
+    let result: Result;
+    try {
+      // A mark applies to a value of the shape of the option it was reached through, and to no other. A value of a
+      // kind or a prototype the schemas here do not expect is never walked: masked whole over a mark, or kept.
+      const mask = at.maskFor(value);
+      const misfit = mask ? undefined : at.misfit(value);
+      result = mask
+        ? { value: masked(mask, value), masked: true }
+        : misfit
+          ? misfit.mask
+            ? { value: masked(misfit.mask, value), masked: true }
+            : { value, masked: false }
+          : {
+              value: redactKind(at, value, below, (child, item, out) => {
+                below.push({ visit: item, at: child, depth: depth + 1, put: out });
+              }),
+              masked: false,
+            };
+    } catch {
+      // A value whose shape, keys or entries throw when read: a proxy's trap, a getter, an iterator. Masked whole, and
+      // nothing read below it is kept.
+      put(TRUNCATED_MASK, true);
+      return;
+    }
+    put(result.value, result.masked);
+    // Popped last to first: what is below runs in order. One push each, never a spread: a value may hold more
+    // children than a call takes arguments.
+    for (let index = below.length - 1; index >= 0; index -= 1) steps.push(below[index] as Step);
+  }
+}
+
+/**
+ * A value walked by its kind against the structural nodes at its position, as the copy its children are put into.
+ * A value of a kind no node here names, and a scalar, is kept. Each child is a step in `below`, in order.
+ */
+function redactKind(at: Position, value: unknown, below: Step[], walk: Walk): unknown {
+  const { kinds } = at;
+  if (Array.isArray(value)) {
+    if (!kinds.has("array") && !kinds.has("tuple")) return value;
+    // Sized, so a hole stays a hole, as it did in the value.
+    const { length } = value;
+    const out = new Array<unknown>(length);
+    for (let index = 0; index < length; index += 1) {
+      if (!(index in value)) continue;
+      walk(at.item(index), read(value, index), (result) => {
+        out[index] = result;
+      });
+    }
+    return out;
+  }
+  if (value instanceof Map) {
+    if (!kinds.has("map")) return value;
+    const out = new Map<unknown, unknown>();
+    const keys: Result[] = [];
+    const items: unknown[] = [];
+    for (const [key, item] of value) {
+      const index = items.push(undefined) - 1;
+      keys.push({ value: undefined, masked: false });
+      walk(at.mapKey, key, (result, isMask) => {
+        keys[index] = { value: result, masked: isMask };
+      });
+      walk(at.mapValue, item, (result) => {
+        items[index] = result;
+      });
+    }
+    below.push({
+      after: () => {
+        distinctAll(keys).forEach((key, index) => {
+          out.set(key, items[index]);
+        });
+      },
+    });
+    return out;
+  }
+  if (value instanceof Set) {
+    if (!kinds.has("set")) return value;
+    const out = new Set<unknown>();
+    const items: Result[] = [];
+    for (const item of value) {
+      const index = items.push({ value: undefined, masked: false }) - 1;
+      walk(at.element, item, (result, isMask) => {
+        items[index] = { value: result, masked: isMask };
+      });
+    }
+    below.push({
+      after: () => {
+        for (const item of distinctAll(items)) out.add(item);
+      },
+    });
+    return out;
+  }
+  if (isPlainObject(value) && (kinds.has("object") || kinds.has("record"))) return redactObject(at, value, walk);
+  return value;
+}
+
+/**
+ * An object's entries, each value redacted at its key's position and each key at a record's key position: a string
+ * key by every mark there but a symbol's, since it is a string whatever its schema says, and a symbol key by a
+ * symbol's alone. A masked key takes the first name, `[pii]`, `[pii] #2` …, that no kept key and no earlier masked
+ * key holds. Each value is put in when its step runs, and the steps run in key order, so the copy keeps the value's.
+ */
+function redactObject(at: Position, value: Record<PropertyKey, unknown>, walk: Walk): Record<PropertyKey, unknown> {
+  const keyAt = at.key;
+  // Only the enumerable own keys are copied, as a spread copies them. A key whose descriptor cannot be read is kept,
+  // and its value masked as unreadable.
+  const unreadable = new Set<PropertyKey>();
+  const keys = Reflect.ownKeys(value).filter((key) => {
+    try {
+      return Object.prototype.propertyIsEnumerable.call(value, key);
+    } catch {
+      unreadable.add(key);
+      return true;
+    }
+  });
+  const names = distinctAll(
+    keys.map((key): Result => {
+      const mask = typeof key === "symbol" ? keyAt?.maskFor(key) : keyAt?.nameMask;
+      return mask ? { value: masked(mask, key), masked: true } : { value: key, masked: false };
+    }),
+  ) as PropertyKey[];
+  const out: Record<PropertyKey, unknown> = {};
+  keys.forEach((key, index) => {
+    const name = names[index] as PropertyKey;
+    // Defined, not assigned: an own `__proto__` key that parse kept stays a key, and never becomes the prototype.
+    walk(at.field(key), unreadable.has(key) ? UNREADABLE : read(value, key), (result) => {
+      Object.defineProperty(out, name, { value: result, enumerable: true, writable: true, configurable: true });
+    });
+  });
+  return out;
+}
+
+/** The masked view of a value, against the schema it is an instance of. See the module note for the contract. */
+export function redact<S extends z.ZodType>(schema: S, value: z.output<S>): RedactedOutput<S> {
+  let root: Position;
+  try {
+    root = rootPosition(schema);
+  } catch {
+    // A schema that cannot be read, nested deeper than the stack can follow: the whole value is cut off.
+    return (value === null || value === undefined ? value : TRUNCATED_MASK) as RedactedOutput<S>;
+  }
+  return walkValue(root, value) as RedactedOutput<S>;
+}

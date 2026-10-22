@@ -3,6 +3,7 @@
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
+import type { UnmarkedString } from "@pithy-sh/core/src/privacy/types";
 
 /**
  * `@pithy-sh/matchmaking` throw sugar. The `matchmaking/*` codes live in core's closed `KitErrorPayload`
@@ -10,9 +11,9 @@ import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
  * throws one of these, never a plain `new Error`.
  */
 interface MatchmakingErrorArgs {
-  message?: string;
-  action?: string;
-  detail?: string;
+  message?: UnmarkedString;
+  action?: UnmarkedString;
+  detail?: UnmarkedString;
   /**
    * Values a translating client interpolates into its own wording for this code. Client-facing, so —
    * unlike `action` and `detail` — these cross the boundary with `message`.

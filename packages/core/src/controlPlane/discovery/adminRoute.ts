@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
+import { PrivacyPosture } from "../../privacy/posture";
 import { ControlPlaneScope } from "../scope/scope";
 import { ManifestConfigKey, ManifestConfigValues } from "./configuration";
 import { CapabilityHealthReport, HealthSummary, HealthSummaryKey, healthReport, healthWire } from "./healthSummary";
@@ -246,6 +247,16 @@ export const ControlPlaneManifest = z
       .describe(
         "The Cloudflare version id of the build answering this call, from the `CF_VERSION_METADATA` binding, or null where the binding is absent. Opaque and per-deploy: it identifies which build is running, never which features it has. Null is honest — a Worker scaffolded before the binding was declared genuinely cannot say.",
       ),
+    versionCreatedAt: z.iso
+      .datetime()
+      .nullable()
+      .optional()
+      .describe(
+        "When the version answering this call was uploaded, ISO-8601, from the same `CF_VERSION_METADATA` binding as `version` — or null where the binding is absent. The id alone cannot tell a deploy from a rollback: a rollback reactivates an existing version, so the id returns to one already seen while this moves backwards. Relayed, never interpreted. Absent from a Worker older than #132.",
+      ),
+    privacy: PrivacyPosture.optional().describe(
+      "What this project declares about privacy and what its running code holds: classes and counts, never field names (`GET /control-plane/privacy` has those, behind `privacy:read`). Present on every Worker from #132, `declared` explicitly empty when nothing was declared; absent from an older Worker.",
+    ),
     capabilities: z
       .array(CapabilityDescriptor)
       .describe(

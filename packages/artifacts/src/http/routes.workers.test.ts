@@ -150,7 +150,7 @@ function seams(events: AuditEventInput[]): Capability {
         app.use("*", async (c, next) => {
           const user = c.req.header("x-user");
           c.set("auth", user ? { userId: user, sessionId: `s-${user}`, scopes: [] } : null);
-          c.set("emit", async (event) => void events.push(event));
+          c.set("emit", async (event: AuditEventInput) => void events.push(event));
           const acting = actingFrom(c.req.raw.headers);
           c.set("actingOrganization", async () => acting);
           await next();

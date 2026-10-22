@@ -499,6 +499,7 @@ describe("the scope prompt", () => {
       "manifest:read",
       "keys:rotate",
       "migrations:read",
+      "privacy:read",
       "support:tickets:read",
       "support:tickets:close",
     ]);
@@ -510,6 +511,7 @@ describe("the scope prompt", () => {
       "manifest:read",
       "keys:rotate",
       "migrations:read",
+      "privacy:read",
       "support:tickets:read",
     ]);
   });

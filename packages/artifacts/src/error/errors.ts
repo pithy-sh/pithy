@@ -3,6 +3,7 @@
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
+import type { UnmarkedString } from "@pithy-sh/core/src/privacy/types";
 
 /**
  * `@pithy-sh/artifacts` throw sugar. The `artifacts/*` codes live in core's closed `KitErrorPayload` union; these
@@ -12,11 +13,11 @@ import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
 /** Variable parts each subclass accepts; `code` and `status` are fixed by the subclass. */
 interface ArtifactsErrorArgs {
   /** Override the public message. */
-  message?: string;
+  message?: UnmarkedString;
   /** A remediation hint for the operator. Never serialized to a client. */
-  action?: string;
+  action?: UnmarkedString;
   /** Internal context for logs and audit. Never serialized to a client. */
-  detail?: string;
+  detail?: UnmarkedString;
   /** Values a translating client interpolates into its own wording for this code. */
   params?: MessageParams;
 }

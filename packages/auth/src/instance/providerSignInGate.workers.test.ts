@@ -325,7 +325,7 @@ function buildApp(options: AppOptions = {}): App {
   app.onError(pithyErrorHandler);
   app.use("*", async (c, next) => {
     if (c.get("emit") === undefined) {
-      c.set("emit", async (event) => {
+      c.set("emit", async (event: AuditEventInput) => {
         events.push(event);
       });
     }

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: FSL-1.1-MIT
 
+import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { workerIdentity } from "@pithy-sh/core/src/worker/identity";
 import { z } from "zod";
@@ -115,7 +116,9 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
           // capability object is built before any request exists, and `env` is only reachable from a
           // context. `workerIdentity` never throws and returns nulls for whatever is unstamped, so a
           // Worker predating these vars still records its events — just without an origin.
-          c.set("emit", (event) =>
+          // The parameter is annotated: `AuditEmit` is generic over `metadata` so a call site carrying a
+          // privacy-marked value fails to compile (#132), and the recorder is the one place every event lands.
+          c.set("emit", (event: AuditEventInput) =>
             recordAuditEvent(
               (c.var.db as Record<typeof AUDIT_DATABASE_NAME, AuditDatabase>)[AUDIT_DATABASE_NAME],
               event,

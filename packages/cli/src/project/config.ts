@@ -21,6 +21,7 @@ import { packageLoadFailure, unresolvedImport } from "@pithy-sh/core/src/error/u
 import { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { DEFAULT_ENVIRONMENTS, DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { assertValidProjectName, kebab } from "@pithy-sh/core/src/naming/resource";
+import { PrivacyClassName } from "@pithy-sh/core/src/privacy/classes";
 import { z } from "zod";
 import { CloudflareAccountName } from "../cloudflare/config";
 import { entryBeside, installedBeside } from "./kitResolve";
@@ -116,6 +117,53 @@ export interface ProjectConfig {
    * the gate. Absent means no.
    */
   administersItself?: unknown;
+  /**
+   * **Which privacy classes this project handles** (#132) — `{ classes: ["pii", "phi"] }`, validated by
+   * {@link loadProjectPrivacy}. Root rather than per-Worker for the reason `seed.productionEnvironments` is: a
+   * project's compliance posture is not a thing one Worker gets to have and another does not.
+   *
+   * **Declarative, not an allowlist.** Marking `phi()` on a field in a project that declared only `pii` is not an
+   * error and fails no build — a developer marking more than the project declared is doing the right thing,
+   * badly configured. What the declaration does is close `console` (`pithy deploy` refuses while
+   * `suspicious/noConsole` is off), and turn on the reporting that sets declared beside observed.
+   *
+   * Typed `unknown` for the reason {@link ProjectConfig.environments} is. Absent means nothing is declared, and
+   * the project behaves exactly as it did before the key existed.
+   */
+  privacy?: unknown;
+}
+
+/**
+ * The root config's `privacy` block (#132). Strict, because a misspelled `clases` that parsed to "nothing
+ * declared" would silently open the console gate the declaration exists to close.
+ */
+export const ProjectPrivacy = z
+  .strictObject({
+    classes: z
+      .array(PrivacyClassName)
+      .refine((classes) => new Set(classes).size === classes.length, "A privacy class is declared once.")
+      .describe(
+        "The privacy classes this project handles — `secret`, `pii`, `phi`, `pci`, or an adopter's own. Declaring any closes `console`: `pithy deploy` refuses while Biome's `suspicious/noConsole` is off. Empty declares nothing.",
+      ),
+  })
+  .describe("Which privacy classes this project declares, from the root pithy.config.ts.");
+export type ProjectPrivacy = z.output<typeof ProjectPrivacy>;
+
+/**
+ * Read and validate the root config's `privacy` declaration: the declared class names, or `[]` when the block is
+ * absent. A value that does not parse is refused rather than read as nothing, for the reason {@link ProjectPrivacy}
+ * is strict.
+ */
+export function loadProjectPrivacy(config: ProjectConfig): string[] {
+  if (config.privacy === undefined || config.privacy === null) return [];
+  const parsed = ProjectPrivacy.safeParse(config.privacy);
+  if (!parsed.success) {
+    throw fromZodError(parsed.error, {
+      message: `The \`privacy\` block in pithy.config.ts is not valid. ${parsed.error.issues.map((issue) => issue.message).join(" ")}`,
+      action: `Fix \`privacy\` in the root pithy.config.ts. It takes \`classes\`, a list of class names — e.g. ${JSON.stringify({ classes: ["pii", "phi"] })}. ${pithyCommand("privacy enable", { flags: { "--class": "pii" } })} writes it.`,
+    });
+  }
+  return [...parsed.data.classes];
 }
 
 /**
@@ -906,14 +954,18 @@ export async function loadWorkerConfig(workerDir: string, options?: LoadWorkerCo
  * Load the **root** `pithy.config.ts` — the project's identity and policy. Capabilities are not here; they
  * live per Worker ({@link loadWorkerConfig}).
  */
-export async function loadProject(projectDir: string): Promise<ProjectConfig> {
+export async function loadProject(projectDir: string, options?: LoadWorkerConfigOptions): Promise<ProjectConfig> {
   const path = join(projectDir, "pithy.config.ts");
-  const value = await importConfig(path, () => {
-    throw new NotFoundError({
-      message: "No pithy.config.ts here.",
-      action: `Run from a Pithy project. ${pithyCommand("init")} creates one.`,
-    });
-  });
+  const value = await importConfig(
+    path,
+    () => {
+      throw new NotFoundError({
+        message: "No pithy.config.ts here.",
+        action: `Run from a Pithy project. ${pithyCommand("init")} creates one.`,
+      });
+    },
+    options?.fresh === true,
+  );
   if (!isProjectConfig(value)) {
     throw new InternalError({
       message: "pithy.config.ts doesn't default-export a config.",
@@ -932,6 +984,9 @@ export async function loadProject(projectDir: string): Promise<ProjectConfig> {
   // And once more, for the same reason one level smaller: a declaration that decides what goes into every
   // generated stanza must refuse the command that read it, not the provision that half-wrote a config.
   administersItself(value);
+  // And the privacy declaration (#132): a misspelled block must refuse here, not read as "nothing declared"
+  // and open the console gate it exists to close.
+  loadProjectPrivacy(value);
   return value;
 }
 

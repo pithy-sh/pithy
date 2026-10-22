@@ -5,9 +5,10 @@ import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import type { PithyHonoEnv } from "../../capability/capability";
 import { pathParams, uncoveredParamRoutes } from "../../http/routeContract";
+import { openApiDocument, undescribedFields, undescribedRoutes } from "../../openapi/document";
 import { type ControlPlaneOptions, controlplane } from "../capability";
 import { missingAdminRoutes, undeclaredAdminRoutes } from "../discovery/drift";
-import { MIGRATIONS_READ_SCOPE } from "../scope/scope";
+import { MIGRATIONS_READ_SCOPE, PRIVACY_READ_SCOPE } from "../scope/scope";
 
 /**
  * The control-plane seam's half of gate 2 of the route request contract. A handler can reach a path
@@ -57,6 +58,7 @@ describe("control-plane route contract", () => {
       "/control-plane/manifest",
       "/control-plane/migrations",
       "/control-plane/ping",
+      "/control-plane/privacy",
     ]);
     // The one param-carrying path, named exactly. Without this the check above would pass on an app
     // that declared no params at all, which proves nothing.
@@ -82,19 +84,19 @@ describe("control-plane route contract", () => {
       const key = `${route.method} ${route.path}`;
       handlerCounts.set(key, (handlerCounts.get(key) ?? 0) + 1);
     }
-    expect(handlerCounts.size).toBe(6);
+    expect(handlerCounts.size).toBe(7);
     for (const [route, count] of handlerCounts) expect(count, `${route} has no guard`).toBeGreaterThan(1);
   });
 
   test("every admin route the seam advertises is a route it actually mounts", () => {
     // The seam holds itself to the rule it imposes on every capability. `GET /control-plane/manifest`
-    // tells a management client these six routes exist and which scope each needs; a declaration that
+    // tells a management client these seven routes exist and which scope each needs; a declaration that
     // drifted from the registrations would have the client calling paths nothing serves.
     const capability = controlplane();
     const app = new Hono<PithyHonoEnv>();
     capability.routes?.(app);
 
-    expect(capability.adminRoutes).toHaveLength(6);
+    expect(capability.adminRoutes).toHaveLength(7);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
     // And the other direction. Since #468 the CORS surface derives from `adminRoutes`, so a guarded
     // route nobody declared gets no preflight and no browser reaches it, with this suite still green.
@@ -131,6 +133,12 @@ describe("control-plane route contract", () => {
     expect([...new Set(mounted.map((route) => route.method))]).toEqual(["GET"]);
   });
 
+  test("every route requiring privacy:read is a GET, so connect offers it as a read (#132)", () => {
+    const advertised = controlplane().adminRoutes ?? [];
+    const reading = advertised.filter((route) => route.scope === PRIVACY_READ_SCOPE);
+    expect(reading.map((route) => `${route.method} ${route.path}`)).toEqual(["GET /control-plane/privacy"]);
+  });
+
   test("the summary says undeclared is relative to this Worker", () => {
     const migrations = (controlplane().adminRoutes ?? []).find((route) => route.path.endsWith("/migrations"));
     expect(migrations?.summary).toMatch(/relative to this Worker/);
@@ -142,5 +150,28 @@ describe("control-plane route contract", () => {
       ["pendingMigrations", MIGRATIONS_READ_SCOPE, { atMost: 0 }],
       ["undeclaredMigrations", MIGRATIONS_READ_SCOPE, null],
     ]);
+  });
+});
+
+describe("control-plane route contract: every route is described for the OpenAPI contract", () => {
+  const groups = () => [{ tag: "controlplane", routes: makeApp().routes }];
+
+  test("every route declares describeRoute", () => {
+    expect(undescribedRoutes(groups())).toEqual([]);
+  });
+
+  test("every field and parameter in the contract carries a description", () => {
+    const document = openApiDocument({ title: "controlplane", version: "0" }, groups());
+    expect(Object.keys(document.paths).length).toBeGreaterThan(0);
+    expect(undescribedFields(document)).toEqual([]);
+  });
+
+  test("GET /privacy names its response schema and the scope it needs (#132)", () => {
+    const document = openApiDocument({ title: "controlplane", version: "0" }, groups());
+    const operation = (document.paths as Record<string, Record<string, unknown>>)["/control-plane/privacy"]?.get as
+      | { responses?: Record<string, unknown> }
+      | undefined;
+    expect(operation?.responses?.["200"]).toBeDefined();
+    expect(JSON.stringify(operation)).toContain("privacy:read");
   });
 });

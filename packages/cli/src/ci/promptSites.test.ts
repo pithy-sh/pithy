@@ -15,6 +15,7 @@ import { addPrompts, targetWorker } from "../commands/add";
 import { confirmOrRefuse } from "../commands/dashboard";
 import { requireScopeAnswerable } from "../commands/docs";
 import { rollbackPhrase } from "../commands/migrate";
+import { classesToDeclare } from "../commands/privacy";
 import { requireDropConfirmable } from "../commands/remove";
 import { canPrompt } from "../commands/secrets";
 import { askFlag, askNewName } from "../commands/worker";
@@ -94,6 +95,13 @@ const SITES: Record<string, PromptSite> = {
     gatedBy: "commands/init.ts",
   },
   "commands/migrate.ts": { prompts: ["promptRollback"], kind: "required", gatedBy: "commands/migrate.ts" },
+  "commands/privacy.ts": {
+    // Which classes to declare has no default (#132), so `enable` without `--class` is refused when it cannot
+    // ask. The two offers between privacy and audit default to no, and a run that asks nobody declines them.
+    prompts: ["promptClasses", "askConfirm"],
+    kind: "mixed",
+    gatedBy: "commands/privacy.ts",
+  },
   "commands/provision.ts": { prompts: ["confirmPrompt"], kind: "required", gatedBy: "commands/provision.ts" },
   "commands/remove.ts": { prompts: ["dropConfirm"], kind: "required", gatedBy: "commands/remove.ts" },
   "commands/seed.ts": { prompts: ["resetPrompt", "productionPrompt"], kind: "required", gatedBy: "commands/seed.ts" },
@@ -236,6 +244,16 @@ const REQUIRED: readonly {
         ],
         interactive ? { choose: async () => null } : {},
       ),
+  },
+  {
+    site: "commands/privacy.ts",
+    prompt: "promptClasses",
+    flag: "--class",
+    choices: ["secret", "pii", "phi", "pci"],
+    run: (interactive) =>
+      classesToDeclare([], interactive, async () => {
+        throw new Error("asked a run that forbade prompts");
+      }),
   },
   {
     site: "commands/migrate.ts",
