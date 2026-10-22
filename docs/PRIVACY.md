@@ -245,7 +245,7 @@ await db.selectFrom("patient").where("emailIndex", "in", hashes).selectAll().exe
 The AAD is `pithy/enc/1:<name>:<field path>:<pk>`. A ciphertext moved to another field, another row or another table does not open.
 
 - **`<name>` is the name `encryptedTable()` declares**, not the SQL table name, so renaming the table in a migration leaves every row openable.
-- **`<field path>` is the field's path in the schema**: `diagnosis`, or `profile.phone` for a field inside a `sqliteJson` column, which rests as its own envelope at that JSON path. Under `CamelCasePlugin` a column is named for its field, so renaming a column renames the path, and that is a re-seal.
+- **`<field path>` is the field's path in the schema**: `diagnosis`, or `profile.phone` for a field inside a `sqliteJson` column, which rests as its own envelope at that JSON path. Under `CamelCasePlugin` a column is named for its field, so renaming an encrypted column changes its field path. That is a re-seal migration through `sealed()`, below.
 - **`<pk>` is the primary key**, which the app assigns before the insert, because a seal binds its value. A text id, such as a UUID. `encryptedTable()` refuses an integer key, which SQLite assigns at the insert.
 
 The key is never updated, which is the guarantee. Changing the name, a path or a key is a re-seal migration: read every row with the old schema through `sealed()` and write it with the new one.
@@ -276,7 +276,7 @@ Fields seal under `PITHY_FIELD_KEYS`, a versioned key set in the master key's fo
 
 **The guard is clean only when all three hold:** no stamped envelope or index column holds a row under the leaving version, every schema source the stamp was derived from was read, and no encrypted field rests outside D1. On anything else nothing is retired, and rotation and the backfill go on. A version still live when the next rotation is due is a failure, not a backlog: the manager raises an audit event naming what held it, and `pithy doctor` reports it as an error. A rotation is refused while four versions are live.
 
-**Past a dirty guard, only a person retires a version**, with `pithy secrets retire-version <v> --env <env> --past-guard`. It prints the stale counts per column, every unrotatable field and every source the guard could not read, then asks for `<env>/<v>` to be typed back. There is no `--yes`, and off a terminal or under `--json` it refuses with `secrets/confirmation_required`. Every ciphertext still under that version becomes unopenable, with no remedy. See [`pithy secrets`](commands/secrets.md#the-field-key).
+**Past a dirty guard, only a person retires a version**, with `pithy secrets retire-version <v> --env <env> --past-guard`. It prints the stale counts per column, every unrotatable field and every source the guard could not read, then asks for `<env>/<v>` to be typed back. There is no `--yes`, and off a terminal or under `--json` it refuses with `core/person_required`. Every ciphertext still under that version becomes unopenable, with no remedy. See [`pithy secrets`](commands/secrets.md#the-field-key).
 
 ### What the control plane reports
 

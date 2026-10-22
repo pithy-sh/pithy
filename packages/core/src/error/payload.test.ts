@@ -317,10 +317,6 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  * rolled at its issuer whose successor the store never took, the one secrets failure a retry cannot
  * repair.
  *
- * `secrets/confirmation_required` (#390) took it to 148 — retiring a field-key version past its guard, which only
- * a person at a terminal may confirm. Its own code because the refusal is not a denial and not a missing flag: no
- * value an automated caller could pass is the answer.
- *
  * **The four sites, so one red gate names them all.** This number is written by hand in four places on
  * purpose (see above). Adding or removing a kit error code moves every one of them, and they live in
  * three packages that do not run each other's tests — so a contributor who fixes only the one that went
@@ -334,7 +330,7 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  * And the code itself also needs: the Spanish sentence in `packages/i18n/src/catalogs/es/errors.ts`,
  * and `bun run docs-catalog` to regenerate `docs/catalog.generated.json`.
  */
-const KIT_ERROR_CODE_COUNT = 148;
+const KIT_ERROR_CODE_COUNT = 147;
 
 /** One member of either kit union — the public projection or its `action`/`detail` twin. */
 type KitUnionMember = (typeof KitErrorPayload | typeof KitPublicErrorPayload)["options"][number];

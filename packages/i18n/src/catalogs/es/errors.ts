@@ -78,7 +78,6 @@ export const esErrors: MessageCatalog = {
   "secrets/crypto_failed": "No se ha podido procesar el secreto.",
   "secrets/rotation_unrecorded": "No se ha registrado la rotación del secreto.",
   "secrets/rotation_unsupported": "Este secreto no se puede rotar por esta vía.",
-  "secrets/confirmation_required": "Solo una persona puede confirmar este paso.",
 
   // Email.
   "email/template_not_found": "Esa plantilla de correo no existe.",

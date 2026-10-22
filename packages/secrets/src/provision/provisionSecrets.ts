@@ -42,9 +42,9 @@ export function masterKeySecretName(project: string, env: ManagedEnvironment, fe
  * The CF Secrets Store entry holding an environment's field key — `<project>-<env>-pithy-field-keys` (#390), bound into
  * every app Worker that holds an encrypted field and into that environment's manager as `PITHY_FIELD_KEYS`.
  *
- * **A different entry from the master key, on purpose.** App Workers seal and open fields with it, so they hold it;
- * the master key never leaves the manager, and sharing it would let one compromised app Worker open the whole
- * vault. A feature gets its own, named for the feature, as its master key is.
+ * **A different entry from the master key, on purpose.** App Workers seal and open fields with it, so they hold it.
+ * This feature never adds the master key to a Worker: a Worker that holds an encrypted field and composes no `secrets`
+ * is bound this key alone. A feature gets its own, named for the feature, as its master key is.
  */
 export function fieldKeysSecretName(project: string, env: ManagedEnvironment, feature?: FeatureIdentity): string {
   if (feature) return featureScope(feature).secretEntry(FIELD_KEYS_BINDING, "environment");

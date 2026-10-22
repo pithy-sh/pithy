@@ -207,11 +207,6 @@ const REQUIRED: readonly {
   choices?: readonly string[];
   /** The answer is a person's to give: the refusal is `core/person_required`, and its action names `flag`. */
   person?: true;
-  /**
-   * The person's refusal under a code of its own, where the step declares one: `secrets/confirmation_required` for
-   * retiring a field-key version past its guard (#390). Still exit 5, which the exit-class gate holds.
-   */
-  code?: string;
   /** The prompt factory the command hands its gate under `interactive ?`, checked against the source. */
   handedOff?: string;
   run: (interactive: boolean) => unknown;
@@ -333,7 +328,6 @@ const REQUIRED: readonly {
     prompt: "askRetirePhrase",
     flag: null,
     person: true,
-    code: "secrets/confirmation_required",
     run: (interactive) =>
       runRetireVersion(
         { env: "prod", version: "1", pastGuard: true, json: false, interactive },
@@ -511,7 +505,7 @@ describe("a required prompt, with input forbidden", () => {
       expect(interactive).toBe(false);
       const payload = await refusalOf(() => row.run(interactive));
       if (row.person) {
-        expect(payload.code).toBe(row.code ?? "core/person_required");
+        expect(payload.code).toBe("core/person_required");
         if (row.flag !== null) expect(payload.action).toContain(row.flag);
         return;
       }

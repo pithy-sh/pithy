@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { commandName, personDecision } from "@pithy-sh/core/src/cli/command";
-import { UpstreamError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { SecretConfirmationRequiredError } from "@pithy-sh/secrets/src/error/errors";
+import { PersonRequiredError, UpstreamError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { secretsFieldKeyRotateWorkflowName } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { type FieldKeyCommand, FieldKeyReport } from "@pithy-sh/secrets/src/rotation/fieldKeyRotation";
 import { defineCommand } from "citty";
@@ -24,9 +23,9 @@ import { formatDone, withErrorReporting } from "../terminal/output";
  * run it:
  *
  * - **It shows what the guard could not see first** — the stale count per column, every unrotatable field, and every
- *   schema source the guard could not read — read from the manager, which is the only process that holds the key.
+ *   schema source the guard could not read — read from the manager, which holds the stamp of encrypted columns.
  * - **Then it asks for `<env>/<v>` to be typed back.** There is no `--yes`. Anything else typed retires nothing.
- * - **Off a terminal or under `--json` it refuses with `secrets/confirmation_required`**, before anything is read,
+ * - **Off a terminal or under `--json` it refuses with `core/person_required`**, exit 5, before anything is read,
  *   so neither an agent nor a CI script can run it.
  */
 
@@ -58,8 +57,8 @@ export function retirePhrase(env: string, version: number): string {
 }
 
 /** The refusal for every run nobody can be asked in. Raised before anything is read. */
-function confirmationRequired(env: string, version: string): SecretConfirmationRequiredError {
-  return new SecretConfirmationRequiredError({
+function personRequired(env: string, version: string): PersonRequiredError {
+  return new PersonRequiredError({
     message: "Retiring a field-key version past its guard needs a person at a terminal.",
     action: `${personDecision("secrets retire-version", { args: [version], flags: { "--env": env, "--past-guard": true } })} It is run at a terminal, where the person reads what the guard could not see and types ${env}/${version} back. There is no --yes.`,
   });
@@ -92,7 +91,7 @@ export async function runRetireVersion(
   options: RetireVersionOptions,
   deps: RetireVersionDeps,
 ): Promise<FieldKeyReport | null> {
-  if (options.json || !options.interactive) throw confirmationRequired(options.env, options.version);
+  if (options.json || !options.interactive) throw personRequired(options.env, options.version);
   if (!options.pastGuard) {
     throw new ValidationError({
       message: "The rotator retires a version itself once its guard reads clean.",
@@ -126,7 +125,7 @@ export async function runRetireVersion(
 /**
  * `pithy secrets retire-version <v> --env <env> --past-guard` — retire a field-key version past a dirty guard
  * (#390). Human-only by design, like `pithy remove`: it shows what the guard could not see, asks for `<env>/<v>` to
- * be typed back, has no `--yes`, and refuses with `secrets/confirmation_required` off a terminal or under `--json`,
+ * be typed back, has no `--yes`, and refuses with `core/person_required` off a terminal or under `--json`,
  * before anything is read. See `capabilities/retireFieldKey.ts`.
  */
 export const retireVersion = withContract(

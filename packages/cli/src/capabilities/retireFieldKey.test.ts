@@ -72,13 +72,13 @@ describe("pithy secrets retire-version --past-guard", () => {
     }
   });
 
-  test("refuses with confirmation_required under --json and off a terminal, before anything is read", async () => {
+  test("refuses with core/person_required under --json and off a terminal, before anything is read", async () => {
     for (const run of [
       { ...asked, json: true },
       { ...asked, interactive: false },
     ]) {
       const { deps, calls } = harness("prod/1");
-      expect(await codeOf(runRetireVersion(run, deps))).toBe("secrets/confirmation_required");
+      expect(await codeOf(runRetireVersion(run, deps))).toBe("core/person_required");
       expect(calls).toEqual([]);
     }
   });

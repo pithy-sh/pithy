@@ -2021,14 +2021,6 @@
       "remedy": "Run the `fix` command"
     },
     {
-      "code": "secrets/confirmation_required",
-      "status": 403,
-      "exitClass": "person",
-      "exit": 5,
-      "retryable": false,
-      "remedy": "Stop and ask"
-    },
-    {
       "code": "secrets/crypto_failed",
       "status": 500,
       "exitClass": "failed",

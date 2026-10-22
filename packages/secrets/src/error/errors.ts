@@ -28,27 +28,6 @@ interface SecretErrorArgs {
   params?: MessageParams;
 }
 
-/**
- * Retiring a field-key version past its guard needs a person at a terminal to type the version back (#390). There is
- * no `--yes`: a run under `--json` or off a terminal is refused before anything is read, so neither an agent nor a CI
- * script can take the most destructive step the kit owns.
- */
-export class SecretConfirmationRequiredError extends PithyError {
-  constructor(args: SecretErrorArgs = {}, options?: { cause?: unknown }) {
-    super(
-      {
-        code: "secrets/confirmation_required",
-        status: 403,
-        message: args.message ?? "Only a person at a terminal may confirm this step.",
-        action: args.action,
-        detail: args.detail,
-        params: args.params,
-      },
-      options,
-    );
-  }
-}
-
 /** A requested secret is not present in the store. */
 export class SecretNotFoundError extends PithyError {
   constructor(args: SecretErrorArgs = {}, options?: { cause?: unknown }) {

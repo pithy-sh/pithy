@@ -229,7 +229,6 @@ export const EXIT_CLASS_BY_CODE = {
   "auth/session_not_fresh": "person",
   "core/person_required": "person",
   "secrets/rotation_unrecorded": "person",
-  "secrets/confirmation_required": "person",
   // Unclassified (1): the kit itself broke, or answered in a way nothing here can act on.
   "audit/write_failed": "failed",
   "cloudflare/invalid_response": "failed",
