@@ -42,14 +42,18 @@ import type { RedactedOutput } from "./types";
  * 5. The kit's database codecs: `SQLiteDate`, `SQLiteBoolean` and `sqliteJson(schema)`. A JSON column's inner fields
  *    are redacted field by field.
  * 6. Recursion: `z.lazy(() => Node)` and getters, whether a getter returns one schema or builds a new one each read,
- *    such as trees and linked lists. Walked exactly to a fixed recursion depth, unless the search budget ends the walk
- *    sooner: a schema that builds two new ones at every level can spend it first, and the position where it runs out
- *    is masked whole with the strongest class, as any class may be marked past it. Past the depth the position is
- *    masked whole, and `Redacted<T>` types it `unknown` from that same depth: one limit, shared by the runtime and the
- *    type, however the recursion is written. A self-referencing `z.lazy` has to be annotated `z.ZodType<T>`, which
- *    names no kind, so `Redacted<T>` types it, and every field that holds it, `unknown`. Write the recursion with a
- *    getter and the type keeps its shape to the limit. A value cut off at the limit is masked `[truncated]`, which is
- *    a safety cutoff rather than a privacy class, so `classifyPrivacy` does not list it.
+ *    such as trees and linked lists. Walked exactly to a fixed recursion depth, unless the call's budget ends the walk
+ *    sooner. One call of `redact`, `classifyPrivacy`, `hasPrivacy` or `walkPrivacy` reads at most 10,000 schemas, and
+ *    every position and every search in it draws on that one budget, so its time and memory are bounded by the budget
+ *    and by what the schema's own getters build, whatever the schema does. A schema that builds new ones as it is read
+ *    can spend it first. Past the budget the call fails closed: `redact` masks each position it has not resolved whole,
+ *    with the strongest class it found there, or as `[truncated]` where it found none, and `classifyPrivacy` lists
+ *    every class at each position it has not read, each `truncated`. Past the depth the position is masked whole, and
+ *    `Redacted<T>` types it `unknown` from that same depth: one limit, shared by the runtime and the type, however the
+ *    recursion is written. A self-referencing `z.lazy` has to be annotated `z.ZodType<T>`, which names no kind, so
+ *    `Redacted<T>` types it, and every field that holds it, `unknown`. Write the recursion with a getter and the type
+ *    keeps its shape to the limit. A value cut off at the limit is masked `[truncated]`, which is a safety cutoff
+ *    rather than a privacy class, so `classifyPrivacy` does not list it.
  * 7. Values copied out of a parsed row into a plain object, array, `Map` or `Set` described by any of the above.
  *
  * **Outside the contract.** Custom transforms and pipes, `preprocess`, codecs other than the kit's own (one built the
@@ -95,13 +99,17 @@ import type { RedactedOutput } from "./types";
  * 5. An array, a `Map` or a `Set` passed through as it is is copied by its elements or entries, and no other own
  *    property it holds is copied.
  *
- * **Where `redact` masks more than the marks name.** It never masks less, and it masks more in three places, each
- * tested. A position a search ran out of its budget at is masked with the strongest class, as any class may be marked
- * past it (item 6). A value whose kind or prototype does not match its position is masked whole over a mark beneath it,
- * as above. And a lazy whose union reaches itself through another lazy reads as every kind where the cycle is cut, so a
- * marked option that wraps it applies to every value at its position, an unmarked sibling option's value included: with
- * `A = z.lazy(() => z.union([z.number(), B]))` and `B = z.lazy(() => z.union([z.string(), A]))`, `z.object({ f:
- * z.union([z.boolean(), secret(A)]) })` masks `{ f: true }` as `{ f: "[secret]" }`.
+ * **Where `redact` masks more than the marks name.** It never masks less, and it masks more in four places, each
+ * tested. A position the call ran out of its budget before it resolved is masked whole, with the strongest class found
+ * there or as `[truncated]`, as any class may be marked past it (item 6). A value whose kind or prototype does not
+ * match its position is masked whole over a mark beneath it, as above. A lazy whose union reaches itself through
+ * another lazy reads as every kind where the cycle is cut, so a marked option that wraps it applies to every value at
+ * its position, an unmarked sibling option's value included: with `A = z.lazy(() => z.union([z.number(), B]))` and `B =
+ * z.lazy(() => z.union([z.string(), A]))`, `z.object({ f: z.union([z.boolean(), secret(A)]) })` masks `{ f: true }` as
+ * `{ f: "[secret]" }`. And a loose record passes a key its key schema does not match through unvalidated, and `redact`
+ * reads that entry at the record's own positions, so the value mark masks its value and the key mark its key:
+ * `z.looseRecord(z.string().regex(/^a/), pii(z.string()))` masks `{ a1: "ada", b: "bob" }` as `{ a1: "[pii]", b:
+ * "[pii]" }`.
  *
  * A read of a value that throws — a getter, a proxy's trap, an iterator — makes that position `[truncated]`, and the
  * walk goes on: `redact` never throws.
@@ -123,16 +131,17 @@ import type { RedactedOutput } from "./types";
  *   one holds. Every key is defined on the copy, not assigned, so an own `__proto__` key stays a key.
  * - **The one recursion limit is {@link MAX_RECURSION_DEPTH} levels of nesting**: every object, array, tuple, record,
  *   map and set a position sits inside counts one. A position deeper than that is masked whole as `[truncated]`, a
- *   safety cutoff rather than a privacy class, and `Redacted<T>` types it `unknown` from the same depth. Nothing
- *   tells one recursion from another, so a lazy, a getter that returns one schema and one that builds a new schema
- *   each read all end at the same level, and the result is a function of the schema and the value alone. The walk
- *   keeps its own stack, so a deep value never overflows the call stack. A recursion beneath an opaque node or a marked
- *   container that reaches the limit ends that path alone: every other path beneath is read, and the value is masked
- *   whole with the strongest class found, or as `[truncated]` where none is. A lazy that builds a new choice each read
- *   ends at the limit the same way: every lazy nested in another counts one. A union of many lazies, none inside
- *   another, counts one. A class known at a position is always its mask; `[truncated]` stands only where none is.
- *   A search that runs out of its budget of schemas never read what lies past it, so it assumes every class
- *   there, and the value is masked with the strongest.
+ *   safety cutoff rather than a privacy class, and `Redacted<T>` types it `unknown` from the same depth. Nothing tells
+ *   one recursion from another, so a lazy, a getter that returns one schema and one that builds a new schema each read
+ *   all end at the same level, and the result is a function of the schema and the value alone. The walk keeps its own
+ *   stack, so a deep value never overflows the call stack. A recursion beneath an opaque node or a marked container
+ *   that reaches the limit ends that path alone: every other path beneath is read, and the value is masked whole with
+ *   the strongest class found, or as `[truncated]` where none is. A lazy that builds a new choice each read ends at the
+ *   limit the same way: every lazy nested in another counts one. A union of many lazies, none inside another, counts
+ *   one. A class known at a position is always its mask; `[truncated]` stands only where none is.
+ * - **One budget per call, `MAX_READ_SCHEMAS` schemas**, shared by every position and every search in it. Past it
+ *   nothing was read, so any class may be marked there: each position not yet resolved is masked whole with the
+ *   strongest class found there, or as `[truncated]` where none was, never with a class only assumed.
  *
  * ## The placeholder, and why it is not a hash
  *
@@ -153,11 +162,12 @@ function isPlainObject(value: unknown): value is Record<PropertyKey, unknown> {
 }
 
 /**
- * How a mask masks a value: its class's own mask, or the placeholder of the strongest class there, cut off or not.
- * {@link TRUNCATED_MASK} only where a recursion here reached the limit and no class is known.
+ * How a mask masks a value: its class's own mask, or the placeholder of the strongest class found there, cut off or
+ * not. {@link TRUNCATED_MASK} only where no class was found: a recursion here reached the limit, or the call ran out of
+ * its budget before it read one, and a class it only assumed is never the placeholder.
  */
 function masked(mask: Mask, value: unknown): string {
-  if (mask.classes.length === 0) return TRUNCATED_MASK;
+  if (mask.className === "") return TRUNCATED_MASK;
   let own: string | undefined;
   try {
     own = mask.own ? privacyClass(mask.className)?.mask(value) : undefined;

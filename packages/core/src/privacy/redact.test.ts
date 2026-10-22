@@ -6,7 +6,7 @@ import { z } from "zod";
 import { SQLiteBoolean, SQLiteDate, sqliteJson } from "../data/codecs";
 import { LogRecord, serializeRecord } from "../logger/record";
 import { definePrivacyClass, pci, phi, pii, secret } from "./classes";
-import { classifyPrivacy, hasPrivacy } from "./classify";
+import { classifyPrivacy, hasPrivacy, MAX_READ_SCHEMAS } from "./classify";
 import { redact } from "./redact";
 import type { ContainsMarked, REDACT_TYPE_DEPTH, Redacted } from "./types";
 
@@ -417,15 +417,21 @@ describe("the contract's edges", () => {
     expect(Reflect.ownKeys(masked(Numbered, { "5": "P-1", "P-k": "P-2" }) as object)).toEqual(["[pii]", "[pii] #2"]);
   });
 
-  test("keeps a string beside a marked option of another shape, however many values that option names", () => {
-    // A choice is read for its shapes to the end, never to a count of schemas: nothing here recurses.
+  test("keeps a string beside a marked option of another shape, to as many values as the budget reads", () => {
+    // A choice is read for its shapes to the end, or to the call's budget: nothing here recurses.
     const literals = (n: number) =>
       z.union(
         Array.from({ length: n }, (_, index) => z.literal(index)) as [z.ZodLiteral<number>, z.ZodLiteral<number>],
       );
-    for (const n of [9_998, 10_001, 20_000]) {
+    for (const n of [1_000, 4_000]) {
       const U = z.object({ c: z.union([pii(literals(n)), z.string()]) });
       expect(masked(U, { c: "P-1" })).toEqual({ c: "P-1" });
+      expect(masked(U, { c: 7 })).toEqual({ c: "[pii]" });
+    }
+    // Past the budget the option's shapes were never all read, so its mark applies to every value: masked, never raw.
+    for (const n of [MAX_READ_SCHEMAS + 1, 20_000]) {
+      const U = z.object({ c: z.union([pii(literals(n)), z.string()]) });
+      expect(masked(U, { c: "P-1" })).toEqual({ c: "[pii]" });
       expect(masked(U, { c: 7 })).toEqual({ c: "[pii]" });
     }
   });
@@ -1232,5 +1238,19 @@ describe("a mark on a whole object", () => {
     expect(classifyPrivacy(Inner.pick({ a: true }))).toEqual([{ path: "a", class: "pii" }]);
     expect(classifyPrivacy(Inner.partial())).toEqual([{ path: "a", class: "pii" }]);
     expect(masked(Inner.strict(), { a: "S-1", b: "u" })).toEqual({ a: "[pii]", b: "u" });
+  });
+});
+
+describe("where redact masks more than the marks name", () => {
+  test("a loose record masks a key its key schema does not match, which parse passed through, by the record's marks", () => {
+    // Over-masking only: parse keeps `b` unvalidated, and redact reads it at the record's value and key positions.
+    const Values = z.looseRecord(z.string().regex(/^a/), pii(z.string()));
+    const values = Values.parse({ a1: "S-1", b: "u-b" });
+    expect(values).toEqual({ a1: "S-1", b: "u-b" });
+    expect(redact(Values, values)).toEqual({ a1: "[pii]", b: "[pii]" });
+    const Keys = z.looseRecord(pii(z.string().regex(/^a/)), z.string());
+    const keys = Keys.parse({ a1: "u", bkey: "u-b" });
+    expect(redact(Keys, keys)).toEqual({ "[pii]": "u", "[pii] #2": "u-b" });
+    expect(classifyPrivacy(Values)).toEqual([{ path: "*", class: "pii" }]);
   });
 });

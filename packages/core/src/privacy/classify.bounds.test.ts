@@ -8,7 +8,7 @@ import {
   classifyPrivacy,
   hasPrivacy,
   MAX_LISTED_PATHS,
-  MAX_SEARCHED_SCHEMAS,
+  MAX_READ_SCHEMAS,
   privacyOf,
   unreadClasses,
   walkPrivacy,
@@ -108,8 +108,8 @@ const cuts: [string, () => z.ZodType, string][] = [
 ];
 
 describe("a read that runs out of its budget assumes every class it did not read", () => {
-  test("the budget is the one the cut points share", () => {
-    expect(MAX_SEARCHED_SCHEMAS).toBe(10_000);
+  test("the budget is the one every cut point in a call shares", () => {
+    expect(MAX_READ_SCHEMAS).toBe(10_000);
   });
 
   test.each(cuts)("%s lists every class below it, and hasPrivacy sees each", (_, build, at) => {
@@ -128,11 +128,12 @@ describe("a read that runs out of its budget assumes every class it did not read
     const Container = z.object({ id: z.string(), t: pii(tree(20)) });
     expect(classifyPrivacy(Container)).toContainEqual({ path: "t", class: "pii" });
     expect(classifyPrivacy(Container)).toContainEqual({ path: "t", class: "phi", truncated: true });
-    expect(redact(Container, Container.parse({ id: "1", t: {} }) as never)).toEqual({ id: "1", t: "[secret]" });
+    // The placeholder is the strongest class found, never one only assumed, and the cutoff where none was found.
+    expect(redact(Container, Container.parse({ id: "1", t: {} }) as never)).toEqual({ id: "1", t: "[pii]" });
     const Opaque = z.object({ id: z.string(), t: tree(20).transform((v) => v) });
-    expect(redact(Opaque, Opaque.parse({ id: "1", t: {} }) as never)).toEqual({ id: "1", t: "[secret]" });
+    expect(redact(Opaque, Opaque.parse({ id: "1", t: {} }) as never)).toEqual({ id: "1", t: "[truncated]" });
     const Lazies = z.object({ id: z.string(), t: lazies(15) });
-    expect(redact(Lazies, Lazies.parse({ id: "1", t: { x: "S-1" } }) as never)).toEqual({ id: "1", t: "[secret]" });
+    expect(redact(Lazies, Lazies.parse({ id: "1", t: { x: "S-1" } }) as never)).toEqual({ id: "1", t: "[truncated]" });
   });
 });
 

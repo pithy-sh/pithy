@@ -7,9 +7,8 @@ import { phi, pii, secret } from "./classes";
 import {
   classifyPrivacy,
   hasPrivacy,
-  MAX_CLASSIFIED_POSITIONS,
+  MAX_READ_SCHEMAS,
   MAX_RECURSION_DEPTH,
-  MAX_SEARCHED_SCHEMAS,
   unreadClasses,
   walkPrivacy,
 } from "./classify";
@@ -256,7 +255,7 @@ describe("one recursion limit, however the recursion is written", () => {
     }
     // Nothing past the budget was read, so every class may be there: each is listed, and none is assumed away.
     expect(new Set(listed.map((field) => field.class))).toEqual(new Set(["secret", "phi", "pci", "pii"]));
-    expect(MAX_CLASSIFIED_POSITIONS).toBe(10_000);
+    expect(MAX_READ_SCHEMAS).toBe(10_000);
   });
 
   test("classifyPrivacy never lists less than a schema marks: a class below the budget is still found", () => {
@@ -332,10 +331,11 @@ describe("one recursion limit, however the recursion is written", () => {
     const Tree = node();
     const listed = classifyPrivacy(Tree);
     const depth = (path: string) => path.split(".").length;
-    // Every level read whole lists its `e` at every path, left or right; the first level past the budget is 13.
+    // Breadth first: every level the call's budget reaches whole lists its `e` at every path, left or right. Each
+    // position costs the schemas its read meets and its shape holds, so the first level the budget runs out on is 10.
     const truncated = listed.filter((field) => field.truncated);
     expect(truncated.length).toBeGreaterThan(0);
-    expect(Math.min(...truncated.map((field) => depth(field.path)))).toBe(13);
+    expect(Math.min(...truncated.map((field) => depth(field.path)))).toBe(10);
     expect(listed).toContainEqual({ path: "right.e", class: "pii" });
     expect(listed).toContainEqual({ path: "left.right.left.e", class: "pii" });
     expect(listed.some((field) => field.path === "right" || field.path.startsWith("right.u"))).toBe(false);
@@ -428,13 +428,13 @@ describe("a recursion that builds a new choice each read never runs past the lim
   const twice = (): z.ZodType => z.lazy(() => z.union([twice(), twice()]));
   const both = (): z.ZodType => z.lazy(() => z.intersection(both(), both()));
   const marked = (): z.ZodType => z.lazy(() => z.union([pii(z.number()), z.string(), marked()]));
-  // One new lazy at every level reaches the limit, and is cut off. Two at every level run out of the budget first, and
-  // what lies past it was never read: every class is assumed, so the value is masked with the strongest.
+  // One new lazy at every level reaches the limit, and is cut off. Two at every level run out of the call's budget
+  // first, and what lies past it was never read: no class was found, so the value is cut off, and every class is listed.
   const cases: [string, () => z.ZodType, unknown, string][] = [
     ["a lazy over a union with a new lazy", anew, "P-1", "[truncated]"],
     ["the same beside a number", beside, "P-1", "[truncated]"],
-    ["two new lazies in a union", twice, "P-1", "[secret]"],
-    ["two new lazies in an intersection", both, "P-1", "[secret]"],
+    ["two new lazies in a union", twice, "P-1", "[truncated]"],
+    ["two new lazies in an intersection", both, "P-1", "[truncated]"],
     ["a marked option at every level", marked, 5, "[pii]"],
   ];
 
@@ -479,46 +479,69 @@ describe("the limit counts nesting, never breadth", () => {
     }
   });
 
-  test("a marked container over a union wider than the search budget carries the class of its last option", () => {
-    const options = Array.from({ length: MAX_SEARCHED_SCHEMAS + 1 }, (_, index) =>
-      z.object({ [`k${index}`]: z.string() }).strict(),
-    );
-    const Marked = pii(z.union([...options, z.object({ last: phi(z.string()) }).strict()] as never));
-    expect(redact(Marked, { last: "S-1" } as never)).toBe("[phi]");
-    expect(classifyPrivacy(Marked)).toEqual([
+  test("a marked container over a wide union carries the class of its last option, and past the budget assumes it", () => {
+    const marked = (width: number) => {
+      const options = Array.from({ length: width }, (_, index) => z.object({ [`k${index}`]: z.string() }).strict());
+      return pii(z.union([...options, z.object({ last: phi(z.string()) }).strict()] as never));
+    };
+    const Narrow = marked(1_000);
+    expect(redact(Narrow, { last: "S-1" } as never)).toBe("[phi]");
+    expect(classifyPrivacy(Narrow)).toEqual([
       { path: "", class: "pii" },
       { path: "", class: "phi" },
     ]);
-    expect(hasPrivacy(Marked, "phi")).toBe(true);
+    // Wider than the call's budget: the last option is never read, so every class is assumed there, and the value is
+    // masked with the strongest class found.
+    const Wide = marked(MAX_READ_SCHEMAS + 1);
+    expect(redact(Wide, { last: "S-1" } as never)).toBe("[pii]");
+    const listed = classifyPrivacy(Wide);
+    expect(listed).toContainEqual({ path: "", class: "pii" });
+    expect(listed).toContainEqual({ path: "", class: "phi", truncated: true });
+    expect(hasPrivacy(Wide, "phi")).toBe(true);
   });
 
-  test("an opaque node over an unmarked object wider than the search budget is kept verbatim", () => {
-    const shape = Object.fromEntries(
-      Array.from({ length: MAX_SEARCHED_SCHEMAS + 1 }, (_, index) => [`f${index}`, z.object({ x: z.string() })]),
+  test("an opaque node over a wide unmarked object is kept, and past the budget masked whole", () => {
+    const row = (width: number) => {
+      const shape = Object.fromEntries(
+        Array.from({ length: width }, (_, index) => [`f${index}`, z.object({ x: z.string() })]),
+      );
+      return z.object({
+        id: z.string(),
+        blob: z
+          .object(shape)
+          .partial()
+          .transform((x) => x),
+      });
+    };
+    const Narrow = row(1_000);
+    const narrow = Narrow.parse({ id: "I-1", blob: { f0: { x: "P-1" } } });
+    expect(redact(Narrow, narrow as never)).toEqual({ id: "I-1", blob: { f0: { x: "P-1" } } });
+    expect(classifyPrivacy(Narrow)).toEqual([]);
+    // Past the budget, what the search never read may hold any class: the value is cut off, and every class listed.
+    const Wide = row(MAX_READ_SCHEMAS + 1);
+    const wide = Wide.parse({ id: "I-1", blob: { f0: { x: "P-1" } } });
+    expect(redact(Wide, wide as never)).toEqual({ id: "I-1", blob: "[truncated]" });
+    expect(classifyPrivacy(Wide)).toEqual(
+      unreadClasses().map((name) => ({ path: "blob", class: name, truncated: true })),
     );
-    const Row = z.object({
-      id: z.string(),
-      blob: z
-        .object(shape)
-        .partial()
-        .transform((x) => x),
-    });
-    const value = Row.parse({ id: "I-1", blob: { f0: { x: "P-1" } } });
-    expect(redact(Row, value as never)).toEqual({ id: "I-1", blob: { f0: { x: "P-1" } } });
-    expect(classifyPrivacy(Row)).toEqual([]);
   });
 
-  test("a union of more lazies than the search budget, none nested in another, is walked and kept", () => {
-    const width = MAX_SEARCHED_SCHEMAS + 1;
-    const Row = z.object({
-      c: z.union(Array.from({ length: width }, (_, index) => z.lazy(() => z.literal(`v${index}`))) as never),
-    });
-    expect(redact(Row, Row.parse({ c: `v${width - 1}` }) as never)).toEqual({ c: `v${width - 1}` });
-    expect(classifyPrivacy(Row)).toEqual([]);
+  test("a union of lazies, none nested in another, is walked and kept, and past the budget masked whole", () => {
+    const row = (width: number) =>
+      z.object({
+        c: z.union(Array.from({ length: width }, (_, index) => z.lazy(() => z.literal(`v${index}`))) as never),
+      });
+    const Narrow = row(1_000);
+    expect(redact(Narrow, Narrow.parse({ c: "v999" }) as never)).toEqual({ c: "v999" });
+    expect(classifyPrivacy(Narrow)).toEqual([]);
+    const width = MAX_READ_SCHEMAS + 1;
+    const Wide = row(width);
+    expect(redact(Wide, Wide.parse({ c: `v${width - 1}` }) as never)).toEqual({ c: "[truncated]" });
+    expect(classifyPrivacy(Wide)).toEqual(unreadClasses().map((name) => ({ path: "c", class: name, truncated: true })));
   });
 
   test("a union of shared lazies reads alike whichever union over them is read first", () => {
-    const width = MAX_SEARCHED_SCHEMAS + 2_000;
+    const width = 1_000;
     const read = (first: boolean) => {
       const lazies = Array.from({ length: width }, (_, index) => z.lazy(() => z.literal(`v${index}`)));
       const Half = z.object({ c: z.union(lazies.slice(0, width / 2) as never) });
@@ -670,9 +693,9 @@ describe("a cutoff ends its own path, and a class known at a position is its pla
       expect(hasPrivacy(Marked, "secret")).toBe(true);
     }
     // Nothing marked as far as the search reads, and it never ends: past the budget nothing was read, so any class
-    // may be marked there. Every class is assumed, each listed truncated, and the value masked with the strongest.
+    // may be marked there. Every class is assumed, each listed truncated, and with none found the value is cut off.
     const Row = z.object({ x: two().transform((x) => x) });
-    expect(redact(Row, { x: {} } as never)).toEqual({ x: "[secret]" });
+    expect(redact(Row, { x: {} } as never)).toEqual({ x: "[truncated]" });
     expect(classifyPrivacy(Row)).toEqual(unreadClasses().map((name) => ({ path: "x", class: name, truncated: true })));
     expect(Date.now() - started).toBeLessThan(5_000);
   });
