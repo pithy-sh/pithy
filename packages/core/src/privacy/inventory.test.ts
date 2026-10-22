@@ -122,6 +122,31 @@ describe("privacyInventory paths", () => {
   });
 });
 
+describe("privacyInventory references", () => {
+  test("every sameAs in a KV inventory names a path the same report lists", () => {
+    let node: z.ZodType = z.object({ e: pii(z.string()) });
+    for (let level = 0; level < 20; level += 1) node = z.object({ a: node.optional(), b: node.optional() });
+    const capability = defineCapability({
+      name: "shared",
+      requiredBindings: [],
+      kvNamespaces: {
+        cache: {
+          binding: "CACHE",
+          stores: { profile: { prefix: "p", key: z.object({ id: z.string() }), value: z.object({ t: node }) } },
+        },
+      },
+    });
+    const fields = privacyInventory([capability]).schemas[0]?.fields ?? [];
+    const listed = fields.filter((field) => field.sameAs === undefined).map((field) => field.path);
+    const references = fields.filter((field) => field.sameAs !== undefined);
+    expect(references.length).toBeGreaterThan(0);
+    for (const { sameAs } of references) {
+      expect(sameAs?.startsWith("value.")).toBe(true);
+      expect(listed.some((path) => path === sameAs || path.startsWith(`${sameAs}.`))).toBe(true);
+    }
+  });
+});
+
 describe("privacyInventory, past the depth limit", () => {
   test("lists no class for a KV value cut off at the recursion limit, as the cutoff is not a privacy class", () => {
     // biome-ignore lint/suspicious/noExplicitAny: a factory's type is circular, and TypeScript infers none.

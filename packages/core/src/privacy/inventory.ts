@@ -55,14 +55,16 @@ function kvFields(store: { key: z.ZodType; value: z.ZodType; metadata?: z.ZodTyp
     ["value", store.value],
     ["metadata", store.metadata],
   ];
-  return parts.flatMap(([part, schema]) =>
-    schema
-      ? classifyPrivacy(schema).map((field) => ({
-          ...field,
-          path: field.path === "" || field.path.startsWith("[") ? `${part}${field.path}` : `${part}.${field.path}`,
-        }))
-      : [],
-  );
+  return parts.flatMap(([part, schema]) => {
+    if (!schema) return [];
+    const under = (path: string) => (path === "" || path.startsWith("[") ? `${part}${path}` : `${part}.${path}`);
+    // A reference names a path in the same list, so it takes the same prefix.
+    return classifyPrivacy(schema).map((field) =>
+      field.sameAs === undefined
+        ? { ...field, path: under(field.path) }
+        : { ...field, path: under(field.path), sameAs: under(field.sameAs) },
+    );
+  });
 }
 
 /** Classes in the order every report lists them: the built-ins first, then each other class by name. */

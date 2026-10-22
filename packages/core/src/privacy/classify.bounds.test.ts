@@ -9,6 +9,7 @@ import {
   hasPrivacy,
   MAX_LISTED_PATHS,
   MAX_SEARCHED_SCHEMAS,
+  privacyOf,
   unreadClasses,
   walkPrivacy,
 } from "./classify";
@@ -160,5 +161,81 @@ describe("a schema nested deeper than the stack is listed with every class, and 
     const Row = z.object({ id: z.string(), v: z.union([z.number(), deep()]) });
     // What parse returns for it: the number option matches, and parse never descends into the other.
     expect(redact(Row, { id: "user-1", v: 1 } as never)).toBe("[truncated]");
+  });
+});
+
+describe("a position read through choices that share a schema costs its distinct schemas, never its paths", () => {
+  const readers: [string, (schema: z.ZodType, wire: unknown) => unknown][] = [
+    ["redact", (schema, wire) => redact(schema, schema.parse(wire) as never)],
+    ["classifyPrivacy", (schema) => classifyPrivacy(schema)],
+    ["hasPrivacy", (schema) => hasPrivacy(schema, "pii")],
+  ];
+
+  /** Forty levels of a union, or an intersection, whose two sides wrap the one schema below: 2^40 paths to it. */
+  function shared(base: z.ZodType, kind: "union" | "intersection"): z.ZodType {
+    let node = base;
+    for (let level = 0; level < 40; level += 1)
+      node =
+        kind === "union"
+          ? z.union([node.optional(), node.nullable()])
+          : z.intersection(node.optional(), node.nullable());
+    return z.object({ id: z.string(), v: z.union([z.number(), z.lazy(() => node)]), e: pii(z.string()) });
+  }
+
+  /** A lazy that comes round to itself, under an intersection, so its every-shape answer ends no union early. */
+  function cyclic(): z.ZodType {
+    const loop: z.ZodType = z.lazy(() => z.union([z.string(), loop]));
+    return z.intersection(loop, z.string());
+  }
+
+  const shapes: [string, () => z.ZodType][] = [
+    ["a union", () => shared(z.object({ name: z.string() }), "union")],
+    ["an intersection", () => shared(z.object({ name: z.string() }), "intersection")],
+    ["a union over a lazy that meets itself", () => shared(cyclic(), "union")],
+  ];
+
+  for (const [shape, build] of shapes) {
+    test.each(readers)(`${shape}: %s takes under 100 ms`, (_, run) => {
+      const schema = build();
+      const started = performance.now();
+      run(schema, { id: "user-1", v: 7, e: "S-1" });
+      expect(performance.now() - started).toBeLessThan(100);
+    });
+  }
+
+  test("and the answer is the one the shape gives", () => {
+    for (const [, build] of shapes) {
+      const schema = build();
+      expect(redact(schema, schema.parse({ id: "user-1", v: 7, e: "S-1" }) as never)).toEqual({
+        id: "user-1",
+        v: 7,
+        e: "[pii]",
+      });
+      expect(classifyPrivacy(schema)).toEqual([{ path: "e", class: "pii" }]);
+    }
+  });
+});
+
+describe("a field cloned by .describe() or .meta() more times than Zod can read its metadata back through", () => {
+  /** Fifty thousand clones: each one's metadata is read through its parent's, deeper than the stack can follow. */
+  function described(how: "describe" | "meta"): z.ZodType {
+    let note: z.ZodType = z.string();
+    for (let index = 0; index < 50_000; index += 1)
+      note = how === "describe" ? note.describe(`d${index}`) : note.meta({ n: index });
+    return note;
+  }
+
+  test.each(["describe", "meta"] as const)("privacyOf never throws, and answers the strongest class (%s)", (how) => {
+    const note = described(how);
+    expect(() => privacyOf(note)).not.toThrow();
+    expect(privacyOf(note)).toBe(unreadClasses()[0]);
+  });
+
+  test("classifyPrivacy lists it with every class, each truncated, and redact masks it", () => {
+    const Row = z.object({ id: z.string(), email: pii(z.string()), note: described("describe") });
+    const listed = classifyPrivacy(Row);
+    expect(listed).toContainEqual({ path: "email", class: "pii" });
+    for (const name of unreadClasses()) expect(listed).toContainEqual({ path: "note", class: name, truncated: true });
+    expect(() => redact(Row, Row.parse({ id: "user-1", email: "S-1", note: "keep me" }) as never)).not.toThrow();
   });
 });

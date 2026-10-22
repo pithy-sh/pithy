@@ -3,7 +3,7 @@
 
 import type { z } from "zod";
 import { privacyClass } from "./classes";
-import { MAX_RECURSION_DEPTH, type Mask, type Position, rootPosition, TRUNCATED_MASK } from "./classify";
+import { kindOfValue, MAX_RECURSION_DEPTH, type Mask, type Position, rootPosition, TRUNCATED_MASK } from "./classify";
 import type { RedactedOutput } from "./types";
 
 /**
@@ -42,39 +42,46 @@ import type { RedactedOutput } from "./types";
  * 5. The kit's database codecs: `SQLiteDate`, `SQLiteBoolean` and `sqliteJson(schema)`. A JSON column's inner fields
  *    are redacted field by field.
  * 6. Recursion: `z.lazy(() => Node)` and getters, whether a getter returns one schema or builds a new one each read,
- *    such as trees and linked lists. Walked exactly to a fixed recursion depth. Past it the position is masked whole,
- *    and `Redacted<T>` types it `unknown` from that same depth: one limit, shared by the runtime and the type, however
- *    the recursion is written. A self-referencing `z.lazy` has to be annotated `z.ZodType<T>`, which names no kind, so
- *    `Redacted<T>` types it, and every field that holds it, `unknown`. Write the recursion with a getter and the type
- *    keeps its shape to the limit. A value cut off at the limit is masked `[truncated]`, which is a safety cutoff
- *    rather than a privacy class, so `classifyPrivacy` does not list it.
+ *    such as trees and linked lists. Walked exactly to a fixed recursion depth, unless the search budget ends the walk
+ *    sooner: a schema that builds two new ones at every level can spend it first, and the position where it runs out
+ *    is masked whole with the strongest class, as any class may be marked past it. Past the depth the position is
+ *    masked whole, and `Redacted<T>` types it `unknown` from that same depth: one limit, shared by the runtime and the
+ *    type, however the recursion is written. A self-referencing `z.lazy` has to be annotated `z.ZodType<T>`, which
+ *    names no kind, so `Redacted<T>` types it, and every field that holds it, `unknown`. Write the recursion with a
+ *    getter and the type keeps its shape to the limit. A value cut off at the limit is masked `[truncated]`, which is
+ *    a safety cutoff rather than a privacy class, so `classifyPrivacy` does not list it.
  * 7. Values copied out of a parsed row into a plain object, array, `Map` or `Set` described by any of the above.
  *
  * **Outside the contract.** Custom transforms and pipes, `preprocess`, codecs other than the kit's own (one built the
  * way `sqliteJson` is built included), `z.custom`, `any`, `unknown`, `.overwrite()` and `.catch()` with a fallback
- * function. `redact` does not look inside these. When
- * anything beneath one is marked, the whole value is masked with the strongest class it carries, and `Redacted<T>`
- * types that position `unknown`. When nothing beneath it is marked, it is kept as it is, including when it is a union
- * option beside a marked one. A recursion beneath it that reaches the item 6 depth limit counts as possibly marked, so
- * that value is masked whole and typed `unknown`: with the strongest class marked anywhere else beneath it, or as
- * `[truncated]` where none is. None of this ever throws or leaks a raw marked value. `Redacted<T>` cannot see an
- * `.overwrite()`, which keeps the type of the schema it is called on, so it types that position as the shape beneath
- * it. A `.refine` or `.superRefine` that mutates its input is outside the contract; `redact` does not defend against a
- * check written to move a marked value. `redact` copies only the enumerable own properties of a plain object passed
- * through as it is.
+ * function. `redact` does not look inside these. When anything beneath one is marked, the whole value is masked with
+ * the strongest class it carries, and `Redacted<T>` types that position `unknown`. When nothing beneath it is marked,
+ * it is kept as it is, including when it is a union option beside a marked one. A recursion beneath it that reaches
+ * the item 6 depth limit counts as possibly marked, so that value is masked whole and typed `unknown`: with the
+ * strongest class marked anywhere else beneath it, or as `[truncated]` where none is. None of this ever throws or
+ * leaks a raw marked value. `Redacted<T>` cannot see an `.overwrite()`, which keeps the type of the schema it is
+ * called on, so it types that position as the shape beneath it. A `.refine` or `.superRefine` that mutates its input
+ * is outside the contract; `redact` does not defend against a check written to move a marked value. `redact` copies
+ * only the enumerable own properties of a plain object passed through as it is. A value that is not a plain object,
+ * such as a class instance, an ORM entity or an object whose prototype is not `Object.prototype`, where an object is
+ * expected is not walked either: when anything beneath that object is marked, the whole value is masked with the
+ * strongest class it carries, inside an array as anywhere, and when nothing is, it is kept as it is. `Redacted<T>`,
+ * which cannot tell a class instance from a plain object, types it as the object.
  *
  * **Five constructions nothing written to the contract uses** are outside it too. Each is tested for exactly this
- * behavior, none throws, and all but the fourth can keep a marked value as it is:
+ * behavior, none throws, and all but the second and the fourth can keep a marked value as it is:
  *
  * 1. A symbol key in a `z.object` shape is not listed by `classifyPrivacy` or seen by `hasPrivacy`, and beneath an
  *    opaque node or a mark `redact` does not see a mark on it.
  * 2. A value that is not a plain object, such as a class instance or an object whose prototype is not
- *    `Object.prototype`, passed through as it is beside an object option is kept as it is.
+ *    `Object.prototype`, passed through as it is beside an object option is read as one where an object is expected:
+ *    masked whole with the strongest class marked beneath that option, and kept as it is where nothing is.
  * 3. An `.overwrite()` or a `.catch()` with a fallback function on a scalar option of a union is read by the
  *    scalar's kind, so an object or an array it makes is kept as it is.
- * 4. Wrappers, choices or intersections nested deeper than the JavaScript stack can follow: `redact` masks the
- *    value they sit in `[truncated]`, and `classifyPrivacy`, `hasPrivacy` and `walkPrivacy` list that position with
- *    every class, each `truncated`, rather than throw.
+ * 4. Wrappers, choices or intersections nested deeper than the JavaScript stack can follow, and a field cloned by
+ *    `.describe()` or `.meta()` more times than Zod can read its metadata back through: `redact` masks the value they
+ *    sit in `[truncated]`, `classifyPrivacy`, `hasPrivacy` and `walkPrivacy` list that position with every class,
+ *    each `truncated`, and `privacyOf` answers the strongest class, rather than throw.
  * 5. An array, a `Map` or a `Set` passed through as it is is copied by its elements or entries, and no other own
  *    property it holds is copied.
  *
@@ -125,6 +132,15 @@ function isPlainObject(value: unknown): value is Record<PropertyKey, unknown> {
   if (typeof value !== "object" || value === null) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+}
+
+/**
+ * The mask for an object that is not a plain one, a class instance or one with another prototype, where an object or
+ * a record here would walk it: it is never walked, and is masked whole where anything beneath is marked.
+ */
+function instanceMask(at: Position, value: unknown): Mask | undefined {
+  if (kindOfValue(value) !== "object" || isPlainObject(value)) return undefined;
+  return at.kinds.has("object") || at.kinds.has("record") ? at.instanceMask : undefined;
 }
 
 /**
@@ -230,7 +246,7 @@ function redactAt(step: Extract<Step, { visit: unknown }>, steps: Step[]): void 
     let result: Result;
     try {
       // A mark applies to a value of the shape of the option it was reached through, and to no other.
-      const mask = at.maskFor(value);
+      const mask = at.maskFor(value) ?? instanceMask(at, value);
       result = mask
         ? { value: masked(mask, value), masked: true }
         : {

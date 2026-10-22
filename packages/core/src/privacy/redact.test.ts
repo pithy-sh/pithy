@@ -869,7 +869,22 @@ describe("outside the contract, and tested for exactly what it does: five constr
     expect(classifyPrivacy(Marked)).toEqual([{ path: "v", class: "pii" }]);
   });
 
-  test("an object that is not a plain object, passed through as it is beside an object option, is kept as it is", () => {
+  test("an object that is not a plain object, where an object with a mark beneath is expected, is masked whole", () => {
+    class UserRow {
+      id = "user-1";
+      email = "S-1@example.com";
+    }
+    const User = z.object({ id: z.string(), email: pii(z.string()) });
+    const row = new UserRow() as unknown as z.output<typeof User>;
+    expect(redact(User, row)).toBe("[pii]");
+    expect(redact(z.array(User), [row])).toEqual(["[pii]"]);
+    expect(redact(z.object({ owner: User }), { owner: row })).toEqual({ owner: "[pii]" });
+    const prototyped = Object.assign(Object.create({ kind: "x" }), { id: "user-1", email: "S-1" });
+    expect(redact(User, prototyped as never)).toBe("[pii]");
+    // The strongest class beneath it is the mask.
+    const Both = z.object({ email: pii(z.string()), token: secret(z.string()) });
+    expect(redact(Both, new UserRow() as never)).toBe("[secret]");
+    // Beside an object option too, construction 2 included.
     class Patient {
       e = "S-1";
       n = "u";
@@ -877,15 +892,31 @@ describe("outside the contract, and tested for exactly what it does: five constr
     const patient = new Patient();
     for (const first of [z.any(), z.unknown(), z.instanceof(Patient)]) {
       const Choice = z.union([first, z.object({ e: pii(z.string()), n: z.string() })]);
-      expect(redact(Choice, Choice.parse(patient) as never)).toBe(patient);
+      expect(redact(Choice, Choice.parse(patient) as never)).toBe("[pii]");
       expect(classifyPrivacy(Choice)).toEqual([{ path: "e", class: "pii" }]);
     }
-    const prototyped = Object.create({}, { e: { value: "S-1", enumerable: true } }) as { e: string };
     const Either = z.union([z.object({ e: pii(z.number()) }), z.any()]);
-    expect(redact(Either, Either.parse(prototyped) as never)).toBe(prototyped);
+    expect(redact(Either, Either.parse(Object.create({}, { e: { value: "S-1", enumerable: true } })) as never)).toBe(
+      "[pii]",
+    );
     // A plain object beside it is walked.
     const Plain = z.union([z.any(), z.object({ e: pii(z.string()), n: z.string() })]);
     expect(masked(Plain, { e: "S-1", n: "u" })).toEqual({ e: "[pii]", n: "u" });
+  });
+
+  test("an object that is not a plain object, where an object with no mark beneath is expected, is kept as it is", () => {
+    class Note {
+      body = "keep me";
+    }
+    const note = new Note();
+    const Unmarked = z.object({ body: z.string() });
+    expect(redact(Unmarked, note as never)).toBe(note);
+    expect(redact(z.union([z.any(), Unmarked]), note as never)).toBe(note);
+    // Beside a marked scalar option, an object option with no mark beneath keeps it too.
+    expect(redact(z.union([pii(z.string()), Unmarked]), note as never)).toBe(note);
+    // A Date, an array, a Map and a Set are not objects of that kind, and are read as they always were.
+    const when = new Date(0);
+    expect(redact(z.union([z.date(), z.object({ e: pii(z.string()) })]), when as never)).toBe(when);
   });
 
   test("a scalar option's .overwrite() or .catch() fallback that makes an object or an array is read by the scalar's kind", () => {

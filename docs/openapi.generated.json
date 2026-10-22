@@ -1711,6 +1711,15 @@
                                 "class": {
                                   "type": "string",
                                   "description": "The privacy class it is marked with: `secret`, `pii`, `phi`, `pci`, or an adopter's own."
+                                },
+                                "truncated": {
+                                  "description": "Set where the class is assumed rather than found: a read ran out of its budget there, or the schema could not be read at all, so any class may be marked below it. Absent where the schema was read to the end.",
+                                  "type": "boolean",
+                                  "const": true
+                                },
+                                "sameAs": {
+                                  "description": "Set on a reference: the path this field's position was first listed under, once the list reached its cap on paths. The class is marked somewhere beneath both, and the paths beneath this one are those beneath that one.",
+                                  "type": "string"
                                 }
                               },
                               "required": [

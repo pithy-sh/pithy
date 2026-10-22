@@ -1488,6 +1488,39 @@ describe("privacy over the control plane (#132)", () => {
     expect(after.schemas[0]?.fields).toEqual([{ path: "email", class: "pii" }]);
   });
 
+  test("GET /privacy sends truncated and sameAs as its schema declares, so a validating client keeps both", async () => {
+    /** A lazy whose target is a union of two new lazies, fifteen deep: the read runs out and assumes every class. */
+    const lazies = (at: number): z.ZodType =>
+      z.lazy(() => (at === 15 ? z.object({ x: phi(z.string()) }) : z.union([lazies(at + 1), lazies(at + 1)])));
+    /** One schema reused in two fields at every level of twenty: past the cap, a position met again is a reference. */
+    let shared: z.ZodType = z.object({ e: pii(z.string()) });
+    for (let level = 0; level < 20; level += 1) shared = z.object({ a: shared.optional(), b: shared.optional() });
+    const archive = defineCapability({
+      name: "archive",
+      requiredBindings: [],
+      databases: { app: { binding: "DB", tables: { cuts: z.object({ id: z.string(), t: lazies(0) }) } } },
+      kvNamespaces: {
+        sessions: {
+          binding: "SESSIONS",
+          stores: { tree: { prefix: "archive", key: z.object({ id: z.string() }), value: z.object({ t: shared }) } },
+        },
+      },
+    });
+    const worker = createBackend({ capabilities: [controlplane(), archive] });
+    await connect([registered(alice)], GRANTED);
+    const response = await worker.request(
+      "http://worker.example/control-plane/privacy",
+      { method: "GET", headers: { [CONTROL_PLANE_HEADER]: await mint(alice, { scope: PRIVACY_READ_SCOPE }) } },
+      { ...BINDINGS, [PRIVACY_ATTESTATION_VAR]: JSON.stringify(ATTESTED) },
+    );
+    const raw = await body<unknown>(response);
+    // Parsed and compared: a key the schema does not name would be stripped and show as a difference.
+    expect(ControlPlanePrivacyResponse.parse(raw)).toEqual(raw);
+    const fields = ControlPlanePrivacyResponse.parse(raw).schemas.flatMap((schema) => schema.fields);
+    expect(fields).toContainEqual({ path: "t", class: "secret", truncated: true });
+    expect(fields.some((field) => field.sameAs?.startsWith("value.t."))).toBe(true);
+  });
+
   test("advertises the route with its scope, like every other admin route", async () => {
     await connect([registered(alice)]);
     const json = ControlPlaneManifest.parse(

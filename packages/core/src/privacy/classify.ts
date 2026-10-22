@@ -43,15 +43,17 @@ import { ownPrivacyClasses, privacyClasses, rankPrivacyClasses, strongestPrivacy
  *   more positions than any list can hold. Such a schema is read whole down to the level the budget runs out on, and
  *   each new position left, none of them above that level, is listed with every class registered, each with
  *   `truncated`: nothing below it was read, so any class may be marked there, and the list never says less than the
- *   schema marks. It is one of two places the list says more than `redact` masks. Every other read that runs out of
+ *   schema marks. It is one of four places the list says more than `redact` masks, beside the classes a cut assumes,
+ *   a reference's own path and an intersection that narrows. Every other read that runs out of
  *   {@link MAX_SEARCHED_SCHEMAS} — the search beneath a marked container or an opaque node, and the read of a level of
  *   lazies — assumes every class past it the same way, each class it did not find listed `truncated`, and `redact`
  *   masks that value with the strongest. A position the walk cannot read at all, nested deeper than the stack can
  *   follow, is listed with every class, each `truncated`: nothing here throws.
  * - **`classifyPrivacy` writes out at most {@link MAX_LISTED_PATHS} paths.** A schema reused in two fields at every
  *   level has a path per field per level, two to the depth; past the cap a position met again is listed at its own
- *   path once per class marked beneath it, with `sameAs` the path it was first written out under. Time and memory
- *   are linear in the schemas a tree holds, never in its paths, and every class is still listed.
+ *   path once per class marked beneath it, with `sameAs` the path it was first written out under: `redact` masks the
+ *   paths below it, not that path itself. Time and memory are linear in the schemas a tree holds, never in its paths,
+ *   and every class is still listed. So is the read of one position, whose choices may wrap one schema on every side.
  * - **An intersection is not narrowed.** Where one side narrows a field so it can never hold the type the other side
  *   marks, `classifyPrivacy` may still list that field: the inventory can list more than `redact` masks, and never
  *   less. `z.intersection(z.object({ b: z.number() }), z.object({ b: z.union([pii(z.string()), z.number()]) }))`
@@ -307,16 +309,37 @@ interface KindsFound {
 
 const kindsRead = new WeakMap<z.ZodType, KindsFound>();
 
+/** A schema on the path of a read of {@link kindsOf}: where on the path it sits, and which time it was put there. */
+interface OnPath {
+  readonly index: number;
+  readonly stamp: number;
+}
+
 /**
- * One read of {@link kindsOf}: whether it ran past the limit or out of its budget, how deep it went, the schemas met on
- * their own path, every lazy it resolved, and how many of those sat on each level.
+ * A schema read inside a cycle that comes round to a schema above it: its answer, and the schema on the path that cycle
+ * comes round to, as it was put there. The answer holds while that schema is still on the path, put there that time.
+ */
+interface WithinCycle {
+  readonly found: KindsFound;
+  readonly anchor: z.ZodType;
+  readonly stamp: number;
+}
+
+/**
+ * One read of {@link kindsOf}: whether it ran past the limit or out of its budget, how deep it went, the schemas on the
+ * path, the shallowest place on the path a cycle below came round to, every lazy it resolved, how many of those sat on
+ * each level, and the answers of the schemas it read inside a cycle.
  */
 interface KindsRead {
   stopped: boolean;
   deepest: number;
-  cycles: number;
+  low: number;
   resolved: number;
+  stamps: number;
   onLevel: Map<number, number>;
+  path: Map<z.ZodType, OnPath>;
+  stack: z.ZodType[];
+  within: Map<z.ZodType, WithinCycle>;
 }
 
 /** What a read of {@link kindsOf} has spent of {@link MAX_SEARCHED_SCHEMAS}: every lazy it resolved inside another. */
@@ -333,17 +356,40 @@ function spent(read: KindsRead): number {
  * linear. Each read has its own budget, and a lazy costs it one only inside another lazy, so a union of lazies of any
  * width, none inside another, costs none. A schema read to its end is remembered with how deep it went and what it
  * cost, and a read that meets it again pays that cost, so a choice reused in many places is read once and the answer
- * is the same whichever read came first. What the read spent is added to `cost`, the read of the position that asked.
+ * is the same whichever read came first. A schema whose cycles all come round to itself or below is remembered for
+ * every read; one inside a cycle that comes round above it is remembered while that schema is still on the path, so a
+ * choice reused inside a cycle is read once too. What the read spent is added to `cost`, the read of the position that
+ * asked.
  */
 function kindsOf(schema: z.ZodType, cost: { spent: number }): ReadonlySet<ValueKind> {
-  const read: KindsRead = { stopped: false, deepest: 0, cycles: 0, resolved: 0, onLevel: new Map() };
-  const found = readKinds(schema, 0, read, new Set());
+  const read: KindsRead = {
+    stopped: false,
+    deepest: 0,
+    low: Number.POSITIVE_INFINITY,
+    resolved: 0,
+    stamps: 0,
+    onLevel: new Map(),
+    path: new Map(),
+    stack: [],
+    within: new Map(),
+  };
+  const found = readKinds(schema, 0, read);
   cost.spent += spent(read);
   return read.stopped ? EVERY_KIND : found;
 }
 
+/** A schema's answer met again, `depth` lazies down: it would go as deep below as it did before, and cost as much. */
+function replay(known: KindsFound, depth: number, read: KindsRead): ReadonlySet<ValueKind> {
+  const cost = known.deep + (depth > 0 ? known.top : 0);
+  if (depth + known.reach > MAX_RECURSION_DEPTH || spent(read) + cost > MAX_SEARCHED_SCHEMAS) read.stopped = true;
+  read.deepest = Math.max(read.deepest, depth + known.reach);
+  read.resolved += known.top + known.deep;
+  read.onLevel.set(depth, (read.onLevel.get(depth) ?? 0) + known.top);
+  return read.stopped ? EVERY_KIND : known.kinds;
+}
+
 /** One step of {@link kindsOf}, `depth` lazies down. */
-function readKinds(schema: z.ZodType, depth: number, read: KindsRead, path: Set<z.ZodType>): ReadonlySet<ValueKind> {
+function readKinds(schema: z.ZodType, depth: number, read: KindsRead): ReadonlySet<ValueKind> {
   if (read.stopped) return EVERY_KIND;
   if (depth > MAX_RECURSION_DEPTH) {
     read.stopped = true;
@@ -351,15 +397,7 @@ function readKinds(schema: z.ZodType, depth: number, read: KindsRead, path: Set<
   }
   read.deepest = Math.max(read.deepest, depth);
   const known = kindsRead.get(schema);
-  if (known) {
-    // Read again from here, it would go as deep below as it did before, and resolve the lazies it did.
-    const cost = known.deep + (depth > 0 ? known.top : 0);
-    if (depth + known.reach > MAX_RECURSION_DEPTH || spent(read) + cost > MAX_SEARCHED_SCHEMAS) read.stopped = true;
-    read.deepest = Math.max(read.deepest, depth + known.reach);
-    read.resolved += known.top + known.deep;
-    read.onLevel.set(depth, (read.onLevel.get(depth) ?? 0) + known.top);
-    return read.stopped ? EVERY_KIND : known.kinds;
-  }
+  if (known) return replay(known, depth, read);
   const def = defOf(schema);
   const one = SCHEMA_KINDS[def.type];
   if (one !== undefined) return widened(def, new Set([one]));
@@ -369,52 +407,67 @@ function readKinds(schema: z.ZodType, depth: number, read: KindsRead, path: Set<
     return values ? new Set([...values].flatMap((value) => [kindOfValue(value)].filter(isKind))) : EVERY_KIND;
   }
   // A lazy that only ever resolves to itself holds nothing parse could return: every shape, so nothing is missed.
-  if (path.has(schema)) {
-    read.cycles += 1;
+  const onPath = read.path.get(schema);
+  if (onPath) {
+    read.low = Math.min(read.low, onPath.index);
     return EVERY_KIND;
   }
-  const { cycles, deepest, resolved } = read;
+  // Read inside a cycle before, and the schema that cycle comes round to is still on the path, put there that time.
+  const cycled = read.within.get(schema);
+  const anchor = cycled && read.path.get(cycled.anchor);
+  if (cycled && anchor?.stamp === cycled.stamp) {
+    read.low = Math.min(read.low, anchor.index);
+    return replay(cycled.found, depth, read);
+  }
+  const { deepest, low, resolved } = read;
   const onLevel = read.onLevel.get(depth) ?? 0;
+  const index = read.stack.length;
+  read.stamps += 1;
   read.deepest = depth;
-  path.add(schema);
+  read.low = Number.POSITIVE_INFINITY;
+  read.path.set(schema, { index, stamp: read.stamps });
+  read.stack.push(schema);
   let found: ReadonlySet<ValueKind>;
   try {
-    found = widened(def, readStep(schema, def, depth, read, path));
+    found = widened(def, readStep(schema, def, depth, read));
   } finally {
-    path.delete(schema);
+    read.path.delete(schema);
+    read.stack.pop();
   }
   const reach = read.deepest - depth;
+  const below = read.low;
   read.deepest = Math.max(deepest, read.deepest);
-  // An answer that ran to its end and met no schema on its own path is the schema's, whatever reached it.
-  if (!read.stopped && read.cycles === cycles) {
+  read.low = Math.min(low, below);
+  if (!read.stopped) {
     const top = (read.onLevel.get(depth) ?? 0) - onLevel;
-    kindsRead.set(schema, { kinds: found, reach, top, deep: read.resolved - resolved - top });
+    const answer: KindsFound = { kinds: found, reach, top, deep: read.resolved - resolved - top };
+    // Every cycle below came round to this schema or below it: the answer is the schema's, whatever reached it.
+    if (below >= index) kindsRead.set(schema, answer);
+    else {
+      // A cycle came round above it: the answer holds while the schema it came round to is on the path.
+      const to = read.stack[below] as z.ZodType;
+      read.within.set(schema, { found: answer, anchor: to, stamp: (read.path.get(to) as OnPath).stamp });
+    }
   }
   return found;
 }
 
 /** {@link readKinds} for a node that holds other schemas. */
-function readStep(
-  schema: z.ZodType,
-  def: Def,
-  depth: number,
-  read: KindsRead,
-  path: Set<z.ZodType>,
-): ReadonlySet<ValueKind> {
-  if (WRAPPERS.has(def.type) && def.innerType) return readKinds(def.innerType, depth, read, path);
+function readStep(schema: z.ZodType, def: Def, depth: number, read: KindsRead): ReadonlySet<ValueKind> {
+  if (WRAPPERS.has(def.type) && def.innerType) return readKinds(def.innerType, depth, read);
   if (def.type === "union" && def.options) {
     const joined = new Set<ValueKind>();
     for (const option of def.options) {
-      for (const kind of readKinds(option, depth, read, path)) joined.add(kind);
+      for (const kind of readKinds(option, depth, read)) joined.add(kind);
       // Every shape already, or a path that ran out: the options left can add none.
       if (joined.size === EVERY_KIND.size || read.stopped) break;
     }
     return joined;
   }
   if (def.type === "intersection" && def.left && def.right) {
-    const left = readKinds(def.left, depth, read, path);
+    const left = readKinds(def.left, depth, read);
     if (left.size === 0) return NO_KIND;
-    const right = readKinds(def.right, depth, read, path);
+    const right = readKinds(def.right, depth, read);
     return new Set([...left].filter((kind) => right.has(kind)));
   }
   if (def.type === "lazy") {
@@ -426,10 +479,10 @@ function readStep(
     read.resolved += 1;
     read.onLevel.set(depth, (read.onLevel.get(depth) ?? 0) + 1);
     const inner = lazyInner(schema);
-    return inner ? readKinds(inner, depth + 1, read, path) : EVERY_KIND;
+    return inner ? readKinds(inner, depth + 1, read) : EVERY_KIND;
   }
   const codec = kitCodecOutput(schema);
-  return codec ? readKinds(codec, depth, read, path) : EVERY_KIND;
+  return codec ? readKinds(codec, depth, read) : EVERY_KIND;
 }
 
 function isKind(kind: ValueKind | undefined): kind is ValueKind {
@@ -439,13 +492,19 @@ function isKind(kind: ValueKind | undefined): kind is ValueKind {
 /**
  * The class a field was marked with, read through its wrappers — `pii(z.string()).optional()` is `pii` — or
  * `null` when nothing along the chain carries one. A field marked twice, `pii(secret(x))`, is its strongest class.
+ * It never throws: a schema whose metadata cannot be read, cloned by `.describe()` or `.meta()` more times than Zod
+ * can read it back through, may carry any class, so it answers the strongest of {@link unreadClasses}.
  */
 export function privacyOf(schema: z.ZodType): string | null {
-  for (let node: z.ZodType | undefined = schema; node; ) {
-    const found = strongestPrivacyClass(ownPrivacyClasses(node));
-    if (found !== undefined) return found;
-    const def = defOf(node);
-    node = WRAPPERS.has(def.type) ? def.innerType : undefined;
+  try {
+    for (let node: z.ZodType | undefined = schema; node; ) {
+      const found = strongestPrivacyClass(ownPrivacyClasses(node));
+      if (found !== undefined) return found;
+      const def = defOf(node);
+      node = WRAPPERS.has(def.type) ? def.innerType : undefined;
+    }
+  } catch {
+    return strongestPrivacyClass(unreadClasses()) ?? null;
   }
   return null;
 }
@@ -605,6 +664,13 @@ export interface Position {
    * option's shape, and one reached through no option to every value. `undefined` where the value is walked or kept.
    */
   maskFor(value: unknown): Mask | undefined;
+  /**
+   * How a value that is an object but not a plain one — a class instance, an object whose prototype is not
+   * `Object.prototype` — is masked where an object or a record here would walk it. It is never walked: with a mark
+   * beneath those objects it is masked whole with the strongest class they carry, as an opaque node is, and with none
+   * it is `undefined` and kept.
+   */
+  readonly instanceMask: Mask | undefined;
   /** The structural kinds here — `object`, `array`, `map` … — a value is walked by: none of a shape masked whole. */
   readonly kinds: ReadonlySet<string>;
   /** Whether anything here but a structural node may hold the value: a scalar, an opaque node. */
@@ -732,10 +798,29 @@ function maskOf(reaches: readonly Reach[], leaves: readonly z.ZodType[]): Mask |
   };
 }
 
+/**
+ * The mask for a value an object here expects but that is not a plain object: every class beneath those objects, as
+ * beneath an opaque node, or `undefined` where none is marked and no read below was cut off.
+ */
+function instanceMaskOf(objects: readonly z.ZodType[]): Mask | undefined {
+  const searches = objects.map(search);
+  const found = new Set(searches.flatMap((each) => [...each.classes]));
+  const truncated = searches.some((each) => each.truncated);
+  if (found.size === 0 && !truncated) return undefined;
+  const assumed = searches.some((each) => each.unread) ? unreadClasses().filter((name) => !found.has(name)) : [];
+  const classes = [...found, ...assumed];
+  return { className: strongestPrivacyClass(classes) ?? "", own: false, classes, assumed, truncated };
+}
+
 /** A mask, written out: two positions with the same leaves and the same masks are one. */
 function maskKey(mask: Mask): string {
   const read = mask.truncated ? "truncated" : "read";
   return `${mask.own ? "own" : "strongest"}:${read}:${mask.classes.join("|")}:${mask.assumed.join("|")}`;
+}
+
+/** A set of shapes, written out the same way whatever order it was built in. */
+function gateKey(gate: ReadonlySet<ValueKind>): string {
+  return VALUE_KINDS.map((kind) => (gate.has(kind) ? "1" : "0")).join("");
 }
 
 /** Flatten a position and decide how it is masked. Its children are read when first asked for. */
@@ -746,6 +831,9 @@ function readPosition(schemas: readonly z.ZodType[]): {
 } {
   const reaches: Reach[] = [];
   const leaves = new Set<z.ZodType>();
+  // Each schema met with the shapes it applies to, and whether as an option: a choice whose sides wrap one schema
+  // reaches it once per path, and what it adds is the same each time, so it is read once.
+  const met = new Set<string>();
   const lazyGates = new Set<string>();
   let other = false;
   /** An opaque node: masked whole with every class beneath it, and kept where there is none. */
@@ -778,6 +866,9 @@ function readPosition(schemas: readonly z.ZodType[]): {
     const stack = [...level].reverse();
     for (let entry = stack.pop(); entry; entry = stack.pop()) {
       const [node, reached, option] = entry;
+      const seen = `${idOf(node)}:${gateKey(reached)}:${option ? "option" : ""}`;
+      if (met.has(seen)) continue;
+      met.add(seen);
       // An option applies where the value has its shape: its marks are narrowed to that shape.
       const kinds = option ? kindsOf(node, cost) : EVERY_KIND;
       const gate = option ? new Set([...reached].filter((kind) => kinds.has(kind))) : reached;
@@ -803,7 +894,7 @@ function readPosition(schemas: readonly z.ZodType[]): {
         continue;
       }
       if (def.type === "lazy") {
-        const key = `${idOf(node)}:${[...gate].join(",")}`;
+        const key = `${idOf(node)}:${gateKey(gate)}`;
         if (lazyGates.has(key)) continue;
         lazyGates.add(key);
         if (lazies >= MAX_RECURSION_DEPTH || !open) {
@@ -874,6 +965,7 @@ function readPosition(schemas: readonly z.ZodType[]): {
   const records = slots(leafList, ["record"], (def) => def.valueType);
   const arrays = slots(leafList, ["array"], (def) => def.element);
   const catchalls = objects.flatMap((leaf) => [openCatchall(defOf(leaf))].filter(isSchema));
+  let instanceMask: { mask: Mask | undefined } | undefined;
   const position: Position = {
     mask,
     nameMask,
@@ -881,6 +973,12 @@ function readPosition(schemas: readonly z.ZodType[]): {
     maskFor: (value) => {
       const kind = kindOfValue(value);
       return kind === undefined ? undefined : byKind.get(kind);
+    },
+    get instanceMask() {
+      instanceMask ??= {
+        mask: instanceMaskOf(leafList.filter((leaf) => ["object", "record"].includes(defOf(leaf).type))),
+      };
+      return instanceMask.mask;
     },
     kinds: new Set(leafList.map((leaf) => defOf(leaf).type)),
     other,

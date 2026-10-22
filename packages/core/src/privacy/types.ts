@@ -125,6 +125,8 @@ export type UnmarkedString = string & NoPrivacyBrand;
  * What `redact(schema, value)` returns, named by the schema: the type a caller names for a value it already redacted,
  * `Redacted<typeof User>`. It is {@link RedactedOutput}, and it takes the schema rather than the value's type on
  * purpose: a value's type cannot tell a plain object from the output of a transform, which `redact` may mask whole.
+ * Nor can a schema's: a class instance where an object with a mark beneath is expected is masked whole at runtime,
+ * outside the contract, and typed as the object it stands in for.
  */
 export type Redacted<S extends z.ZodType> = RedactedOutput<S>;
 

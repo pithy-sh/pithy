@@ -248,6 +248,18 @@ export const PrivacyFieldView = z
     class: z
       .string()
       .describe("The privacy class it is marked with: `secret`, `pii`, `phi`, `pci`, or an adopter's own."),
+    truncated: z
+      .literal(true)
+      .optional()
+      .describe(
+        "Set where the class is assumed rather than found: a read ran out of its budget there, or the schema could not be read at all, so any class may be marked below it. Absent where the schema was read to the end.",
+      ),
+    sameAs: z
+      .string()
+      .optional()
+      .describe(
+        "Set on a reference: the path this field's position was first listed under, once the list reached its cap on paths. The class is marked somewhere beneath both, and the paths beneath this one are those beneath that one.",
+      ),
   })
   .describe("One marked field and its class.");
 export type PrivacyFieldView = z.output<typeof PrivacyFieldView>;
