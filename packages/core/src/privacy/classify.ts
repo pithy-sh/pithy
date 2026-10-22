@@ -31,8 +31,11 @@ import { type BuiltInPrivacyClass, PRIVACY_META_KEY, strongestPrivacyClass } fro
  *   own: `pii(z.object({ token: secret(z.string()) }))` is listed `pii` and `secret`, and masked `[secret]`.
  * - **Recursion is bounded once**, at {@link MAX_RECURSION_DEPTH} levels of nesting: a position deeper than that is
  *   masked whole as {@link TRUNCATED_MASK}, whatever the recursion is written with. It is a safety cutoff rather than a
- *   privacy class, so `classifyPrivacy` does not list it and `hasPrivacy` does not see it. Nothing here tells one kind
- *   of recursion from another, so every answer is a function of the schema and the value alone.
+ *   privacy class, so `classifyPrivacy` does not list it and `hasPrivacy` does not see it. A path that reaches it ends
+ *   alone: every other path is still read, so a class beside a recursion is found whatever the field order, and a
+ *   position masked whole for a class it carries is masked with that class, cut off below or not. The cutoff is a flag
+ *   beside the classes, never instead of them. Nothing here tells one kind of recursion from another, so every answer
+ *   is a function of the schema and the value alone.
  * - **`classifyPrivacy` reads at most {@link MAX_CLASSIFIED_POSITIONS} distinct positions**, level by level,
  *   shallowest first. A position is read once wherever it sits, so a schema reused in many fields costs one. `redact`
  *   walks a value, which is finite; a list walks the schema, and one that builds two new schemas at every level has
@@ -71,9 +74,10 @@ export interface PrivacyField {
  * type). Depth is counted in levels of nesting: every object, array, tuple, record, map and set a position sits inside.
  * A position deeper than this is masked whole as {@link TRUNCATED_MASK} and typed `unknown`, however the recursion
  * is written: a `z.lazy`, a getter that returns one schema, or one that builds a new schema each read. No schema
- * written out by hand nests this deep, so only a recursion reaches it. A search for a mark beneath an opaque node
- * stops at the same depth, counting each lazy too, and so does the one `Redacted<T>` makes. So does a read of the
- * shapes a choice can have, and of the schemas that reach one position, each counting the lazies nested above a schema:
+ * written out by hand nests this deep, so only a recursion reaches it. A search for a mark beneath an opaque node or a
+ * marked container ends a path at the same depth, counting each lazy too, and reads every other path; so does the one
+ * `Redacted<T>` makes. So does a read of the shapes a choice can have, and of the schemas that reach one position,
+ * each counting the lazies nested above a schema:
  * a lazy that builds a new choice each read never meets a schema twice. A union of many lazies, none inside another,
  * counts one.
  */
@@ -86,6 +90,15 @@ export const MAX_RECURSION_DEPTH = 256;
  * new schemas at every level reaches it, and then only below the levels it read whole.
  */
 export const MAX_CLASSIFIED_POSITIONS = 10_000;
+
+/**
+ * How many levels one read of a position, or one search beneath a node for a mark, opens, shallowest first, before
+ * each path left ends as cut off. Opening a level is what may build a schema — a lazy's target, an object's shape read
+ * through its getters — so it is what is counted, never breadth: a union of any width costs none. Far past any schema
+ * written out, and past any recursion that builds one new schema at each level; only one that builds two new ones at
+ * every level reaches it, and then only below the levels it read whole. A class found is kept, past it or not.
+ */
+export const MAX_SEARCHED_SCHEMAS = 10_000;
 
 /**
  * What `redact` puts where it stops: a value nested past {@link MAX_RECURSION_DEPTH}, and an opaque value over a
@@ -214,11 +227,20 @@ interface KindsFound {
 
 const kindsRead = new WeakMap<z.ZodType, KindsFound>();
 
-/** One read of {@link kindsOf}: whether it ran past the limit, how deep it went, and the schemas met on their own path. */
+/**
+ * One read of {@link kindsOf}: whether it ran past the limit or out of its budget, how deep it went, the schemas met on
+ * their own path, and the budget it draws on, shared with the read of the position that asked.
+ */
 interface KindsRead {
   stopped: boolean;
   deepest: number;
   cycles: number;
+  budget: Budget;
+}
+
+/** How many more levels a read may open, of {@link MAX_SEARCHED_SCHEMAS}. */
+interface Budget {
+  left: number;
 }
 
 /**
@@ -230,8 +252,8 @@ interface KindsRead {
  * linear. A schema read to its end is remembered with how deep it went, so a choice reused in many places is read
  * once, and the answer is the same whichever read came first.
  */
-function kindsOf(schema: z.ZodType): ReadonlySet<ValueKind> {
-  const read: KindsRead = { stopped: false, deepest: 0, cycles: 0 };
+function kindsOf(schema: z.ZodType, budget: Budget): ReadonlySet<ValueKind> {
+  const read: KindsRead = { stopped: false, deepest: 0, cycles: 0, budget };
   const found = readKinds(schema, 0, read, new Set());
   return read.stopped ? EVERY_KIND : found;
 }
@@ -305,6 +327,12 @@ function readStep(
     return new Set([...left].filter((kind) => right.has(kind)));
   }
   if (def.type === "lazy") {
+    // Out of budget, the answer is every shape: the one that masks the most.
+    if (read.budget.left <= 0) {
+      read.stopped = true;
+      return EVERY_KIND;
+    }
+    read.budget.left -= 1;
     const inner = lazyInner(schema);
     return inner ? readKinds(inner, depth + 1, read, path) : EVERY_KIND;
   }
@@ -384,37 +412,46 @@ interface Search {
 const searched = new WeakMap<z.ZodType, Search>();
 
 /**
- * Every class marked anywhere beneath a schema, on every side of every node. Depth first, each schema once, and a
- * path more than {@link MAX_RECURSION_DEPTH} levels long, counting each lazy and each structural node, stops the whole
- * search and marks it `truncated`: what is past it was never read, so the value is cut off. Depth first is what keeps a
- * schema that builds two new ones at every level linear: the first path runs out, and the search ends.
+ * Every class marked anywhere beneath a schema, on every side of every node. Level by level, each level in the order
+ * the schema declares it, and each schema once. A path more than {@link MAX_RECURSION_DEPTH} levels long, counting
+ * each lazy and each structural node, ends there and marks the search `truncated`; every other path is still read, so
+ * a class beside a recursion is found whatever the field order. Shallowest first and at most
+ * {@link MAX_SEARCHED_SCHEMAS} levels opened is what keeps a schema that builds two new ones at every level bounded:
+ * the levels above the one the budget runs out on are read whole, and each path left ends `truncated` too.
  */
 function search(schema: z.ZodType): Search {
   const known = searched.get(schema);
   if (known) return known;
   const classes = new Set<string>();
   let truncated = false;
+  let read = 0;
   const seen = new Set<z.ZodType>();
-  const stack: [z.ZodType, number][] = [[schema, 0]];
-  for (let entry = stack.pop(); entry; entry = stack.pop()) {
-    const [node, depth] = entry;
-    if (seen.has(node)) continue;
-    seen.add(node);
-    // A mark does not end the search: a container marked whole carries every class marked inside it too.
-    const own = ownMarker(node);
-    if (own !== null) classes.add(own);
-    const def = defOf(node);
-    const step = def.type === "lazy" || STRUCTURAL.has(def.type) ? 1 : 0;
-    if (depth + step > MAX_RECURSION_DEPTH) {
-      truncated = true;
-      break;
-    }
+  let level: z.ZodType[] = [schema];
+  for (let depth = 0; level.length > 0; depth += 1) {
+    const next: z.ZodType[] = [];
     // Reversed, so the classes come out in the order the schema declares them.
-    stack.push(
-      ...children(node)
-        .map((child): [z.ZodType, number] => [child, depth + step])
-        .reverse(),
-    );
+    const stack = [...level].reverse();
+    for (let node = stack.pop(); node; node = stack.pop()) {
+      if (seen.has(node)) continue;
+      seen.add(node);
+      // A mark does not end the search: a container marked whole carries every class marked inside it too.
+      const own = ownMarker(node);
+      if (own !== null) classes.add(own);
+      const def = defOf(node);
+      if (def.type !== "lazy" && !STRUCTURAL.has(def.type)) {
+        stack.push(...children(node).reverse());
+        continue;
+      }
+      // Past the limit or the budget, this path ends here, and only this one. Opening a level is what may build a
+      // schema, so it is what the budget counts: a lazy's target, or an object's shape read through its getters.
+      if (depth + 1 > MAX_RECURSION_DEPTH || read >= MAX_SEARCHED_SCHEMAS) {
+        truncated = true;
+        continue;
+      }
+      read += 1;
+      next.push(...children(node));
+    }
+    level = next;
   }
   const found = { classes, truncated };
   searched.set(schema, found);
@@ -424,15 +461,18 @@ function search(schema: z.ZodType): Search {
 /** How a position is masked whole. */
 export interface Mask {
   /**
-   * The strongest class the position carries: its placeholder is the mask, unless `own` or `truncated`. Empty where a
-   * recursion that reached the limit is all there is.
+   * The strongest class the position carries: its placeholder is the mask, unless `own`. Empty where a recursion that
+   * reached the limit is all there is, and only there is the mask {@link TRUNCATED_MASK}.
    */
   readonly className: string;
   /** Whether the class's own mask applies: one class, from a marker, nothing opaque, and nothing cut off. */
   readonly own: boolean;
   /** Every class marked at the position, in the order met. Never the cutoff, which is not a class. */
   readonly classes: readonly string[];
-  /** Whether a recursion here reached {@link MAX_RECURSION_DEPTH}: the mask is then {@link TRUNCATED_MASK}. */
+  /**
+   * Whether a recursion here reached {@link MAX_RECURSION_DEPTH}, or a read ran out of {@link MAX_SEARCHED_SCHEMAS}: a
+   * flag beside the classes, never instead of them. A class known here is still the mask.
+   */
   readonly truncated: boolean;
 }
 
@@ -589,68 +629,64 @@ function readPosition(schemas: readonly z.ZodType[]): {
   const leaves = new Set<z.ZodType>();
   const lazyGates = new Set<string>();
   let other = false;
-  // Each schema with the shapes of value it applies to, every shape until a union option narrows it, how many lazies
-  // it sits beneath at this position, and whether it is an option, narrowed to its own shapes when it is read. Depth
-  // first, so the first path that runs out ends the read.
-  const stack: [z.ZodType, ReadonlySet<ValueKind>, number, boolean][] = [...schemas]
-    .reverse()
-    .map((schema) => [schema, EVERY_KIND, 0, false]);
-  for (let entry = stack.pop(); entry; entry = stack.pop()) {
-    const [node, reached, lazies, option] = entry;
-    // An option applies where the value has its shape: its marks are narrowed to that shape.
-    const kinds = option ? kindsOf(node) : EVERY_KIND;
-    const gate = option ? new Set([...reached].filter((kind) => kinds.has(kind))) : reached;
-    if (gate.size === 0) continue;
-    const own = ownMarker(node);
-    if (own !== null) {
-      // A marked container is masked whole, so every class marked inside it is a class it carries, as beneath an
-      // opaque node: `pii(z.object({ token: secret(…) }))` is listed `pii` and `secret`, and masked `[secret]`.
-      const inside = search(node);
-      reaches.push({ gate, classes: [...inside.classes], opaque: false, truncated: inside.truncated });
-      continue;
-    }
-    const def = defOf(node);
-    const codec = kitCodecOutput(node);
-    const lazy = def.type === "lazy";
-    if (lazy) {
-      const key = `${idOf(node)}:${[...gate].join(",")}`;
-      if (lazyGates.has(key)) continue;
-      lazyGates.add(key);
-      if (lazies >= MAX_RECURSION_DEPTH) {
-        // A lazy nested in more lazies than the limit: this path, and every one not read yet, whatever its shape,
-        // is cut off, as a search is. Nothing is read past the first path that runs out.
-        for (const left of [gate, ...stack.map(([, unread]) => unread)])
-          if (left.size > 0) reaches.push({ gate: left, classes: [], opaque: true, truncated: true });
+  // One budget for this read and every read of an option's shapes it makes.
+  const budget: Budget = { left: MAX_SEARCHED_SCHEMAS };
+  // Each schema with the shapes of value it applies to, every shape until a union option narrows it, and whether it
+  // is an option, narrowed to its own shapes when it is read. Level by level, a level for each lazy the schemas sit
+  // beneath at this position, each level in the order the schema declares it, so a path that runs out ends alone.
+  type Entry = [z.ZodType, ReadonlySet<ValueKind>, boolean];
+  let level: Entry[] = schemas.map((schema): Entry => [schema, EVERY_KIND, false]);
+  for (let lazies = 0; level.length > 0; lazies += 1) {
+    const next: Entry[] = [];
+    const stack = [...level].reverse();
+    for (let entry = stack.pop(); entry; entry = stack.pop()) {
+      const [node, reached, option] = entry;
+      // An option applies where the value has its shape: its marks are narrowed to that shape.
+      const kinds = option ? kindsOf(node, budget) : EVERY_KIND;
+      const gate = option ? new Set([...reached].filter((kind) => kinds.has(kind))) : reached;
+      if (gate.size === 0) continue;
+      const own = ownMarker(node);
+      if (own !== null) {
+        // A marked container is masked whole, so every class marked inside it is a class it carries, as beneath an
+        // opaque node: `pii(z.object({ token: secret(…) }))` is listed `pii` and `secret`, and masked `[secret]`.
+        const inside = search(node);
+        reaches.push({ gate, classes: [...inside.classes], opaque: false, truncated: inside.truncated });
+        continue;
+      }
+      const def = defOf(node);
+      const codec = kitCodecOutput(node);
+      if (def.type === "lazy") {
+        const key = `${idOf(node)}:${[...gate].join(",")}`;
+        if (lazyGates.has(key)) continue;
+        lazyGates.add(key);
+        if (lazies >= MAX_RECURSION_DEPTH || budget.left <= 0) {
+          // A lazy nested in more lazies than the limit, or one past the budget: this path is cut off, and only this
+          // one. Every level above the budget's last is read whole, as nothing on it waits on another lazy.
+          reaches.push({ gate, classes: [], opaque: true, truncated: true });
+          other = true;
+          continue;
+        }
+        budget.left -= 1;
+        const inner = lazyInner(node);
+        if (inner) next.push([inner, gate, false]);
+      } else if (WRAPPERS.has(def.type) && def.innerType) stack.push([def.innerType, gate, false]);
+      else if (def.type === "union" && def.options) {
+        for (const each of [...def.options].reverse()) stack.push([each, gate, true]);
+      } else if (def.type === "intersection") {
+        // A value of an intersection has both sides' shapes, so both apply wherever it does.
+        for (const side of [def.right, def.left].filter(isSchema)) stack.push([side, gate, false]);
+      } else if (codec) stack.push([codec, gate, false]);
+      else if (STRUCTURAL.has(def.type)) {
+        if (gate.has(leafKind(node))) leaves.add(node);
+      } else {
+        const inside = search(node);
+        // A recursion beneath it that reached the limit counts as possibly marked: the value is masked whole.
+        if (inside.classes.size > 0 || inside.truncated)
+          reaches.push({ gate, classes: [...inside.classes], opaque: true, truncated: inside.truncated });
         other = true;
-        break;
       }
     }
-    if (WRAPPERS.has(def.type) && def.innerType) {
-      stack.push([def.innerType, gate, lazies, false]);
-      continue;
-    } else if (def.type === "union" && def.options) {
-      for (const each of [...def.options].reverse()) stack.push([each, gate, lazies, true]);
-      continue;
-    } else if (def.type === "intersection") {
-      // A value of an intersection has both sides' shapes, so both apply wherever it does.
-      for (const side of [def.right, def.left].filter(isSchema)) stack.push([side, gate, lazies, false]);
-      continue;
-    } else if (codec) {
-      stack.push([codec, gate, lazies, false]);
-      continue;
-    } else if (lazy) {
-      const inner = lazyInner(node);
-      if (inner) stack.push([inner, gate, lazies + 1, false]);
-      continue;
-    } else if (STRUCTURAL.has(def.type)) {
-      if (gate.has(leafKind(node))) leaves.add(node);
-      continue;
-    }
-    const inside = search(node);
-    // A recursion beneath it that reached the limit counts as possibly marked: the value is cut off whole.
-    if (inside.classes.size > 0 || inside.truncated)
-      reaches.push({ gate, classes: [...inside.classes], opaque: true, truncated: inside.truncated });
-    other = true;
+    level = next;
   }
   const allLeaves = [...leaves];
   const byKind = new Map<ValueKind, Mask>();

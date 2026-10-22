@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
-import { pii } from "./classes";
+import { pii, secret } from "./classes";
 import { classifyPrivacy, hasPrivacy, MAX_CLASSIFIED_POSITIONS, MAX_RECURSION_DEPTH, walkPrivacy } from "./classify";
 import { redact } from "./redact";
 import type { REDACT_RECURSION_DEPTH, Redacted } from "./types";
@@ -389,8 +389,8 @@ describe("a recursion that builds a new choice each read never runs past the lim
     expect(redact(beside(), 5 as never)).toBe("[truncated]");
     expect(classifyPrivacy(anew())).toEqual([]);
     expect(hasPrivacy(beside(), "secret")).toBe(false);
-    // A marked number at every level, and the limit reached: the value is cut off, and the mark is still listed.
-    expect(redact(marked(), 5 as never)).toBe("[truncated]");
+    // A marked number at every level, and the limit reached: the class is known, so it is the placeholder.
+    expect(redact(marked(), 5 as never)).toBe("[pii]");
     expect(hasPrivacy(marked(), "pii")).toBe(true);
     expect(hasPrivacy(marked(), "secret")).toBe(false);
   });
@@ -459,13 +459,112 @@ describe("a recursion beneath an opaque node that reaches the limit counts as po
   test("so is a lazy beneath one, whose annotated type the search cannot see inside", () => {
     const Row = z.object({ d: freshLazy().transform((x) => x), l: Lazy.transform((x) => x) });
     const value = Row.parse({ d: { e: "S-1" }, l: { e: "S-2" } });
-    expect(redact(Row, value)).toEqual({ d: "[truncated]", l: "[pii]" });
-    // The mark beneath the cut-off one is still listed; the cutoff itself is not a class.
+    // A class known beneath it is its placeholder, cut off or not; the cutoff itself is not a class.
+    expect(redact(Row, value)).toEqual({ d: "[pii]", l: "[pii]" });
     expect(classifyPrivacy(Row)).toEqual([
       { path: "d", class: "pii" },
       { path: "l", class: "pii" },
     ]);
     same<Redacted<typeof Row>["d"], unknown>();
     same<Redacted<typeof Row>["l"], unknown>();
+  });
+});
+
+describe("a cutoff ends its own path, and a class known at a position is its placeholder", () => {
+  /** Nothing marked: a getter that returns one schema, one that builds a new one each read, and a lazy. */
+  const Once: z.ZodType = z.object({
+    v: z.string(),
+    get next() {
+      return Once.optional();
+    },
+  });
+  const built = (): z.ZodType =>
+    z.object({
+      v: z.string(),
+      get next() {
+        return built().optional();
+      },
+    });
+  type Plain = { v: string; next?: Plain };
+  const Lazy: z.ZodType<Plain> = z.lazy(() => z.object({ v: z.string(), next: Lazy.optional() }));
+  const builtLazy = (): z.ZodType<Plain> => z.lazy(() => z.object({ v: z.string(), next: builtLazy().optional() }));
+  const styles: [string, () => z.ZodType][] = [
+    ["getter, one schema", () => Once],
+    ["getter, a new schema each read", built],
+    ["lazy, defined once", () => Lazy],
+    ["lazy, built anew", builtLazy],
+  ];
+  const tree = { v: "P-1", next: { v: "P-2" } };
+
+  test.each(styles)("a marked container over it is masked with its class, one level deep: %s", (_, style) => {
+    const Marked = pii(style());
+    expect(redact(Marked, tree as never)).toBe("[pii]");
+    expect(classifyPrivacy(Marked)).toEqual([{ path: "", class: "pii" }]);
+    const Rows = z.array(z.object({ id: z.string(), t: pii(style()) }));
+    expect(redact(Rows, [{ id: "1", t: tree }] as never)).toEqual([{ id: "1", t: "[pii]" }]);
+    expect(classifyPrivacy(Rows)).toEqual([{ path: "[].t", class: "pii" }]);
+  });
+
+  test.each(styles)("a class beside it is carried whatever the field order: %s", (_, style) => {
+    const value = { tree, s: "S-1" };
+    const first = pii(z.object({ tree: style(), s: secret(z.string()) }));
+    const last = pii(z.object({ s: secret(z.string()), tree: style() }));
+    for (const Marked of [first, last]) {
+      expect(redact(Marked, value as never)).toBe("[secret]");
+      expect(classifyPrivacy(Marked)).toEqual([
+        { path: "", class: "pii" },
+        { path: "", class: "secret" },
+      ]);
+      expect(hasPrivacy(Marked, "secret")).toBe(true);
+    }
+  });
+
+  test.each(styles)("beneath an opaque node, the strongest class found is its placeholder: %s", (_, style) => {
+    const value = { x: { tree, s: "S-1" } };
+    const first = z.object({ x: z.object({ tree: style(), s: secret(z.string()) }).transform((x) => x) });
+    const last = z.object({ x: z.object({ s: secret(z.string()), tree: style() }).transform((x) => x) });
+    for (const Row of [first, last]) {
+      expect(redact(Row, value as never)).toEqual({ x: "[secret]" });
+      expect(classifyPrivacy(Row)).toEqual([{ path: "x", class: "secret" }]);
+      expect(hasPrivacy(Row, "secret")).toBe(true);
+    }
+  });
+
+  test("a schema that builds two new ones at every level is searched shallowest first, and fast", () => {
+    const two = (): z.ZodType =>
+      z.object({
+        get l() {
+          return two().optional();
+        },
+        get r() {
+          return two().optional();
+        },
+      });
+    const started = Date.now();
+    for (const Marked of [
+      pii(z.object({ tree: two(), s: secret(z.string()) })),
+      pii(z.object({ s: secret(z.string()), tree: two() })),
+    ]) {
+      expect(redact(Marked, { tree: {}, s: "S-1" } as never)).toBe("[secret]");
+      expect(hasPrivacy(Marked, "secret")).toBe(true);
+    }
+    // Nothing marked beneath it, and it never ends: cut off, and no class.
+    const Row = z.object({ x: two().transform((x) => x) });
+    expect(redact(Row, { x: {} } as never)).toEqual({ x: "[truncated]" });
+    expect(classifyPrivacy(Row)).toEqual([]);
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  test("a union option beside a choice that never ends is read whatever the option order", () => {
+    const anew = (): z.ZodType => z.lazy(() => z.union([z.string(), anew()]));
+    for (const Row of [
+      z.object({ a: z.union([anew(), secret(z.number())]) }),
+      z.object({ a: z.union([secret(z.number()), anew()]) }),
+    ]) {
+      expect(redact(Row, { a: 5 } as never)).toEqual({ a: "[secret]" });
+      // A string reaches the endless chain and no class: it is cut off.
+      expect(redact(Row, { a: "P-1" } as never)).toEqual({ a: "[truncated]" });
+      expect(classifyPrivacy(Row)).toEqual([{ path: "a", class: "secret" }]);
+    }
   });
 });

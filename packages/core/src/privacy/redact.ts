@@ -50,8 +50,8 @@ import type { RedactedOutput } from "./types";
  * anything beneath one is marked, the whole value is masked with the strongest class it carries, and `Redacted<T>`
  * types that position `unknown`. When nothing beneath it is marked, it is kept as it is, including when it is a union
  * option beside a marked one. A recursion beneath it that reaches the item 6 depth limit counts as possibly marked, so
- * that value is masked whole as `[truncated]` and typed `unknown`. None of this ever throws or leaks a raw marked
- * value.
+ * that value is masked whole and typed `unknown`: with the strongest class marked anywhere else beneath it, or as
+ * `[truncated]` where none is. None of this ever throws or leaks a raw marked value.
  *
  * ## The edges, exactly
  *
@@ -73,9 +73,11 @@ import type { RedactedOutput } from "./types";
  *   safety cutoff rather than a privacy class, and `Redacted<T>` types it `unknown` from the same depth. Nothing
  *   tells one recursion from another, so a lazy, a getter that returns one schema and one that builds a new schema
  *   each read all end at the same level, and the result is a function of the schema and the value alone. The walk
- *   keeps its own stack, so a deep value never overflows the call stack. A recursion beneath an opaque node that reaches the limit masks that
- *   node's value whole as `[truncated]` too, and a lazy that builds a new choice each read ends at the limit the same
- *   way: every lazy nested in another counts one. A union of many lazies, none inside another, counts one.
+ *   keeps its own stack, so a deep value never overflows the call stack. A recursion beneath an opaque node or a marked
+ *   container that reaches the limit ends that path alone: every other path beneath is read, and the value is masked
+ *   whole with the strongest class found, or as `[truncated]` where none is. A lazy that builds a new choice each read
+ *   ends at the limit the same way: every lazy nested in another counts one. A union of many lazies, none inside
+ *   another, counts one. A class known at a position is always its mask; `[truncated]` stands only where none is.
  *
  * ## The placeholder, and why it is not a hash
  *
@@ -96,11 +98,11 @@ function isPlainObject(value: unknown): value is Record<PropertyKey, unknown> {
 }
 
 /**
- * How a mask masks a value: {@link TRUNCATED_MASK} where a recursion here reached the limit, else its class's own mask,
- * or the placeholder of the strongest class there.
+ * How a mask masks a value: its class's own mask, or the placeholder of the strongest class there, cut off or not.
+ * {@link TRUNCATED_MASK} only where a recursion here reached the limit and no class is known.
  */
 function masked(mask: Mask, value: unknown): string {
-  if (mask.truncated) return TRUNCATED_MASK;
+  if (mask.classes.length === 0) return TRUNCATED_MASK;
   return (mask.own ? privacyClass(mask.className)?.mask(value) : undefined) ?? `[${mask.className}]`;
 }
 
