@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { RetainedRows } from "@pithy-sh/core/src/migrations/retained";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { MAX_PROJECT_NAME } from "@pithy-sh/core/src/naming/resource";
 import { describe, expect, test, vi } from "vitest";
-import { EncryptionConfig } from "../crypto/envelope";
 import type { ManagedEnvironment } from "../scope";
 import {
   type DeprovisionOptions,

@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { pithyCommand } from "@pithy-sh/core/src/cli/command";
+import type { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { chunkByBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { createDatabase, type DatabaseSchema } from "@pithy-sh/core/src/data/db";
 import type { Kysely } from "kysely";
-import { decryptValue, type EncryptionConfig, encryptValue } from "../crypto/envelope";
+import { openSecret, sealSecret } from "../crypto/secretEnvelope";
 import { decodeVersionedValue, encodeVersionedValue, type VersionedValue } from "../crypto/versionedValue";
 import { type SecretsTables, secretsTables } from "../data/tables";
 import { resolveEncryptionConfig, type SecretsStoreEnv } from "../env/bindings";
@@ -85,7 +86,7 @@ async function readRow(
 ): Promise<StoredSecretValue> {
   try {
     // The row's own name is the bound context: a ciphertext moved to another row does not open.
-    return { state: "readable", value: decodeVersionedValue(await decryptValue(config, row.name, row)) };
+    return { state: "readable", value: decodeVersionedValue(await openSecret(config, row.name, row)) };
   } catch {
     return { state: "unreadable" };
   }
@@ -115,7 +116,7 @@ export async function storedRowOpens(
  * The D1-backed encrypted store for `d1`-backed secrets, ported from the CMS `SystemSecretsStore`
  * with Pithy's universal value envelope layered on. Every secret's plaintext is a
  * `{ currentVersion, versions }` envelope (`crypto/versionedValue`), sealed in one AES-256-GCM
- * envelope (`crypto/envelope`) and persisted as one `pithy_secrets_system_secrets` row. The master
+ * envelope (`crypto/secretEnvelope`) and persisted as one `pithy_secrets_system_secrets` row. The master
  * key is held only in memory, resolved once from the worker-only `SECRETS_ENCRYPTION_KEYS` binding.
  *
  * The store is the low-level read/write primitive: it persists and returns value envelopes. The
@@ -207,13 +208,13 @@ export class SystemSecretsStore {
   /**
    * Encrypt `value` under the current key version and upsert the row. Inserts on first write,
    * updates the envelope in place otherwise. `name` is sealed into the ciphertext as authenticated
-   * data (`crypto/envelope`), so a rename has to go through here and not through SQL: an
+   * data (`crypto/secretEnvelope`), so a rename has to go through here and not through SQL: an
    * `UPDATE ... SET name` leaves a row nothing can open. The caller owns the envelope's shape —
    * `initialVersionedValue` for a create, an edited envelope for an update, `appendVersion` for a
    * value rotation.
    */
   async put(name: string, value: VersionedValue, valueType: SecretValueType = "text"): Promise<void> {
-    const { encryptedValue, iv, keyVersion } = await encryptValue(this.#config, name, encodeVersionedValue(value));
+    const { encryptedValue, iv, keyVersion } = await sealSecret(this.#config, name, encodeVersionedValue(value));
     const now = SQLiteDate.encode(new Date());
 
     if (await this.has(name)) {
@@ -241,7 +242,7 @@ export class SystemSecretsStore {
    * are different acts, and only the first happens here.
    */
   async create(name: string, value: VersionedValue, valueType: SecretValueType = "text"): Promise<boolean> {
-    const { encryptedValue, iv, keyVersion } = await encryptValue(this.#config, name, encodeVersionedValue(value));
+    const { encryptedValue, iv, keyVersion } = await sealSecret(this.#config, name, encodeVersionedValue(value));
     const now = SQLiteDate.encode(new Date());
     const result = await this.#db
       .insertInto("pithySecretsSystemSecrets")

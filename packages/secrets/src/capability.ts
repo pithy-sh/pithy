@@ -3,8 +3,8 @@
 
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { commandName } from "@pithy-sh/core/src/cli/command";
+import { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { secretsHealth } from "./admin/health";
-import { EncryptionConfig } from "./crypto/envelope";
 import { secretsRetainedTables, secretsTables } from "./data/tables";
 import { MASTER_KEY_BINDING } from "./env/masterKeyBinding";
 import { secretsAdminRoutes } from "./http/guards";

@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { PithyError, UpstreamError } from "@pithy-sh/core/src/error/pithyError";
-import { EncryptionConfig } from "../crypto/envelope";
 import { resolveBinding, type SecretsStoreEnv } from "../env/bindings";
 import { MASTER_KEY_BINDING } from "../env/masterKeyBinding";
 import { SecretCryptoError } from "../error/errors";

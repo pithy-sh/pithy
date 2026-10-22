@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { backendRoutedDispatcher, type PreflightSecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
-import { EncryptionConfig } from "@pithy-sh/secrets/src/crypto/envelope";
 import { encodeVersionedValue, initialVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import { resolveEncryptionConfig, type SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";

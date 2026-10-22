@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import type { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { beforeEach, describe, expect, test } from "vitest";
-import type { EncryptionConfig } from "../crypto/envelope";
 import { secretsTables } from "../data/tables";
 import { SecretAlreadyExistsError, SecretNotFoundError } from "../error/errors";
 import { secrets_0001_init } from "../migrations/0001_init";

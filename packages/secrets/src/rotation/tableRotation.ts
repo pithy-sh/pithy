@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import type { DatabaseSchema } from "@pithy-sh/core/src/data/db";
 import { type Kysely, sql } from "kysely";
-import { decryptValue, type EncryptionConfig, encryptValue } from "../crypto/envelope";
+import { openSecret, sealSecret } from "../crypto/secretEnvelope";
 import { SecretTableRegistration } from "../data/secretTables";
 import type { SecretsTables } from "../data/tables";
 import {
@@ -109,7 +110,7 @@ export async function reencryptTableBatch(
       const owner = Object.fromEntries(table.keys.map((key) => [key, String(record[key] ?? "")]));
       // Same context in and out: re-encryption changes the key, never what the ciphertext is bound to.
       const context = secretTableContext(table.name, owner, row.name);
-      const reencrypted = await encryptValue(config, context, await decryptValue(config, context, row));
+      const reencrypted = await sealSecret(config, context, await openSecret(config, context, row));
       // Guarded on the iv that was read — every write draws a fresh one. A declared table is written on the
       // request path, so a `put` or a `rotate` can land between the select and this; without the guard the
       // stale copy would overwrite it. A row that changed updates nothing, and is left for a later batch.

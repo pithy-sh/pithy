@@ -5,9 +5,9 @@ import type {
   CfSecretEntry,
   CloudflareSecretsStoreManager,
 } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
+import type { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test, vi } from "vitest";
-import type { EncryptionConfig } from "../crypto/envelope";
 import { masterKeySecretName } from "../provision/provisionSecrets";
 import { decodeConfigStamp, MASTER_KEY_STAMP_KIND } from "./configStamp";
 import { rotationConfigWriter, SecretsStoreConfigWriter } from "./secretsConfigWriter";

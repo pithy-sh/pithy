@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { masterKeyRegistryEntry } from "../capability";
-import type { EncryptionConfig } from "../crypto/envelope";
 import { VersionedValue } from "../crypto/versionedValue";
 import { MASTER_KEY_BINDING } from "../env/masterKeyBinding";
 import { defineSecretRegistry, type SecretRegistry, type SecretRegistryEntry } from "../registry";

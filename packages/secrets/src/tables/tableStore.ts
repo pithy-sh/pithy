@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import type { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { sql } from "kysely";
 import { z } from "zod";
-import { decryptValue, type EncryptionConfig, encryptValue } from "../crypto/envelope";
+import { openSecret, sealSecret } from "../crypto/secretEnvelope";
 import { decodeVersionedValue, encodeVersionedValue, type VersionedValue } from "../crypto/versionedValue";
 import { resolveEncryptionConfig, type SecretsStoreEnv } from "../env/bindings";
 import { SecretCryptoError } from "../error/errors";
@@ -115,7 +116,7 @@ export class TableSecretsStore {
     if (!row) return undefined;
     try {
       const context = secretTableContext(this.#table.name, owner, name);
-      return { value: decodeVersionedValue(await decryptValue(this.#config, context, row)), iv: row.iv };
+      return { value: decodeVersionedValue(await openSecret(this.#config, context, row)), iv: row.iv };
     } catch {
       // No binding: what a decrypt throws names the context it tried, and the context holds the owner.
       throw new SecretCryptoError({
@@ -137,7 +138,7 @@ export class TableSecretsStore {
     mode: "create" | "replace",
   ): Promise<boolean> {
     const context = secretTableContext(this.#table.name, owner, name);
-    const { encryptedValue, iv, keyVersion } = await encryptValue(this.#config, context, encodeVersionedValue(value));
+    const { encryptedValue, iv, keyVersion } = await sealSecret(this.#config, context, encodeVersionedValue(value));
     const now = SQLiteDate.encode(new Date());
     const row = Object.assign(
       { name, encryptedValue, iv, keyVersion, valueType, createdAt: now, updatedAt: now },
@@ -171,7 +172,7 @@ export class TableSecretsStore {
     iv: string,
   ): Promise<boolean> {
     const context = secretTableContext(this.#table.name, owner, name);
-    const sealed = await encryptValue(this.#config, context, encodeVersionedValue(value));
+    const sealed = await sealSecret(this.#config, context, encodeVersionedValue(value));
     let query = this.#db
       .updateTable(this.#table.identifier)
       .set({ ...sealed, valueType, updatedAt: SQLiteDate.encode(new Date()) });

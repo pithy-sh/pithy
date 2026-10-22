@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import type { DatabaseSchema } from "@pithy-sh/core/src/data/db";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { Kysely } from "kysely";
-import { decryptValue, type EncryptionConfig, encryptValue } from "../crypto/envelope";
+import { openSecret, sealSecret } from "../crypto/secretEnvelope";
 import type { SecretsTables } from "../data/tables";
 import { MASTER_KEY_BINDING } from "../env/masterKeyBinding";
 import { SecretCryptoError } from "../error/errors";
@@ -279,8 +280,8 @@ export async function reencryptBatch(
   for (const row of rows) {
     try {
       // Same name in and out: re-encryption changes the key, never the bound context.
-      const plaintext = await decryptValue(config, row.name, row);
-      const reencrypted = await encryptValue(config, row.name, plaintext);
+      const plaintext = await openSecret(config, row.name, row);
+      const reencrypted = await sealSecret(config, row.name, plaintext);
       await db
         .updateTable("pithySecretsSystemSecrets")
         .set({

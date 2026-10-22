@@ -6,9 +6,9 @@ import type {
   CloudflareSecretsStoreManager,
 } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
 import { pithyCommand, remedy } from "@pithy-sh/core/src/cli/command";
+import { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { ConflictError, fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
-import { EncryptionConfig } from "../crypto/envelope";
 import { masterKeySecretName } from "../provision/provisionSecrets";
 import { ManagedEnvironment } from "../scope";
 import { configStamp, decodeConfigStamp, encodeConfigStamp, type RotationPass } from "./configStamp";

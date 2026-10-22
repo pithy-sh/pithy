@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { RUNTIME_PROFILE, RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
+import type { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { assertRetainedAgreed, type RetainedRows } from "@pithy-sh/core/src/migrations/retained";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
-import type { EncryptionConfig } from "../crypto/envelope";
 import { MASTER_KEY_BINDING } from "../env/masterKeyBinding";
 import { generateKeyB64 } from "../rotation/keyRotation";
 import { type DeprovisionTarget, deprovisionTarget, type ManagedEnvironment, managedEnvironments } from "../scope";

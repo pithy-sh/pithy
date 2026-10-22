@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { workerDirOf } from "@pithy-sh/core/src/cli/command";
-import { EncryptionConfig } from "@pithy-sh/secrets/src/crypto/envelope";
+import { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { DevSecretEnvelope } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";

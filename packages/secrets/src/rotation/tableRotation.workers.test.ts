@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import type { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import type { KyselyPlugin } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
-import type { EncryptionConfig } from "../crypto/envelope";
 import { secretsTables } from "../data/tables";
 import type { SecretsStoreEnv } from "../env/bindings";
 import { secrets_0001_init } from "../migrations/0001_init";

@@ -3,13 +3,14 @@
 
 import { env } from "cloudflare:test";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
+import type { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { KyselyPlugin } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
 import { SecretsAuditActions } from "../audit/actions";
-import { decryptValue, type EncryptionConfig } from "../crypto/envelope";
+import { openSecret } from "../crypto/secretEnvelope";
 import { decodeVersionedValue } from "../crypto/versionedValue";
 import { secretsTables } from "../data/tables";
 import type { SecretsStoreEnv } from "../env/bindings";
@@ -141,7 +142,7 @@ describe("get / put", () => {
     expect(row?.encryptedValue).not.toContain("sk_live_alice");
     // The same envelope a system secret has: AES-GCM over a `{ currentVersion, versions }` value envelope,
     // bound to the row's identity.
-    const plaintext = await decryptValue(config, secretTableContext("customer", alice, "STRIPE_KEY"), row as never);
+    const plaintext = await openSecret(config, secretTableContext("customer", alice, "STRIPE_KEY"), row as never);
     expect(decodeVersionedValue(plaintext)).toEqual({ currentVersion: "1", versions: { "1": "sk_live_alice" } });
   });
 

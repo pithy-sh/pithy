@@ -4,7 +4,7 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EncryptionConfig } from "@pithy-sh/secrets/src/crypto/envelope";
+import { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { afterEach, describe, expect, test } from "vitest";
 import { removeTempDir } from "../test-utils/tempRepo";

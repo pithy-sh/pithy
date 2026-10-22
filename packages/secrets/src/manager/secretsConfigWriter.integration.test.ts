@@ -5,8 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CloudflareSecretsStoreManager } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
 import { loadIntegrationCreds, uniqueName } from "@pithy-sh/cloudflare/src/test-utils/harness";
+import type { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { describe, expect, test } from "vitest";
-import type { EncryptionConfig } from "../crypto/envelope";
 import { SecretsStoreConfigWriter } from "./secretsConfigWriter";
 
 /**

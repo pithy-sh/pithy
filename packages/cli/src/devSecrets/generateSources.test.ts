@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
-import type { EncryptionConfig } from "@pithy-sh/secrets/src/crypto/envelope";
+import type { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { StatePathOptions } from "../notifier/state";

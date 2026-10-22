@@ -45,10 +45,10 @@
  *   the CLI says to re-run after it finishes rather than to restore a key.
  */
 
+import type { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { createDatabase, type DatabaseSchema } from "@pithy-sh/core/src/data/db";
 import type { Kysely } from "kysely";
 import { z } from "zod";
-import type { EncryptionConfig } from "../crypto/envelope";
 import { AT_REST_ROTATION_NAME } from "../data/secretRotations";
 import { type SecretsTables, secretsTables } from "../data/tables";
 import type { SecretsStoreEnv } from "../env/bindings";

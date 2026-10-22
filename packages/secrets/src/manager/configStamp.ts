@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
 import { z } from "zod";
-import type { EncryptionConfig } from "../crypto/envelope";
 
 /**
  * **The provenance a rotation pass writes beside the master key, and reads back over REST.**
