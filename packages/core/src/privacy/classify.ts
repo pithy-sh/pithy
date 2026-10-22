@@ -27,6 +27,8 @@ import { type BuiltInPrivacyClass, PRIVACY_META_KEY, strongestPrivacyClass } fro
  * - **Everything else is opaque**: a transform, a pipe, a preprocess, any other codec, `z.custom`, `any`, `unknown`.
  *   Nothing inside one is walked. With a mark anywhere beneath it, its position is masked whole with the strongest
  *   class it carries; with none, it is kept, a union option beside a marked one included.
+ * - **A mark on a container masks it whole**, and the container carries every class marked inside it as well as its
+ *   own: `pii(z.object({ token: secret(z.string()) }))` is listed `pii` and `secret`, and masked `[secret]`.
  * - **Recursion is bounded once**, at {@link MAX_RECURSION_DEPTH} levels of nesting: a position deeper than that is
  *   masked whole as {@link TRUNCATED_MASK}, whatever the recursion is written with. It is a safety cutoff rather than a
  *   privacy class, so `classifyPrivacy` does not list it and `hasPrivacy` does not see it. Nothing here tells one kind
@@ -398,11 +400,9 @@ function search(schema: z.ZodType): Search {
     const [node, depth] = entry;
     if (seen.has(node)) continue;
     seen.add(node);
+    // A mark does not end the search: a container marked whole carries every class marked inside it too.
     const own = ownMarker(node);
-    if (own !== null) {
-      classes.add(own);
-      continue;
-    }
+    if (own !== null) classes.add(own);
     const def = defOf(node);
     const step = def.type === "lazy" || STRUCTURAL.has(def.type) ? 1 : 0;
     if (depth + step > MAX_RECURSION_DEPTH) {
@@ -603,7 +603,10 @@ function readPosition(schemas: readonly z.ZodType[]): {
     if (gate.size === 0) continue;
     const own = ownMarker(node);
     if (own !== null) {
-      reaches.push({ gate, classes: [own], opaque: false, truncated: false });
+      // A marked container is masked whole, so every class marked inside it is a class it carries, as beneath an
+      // opaque node: `pii(z.object({ token: secret(…) }))` is listed `pii` and `secret`, and masked `[secret]`.
+      const inside = search(node);
+      reaches.push({ gate, classes: [...inside.classes], opaque: false, truncated: inside.truncated });
       continue;
     }
     const def = defOf(node);

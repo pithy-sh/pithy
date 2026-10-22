@@ -177,6 +177,58 @@ describe("classifyPrivacy", () => {
     expect(hasPrivacy(Narrowed, "pii")).toBe(true);
     expect(redact(Narrowed, Narrowed.parse({ b: 3 }))).toEqual({ b: 3 });
   });
+
+  test("a marked container carries every class marked inside it, and the strongest is its placeholder", () => {
+    const Row = z
+      .object({
+        profile: pii(
+          z
+            .object({
+              diagnosis: phi(z.string().describe("A condition.")),
+              token: secret(z.string().describe("A token.")),
+            })
+            .describe("A profile."),
+        ),
+      })
+      .describe("A row.");
+    expect(classifyPrivacy(Row)).toEqual([
+      { path: "profile", class: "pii" },
+      { path: "profile", class: "phi" },
+      { path: "profile", class: "secret" },
+    ]);
+    expect(hasPrivacy(Row, "phi")).toBe(true);
+    expect(hasPrivacy(Row, "secret")).toBe(true);
+    expect(redact(Row, Row.parse({ profile: { diagnosis: "S-flu", token: "S-t" } }))).toEqual({ profile: "[secret]" });
+    // The same object behind a transform, which is opaque, lists and masks alike.
+    const Opaque = z
+      .object({ profile: Row.shape.profile.transform((profile) => profile).describe("A profile.") })
+      .describe("A row.");
+    expect(redact(Opaque, Opaque.parse({ profile: { diagnosis: "S-flu", token: "S-t" } }))).toEqual({
+      profile: "[secret]",
+    });
+  });
+
+  test("a marked array and a marked record carry the classes marked in their elements", () => {
+    const Row = z
+      .object({
+        notes: pii(z.array(phi(z.string().describe("A note."))).describe("Notes.")),
+        byId: pii(z.record(z.string(), secret(z.string().describe("A token."))).describe("Tokens.")),
+        plain: pii(z.object({ name: z.string().describe("A name.") }).describe("A plain one.")),
+      })
+      .describe("A row.");
+    expect(classifyPrivacy(Row)).toEqual([
+      { path: "notes", class: "pii" },
+      { path: "notes", class: "phi" },
+      { path: "byId", class: "pii" },
+      { path: "byId", class: "secret" },
+      { path: "plain", class: "pii" },
+    ]);
+    expect(redact(Row, Row.parse({ notes: ["S-a"], byId: { a: "S-b" }, plain: { name: "S-c" } }))).toEqual({
+      notes: "[phi]",
+      byId: "[secret]",
+      plain: "[pii]",
+    });
+  });
 });
 
 describe("hasPrivacy", () => {
