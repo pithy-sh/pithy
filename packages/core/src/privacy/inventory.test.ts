@@ -6,6 +6,7 @@ import { z } from "zod";
 import { type Capability, defineCapability } from "../capability/capability";
 import { phi, pii, secret } from "./classes";
 import { unreadClasses } from "./classify";
+import { blindIndex, encrypted, encryptedTable } from "./encrypted";
 import { lazyPrivacyInventory, privacyInventory } from "./inventory";
 import { PRIVACY_SOURCES } from "./report";
 
@@ -51,9 +52,10 @@ describe("privacyInventory", () => {
         container: "app",
         name: "patients",
         fields: [
-          { path: "email", class: "pii" },
-          { path: "diagnosis", class: "phi" },
+          { path: "email", class: "pii", encryptedAtRest: false },
+          { path: "diagnosis", class: "phi", encryptedAtRest: false },
         ],
+        encrypted: [],
       },
       {
         capability: "app",
@@ -61,10 +63,11 @@ describe("privacyInventory", () => {
         container: "sessions",
         name: "session",
         fields: [
-          { path: "key.email", class: "pii" },
-          { path: "value.token", class: "secret" },
-          { path: "metadata.ip", class: "pii" },
+          { path: "key.email", class: "pii", encryptedAtRest: false },
+          { path: "value.token", class: "secret", encryptedAtRest: false },
+          { path: "metadata.ip", class: "pii", encryptedAtRest: false },
         ],
+        encrypted: [],
       },
     ]);
     expect(inventory.schemasWalked).toBe(4);
@@ -93,6 +96,8 @@ describe("privacyInventory", () => {
       schemas: [],
       counts: {},
       observed: [],
+      encryptedFields: 0,
+      unrotatable: 0,
     });
   });
 });
@@ -117,8 +122,8 @@ describe("privacyInventory paths", () => {
       },
     });
     expect(privacyInventory([capability]).schemas[0]?.fields).toEqual([
-      { path: "value[].email", class: "pii" },
-      { path: "metadata[1]", class: "pii" },
+      { path: "value[].email", class: "pii", encryptedAtRest: false },
+      { path: "metadata[1]", class: "pii", encryptedAtRest: false },
     ]);
   });
 });
@@ -174,7 +179,9 @@ describe("privacyInventory, past the depth limit", () => {
         storage: "kv",
         container: "trees",
         name: "tree",
+        // An assumed class is a field the core cannot say is encrypted, so it says nothing: never `false`.
         fields: every.map((name) => ({ path: "value", class: name, truncated: true })),
+        encrypted: [],
       },
     ]);
     expect([...inventory.observed].sort()).toEqual([...every].sort());
@@ -208,5 +215,65 @@ describe("lazyPrivacyInventory", () => {
     const second = inventory();
     expect(walks).toBe(1);
     expect(second).toBe(first);
+  });
+});
+
+describe("privacyInventory, encrypted at rest (#390)", () => {
+  const Charts = encryptedTable(
+    z.object({
+      id: z.string().describe("id"),
+      diagnosis: encrypted(phi(z.string().describe("diagnosis"))),
+      email: pii(z.string().describe("email")),
+      memo: encrypted(z.string().describe("memo")).nullable(),
+      lookup: encrypted(pii(z.string().describe("lookup")), { index: "email" }),
+      lookupIndex: blindIndex("lookup"),
+    }),
+    { name: "record", key: "id" },
+  );
+
+  test("each field record carries encrypted-at-rest, and an unclassed encrypted field is listed too", () => {
+    const inventory = privacyInventory([app({ records: Charts })]);
+    const records = inventory.schemas.find((schema) => schema.name === "records");
+    expect(records?.fields).toEqual([
+      { path: "diagnosis", class: "phi", encryptedAtRest: true },
+      { path: "email", class: "pii", encryptedAtRest: false },
+      { path: "lookup", class: "pii", encryptedAtRest: true },
+    ]);
+    expect(records?.encrypted).toEqual([{ path: "diagnosis" }, { path: "memo" }, { path: "lookup" }]);
+    expect(inventory.encryptedFields).toBe(3);
+    expect(inventory.unrotatable).toBe(0);
+  });
+
+  test("which PHI fields are encrypted at rest is a derivation over the records", () => {
+    const inventory = privacyInventory([app({ records: Charts })]);
+    const phiAtRest = inventory.schemas.flatMap((schema) =>
+      schema.fields.filter((field) => field.class === "phi" && field.encryptedAtRest).map((field) => field.path),
+    );
+    expect(phiAtRest).toEqual(["diagnosis"]);
+  });
+
+  test("an encrypted field outside D1 is reported as encrypted but unrotatable, from its storage kind", () => {
+    const capability = defineCapability({
+      name: "cache",
+      requiredBindings: [],
+      kvNamespaces: {
+        cache: {
+          binding: "CACHE",
+          stores: {
+            tokens: {
+              prefix: "t",
+              key: z.object({ id: z.string() }),
+              value: z.object({ token: encrypted(secret(z.string())) }),
+            },
+          },
+        },
+      },
+    });
+    const inventory = privacyInventory([capability]);
+    expect(inventory.schemas[0]?.fields).toEqual([
+      { path: "value.token", class: "secret", encryptedAtRest: true, unrotatable: true },
+    ]);
+    expect(inventory.schemas[0]?.encrypted).toEqual([{ path: "value.token", unrotatable: true }]);
+    expect(inventory.unrotatable).toBe(1);
   });
 });

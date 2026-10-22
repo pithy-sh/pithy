@@ -4,6 +4,7 @@
 import { z } from "zod";
 import { PrivacyClassName } from "./classes";
 import { PRIVACY_SOURCES, type PrivacyInventory } from "./report";
+import { RetirementVerdict } from "./retirement";
 
 /**
  * **What a project declares about privacy, and what its running code holds — side by side** (#132).
@@ -150,6 +151,9 @@ export const PrivacyPosture = z
       .describe(
         "The storage the observed classes were derived from. Anything not listed was not walked; empty when nothing was.",
       ),
+    retirement: RetirementVerdict.optional().describe(
+      "The field key's retirement guard (#390): whether a version due to leave is held live, and by what. Absent on a Worker whose core predates encrypted fields.",
+    ),
   })
   .describe(
     "What this project declares about privacy and what its running code holds. Declared is an attestation dated to the last `pithy deploy`; observed is derived from the deployed schemas and cannot be edited.",

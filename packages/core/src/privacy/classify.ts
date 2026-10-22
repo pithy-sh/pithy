@@ -93,6 +93,14 @@ export interface PrivacyField {
    * this one.
    */
   sameAs?: string;
+  /**
+   * Whether the field rests encrypted in its store (#390): `true` for a field marked `encrypted()`, `false` for one
+   * that is not. Set by the inventory, on the observed side of #132's attestation split, and **absent where the core
+   * cannot say** — an assumed class, a reference, or a core older than #390 — never defaulted to `false`.
+   */
+  encryptedAtRest?: boolean;
+  /** Set on an encrypted field whose storage is not D1: nothing can prove it re-sealed, so it blocks retirement. */
+  unrotatable?: true;
 }
 
 /**

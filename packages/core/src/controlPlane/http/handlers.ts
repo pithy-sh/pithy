@@ -6,6 +6,7 @@ import type { PithyHonoEnv } from "../../capability/capability";
 import { causeMessage } from "../../error/cause";
 import { privacyAttestation, privacyPosture } from "../../privacy/posture";
 import type { PrivacyInventory } from "../../privacy/report";
+import type { RetirementVerdict } from "../../privacy/retirement";
 import { workerVersionMetadata } from "../../worker/identity";
 import { ControlPlaneAuditActions, safeEmit } from "../audit/actions";
 import type { ControlPlaneConfig } from "../config/config";
@@ -84,6 +85,11 @@ export interface ControlPlaneHandlerDeps {
    * cached for the isolate. A thunk, so a Worker whose control plane is never called never walks.
    */
   privacyInventory: () => PrivacyInventory;
+  /**
+   * The field key's retirement verdict (#390): the guard over this Worker's encrypted columns, read through its own
+   * bindings. Never throws: whatever it cannot read is incomplete coverage.
+   */
+  retirement: (env: Record<string, unknown>) => Promise<RetirementVerdict>;
   /** The clock, injected so a test can stand at any instant. */
   now: () => Date;
 }
@@ -219,7 +225,11 @@ export function manifestHandler(deps: ControlPlaneHandlerDeps) {
       versionCreatedAt: build.createdAt,
       // Classes and counts, never field names — those are `GET /privacy`'s, behind their own scope. A project
       // that declared nothing walks nothing; otherwise the walk is the isolate's cached one.
-      privacy: privacyPosture(privacyAttestation(c.env), deps.privacyInventory),
+      // The retirement verdict beside it (#390), so a dashboard reads the guard rather than inferring it.
+      privacy: {
+        ...privacyPosture(privacyAttestation(c.env), deps.privacyInventory),
+        retirement: await deps.retirement(c.env as Record<string, unknown>),
+      },
       capabilities,
       grantedScopes: [...context.grantedScopes],
     } satisfies ControlPlaneManifestWire);
@@ -410,14 +420,21 @@ export function expireKeyHandler(deps: ControlPlaneHandlerDeps) {
  * that has no business seeing them. Read-only.
  */
 export function privacyHandler(deps: ControlPlaneHandlerDeps) {
-  return (c: Context<PithyHonoEnv>) => {
+  return async (c: Context<PithyHonoEnv>) => {
     const context = caller(c);
     const inventory = deps.privacyInventory();
     return c.json({
       environment: context.environment,
-      posture: privacyPosture(privacyAttestation(c.env), () => inventory),
+      posture: {
+        ...privacyPosture(privacyAttestation(c.env), () => inventory),
+        retirement: await deps.retirement(c.env as Record<string, unknown>),
+      },
       schemasWalked: inventory.schemasWalked,
-      schemas: inventory.schemas.map((schema) => ({ ...schema, fields: schema.fields.map((field) => ({ ...field })) })),
+      schemas: inventory.schemas.map((schema) => ({
+        ...schema,
+        fields: schema.fields.map((field) => ({ ...field })),
+        encrypted: schema.encrypted.map((field) => ({ ...field })),
+      })),
     } satisfies ControlPlanePrivacyResponse);
   };
 }

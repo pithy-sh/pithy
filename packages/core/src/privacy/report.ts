@@ -30,6 +30,19 @@ export interface PrivacyInventorySchema {
   name: string;
   /** Every marked field in it, with its class. */
   fields: PrivacyField[];
+  /**
+   * Every field in it marked `encrypted()`, classed or not (#390): encryption may be marked alone, so this is where an
+   * unclassed one is listed. `unrotatable` where the storage is not D1.
+   */
+  encrypted: EncryptedFieldRecord[];
+}
+
+/** One encrypted field of a schema. */
+export interface EncryptedFieldRecord {
+  /** Where it sits, on the same paths as {@link PrivacyField.path}. */
+  path: string;
+  /** Set where the storage is not D1, so it can never be rotated. */
+  unrotatable?: true;
 }
 
 /** Everything one Worker's storage schemas say about privacy. */
@@ -44,4 +57,8 @@ export interface PrivacyInventory {
   counts: Record<string, number>;
   /** Every class with at least one marked field: the built-ins in their fixed order, then the rest by name. */
   observed: string[];
+  /** How many encrypted fields the walked schemas hold, classed or not (#390). */
+  encryptedFields: number;
+  /** How many of them rest outside D1 and so can never be rotated. */
+  unrotatable: number;
 }

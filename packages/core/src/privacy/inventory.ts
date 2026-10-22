@@ -5,7 +5,14 @@ import type { z } from "zod";
 import type { Capability } from "../capability/capability";
 import { BUILT_IN_PRIVACY_CLASSES } from "./classes";
 import { classifyPrivacy, type PrivacyField } from "./classify";
-import { PRIVACY_SOURCES, type PrivacyInventory, type PrivacyInventorySchema } from "./report";
+import { encryptedLayout } from "./encrypted";
+import { kvEncryptedPaths } from "./encryptedColumns";
+import {
+  type EncryptedFieldRecord,
+  PRIVACY_SOURCES,
+  type PrivacyInventory,
+  type PrivacyInventorySchema,
+} from "./report";
 
 /**
  * **What this Worker holds, derived from the code that is running** (#132).
@@ -37,9 +44,9 @@ import { PRIVACY_SOURCES, type PrivacyInventory, type PrivacyInventorySchema } f
  * `{ path, class }`, from `classifyPrivacy`, with `truncated: true` where a read ran out of its budget, or was cut at
  * the depth limit on a chain of schemas not yet read, and it assumed every class, and `sameAs` on a reference: a
  * position written out under another path once the list reached its cap on paths, listed once per class marked
- * beneath it. The counts count each record, a reference included. It is the extension point #390 builds on: once a field can be marked encrypted at rest, that lands beside
- * `class` on this record, and "which of your PHI fields are encrypted" becomes one more derivation rather than a
- * second thing to maintain.
+ * beneath it. The counts count each record, a reference included. Since #390 it also carries `encryptedAtRest`
+ * beside `class`, so "which of your PHI fields are encrypted" is one more derivation rather than a second thing to
+ * maintain, and it is absent where the core cannot say.
  *
  * ## What it costs
  *
@@ -66,6 +73,18 @@ function kvFields(store: { key: z.ZodType; value: z.ZodType; metadata?: z.ZodTyp
   });
 }
 
+/**
+ * A field record with whether it rests encrypted (#390). **Left out where the core cannot say**: a class assumed past a
+ * budget or a cut, and a reference, which stands for paths it never wrote out. Never defaulted to `false`.
+ */
+function withEncryption(field: PrivacyField, encrypted: ReadonlySet<string>, unrotatable: boolean): PrivacyField {
+  if (field.truncated || field.sameAs !== undefined) return field;
+  const atRest = encrypted.has(field.path);
+  return atRest && unrotatable
+    ? { ...field, encryptedAtRest: true, unrotatable: true }
+    : { ...field, encryptedAtRest: atRest };
+}
+
 /** Classes in the order every report lists them: the built-ins first, then each other class by name. */
 function ordered(classes: Iterable<string>): string[] {
   const builtIn: readonly string[] = BUILT_IN_PRIVACY_CLASSES;
@@ -81,15 +100,24 @@ export function privacyInventory(capabilities: readonly Capability[]): PrivacyIn
     for (const [container, database] of Object.entries(capability.databases ?? {})) {
       for (const [name, table] of Object.entries(database.tables)) {
         schemasWalked += 1;
-        const fields = classifyPrivacy(table as z.ZodType);
-        if (fields.length > 0) schemas.push({ capability: capability.name, storage: "d1", container, name, fields });
+        const paths = new Set(encryptedLayout(table as z.ZodType).fields.map((field) => field.path));
+        const fields = classifyPrivacy(table as z.ZodType).map((field) => withEncryption(field, paths, false));
+        const encrypted: EncryptedFieldRecord[] = [...paths].map((path) => ({ path }));
+        if (fields.length > 0 || encrypted.length > 0) {
+          schemas.push({ capability: capability.name, storage: "d1", container, name, fields, encrypted });
+        }
       }
     }
     for (const [container, namespace] of Object.entries(capability.kvNamespaces ?? {})) {
       for (const [name, store] of Object.entries(namespace.stores)) {
         schemasWalked += 1;
-        const fields = kvFields(store);
-        if (fields.length > 0) schemas.push({ capability: capability.name, storage: "kv", container, name, fields });
+        // An encrypted field in KV is refused at boot; one this walk still meets is reported, and it is unrotatable.
+        const paths = new Set(kvEncryptedPaths(store));
+        const fields = kvFields(store).map((field) => withEncryption(field, paths, true));
+        const encrypted: EncryptedFieldRecord[] = [...paths].map((path) => ({ path, unrotatable: true }));
+        if (fields.length > 0 || encrypted.length > 0) {
+          schemas.push({ capability: capability.name, storage: "kv", container, name, fields, encrypted });
+        }
       }
     }
   }
@@ -98,7 +126,12 @@ export function privacyInventory(capabilities: readonly Capability[]): PrivacyIn
     for (const field of schema.fields) tally.set(field.class, (tally.get(field.class) ?? 0) + 1);
   const observed = ordered(tally.keys());
   const counts = Object.fromEntries(observed.map((name) => [name, tally.get(name) ?? 0]));
-  return { sources: [...PRIVACY_SOURCES], schemasWalked, schemas, counts, observed };
+  const encryptedFields = schemas.reduce((sum, schema) => sum + schema.encrypted.length, 0);
+  const unrotatable = schemas.reduce(
+    (sum, schema) => sum + schema.encrypted.filter((field) => field.unrotatable).length,
+    0,
+  );
+  return { sources: [...PRIVACY_SOURCES], schemasWalked, schemas, counts, observed, encryptedFields, unrotatable };
 }
 
 /**

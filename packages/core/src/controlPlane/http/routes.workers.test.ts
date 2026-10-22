@@ -12,7 +12,9 @@ import { InternalError } from "../../error/pithyError";
 import { MIGRATION_GROUP_TABLE, MIGRATION_TABLE } from "../../migrations/bookkeeping";
 import { recordMigrationGroup } from "../../migrations/groups";
 import { phi, pii, secret } from "../../privacy/classes";
-import { PRIVACY_ATTESTATION_VAR, type PrivacyAttestation } from "../../privacy/posture";
+import { encrypted, encryptedTable } from "../../privacy/encrypted";
+import { PRIVACY_ATTESTATION_VAR, type PrivacyAttestation, PrivacyPosture } from "../../privacy/posture";
+import { sealed } from "../../privacy/sealed";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "../../version.generated";
 import { controlplane } from "../capability";
 import { ControlPlaneConnection, type Ed25519PublicJwk, type RegisteredKey } from "../data/connection";
@@ -1410,16 +1412,18 @@ describe("privacy over the control plane (#132)", () => {
         container: "app",
         name: "patients",
         fields: [
-          { path: "email", class: "pii" },
-          { path: "diagnosis", class: "phi" },
+          { path: "email", class: "pii", encryptedAtRest: false },
+          { path: "diagnosis", class: "phi", encryptedAtRest: false },
         ],
+        encrypted: [],
       },
       {
         capability: "clinic",
         storage: "kv",
         container: "sessions",
         name: "portal",
-        fields: [{ path: "value.token", class: "secret" }],
+        fields: [{ path: "value.token", class: "secret", encryptedAtRest: false }],
+        encrypted: [],
       },
     ]);
     expect(json.posture).toMatchObject({
@@ -1445,6 +1449,7 @@ describe("privacy over the control plane (#132)", () => {
       consoleGateReason: null,
       attestedAt: ATTESTED.attestedAt,
       sources: ["d1", "kv"],
+      retirement: { blocked: false, reasons: [], liveVersions: 0 },
     });
     expect(text).not.toContain("diagnosis");
   });
@@ -1485,7 +1490,79 @@ describe("privacy over the control plane (#132)", () => {
     expect(before.posture.counts?.phi).toBe(1);
     expect(after.posture.counts?.phi).toBeUndefined();
     expect(after.posture.declaredNotObserved).toEqual(["phi"]);
-    expect(after.schemas[0]?.fields).toEqual([{ path: "email", class: "pii" }]);
+    expect(after.schemas[0]?.fields).toEqual([{ path: "email", class: "pii", encryptedAtRest: false }]);
+  });
+
+  test("an encrypted field is reported at rest, and the manifest reads the retirement guard directly (#390)", async () => {
+    await connect([registered(alice)], GRANTED);
+    const Sealed = encryptedTable(
+      z
+        .object({
+          id: z.string().describe("The patient's id."),
+          email: pii(z.string().describe("Where reminders go.")),
+          diagnosis: encrypted(phi(z.string().describe("The recorded condition."))),
+        })
+        .describe("A patient, its diagnosis encrypted."),
+      { name: "patient", key: "id" },
+    );
+    const worker = createBackend({ capabilities: [controlplane(), clinic(Sealed)] });
+    const key = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
+    const fieldKeys = (versions: string[]) =>
+      JSON.stringify({
+        currentVersion: versions[versions.length - 1],
+        versions: Object.fromEntries(versions.map((version) => [version, key])),
+        lastRotatedAt: "2026-10-01T00:00:00.000Z",
+      });
+    await env.DB.exec("DROP TABLE IF EXISTS patients");
+    await env.DB.exec("CREATE TABLE patients (id TEXT PRIMARY KEY, email TEXT, diagnosis TEXT)");
+    const record = await sealed(Sealed, { keys: fieldKeys(["1"]) }).seal({
+      id: "p_1",
+      email: "ada@example.com",
+      diagnosis: "asthma",
+    } as never);
+    await env.DB.prepare("INSERT INTO patients (id, email, diagnosis) VALUES (?, ?, ?)")
+      .bind(record.id, record.email, record.diagnosis)
+      .run();
+    const bindings = (versions: string[]) => ({
+      ...BINDINGS,
+      [PRIVACY_ATTESTATION_VAR]: JSON.stringify(ATTESTED),
+      PITHY_FIELD_KEYS: fieldKeys(versions),
+    });
+
+    const privacy = ControlPlanePrivacyResponse.parse(
+      await body<unknown>(await on(worker, "/control-plane/privacy", PRIVACY_READ_SCOPE, bindings(["1", "2"]))),
+    );
+    expect(privacy.schemas[0]?.fields).toEqual([
+      { path: "email", class: "pii", encryptedAtRest: false },
+      { path: "diagnosis", class: "phi", encryptedAtRest: true },
+    ]);
+    expect(privacy.schemas[0]?.encrypted).toEqual([{ path: "diagnosis" }]);
+
+    const normal = ControlPlaneManifest.parse(
+      await body<unknown>(await on(worker, "/control-plane/manifest", MANIFEST_READ_SCOPE, bindings(["1", "2"]))),
+    );
+    expect(normal.privacy?.retirement).toEqual({ blocked: false, reasons: [], liveVersions: 2 });
+    const overdue = ControlPlaneManifest.parse(
+      await body<unknown>(await on(worker, "/control-plane/manifest", MANIFEST_READ_SCOPE, bindings(["1", "2", "3"]))),
+    );
+    expect(overdue.privacy?.retirement).toEqual({ blocked: true, reasons: ["stale"], liveVersions: 3 });
+    await env.DB.exec("DROP TABLE patients");
+  });
+
+  test("a manifest from an older core, with no retirement block, still parses", () => {
+    const parsed = PrivacyPosture.safeParse({
+      declared: null,
+      observed: [],
+      counts: {},
+      observedNotDeclared: [],
+      declaredNotObserved: [],
+      consoleGate: "unattested",
+      consoleGateReason: null,
+      attestedAt: null,
+      sources: ["d1", "kv"],
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.data?.retirement).toBeUndefined();
   });
 
   test("GET /privacy sends truncated and sameAs as its schema declares, so a validating client keeps both", async () => {
