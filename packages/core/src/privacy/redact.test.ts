@@ -358,6 +358,24 @@ describe("the contract's edges", () => {
     });
     const tags = redact(z.set(pii(z.string())), new Set(["S-1", "S-2", "S-3"]) as never);
     expect([...tags]).toEqual(["[pii]", "[pii] #2", "[pii] #3"]);
+    // A kept element is never renamed: only a masked one is numbered, past every kept one.
+    const Mixed = z.set(z.union([pii(z.number()), z.string()]));
+    expect([...redact(Mixed, Mixed.parse(new Set([5, "[pii]"])))]).toEqual(["[pii] #2", "[pii]"]);
+    expect([...redact(Mixed, Mixed.parse(new Set([1, 2, "[pii] #2"])))]).toEqual(["[pii]", "[pii] #3", "[pii] #2"]);
+    const MixedKeys = z.map(z.union([pii(z.array(z.string())), z.string()]), z.number());
+    const keys = redact(
+      MixedKeys,
+      MixedKeys.parse(
+        new Map<unknown, number>([
+          [["S-1"], 1],
+          ["[pii]", 2],
+        ]),
+      ),
+    );
+    expect([...keys]).toEqual([
+      ["[pii] #2", 1],
+      ["[pii]", 2],
+    ]);
     const ByUser = z.map(z.object({ id: z.string(), e: pii(z.string()) }), z.number());
     const byUser = masked(ByUser, new Map([[{ id: "u_1", e: "S-1" }, 1]])) as Map<unknown, number>;
     expect([...byUser]).toEqual([[{ id: "u_1", e: "[pii]" }, 1]]);

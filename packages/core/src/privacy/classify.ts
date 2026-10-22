@@ -64,7 +64,8 @@ export interface PrivacyField {
  * A position deeper than this is masked whole as {@link TRUNCATED_CLASS} and typed `unknown`, however the recursion
  * is written: a `z.lazy`, a getter that returns one schema, or one that builds a new schema each read. No schema
  * written out by hand nests this deep, so only a recursion reaches it. A search for a mark beneath an opaque node
- * stops at the same depth, counting each lazy too, and so does the one `Redacted<T>` makes.
+ * stops at the same depth, counting each lazy too, and so does the one `Redacted<T>` makes. So does a read of the
+ * shapes a choice can have, counting each lazy: a lazy that builds a new choice each read never meets a schema twice.
  */
 export const MAX_RECURSION_DEPTH = 256;
 
@@ -186,10 +187,36 @@ const SCHEMA_KINDS: Readonly<Record<string, ValueKind>> = {
 const NO_VALUE: ReadonlySet<string> = new Set(["null", "undefined", "void", "never"]);
 
 /**
- * The shapes a schema's output can have: read through its wrappers, the options of a union, the sides of an
- * intersection, a lazy and the kit's codecs. Every shape for anything opaque, whose output nothing here reads.
+ * How many schemas one read of {@link kindsOf} reads before it assumes every shape. Far past any choice written out;
+ * only a lazy that builds two new choices at every level reaches it, and every shape masks the most.
  */
-function kindsOf(schema: z.ZodType, path: Set<z.ZodType> = new Set()): ReadonlySet<ValueKind> {
+const KINDS_BUDGET = MAX_CLASSIFIED_POSITIONS;
+
+const kindsRead = new WeakMap<z.ZodType, ReadonlySet<ValueKind>>();
+
+/**
+ * The shapes a schema's output can have: read through its wrappers, the options of a union, the sides of an
+ * intersection, a lazy and the kit's codecs. Every shape for anything opaque, whose output nothing here reads, and for
+ * a read that runs past {@link MAX_RECURSION_DEPTH} lazies or {@link KINDS_BUDGET} schemas: a lazy that builds a new
+ * choice each read never meets a schema twice, and every shape is the answer that masks the most.
+ */
+function kindsOf(schema: z.ZodType): ReadonlySet<ValueKind> {
+  const known = kindsRead.get(schema);
+  if (known) return known;
+  const found = readKinds(schema, 0, { left: KINDS_BUDGET }, new Set());
+  kindsRead.set(schema, found);
+  return found;
+}
+
+/** One step of {@link kindsOf}, `depth` lazies down, with what is `left` of the budget. */
+function readKinds(
+  schema: z.ZodType,
+  depth: number,
+  budget: { left: number },
+  path: Set<z.ZodType>,
+): ReadonlySet<ValueKind> {
+  if (depth > MAX_RECURSION_DEPTH || budget.left <= 0) return EVERY_KIND;
+  budget.left -= 1;
   const def = defOf(schema);
   const one = SCHEMA_KINDS[def.type];
   if (one !== undefined) return new Set([one]);
@@ -202,18 +229,28 @@ function kindsOf(schema: z.ZodType, path: Set<z.ZodType> = new Set()): ReadonlyS
   if (path.has(schema)) return EVERY_KIND;
   path.add(schema);
   try {
-    if (WRAPPERS.has(def.type) && def.innerType) return kindsOf(def.innerType, path);
-    if (def.type === "union" && def.options) return joinKinds(def.options.map((option) => kindsOf(option, path)));
+    if (WRAPPERS.has(def.type) && def.innerType) return readKinds(def.innerType, depth, budget, path);
+    if (def.type === "union" && def.options) {
+      const joined = new Set<ValueKind>();
+      for (const option of def.options) {
+        for (const kind of readKinds(option, depth, budget, path)) joined.add(kind);
+        // Every shape already: the options left can add none.
+        if (joined.size === EVERY_KIND.size) break;
+      }
+      return joined;
+    }
     if (def.type === "intersection" && def.left && def.right) {
-      const right = kindsOf(def.right, path);
-      return new Set([...kindsOf(def.left, path)].filter((kind) => right.has(kind)));
+      const left = readKinds(def.left, depth, budget, path);
+      if (left.size === 0) return NO_KIND;
+      const right = readKinds(def.right, depth, budget, path);
+      return new Set([...left].filter((kind) => right.has(kind)));
     }
     if (def.type === "lazy") {
       const inner = lazyInner(schema);
-      return inner ? kindsOf(inner, path) : EVERY_KIND;
+      return inner ? readKinds(inner, depth + 1, budget, path) : EVERY_KIND;
     }
     const codec = kitCodecOutput(schema);
-    return codec ? kindsOf(codec, path) : EVERY_KIND;
+    return codec ? readKinds(codec, depth, budget, path) : EVERY_KIND;
   } finally {
     path.delete(schema);
   }
@@ -221,10 +258,6 @@ function kindsOf(schema: z.ZodType, path: Set<z.ZodType> = new Set()): ReadonlyS
 
 function isKind(kind: ValueKind | undefined): kind is ValueKind {
   return kind !== undefined;
-}
-
-function joinKinds(sets: readonly ReadonlySet<ValueKind>[]): ReadonlySet<ValueKind> {
-  return new Set(sets.flatMap((set) => [...set]));
 }
 
 /** The `privacy` meta on this exact schema, or `null`. */

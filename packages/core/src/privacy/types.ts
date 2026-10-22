@@ -141,10 +141,12 @@ export type Redacted<S extends z.ZodType> = RedactedOutput<S>;
  *   every side's marks at each position: an array beside a tuple is typed index by index where the tuple names one,
  *   and a record or an open object beside an object types each key the object names. The kit's three codecs are the
  *   schema they decode to, and a JSON column is known by the type `sqliteJson` returns, never by its shape.
- * - **An opaque node is its own output**, or `unknown` where a mark sits anywhere beneath it, because `redact` masks
- *   it whole there. The search beneath it reads every schema once, to the one recursion limit, so a recursion with
- *   nothing marked in it keeps its output. That is the one place the type says `unknown`, with two more a type cannot
- *   see past: a schema annotated `z.ZodType<T>`, as a self-referencing `z.lazy` must be, names no kind; and `any`.
+ * - **An opaque node is its own output**, or `unknown` where a mark sits anywhere beneath it or may, because `redact`
+ *   masks it whole there. The search beneath it reads every schema once, to the one recursion limit, so an unmarked
+ *   schema of any depth keeps its output. A recursion beneath it is `unknown` however it is written, as a type cannot
+ *   tell one defined once from one built anew, which reaches the limit and is masked; so is a schema annotated
+ *   `z.ZodType<T>` beneath it. That is the one place the type says `unknown`, with two more a type cannot see past: a
+ *   schema annotated `z.ZodType<T>`, as a self-referencing `z.lazy` must be, names no kind; and `any`.
  * - **A position nested deeper than {@link REDACT_RECURSION_DEPTH} levels is `unknown`**, as `redact` masks it whole
  *   from the same depth: every object, array, tuple, record, map and set above it counts one.
  */
@@ -356,8 +358,11 @@ type Verdict<R> = true extends R ? true : "deep" extends R ? "deep" : false;
 
 /**
  * Whether a schema carries a mark anywhere beneath it: `true`, `false`, or `"deep"` where the search ran past the one
- * recursion limit. It reads level by level, every schema once, so a recursion comes round to a schema it has read and
- * ends; and, as the runtime search does, a level is one more object, array, tuple, record, map, set or lazy.
+ * recursion limit, or may. It reads level by level, every schema once; as the runtime search does, a level is one more
+ * object, array, tuple, record, map, set or lazy. It is `"deep"` wherever it meets a recursion, a getter or a lazy
+ * that comes round to a schema above it: a type cannot tell one defined once, which the runtime reads to its end, from
+ * one built anew each read, which reaches the limit and is masked whole. So is a schema annotated `z.ZodType<T>`,
+ * which names no kind the search could read inside.
  */
 type HasMark<S> = SearchLevel<S, never, never, []>;
 
@@ -369,17 +374,41 @@ type SearchLevel<Cur, Next, Seen, L extends readonly unknown[]> = [Cur] extends 
   ? [Next] extends [never]
     ? false
     : SearchLevel<Next, never, Seen, [...L, 0]>
-  : Unseen<Cur, Seen> extends infer New
-    ? [New] extends [never]
-      ? SearchLevel<never, Next, Seen, L>
-      : true extends AnyBranded<New>
-        ? true
-        : [Nested<New>] extends [never]
-          ? SearchLevel<Children<New>, Next, Seen | New, L>
-          : L["length"] extends REDACT_RECURSION_DEPTH
+  : true extends Recurs<Cur, Seen>
+    ? "deep"
+    : Unseen<Cur, Seen> extends infer New
+      ? [New] extends [never]
+        ? SearchLevel<never, Next, Seen, L>
+        : true extends AnyBranded<New>
+          ? true
+          : true extends Unnamed<New>
             ? "deep"
-            : SearchLevel<Children<Flat<New>>, Next | Children<Nested<New>>, Seen | New, L>
+            : [Nested<New>] extends [never]
+              ? SearchLevel<Children<New>, Next, Seen | New, L>
+              : L["length"] extends REDACT_RECURSION_DEPTH
+                ? "deep"
+                : SearchLevel<Children<Flat<New>>, Next | Children<Nested<New>>, Seen | New, L>
+      : never;
+
+/**
+ * Whether a schema met again is a recursion: one among `Cur` already read, a level counted at it, that reaches itself.
+ * A schema used twice at two depths is met again too, and reaches no copy of itself. Distributes.
+ */
+type Recurs<Cur, Seen> =
+  Nested<Cur> extends infer R
+    ? R extends unknown
+      ? true extends IsSeen<R, Seen>
+        ? Reaches<Children<R>, R, never>
+        : false
+      : never
     : never;
+
+/** Whether `T` is among the schemas beneath `Cur`, each read once. */
+type Reaches<Cur, T, Seen> = [Cur] extends [never]
+  ? false
+  : true extends IsSeen<T, Cur>
+    ? true
+    : Reaches<Children<Unseen<Cur, Seen>>, T, Seen | Cur>;
 
 /** The schemas among `N` not yet read. Distributes. */
 type Unseen<N, Seen> = N extends unknown ? (true extends IsSeen<N, Seen> ? never : N) : never;
@@ -402,9 +431,14 @@ type Nested<N> = N extends unknown ? (DefOf<N> extends { type: Structural | "laz
 /** The schemas among `N` read at the level they sit at. Distributes. */
 type Flat<N> = N extends unknown ? (DefOf<N> extends { type: Structural | "lazy" } ? never : N) : never;
 
-/** Every schema a definition holds: a schema, a lazy's getter, a list of schemas, or an object's shape. Distributes. */
+/**
+ * Every schema a definition holds: a schema, a lazy's getter, a list of schemas, or an object's shape. An object's
+ * definition names its catchall only as a schema of any kind, so the catchall is read from its config. Distributes.
+ */
 type Children<N> = N extends Schema
-  ? { [K in keyof DefOf<N>]-?: K extends "checks" ? never : SlotSchemas<DefOf<N>[K]> }[keyof DefOf<N>]
+  ?
+      | { [K in keyof DefOf<N>]-?: K extends "checks" | "catchall" ? never : SlotSchemas<DefOf<N>[K]> }[keyof DefOf<N>]
+      | OpenCatchall<N>
   : never;
 
 /** The schemas one slot of a definition holds. */

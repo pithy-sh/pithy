@@ -430,3 +430,58 @@ describe("Redacted<T>, for the same matrix", () => {
     expect(KINDS).toHaveLength(Object.keys(kinds).length);
   });
 });
+
+// A kept value that reads like a placeholder: only a masked one is ever numbered.
+
+/** Every order of `items`. */
+function* orders<T>(items: readonly T[]): Generator<T[]> {
+  if (items.length <= 1) {
+    yield [...items];
+    return;
+  }
+  for (const [index, item] of items.entries()) {
+    for (const rest of orders([...items.slice(0, index), ...items.slice(index + 1)])) yield [item, ...rest];
+  }
+}
+
+describe("a set's elements and a map's keys, where a kept value equals a placeholder", () => {
+  // Numbers are masked, strings kept: the kept strings are the placeholders a masked number would take.
+  const Element = z.union([pii(z.number()), z.string()]);
+  const containers: [string, z.ZodType, (items: unknown[]) => unknown, (out: unknown) => unknown[]][] = [
+    ["set", z.set(Element), (items) => new Set(items), (out) => [...(out as Set<unknown>)]],
+    [
+      "map key",
+      z.map(Element, z.number()),
+      (items) => new Map(items.map((item, index) => [item, index])),
+      (out) => [...(out as Map<unknown, number>).keys()],
+    ],
+    [
+      "set in an object in an array",
+      z.array(z.object({ s: z.set(Element) })),
+      (items) => [{ s: new Set(items) }],
+      (out) => [...((out as { s: Set<unknown> }[])[0] as { s: Set<unknown> }).s],
+    ],
+  ];
+
+  test("keeps every kept value as it is and numbers each masked one apart from all of them, in every order", () => {
+    const failures: string[] = [];
+    let ran = 0;
+    for (const [name, schema, make, read] of containers) {
+      for (const order of orders<unknown>([1, 2, 3, "[pii]", "[pii] #2", "[pii] #4", "P-1"])) {
+        ran += 1;
+        const out = read(redact(schema, schema.parse(make(order)) as never));
+        const label = `${name} ${JSON.stringify(order)}`;
+        if (out.length !== order.length) failures.push(`${label}: ${out.length} came back`);
+        order.forEach((item, index) => {
+          const back = out[index];
+          if (typeof item === "string" && back !== item) failures.push(`${label}: kept ${item} came back ${back}`);
+          if (typeof item === "number" && (typeof back !== "string" || !/^\[pii\]( #\d+)?$/.test(back)))
+            failures.push(`${label}: masked ${item} came back ${String(back)}`);
+        });
+        if (new Set(out).size !== out.length) failures.push(`${label}: two entries came back alike`);
+      }
+    }
+    expect(failures.slice(0, 20)).toEqual([]);
+    expect(ran).toBe(containers.length * 5_040);
+  });
+});

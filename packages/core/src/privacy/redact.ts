@@ -45,7 +45,8 @@ import type { RedactedOutput } from "./types";
  * way `sqliteJson` is built included), `z.custom`, `any` and `unknown`. `redact` does not look inside these. When
  * anything beneath one is marked, the whole value is masked with the strongest class it carries, and `Redacted<T>`
  * types that position `unknown`. When nothing beneath it is marked, it is kept as it is, including when it is a union
- * option beside a marked one. None of this ever throws or leaks a raw marked value.
+ * option beside a marked one. A recursion beneath it that reaches the item 6 depth limit counts as possibly marked, so
+ * that value is masked whole and typed `unknown`. None of this ever throws or leaks a raw marked value.
  *
  * ## The edges, exactly
  *
@@ -58,14 +59,17 @@ import type { RedactedOutput } from "./types";
  *   option names, such as an array a `z.unknown()` beside an object option let through. A record's key is a string
  *   whatever its schema says, so a key schema that marks any shape masks every key.
  * - **A record's or a map's key is redacted by its key schema**, and so is a set's element. Two that mask alike come
- *   back as `[pii]` and `[pii] #2`, so the copy holds as many entries as the value did. Every key is defined on the
- *   copy, not assigned, so an own `__proto__` key stays a key.
+ *   back as `[pii]` and `[pii] #2`, so the copy holds as many entries as the value did. Only a masked one is ever
+ *   numbered: a kept one stays as it is, even one that reads `[pii]`, and a masked one takes the first name no kept
+ *   one holds. Every key is defined on the copy, not assigned, so an own `__proto__` key stays a key.
  * - **The one recursion limit is {@link MAX_RECURSION_DEPTH} levels of nesting**: every object, array, tuple, record,
  *   map and set a position sits inside counts one. A position deeper than that is masked whole as `[secret]`, the
  *   strongest class, and `Redacted<T>` types it `unknown` from the same depth. Nothing tells one recursion from
  *   another, so a lazy, a getter that returns one schema and one that builds a new schema each read all end at the
  *   same level, and the result is a function of the schema and the value alone. The walk keeps its own stack, so a
- *   deep value never overflows the call stack.
+ *   deep value never overflows the call stack. A recursion beneath an opaque node that reaches the limit masks that
+ *   node's value whole as `[secret]` too, and a lazy that builds a new choice each read ends at the limit the same
+ *   way: every lazy counts one.
  *
  * ## The placeholder, and why it is not a hash
  *
@@ -98,22 +102,49 @@ function distinct(name: unknown, taken: { has(key: unknown): boolean }): unknown
   return `${name} #${index}`;
 }
 
+/** A child's result, and whether it is a mask: only a masked key or element is ever renamed. */
+type Result = { value: unknown; masked: boolean };
+
+/**
+ * Keys or elements, each kept or masked, made distinct: every kept one first, as it is, then each masked one at the
+ * first name, `[pii]`, `[pii] #2` …, that no kept one and no earlier masked one holds. In the value's order.
+ */
+function distinctAll(results: readonly Result[]): unknown[] {
+  const taken = new Set<unknown>(results.filter((result) => !result.masked).map((result) => result.value));
+  return results.map((result) => {
+    if (!result.masked) return result.value;
+    const name = distinct(result.value, taken);
+    taken.add(name);
+    return name;
+  });
+}
+
 /**
  * One step of the walk. `visit` redacts one value at one position, `depth` levels of nesting down, and hands the
  * result to `put`; `after` runs once every step above it on the stack is done, to fill a map or a set in order. The
  * walk keeps its own stack rather than the call stack, so a deep value never overflows it.
  */
-type Step =
-  | { visit: unknown; at: Position | undefined; depth: number; put: (result: unknown) => void }
-  | { after: () => void };
+type Step = { visit: unknown; at: Position | undefined; depth: number; put: Put } | { after: () => void };
+
+/** Where a result goes, and whether it is a mask. */
+type Put = (result: unknown, masked: boolean) => void;
 
 /** How a child is handed to the walk: its position, its value, and where its result goes. */
-type Walk = (child: Position | undefined, item: unknown, put: (result: unknown) => void) => void;
+type Walk = (child: Position | undefined, item: unknown, put: Put) => void;
 
 /** The walk: every value at its position, depth first and in order. */
 function walkValue(root: Position, value: unknown): unknown {
   let result: unknown;
-  const steps: Step[] = [{ visit: value, at: root, depth: 0, put: (out) => (result = out) }];
+  const steps: Step[] = [
+    {
+      visit: value,
+      at: root,
+      depth: 0,
+      put: (out) => {
+        result = out;
+      },
+    },
+  ];
   for (let step = steps.pop(); step; step = steps.pop()) {
     if ("after" in step) step.after();
     else redactAt(step, steps);
@@ -128,14 +159,14 @@ function walkValue(root: Position, value: unknown): unknown {
  */
 function redactAt(step: Extract<Step, { visit: unknown }>, steps: Step[]): void {
   const { at, depth, visit: value, put } = step;
-  if (value === null || value === undefined) put(value);
-  else if (depth > MAX_RECURSION_DEPTH) put(`[${TRUNCATED_CLASS}]`);
-  else if (at === undefined) put(value);
+  if (value === null || value === undefined) put(value, false);
+  else if (depth > MAX_RECURSION_DEPTH) put(`[${TRUNCATED_CLASS}]`, true);
+  else if (at === undefined) put(value, false);
   else {
     // A mark applies to a value of the shape of the option it was reached through, and to no other.
     const mask = at.maskFor(value);
     if (mask) {
-      put(masked(mask, value));
+      put(masked(mask, value), true);
       return;
     }
     const below: Step[] = [];
@@ -143,6 +174,7 @@ function redactAt(step: Extract<Step, { visit: unknown }>, steps: Step[]): void 
       redactKind(at, value, below, (child, item, out) => {
         below.push({ visit: item, at: child, depth: depth + 1, put: out });
       }),
+      false,
     );
     // Popped last to first: what is below runs in order.
     steps.push(...below.reverse());
@@ -169,20 +201,23 @@ function redactKind(at: Position, value: unknown, below: Step[], walk: Walk): un
   if (value instanceof Map) {
     if (!kinds.has("map")) return value;
     const out = new Map<unknown, unknown>();
-    const entries: [unknown, unknown][] = [];
+    const keys: Result[] = [];
+    const items: unknown[] = [];
     for (const [key, item] of value) {
-      const entry: [unknown, unknown] = [undefined, undefined];
-      entries.push(entry);
-      walk(at.mapKey, key, (result) => {
-        entry[0] = result;
+      const index = items.push(undefined) - 1;
+      keys.push({ value: undefined, masked: false });
+      walk(at.mapKey, key, (result, isMask) => {
+        keys[index] = { value: result, masked: isMask };
       });
       walk(at.mapValue, item, (result) => {
-        entry[1] = result;
+        items[index] = result;
       });
     }
     below.push({
       after: () => {
-        for (const [key, item] of entries) out.set(distinct(key, out), item);
+        distinctAll(keys).forEach((key, index) => {
+          out.set(key, items[index]);
+        });
       },
     });
     return out;
@@ -190,16 +225,16 @@ function redactKind(at: Position, value: unknown, below: Step[], walk: Walk): un
   if (value instanceof Set) {
     if (!kinds.has("set")) return value;
     const out = new Set<unknown>();
-    const items: unknown[] = [];
+    const items: Result[] = [];
     for (const item of value) {
-      const index = items.push(undefined) - 1;
-      walk(at.element, item, (result) => {
-        items[index] = result;
+      const index = items.push({ value: undefined, masked: false }) - 1;
+      walk(at.element, item, (result, isMask) => {
+        items[index] = { value: result, masked: isMask };
       });
     }
     below.push({
       after: () => {
-        for (const item of items) out.add(distinct(item, out));
+        for (const item of distinctAll(items)) out.add(item);
       },
     });
     return out;
