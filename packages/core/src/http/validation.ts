@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { zValidator } from "@hono/zod-validator";
-import type { ValidationTargets } from "hono";
+import type { Context, MiddlewareHandler, ValidationTargets } from "hono";
 import type { z } from "zod";
 import { fromZodError } from "../error/pithyError";
 
@@ -70,11 +70,43 @@ export interface RequestContract {
 export function validate<Target extends keyof ValidationTargets, Schema extends z.ZodType>(
   target: Target,
   schema: Schema,
+  onInvalid?: InvalidRequestListener,
 ) {
-  const middleware = zValidator(target, schema, validationHook);
   const contract: RequestContract = { target, schema };
-  return Object.assign(middleware, { [REQUEST_CONTRACT]: contract });
+  if (!onInvalid) return Object.assign(zValidator(target, schema, validationHook), { [REQUEST_CONTRACT]: contract });
+  // What each refused request sent, keyed by its context, so the listener is handed the input without
+  // reading the request raw — which no route may do.
+  const refusedInput = new WeakMap<Context, unknown>();
+  const middleware = zValidator(target, schema, (outcome: ValidationOutcome & { data?: unknown }, c: Context) => {
+    if (!outcome.success) refusedInput.set(c, outcome.data);
+    validationHook(outcome);
+  });
+  // Only a throw from the validator itself is a refusal of the request. Once `next` runs, a throw is the
+  // handler's, and is the handler's to record.
+  const listened: MiddlewareHandler = async (c, next) => {
+    let reached = false;
+    try {
+      return await middleware(c, async () => {
+        reached = true;
+        await next();
+      });
+    } catch (error) {
+      if (!reached) await onInvalid(c, error, refusedInput.get(c));
+      throw error;
+    }
+  };
+  return Object.assign(listened as typeof middleware, { [REQUEST_CONTRACT]: contract });
 }
+
+/**
+ * Told when {@link validate} refuses a request — a body that does not parse, or one that fails the schema —
+ * before the refusal is thrown. A route whose every attempt must be on the audit trail records the refusal
+ * here. It cannot turn the refusal into anything else: the error is thrown after it returns, and a listener
+ * that throws replaces it. `input` is what the request sent for the validated part, as it arrived; it is
+ * `undefined` when there was nothing to read, as for a body that is not JSON. Input validated by an earlier
+ * {@link validate} on the same route is readable with `c.req.valid(target)`.
+ */
+export type InvalidRequestListener = (c: Context, error: unknown, input: unknown) => Promise<void> | void;
 
 /** The contract a {@link validate} middleware carries, or `undefined` for any other handler. */
 export function requestContractOf(handler: unknown): RequestContract | undefined {

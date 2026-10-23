@@ -198,6 +198,62 @@ export const AdminDeviceRevokeResponse = z
   .describe("How many sessions the device revocation ended, and whether the registry row went with them.");
 export type AdminDeviceRevokeResponse = z.output<typeof AdminDeviceRevokeResponse>;
 
+/**
+ * `POST {base}/admin/users/:userId/suspend` (#621).
+ *
+ * The suspension the account is now under, how many sessions ended with it, and whether the person was told.
+ * Not the reason: the caller wrote it, the trail keeps it, and echoing it back would put it in one more place
+ * a dashboard logs.
+ */
+export const AdminUserSuspendResponse = z
+  .object({
+    userId: z.string().describe("The account suspended, as `pithy_auth_users.id` stores it."),
+    state: z.literal("suspended").describe("Where the account stands now. Every sign-in and refresh is refused."),
+    outcome: z
+      .enum(["suspended", "updated"])
+      .describe(
+        "`suspended` when this call suspended an account in good standing; `updated` when it was already suspended and this call restated the reason and the end.",
+      ),
+    suspendedAt: z.iso
+      .datetime()
+      .describe("When the suspension in force began, ISO-8601. A restatement keeps the original start."),
+    suspendedUntil: z.iso
+      .datetime()
+      .nullable()
+      .describe("When it ends by itself, ISO-8601, with nothing written to end it. Null lasts until a reinstatement."),
+    sessionsRevoked: RevokedCount,
+    mailed: z
+      .boolean()
+      .describe(
+        "Whether the account-suspended mail was enqueued. False for `notify: false`, when the config turns it off, or when no email capability is composed.",
+      ),
+  })
+  .describe("A suspended account: since when, until when, how many sessions it cost, and whether the person was told.");
+export type AdminUserSuspendResponse = z.output<typeof AdminUserSuspendResponse>;
+
+/**
+ * `POST {base}/admin/users/:userId/reinstate` (#621).
+ *
+ * No session count: a reinstatement restores none. The person signs in again.
+ */
+export const AdminUserReinstateResponse = z
+  .object({
+    userId: z.string().describe("The account reinstated, as `pithy_auth_users.id` stores it."),
+    state: z.literal("active").describe("Where the account stands now. It can sign in again."),
+    outcome: z
+      .enum(["reinstated", "unchanged"])
+      .describe(
+        "`reinstated` when this call lifted a suspension; `unchanged` when there was none in force — never suspended, or past its end — and nothing was written.",
+      ),
+    mailed: z
+      .boolean()
+      .describe(
+        "Whether the account-reinstated mail was enqueued. Always false for `unchanged`, and on the same rule as a suspension's otherwise.",
+      ),
+  })
+  .describe("A reinstated account, and whether the person was told. Its revoked sessions stay revoked.");
+export type AdminUserReinstateResponse = z.output<typeof AdminUserReinstateResponse>;
+
 /*
  * The routes a signed-in person calls on their own account. These are not read across the management
  * version boundary the admin schemas above are, but a client generated from the contract reads Workers on

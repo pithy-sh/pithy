@@ -14,7 +14,7 @@ import { authDatabase } from "../data/tables";
 import { UserLifecycleEvent } from "../data/userLifecycle";
 import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
 import { AUTH_MIGRATIONS } from "../migrations/set";
-import { readLifecycleColumns } from "./enforce";
+import { readLifecycleColumns, suspensionReason } from "./enforce";
 import type { UserLifecycleHookEvent, UserLifecycleHooks } from "./hooks";
 import {
   completePurge,
@@ -197,16 +197,169 @@ describe("suspendUser", () => {
     expect(h.fired[0]?.event).toMatchObject({ userId: "u1", reason: "A payment is under review." });
   });
 
-  test("suspending an account that is already suspended is no transition: no row, no mail, no hook", async () => {
+  test("suspending an account that is already suspended restates the reason and the end (#621)", async () => {
+    await seedUser();
+    const h = harness();
+    const first = await suspendUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "First." });
+    expect(first).toMatchObject({ changed: true, updated: false, mailed: true, suspendedUntil: null });
+    expect(first.suspendedAt.getTime()).toBe(NOW.getTime());
+
+    const until = new Date(NOW.getTime() + 3 * DAY);
+    const again = await suspendUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Second.", until });
+    // Not a transition — the account was suspended and still is — but its terms moved, and the call says so.
+    expect(again).toMatchObject({ changed: false, updated: true, mailed: true });
+    expect(again.suspendedAt.getTime()).toBe(NOW.getTime());
+    expect(again.suspendedUntil?.getTime()).toBe(until.getTime());
+
+    const columns = await readLifecycleColumns(h.deps.db, "u1");
+    expect(columns?.suspendedAt?.getTime()).toBe(NOW.getTime());
+    expect(columns?.suspendedUntil?.getTime()).toBe(until.getTime());
+    // A row for the restatement, so the reason the person is shown is the newest one.
+    const rows = await history();
+    expect(rows.map((row) => [row.action, row.reason])).toEqual([
+      ["suspended", "First."],
+      ["suspended", "Second."],
+    ]);
+    expect(rows[1]?.suspendedUntil?.getTime()).toBe(until.getTime());
+    expect(await suspensionReason(h.deps.db, "u1")).toBe("Second.");
+    // The person is told the new terms; the hook hears transitions only, so it fired once.
+    expect((await jobs()).map((job) => job.payload.reason)).toEqual(["First.", "Second."]);
+    expect(h.fired).toHaveLength(1);
+    expect(h.events.map((event) => event.metadata)).toEqual([
+      expect.objectContaining({ updated: false, reason: "First." }),
+      expect.objectContaining({ updated: true, reason: "Second.", suspendedUntil: until.toISOString() }),
+    ]);
+  });
+
+  test("a restatement that loses the race to a reinstatement is a conflict, and writes nothing", async () => {
     await seedUser();
     const h = harness();
     await suspendUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "First." });
-    const again = await suspendUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Second." });
-    expect(again.changed).toBe(false);
-    expect(await history()).toHaveLength(1);
-    expect(await jobs()).toHaveLength(1);
-    expect(h.fired).toHaveLength(1);
+    const d1 = new Proxy(env.DB, {
+      get(target, key) {
+        if (key === "batch") {
+          return async (statements: Parameters<typeof target.batch>[0]) => {
+            await target.prepare("update pithy_auth_users set suspended_at = null, suspended_until = null").run();
+            return await target.batch(statements);
+          };
+        }
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    await expect(
+      suspendUser({ ...h.deps, d1 }, { userId: "u1", actor: OPERATOR, reason: "Second." }),
+    ).rejects.toMatchObject({ payload: { code: "core/conflict" } });
+    expect((await history()).map((row) => row.reason)).toEqual(["First."]);
     expect(h.events).toHaveLength(1);
+  });
+
+  /** A D1 whose first batch lets `before` land first — another request's write, racing this one. */
+  function racing(before: () => Promise<unknown>): D1Database {
+    let raced = false;
+    return new Proxy(env.DB, {
+      get(target, key) {
+        if (key === "batch") {
+          return async (statements: Parameters<typeof target.batch>[0]) => {
+            if (!raced) {
+              raced = true;
+              await before();
+            }
+            return await target.batch(statements);
+          };
+        }
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  }
+
+  test("a fresh suspension that loses the race to another suspension restates its terms instead of failing", async () => {
+    await seedUser();
+    const h = harness();
+    const until = new Date(NOW.getTime() + 3 * DAY);
+    const d1 = racing(() => suspendUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "First." }));
+    const result = await suspendUser({ ...h.deps, d1 }, { userId: "u1", actor: OPERATOR, reason: "Second.", until });
+    expect(result).toMatchObject({ changed: false, updated: true, mailed: true });
+    expect(result.suspendedAt.getTime()).toBe(NOW.getTime());
+    expect(result.suspendedUntil?.getTime()).toBe(until.getTime());
+    const columns = await readLifecycleColumns(h.deps.db, "u1");
+    expect(columns?.suspendedUntil?.getTime()).toBe(until.getTime());
+    expect((await history()).map((row) => row.reason)).toEqual(["First.", "Second."]);
+    expect(await suspensionReason(h.deps.db, "u1")).toBe("Second.");
+    // The suspension that landed first is the transition; this one only restated it.
+    expect(h.fired).toHaveLength(1);
+    expect(h.events.map((event) => event.metadata)).toEqual([
+      expect.objectContaining({ updated: false, reason: "First." }),
+      expect.objectContaining({ updated: true, reason: "Second.", suspendedUntil: until.toISOString() }),
+    ]);
+  });
+
+  test("a fresh suspension that loses the race to a deletion is a conflict, and writes nothing", async () => {
+    await seedUser();
+    const h = harness();
+    const d1 = racing(() => deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Gone." }));
+    await expect(
+      suspendUser({ ...h.deps, d1 }, { userId: "u1", actor: OPERATOR, reason: "Review." }),
+    ).rejects.toMatchObject({ payload: { code: "core/conflict" } });
+    expect((await history()).map((row) => row.action)).toEqual(["deleted"]);
+    expect(h.fired.map((entry) => entry.hook)).toEqual(["onUserDeleted"]);
+  });
+
+  test("notify: false sends no mail, and says so", async () => {
+    await seedUser();
+    const h = harness();
+    const result = await suspendUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Review.", notify: false });
+    expect(result).toMatchObject({ changed: true, mailed: false });
+    expect(await jobs()).toEqual([]);
+    expect(h.fired).toHaveLength(1);
+  });
+
+  test("with no email capability composed nothing is mailed, and the result does not claim otherwise", async () => {
+    await seedUser();
+    const h = harness();
+    const result = await suspendUser(
+      { ...h.deps, enqueueEmail: undefined },
+      { userId: "u1", actor: OPERATOR, reason: "x" },
+    );
+    expect(result.mailed).toBe(false);
+  });
+
+  test("the request's correlation and metadata ride on the audit event", async () => {
+    await seedUser();
+    const h = harness();
+    await suspendUser(
+      {
+        ...h.deps,
+        context: { ip: "203.0.113.7", userAgent: "Ops/1", requestId: "ray-1", metadata: { connectionId: "c-1" } },
+      },
+      { userId: "u1", actor: OPERATOR, reason: "Review." },
+    );
+    expect(h.events[0]).toMatchObject({
+      ip: "203.0.113.7",
+      userAgent: "Ops/1",
+      requestId: "ray-1",
+      metadata: { connectionId: "c-1", reason: "Review." },
+    });
+  });
+
+  test("a deleted account's conflict names the route that restores it, when the caller gives one", async () => {
+    await seedUser();
+    const h = harness();
+    await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x" });
+    const restoreRoute = "POST /auth/admin/users/u1/restore";
+    for (const run of [
+      () => suspendUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "y", restoreRoute }),
+      () => reinstateUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "y", restoreRoute }),
+    ]) {
+      const refusal = await run().then(
+        () => null,
+        (error: unknown) => error as { payload: { code: string; message: string; action?: string } },
+      );
+      expect(refusal?.payload.code).toBe("core/conflict");
+      expect(refusal?.payload.message).toContain(restoreRoute);
+      expect(refusal?.payload.action).toContain(restoreRoute);
+    }
   });
 
   test("a suspension whose end has passed can be replaced by a new one", async () => {
@@ -296,6 +449,20 @@ describe("reinstateUser", () => {
     expect((await jobs()).map((job) => job.template)).toEqual(["accountSuspended", "accountReinstated"]);
     expect(h.fired.map((call) => call.hook)).toEqual(["onUserSuspended", "onUserReinstated"]);
     expect(h.events.map((event) => event.action)).toEqual(["auth/admin_user_suspended", "auth/admin_user_reinstated"]);
+  });
+
+  test("reinstating with notify: false sends no mail, and says so; the default says it did", async () => {
+    await seedUser();
+    const h = harness();
+    await suspendUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Review.", notify: false });
+    const quiet = await reinstateUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Cleared.", notify: false });
+    expect(quiet).toEqual({ changed: true, mailed: false });
+    expect(await jobs()).toEqual([]);
+
+    await suspendUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Again.", notify: false });
+    const loud = await reinstateUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Cleared." });
+    expect(loud).toEqual({ changed: true, mailed: true });
+    expect((await jobs()).map((job) => job.template)).toEqual(["accountReinstated"]);
   });
 
   test("reinstating an account that is not suspended is no transition", async () => {

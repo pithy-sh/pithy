@@ -11,11 +11,13 @@ import {
   AdminDeviceView,
   AdminRevokeResponse,
   AdminSessionView,
+  AdminUserReinstateResponse,
   AdminUserResponse,
+  AdminUserSuspendResponse,
   AdminUsersResponse,
   AdminUserView,
 } from "./responses";
-import { deviceView, sessionView, userView } from "./views";
+import { deviceView, reinstatementView, sessionView, suspensionView, userView } from "./views";
 
 /**
  * The response schemas against what the projections actually produce.
@@ -68,6 +70,47 @@ const DEVICE: Device = {
 };
 
 describe("auth admin response schemas", () => {
+  test("the suspension projection is exactly what its schema declares, both outcomes (#621)", () => {
+    const at = new Date("2026-10-20T12:00:00.000Z");
+    const until = new Date("2026-10-27T12:00:00.000Z");
+    const suspended = suspensionView(
+      "u-1",
+      { changed: true, updated: false, mailed: true, suspendedAt: at, suspendedUntil: null },
+      2,
+    );
+    accepts(AdminUserSuspendResponse, suspended);
+    expect(suspended).toEqual({
+      userId: "u-1",
+      state: "suspended",
+      outcome: "suspended",
+      suspendedAt: at.toISOString(),
+      suspendedUntil: null,
+      sessionsRevoked: 2,
+      mailed: true,
+    });
+    const restated = suspensionView(
+      "u-1",
+      { changed: false, updated: true, mailed: false, suspendedAt: at, suspendedUntil: until },
+      0,
+    );
+    accepts(AdminUserSuspendResponse, restated);
+    expect(restated).toMatchObject({ outcome: "updated", suspendedUntil: until.toISOString(), mailed: false });
+  });
+
+  test("the reinstatement projection is exactly what its schema declares, both outcomes (#621)", () => {
+    const lifted = reinstatementView("u-1", { changed: true, mailed: true });
+    accepts(AdminUserReinstateResponse, lifted);
+    expect(lifted).toEqual({ userId: "u-1", state: "active", outcome: "reinstated", mailed: true });
+    const nothing = reinstatementView("u-1", { changed: false, mailed: false });
+    accepts(AdminUserReinstateResponse, nothing);
+    expect(nothing).toEqual({ userId: "u-1", state: "active", outcome: "unchanged", mailed: false });
+  });
+
+  test("neither lifecycle response carries the reason, which the caller wrote and the trail keeps", () => {
+    expect(Object.keys(AdminUserSuspendResponse.shape)).not.toContain("reason");
+    expect(Object.keys(AdminUserReinstateResponse.shape)).not.toContain("reason");
+  });
+
   test("each projection is exactly what its schema declares", () => {
     accepts(AdminUserView, userView(USER));
     accepts(AdminUserView, userView({ ...USER, image: null }));

@@ -60,7 +60,7 @@ So: **do not "improve" this by matching more addresses, and do not make the refu
 
 ## Account lifecycle
 
-An account can be suspended or deleted, and the kit refuses it at every door. Auth's own routes, sign-in and token refresh answer `auth/account_suspended` or `auth/account_deleted` (403); another capability's `requireAuth()` answers 401, and the client's next refresh gets the code. [`docs/account-lifecycle.md`](docs/account-lifecycle.md) has the two states, the record, the scopes, the mail, the hooks, the screens, and the purge contribution a capability declares for its own rows.
+An account can be suspended or deleted, and the kit refuses it at every door. An operator suspends and reinstates one through `POST /auth/admin/users/:userId/suspend` and `/reinstate`, under `auth:users:suspend`, with a reason the trail keeps. Auth's own routes, sign-in and token refresh answer `auth/account_suspended` or `auth/account_deleted` (403); another capability's `requireAuth()` answers 401, and the client's next refresh gets the code. [`docs/account-lifecycle.md`](docs/account-lifecycle.md) has the two states, the record, the scopes, the mail, the hooks, the screens, and the purge contribution a capability declares for its own rows.
 
 ## Server-authoritative writes
 

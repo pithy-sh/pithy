@@ -159,6 +159,12 @@ export const AuthAuditActions = {
    *
    * The dashboard's own `customer/user_suspended` and `customer/user_restored` are the client side of the
    * same events, recorded where the operator pressed the button.
+   *
+   * **The suspend and reinstate routes record every call under the same action (#621)**, the ones the
+   * transition did not write included: a refusal as `denied` with its code in `metadata.code`, and a
+   * reinstatement that found nothing to lift as a `success` with `metadata.changed: false`. A restated
+   * suspension is the transition's own event, with `metadata.updated: true`. So one filter on the action
+   * finds every attempt on one account. `../lifecycle/audited.ts` writes the route's half.
    */
 
   /** An account was suspended from the management surface. Carries the reason and any end date. */

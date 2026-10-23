@@ -52,6 +52,12 @@ describe("lifecycleDeps", () => {
     expect(lifecycleDeps(context({ DB: {} }), wiring()).hooks).toEqual({});
   });
 
+  test("carries the caller's audit context onto the deps, and none when there is none (#621)", () => {
+    const audit = { ip: "203.0.113.7", requestId: "ray-1", metadata: { connectionId: "c-1" } };
+    expect(lifecycleDeps(context({ DB: {} }), wiring(), audit).context).toEqual(audit);
+    expect(lifecycleDeps(context({ DB: {} }), wiring()).context).toBeUndefined();
+  });
+
   test("refuses loudly when the database binding is missing, rather than failing on the first write", () => {
     expect(() => lifecycleDeps(context({}), wiring())).toThrow(/auth database binding is missing/);
   });
