@@ -20,6 +20,7 @@ import {
 } from "../data/tables";
 import { ORGANIZATION_MIGRATION_ORDER } from "../migrations/0001_init";
 import { ORGANIZATION_MIGRATIONS } from "../migrations/set";
+import { forceOwnership } from "../ownership/ownership";
 import { defineRoles } from "../roles/roles";
 import {
   addMember,
@@ -719,6 +720,46 @@ describe("the operator's doors", () => {
     return reason.payload;
   }
 
+  /**
+   * The database, with `interloper` run once just before the first insert executes: another request's
+   * write landing between `addMember`'s count and its own insert, made deterministic rather than raced.
+   */
+  function beforeFirstInsert(interloper: () => Promise<unknown>): D1Database {
+    let pending: (() => Promise<unknown>) | null = interloper;
+    const once = async (): Promise<void> => {
+      const run = pending;
+      pending = null;
+      if (run) await run();
+    };
+    const watch = (statement: D1PreparedStatement): D1PreparedStatement =>
+      new Proxy(statement, {
+        get(target, property) {
+          if (property === "bind") return (...values: unknown[]) => watch(target.bind(...values));
+          if (property === "all" || property === "run" || property === "first" || property === "raw") {
+            const method = Reflect.get(target, property, target) as (...args: unknown[]) => Promise<unknown>;
+            return async (...args: unknown[]) => {
+              await once();
+              return method.apply(target, args);
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    return new Proxy(env.DB, {
+      get(target, property) {
+        if (property === "prepare") {
+          return (query: string) => {
+            const statement = target.prepare(query);
+            return /^\s*insert\b/i.test(query) && pending ? watch(statement) : statement;
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  }
+
   async function setSeatLimit(limit: number | null): Promise<void> {
     await organizationDatabase(env.DB)
       .updateTable(ORGANIZATIONS_TABLE)
@@ -834,6 +875,41 @@ describe("the operator's doors", () => {
         now: NOW,
       });
       expect(added.overrodeSeatLimit).toBe(true);
+      expect(await countRows("pithy_organization_memberships")).toBe(2);
+    });
+
+    test("**an override that lands past the limit is recorded as one**, though the count read in front said there was room", async () => {
+      // The count is read, then somebody else takes the last seat, then this insert lands. Reported from
+      // the count, the add would say it needed no override and the audit event would carry that.
+      await join(ADA, "admin");
+      await setSeatLimit(2);
+      const added = await addMember(
+        beforeFirstInsert(() => join(CAT, "member")),
+        OWNED,
+        { organizationId: acme, userId: BOB, role: "member", overrideSeatLimit: true, now: NOW },
+      );
+      expect(added.membersBefore).toBe(1);
+      expect(added.overrodeSeatLimit).toBe(true);
+      expect(await countRows("pithy_organization_memberships")).toBe(3);
+    });
+
+    test("an add without override that loses the last seat after the count is refused", async () => {
+      await join(ADA, "admin");
+      await setSeatLimit(2);
+      const payload = await refusal(
+        addMember(
+          beforeFirstInsert(() => join(CAT, "member")),
+          OWNED,
+          {
+            organizationId: acme,
+            userId: BOB,
+            role: "member",
+            overrideSeatLimit: false,
+            now: NOW,
+          },
+        ),
+      );
+      expect(payload.code).toBe("organization/seat_limit_reached");
       expect(await countRows("pithy_organization_memberships")).toBe(2);
     });
 
@@ -1190,6 +1266,91 @@ describe("the operator's doors", () => {
       const payload = loser(results);
       expect(payload.code).toBe("organization/last_owner");
       expect(payload.params?.ownershipRoute).toBe(OWNER.transferRoute);
+    });
+  });
+
+  describe("a roster write racing a forced transfer", () => {
+    /**
+     * The real D1, except that `interloper` runs once just before the first batch does — a forced
+     * transfer landing between an operator write's read of the member and its own batch, made
+     * deterministic rather than raced.
+     */
+    function beforeFirstBatch(interloper: () => Promise<unknown>): D1Database {
+      let pending: (() => Promise<unknown>) | null = interloper;
+      return new Proxy(env.DB, {
+        get(target, property) {
+          if (property === "batch") {
+            return async (statements: D1PreparedStatement[]) => {
+              const run = pending;
+              pending = null;
+              if (run) await run();
+              return target.batch(statements);
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    }
+
+    /** Make `membershipId` the only owner, removing whoever held it. The operator's break-glass call. */
+    function forceTo(membershipId: string): () => Promise<unknown> {
+      return () =>
+        forceOwnership(env.DB, OWNED, {
+          organizationId: acme,
+          membershipId,
+          previousOwner: "remove",
+          roles: { confers: "owner", demotesTo: "admin" },
+        });
+    }
+
+    test("**removing a member who became the owner in between is refused, and the account keeps its owner**", async () => {
+      // Read as a member, so the removal chose no owner floor and no ownership grant. Without the role in
+      // the delete, it then deleted the account's only owner under a roster scope.
+      await join(OLIVE, "owner");
+      const bob = await join(BOB, "member");
+
+      await expect(
+        removeMemberAsOperator(beforeFirstBatch(forceTo(bob)), OWNED, {
+          organizationId: acme,
+          membershipId: bob,
+          owner: ROSTER_ONLY,
+        }),
+      ).rejects.toMatchObject({ payload: { code: "core/conflict", status: 409 } });
+
+      expect(await roleOf(bob)).toBe("owner");
+      expect(await owners()).toBe(1);
+    });
+
+    test("**changing the role of a member who became the owner in between is refused, and the account keeps its owner**", async () => {
+      await join(OLIVE, "owner");
+      const bob = await join(BOB, "member");
+
+      await expect(
+        changeRoleAsOperator(beforeFirstBatch(forceTo(bob)), OWNED, {
+          organizationId: acme,
+          membershipId: bob,
+          role: "member",
+          owner: ROSTER_ONLY,
+        }),
+      ).rejects.toMatchObject({ payload: { code: "core/conflict", status: 409 } });
+
+      expect(await roleOf(bob)).toBe("owner");
+      expect(await owners()).toBe(1);
+    });
+
+    test("a member leaving after being made the owner in between is refused too — the member surface shares the delete", async () => {
+      await join(OLIVE, "owner");
+      const bob = await join(BOB, "member");
+
+      await expect(
+        leaveOrganization(beforeFirstBatch(forceTo(bob)), OWNED, {
+          organizationId: acme,
+          actor: { userId: BOB, role: "member" },
+        }),
+      ).rejects.toMatchObject({ payload: { code: "core/conflict", status: 409 } });
+
+      expect(await roleOf(bob)).toBe("owner");
     });
   });
 });

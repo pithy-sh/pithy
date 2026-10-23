@@ -101,7 +101,7 @@ export const OrganizationAuditActions = {
   adminMemberAdded: "organization/admin_member_added",
   /** An operator removed a member, and cleared their selection of the account. */
   adminMemberRemoved: "organization/admin_member_removed",
-  /** An operator changed a member's role, to any role the catalog declares. */
+  /** An operator changed a member's role, to any role the catalog declares but the owning one. */
   adminMemberRoleChanged: "organization/admin_member_role_changed",
   /**
    * An operator made a member the owner, with no nomination and no acceptance.

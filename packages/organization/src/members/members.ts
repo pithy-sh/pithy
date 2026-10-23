@@ -5,7 +5,7 @@ import type { D1Database, D1PreparedStatement, D1Result } from "@cloudflare/work
 import { ControlPlaneInsufficientScopeError } from "@pithy-sh/core/src/controlPlane/error/errors";
 import type { DatabaseSchema } from "@pithy-sh/core/src/data/db";
 import { withD1Retry } from "@pithy-sh/core/src/data/withD1Retry";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { type CompiledQuery, type ExpressionBuilder, sql } from "kysely";
 import { Membership } from "../data/membership";
 import {
@@ -478,13 +478,39 @@ export async function changeRole<Power extends string, Role extends string>(
 
 /** Whether the membership is still there, asked after a write that matched nothing. */
 async function stillThere(db: OrganizationDatabase, organizationId: string, membershipId: string): Promise<boolean> {
+  return (await currentRole(db, organizationId, membershipId)) !== undefined;
+}
+
+/** The role one membership holds now, or `undefined` when it is gone. */
+async function currentRole(
+  db: OrganizationDatabase,
+  organizationId: string,
+  membershipId: string,
+): Promise<string | undefined> {
   const row = await db
     .selectFrom(MEMBERSHIPS_TABLE)
-    .select(["id"])
+    .select(["role"])
     .where("id", "=", membershipId)
     .where("organizationId", "=", organizationId)
     .executeTakeFirst();
-  return row !== undefined;
+  return row?.role;
+}
+
+/**
+ * The refusal a write gets when the role it was decided from is no longer the role the member holds.
+ *
+ * Every rule a write here carries — the owner floor, the administrator floor, whether the caller may move
+ * the owning role at all — is chosen from the role read in front of it. Another request can change that
+ * role in between (a forced transfer of ownership is the sharp case), and a write that landed anyway
+ * would apply a member's rules to an owner. So each write is conditioned on the role it was decided
+ * from, and losing that condition is this 409 rather than a guess at what the caller would have wanted.
+ */
+function staleRole<Role extends string>(organizationId: string, target: TargetMembership<Role>): ConflictError {
+  return new ConflictError({
+    message: "That member's role changed while this request was running.",
+    action: "Read the member again and retry against the role they hold now.",
+    detail: `membership ${target.id} in organization ${organizationId} no longer holds ${target.role}`,
+  });
 }
 
 /**
@@ -613,6 +639,7 @@ async function endMembership<Power extends string, Role extends string>(
     floors: floors ? [administeringRoles(catalog)] : [],
     spendOffersMade: false,
   });
+  if (outcome === "stale") throw staleRole(organizationId, target);
   if (outcome !== "removed") refuseUnwritten(outcome === "floored", organizationId, target, act);
 
   return { membership: target, left };
@@ -623,9 +650,10 @@ async function endMembership<Power extends string, Role extends string>(
  *
  * `removed` — it went, by this call. `gone` — it was already gone, by somebody else's. `floored` — it is
  * still there, because a floor carried in the statement matched nothing: there was nobody else left to
- * hold what this membership held.
+ * hold what this membership held. `stale` — it is still there, holding a different role from the one
+ * the floors were chosen for, so the delete was conditioned on a role it no longer holds.
  */
-type EndOutcome = "removed" | "gone" | "floored";
+type EndOutcome = "removed" | "gone" | "floored" | "stale";
 
 /** What {@link deleteMembership} carries beyond the membership itself. */
 interface DeleteMembershipRules {
@@ -659,7 +687,11 @@ async function deleteMembership<Role extends string>(
   let membership = db
     .deleteFrom(MEMBERSHIPS_TABLE)
     .where("id", "=", target.id)
-    .where("organizationId", "=", organizationId);
+    .where("organizationId", "=", organizationId)
+    // The role the floors below were chosen from. Promoted to the owning role in between — by a forced
+    // transfer — the member would otherwise be deleted with a member's floors and the account left with
+    // no owner; see `staleRole`.
+    .where("role", "=", target.role);
   // The floor, in the statement. The count read a moment ago is one another request is free to have
   // changed.
   for (const roles of floors) membership = membership.where(stillAdministered(organizationId, target.id, roles));
@@ -707,8 +739,8 @@ async function deleteMembership<Role extends string>(
   );
 
   if ((written?.[0]?.meta.changes ?? 0) > 0) return "removed";
-  const present = await stillThere(db, organizationId, target.id);
-  if (present) return "floored";
+  const role = await currentRole(db, organizationId, target.id);
+  if (role !== undefined) return role === target.role ? "floored" : "stale";
   // `undefined` is `withD1Retry`'s idempotency guard — a failure on a *retry*, which it reads as "my own
   // earlier attempt committed". Here that inference is checkable rather than assumed: the row it would
   // have written is this one, so a membership that is gone is a membership this call removed.
@@ -747,9 +779,13 @@ export interface OwnerRule<Role extends string> {
    * Whether this caller may put somebody into the owning role, or take somebody out of it, through a
    * roster write — an add at that role, a role change to or from it, or the removal of an owner.
    *
-   * The operator surface sets it from the connection's `organization:ownership:transfer` grant. Without
-   * it, `organization:members:write` alone could hand an account to anybody: add them as a second owner,
-   * then remove the first, with no ownership grant and no forced-ownership event in the trail.
+   * **The control-plane surface always sets it false.** A control-plane token exercises the one scope it
+   * was minted for, whatever else its connection was granted, and a roster write's token is minted for
+   * `organization:members:write` — so no roster call ever carries `organization:ownership:transfer`.
+   * Reading the connection's grant instead would let a roster token add a second owner and remove the
+   * first: an account handed over with no ownership-scoped call, no forced-ownership event and no notice
+   * to the new owner. Ownership moves through {@link transferRoute}, under its own scope. True is for an
+   * adopter's own code, which has already decided who may move it.
    */
   readonly mayConfer: boolean;
 }
@@ -762,7 +798,10 @@ function refuseUnlessMayConfer<Role extends string>(
 ): void {
   if (owner.mayConfer) return;
   throw new ControlPlaneInsufficientScopeError({
-    detail: `${subject} moves ${owner.role} in organization ${organizationId}, which needs organization:ownership:transfer as well as organization:members:write`,
+    message: `Moving the \`${owner.role}\` role is not a roster write.`,
+    action: `Make the change through POST ${owner.transferRoute}, under organization:ownership:transfer.`,
+    detail: `${subject} moves ${owner.role} in organization ${organizationId}, which only the ownership route may do`,
+    params: { ownershipRoute: owner.transferRoute },
   });
 }
 
@@ -923,30 +962,37 @@ export async function addMember<Power extends string, Role extends string>(
   // Through the table's own codec, which is also where the id's shape and the role's bound are held.
   const row = Membership.encode(membership);
 
-  let inserted: bigint;
+  // Whether this add went past the limit is what the insert found, not what the count said: a count
+  // that saw room can be overtaken by another add before this one lands. So when the limit binds, the
+  // seat-conditional insert always goes first, and only an override that it refuses writes past it.
+  let overrodeSeatLimit = false;
   try {
-    if (seatLimit !== null && !options.overrideSeatLimit) {
+    if (seatLimit === null) {
+      await db.insertInto(MEMBERSHIPS_TABLE).values(row).executeTakeFirst();
+    } else {
       const result = await sql`
         insert into pithy_organization_memberships (id, organization_id, user_id, role, created_at)
         select ${row.id}, ${row.organizationId}, ${row.userId}, ${row.role}, ${row.createdAt}
         where (select count(*) from pithy_organization_memberships where organization_id = ${row.organizationId}) < ${seatLimit}
       `.execute(db);
-      inserted = result.numAffectedRows ?? 0n;
-    } else {
-      const result = await db.insertInto(MEMBERSHIPS_TABLE).values(row).executeTakeFirst();
-      inserted = result.numInsertedOrUpdatedRows ?? 1n;
+      if ((result.numAffectedRows ?? 0n) === 0n) {
+        // The seat predicate matched nothing: the account was full, or the last seat went between the
+        // count and the insert. Refused, unless the request said to go past it.
+        if (!options.overrideSeatLimit) throw seatLimitReached(options.organizationId, seatLimit);
+        await db.insertInto(MEMBERSHIPS_TABLE).values(row).executeTakeFirst();
+        overrodeSeatLimit = true;
+      }
     }
   } catch (cause) {
+    if (cause instanceof OrganizationSeatLimitReachedError) throw cause;
     // The unique index on `(organizationId, userId)`: somebody added them between the read and the write.
     // Asked again, so the refusal names the role the winner gave them — and a genuine failure, with no
     // row behind it, is still a failure.
     await refuseIfAlreadyMember(db, options.organizationId, options.userId);
     throw cause;
   }
-  // The seat predicate matched nothing: the last seat went between the count and the insert.
-  if (inserted === 0n && seatLimit !== null) throw seatLimitReached(options.organizationId, seatLimit);
 
-  return { membership, seatLimit, membersBefore, overrodeSeatLimit: full };
+  return { membership, seatLimit, membersBefore, overrodeSeatLimit };
 }
 
 /** How many memberships one organization holds. */
@@ -992,7 +1038,10 @@ export interface OperatorChangeRoleOptions<Role extends string> {
   readonly organizationId: string;
   /** The membership changed. Resolved inside that organization or refused. */
   readonly membershipId: string;
-  /** The role it becomes. Any role the catalog declares, the owning one included. */
+  /**
+   * The role it becomes. Any role the catalog declares; to or from the owning one only with
+   * {@link OwnerRule.mayConfer}, which the control-plane route never grants.
+   */
   readonly role: string;
   /** The owning role, where the project has one. */
   readonly owner?: OwnerRule<Role>;
@@ -1007,13 +1056,16 @@ export interface OperatorRoleChange<Role extends string> {
 }
 
 /**
- * Change a member's role, as an operator. Any role the catalog declares, **including to and from the
- * owning role** — the catalog's `unassignable` closes the member surface's door onto ownership, and this
- * is not that door: it is behind a control-plane scope, and its reason is recorded.
+ * Change a member's role, as an operator. Any role the catalog declares, `unassignable` ones included —
+ * the catalog's `unassignable` closes the member surface's door, and this is not that door: it is behind
+ * a control-plane scope, and its reason is recorded. **The owning role is the exception**: a change to or
+ * from it needs {@link OwnerRule.mayConfer}, which the control-plane route never sets, so there ownership
+ * moves only through {@link OwnerRule.transferRoute}.
  *
  * Demoting the last owner is refused, naming the route that moves ownership; demoting the last
- * administrator is refused on the member surface's own floor. Both are carried in the statement. A change
- * to or from the owning role needs {@link OwnerRule.mayConfer}, and a demoted owner's standing offer of
+ * administrator is refused on the member surface's own floor. Both are carried in the statement, and so is
+ * the role every rule here was chosen from: a member made the owner in between is refused 409 rather than
+ * changed with a member's rules. A demoted owner's standing offer of
  * ownership is spent in the same batch — it was theirs to make, and they no longer own the account.
  */
 export async function changeRoleAsOperator<Power extends string, Role extends string>(
@@ -1026,6 +1078,11 @@ export async function changeRoleAsOperator<Power extends string, Role extends st
   const target = await requireMembershipInOrganization(db, catalog, options.organizationId, options.membershipId);
 
   const owner = options.owner;
+  const demotingOwner = owner !== undefined && target.role === owner.role && role !== owner.role;
+  const demotingAdministrator = catalog.administers(target.role) && !catalog.administers(role);
+  // The owner first: it is the stricter sentence, and it names a route. Then the grant, which also names
+  // it — both refuse, so the order only decides which sentence the operator reads.
+  if (demotingOwner && owner) await refuseIfLastOwner(db, options.organizationId, target, owner, "demote");
   if (owner && role !== target.role && (role === owner.role || target.role === owner.role)) {
     refuseUnlessMayConfer(
       options.organizationId,
@@ -1033,10 +1090,6 @@ export async function changeRoleAsOperator<Power extends string, Role extends st
       `changing membership ${target.id} from ${target.role} to ${role}`,
     );
   }
-  const demotingOwner = owner !== undefined && target.role === owner.role && role !== owner.role;
-  const demotingAdministrator = catalog.administers(target.role) && !catalog.administers(role);
-  // The owner first: it is the stricter sentence, and it names a route.
-  if (demotingOwner && owner) await refuseIfLastOwner(db, options.organizationId, target, owner, "demote");
   if (demotingAdministrator) await refuseIfLastAdministrator(db, catalog, options.organizationId, target, "demote");
 
   const update = db
@@ -1044,6 +1097,8 @@ export async function changeRoleAsOperator<Power extends string, Role extends st
     .set({ role })
     .where("id", "=", target.id)
     .where("organizationId", "=", options.organizationId)
+    // The role every rule above was chosen from; see `staleRole`.
+    .where("role", "=", target.role)
     .$if(demotingOwner && owner !== undefined, (query) =>
       query.where(stillAdministered(options.organizationId, target.id, [owner?.role ?? ""])),
     )
@@ -1090,8 +1145,9 @@ export async function changeRoleAsOperator<Power extends string, Role extends st
         )?.role === role
       : (written[0]?.meta.changes ?? 0) === 1;
   if (!landed) {
-    if (!(await stillThere(db, options.organizationId, target.id)))
-      refuseUnwritten(false, options.organizationId, target, "demote");
+    const now = await currentRole(db, options.organizationId, target.id);
+    if (now === undefined) refuseUnwritten(false, options.organizationId, target, "demote");
+    if (now !== target.role) throw staleRole(options.organizationId, target);
     await operatorFloorRefusal(db, options.organizationId, target, owner, "demote");
   }
 
@@ -1130,9 +1186,10 @@ export async function removeMemberAsOperator<Power extends string, Role extends 
   const ownerFloor = owner !== undefined && target.role === owner.role;
   const administratorFloor = catalog.administers(target.role);
   // Removing an owner takes them out of the owning role as surely as demoting them does, so it needs the
-  // same grant — ahead of the floors, which a second owner would otherwise let it through.
-  if (ownerFloor && owner) refuseUnlessMayConfer(options.organizationId, owner, `removing owner ${target.id}`);
+  // same grant — refused even where a second owner would let the floor through. The last-owner sentence
+  // first, as for a demotion: both refuse, and that one is the stricter.
   if (ownerFloor && owner) await refuseIfLastOwner(db, options.organizationId, target, owner, "remove");
+  if (ownerFloor && owner) refuseUnlessMayConfer(options.organizationId, owner, `removing owner ${target.id}`);
   if (administratorFloor) await refuseIfLastAdministrator(db, catalog, options.organizationId, target, "remove");
 
   const floors: (readonly string[])[] = [];
@@ -1145,6 +1202,7 @@ export async function removeMemberAsOperator<Power extends string, Role extends 
     spendOffersMade: ownerFloor,
   });
   if (outcome === "gone") refuseUnwritten(false, options.organizationId, target, "remove");
+  if (outcome === "stale") throw staleRole(options.organizationId, target);
   if (outcome === "floored") await operatorFloorRefusal(db, options.organizationId, target, owner, "remove");
   return target;
 }

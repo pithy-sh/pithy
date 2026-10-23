@@ -29968,7 +29968,7 @@
         ],
         "operationId": "postOrganizationsAdminOrganizationsByOrganizationIdMembers",
         "summary": "Add an existing user to a tenant, at a named role.",
-        "description": "Refused for somebody already in it, naming their role, and past the seat limit unless the request overrides it. Adding at the owning role also needs the connection to hold organization:ownership:transfer. Takes a reason.",
+        "description": "Refused for somebody already in it, naming their role, and past the seat limit unless the request overrides it. Never at the owning role: that refusal names the ownership route. Takes a reason.",
         "parameters": [
           {
             "name": "organizationId",
@@ -30000,7 +30000,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 64,
-                    "description": "The role they take, as this project's catalog names it. Any role the catalog declares; one it does not is refused, listing the ones it does."
+                    "description": "The role they take, as this project's catalog names it. Any role the catalog declares but the owning one, which is refused naming the ownership route; one it does not declare is refused, listing the ones it does."
                   },
                   "overrideSeatLimit": {
                     "description": "True adds them even when the account is at its seat limit. Recorded on the audit event when it was needed. Absent or false, a full account refuses the add, naming its limit.",
@@ -30276,8 +30276,8 @@
           "organization"
         ],
         "operationId": "patchOrganizationsAdminOrganizationsByOrganizationIdMembersByMembershipId",
-        "summary": "Change a member's role to any role the catalog declares.",
-        "description": "To and from the owning role, which also needs the connection to hold organization:ownership:transfer. Demoting the last owner is refused, naming the ownership route; demoting the last administrator is refused. Takes a reason.",
+        "summary": "Change a member's role to any role the catalog declares but the owning one.",
+        "description": "Never to or from the owning role, which moves through the ownership route; that refusal names it, and so does the refusal to demote the last owner. Demoting the last administrator is refused. Takes a reason.",
         "parameters": [
           {
             "name": "organizationId",
@@ -30314,7 +30314,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 64,
-                    "description": "The role the membership becomes. Any role the catalog declares, to and from the owning one; demoting the last owner is refused."
+                    "description": "The role the membership becomes. Any role the catalog declares, never to or from the owning one: that move is the ownership route's, and the refusal names it."
                   },
                   "reason": {
                     "type": "string",
@@ -30420,7 +30420,7 @@
         ],
         "operationId": "deleteOrganizationsAdminOrganizationsByOrganizationIdMembersByMembershipId",
         "summary": "Remove a member from a tenant, and clear their selection of it.",
-        "description": "Never the last owner — the refusal names the ownership route — and never the last administrator. Removing an owner also needs the connection to hold organization:ownership:transfer. Takes a reason, in the body.",
+        "description": "Never an owner — the refusal names the ownership route, which can remove the previous owner — and never the last administrator. Takes a reason, in the body.",
         "parameters": [
           {
             "name": "organizationId",

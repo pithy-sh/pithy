@@ -29,9 +29,11 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
  *
  * Three rather than one, because they are three different powers over somebody else's account:
  *
- * - `organization:members:write` — who is in it: add, remove, change a role, and fix an invitation. A
- *   roster write that puts somebody into the owning role or takes them out of it needs the transfer
- *   grant below as well, or this scope alone could add a second owner and remove the first.
+ * - `organization:members:write` — who is in it: add, remove, change a role, and fix an invitation. Never
+ *   a write that puts somebody into the owning role or takes them out of it, whatever else the connection
+ *   holds: a token exercises the one scope it was minted for, so a roster token never carries the transfer
+ *   scope below, and those writes are refused, naming the ownership route. Otherwise this scope could add
+ *   a second owner and remove the first.
  * - `organization:accounts:write` — what it is: its name, its short name, its seat limit.
  * - `organization:ownership:transfer` — who owns it, moved with no nomination and no acceptance. The one
  *   that most needs its own grant, because it is the break-glass path and nothing else can undo it.
@@ -110,19 +112,21 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
       method: "POST",
       path: `${one}/members`,
       scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
-      summary: "Add an existing user at a named role, inside the seat limit or past it on purpose. Takes a reason.",
+      summary:
+        "Add an existing user at a named role but the owning one, inside the seat limit or past it on purpose. Takes a reason.",
     },
     {
       method: "PATCH",
       path: `${one}/members/:membershipId`,
       scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
-      summary: "Change a member's role to any role the catalog declares. Never demotes the last owner. Takes a reason.",
+      summary:
+        "Change a member's role to any role the catalog declares, never to or from the owning one. Takes a reason.",
     },
     {
       method: "DELETE",
       path: `${one}/members/:membershipId`,
       scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
-      summary: "Remove a member and clear their selection. Never the last owner. Takes a reason.",
+      summary: "Remove a member and clear their selection. Never an owner. Takes a reason.",
     },
     {
       method: "GET",

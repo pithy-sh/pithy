@@ -1688,16 +1688,17 @@ describe("membership administration through the control plane (#624)", () => {
       }
     });
 
-    test("**the roster scope alone cannot move the owning role**: an add at it, a change to or from it, or a removal of an owner, is 403", async () => {
+    test("**a roster write cannot move the owning role, whatever the connection holds**: an add at it, a change to or from it, or a removal of an owner, is 403 naming the ownership route", async () => {
       // Without this, `members:write` hands the account to anybody: add a second owner, then remove Ada.
-      // Cai is a second owner here, so the owner floor would let Ada's removal through — only the grant stops it.
+      // Cai is a second owner here, so the owner floor would let Ada's removal through — only the gate stops it.
+      // The connection's grant is not the token's: a token minted for `organization:members:write` exercises
+      // that one scope, however much else the connection holds, so it never carries the transfer scope.
       await db()
         .updateTable(MEMBERSHIPS_TABLE)
         .set({ role: "owner" })
         .where("organizationId", "=", ACME)
         .where("userId", "=", CAI)
         .execute();
-      const rosterOnly = buildApp({ verifier: verifierFor([ORGANIZATION_MEMBERS_WRITE_SCOPE]) });
       const bob = await membershipIdOf(ACME, BOB);
       const ada = await membershipIdOf(ACME, ADA);
       const attempts = [
@@ -1706,42 +1707,48 @@ describe("membership administration through the control plane (#624)", () => {
         { method: "PATCH", path: `${ADMIN}/${ACME}/members/${ada}`, body: { role: "admin", reason: REASON } },
         { method: "DELETE", path: `${ADMIN}/${ACME}/members/${ada}`, body: { reason: REASON } },
       ];
-      for (const attempt of attempts) {
-        events = [];
-        const response = await call(attempt.method, attempt.path, { app: rosterOnly, body: attempt.body });
-        expect(response.status, `${attempt.method} ${attempt.path}`).toBe(403);
-        expect((await errorOf(response)).code).toBe("controlplane/insufficient_scope");
-        // A blocked attempt is in the trail as one, not only as the call the gate let in.
-        expect(
-          events.filter((event) => event.action === "controlplane/call_denied"),
-          `${attempt.method} ${attempt.path}`,
-        ).toEqual([
-          expect.objectContaining({
-            outcome: "denied",
-            actorType: "control-plane",
-            metadata: expect.objectContaining({
-              reason: "controlplane/insufficient_scope",
-              required: ORGANIZATION_MEMBERS_WRITE_SCOPE,
-              method: attempt.method,
+      const connections = {
+        "roster only": [ORGANIZATION_MEMBERS_WRITE_SCOPE],
+        "roster and ownership": [ORGANIZATION_MEMBERS_WRITE_SCOPE, ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE],
+      };
+      for (const [granted, scopes] of Object.entries(connections)) {
+        const app = buildApp({ verifier: verifierFor(scopes) });
+        for (const attempt of attempts) {
+          const label = `${granted}: ${attempt.method} ${attempt.path}`;
+          events = [];
+          mailed = [];
+          const response = await call(attempt.method, attempt.path, { app, body: attempt.body });
+          expect(response.status, label).toBe(403);
+          const error = await errorOf(response);
+          expect(error.code, label).toBe("controlplane/insufficient_scope");
+          expect(error.params?.ownershipRoute, label).toBe(`${ADMIN}/${ACME}/ownership`);
+          // `action` is the operator's half and never crosses the wire; it is in the log the throw site wrote.
+          expect(refused?.payload.action, label).toContain(`POST ${ADMIN}/${ACME}/ownership`);
+          // A blocked attempt is in the trail as one, not only as the call the gate let in.
+          expect(
+            events.filter((event) => event.action === "controlplane/call_denied"),
+            label,
+          ).toEqual([
+            expect.objectContaining({
+              outcome: "denied",
+              actorType: "control-plane",
+              metadata: expect.objectContaining({
+                reason: "controlplane/insufficient_scope",
+                required: ORGANIZATION_MEMBERS_WRITE_SCOPE,
+                method: attempt.method,
+              }),
             }),
-          }),
-        ]);
-        expect(events.filter((event) => event.action.startsWith("organization/admin_"))).toEqual([]);
+          ]);
+          expect(
+            events.filter((event) => event.action.startsWith("organization/admin_")),
+            label,
+          ).toEqual([]);
+          expect(mailed, label).toEqual([]);
+        }
       }
       expect(await roleIn(ACME, STRANGER)).toBeUndefined();
       expect(await roleIn(ACME, BOB)).toBe("admin");
       expect(await roleIn(ACME, ADA)).toBe("owner");
-
-      // Granted ownership as well, the same add lands.
-      const both = buildApp({
-        verifier: verifierFor([ORGANIZATION_MEMBERS_WRITE_SCOPE, ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE]),
-      });
-      const response = await call("POST", `${ADMIN}/${ACME}/members`, {
-        app: both,
-        body: { userId: STRANGER, role: "owner", reason: REASON },
-      });
-      expect(response.status).toBe(201);
-      expect(await roleIn(ACME, STRANGER)).toBe("owner");
     });
 
     test("every route takes a required reason", async () => {
@@ -1943,10 +1950,10 @@ describe("membership administration through the control plane (#624)", () => {
   });
 
   describe("changing a role", () => {
-    test("accepts every role the organization declares, to and from owner", async () => {
+    test("accepts every role the organization declares but the owning one, which goes through the ownership route", async () => {
       const app = operatorApp();
       const cai = await membershipIdOf(ACME, CAI);
-      for (const role of catalog.roles) {
+      for (const role of catalog.roles.filter((declared) => declared !== "owner")) {
         const response = await call("PATCH", `${ADMIN}/${ACME}/members/${cai}`, {
           app,
           body: { role, reason: REASON },
@@ -1954,20 +1961,18 @@ describe("membership administration through the control plane (#624)", () => {
         expect(response.status, role).toBe(200);
         expect((await bound(response, AdminMemberResponse)).member.role, role).toBe(role);
       }
-      // Back from owner to member: Ada still owns it, so Cai is not the last.
-      const back = await call("PATCH", `${ADMIN}/${ACME}/members/${cai}`, {
-        app,
-        body: { role: "member", reason: REASON },
-      });
-      expect(back.status).toBe(200);
       expect(
         events.filter((event) => event.action === "organization/admin_member_role_changed").at(-1)?.metadata,
-      ).toMatchObject({
-        role: "member",
-        previousRole: "owner",
-        subjectUserId: CAI,
-        reason: REASON,
+      ).toMatchObject({ subjectUserId: CAI, reason: REASON });
+
+      // Made owner here, Cai would be a new owner nobody told and no forced-ownership event recorded.
+      const owner = await call("PATCH", `${ADMIN}/${ACME}/members/${cai}`, {
+        app,
+        body: { role: "owner", reason: REASON },
       });
+      expect(owner.status).toBe(403);
+      expect((await errorOf(owner)).params?.ownershipRoute).toBe(`${ADMIN}/${ACME}/ownership`);
+      expect(await roleIn(ACME, CAI)).not.toBe("owner");
     });
 
     test("refuses a role the organization does not declare, listing the valid roles", async () => {

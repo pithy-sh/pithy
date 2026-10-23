@@ -374,7 +374,7 @@ export const AdminAddMember = z
         "The person, as `pithy_auth_users` ids them. They must already have an account; an unknown id is a 404. Not a UUID shape: that generator is the auth capability's and is configurable.",
       ),
     role: RoleName.describe(
-      "The role they take, as this project's catalog names it. Any role the catalog declares; one it does not is refused, listing the ones it does.",
+      "The role they take, as this project's catalog names it. Any role the catalog declares but the owning one, which is refused naming the ownership route; one it does not declare is refused, listing the ones it does.",
     ),
     overrideSeatLimit: z
       .boolean()
@@ -391,7 +391,7 @@ export type AdminAddMember = z.output<typeof AdminAddMember>;
 export const AdminChangeRole = z
   .strictObject({
     role: RoleName.describe(
-      "The role the membership becomes. Any role the catalog declares, to and from the owning one; demoting the last owner is refused.",
+      "The role the membership becomes. Any role the catalog declares, never to or from the owning one: that move is the ownership route's, and the refusal names it.",
     ),
     reason: OperatorReason,
   })

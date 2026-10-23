@@ -178,15 +178,17 @@ import {
  * | `PATCH  {base}/admin/organizations/:id`        | control-plane  | `accounts:write`      | param + json `AdminUpdateOrganization` |
  * | `POST   {base}/admin/organizations/:id/members`| control-plane  | `members:write` ¹     | param + json `AdminAddMember`  |
  * | `PATCH  {base}/admin/…/members/:membershipId`  | control-plane  | `members:write` ¹     | param + json `AdminChangeRole` |
- * | `DELETE {base}/admin/…/members/:membershipId`  | control-plane  | `members:write`       | param + json `AdminReason`     |
+ * | `DELETE {base}/admin/…/members/:membershipId`  | control-plane  | `members:write` ¹     | param + json `AdminReason`     |
  * | `GET    {base}/admin/…/invitations`            | control-plane  | `members:write`       | param + query `AdminInvitationsQuery` |
  * | `POST   {base}/admin/…/invitations/:id/resend` | control-plane  | `members:write`       | param + json `AdminReason`     |
  * | `DELETE {base}/admin/…/invitations/:id`        | control-plane  | `members:write`       | param + json `AdminReason`     |
  * | `POST   {base}/admin/…/ownership`              | control-plane  | `ownership:transfer`  | param + json `AdminForceOwnership` |
  *
- * ¹ An add at the owning role, or a role change to or from it, also needs the connection to be granted
- * `ownership:transfer`. Otherwise a roster credential could add a second owner and remove the first —
- * a transfer by another door, with no ownership grant and no forced-ownership event.
+ * ¹ Never an add at the owning role, a role change to or from it, or the removal of an owner, whatever
+ * else the connection is granted: each is refused 403, naming the ownership route. A token is minted for
+ * one scope, and these are minted for `members:write`, so the connection's `ownership:transfer` grant is
+ * not this call's authority. Otherwise a roster token could add a second owner and remove the first — a
+ * transfer by another door, with no ownership-scoped call, no forced-ownership event and no notice.
  *
  * ## The operator's writes take no CSRF gate, and every one takes a reason
  *
@@ -606,15 +608,18 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
   /**
    * The owning role, as the operator's roster writes read it, or nothing where there is no transfer.
    *
-   * `mayConfer` is the connection's own ownership grant: a roster write that moves the owning role is a
-   * transfer by another door, and `organization:members:write` alone must not be able to make one.
+   * `mayConfer` is false, always. A roster write that moves the owning role is a transfer by another
+   * door, and the token behind it was minted for `organization:members:write` alone — the connection's
+   * wider grant is not this call's authority (`scopeCovers`). So an add at the owning role, a change to or
+   * from it, or the removal of an owner is refused, naming the ownership route, where the move is made
+   * under its own scope, recorded at `warning`, and the new owner is told.
    */
-  function ownerRule(c: Ctx, organizationId: string): OwnerRule<Role> | undefined {
+  function ownerRule(organizationId: string): OwnerRule<Role> | undefined {
     if (!options.ownership) return undefined;
     return {
       role: options.ownership.confers,
       transferRoute: `${base}/admin/organizations/${organizationId}/ownership`,
-      mayConfer: operator(c).grantedScopes.includes(ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE),
+      mayConfer: false,
     };
   }
 
@@ -1880,7 +1885,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
       describeRoute({
         summary: "Add an existing user to a tenant, at a named role.",
         description:
-          "Refused for somebody already in it, naming their role, and past the seat limit unless the request overrides it. Adding at the owning role also needs the connection to hold organization:ownership:transfer. Takes a reason.",
+          "Refused for somebody already in it, naming their role, and past the seat limit unless the request overrides it. Never at the owning role: that refusal names the ownership route. Takes a reason.",
         verification: "control-plane",
         scopes: [ORGANIZATION_MEMBERS_WRITE_SCOPE],
         responses: { 201: AdminMemberResponse },
@@ -1906,7 +1911,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
           overrideSeatLimit: body.overrideSeatLimit ?? false,
           now: clock(),
           newId: ids,
-          owner: ownerRule(c, organizationId),
+          owner: ownerRule(organizationId),
         });
         const mailed = await sendMembershipNotice(config, mailer(c), {
           notice: "memberAdded",
@@ -1934,9 +1939,9 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
     app.patch(
       `${base}/admin/organizations/:organizationId/members/:membershipId`,
       describeRoute({
-        summary: "Change a member's role to any role the catalog declares.",
+        summary: "Change a member's role to any role the catalog declares but the owning one.",
         description:
-          "To and from the owning role, which also needs the connection to hold organization:ownership:transfer. Demoting the last owner is refused, naming the ownership route; demoting the last administrator is refused. Takes a reason.",
+          "Never to or from the owning role, which moves through the ownership route; that refusal names it, and so does the refusal to demote the last owner. Demoting the last administrator is refused. Takes a reason.",
         verification: "control-plane",
         scopes: [ORGANIZATION_MEMBERS_WRITE_SCOPE],
         responses: { 200: AdminMemberResponse },
@@ -1953,7 +1958,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
           organizationId,
           membershipId,
           role: body.role,
-          owner: ownerRule(c, organizationId),
+          owner: ownerRule(organizationId),
         });
         await recordOperator(c, organizationId, {
           action: OrganizationAuditActions.adminMemberRoleChanged,
@@ -1976,7 +1981,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
       describeRoute({
         summary: "Remove a member from a tenant, and clear their selection of it.",
         description:
-          "Never the last owner — the refusal names the ownership route — and never the last administrator. Removing an owner also needs the connection to hold organization:ownership:transfer. Takes a reason, in the body.",
+          "Never an owner — the refusal names the ownership route, which can remove the previous owner — and never the last administrator. Takes a reason, in the body.",
         verification: "control-plane",
         scopes: [ORGANIZATION_MEMBERS_WRITE_SCOPE],
         responses: { 200: AdminRemovedMemberResponse },
@@ -1991,7 +1996,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
         const removed = await removeMemberAsOperator(d1(c), catalog, {
           organizationId,
           membershipId,
-          owner: ownerRule(c, organizationId),
+          owner: ownerRule(organizationId),
         });
         const person = (await readPeople(auth(c), [removed.userId])).get(removed.userId);
         const mailed = person

@@ -944,6 +944,89 @@ describe("forceOwnership", () => {
     });
   }
 
+  for (const previousOwner of ["keep", "remove"] as const) {
+    test(`**a forced transfer that lands second takes the account from whoever holds it then** (${previousOwner})`, async () => {
+      // Both transfers read Olive as the holder. The one whose batch runs second must demote or remove the
+      // member the first one promoted — matched by role in the statement, not by an id read before it —
+      // or the account ends with two owners and the second call names the wrong person as the one it moved.
+      await join(OLIVE, "owner");
+      const bob = await join(BOB, "member");
+      const cat = await join(CAT, "member");
+      await selection(OLIVE);
+      await selection(BOB);
+
+      const forced = await forceOwnership(
+        interleaved(async () => {
+          await forceOwnership(env.DB, OWNED, {
+            organizationId: acme,
+            membershipId: bob,
+            previousOwner,
+            roles: TRANSFER,
+          });
+        }),
+        OWNED,
+        { organizationId: acme, membershipId: cat, previousOwner, roles: TRANSFER },
+      );
+
+      const after = await roles();
+      expect(Object.values(after).filter((role) => role === "owner")).toHaveLength(1);
+      expect(after[CAT]).toBe("owner");
+      expect(after).toEqual(
+        previousOwner === "keep" ? { [OLIVE]: "admin", [BOB]: "admin", [CAT]: "owner" } : { [CAT]: "owner" },
+      );
+      // What the second call reports is what its own batch moved: Bob, not Olive.
+      expect(forced.previousHolders).toEqual([{ id: bob, userId: BOB }]);
+      expect(forced.removed).toBe(previousOwner === "remove");
+      expect(await selections()).toEqual(previousOwner === "keep" ? [BOB, OLIVE] : []);
+    });
+  }
+
+  test("**two forced transfers raced at once leave exactly one owner**", async () => {
+    await join(OLIVE, "owner");
+    const bob = await join(BOB, "member");
+    const cat = await join(CAT, "member");
+
+    const settled = await Promise.allSettled([
+      forceOwnership(env.DB, OWNED, {
+        organizationId: acme,
+        membershipId: bob,
+        previousOwner: "keep",
+        roles: TRANSFER,
+      }),
+      forceOwnership(env.DB, OWNED, {
+        organizationId: acme,
+        membershipId: cat,
+        previousOwner: "keep",
+        roles: TRANSFER,
+      }),
+    ]);
+    expect(settled.every((result) => result.status === "fulfilled")).toBe(true);
+
+    const after = await roles();
+    expect(Object.values(after).filter((role) => role === "owner")).toHaveLength(1);
+    expect(after[OLIVE]).toBe("admin");
+  });
+
+  test("**a forced transfer racing an acceptance demotes the member who accepted**", async () => {
+    // The acceptance lands between the force's read and its batch: Bob owns the account by the time the
+    // force writes, and the force must take it from Bob, not from the Olive it read.
+    await join(OLIVE, "owner");
+    const bob = await join(BOB, "member");
+    const cat = await join(CAT, "member");
+    await offer(bob);
+
+    const forced = await forceOwnership(
+      interleaved(async () => {
+        await acceptNomination(env.DB, OWNED, { organizationId: acme, userId: BOB, now: NOW, roles: TRANSFER });
+      }),
+      OWNED,
+      { organizationId: acme, membershipId: cat, previousOwner: "keep", roles: TRANSFER },
+    );
+
+    expect(await roles()).toEqual({ [OLIVE]: "admin", [BOB]: "admin", [CAT]: "owner" });
+    expect(forced.previousHolders).toEqual([{ id: bob, userId: BOB }]);
+  });
+
   test("a membership in another organization is the ordinary 404, and nothing moves", async () => {
     await join(OLIVE, "owner");
     const beta = await makeOrganization("beta");
