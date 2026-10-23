@@ -1509,6 +1509,305 @@ export const precompiledTemplates = {
     + "\n\n"
     + ((stack1 = (lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||alias2).call(alias1,"email/organization_member.contact",{"name":"t","hash":{},"data":data,"loc":{"start":{"line":5,"column":0},"end":{"line":5,"column":41}}})) != null ? stack1 : "");
 },"useData":true},
+  "organizationSuspended:subject": {"compiler":[8,">= 4.3.0"],"main":function(container,depth0,helpers,partials,data) {
+    var stack1, lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return ((stack1 = (lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||container.hooks.helperMissing).call(depth0 != null ? depth0 : (container.nullContext || {}),"email/organization_suspended.subject",{"name":"t","hash":{"organization":(depth0 != null ? lookupProperty(depth0,"organizationName") : depth0)},"data":data,"loc":{"start":{"line":1,"column":0},"end":{"line":1,"column":74}}})) != null ? stack1 : "");
+},"useData":true},
+  "organizationSuspended:html": {"0":function(container,depth0,helpers,partials,data) {
+    var lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return container.escapeExpression((lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||container.hooks.helperMissing).call(depth0 != null ? depth0 : (container.nullContext || {}),"email/shell.greeting_named",{"name":"t","hash":{"name":(depth0 != null ? lookupProperty(depth0,"name") : depth0)},"data":data,"loc":{"start":{"line":1,"column":229},"end":{"line":1,"column":273}}}));
+},"1":function(container,depth0,helpers,partials,data) {
+    var lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return container.escapeExpression((lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||container.hooks.helperMissing).call(depth0 != null ? depth0 : (container.nullContext || {}),"email/shell.greeting",{"name":"t","hash":{},"data":data,"loc":{"start":{"line":1,"column":281},"end":{"line":1,"column":309}}}));
+},"2":function(container,depth0,helpers,partials,data) {
+    var lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return "<p style=\"margin:0 0 8px\">"
+    + container.escapeExpression((lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||container.hooks.helperMissing).call(depth0 != null ? depth0 : (container.nullContext || {}),"email/organization_suspended.reason",{"name":"t","hash":{"reason":(depth0 != null ? lookupProperty(depth0,"reason") : depth0)},"data":data,"loc":{"start":{"line":1,"column":450},"end":{"line":1,"column":507}}}))
+    + "</p>";
+},"3":function(container,depth0,helpers,partials,data) {
+    var lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return "<p style=\"margin:0 0 8px\">"
+    + container.escapeExpression((lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||container.hooks.helperMissing).call(depth0 != null ? depth0 : (container.nullContext || {}),"email/organization_suspended.until",{"name":"t","hash":{"until":(depth0 != null ? lookupProperty(depth0,"until") : depth0)},"data":data,"loc":{"start":{"line":1,"column":557},"end":{"line":1,"column":611}}}))
+    + "</p>";
+},"compiler":[8,">= 4.3.0"],"main":function(container,depth0,helpers,partials,data) {
+    var stack1, alias1=container.lambda, alias2=container.escapeExpression, alias3=depth0 != null ? depth0 : (container.nullContext || {}), alias4=container.hooks.helperMissing, lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return ((stack1 = container.invokePartial(lookupProperty(partials,"emailHead"),depth0,{"name":"emailHead","data":data,"helpers":helpers,"partials":partials,"decorators":container.decorators})) != null ? stack1 : "")
+    + "<h1 class=\"t-ink\" style=\"margin:0 0 16px; font-size:22px; font-weight:600; letter-spacing:-0.02em; color:"
+    + alias2(alias1(((stack1 = ((stack1 = (depth0 != null ? lookupProperty(depth0,"theme") : depth0)) != null ? lookupProperty(stack1,"light") : stack1)) != null ? lookupProperty(stack1,"text") : stack1), depth0))
+    + "\">"
+    + alias2((lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||alias4).call(alias3,"email/organization_suspended.heading",{"name":"t","hash":{},"data":data,"loc":{"start":{"line":1,"column":142},"end":{"line":1,"column":186}}}))
+    + "</h1><p style=\"margin:0 0 8px\">"
+    + ((stack1 = lookupProperty(helpers,"if").call(alias3,(depth0 != null ? lookupProperty(depth0,"name") : depth0),{"name":"if","hash":{},"fn":container.program(0, data, 0),"inverse":container.program(1, data, 0),"data":data,"loc":{"start":{"line":1,"column":217},"end":{"line":1,"column":316}}})) != null ? stack1 : "")
+    + " "
+    + alias2((lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||alias4).call(alias3,"email/organization_suspended.body",{"name":"t","hash":{"app":((stack1 = (depth0 != null ? lookupProperty(depth0,"theme") : depth0)) != null ? lookupProperty(stack1,"appName") : stack1),"organization":(depth0 != null ? lookupProperty(depth0,"organizationName") : depth0)},"data":data,"loc":{"start":{"line":1,"column":317},"end":{"line":1,"column":406}}}))
+    + "</p>"
+    + ((stack1 = lookupProperty(helpers,"if").call(alias3,(depth0 != null ? lookupProperty(depth0,"reason") : depth0),{"name":"if","hash":{},"fn":container.program(2, data, 0),"inverse":container.noop,"data":data,"loc":{"start":{"line":1,"column":410},"end":{"line":1,"column":518}}})) != null ? stack1 : "")
+    + ((stack1 = lookupProperty(helpers,"if").call(alias3,(depth0 != null ? lookupProperty(depth0,"until") : depth0),{"name":"if","hash":{},"fn":container.program(3, data, 0),"inverse":container.noop,"data":data,"loc":{"start":{"line":1,"column":518},"end":{"line":1,"column":622}}})) != null ? stack1 : "")
+    + "<p class=\"t-subtle\" style=\"margin:16px 0 0; font-size:13px; color:"
+    + alias2(alias1(((stack1 = ((stack1 = (depth0 != null ? lookupProperty(depth0,"theme") : depth0)) != null ? lookupProperty(stack1,"light") : stack1)) != null ? lookupProperty(stack1,"textSubtle") : stack1), depth0))
+    + "\">"
+    + alias2((lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||alias4).call(alias3,"email/organization_member.contact",{"name":"t","hash":{},"data":data,"loc":{"start":{"line":1,"column":716},"end":{"line":1,"column":757}}}))
+    + "</p>"
+    + ((stack1 = container.invokePartial(lookupProperty(partials,"emailFoot"),depth0,{"name":"emailFoot","data":data,"helpers":helpers,"partials":partials,"decorators":container.decorators})) != null ? stack1 : "");
+},"usePartial":true,"useData":true},
+  "organizationSuspended:text": {"0":function(container,depth0,helpers,partials,data) {
+    var stack1, lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return ((stack1 = (lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||container.hooks.helperMissing).call(depth0 != null ? depth0 : (container.nullContext || {}),"email/shell.greeting_named",{"name":"t","hash":{"name":(depth0 != null ? lookupProperty(depth0,"name") : depth0)},"data":data,"loc":{"start":{"line":1,"column":12},"end":{"line":1,"column":56}}})) != null ? stack1 : "");
+},"1":function(container,depth0,helpers,partials,data) {
+    var stack1, lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return ((stack1 = (lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||container.hooks.helperMissing).call(depth0 != null ? depth0 : (container.nullContext || {}),"email/shell.greeting",{"name":"t","hash":{},"data":data,"loc":{"start":{"line":1,"column":64},"end":{"line":1,"column":92}}})) != null ? stack1 : "");
+},"2":function(container,depth0,helpers,partials,data) {
+    var stack1, lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return "\n\n"
+    + ((stack1 = (lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||container.hooks.helperMissing).call(depth0 != null ? depth0 : (container.nullContext || {}),"email/organization_suspended.reason",{"name":"t","hash":{"reason":(depth0 != null ? lookupProperty(depth0,"reason") : depth0)},"data":data,"loc":{"start":{"line":5,"column":0},"end":{"line":5,"column":57}}})) != null ? stack1 : "");
+},"3":function(container,depth0,helpers,partials,data) {
+    var stack1, lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return "\n\n"
+    + ((stack1 = (lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||container.hooks.helperMissing).call(depth0 != null ? depth0 : (container.nullContext || {}),"email/organization_suspended.until",{"name":"t","hash":{"until":(depth0 != null ? lookupProperty(depth0,"until") : depth0)},"data":data,"loc":{"start":{"line":7,"column":0},"end":{"line":7,"column":54}}})) != null ? stack1 : "");
+},"compiler":[8,">= 4.3.0"],"main":function(container,depth0,helpers,partials,data) {
+    var stack1, alias1=depth0 != null ? depth0 : (container.nullContext || {}), alias2=container.hooks.helperMissing, lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return ((stack1 = lookupProperty(helpers,"if").call(alias1,(depth0 != null ? lookupProperty(depth0,"name") : depth0),{"name":"if","hash":{},"fn":container.program(0, data, 0),"inverse":container.program(1, data, 0),"data":data,"loc":{"start":{"line":1,"column":0},"end":{"line":1,"column":99}}})) != null ? stack1 : "")
+    + "\n\n"
+    + ((stack1 = (lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||alias2).call(alias1,"email/organization_suspended.text_body",{"name":"t","hash":{"app":((stack1 = (depth0 != null ? lookupProperty(depth0,"theme") : depth0)) != null ? lookupProperty(stack1,"appName") : stack1),"organization":(depth0 != null ? lookupProperty(depth0,"organizationName") : depth0)},"data":data,"loc":{"start":{"line":3,"column":0},"end":{"line":3,"column":94}}})) != null ? stack1 : "")
+    + ((stack1 = lookupProperty(helpers,"if").call(alias1,(depth0 != null ? lookupProperty(depth0,"reason") : depth0),{"name":"if","hash":{},"fn":container.program(2, data, 0),"inverse":container.noop,"data":data,"loc":{"start":{"line":3,"column":94},"end":{"line":5,"column":64}}})) != null ? stack1 : "")
+    + ((stack1 = lookupProperty(helpers,"if").call(alias1,(depth0 != null ? lookupProperty(depth0,"until") : depth0),{"name":"if","hash":{},"fn":container.program(3, data, 0),"inverse":container.noop,"data":data,"loc":{"start":{"line":5,"column":64},"end":{"line":7,"column":61}}})) != null ? stack1 : "")
+    + "\n\n"
+    + ((stack1 = (lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||alias2).call(alias1,"email/organization_member.contact",{"name":"t","hash":{},"data":data,"loc":{"start":{"line":9,"column":0},"end":{"line":9,"column":41}}})) != null ? stack1 : "");
+},"useData":true},
+  "organizationReinstated:subject": {"compiler":[8,">= 4.3.0"],"main":function(container,depth0,helpers,partials,data) {
+    var stack1, lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return ((stack1 = (lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||container.hooks.helperMissing).call(depth0 != null ? depth0 : (container.nullContext || {}),"email/organization_reinstated.subject",{"name":"t","hash":{"organization":(depth0 != null ? lookupProperty(depth0,"organizationName") : depth0)},"data":data,"loc":{"start":{"line":1,"column":0},"end":{"line":1,"column":75}}})) != null ? stack1 : "");
+},"useData":true},
+  "organizationReinstated:html": {"0":function(container,depth0,helpers,partials,data) {
+    var lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return container.escapeExpression((lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||container.hooks.helperMissing).call(depth0 != null ? depth0 : (container.nullContext || {}),"email/shell.greeting_named",{"name":"t","hash":{"name":(depth0 != null ? lookupProperty(depth0,"name") : depth0)},"data":data,"loc":{"start":{"line":1,"column":230},"end":{"line":1,"column":274}}}));
+},"1":function(container,depth0,helpers,partials,data) {
+    var lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return container.escapeExpression((lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||container.hooks.helperMissing).call(depth0 != null ? depth0 : (container.nullContext || {}),"email/shell.greeting",{"name":"t","hash":{},"data":data,"loc":{"start":{"line":1,"column":282},"end":{"line":1,"column":310}}}));
+},"compiler":[8,">= 4.3.0"],"main":function(container,depth0,helpers,partials,data) {
+    var stack1, alias1=container.lambda, alias2=container.escapeExpression, alias3=depth0 != null ? depth0 : (container.nullContext || {}), alias4=container.hooks.helperMissing, lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return ((stack1 = container.invokePartial(lookupProperty(partials,"emailHead"),depth0,{"name":"emailHead","data":data,"helpers":helpers,"partials":partials,"decorators":container.decorators})) != null ? stack1 : "")
+    + "<h1 class=\"t-ink\" style=\"margin:0 0 16px; font-size:22px; font-weight:600; letter-spacing:-0.02em; color:"
+    + alias2(alias1(((stack1 = ((stack1 = (depth0 != null ? lookupProperty(depth0,"theme") : depth0)) != null ? lookupProperty(stack1,"light") : stack1)) != null ? lookupProperty(stack1,"text") : stack1), depth0))
+    + "\">"
+    + alias2((lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||alias4).call(alias3,"email/organization_reinstated.heading",{"name":"t","hash":{},"data":data,"loc":{"start":{"line":1,"column":142},"end":{"line":1,"column":187}}}))
+    + "</h1><p style=\"margin:0 0 8px\">"
+    + ((stack1 = lookupProperty(helpers,"if").call(alias3,(depth0 != null ? lookupProperty(depth0,"name") : depth0),{"name":"if","hash":{},"fn":container.program(0, data, 0),"inverse":container.program(1, data, 0),"data":data,"loc":{"start":{"line":1,"column":218},"end":{"line":1,"column":317}}})) != null ? stack1 : "")
+    + " "
+    + alias2((lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||alias4).call(alias3,"email/organization_reinstated.body",{"name":"t","hash":{"app":((stack1 = (depth0 != null ? lookupProperty(depth0,"theme") : depth0)) != null ? lookupProperty(stack1,"appName") : stack1),"organization":(depth0 != null ? lookupProperty(depth0,"organizationName") : depth0)},"data":data,"loc":{"start":{"line":1,"column":318},"end":{"line":1,"column":408}}}))
+    + "</p><p class=\"t-subtle\" style=\"margin:16px 0 0; font-size:13px; color:"
+    + alias2(alias1(((stack1 = ((stack1 = (depth0 != null ? lookupProperty(depth0,"theme") : depth0)) != null ? lookupProperty(stack1,"light") : stack1)) != null ? lookupProperty(stack1,"textSubtle") : stack1), depth0))
+    + "\">"
+    + alias2((lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||alias4).call(alias3,"email/organization_member.contact",{"name":"t","hash":{},"data":data,"loc":{"start":{"line":1,"column":506},"end":{"line":1,"column":547}}}))
+    + "</p>"
+    + ((stack1 = container.invokePartial(lookupProperty(partials,"emailFoot"),depth0,{"name":"emailFoot","data":data,"helpers":helpers,"partials":partials,"decorators":container.decorators})) != null ? stack1 : "");
+},"usePartial":true,"useData":true},
+  "organizationReinstated:text": {"0":function(container,depth0,helpers,partials,data) {
+    var stack1, lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return ((stack1 = (lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||container.hooks.helperMissing).call(depth0 != null ? depth0 : (container.nullContext || {}),"email/shell.greeting_named",{"name":"t","hash":{"name":(depth0 != null ? lookupProperty(depth0,"name") : depth0)},"data":data,"loc":{"start":{"line":1,"column":12},"end":{"line":1,"column":56}}})) != null ? stack1 : "");
+},"1":function(container,depth0,helpers,partials,data) {
+    var stack1, lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return ((stack1 = (lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||container.hooks.helperMissing).call(depth0 != null ? depth0 : (container.nullContext || {}),"email/shell.greeting",{"name":"t","hash":{},"data":data,"loc":{"start":{"line":1,"column":64},"end":{"line":1,"column":92}}})) != null ? stack1 : "");
+},"compiler":[8,">= 4.3.0"],"main":function(container,depth0,helpers,partials,data) {
+    var stack1, alias1=depth0 != null ? depth0 : (container.nullContext || {}), alias2=container.hooks.helperMissing, lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return ((stack1 = lookupProperty(helpers,"if").call(alias1,(depth0 != null ? lookupProperty(depth0,"name") : depth0),{"name":"if","hash":{},"fn":container.program(0, data, 0),"inverse":container.program(1, data, 0),"data":data,"loc":{"start":{"line":1,"column":0},"end":{"line":1,"column":99}}})) != null ? stack1 : "")
+    + "\n\n"
+    + ((stack1 = (lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||alias2).call(alias1,"email/organization_reinstated.text_body",{"name":"t","hash":{"app":((stack1 = (depth0 != null ? lookupProperty(depth0,"theme") : depth0)) != null ? lookupProperty(stack1,"appName") : stack1),"organization":(depth0 != null ? lookupProperty(depth0,"organizationName") : depth0)},"data":data,"loc":{"start":{"line":3,"column":0},"end":{"line":3,"column":95}}})) != null ? stack1 : "")
+    + "\n\n"
+    + ((stack1 = (lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||alias2).call(alias1,"email/organization_member.contact",{"name":"t","hash":{},"data":data,"loc":{"start":{"line":5,"column":0},"end":{"line":5,"column":41}}})) != null ? stack1 : "");
+},"useData":true},
+  "organizationDeletionScheduled:subject": {"compiler":[8,">= 4.3.0"],"main":function(container,depth0,helpers,partials,data) {
+    var stack1, lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return ((stack1 = (lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||container.hooks.helperMissing).call(depth0 != null ? depth0 : (container.nullContext || {}),"email/organization_deletion_scheduled.subject",{"name":"t","hash":{"organization":(depth0 != null ? lookupProperty(depth0,"organizationName") : depth0)},"data":data,"loc":{"start":{"line":1,"column":0},"end":{"line":1,"column":83}}})) != null ? stack1 : "");
+},"useData":true},
+  "organizationDeletionScheduled:html": {"0":function(container,depth0,helpers,partials,data) {
+    var lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return container.escapeExpression((lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||container.hooks.helperMissing).call(depth0 != null ? depth0 : (container.nullContext || {}),"email/shell.greeting_named",{"name":"t","hash":{"name":(depth0 != null ? lookupProperty(depth0,"name") : depth0)},"data":data,"loc":{"start":{"line":1,"column":238},"end":{"line":1,"column":282}}}));
+},"1":function(container,depth0,helpers,partials,data) {
+    var lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return container.escapeExpression((lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||container.hooks.helperMissing).call(depth0 != null ? depth0 : (container.nullContext || {}),"email/shell.greeting",{"name":"t","hash":{},"data":data,"loc":{"start":{"line":1,"column":290},"end":{"line":1,"column":318}}}));
+},"compiler":[8,">= 4.3.0"],"main":function(container,depth0,helpers,partials,data) {
+    var stack1, alias1=container.lambda, alias2=container.escapeExpression, alias3=depth0 != null ? depth0 : (container.nullContext || {}), alias4=container.hooks.helperMissing, lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return ((stack1 = container.invokePartial(lookupProperty(partials,"emailHead"),depth0,{"name":"emailHead","data":data,"helpers":helpers,"partials":partials,"decorators":container.decorators})) != null ? stack1 : "")
+    + "<h1 class=\"t-ink\" style=\"margin:0 0 16px; font-size:22px; font-weight:600; letter-spacing:-0.02em; color:"
+    + alias2(alias1(((stack1 = ((stack1 = (depth0 != null ? lookupProperty(depth0,"theme") : depth0)) != null ? lookupProperty(stack1,"light") : stack1)) != null ? lookupProperty(stack1,"text") : stack1), depth0))
+    + "\">"
+    + alias2((lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||alias4).call(alias3,"email/organization_deletion_scheduled.heading",{"name":"t","hash":{},"data":data,"loc":{"start":{"line":1,"column":142},"end":{"line":1,"column":195}}}))
+    + "</h1><p style=\"margin:0 0 8px\">"
+    + ((stack1 = lookupProperty(helpers,"if").call(alias3,(depth0 != null ? lookupProperty(depth0,"name") : depth0),{"name":"if","hash":{},"fn":container.program(0, data, 0),"inverse":container.program(1, data, 0),"data":data,"loc":{"start":{"line":1,"column":226},"end":{"line":1,"column":325}}})) != null ? stack1 : "")
+    + " "
+    + alias2((lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||alias4).call(alias3,"email/organization_deletion_scheduled.body",{"name":"t","hash":{"purgeOn":(depth0 != null ? lookupProperty(depth0,"purgeOn") : depth0),"app":((stack1 = (depth0 != null ? lookupProperty(depth0,"theme") : depth0)) != null ? lookupProperty(stack1,"appName") : stack1),"organization":(depth0 != null ? lookupProperty(depth0,"organizationName") : depth0)},"data":data,"loc":{"start":{"line":1,"column":326},"end":{"line":1,"column":440}}}))
+    + "</p><p class=\"t-subtle\" style=\"margin:16px 0 0; font-size:13px; color:"
+    + alias2(alias1(((stack1 = ((stack1 = (depth0 != null ? lookupProperty(depth0,"theme") : depth0)) != null ? lookupProperty(stack1,"light") : stack1)) != null ? lookupProperty(stack1,"textSubtle") : stack1), depth0))
+    + "\">"
+    + alias2((lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||alias4).call(alias3,"email/organization_deletion_scheduled.contact",{"name":"t","hash":{"purgeOn":(depth0 != null ? lookupProperty(depth0,"purgeOn") : depth0)},"data":data,"loc":{"start":{"line":1,"column":538},"end":{"line":1,"column":607}}}))
+    + "</p>"
+    + ((stack1 = container.invokePartial(lookupProperty(partials,"emailFoot"),depth0,{"name":"emailFoot","data":data,"helpers":helpers,"partials":partials,"decorators":container.decorators})) != null ? stack1 : "");
+},"usePartial":true,"useData":true},
+  "organizationDeletionScheduled:text": {"0":function(container,depth0,helpers,partials,data) {
+    var stack1, lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return ((stack1 = (lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||container.hooks.helperMissing).call(depth0 != null ? depth0 : (container.nullContext || {}),"email/shell.greeting_named",{"name":"t","hash":{"name":(depth0 != null ? lookupProperty(depth0,"name") : depth0)},"data":data,"loc":{"start":{"line":1,"column":12},"end":{"line":1,"column":56}}})) != null ? stack1 : "");
+},"1":function(container,depth0,helpers,partials,data) {
+    var stack1, lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return ((stack1 = (lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||container.hooks.helperMissing).call(depth0 != null ? depth0 : (container.nullContext || {}),"email/shell.greeting",{"name":"t","hash":{},"data":data,"loc":{"start":{"line":1,"column":64},"end":{"line":1,"column":92}}})) != null ? stack1 : "");
+},"compiler":[8,">= 4.3.0"],"main":function(container,depth0,helpers,partials,data) {
+    var stack1, alias1=depth0 != null ? depth0 : (container.nullContext || {}), alias2=container.hooks.helperMissing, lookupProperty = container.lookupProperty || function(parent, propertyName) {
+        if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {
+          return parent[propertyName];
+        }
+        return undefined
+    };
+
+  return ((stack1 = lookupProperty(helpers,"if").call(alias1,(depth0 != null ? lookupProperty(depth0,"name") : depth0),{"name":"if","hash":{},"fn":container.program(0, data, 0),"inverse":container.program(1, data, 0),"data":data,"loc":{"start":{"line":1,"column":0},"end":{"line":1,"column":99}}})) != null ? stack1 : "")
+    + "\n\n"
+    + ((stack1 = (lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||alias2).call(alias1,"email/organization_deletion_scheduled.text_body",{"name":"t","hash":{"purgeOn":(depth0 != null ? lookupProperty(depth0,"purgeOn") : depth0),"app":((stack1 = (depth0 != null ? lookupProperty(depth0,"theme") : depth0)) != null ? lookupProperty(stack1,"appName") : stack1),"organization":(depth0 != null ? lookupProperty(depth0,"organizationName") : depth0)},"data":data,"loc":{"start":{"line":3,"column":0},"end":{"line":3,"column":119}}})) != null ? stack1 : "")
+    + "\n\n"
+    + ((stack1 = (lookupProperty(helpers,"t")||(depth0 && lookupProperty(depth0,"t"))||alias2).call(alias1,"email/organization_deletion_scheduled.contact",{"name":"t","hash":{"purgeOn":(depth0 != null ? lookupProperty(depth0,"purgeOn") : depth0)},"data":data,"loc":{"start":{"line":5,"column":0},"end":{"line":5,"column":69}}})) != null ? stack1 : "");
+},"useData":true},
   "operationalNotice:subject": {"compiler":[8,">= 4.3.0"],"main":function(container,depth0,helpers,partials,data) {
     var stack1, helper, alias1=depth0 != null ? depth0 : (container.nullContext || {}), alias2=container.hooks.helperMissing, lookupProperty = container.lookupProperty || function(parent, propertyName) {
         if (Object.prototype.hasOwnProperty.call(parent, propertyName)) {

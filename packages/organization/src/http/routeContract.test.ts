@@ -16,7 +16,9 @@ import type { OwnershipRoles } from "../ownership/ownership";
 import { defineRoles } from "../roles/roles";
 import { ORGANIZATION_ROUTES, registerOrganizationRoutes } from "./routes";
 import {
+  ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
   ORGANIZATION_ACCOUNTS_READ_SCOPE,
+  ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
   ORGANIZATION_ACCOUNTS_WRITE_SCOPE,
   ORGANIZATION_CONTROL_PLANE_SCOPES,
   ORGANIZATION_MEMBERS_READ_SCOPE,
@@ -238,6 +240,7 @@ describe("the declared surface and the mounted one are the same surface", () => 
     // Anti-vacuity, exact rather than a floor. A route added on purpose is one line here; a route added
     // by accident is a failing test with a name on it.
     expect(mountedKeys(makeApp())).toEqual([
+      `DELETE ${BASE}/admin/organizations/:organizationId`,
       `DELETE ${BASE}/admin/organizations/:organizationId/invitations/:invitationId`,
       `DELETE ${BASE}/admin/organizations/:organizationId/members/:membershipId`,
       `DELETE ${BASE}/current`,
@@ -264,6 +267,9 @@ describe("the declared surface and the mounted one are the same surface", () => 
       `POST ${BASE}/admin/organizations/:organizationId/invitations/:invitationId/resend`,
       `POST ${BASE}/admin/organizations/:organizationId/members`,
       `POST ${BASE}/admin/organizations/:organizationId/ownership`,
+      `POST ${BASE}/admin/organizations/:organizationId/reinstate`,
+      `POST ${BASE}/admin/organizations/:organizationId/restore`,
+      `POST ${BASE}/admin/organizations/:organizationId/suspend`,
       `POST ${BASE}/current/invitations`,
       `POST ${BASE}/current/invitations/:invitationId/resend`,
       `POST ${BASE}/current/members/leave`,
@@ -315,6 +321,9 @@ describe("the request contract: every path param is validated", () => {
       `${BASE}/admin/organizations/:organizationId/members`,
       `${BASE}/admin/organizations/:organizationId/members/:membershipId`,
       `${BASE}/admin/organizations/:organizationId/ownership`,
+      `${BASE}/admin/organizations/:organizationId/reinstate`,
+      `${BASE}/admin/organizations/:organizationId/restore`,
+      `${BASE}/admin/organizations/:organizationId/suspend`,
       `${BASE}/current/invitations/:invitationId`,
       `${BASE}/current/invitations/:invitationId/resend`,
       `${BASE}/current/members/:membershipId`,
@@ -472,7 +481,7 @@ describe("the surface a client is told about", () => {
     expect(new Set(mountedKeys(makeApp({ basePath: "/accounts" })))).toContain(`GET /accounts/admin/organizations`);
   });
 
-  test("five management scopes, all separate, and no write is gated by a read scope", () => {
+  test("seven management scopes, all separate, and no write is gated by a read scope", () => {
     // One `organization:admin` flag would mean a credential issued to find the right tenant also carried
     // every customer's address and the power to hand their account to somebody. `scopeCovers` matches
     // exactly, with no prefix rule, so five constants are five grants.
@@ -481,8 +490,11 @@ describe("the surface a client is told about", () => {
       ORGANIZATION_MEMBERS_WRITE_SCOPE,
       ORGANIZATION_ACCOUNTS_WRITE_SCOPE,
       ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE,
+      // The organization's own lifecycle (#623): a suspension and a deletion are each their own grant.
+      ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
+      ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
     ];
-    expect(new Set([...reads, ...writes]).size).toBe(5);
+    expect(new Set([...reads, ...writes]).size).toBe(7);
     expect([...ORGANIZATION_CONTROL_PLANE_SCOPES].sort()).toEqual([...reads, ...writes].sort());
     for (const route of ORGANIZATION_ROUTES.filter((entry) => entry.strategy === "control-plane")) {
       if (route.mutating) expect(writes, `${route.method} ${route.path}`).toContain(route.scope);

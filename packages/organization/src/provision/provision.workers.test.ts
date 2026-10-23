@@ -87,6 +87,7 @@ const PARALLEL = defineRoles({
 });
 
 const TABLES = [
+  "pithy_organization_lifecycle",
   "pithy_organization_acting",
   "pithy_organization_ownership_nominations",
   "pithy_organization_invitations",

@@ -9,6 +9,7 @@ import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { type CompiledQuery, sql } from "kysely";
 import { Invitation } from "../data/invitation";
 import { Membership } from "../data/membership";
+import { Organization } from "../data/organization";
 import {
   INVITATIONS_TABLE,
   MEMBERSHIPS_TABLE,
@@ -21,6 +22,7 @@ import {
   OrganizationInvitationInvalidError,
   OrganizationSeatLimitReachedError,
 } from "../error/errors";
+import { organizationStanding } from "../lifecycle/state";
 import type { RoleCatalog } from "../roles/roles";
 import { invitationDigest, mintInvitationToken } from "./token";
 
@@ -412,6 +414,11 @@ export async function acceptInvitation<Power extends string, Role extends string
     );
   }
 
+  // **A suspended or deleted organization takes no one in (#623).** Nobody can act in it, and a membership written
+  // into a shut tenant is a row its restore would bring back and another tenant's `members: "sole"` would count.
+  // The refusal is the dead-offer one, and the offer stays pending: a reinstatement makes it redeemable again.
+  await refuseIfShut(db, invitation, options.now);
+
   /*
     Decoded against the **assignable** set, never merely the declared one, and never asserted.
 
@@ -488,6 +495,13 @@ export async function acceptInvitation<Power extends string, Role extends string
     or (select count(*) from pithy_organization_memberships where organization_id = ${invitation.organizationId})
       < (select seat_limit from pithy_organization_organizations where id = ${invitation.organizationId})
   )`;
+  // And open, carried in the write too: a suspension or deletion landing between the read above and this insert.
+  const at = SQLiteDate.encode(options.now);
+  const open = sql`not exists (
+    select 1 from pithy_organization_organizations
+    where id = ${invitation.organizationId}
+      and (deleted_at is not null or (suspended_at is not null and (suspended_until is null or suspended_until > ${at})))
+  )`;
   const join = sql`
     insert into pithy_organization_memberships (id, organization_id, user_id, role, created_at)
     select ${membership.id}, ${membership.organizationId}, ${membership.userId}, ${membership.role}, ${membership.createdAt}
@@ -495,6 +509,7 @@ export async function acceptInvitation<Power extends string, Role extends string
     where pithy_organization_invitations.id = ${invitation.id}
       and pithy_organization_invitations.status = 'pending'
       and ${roomFor}
+      and ${open}
   `;
   // The claim spends the offer only when this batch's insert landed, so a join refused for want of a seat
   // leaves the offer pending rather than consumed with no membership behind it. The batch is one
@@ -607,6 +622,25 @@ async function refuseIfFull(db: OrganizationDatabase, organizationId: string): P
     detail: `organization ${organizationId} holds ${row.members} memberships against a seat limit of ${seatLimit}`,
     params: { seatLimit },
   });
+}
+
+/**
+ * Refuse a join into an organization that is suspended or deleted (#623), with the refusal every dead offer gets.
+ *
+ * An organization with no row is left to the paths that already answer for it: this decides lifecycle, not existence.
+ */
+async function refuseIfShut(db: OrganizationDatabase, invitation: Invitation, now: Date): Promise<void> {
+  const row = await db
+    .selectFrom(ORGANIZATIONS_TABLE)
+    .selectAll()
+    .where("id", "=", invitation.organizationId)
+    .executeTakeFirst();
+  if (!row) return;
+  const standing = organizationStanding(Organization.parse(row), now);
+  if (standing.state === "active") return;
+  throw invitationInvalid(
+    `invitation ${invitation.id} is to organization ${invitation.organizationId}, which is ${standing.state}`,
+  );
 }
 
 /** The invitation as it stands once accepted, without a re-read of the row we just wrote. */

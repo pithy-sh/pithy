@@ -7,6 +7,7 @@ import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { ORGANIZATION_MIGRATION_ORDER, organization_0001_init } from "./0001_init";
 import { organization_0002_seat_limit } from "./0002_seat_limit";
+import { organization_0003_organization_lifecycle } from "./0003_organization_lifecycle";
 
 /**
  * The one migration, both ways, against real D1.
@@ -59,7 +60,8 @@ async function catalog(): Promise<string[]> {
 }
 
 beforeEach(async () => {
-  for (const name of EXPECTED_CATALOG) {
+  // The lifecycle table first: a later migration's table is in no catalog the `0001` tests list.
+  for (const name of ["pithy_organization_lifecycle", ...EXPECTED_CATALOG]) {
     await env.DB.prepare(`drop table if exists ${name}`).run();
   }
 });
@@ -227,5 +229,77 @@ describe("0002_seat_limit", () => {
     await organization_0002_seat_limit.down?.(db());
     await organization_0002_seat_limit.up(db());
     expect(await organizationColumns()).toContain("seat_limit");
+  });
+});
+
+describe("0003_organization_lifecycle", () => {
+  const ACME = "11111111-1111-4111-8111-111111111111";
+
+  /** The organizations table's columns, as SQLite reports them. */
+  async function organizationColumns(): Promise<string[]> {
+    const { results } = await env.DB.prepare("PRAGMA table_info(pithy_organization_organizations)").all<{
+      name: string;
+    }>();
+    return results.map((row) => row.name);
+  }
+
+  /** What `0003` adds to the catalog, beside what `0001` made. */
+  const ADDED = [
+    "pithy_organization_lifecycle",
+    "pithy_organization_lifecycle_org_idx",
+    "pithy_organization_lifecycle_purged_once_idx",
+    "pithy_organization_organizations_purge_after_idx",
+  ];
+
+  beforeEach(async () => {
+    await organization_0001_init.up(db());
+    await organization_0002_seat_limit.up(db());
+  });
+
+  test("up adds the four nullable state columns, the history table and its indexes, and backfills nothing", async () => {
+    await env.DB.prepare(
+      `insert into pithy_organization_organizations (id, name, slug, logo, created_at, updated_at) values ('${ACME}', 'Acme', 'acme', null, 0, 0)`,
+    ).run();
+    await organization_0003_organization_lifecycle.up(db());
+    expect(await organizationColumns()).toEqual(
+      expect.arrayContaining(["suspended_at", "suspended_until", "deleted_at", "purge_after"]),
+    );
+    expect(await catalog()).toEqual([...EXPECTED_CATALOG, ...ADDED].sort());
+    // An organization that existed before it is in neither state, and null is exactly that.
+    const row = await env.DB.prepare(
+      "select suspended_at, suspended_until, deleted_at, purge_after from pithy_organization_organizations",
+    ).first<Record<string, number | null>>();
+    expect(row).toEqual({ suspended_at: null, suspended_until: null, deleted_at: null, purge_after: null });
+  });
+
+  test("an organization is purged once: a second `purged` row is refused, and every other action repeats", async () => {
+    await organization_0003_organization_lifecycle.up(db());
+    const insert = (action: string) =>
+      env.DB.prepare(
+        "insert into pithy_organization_lifecycle (organization_id, action, actor_type, actor_id, reason, suspended_until, step, created_at) values (?, ?, 'system', null, null, null, null, 0)",
+      )
+        .bind(ACME, action)
+        .run();
+    await insert("suspended");
+    await insert("suspended");
+    await insert("purged");
+    await expect(insert("purged")).rejects.toThrow();
+  });
+
+  test("down takes every column and object back out, and leaves what `0002` left", async () => {
+    await organization_0003_organization_lifecycle.up(db());
+    await organization_0003_organization_lifecycle.down?.(db());
+    for (const column of ["suspended_at", "suspended_until", "deleted_at", "purge_after"]) {
+      expect(await organizationColumns()).not.toContain(column);
+    }
+    expect(await organizationColumns()).toContain("seat_limit");
+    expect(await catalog()).toEqual(EXPECTED_CATALOG);
+  });
+
+  test("up after down is clean", async () => {
+    await organization_0003_organization_lifecycle.up(db());
+    await organization_0003_organization_lifecycle.down?.(db());
+    await organization_0003_organization_lifecycle.up(db());
+    expect(await catalog()).toEqual([...EXPECTED_CATALOG, ...ADDED].sort());
   });
 });

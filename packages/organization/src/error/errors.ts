@@ -234,3 +234,28 @@ export class OrganizationSeatLimitReachedError extends PithyError {
     );
   }
 }
+
+/**
+ * The organization a request acts in is suspended (#623). `params.suspendedUntil` names when it ends by itself,
+ * when it does.
+ *
+ * **A 403, and only ever to a proved member.** Somebody who is not in the organization still gets
+ * {@link OrganizationNotFoundError}, so this tells nobody anything about an account they could not already see.
+ * It is not {@link OrganizationForbiddenError}, because no role would let them: the screen to render says what
+ * happened to the organization, and that their own account is fine.
+ */
+export class OrganizationSuspendedError extends PithyError {
+  constructor(args: OrganizationErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "organization/organization_suspended",
+        status: 403,
+        message: args.message ?? "This organization is suspended. Your own account is not affected.",
+        action: args.action ?? "Ask an owner of the organization, or the operator, to reinstate it.",
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}

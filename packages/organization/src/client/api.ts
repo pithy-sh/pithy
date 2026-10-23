@@ -156,6 +156,12 @@ export interface ActableOrganizations {
    * somebody put into their only account did not choose it, and offering them a switcher is noise.
    */
   chosen: boolean;
+  /**
+   * How many of the reader's organizations are suspended, and so not in `organizations` (#623). Non-zero with an
+   * empty list is somebody whose organizations are all suspended — the suspended screen, not the invitation one.
+   * Optional because a server from before #623 does not send it.
+   */
+  suspended?: number;
 }
 
 /** Whether a value is a plain record — the first step of every guard below. */
@@ -260,6 +266,7 @@ function isActableOrganizations(value: unknown): value is ActableOrganizations {
   if (!isRecord(value)) return false;
   if (!Array.isArray(value.organizations) || !value.organizations.every(isActableOrganization)) return false;
   if (value.acting !== null && !isText(value.acting)) return false;
+  if (value.suspended !== undefined && (typeof value.suspended !== "number" || value.suspended < 0)) return false;
   return typeof value.chosen === "boolean";
 }
 

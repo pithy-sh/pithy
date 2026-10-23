@@ -56,8 +56,19 @@ describe("the purge contribution on the Capability contract", () => {
     expect(() => defineCapability({ name: "media", requiredBindings: [], purge: [broken] })).toThrow(/media.*export/);
   });
 
-  test("the subject vocabulary is closed, and today it is one word", () => {
-    expect(PurgeSubject.options).toEqual(["user"]);
+  test("the subject vocabulary is closed, and today it is two words", () => {
+    expect(PurgeSubject.options).toEqual(["user", "organization"]);
+    expect(PurgeSubject.safeParse("tenant").success).toBe(false);
+  });
+
+  test("one capability may declare a contribution per subject, so a user's and an organization's sit side by side (#623)", () => {
+    const capability = defineCapability({
+      name: "media",
+      requiredBindings: [],
+      purge: [recording([]), { ...recording([]), subject: "organization" }],
+    });
+    expect(purgeSteps([capability], "organization").map((step) => step.step)).toEqual(["media"]);
+    expect(purgeSteps([capability], "user").map((step) => step.step)).toEqual(["media"]);
   });
 });
 

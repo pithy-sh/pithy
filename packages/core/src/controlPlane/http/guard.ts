@@ -186,9 +186,10 @@ export function requireControlPlane(requirement: ControlPlaneRequirement): Middl
       },
       c.var.log,
     );
-    // A handler can need a grant the gate's requirement does not name — an operator roster write that
-    // moves the owning role needs `organization:ownership:transfer` beside `organization:members:write` —
-    // and refuses it itself, past this gate. That refusal is still a blocked attempt, and the trail must
+    // A handler can refuse a call the gate's requirement let through — an operator roster write that
+    // would move the owning role is refused `controlplane/insufficient_scope`, naming the ownership route,
+    // even on a connection granted `organization:ownership:transfer`, because a token exercises the one
+    // scope it was minted for — and it refuses it itself, past this gate. That refusal is still a blocked attempt, and the trail must
     // say so: `call_allowed` alone would hide a credential probing for the grant it lacks.
     //
     // Both paths, as the organization routes' refusal recorder reads them: a throw that reaches here, and

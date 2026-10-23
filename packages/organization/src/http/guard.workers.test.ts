@@ -185,6 +185,7 @@ async function membership(organizationId: string, userId: string, role: Role): P
 
 beforeEach(async () => {
   for (const table of [
+    "pithy_organization_lifecycle",
     "pithy_organization_acting",
     "pithy_organization_ownership_nominations",
     "pithy_organization_invitations",

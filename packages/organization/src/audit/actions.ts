@@ -119,6 +119,25 @@ export const OrganizationAuditActions = {
   /** An operator revoked an invitation, so its link no longer works. */
   adminInvitationRevoked: "organization/admin_invitation_revoked",
   /**
+   * ## The organization's own lifecycle, below (#623)
+   *
+   * An operator acting on the account itself rather than on somebody in it. Each carries the reason, and how
+   * many members the cascade reached and skipped — counts, never the people, for the reason the trail holds no
+   * addresses.
+   */
+  /** An operator suspended the account, or restated a suspension already in force. Nobody can act in it. */
+  adminOrganizationSuspended: "organization/admin_organization_suspended",
+  /** An operator lifted the account's suspension. A member suspended with it stays suspended. */
+  adminOrganizationReinstated: "organization/admin_organization_reinstated",
+  /** An operator deleted the account softly: shut now, restorable until its purge window closes. */
+  adminOrganizationDeleted: "organization/admin_organization_deleted",
+  /** An operator deleted the account hard: its window closed at once and its purge was started. */
+  adminOrganizationHardDeleted: "organization/admin_organization_hard_deleted",
+  /** An operator restored a deleted account inside its window, with every membership it had. */
+  adminOrganizationRestored: "organization/admin_organization_restored",
+  /** The purge erased a deleted account's data from every capability that held it. The last event it gets. */
+  purged: "organization/purged",
+  /**
    * Somebody inside the account was refused.
    *
    * **One code for every interesting refusal, carrying the refusal's own code in `facts`.** A code per

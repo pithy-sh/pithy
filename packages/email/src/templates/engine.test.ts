@@ -37,6 +37,9 @@ const validPayloads: Record<string, unknown> = {
   organizationMemberAdded: { organizationName: "Acme", role: "member" },
   organizationMemberRemoved: { organizationName: "Acme" },
   organizationOwnershipTransferred: { organizationName: "Acme" },
+  organizationSuspended: { organizationName: "Acme" },
+  organizationReinstated: { organizationName: "Acme" },
+  organizationDeletionScheduled: { organizationName: "Acme", purgeOn: "19 November 2026" },
   operationalNotice: {
     severity: "critical",
     summary: "Sign-in is failing for every user",
@@ -71,7 +74,7 @@ const validPayloads: Record<string, unknown> = {
 };
 
 describe("template registry", () => {
-  test("ships the nine starter templates, the four lifecycle notices, the three membership notices, plus the testers envelope", () => {
+  test("ships the nine starter templates, the four lifecycle notices, the three membership notices, the three organization notices, plus the testers envelope", () => {
     expect(
       listTemplates()
         .map((t) => t.id)
@@ -93,6 +96,10 @@ describe("template registry", () => {
         "organizationMemberAdded",
         "organizationMemberRemoved",
         "organizationOwnershipTransferred",
+        // The organization lifecycle notices `@pithy-sh/organization` sends its owners (#623).
+        "organizationSuspended",
+        "organizationReinstated",
+        "organizationDeletionScheduled",
         // *Something about your own infrastructure needs attention* — the shape `securityAlert` cannot
         // carry, because it is about a session and closes by saying no action is needed.
         "operationalNotice",
@@ -228,6 +235,9 @@ describe("tracking", () => {
       organizationMemberAdded: "transactional",
       organizationMemberRemoved: "transactional",
       organizationOwnershipTransferred: "transactional",
+      organizationSuspended: "transactional",
+      organizationReinstated: "transactional",
+      organizationDeletionScheduled: "transactional",
       supportReply: "transactional",
       testerNudge: "elective",
       leadCapture: "elective",

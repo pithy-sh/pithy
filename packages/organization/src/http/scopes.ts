@@ -38,6 +38,12 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
  * - `organization:ownership:transfer` — who owns it, moved with no nomination and no acceptance. The one
  *   that most needs its own grant, because it is the break-glass path and nothing else can undo it.
  *
+ * And two more for the organization's own lifecycle (#623), each a power over whether the account exists for
+ * its members at all:
+ *
+ * - `organization:accounts:suspend` — suspend an account and reinstate it. Nobody can act in it meanwhile.
+ * - `organization:accounts:delete` — delete an account, softly or hard, and restore one inside its window.
+ *
  * None implies another, and none implies a read. A client holding only the read scopes is refused every
  * write.
  */
@@ -57,6 +63,12 @@ export const ORGANIZATION_ACCOUNTS_WRITE_SCOPE: ControlPlaneScope = "organizatio
 /** Who owns an account, moved immediately — no nomination and no acceptance. The break-glass write. */
 export const ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE: ControlPlaneScope = "organization:ownership:transfer";
 
+/** Suspend an account and reinstate it (#623). While it is suspended, nobody can act in it. */
+export const ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE: ControlPlaneScope = "organization:accounts:suspend";
+
+/** Delete an account, softly or hard, and restore one inside its purge window (#623). */
+export const ORGANIZATION_ACCOUNTS_DELETE_SCOPE: ControlPlaneScope = "organization:accounts:delete";
+
 /** Every control-plane scope this capability defines. */
 export const ORGANIZATION_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
   ORGANIZATION_ACCOUNTS_READ_SCOPE,
@@ -64,6 +76,8 @@ export const ORGANIZATION_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
   ORGANIZATION_MEMBERS_WRITE_SCOPE,
   ORGANIZATION_ACCOUNTS_WRITE_SCOPE,
   ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE,
+  ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
+  ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
 ];
 
 /** What {@link organizationAdminRoutes} needs to know beyond the mount point. */
@@ -107,6 +121,33 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
       path: one,
       scope: ORGANIZATION_ACCOUNTS_WRITE_SCOPE,
       summary: "Rename a tenant, give it a free short name, or set its seat limit. Takes a reason.",
+    },
+    {
+      method: "POST",
+      path: `${one}/suspend`,
+      scope: ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
+      summary:
+        "Suspend a tenant until a date or a reinstatement: nobody can act in it. Its sole members' accounts too, when asked. Takes a reason.",
+    },
+    {
+      method: "POST",
+      path: `${one}/reinstate`,
+      scope: ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
+      summary:
+        "Lift a tenant's suspension. A member suspended with it stays suspended, and the response names them. Takes a reason.",
+    },
+    {
+      method: "DELETE",
+      path: one,
+      scope: ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
+      summary:
+        "Delete a tenant: soft by default, restorable for the retention window; hard purges now. Its sole members' accounts too, when asked. Takes a reason.",
+    },
+    {
+      method: "POST",
+      path: `${one}/restore`,
+      scope: ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
+      summary: "Restore a deleted tenant inside its window, with every membership it had. Takes a reason.",
     },
     {
       method: "POST",

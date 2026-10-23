@@ -39,12 +39,13 @@ import { ValidationError } from "../error/pithyError";
 
 /**
  * The kinds of subject a purge erases. Closed, so a typo is refused where it is written rather than becoming
- * a contribution no purge ever asks for. `organization` joins when organization state does (#623).
+ * a contribution no purge ever asks for. `organization` joined with organization state (#623): a capability
+ * holding rows scoped to a tenant declares one for it, and the organization purge runs it.
  */
 export const PurgeSubject = z
-  .enum(["user"])
+  .enum(["user", "organization"])
   .describe(
-    "The kind of subject a purge erases. `user` is one person's account in `@pithy-sh/auth`, identified by its user id.",
+    "The kind of subject a purge erases. `user` is one person's account in `@pithy-sh/auth`, identified by its user id. `organization` is one tenant in `@pithy-sh/organization`, identified by its organization id.",
   );
 export type PurgeSubject = z.output<typeof PurgeSubject>;
 

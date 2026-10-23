@@ -112,6 +112,7 @@ type Role = (typeof catalog.roles)[number];
 const OWNERSHIP: OwnershipRoles<Role> = { confers: "owner", demotesTo: "admin" };
 
 const TABLES = [
+  "pithy_organization_lifecycle",
   "pithy_organization_acting",
   "pithy_organization_ownership_nominations",
   "pithy_organization_invitations",

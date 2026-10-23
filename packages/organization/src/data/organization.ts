@@ -65,6 +65,26 @@ export const Organization = z
       .describe(
         "How many memberships the account may hold, or null for no limit. Set by an operator through the control plane (`0002_seat_limit`, #624). An operator's add counts against it and may override it, which the audit event records; an accepted invitation is refused against a full account. Optional because a row written before the column existed, or by a writer that never names it, reads as no limit.",
       ),
+    suspendedAt: SQLiteDate.nullable()
+      .optional()
+      .describe(
+        "When an operator suspended the organization, or null. Nobody can act in it while a suspension is in force (#623). A suspension past its `suspendedUntil` is over without anything clearing this, so read it through `organizationStanding`, never on its own. Optional because a row written before `0003_organization_lifecycle` reads as never suspended.",
+      ),
+    suspendedUntil: SQLiteDate.nullable()
+      .optional()
+      .describe(
+        "When the suspension ends by itself, or null for one that lasts until a reinstatement. Exclusive: at this instant the organization is active again, and no write is needed to make it so.",
+      ),
+    deletedAt: SQLiteDate.nullable()
+      .optional()
+      .describe(
+        "When an operator deleted the organization, or null. A deleted organization is gone from every member's list and cannot be acted in; inside its window it can be restored with every membership it had (#623).",
+      ),
+    purgeAfter: SQLiteDate.nullable()
+      .optional()
+      .describe(
+        "When the purge may erase a deleted organization: `deletedAt` plus `retention.purgeAfterDays`, or the moment of a hard deletion. Restorable until then. Null while it is not deleted.",
+      ),
     createdAt: SQLiteDate.describe(
       "When the organization was created. Ms-epoch in SQLite; a `Date` in app code. Indexed for listing.",
     ),

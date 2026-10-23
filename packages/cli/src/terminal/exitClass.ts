@@ -173,6 +173,7 @@ export const EXIT_CLASS_BY_CODE = {
   "organization/last_owner": "precondition",
   "organization/already_member": "precondition",
   "organization/seat_limit_reached": "precondition",
+  "organization/organization_suspended": "precondition",
   "artifacts/forbidden": "precondition",
   "artifacts/name_taken": "precondition",
   "artifacts/not_found": "precondition",

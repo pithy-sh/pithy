@@ -3,6 +3,9 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import { type AuthDatabase, authDatabase } from "@pithy-sh/auth/src/data/tables";
+import type { LifecycleDeps } from "@pithy-sh/auth/src/lifecycle/transitions";
+import { AUTH_PURGE_BINDING } from "@pithy-sh/auth/src/purge/specs";
+import { startPurgeInstance } from "@pithy-sh/auth/src/purge/start";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
@@ -16,8 +19,16 @@ import { validate } from "@pithy-sh/core/src/http/validation";
 import type { VerificationStrategy } from "@pithy-sh/core/src/http/verification";
 import { STORED_IMAGE_HEADERS, storedImageBytes } from "@pithy-sh/core/src/image/storedImage";
 import { migrateStep } from "@pithy-sh/core/src/migrations/migrateStep";
+import { workflowBindingFor } from "@pithy-sh/core/src/workflow/dispatch";
 import type { Context, Hono, MiddlewareHandler } from "hono";
-import { chooseActing, listActable, noSuchOrganization, resolveActing } from "../acting/acting";
+import {
+  chooseActing,
+  countSuspended,
+  listActable,
+  noSuchOrganization,
+  resolveActing,
+  resolveSelection,
+} from "../acting/acting";
 import { OrganizationAuditActions } from "../audit/actions";
 import {
   correlation,
@@ -47,8 +58,27 @@ import {
   withdrawInvitation,
 } from "../invite/invite";
 import { invitationDigest } from "../invite/token";
+import {
+  type CascadeOutcome,
+  deleteSoleMembers,
+  membersStillShut,
+  NO_CASCADE,
+  suspendSoleMembers,
+  type UserLifecycleWiring,
+} from "../lifecycle/cascade";
+import type { OrganizationLifecycleHooks } from "../lifecycle/hooks";
+import { organizationStanding } from "../lifecycle/state";
+import {
+  absent,
+  type OrganizationLifecycleDeps,
+  reinstateOrganization,
+  removeOrganization,
+  restoreOrganization,
+  suspendOrganization,
+} from "../lifecycle/transitions";
 import { type EnqueueInvitation, invitationAcceptUrl, sendInvitationMail } from "../mail/invitation";
-import { sendMembershipNotice } from "../mail/membership";
+import { notifyOwners } from "../mail/lifecycle";
+import { type NoticeRecipient, sendMembershipNotice } from "../mail/membership";
 import {
   addMember,
   changeRole,
@@ -78,6 +108,8 @@ import {
   setLogo,
   updateOrganizationAsOperator,
 } from "../provision/provision";
+import { ORGANIZATION_PURGE_BINDING } from "../purge/specs";
+import { startOrganizationPurgeInstance } from "../purge/start";
 import type { KitPower, RoleCatalog } from "../roles/roles";
 import { type OrganizationGuardDeps, type OrganizationHonoEnv, requireOrganization, requirePower } from "./guard";
 import {
@@ -86,7 +118,11 @@ import {
   AdminInvitationsResponse,
   AdminMemberResponse,
   AdminMembersResponse,
+  AdminOrganizationDeleteResponse,
+  AdminOrganizationReinstateResponse,
   AdminOrganizationResponse,
+  AdminOrganizationRestoreResponse,
+  AdminOrganizationSuspendResponse,
   AdminOrganizationsResponse,
   AdminOwnershipResponse,
   AdminRemovedMemberResponse,
@@ -108,6 +144,7 @@ import {
   AcceptInvitation,
   AdminAddMember,
   AdminChangeRole,
+  AdminDeleteOrganization,
   AdminForceOwnership,
   AdminInvitationParam,
   AdminInvitationsQuery,
@@ -115,6 +152,7 @@ import {
   AdminMembershipParam,
   AdminOrganizationParam,
   AdminReason,
+  AdminSuspendOrganization,
   AdminUpdateOrganization,
   ChangeRole,
   ChooseOrganization,
@@ -129,7 +167,9 @@ import {
   UpdateOrganization,
 } from "./schemas";
 import {
+  ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
   ORGANIZATION_ACCOUNTS_READ_SCOPE,
+  ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
   ORGANIZATION_ACCOUNTS_WRITE_SCOPE,
   ORGANIZATION_MEMBERS_READ_SCOPE,
   ORGANIZATION_MEMBERS_WRITE_SCOPE,
@@ -139,6 +179,7 @@ import {
   actingView,
   adminMemberView,
   adminOrganizationView,
+  deletionView,
   invitationOfferView,
   invitationView,
   MARKS_SEGMENT,
@@ -146,6 +187,7 @@ import {
   memberView,
   nominationView,
   organizationView,
+  suspensionView,
 } from "./views";
 
 /**
@@ -183,6 +225,10 @@ import {
  * | `POST   {base}/admin/…/invitations/:id/resend` | control-plane  | `members:write`       | param + json `AdminReason`     |
  * | `DELETE {base}/admin/…/invitations/:id`        | control-plane  | `members:write`       | param + json `AdminReason`     |
  * | `POST   {base}/admin/…/ownership`              | control-plane  | `ownership:transfer`  | param + json `AdminForceOwnership` |
+ * | `POST   {base}/admin/organizations/:id/suspend`  | control-plane  | `accounts:suspend`  | param + json `AdminSuspendOrganization` |
+ * | `POST   {base}/admin/organizations/:id/reinstate`| control-plane  | `accounts:suspend`  | param + json `AdminReason`     |
+ * | `DELETE {base}/admin/organizations/:id`          | control-plane  | `accounts:delete`   | param + json `AdminDeleteOrganization` |
+ * | `POST   {base}/admin/organizations/:id/restore`  | control-plane  | `accounts:delete`   | param + json `AdminReason`     |
  *
  * ¹ Never an add at the owning role, a role change to or from it, or the removal of an owner, whatever
  * else the connection is granted: each is refused 403, naming the ownership route. A token is minted for
@@ -408,6 +454,36 @@ export const ORGANIZATION_ROUTES: readonly OrganizationRouteDeclaration[] = [
     mutating: true,
     ownership: true,
   },
+  // The organization's own lifecycle (#623). Each takes a reason; each scope is a power over whether the account
+  // exists for its members at all.
+  {
+    method: "POST",
+    path: "/admin/organizations/:organizationId/suspend",
+    strategy: "control-plane",
+    scope: ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
+    mutating: true,
+  },
+  {
+    method: "POST",
+    path: "/admin/organizations/:organizationId/reinstate",
+    strategy: "control-plane",
+    scope: ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
+    mutating: true,
+  },
+  {
+    method: "DELETE",
+    path: "/admin/organizations/:organizationId",
+    strategy: "control-plane",
+    scope: ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
+    mutating: true,
+  },
+  {
+    method: "POST",
+    path: "/admin/organizations/:organizationId/restore",
+    strategy: "control-plane",
+    scope: ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
+    mutating: true,
+  },
 ];
 
 /**
@@ -461,6 +537,14 @@ export interface OrganizationRoutesOptions<Power extends string, Role extends st
    * captured at registration would close over whichever request happened to assemble the routes.
    */
   readonly enqueue?: (env: Record<string, unknown>) => EnqueueInvitation | undefined;
+  /** The adopter's organization-lifecycle hooks (#623). */
+  readonly lifecycleHooks?: OrganizationLifecycleHooks;
+  /**
+   * The composed `@pithy-sh/auth`'s lifecycle config and user hooks, which a member cascade runs through (#623).
+   * A function, because `compose` fills it after the routes are registered. Absent, a cascade that would reach a
+   * member refuses rather than guessing auth's config.
+   */
+  readonly userLifecycle?: () => UserLifecycleWiring | undefined;
   /** The clock. Injected so expiries and stored timestamps are deterministic in tests. */
   readonly now?: () => Date;
   /** The id source. Injected for the same reason. */
@@ -528,6 +612,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
 
   const deps: OrganizationGuardDeps<Power, Role> = {
     catalog,
+    now: clock,
     database: (env) => {
       const found = env[binding];
       if (!found) {
@@ -783,6 +868,157 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
     return new OrganizationInvitationInvalidError({ detail: why });
   }
 
+  /**
+   * The tenant a lifecycle route names, or its 404 — the one whose action says the data is gone when the purge
+   * erased it. A 404 and never a 403, for the reason `operatorOrganization` gives.
+   */
+  async function lifecycleOrganization(c: Ctx, organizationId: string): Promise<Organization> {
+    const found = await findOrganization(db(c), organizationId);
+    if (!found) throw await absent(db(c), organizationId);
+    return found;
+  }
+
+  /** The organization transitions' dependencies, for this request. */
+  function lifecycle(c: Ctx): OrganizationLifecycleDeps {
+    return {
+      db: db(c),
+      d1: d1(c),
+      hooks: options.lifecycleHooks ?? {},
+      log: c.var.log?.child("organization"),
+      now: options.now,
+    };
+  }
+
+  /** The restore route a refusal names, for a tenant that is deleted. */
+  const restoreRoute = (organizationId: string) => `POST ${base}/admin/organizations/${organizationId}/restore`;
+
+  /**
+   * What a member cascade runs through: `@pithy-sh/auth`'s own transitions, configured as the composed auth is,
+   * with the operator as the actor and the tenant and connection on every audit event they write.
+   */
+  function cascadeDeps(c: Ctx, organizationId: string) {
+    const wiring = options.userLifecycle?.();
+    if (!wiring) {
+      throw new InternalError({
+        message: "This Worker cannot reach a member's account, so the cascade could not run.",
+        action: "Compose `auth(...)` beside `organization(...)` in this Worker.",
+        detail: "a member cascade ran with no user lifecycle wired from the composed auth capability",
+      });
+    }
+    const caller = operator(c);
+    const enqueue = mailer(c);
+    const users: LifecycleDeps = {
+      db: auth(c),
+      d1: d1(c),
+      emit: c.var.emit,
+      config: wiring.config,
+      hooks: wiring.hooks,
+      enqueueEmail: enqueue
+        ? (input) =>
+            enqueue({
+              to: input.to,
+              template: input.template,
+              payload: input.payload,
+              ...(input.locale ? { locale: input.locale } : {}),
+            })
+        : undefined,
+      log: c.var.log?.child("organization"),
+      now: options.now,
+      context: {
+        ...correlation(c.req.raw.headers),
+        requestId: c.req.header("cf-ray") ?? undefined,
+        metadata: { connectionId: caller.connectionId, organizationId },
+      },
+    };
+    return { db: db(c), users, actor: { type: "control-plane", id: caller.subject } as const, now: clock() };
+  }
+
+  /**
+   * Who the lifecycle notices go to: the account's owners — the role a transfer confers, where the project wires
+   * one, or else whoever holds the power to delete it — read through auth's own reader. `except` names owners to
+   * leave out: those a cascade reached, whose own account's notice already told them, and whom the organization's
+   * notice would tell their account is unaffected.
+   */
+  async function ownerRecipients(
+    c: Ctx,
+    organizationId: string,
+    except: ReadonlySet<string> = new Set(),
+  ): Promise<NoticeRecipient[]> {
+    const rows = await db(c)
+      .selectFrom(MEMBERSHIPS_TABLE)
+      .select(["userId", "role"])
+      .where("organizationId", "=", organizationId)
+      .orderBy("createdAt", "asc")
+      .execute();
+    const owning = rows.filter(
+      (row) =>
+        !except.has(row.userId) &&
+        (options.ownership
+          ? row.role === options.ownership.confers
+          : catalog.Role.safeParse(row.role).success && catalog.roleAllows(row.role as Role, "organization:delete")),
+    );
+    const people = await readPeople(
+      auth(c),
+      owning.map((row) => row.userId),
+    );
+    return owning.flatMap((row) => {
+      const person = people.get(row.userId);
+      return person ? [{ email: person.email, name: person.name, locale: person.locale ?? null }] : [];
+    });
+  }
+
+  /** How many members a cascade reached and skipped — counts for the trail, never the people. */
+  const cascadeFacts = (members: CascadeOutcome) => ({
+    members: members.mode,
+    reached: members.reached.length,
+    skipped: members.skipped.length,
+  });
+
+  /**
+   * Start one organization's purge now: `started` when this Worker binds the purge Workflow and it took the
+   * instance, `pending` when it binds none or the start failed — the organization is due either way, and the
+   * daily pass starts it. A failed start is not this call's failure: the deletion is already written.
+   */
+  async function startOrganizationPurge(
+    c: Ctx,
+    organizationId: string,
+    deletedAt: Date,
+  ): Promise<"started" | "pending"> {
+    const log = c.var.log?.child("organization");
+    const bound = workflowBindingFor(c.env as Record<string, unknown>, ORGANIZATION_PURGE_BINDING);
+    if (!bound) {
+      log?.warn("a deletion found no organization purge Workflow bound; the purge is pending", { organizationId });
+      return "pending";
+    }
+    try {
+      await startOrganizationPurgeInstance(bound, { organizationId, deletedAt: deletedAt.getTime(), at: new Date() });
+      return "started";
+    } catch (error) {
+      log?.warn("the organization purge could not be started; the daily pass will start it", {
+        organizationId,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      return "pending";
+    }
+  }
+
+  /**
+   * Start one member's account purge after a hard cascade deleted it, best effort: the account is due either way,
+   * and auth's own daily pass starts whatever this could not.
+   */
+  async function startMemberPurge(c: Ctx, userId: string, deletedAt: Date): Promise<void> {
+    const bound = workflowBindingFor(c.env as Record<string, unknown>, AUTH_PURGE_BINDING);
+    if (!bound) return;
+    try {
+      await startPurgeInstance(bound, { userId, deletedAt: deletedAt.getTime(), at: new Date() });
+    } catch (error) {
+      c.var.log?.child("organization").warn("a member's purge could not be started; auth's daily pass will start it", {
+        userId,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   return (backend) => {
     const app = backend as unknown as Hono<Env>;
 
@@ -840,8 +1076,12 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
         const database = db(c);
         // The membership join is the entitlement; the second read is only the rows it named. An
         // organization list built the other way round would be every tenant in the database, filtered.
-        const actable = await listActable(database, catalog, who.userId);
-        const acting = await resolveActing(database, catalog, who);
+        const now = clock();
+        const actable = await listActable(database, catalog, who.userId, now);
+        // Read without refusing: a selection naming an organization since suspended is cleared, and the list
+        // still answers — without it, and with nothing in force (#623).
+        const selection = await resolveSelection(database, catalog, { ...who, now });
+        const acting = selection?.kind === "acting" ? selection.acting : null;
         const rows = await readOrganizations(
           database,
           actable.map((membership) => membership.organizationId),
@@ -853,6 +1093,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
           }),
           acting: acting?.organizationId ?? null,
           chosen: acting?.chosen ?? false,
+          suspended: await countSuspended(database, who.userId, now),
         } satisfies OrganizationsResponse);
       },
     );
@@ -936,8 +1177,9 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
       async (c) => {
         const who = session(c);
         const database = db(c);
-        await chooseActing(database, { ...who, organizationId: c.req.valid("json").organizationId, now: clock() });
-        const acting = await resolveActing(database, catalog, who);
+        const now = clock();
+        await chooseActing(database, { ...who, organizationId: c.req.valid("json").organizationId, now });
+        const acting = await resolveActing(database, catalog, { ...who, now });
         if (!acting) {
           // The membership went between the proof and the read. Same 404 as every other absence.
           throw noSuchOrganization(
@@ -1475,6 +1717,12 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
         if (!organization) {
           throw offerInvalid(`organization ${invitation.organizationId} no longer exists`);
         }
+        // A suspended or deleted organization offers nothing (#623): `acceptInvitation` refuses the join, so the
+        // accept screen must not show an offer it cannot honor — nor the name and inviter of a shut tenant.
+        const standing = organizationStanding(organization, now);
+        if (standing.state !== "active") {
+          throw offerInvalid(`organization ${invitation.organizationId} is ${standing.state}`);
+        }
         const inviter = (await readPeople(auth(c), [invitation.invitedByUserId])).get(invitation.invitedByUserId);
         return c.json(invitationOfferView(invitation, organization.name, inviter));
       },
@@ -1790,7 +2038,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
         );
         return c.json({
           organizations: page.map((organization) =>
-            adminOrganizationView(organization, counts.get(organization.id) ?? 0),
+            adminOrganizationView(organization, counts.get(organization.id) ?? 0, clock()),
           ),
           truncated: rows.length > limit,
         } satisfies AdminOrganizationsResponse);
@@ -1868,8 +2116,258 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
         });
         const counts = await memberCounts(db(c), [organizationId]);
         return c.json({
-          organization: adminOrganizationView(updated, counts.get(organizationId) ?? 0),
+          organization: adminOrganizationView(updated, counts.get(organizationId) ?? 0, clock()),
         } satisfies AdminOrganizationResponse);
+      },
+    );
+
+    // ── the organization's own lifecycle: suspend, reinstate, delete, restore (#623) ────────────────
+
+    /**
+     * Suspend a tenant. Nobody can act in it until it is reinstated or `until` passes, and a member's selection of
+     * it is cleared on the request that finds it. A member of other organizations carries on in those.
+     *
+     * **`members: "sole"` reaches only the members whose only organization this is**, through the user lifecycle,
+     * with this reason. The default reaches nobody. The owners are told, with the reason.
+     */
+    app.post(
+      `${base}/admin/organizations/:organizationId/suspend`,
+      describeRoute({
+        summary: "Suspend a tenant, with a reason: nobody can act in it until it is reinstated or its end passes.",
+        description:
+          '`members: "sole"` also suspends the accounts of the members whose only organization this is; a member of any other is never modified. The owners are told why. Takes a reason.',
+        verification: "control-plane",
+        scopes: [ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE],
+        responses: { 200: AdminOrganizationSuspendResponse },
+      }),
+      gate(ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE),
+      validate("param", AdminOrganizationParam),
+      validate("json", AdminSuspendOrganization),
+      async (c) => {
+        const { organizationId } = c.req.valid("param");
+        const body = c.req.valid("json");
+        const organization = await lifecycleOrganization(c, organizationId);
+        const caller = operator(c);
+        // Resolved before anything is written, so a Worker that cannot reach a member's account refuses the call
+        // whole rather than suspending the organization and then failing its cascade.
+        const cascade = body.members === "sole" ? cascadeDeps(c, organizationId) : undefined;
+        const result = await suspendOrganization(lifecycle(c), {
+          organizationId,
+          actor: { type: "control-plane", id: caller.subject },
+          reason: body.reason,
+          until: body.until ? new Date(body.until) : null,
+          restoreRoute: restoreRoute(organizationId),
+        });
+        const members = cascade
+          ? await suspendSoleMembers(cascade, {
+              organizationId,
+              mode: "sole",
+              reason: body.reason,
+              until: result.suspendedUntil,
+            })
+          : NO_CASCADE;
+        // An owner the cascade reached has their own account's suspension notice, with the same reason, and the
+        // organization's notice ends by telling them their account is unaffected — so they are not sent it.
+        const reached = new Set(members.reached.map((member) => member.userId));
+        const recipients = await ownerRecipients(c, organizationId, reached);
+        const mailed = await notifyOwners(config, mailer(c), recipients, {
+          notice: "organizationSuspended",
+          organizationName: organization.name,
+          reason: body.reason,
+          until: result.suspendedUntil,
+        });
+        await recordOperator(c, organizationId, {
+          action: OrganizationAuditActions.adminOrganizationSuspended,
+          reason: body.reason,
+          resource: { type: "organization", id: organizationId },
+          severity: "warning",
+          facts: {
+            changed: result.changed,
+            updated: result.updated,
+            suspendedUntil: result.suspendedUntil?.toISOString() ?? null,
+            ...cascadeFacts(members),
+            mailed,
+          },
+        });
+        return c.json(
+          suspensionView(organizationId, result, mailed, members) satisfies AdminOrganizationSuspendResponse,
+        );
+      },
+    );
+
+    /**
+     * Lift a tenant's suspension. Its members see it again in their lists. **A member whose own account the
+     * cascade suspended stays suspended**, and the response names every member whose account is still refused.
+     */
+    app.post(
+      `${base}/admin/organizations/:organizationId/reinstate`,
+      describeRoute({
+        summary: "Lift a tenant's suspension, with a reason. It is back in every member's list.",
+        description:
+          "Reinstates no member's own account, a cascade's included; `membersStillShut` names each one still refused. Takes a reason.",
+        verification: "control-plane",
+        scopes: [ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE],
+        responses: { 200: AdminOrganizationReinstateResponse },
+      }),
+      gate(ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE),
+      validate("param", AdminOrganizationParam),
+      validate("json", AdminReason),
+      async (c) => {
+        const { organizationId } = c.req.valid("param");
+        const body = c.req.valid("json");
+        const organization = await lifecycleOrganization(c, organizationId);
+        const caller = operator(c);
+        const result = await reinstateOrganization(lifecycle(c), {
+          organizationId,
+          actor: { type: "control-plane", id: caller.subject },
+          reason: body.reason,
+          restoreRoute: restoreRoute(organizationId),
+        });
+        const mailed = result.changed
+          ? await notifyOwners(config, mailer(c), await ownerRecipients(c, organizationId), {
+              notice: "organizationReinstated",
+              organizationName: organization.name,
+            })
+          : null;
+        const shut = await membersStillShut(db(c), auth(c), organizationId, clock());
+        await recordOperator(c, organizationId, {
+          action: OrganizationAuditActions.adminOrganizationReinstated,
+          reason: body.reason,
+          resource: { type: "organization", id: organizationId },
+          facts: { changed: result.changed, membersStillShut: shut.length, mailed },
+        });
+        return c.json({
+          organizationId,
+          changed: result.changed,
+          mailed,
+          membersStillShut: shut,
+        } satisfies AdminOrganizationReinstateResponse);
+      },
+    );
+
+    /**
+     * Delete a tenant. **Soft by default**: shut now, gone from every member's list, and restorable — memberships
+     * and all — until `retention.purgeAfterDays` have passed; the owners are told the date. **`mode: "hard"`**
+     * closes the window and starts the purge now. `members: "sole"` deletes, the same way, the accounts of the
+     * members whose only organization this is.
+     */
+    app.delete(
+      `${base}/admin/organizations/:organizationId`,
+      describeRoute({
+        summary:
+          "Delete a tenant, with a reason: soft by default and restorable for its window; hard when named, purged now.",
+        description:
+          '`members: "sole"` also deletes the accounts of the members whose only organization this is; a member of any other is never modified. Takes a reason, in the body.',
+        verification: "control-plane",
+        scopes: [ORGANIZATION_ACCOUNTS_DELETE_SCOPE],
+        responses: { 200: AdminOrganizationDeleteResponse },
+      }),
+      gate(ORGANIZATION_ACCOUNTS_DELETE_SCOPE),
+      validate("param", AdminOrganizationParam),
+      validate("json", AdminDeleteOrganization),
+      async (c) => {
+        const { organizationId } = c.req.valid("param");
+        const body = c.req.valid("json");
+        const mode = body.mode ?? "soft";
+        const organization = await lifecycleOrganization(c, organizationId);
+        const caller = operator(c);
+        // Read before anything moves, so a hard deletion's owners are known even once its purge has run.
+        const owners = await ownerRecipients(c, organizationId);
+        // Resolved before anything is written, for the reason the suspension resolves it first.
+        const cascade = body.members === "sole" ? cascadeDeps(c, organizationId) : undefined;
+        const result = await removeOrganization(lifecycle(c), {
+          organizationId,
+          actor: { type: "control-plane", id: caller.subject },
+          reason: body.reason,
+          mode,
+          purgeAfterDays: config.retention.purgeAfterDays,
+        });
+        // Before the purge is started: the cascade asks who belongs elsewhere, and the purge takes the memberships.
+        const members = cascade
+          ? await deleteSoleMembers(cascade, {
+              organizationId,
+              mode: "sole",
+              reason: body.reason,
+              deletion: mode,
+              onHard: (userId, deletedAt) => startMemberPurge(c, userId, deletedAt),
+            })
+          : NO_CASCADE;
+        // A hard deletion starts its purge here; a soft one waits for the daily pass, unless its window has
+        // already closed, in which case it is due now and is started like a hard one.
+        const due = mode === "hard" || result.purgeAfter.getTime() <= clock().getTime();
+        const purge = due ? await startOrganizationPurge(c, organizationId, result.deletedAt) : "scheduled";
+        const mailed =
+          mode === "soft" && result.outcome === "deleted"
+            ? await notifyOwners(config, mailer(c), owners, {
+                notice: "organizationDeletionScheduled",
+                organizationName: organization.name,
+                purgeOn: result.purgeAfter,
+              })
+            : null;
+        await recordOperator(c, organizationId, {
+          action:
+            mode === "hard"
+              ? OrganizationAuditActions.adminOrganizationHardDeleted
+              : OrganizationAuditActions.adminOrganizationDeleted,
+          reason: body.reason,
+          resource: { type: "organization", id: organizationId },
+          severity: "warning",
+          facts: {
+            mode,
+            outcome: result.outcome,
+            purgeAfter: result.purgeAfter.toISOString(),
+            purge,
+            ...cascadeFacts(members),
+            mailed,
+          },
+        });
+        return c.json(
+          deletionView(organizationId, mode, result, purge, mailed, members) satisfies AdminOrganizationDeleteResponse,
+        );
+      },
+    );
+
+    /**
+     * Restore a deleted tenant inside its window, with every membership it had. After its window has closed it is
+     * a conflict; after the purge, a 404 whose action says the data is gone. **No member's own account is
+     * restored or reinstated**, and the response names each one still refused.
+     */
+    app.post(
+      `${base}/admin/organizations/:organizationId/restore`,
+      describeRoute({
+        summary: "Restore a deleted tenant inside its purge window, with every membership it had, and a reason.",
+        description:
+          "Restores no member's own account; `membersStillShut` names each one still suspended or deleted. A suspension the tenant was under stays. Takes a reason.",
+        verification: "control-plane",
+        scopes: [ORGANIZATION_ACCOUNTS_DELETE_SCOPE],
+        responses: { 200: AdminOrganizationRestoreResponse },
+      }),
+      gate(ORGANIZATION_ACCOUNTS_DELETE_SCOPE),
+      validate("param", AdminOrganizationParam),
+      validate("json", AdminReason),
+      async (c) => {
+        const { organizationId } = c.req.valid("param");
+        const body = c.req.valid("json");
+        await lifecycleOrganization(c, organizationId);
+        const caller = operator(c);
+        const result = await restoreOrganization(lifecycle(c), {
+          organizationId,
+          actor: { type: "control-plane", id: caller.subject },
+          reason: body.reason,
+        });
+        const shut = await membersStillShut(db(c), auth(c), organizationId, clock());
+        await recordOperator(c, organizationId, {
+          action: OrganizationAuditActions.adminOrganizationRestored,
+          reason: body.reason,
+          resource: { type: "organization", id: organizationId },
+          facts: { changed: result.changed, state: result.state, membersStillShut: shut.length },
+        });
+        return c.json({
+          organizationId,
+          changed: result.changed,
+          state: result.state,
+          membersStillShut: shut,
+        } satisfies AdminOrganizationRestoreResponse);
       },
     );
 

@@ -79,6 +79,7 @@ function provider(): MigrationProvider {
 
 beforeEach(async () => {
   for (const table of [
+    "pithy_organization_lifecycle",
     "pithy_organization_acting",
     "pithy_organization_ownership_nominations",
     "pithy_organization_invitations",
@@ -396,6 +397,72 @@ describe("acceptInvitation against a seat limit", () => {
       now: NOW,
     });
     expect(await membershipCount()).toBe(6);
+  });
+});
+
+describe("acceptInvitation into a suspended or deleted organization (#623)", () => {
+  /** Acme, in the lifecycle state the columns name. */
+  async function acme(columns: { suspendedAt?: Date; suspendedUntil?: Date; deletedAt?: Date; purgeAfter?: Date }) {
+    await db
+      .insertInto(ORGANIZATIONS_TABLE)
+      .values(
+        Organization.encode({
+          id: ORG,
+          name: "Acme",
+          slug: "acme",
+          logo: null,
+          seatLimit: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+          suspendedAt: columns.suspendedAt ?? null,
+          suspendedUntil: columns.suspendedUntil ?? null,
+          deletedAt: columns.deletedAt ?? null,
+          purgeAfter: columns.purgeAfter ?? null,
+        }),
+      )
+      .execute();
+  }
+
+  test("a suspended organization refuses the join with the dead-offer refusal, and writes no membership", async () => {
+    const minted = await offer();
+    await acme({ suspendedAt: NOW });
+    const error = await refusal(() =>
+      acceptInvitation(d1, catalog, {
+        token: minted.token,
+        session: { userId: ADA, email: "ada@example.com" },
+        now: NOW,
+      }),
+    );
+    expect(error.payload.code).toBe("organization/invitation_invalid");
+    expect(await membershipCount()).toBe(0);
+    // Pending still: a reinstatement makes the offer redeemable again, and the person was invited.
+    expect((await listInvitations(db, ORG)).map((row) => row.status)).toEqual(["pending"]);
+  });
+
+  test("a soft-deleted organization refuses the join, so a restore brings back no row written while it was shut", async () => {
+    const minted = await offer();
+    await acme({ deletedAt: NOW, purgeAfter: new Date(NOW.getTime() + 30 * 86_400_000) });
+    const error = await refusal(() =>
+      acceptInvitation(d1, catalog, {
+        token: minted.token,
+        session: { userId: ADA, email: "ada@example.com" },
+        now: NOW,
+      }),
+    );
+    expect(error.payload.code).toBe("organization/invitation_invalid");
+    expect(await membershipCount()).toBe(0);
+  });
+
+  test("a suspension whose end has passed is no suspension, and the join lands", async () => {
+    const minted = await offer();
+    await acme({ suspendedAt: new Date(NOW.getTime() - 2 * 86_400_000), suspendedUntil: new Date(NOW.getTime() - 1) });
+    const accepted = await acceptInvitation(d1, catalog, {
+      token: minted.token,
+      session: { userId: ADA, email: "ada@example.com" },
+      now: NOW,
+    });
+    expect(accepted.joined).toBe(true);
+    expect(await membershipCount()).toBe(1);
   });
 });
 

@@ -4,8 +4,10 @@
 import { describe, expect, test } from "vitest";
 import {
   AdminAddMember,
+  AdminDeleteOrganization,
   AdminInvitationsQuery,
   AdminReason,
+  AdminSuspendOrganization,
   AdminUpdateOrganization,
   CreateOrganization,
   createOrganizationBody,
@@ -90,5 +92,31 @@ describe("AdminUpdateOrganization", () => {
 
   test("an unknown field is refused rather than quietly dropped", () => {
     expect(AdminUpdateOrganization.safeParse({ reason: "r", name: "Globex", logo: null }).success).toBe(false);
+  });
+});
+
+describe("the organization lifecycle bodies (#623)", () => {
+  test("a suspension needs a reason, and members is absent rather than defaulted, so omission reaches nobody", () => {
+    expect(AdminSuspendOrganization.safeParse({}).success).toBe(false);
+    const parsed = AdminSuspendOrganization.parse({ reason: "Unpaid." });
+    expect(parsed).toEqual({ reason: "Unpaid." });
+    expect(AdminSuspendOrganization.safeParse({ reason: "r", members: "all" }).success).toBe(false);
+    expect(AdminSuspendOrganization.parse({ reason: "r", members: "sole" }).members).toBe("sole");
+  });
+
+  test("a suspension's end is an ISO-8601 instant", () => {
+    expect(AdminSuspendOrganization.safeParse({ reason: "r", until: "tomorrow" }).success).toBe(false);
+    expect(AdminSuspendOrganization.safeParse({ reason: "r", until: "2026-11-01T00:00:00.000Z" }).success).toBe(true);
+  });
+
+  test("a deletion is soft or hard, and nothing else, and refuses an unknown field", () => {
+    expect(AdminDeleteOrganization.parse({ reason: "r" })).toEqual({ reason: "r" });
+    expect(AdminDeleteOrganization.parse({ reason: "r", mode: "hard" }).mode).toBe("hard");
+    expect(AdminDeleteOrganization.safeParse({ reason: "r", mode: "purge" }).success).toBe(false);
+    expect(AdminDeleteOrganization.safeParse({ reason: "r", until: "2026-11-01T00:00:00.000Z" }).success).toBe(false);
+  });
+
+  test("a reason carrying an address is refused, as on every operator write", () => {
+    expect(AdminSuspendOrganization.safeParse({ reason: "asked by ada@example.com" }).success).toBe(false);
   });
 });

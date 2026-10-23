@@ -215,6 +215,7 @@ export const esErrors: MessageCatalog = {
   "organization/last_owner": "Es la única persona titular de la organización. Transfiere la titularidad primero.",
   "organization/already_member": "Esa persona ya es miembro de la organización.",
   "organization/seat_limit_reached": "La organización no tiene plazas libres.",
+  "organization/organization_suspended": "Esta organización está suspendida. Tu propia cuenta no se ve afectada.",
 
   // Artifacts.
   "artifacts/not_found": "Ese repositorio no existe.",

@@ -95,6 +95,8 @@ export interface OrganizationGuardDeps<Power extends string = string, Role exten
   readonly catalog: RoleCatalog<Power, Role>;
   /** The tenancy database, built from this invocation's D1 binding. */
   readonly database: (env: Record<string, unknown>) => OrganizationDatabase;
+  /** The clock a suspension is judged by. Defaults to the system's; injected so tests are deterministic. */
+  readonly now?: () => Date;
 }
 
 /**
@@ -165,6 +167,7 @@ export function requireOrganization<Power extends string, Role extends string>(
     }
 
     const db = deps.database(c.env);
+    const now = deps.now ? deps.now() : new Date();
 
     if (named) {
       const organizationId = namedOrganizationId(c, named);
@@ -173,7 +176,7 @@ export function requireOrganization<Power extends string, Role extends string>(
           `route declares a validated ${named.from} named ${named.name}; the request carried none`,
         );
       }
-      const acting = await resolveActingIn(db, deps.catalog, { userId: auth.userId, organizationId });
+      const acting = await resolveActingIn(db, deps.catalog, { userId: auth.userId, organizationId, now });
       if (!acting) {
         throw noSuchOrganization(`user ${auth.userId} has no membership in organization ${organizationId}`);
       }
@@ -182,8 +185,10 @@ export function requireOrganization<Power extends string, Role extends string>(
       return;
     }
 
-    const acting = await resolveActing(db, deps.catalog, { userId: auth.userId, sessionId: auth.sessionId });
-    if (!acting) throw await noOrganizationInForce(db, auth.userId);
+    // A selection naming a suspended organization is refused with `organization/organization_suspended` and
+    // cleared on the way (#623), so the next request finds nothing in force rather than the same refusal.
+    const acting = await resolveActing(db, deps.catalog, { userId: auth.userId, sessionId: auth.sessionId, now });
+    if (!acting) throw await noOrganizationInForce(db, auth.userId, now);
     c.set("acting", acting);
     await next();
   };
@@ -243,8 +248,12 @@ export function requirePower<Power extends string, Role extends string>(
  * costs. Neither names an organization, because both are facts about the caller's own rows — which is
  * why they may be said plainly where "that organization does not exist" may not.
  */
-async function noOrganizationInForce(db: OrganizationDatabase, userId: string): Promise<OrganizationNotFoundError> {
-  const belongs = await hasAnyMembership(db, userId);
+async function noOrganizationInForce(
+  db: OrganizationDatabase,
+  userId: string,
+  now: Date,
+): Promise<OrganizationNotFoundError> {
+  const belongs = await hasAnyMembership(db, userId, now);
   return new OrganizationNotFoundError({
     message: "No organization is in force.",
     action: belongs ? "Choose an organization to continue." : "Join or create an organization to continue.",

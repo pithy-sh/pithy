@@ -10,9 +10,11 @@ export const role = "organization-suspended";
 
 // Pithy's screen. Yours to override: put your own file at this path under src/routes/app/ and it wins.
 //
-// **It ships with the account screens, ahead of the state it describes.** Suspending an organization is its
-// own issue (#623); the screen is here so that issue lands on a screen an adopter already owns. Like the
-// other two it names nobody: the organization's owners were told why, so they are who to ask.
+// **Arrived at from a refusal, by role.** A member's request to act in a suspended organization is refused with
+// `organization/organization_suspended` (#623), and the chooser sends them here when every account they belong to
+// is suspended, or when the account they picked was suspended after the list was drawn. Your own screens do the same with `organizationRefusal` from
+// `@pithy-sh/organization/src/index`. Like the other two it names nobody: the organization's owners were told
+// why, so they are who to ask.
 
 /** This screen's English, baked in — the only catalog that survives being copied into your repository. */
 const EN = {

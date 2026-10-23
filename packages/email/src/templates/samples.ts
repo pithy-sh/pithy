@@ -43,6 +43,14 @@ export const samplePayloads: Record<string, unknown> = {
   organizationMemberAdded: { name: "Sam", organizationName: "Globex", role: "admin" },
   organizationMemberRemoved: { name: "Sam", organizationName: "Globex" },
   organizationOwnershipTransferred: { name: "Sam", organizationName: "Globex" },
+  organizationSuspended: {
+    name: "Sam",
+    organizationName: "Globex",
+    reason: "The invoice for October is unpaid.",
+    until: "19 November 2026",
+  },
+  organizationReinstated: { name: "Sam", organizationName: "Globex" },
+  organizationDeletionScheduled: { name: "Sam", organizationName: "Globex", purgeOn: "19 November 2026" },
   // `warning` rather than `info`: a sample is what somebody looks at to decide whether the severity is
   // legible, and the middle level is the one that has to earn its place between the other two.
   operationalNotice: {

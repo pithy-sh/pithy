@@ -134,7 +134,10 @@ const DECLARED_ONLY: Record<string, string> = {
  * and `secrets` by two: `rotation/fieldKeyRotation.ts` and `manager/fieldKeyWorkflow.ts`, which hand it the
  * adopter's own databases. The purge (#622) moved `auth` by two — `purge/contribution.ts` erases the account's rows
  * through one D1 batch, and `test-utils/accountFootprint.ts` seeds them — and `audit` by one: `capability.ts` builds
- * the recorder a Workflow step audits through over the env's own D1.
+ * the recorder a Workflow step audits through over the env's own D1. The organization lifecycle (#623) moved
+ * `organization` by four: `lifecycle/hooks.ts` and `lifecycle/transitions.ts`, the same pair auth's lifecycle added,
+ * and `purge/contribution.ts` and `purge/workflow.ts`, which erase an organization through the env's own D1 — and
+ * `media` and `storage` by one each: their `purge/contribution.ts`, which erases the organization's records and bytes.
  */
 const IMPORTERS: Record<string, number> = {
   "packages/artifacts": 2,
@@ -147,13 +150,13 @@ const IMPORTERS: Record<string, number> = {
   "packages/leaderboard": 5,
   "packages/ledger": 4,
   "packages/matchmaking": 8,
-  "packages/media": 7,
+  "packages/media": 8,
   "packages/multiplayer": 5,
-  "packages/organization": 7,
+  "packages/organization": 11,
   "packages/payments": 18,
   "packages/rating": 2,
   "packages/secrets": 7,
-  "packages/storage": 6,
+  "packages/storage": 7,
   "packages/support": 8,
   "packages/testers": 7,
   "packages/vector": 4,
