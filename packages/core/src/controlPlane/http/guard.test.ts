@@ -6,10 +6,11 @@ import { beforeAll, describe, expect, test } from "vitest";
 import type { AuditEventInput } from "../../audit/auditEvent";
 import type { PithyHonoEnv } from "../../capability/capability";
 import { pithyErrorHandler } from "../../error/http";
-import { PithyError } from "../../error/pithyError";
+import { NotFoundError, PithyError } from "../../error/pithyError";
 import { validate } from "../../http/validation";
 import { ControlPlaneConfig } from "../config/config";
 import type { ControlPlaneConnection, Ed25519PublicJwk } from "../data/connection";
+import { ControlPlaneInsufficientScopeError } from "../error/errors";
 import type { ReplayGuard } from "../replay/guard";
 import { KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE } from "../scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "../token/mint";
@@ -305,6 +306,69 @@ describe("requireControlPlane", () => {
       } finally {
         connection = saved;
       }
+    });
+  });
+
+  describe("a scope refusal raised by the handler, past the gate", () => {
+    /**
+     * A route whose handler needs a grant the gate's own requirement does not name — the operator roster
+     * write that moves the owning role is one — and refuses it itself. The gate let the call in, so it
+     * wrote `call_allowed`; the refusal still has to be in the trail as a denial.
+     */
+    function refusingApp(events: AuditEventInput[], refusal: Error) {
+      const app = new Hono<PithyHonoEnv>();
+      app.onError(pithyErrorHandler);
+      app.use("*", async (c, next) => {
+        c.set("auth", null);
+        c.set("controlPlane", null);
+        c.set("controlPlaneVerifier", verifier());
+        c.set("emit", async (event: AuditEventInput) => {
+          events.push(event);
+        });
+        await next();
+      });
+      app.get("/control-plane/act", requireControlPlane(MANIFEST_READ_SCOPE), () => {
+        throw refusal;
+      });
+      return app;
+    }
+
+    async function call(events: AuditEventInput[], refusal: Error): Promise<Response> {
+      return refusingApp(events, refusal).request("/control-plane/act", {
+        headers: { [CONTROL_PLANE_HEADER]: await token({ scope: MANIFEST_READ_SCOPE }) },
+      });
+    }
+
+    test("is recorded as a denied call, naming the verified caller", async () => {
+      const events: AuditEventInput[] = [];
+      const response = await call(events, new ControlPlaneInsufficientScopeError({ detail: "needs more" }));
+      expect(response.status).toBe(403);
+      expect(events.map((event) => event.action)).toEqual(["controlplane/call_allowed", "controlplane/call_denied"]);
+      expect(events[1]).toMatchObject({
+        outcome: "denied",
+        severity: "warning",
+        actorType: "control-plane",
+        actorId: SUBJECT,
+        actorKind: "agent",
+        resourceType: "controlplane_connection",
+        resourceId: CONNECTION_ID,
+        metadata: {
+          reason: "controlplane/insufficient_scope",
+          required: MANIFEST_READ_SCOPE,
+          refusedBy: "handler",
+          method: "GET",
+          path: "/control-plane/act",
+        },
+      });
+      // The step stays in the log; the trail carries the code.
+      expect(JSON.stringify(events[1])).not.toContain("needs more");
+    });
+
+    test("any other refusal a handler raises is the handler's to record, not the gate's", async () => {
+      const events: AuditEventInput[] = [];
+      const response = await call(events, new NotFoundError({ detail: "no such row" }));
+      expect(response.status).toBe(404);
+      expect(events.map((event) => event.action)).toEqual(["controlplane/call_allowed"]);
     });
   });
 

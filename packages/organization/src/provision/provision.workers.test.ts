@@ -11,9 +11,17 @@ import type { MigrationProvider } from "kysely/migration";
 import { D1Dialect } from "kysely-d1";
 import { beforeEach, describe, expect, test } from "vitest";
 import { Organization } from "../data/organization";
-import { ORGANIZATION_MIGRATION_ORDER, organization_0001_init } from "../migrations/0001_init";
+import { ORGANIZATION_MIGRATION_ORDER } from "../migrations/0001_init";
+import { ORGANIZATION_MIGRATIONS } from "../migrations/set";
 import { defineRoles } from "../roles/roles";
-import { createOrganization, deleteOrganization, founderRole, renameOrganization, setLogo } from "./provision";
+import {
+  createOrganization,
+  deleteOrganization,
+  founderRole,
+  renameOrganization,
+  setLogo,
+  updateOrganizationAsOperator,
+} from "./provision";
 
 /**
  * Founding, changing and ending an account, against real D1.
@@ -94,7 +102,7 @@ function provider(): MigrationProvider {
       database: "app",
       namespace: "organization",
       order: ORGANIZATION_MIGRATION_ORDER,
-      migrations: { "0001_init": organization_0001_init },
+      migrations: ORGANIZATION_MIGRATIONS,
     },
   ]);
   const found = registry.app;
@@ -591,6 +599,111 @@ describe("renameOrganization", () => {
     }).catch((error: unknown) => error);
     expect(codeOf(failure)).toBe("organization/not_found");
     expect((failure as PithyError).payload.status).toBe(404);
+  });
+});
+
+describe("updateOrganizationAsOperator", () => {
+  test("changes the name, the short name and the seat limit together", async () => {
+    const { organization } = await createOrganization(env.DB, NESTING, {
+      name: "Acme",
+      slug: "acme",
+      founderUserId: FOUNDER,
+    });
+    const later = new Date("2026-03-03T00:00:00.000Z");
+    const updated = await updateOrganizationAsOperator(env.DB, {
+      organizationId: organization.id,
+      name: "Acme Games",
+      slug: "acme-games",
+      seatLimit: 25,
+      now: later,
+    });
+    expect(updated.name).toBe("Acme Games");
+    expect(updated.slug).toBe("acme-games");
+    expect(updated.seatLimit).toBe(25);
+    expect(updated.updatedAt).toEqual(later);
+  });
+
+  test("absent leaves a field alone, and a null seat limit lifts the limit", async () => {
+    const { organization } = await createOrganization(env.DB, NESTING, {
+      name: "Acme",
+      slug: "acme",
+      founderUserId: FOUNDER,
+    });
+    await updateOrganizationAsOperator(env.DB, { organizationId: organization.id, seatLimit: 3, now: new Date() });
+    const lifted = await updateOrganizationAsOperator(env.DB, {
+      organizationId: organization.id,
+      seatLimit: null,
+      now: new Date(),
+    });
+    expect(lifted.seatLimit).toBeNull();
+    expect(lifted.name).toBe("Acme");
+    expect(lifted.slug).toBe("acme");
+  });
+
+  test("a short name another account holds is refused, naming the holder, and nothing is written", async () => {
+    const { organization: beta } = await createOrganization(env.DB, NESTING, {
+      name: "Beta Studio",
+      slug: "beta",
+      founderUserId: FOUNDER,
+    });
+    const { organization } = await createOrganization(env.DB, NESTING, {
+      name: "Acme",
+      slug: "acme",
+      founderUserId: FOUNDER,
+    });
+    const failure = await updateOrganizationAsOperator(env.DB, {
+      organizationId: organization.id,
+      name: "Renamed",
+      slug: "beta",
+      now: new Date(),
+    }).catch((error: unknown) => error);
+    expect(codeOf(failure)).toBe("organization/slug_taken");
+    const payload = (failure as PithyError).payload;
+    expect(payload.message).toContain("Beta Studio");
+    expect(payload.params).toMatchObject({ slug: "beta", holderId: beta.id, holderName: "Beta Studio" });
+    const row = await env.DB.prepare("select name, slug from pithy_organization_organizations where id = ?")
+      .bind(organization.id)
+      .first<{ name: string; slug: string }>();
+    expect(row).toEqual({ name: "Acme", slug: "acme" });
+  });
+
+  test("the account's own short name is not a collision with itself", async () => {
+    const { organization } = await createOrganization(env.DB, NESTING, {
+      name: "Acme",
+      slug: "acme",
+      founderUserId: FOUNDER,
+    });
+    const updated = await updateOrganizationAsOperator(env.DB, {
+      organizationId: organization.id,
+      slug: "acme",
+      now: new Date(),
+    });
+    expect(updated.slug).toBe("acme");
+  });
+
+  test("a short name or a seat limit the column would not hold is refused", async () => {
+    const { organization } = await createOrganization(env.DB, NESTING, {
+      name: "Acme",
+      slug: "acme",
+      founderUserId: FOUNDER,
+    });
+    for (const input of [{ slug: "Not Safe" }, { seatLimit: 0 }, { seatLimit: 1.5 }]) {
+      const failure = await updateOrganizationAsOperator(env.DB, {
+        organizationId: organization.id,
+        ...input,
+        now: new Date(),
+      }).catch((error: unknown) => error);
+      expect(codeOf(failure), JSON.stringify(input)).toBe("validation/invalid_input");
+    }
+  });
+
+  test("an organization that is not there is the same 404 as everywhere else", async () => {
+    const failure = await updateOrganizationAsOperator(env.DB, {
+      organizationId: "00000000-0000-4000-8000-000000000000",
+      name: "Ghost",
+      now: new Date(),
+    }).catch((error: unknown) => error);
+    expect(codeOf(failure)).toBe("organization/not_found");
   });
 });
 

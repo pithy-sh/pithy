@@ -1525,6 +1525,42 @@ const OrganizationNominationInvalidPublic = z
   })
   .describe("No standing ownership offer this caller may accept (400).");
 
+const OrganizationLastOwnerPublic = z
+  .object({
+    code: z
+      .literal("organization/last_owner")
+      .describe(
+        "An operator write would leave the account with nobody holding the role a transfer of ownership confers: removing or demoting its only owner. An account with no owner is the unadministrable state membership administration exists to get out of, so the way out is to force ownership onto somebody else first, which `params.ownershipRoute` names.",
+      ),
+    status: z.literal(409).describe("Conflict — an account nobody owns is not a state to arrive at."),
+    ...publicFields,
+  })
+  .describe("The last owner cannot be removed or demoted (409).");
+
+const OrganizationAlreadyMemberPublic = z
+  .object({
+    code: z
+      .literal("organization/already_member")
+      .describe(
+        "An operator tried to add somebody who already holds a membership in the account. One membership per person per organization, so this is a refusal rather than a second row — and `params.role` names the role they already hold, because the next step is a role change rather than an add.",
+      ),
+    status: z.literal(409).describe("Conflict."),
+    ...publicFields,
+  })
+  .describe("That person is already a member (409).");
+
+const OrganizationSeatLimitReachedPublic = z
+  .object({
+    code: z
+      .literal("organization/seat_limit_reached")
+      .describe(
+        "The account holds as many members as its seat limit allows, so another one would exceed it. `params.seatLimit` names the limit. An operator add may override it, and the override is recorded; an invitation accepted against a full account is refused until a seat frees.",
+      ),
+    status: z.literal(409).describe("Conflict."),
+    ...publicFields,
+  })
+  .describe("The account has no free seat (409).");
+
 // --- @pithy-sh/artifacts: Git repositories, ownership, grants and short-lived tokens ---
 
 const ArtifactsNotFoundPublic = z
@@ -1908,6 +1944,9 @@ export const KitPublicErrorPayload = z
     OrganizationLastAdministratorPublic,
     OrganizationSlugTakenPublic,
     OrganizationNominationInvalidPublic,
+    OrganizationLastOwnerPublic,
+    OrganizationAlreadyMemberPublic,
+    OrganizationSeatLimitReachedPublic,
     ArtifactsNotFoundPublic,
     ArtifactsForbiddenPublic,
     ArtifactsInvalidNamePublic,
@@ -2304,6 +2343,15 @@ const OrganizationSlugTaken = OrganizationSlugTakenPublic.extend(internalFields)
 const OrganizationNominationInvalid = OrganizationNominationInvalidPublic.extend(internalFields).describe(
   OrganizationNominationInvalidPublic.description ?? "",
 );
+const OrganizationLastOwner = OrganizationLastOwnerPublic.extend(internalFields).describe(
+  OrganizationLastOwnerPublic.description ?? "",
+);
+const OrganizationAlreadyMember = OrganizationAlreadyMemberPublic.extend(internalFields).describe(
+  OrganizationAlreadyMemberPublic.description ?? "",
+);
+const OrganizationSeatLimitReached = OrganizationSeatLimitReachedPublic.extend(internalFields).describe(
+  OrganizationSeatLimitReachedPublic.description ?? "",
+);
 
 const ArtifactsNotFound = ArtifactsNotFoundPublic.extend(internalFields).describe(
   ArtifactsNotFoundPublic.description ?? "",
@@ -2469,6 +2517,9 @@ export const KitErrorPayload = z
     OrganizationLastAdministrator,
     OrganizationSlugTaken,
     OrganizationNominationInvalid,
+    OrganizationLastOwner,
+    OrganizationAlreadyMember,
+    OrganizationSeatLimitReached,
     ArtifactsNotFound,
     ArtifactsForbidden,
     ArtifactsInvalidName,

@@ -99,7 +99,7 @@ export const roles = defineRoles({
 
 `nests` is asserted, not documented: every power `member` holds `admin` must hold, and every power `admin` holds `owner` must hold, or the catalog is refused at boot naming both roles. That is what makes a promotion and a demotion mean something a person can predict.
 
-`unassignable: ["owner"]` is why a new organization here has no owner. Ownership is who pays the bill and signs, so it is accepted rather than conferred — it moves only by a two-party transfer — and the founder of an account gets the first role that administers and *may be assigned*, which is `admin`. Such an account works: it can be administered, invited into, read and renamed. It cannot be billed, which is the model saying out loud that nobody has yet agreed to pay for it.
+`unassignable: ["owner"]` is why a new organization here has no owner. Ownership is who pays the bill and signs, so it is accepted rather than conferred — inside the account it moves only by a two-party transfer, and otherwise only by an operator through the control plane ([Membership administration](#membership-administration)) — and the founder of an account gets the first role that administers and *may be assigned*, which is `admin`. Such an account works: it can be administered, invited into, read and renamed. It cannot be billed, which is the model saying out loud that nobody has yet agreed to pay for it.
 
 ### A catalog that does not
 
@@ -180,6 +180,14 @@ They are two settings because they are two things: one is where this capability'
 | `GET {base}/members/:membershipId/image` | A member's stored image | session | `organization:read` |
 | `GET {base}/admin/organizations` | Every tenant, with how many people are in each | control-plane | `organization:accounts:read` |
 | `GET {base}/admin/organizations/:organizationId/members` | One tenant's roster, with addresses | control-plane | `organization:members:read` |
+| `PATCH {base}/admin/organizations/:organizationId` | Rename a tenant, give it a free short name, set its seat limit | control-plane | `organization:accounts:write` |
+| `POST {base}/admin/organizations/:organizationId/members` | Add an existing user at a named role | control-plane | `organization:members:write` |
+| `PATCH {base}/admin/organizations/:organizationId/members/:membershipId` | Change a member's role, to any role the catalog declares but the owning one | control-plane | `organization:members:write` |
+| `DELETE {base}/admin/organizations/:organizationId/members/:membershipId` | Remove a member, and clear their selection | control-plane | `organization:members:write` |
+| `GET {base}/admin/organizations/:organizationId/invitations` | A tenant's outstanding invitations, to fix one | control-plane | `organization:members:write` |
+| `POST {base}/admin/organizations/:organizationId/invitations/:invitationId/resend` | Send one again with a fresh link, expired or not | control-plane | `organization:members:write` |
+| `DELETE {base}/admin/organizations/:organizationId/invitations/:invitationId` | Revoke one, so its link stops working | control-plane | `organization:members:write` |
+| `POST {base}/admin/organizations/:organizationId/ownership` | Make a member the owner now, with no nomination and no acceptance | control-plane | `organization:ownership:transfer` |
 
 **`slug` is optional on `POST {base}`, and who may pick one is a setting.** Send one and it behaves as it always has: held to the column's rule, unique across every organization, and a collision refuses rather than renaming — an address somebody picked is theirs to keep or to be told is gone. Omit it and the server derives one from the name.
 
@@ -195,9 +203,42 @@ A name that reduces to nothing keeps a short name of its own. `Café Ñandú` is
 
 **The three ownership routes mount only where a project declares the pair of roles a transfer moves.** A catalog with no two-party transfer has no ownership surface at all, rather than one that answers 404 for reasons a client has to guess.
 
-**Both control-plane routes are reads, and there is no management write.** Every mutation here is an administrative act inside one account, audited against the membership that took it, and a control-plane credential holds no membership by design — so a management write would be a change to somebody's roster attributed to nobody, in the one table an adopter reads to find out who did what. The operator's path is your own code, calling the store functions with an actor it can name.
+Two read scopes rather than one, because these are two blast radii: the account list is names and counts, and a roster is your customers' addresses. `scopeCovers` matches exactly, so holding the first confers nothing about the second.
 
-Two scopes rather than one, because these are two blast radii: the account list is names and counts, and a roster is your customers' addresses. `scopeCovers` matches exactly, so holding the first confers nothing about the second.
+## Membership administration
+
+Support can act on an account through the control plane: add or remove a member, change a role, force ownership when the owner is gone, fix an invitation, and hold a seat limit. The routes are the last eight rows of the table above.
+
+**Every one takes a reason, and every one is audited.** The reason is a required field of the JSON body — a `DELETE` included, because the control-plane token signs the body — and of the query on the invitation listing. It is at most 500 characters and may not contain an email address, because the trail refuses addresses; name a member or an invitation by its id. Each act writes an `organization/admin_*` audit event with `actorType: "control-plane"`, the token's `sub` as the actor, the connection, the reason, the tenant, and the membership, invitation or organization it was done to.
+
+**Three write scopes, separate from the reads and from each other.** `organization:members:write` covers who is in an account: add, remove, change a role, and list, resend or revoke an invitation. `organization:accounts:write` covers what it is: its name, its short name, its seat limit. `organization:ownership:transfer` covers who owns it, and only the ownership route exercises it. A control-plane token is minted for one scope and exercises that one, whatever else its connection was granted, so a roster call never carries the transfer scope: an add at the owning role, a role change to or from it, or the removal of an owner is refused 403 with `controlplane/insufficient_scope`, naming the ownership route in `params.ownershipRoute`, even on a connection granted both. Otherwise a roster token could add a second owner and remove the first, with no ownership-scoped call, no forced-ownership event and no notice to the new owner. The refusal is written to the trail as `controlplane/call_denied`, like any other scope refusal. A client holding only the read scopes is refused 403 on all eight. An organization id that names no account is a 404 on every one, and so is the read roster's.
+
+**The last owner stays.** The owner is the role your `ownership` pair confers. Removing or demoting the last one is refused with `organization/last_owner` (409), and the refusal names the route that moves ownership in `params.ownershipRoute`. An account with no owner is the state this surface exists to get out of. The last administrator stays too, on the member surface's own floor. Both rules are carried in the write, so two concurrent removals cannot both land, and so is the role each write was decided from: a member made the owner while their removal or role change was running is refused with `core/conflict` (409) rather than removed or changed under a member's rules. A project with no `ownership` pair has no owner and no forced-ownership route; the administrator floor is the only one.
+
+**An add is a membership, not an invitation.** The user must already have an account: an unknown `userId` is a 404. Somebody already in the account is refused with `organization/already_member`, naming the role they hold. The role may be any role the catalog declares but the owning one, `unassignable` ones included, and so may a role change; a role the catalog does not declare is refused, listing the ones it does. Ownership moves through the forced-ownership route alone.
+
+**Forcing ownership moves it now.** No nomination and no acceptance. `previousOwner: "keep"` demotes whoever held it to the role the pair falls back to; `"remove"` ends their membership and their selection. Any standing offer is spent. The event is recorded at `warning`, and each previous holder gets an event of their own naming them, with the same reason: `organization/admin_member_removed` for `"remove"`, `organization/admin_member_role_changed` for `"keep"`, each with `forcedOwnershipTo` set to the new holder's membership. A nominee who leaves the account while the transfer runs takes nothing with them: the batch is conditional on their membership, so it changes nothing and answers 404.
+
+**An owner whose tenure an operator ends takes their offers with them.** Forcing ownership away from an owner, kept or removed, spends any offer of ownership they made in the same write, so its nominee cannot take the account from the new owner.
+
+**A seat limit is stored on the account** (`seatLimit`, set with `PATCH`; `null` lifts it). An add that would exceed it is refused with `organization/seat_limit_reached`, naming the limit, unless the request sets `overrideSeatLimit: true` — then it lands, and the audit event records `overrodeSeatLimit: true`. An invitation accepted against a full account is refused the same way, and the offer stays pending until a seat frees. Lowering the limit below the roster removes nobody.
+
+**Changing the short name is an operator's act alone.** A short name another account holds is refused with `organization/slug_taken`, naming that account.
+
+**Resending an invitation issues a fresh link, expired or not, and the old one stops working.** Revoking one makes its link unusable. Listing them is under the write scope, because the list is addresses and it is read to fix one; the read is audited with its reason.
+
+**The people affected are told.** A member an operator added or removed, and a new owner, each get a notice through `@pithy-sh/email` — `organizationMemberAdded`, `organizationMemberRemoved`, `organizationOwnershipTransferred` — in their own language. A previous owner removed by a forced transfer is told they were removed. The operator's reason is never in the mail. Each is switchable off:
+
+```ts
+organization({
+  roles,
+  ownership: { confers: "owner", demotesTo: "admin" },
+  // All three send by default.
+  operatorEmails: { memberAdded: true, memberRemoved: true, ownershipTransferred: true },
+});
+```
+
+With no email composed nothing is sent and nothing is refused: the change has already happened, and the audit event records `mailed: null`.
 
 **`ORGANIZATION_ROUTES` in `src/http/routes.ts` is the registry this table mirrors**, and `routeContract.test.ts` compares that registry against what Hono actually mounted, in both directions, then calls every route with no credential and asserts which gate answered. A route added without an entry is a route whose verification nobody declared; an entry naming a route nobody mounts is a promise to a client that 404s.
 

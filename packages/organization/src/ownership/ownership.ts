@@ -4,9 +4,11 @@
 import type { D1Database, D1PreparedStatement, D1Result } from "@cloudflare/workers-types";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { withD1Retry } from "@pithy-sh/core/src/data/withD1Retry";
+import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import type { CompiledQuery } from "kysely";
 import { OwnershipNomination } from "../data/ownershipNomination";
 import {
+  ACTING_TABLE,
   MEMBERSHIPS_TABLE,
   type OrganizationDatabase,
   OWNERSHIP_NOMINATIONS_TABLE,
@@ -16,6 +18,7 @@ import {
   OrganizationForbiddenError,
   OrganizationInvalidRoleCatalogError,
   OrganizationNominationInvalidError,
+  OrganizationNotFoundError,
 } from "../error/errors";
 import type { RoleCatalog } from "../roles/roles";
 
@@ -81,9 +84,10 @@ import type { RoleCatalog } from "../roles/roles";
  * **What is left to the routes is how narrow to make it**, over `billing:manage` and
  * `organization:manage` — a product may require a power to reach this at all. It may not widen it.
  *
- * An account whose holder has vanished is therefore stuck, and that is deliberate: it is repaired by an
- * operator writing the row, which leaves a trace, rather than by a route that could be reached by
- * anybody the day somebody mis-scopes it.
+ * An account whose holder has vanished is therefore stuck on this surface, and that is deliberate: no
+ * route a member can reach repairs it. The repair is {@link forceOwnership}, an operator's act behind its
+ * own control-plane scope with a reason recorded (#624) — a route that only a management credential
+ * granted `organization:ownership:transfer` can reach, rather than one a mis-scoped member route could.
  *
  * ## An organization may have no owner at all
  *
@@ -577,6 +581,220 @@ export async function acceptNomination<Power extends string, Role extends string
   }
 
   return { newHolderMembershipId: nominee.id, previousHolderMembershipIds: previous.map((holder) => holder.id) };
+}
+
+/** What an operator's forced transfer names. */
+export interface ForceOwnershipOptions<Role extends string> {
+  /** The organization, from the path. */
+  readonly organizationId: string;
+  /** The new owner's membership. They are already in the account; an operator adds them first if not. */
+  readonly membershipId: string;
+  /**
+   * What happens to whoever held it: `keep` demotes them to {@link OwnershipRoles.demotesTo}, `remove`
+   * ends their membership, their selection of the account, and any offer made to them.
+   *
+   * Required and never defaulted. The two are different answers to *what happened to the person who
+   * left*, and a default would be the operator's answer chosen by somebody else.
+   */
+  readonly previousOwner: "keep" | "remove";
+  /** The roles this transfer moves. */
+  readonly roles: OwnershipRoles<Role>;
+}
+
+/** What a forced transfer moved. */
+export interface ForcedOwnership {
+  /** The membership that now holds the conferred role, and whose it is. */
+  readonly newHolder: { readonly id: string; readonly userId: string };
+  /** The memberships that held it, and whose they were. Empty for an account nobody owned. */
+  readonly previousHolders: readonly { readonly id: string; readonly userId: string }[];
+  /** Whether those memberships were ended rather than demoted. */
+  readonly removed: boolean;
+}
+
+/**
+ * Make a member the owner **now** — no nomination, no acceptance. The break-glass path (#624).
+ *
+ * **The two-party rule is the member surface's, and this is not that surface.** An owner who has left
+ * the company cannot hand the account on, which is exactly when an account needs handing on, and the
+ * module note's "repaired by an operator, which leaves a trace" is this function: behind a control-plane
+ * scope of its own, with the reason recorded by the route.
+ *
+ * **One batch, in the module's own order.** Demote or remove the previous holders first, promote the
+ * new one, and spend any standing offer — an offer made under the old owner is not one the new owner
+ * made, and leaving it would let its nominee take the account back from them. With `remove`, each
+ * previous holder's selection of the account goes in the same batch, keyed to the same rows the removal
+ * ends. The previous holders are whoever holds the role **when the batch runs**, matched by role in each
+ * statement and reported from the batch's own read — never an id list read before it, which a concurrent
+ * forced transfer or acceptance makes stale and which would leave two owners.
+ *
+ * **Every statement is conditional on the nominee still being in the account.** The nominee is read, then
+ * the holders, then the batch runs — and in that window the nominee can leave, or be removed by an
+ * operator. Unconditioned, the batch would demote or delete every previous holder and then promote
+ * nobody, leaving an account with no owner and possibly no administrator, which nothing can undo. So the
+ * demotion, the removal, the selection cleanup and the spending of offers each carry `exists (the
+ * nominee's membership)`, and a batch whose nominee has gone changes nothing; the read-back below then
+ * answers the ordinary 404.
+ *
+ * **The administrator floor cannot be crossed here**, by the same argument {@link acceptNomination}
+ * makes: {@link requireTransferableRoles} guarantees the conferred role administers, so the account
+ * gains an administrator in the batch that loses any — and the condition above is what makes "gains"
+ * true of every batch that commits a loss.
+ */
+export async function forceOwnership<Power extends string, Role extends string>(
+  d1: D1Database,
+  catalog: RoleCatalog<Power, Role>,
+  options: ForceOwnershipOptions<Role>,
+): Promise<ForcedOwnership> {
+  requireTransferableRoles(catalog, options.roles);
+  const db = organizationDatabase(d1);
+
+  const nominee = await db
+    .selectFrom(MEMBERSHIPS_TABLE)
+    .select(["id", "userId", "role"])
+    .where("id", "=", options.membershipId)
+    .where("organizationId", "=", options.organizationId)
+    .executeTakeFirst();
+  if (!nominee) {
+    throw new OrganizationNotFoundError({
+      message: "No such member.",
+      action: "Add them to the organization first, then make them the owner.",
+      detail: `membership ${options.membershipId} is not in organization ${options.organizationId}`,
+    });
+  }
+  if (nominee.role === options.roles.confers) {
+    throw new ConflictError({
+      message: "That member already owns this organization.",
+      detail: `membership ${nominee.id} already holds ${options.roles.confers}`,
+    });
+  }
+
+  /*
+    **Who held it is decided inside the batch, never by a read before it.** Two forced transfers, or a
+    force racing an acceptance, both read the same holder; a demotion keyed to that id list would match a
+    row the other call had already moved, leave the member it promoted untouched, and end with two owners.
+    So every statement that takes the role away names it by `role = confers and id != nominee` — the
+    shape `acceptNomination` uses — and the holders this call reports are read by the batch's own first
+    statement, in the same transaction as the writes that move them.
+  */
+  const holders = db
+    .selectFrom(MEMBERSHIPS_TABLE)
+    .where("organizationId", "=", options.organizationId)
+    .where("role", "=", options.roles.confers)
+    .where("id", "!=", nominee.id);
+
+  // The nominee, still in the account — carried into every statement that takes something away, so a
+  // nominee who left between the read and the batch makes the whole batch a no-op rather than a loss.
+  const nomineeStays = db
+    .selectFrom(`${MEMBERSHIPS_TABLE} as nominee`)
+    .select("nominee.id")
+    .where("nominee.id", "=", nominee.id)
+    .where("nominee.organizationId", "=", options.organizationId);
+
+  const statements: D1PreparedStatement[] = [
+    prepared(
+      d1,
+      holders
+        .select(["id", "userId"])
+        .where((eb) => eb.exists(nomineeStays))
+        .orderBy("id", "asc"),
+    ),
+  ];
+  if (options.previousOwner === "keep") {
+    statements.push(
+      prepared(
+        d1,
+        db
+          .updateTable(MEMBERSHIPS_TABLE)
+          .set({ role: options.roles.demotesTo })
+          .where("organizationId", "=", options.organizationId)
+          .where("role", "=", options.roles.confers)
+          .where("id", "!=", nominee.id)
+          .where((eb) => eb.exists(nomineeStays)),
+      ),
+    );
+  } else {
+    statements.push(
+      // The selections first, while the memberships they belong to can still be named: the same rows the
+      // delete below ends, read in the same transaction, so a selection goes exactly when its membership
+      // does — the rule `members.ts` states for every removal.
+      prepared(
+        d1,
+        db
+          .deleteFrom(ACTING_TABLE)
+          .where("organizationId", "=", options.organizationId)
+          .where("userId", "in", holders.select("userId"))
+          .where((eb) => eb.exists(nomineeStays)),
+      ),
+      prepared(
+        d1,
+        db
+          .deleteFrom(MEMBERSHIPS_TABLE)
+          .where("organizationId", "=", options.organizationId)
+          .where("role", "=", options.roles.confers)
+          .where("id", "!=", nominee.id)
+          .where((eb) => eb.exists(nomineeStays)),
+      ),
+    );
+  }
+  const promotion = statements.length;
+  statements.push(
+    prepared(
+      d1,
+      db
+        .updateTable(MEMBERSHIPS_TABLE)
+        .set({ role: options.roles.confers })
+        .where("id", "=", nominee.id)
+        .where("organizationId", "=", options.organizationId),
+    ),
+    // Any standing offer is spent: it was made under the account's previous owner. Only when the transfer
+    // lands, like everything else here.
+    prepared(
+      d1,
+      db
+        .deleteFrom(OWNERSHIP_NOMINATIONS_TABLE)
+        .where("organizationId", "=", options.organizationId)
+        .where((eb) => eb.exists(nomineeStays)),
+    ),
+  );
+
+  const written = await withD1Retry<D1Result<unknown>[] | undefined>(() => d1.batch(statements));
+
+  // The transfer happened exactly when the promotion changed the nominee's row. Not a read-back of the
+  // role: a forced transfer that lands just after this one rightly takes the role away again, and this
+  // call still moved the account. Only when `withD1Retry`'s idempotency guard hides the change counts
+  // does a read-back stand in, and then the nominee holding the role is the evidence there is.
+  const landed =
+    written === undefined
+      ? (
+          await db
+            .selectFrom(MEMBERSHIPS_TABLE)
+            .select(["role"])
+            .where("id", "=", nominee.id)
+            .where("organizationId", "=", options.organizationId)
+            .executeTakeFirst()
+        )?.role === options.roles.confers
+      : written[promotion]?.meta?.changes === 1;
+  if (!landed) {
+    throw new OrganizationNotFoundError({
+      message: "No such member.",
+      detail: `membership ${nominee.id} left organization ${options.organizationId} before ownership reached it`,
+    });
+  }
+
+  // The rows the batch's first statement saw, which are the rows its writes moved. `undefined` is
+  // `withD1Retry`'s idempotency guard, which only a unique-constraint failure on a retry produces and
+  // nothing in this batch can raise; were it ever to, the batch committed and a fresh read cannot say
+  // who it moved, so the report is empty rather than a guess.
+  const previousHolders = (written?.[0]?.results ?? []).map((row) => {
+    const { id, user_id } = row as { id: string; user_id: string };
+    return { id, userId: user_id };
+  });
+
+  return {
+    newHolder: { id: nominee.id, userId: nominee.userId },
+    previousHolders,
+    removed: options.previousOwner === "remove" && previousHolders.length > 0,
+  };
 }
 
 /** The one refusal every unacceptable offer gets, with the fact that distinguishes it in `detail`. */

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import type { MigrationProvider } from "kysely/migration";
@@ -17,9 +18,21 @@ import {
   OWNERSHIP_NOMINATIONS_TABLE,
   organizationDatabase,
 } from "../data/tables";
-import { ORGANIZATION_MIGRATION_ORDER, organization_0001_init } from "../migrations/0001_init";
+import { ORGANIZATION_MIGRATION_ORDER } from "../migrations/0001_init";
+import { ORGANIZATION_MIGRATIONS } from "../migrations/set";
+import { forceOwnership } from "../ownership/ownership";
 import { defineRoles } from "../roles/roles";
-import { changeRole, countAdministrators, leaveOrganization, listMembers, removeMember } from "./members";
+import {
+  addMember,
+  changeRole,
+  changeRoleAsOperator,
+  countAdministrators,
+  leaveOrganization,
+  listMembers,
+  type OwnerRule,
+  removeMember,
+  removeMemberAsOperator,
+} from "./members";
 
 /**
  * The roster's two writes, against real D1.
@@ -103,7 +116,7 @@ function provider(): MigrationProvider {
       database: "app",
       namespace: "organization",
       order: ORGANIZATION_MIGRATION_ORDER,
-      migrations: { "0001_init": organization_0001_init },
+      migrations: ORGANIZATION_MIGRATIONS,
     },
   ]);
   const found = registry.app;
@@ -649,5 +662,695 @@ describe("what a removal takes with it", () => {
       actor: { userId: ADA, role: "admin" },
     });
     expect(await countRows("pithy_organization_acting")).toBe(1);
+  });
+});
+
+/** The payload of a refusal, so a test reads the code, the sentence and the params it carried. */
+async function refusal(work: Promise<unknown>): Promise<PithyError["payload"]> {
+  try {
+    await work;
+  } catch (error) {
+    if (error instanceof PithyError) return error.payload;
+    throw error;
+  }
+  throw new Error("expected a refusal");
+}
+
+describe("the operator's doors", () => {
+  const OWNER: OwnerRule<(typeof OWNED.roles)[number]> = {
+    role: "owner",
+    transferRoute: "/organizations/admin/organizations/ORG/ownership",
+    mayConfer: true,
+  };
+  /** The same rule, for a caller granted the roster and not ownership. */
+  const ROSTER_ONLY: OwnerRule<(typeof OWNED.roles)[number]> = { ...OWNER, mayConfer: false };
+
+  /** An offer of ownership standing in Acme, to `membershipId`, made by `by`. Fixture, not a route. */
+  async function standingOffer(membershipId: string, by: string): Promise<void> {
+    await organizationDatabase(env.DB)
+      .insertInto(OWNERSHIP_NOMINATIONS_TABLE)
+      .values(
+        OwnershipNomination.encode({
+          organizationId: acme,
+          membershipId,
+          nominatedByUserId: by,
+          expiresAt: new Date(NOW.getTime() + 86_400_000),
+          createdAt: NOW,
+        }),
+      )
+      .execute();
+  }
+
+  /** How many owners Acme has. The state the owner floor exists to keep above zero. */
+  async function owners(): Promise<number> {
+    const row = await env.DB.prepare(
+      "select count(*) as n from pithy_organization_memberships where organization_id = ? and role = 'owner'",
+    )
+      .bind(acme)
+      .first<{ n: number }>();
+    return Number(row?.n ?? 0);
+  }
+
+  /** The one refusal among settled results, as its payload. */
+  function loser(results: PromiseSettledResult<unknown>[]): PithyError["payload"] {
+    const rejected = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+    expect(rejected).toHaveLength(1);
+    const reason = rejected[0]?.reason as unknown;
+    if (!(reason instanceof PithyError)) throw reason;
+    return reason.payload;
+  }
+
+  /**
+   * The database, with `interloper` run once just before the first insert executes: another request's
+   * write landing between `addMember`'s count and its own insert, made deterministic rather than raced.
+   */
+  function beforeFirstInsert(interloper: () => Promise<unknown>): D1Database {
+    let pending: (() => Promise<unknown>) | null = interloper;
+    const once = async (): Promise<void> => {
+      const run = pending;
+      pending = null;
+      if (run) await run();
+    };
+    const watch = (statement: D1PreparedStatement): D1PreparedStatement =>
+      new Proxy(statement, {
+        get(target, property) {
+          if (property === "bind") return (...values: unknown[]) => watch(target.bind(...values));
+          if (property === "all" || property === "run" || property === "first" || property === "raw") {
+            const method = Reflect.get(target, property, target) as (...args: unknown[]) => Promise<unknown>;
+            return async (...args: unknown[]) => {
+              await once();
+              return method.apply(target, args);
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    return new Proxy(env.DB, {
+      get(target, property) {
+        if (property === "prepare") {
+          return (query: string) => {
+            const statement = target.prepare(query);
+            return /^\s*insert\b/i.test(query) && pending ? watch(statement) : statement;
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  }
+
+  async function setSeatLimit(limit: number | null): Promise<void> {
+    await organizationDatabase(env.DB)
+      .updateTable(ORGANIZATIONS_TABLE)
+      .set({ seatLimit: limit })
+      .where("id", "=", acme)
+      .execute();
+  }
+
+  describe("addMember", () => {
+    test("creates the membership at the named role, any role the catalog declares", async () => {
+      await join(ADA, "owner");
+      const added = await addMember(env.DB, OWNED, {
+        organizationId: acme,
+        userId: BOB,
+        role: "owner",
+        overrideSeatLimit: false,
+        now: NOW,
+      });
+      // An operator may name the owning role here, which the member surface's `unassignable` closes.
+      expect(await roleOf(added.membership.id)).toBe("owner");
+      expect(added.membersBefore).toBe(1);
+      expect(added.seatLimit).toBeNull();
+      expect(added.overrodeSeatLimit).toBe(false);
+    });
+
+    test("an existing member is refused, naming the role they hold", async () => {
+      await join(ADA, "admin");
+      const payload = await refusal(
+        addMember(env.DB, OWNED, {
+          organizationId: acme,
+          userId: ADA,
+          role: "member",
+          overrideSeatLimit: false,
+          now: NOW,
+        }),
+      );
+      expect(payload.code).toBe("organization/already_member");
+      expect(payload.message).toContain("`admin`");
+      expect(payload.params?.role).toBe("admin");
+      expect(await countRows("pithy_organization_memberships")).toBe(1);
+    });
+
+    test("an unknown organization is the ordinary 404", async () => {
+      const payload = await refusal(
+        addMember(env.DB, OWNED, {
+          organizationId: crypto.randomUUID(),
+          userId: ADA,
+          role: "member",
+          overrideSeatLimit: false,
+          now: NOW,
+        }),
+      );
+      expect(payload.code).toBe("organization/not_found");
+      expect(payload.status).toBe(404);
+    });
+
+    test("a role the catalog does not declare is refused, listing the ones it does", async () => {
+      const payload = await refusal(
+        addMember(env.DB, OWNED, {
+          organizationId: acme,
+          userId: ADA,
+          role: "emperor",
+          overrideSeatLimit: false,
+          now: NOW,
+        }),
+      );
+      expect(payload.code).toBe("validation/invalid_input");
+      expect(payload.message).toContain("member, admin, owner");
+    });
+
+    test("a full account refuses the add, naming its limit", async () => {
+      await join(ADA, "admin");
+      await join(BOB, "member");
+      await setSeatLimit(2);
+      const payload = await refusal(
+        addMember(env.DB, OWNED, {
+          organizationId: acme,
+          userId: CAT,
+          role: "member",
+          overrideSeatLimit: false,
+          now: NOW,
+        }),
+      );
+      expect(payload.code).toBe("organization/seat_limit_reached");
+      expect(payload.message).toContain("2");
+      expect(payload.params?.seatLimit).toBe(2);
+      expect(await countRows("pithy_organization_memberships")).toBe(2);
+    });
+
+    test("an add inside the limit lands, and says it needed no override", async () => {
+      await join(ADA, "admin");
+      await setSeatLimit(2);
+      const added = await addMember(env.DB, OWNED, {
+        organizationId: acme,
+        userId: BOB,
+        role: "member",
+        overrideSeatLimit: false,
+        now: NOW,
+      });
+      expect(added.seatLimit).toBe(2);
+      expect(added.overrodeSeatLimit).toBe(false);
+      expect(await countRows("pithy_organization_memberships")).toBe(2);
+    });
+
+    test("an explicit override goes past the limit, and says it did", async () => {
+      await join(ADA, "admin");
+      await setSeatLimit(1);
+      const added = await addMember(env.DB, OWNED, {
+        organizationId: acme,
+        userId: BOB,
+        role: "member",
+        overrideSeatLimit: true,
+        now: NOW,
+      });
+      expect(added.overrodeSeatLimit).toBe(true);
+      expect(await countRows("pithy_organization_memberships")).toBe(2);
+    });
+
+    test("**an override that lands past the limit is recorded as one**, though the count read in front said there was room", async () => {
+      // The count is read, then somebody else takes the last seat, then this insert lands. Reported from
+      // the count, the add would say it needed no override and the audit event would carry that.
+      await join(ADA, "admin");
+      await setSeatLimit(2);
+      const added = await addMember(
+        beforeFirstInsert(() => join(CAT, "member")),
+        OWNED,
+        { organizationId: acme, userId: BOB, role: "member", overrideSeatLimit: true, now: NOW },
+      );
+      expect(added.membersBefore).toBe(1);
+      expect(added.overrodeSeatLimit).toBe(true);
+      expect(await countRows("pithy_organization_memberships")).toBe(3);
+    });
+
+    test("an add without override that loses the last seat after the count is refused", async () => {
+      await join(ADA, "admin");
+      await setSeatLimit(2);
+      const payload = await refusal(
+        addMember(
+          beforeFirstInsert(() => join(CAT, "member")),
+          OWNED,
+          {
+            organizationId: acme,
+            userId: BOB,
+            role: "member",
+            overrideSeatLimit: false,
+            now: NOW,
+          },
+        ),
+      );
+      expect(payload.code).toBe("organization/seat_limit_reached");
+      expect(await countRows("pithy_organization_memberships")).toBe(2);
+    });
+
+    test("an override on an account with room is not recorded as one", async () => {
+      await setSeatLimit(5);
+      const added = await addMember(env.DB, OWNED, {
+        organizationId: acme,
+        userId: BOB,
+        role: "member",
+        overrideSeatLimit: true,
+        now: NOW,
+      });
+      expect(added.overrodeSeatLimit).toBe(false);
+    });
+
+    test("**an add at the owning role is refused to a caller not granted ownership**, and nothing is written", async () => {
+      // Otherwise the roster scope alone hands the account over: add a second owner, remove the first.
+      await join(ADA, "owner");
+      const payload = await refusal(
+        addMember(env.DB, OWNED, {
+          organizationId: acme,
+          userId: BOB,
+          role: "owner",
+          overrideSeatLimit: false,
+          now: NOW,
+          owner: ROSTER_ONLY,
+        }),
+      );
+      expect(payload.code).toBe("controlplane/insufficient_scope");
+      expect(payload.status).toBe(403);
+      expect(await countRows("pithy_organization_memberships")).toBe(1);
+    });
+
+    test("an add at any other role needs no ownership grant, and one at the owning role lands with it", async () => {
+      await join(ADA, "owner");
+      const admin = await addMember(env.DB, OWNED, {
+        organizationId: acme,
+        userId: BOB,
+        role: "admin",
+        overrideSeatLimit: false,
+        now: NOW,
+        owner: ROSTER_ONLY,
+      });
+      expect(await roleOf(admin.membership.id)).toBe("admin");
+      const owner = await addMember(env.DB, OWNED, {
+        organizationId: acme,
+        userId: CAT,
+        role: "owner",
+        overrideSeatLimit: false,
+        now: NOW,
+        owner: OWNER,
+      });
+      expect(await roleOf(owner.membership.id)).toBe("owner");
+    });
+
+    test("two adds racing for the last seat cannot both land", async () => {
+      await join(ADA, "admin");
+      await setSeatLimit(2);
+      const results = await Promise.allSettled([
+        addMember(env.DB, OWNED, {
+          organizationId: acme,
+          userId: BOB,
+          role: "member",
+          overrideSeatLimit: false,
+          now: NOW,
+        }),
+        addMember(env.DB, OWNED, {
+          organizationId: acme,
+          userId: CAT,
+          role: "member",
+          overrideSeatLimit: false,
+          now: NOW,
+        }),
+      ]);
+      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(await countRows("pithy_organization_memberships")).toBe(2);
+    });
+  });
+
+  describe("changeRoleAsOperator", () => {
+    test("accepts every role the catalog declares, the owning one included", async () => {
+      await join(ADA, "owner");
+      const bob = await join(BOB, "member");
+      for (const role of OWNED.roles) {
+        const changed = await changeRoleAsOperator(env.DB, OWNED, {
+          organizationId: acme,
+          membershipId: bob,
+          role,
+          owner: OWNER,
+        });
+        expect(changed.membership.role).toBe(role);
+        expect(await roleOf(bob)).toBe(role);
+      }
+    });
+
+    test("refuses a role the catalog does not declare, listing the valid ones", async () => {
+      const bob = await join(BOB, "member");
+      const payload = await refusal(
+        changeRoleAsOperator(env.DB, OWNED, {
+          organizationId: acme,
+          membershipId: bob,
+          role: "emperor",
+        }),
+      );
+      expect(payload.code).toBe("validation/invalid_input");
+      expect(payload.message).toContain("Valid roles: member, admin, owner.");
+      expect(payload.params?.roles).toBe("member, admin, owner");
+      expect(await roleOf(bob)).toBe("member");
+    });
+
+    test("demoting the last owner is refused, naming the ownership route", async () => {
+      const ada = await join(ADA, "owner");
+      await join(BOB, "admin");
+      const payload = await refusal(
+        changeRoleAsOperator(env.DB, OWNED, {
+          organizationId: acme,
+          membershipId: ada,
+          role: "admin",
+          owner: OWNER,
+        }),
+      );
+      expect(payload.code).toBe("organization/last_owner");
+      expect(payload.action).toContain("POST /organizations/admin/organizations/ORG/ownership");
+      expect(payload.params?.ownershipRoute).toBe(OWNER.transferRoute);
+      expect(await roleOf(ada)).toBe("owner");
+    });
+
+    test("demoting one of two owners is allowed", async () => {
+      const ada = await join(ADA, "owner");
+      await join(BOB, "owner");
+      await changeRoleAsOperator(env.DB, OWNED, {
+        organizationId: acme,
+        membershipId: ada,
+        role: "member",
+        owner: OWNER,
+      });
+      expect(await roleOf(ada)).toBe("member");
+    });
+
+    test("the administrator floor still holds where nothing is owned", async () => {
+      const steward = await join(ADA, "steward");
+      await join(BOB, "manager");
+      const payload = await refusal(
+        changeRoleAsOperator(env.DB, STEWARDED, {
+          organizationId: acme,
+          membershipId: steward,
+          role: "member",
+        }),
+      );
+      expect(payload.code).toBe("organization/last_administrator");
+      expect(await roleOf(steward)).toBe("steward");
+    });
+
+    test("a membership in another organization is the ordinary 404", async () => {
+      const beta = await makeOrganization("beta");
+      const elsewhere = await join(BOB, "member", beta);
+      const payload = await refusal(
+        changeRoleAsOperator(env.DB, OWNED, {
+          organizationId: acme,
+          membershipId: elsewhere,
+          role: "admin",
+        }),
+      );
+      expect(payload.code).toBe("organization/not_found");
+      expect(await roleOf(elsewhere)).toBe("member");
+    });
+
+    test("**a change to or from the owning role is refused to a caller not granted ownership**", async () => {
+      const ada = await join(ADA, "owner");
+      await join(BOB, "owner");
+      const cat = await join(CAT, "member");
+      for (const [membershipId, role] of [
+        [cat, "owner"],
+        [ada, "admin"],
+      ] as const) {
+        const payload = await refusal(
+          changeRoleAsOperator(env.DB, OWNED, { organizationId: acme, membershipId, role, owner: ROSTER_ONLY }),
+        );
+        expect(payload.code, `${membershipId} to ${role}`).toBe("controlplane/insufficient_scope");
+      }
+      expect(await roleOf(cat)).toBe("member");
+      expect(await roleOf(ada)).toBe("owner");
+      // Any other change is the roster's to make.
+      await changeRoleAsOperator(env.DB, OWNED, {
+        organizationId: acme,
+        membershipId: cat,
+        role: "admin",
+        owner: ROSTER_ONLY,
+      });
+      expect(await roleOf(cat)).toBe("admin");
+    });
+
+    test("**demoting an owner spends the offers they made**, and leaves everybody else's", async () => {
+      // Owners Ada and Bob; Ada offers the account to Cat. Demoted, Ada no longer owns it, so an offer of
+      // hers that Cat accepted would take the account from Bob on the word of somebody who does not own it.
+      const ada = await join(ADA, "owner");
+      await join(BOB, "owner");
+      const cat = await join(CAT, "member");
+      await standingOffer(cat, ADA);
+
+      await changeRoleAsOperator(env.DB, OWNED, {
+        organizationId: acme,
+        membershipId: ada,
+        role: "admin",
+        owner: OWNER,
+      });
+      expect(await roleOf(ada)).toBe("admin");
+      expect(await countRows("pithy_organization_ownership_nominations")).toBe(0);
+    });
+
+    test("an owner whose demotion the floor refuses keeps their offer", async () => {
+      const ada = await join(ADA, "owner");
+      const cat = await join(CAT, "member");
+      await standingOffer(cat, ADA);
+      await refusal(
+        changeRoleAsOperator(env.DB, OWNED, { organizationId: acme, membershipId: ada, role: "admin", owner: OWNER }),
+      );
+      expect(await countRows("pithy_organization_ownership_nominations")).toBe(1);
+    });
+
+    test("**of two concurrent demotions of the only two owners, exactly one lands** — the floor in the statement", async () => {
+      // Both read two owners, so both pass the count. Only the predicate in the update can refuse the
+      // second, and without it the account is left with nobody who owns it.
+      const ada = await join(ADA, "owner");
+      const bob = await join(BOB, "owner");
+      await join(CAT, "admin");
+
+      const results = await Promise.allSettled([
+        changeRoleAsOperator(env.DB, OWNED, { organizationId: acme, membershipId: ada, role: "admin", owner: OWNER }),
+        changeRoleAsOperator(env.DB, OWNED, { organizationId: acme, membershipId: bob, role: "admin", owner: OWNER }),
+      ]);
+      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(await owners()).toBe(1);
+      const payload = loser(results);
+      expect(payload.code).toBe("organization/last_owner");
+      expect(payload.params?.ownershipRoute).toBe(OWNER.transferRoute);
+    });
+  });
+
+  describe("removeMemberAsOperator", () => {
+    test("removes the membership and clears their selection of the account", async () => {
+      await join(ADA, "owner");
+      const bob = await join(BOB, "admin");
+      await organizationDatabase(env.DB)
+        .insertInto(ACTING_TABLE)
+        .values(
+          ActingOrganization.encode({
+            sessionId: "s-bob",
+            userId: BOB,
+            organizationId: acme,
+            chosen: true,
+            chosenAt: NOW,
+          }),
+        )
+        .execute();
+
+      const removed = await removeMemberAsOperator(env.DB, OWNED, {
+        organizationId: acme,
+        membershipId: bob,
+        owner: OWNER,
+      });
+      expect(removed.userId).toBe(BOB);
+      expect(await roleOf(bob)).toBeUndefined();
+      expect(await countRows("pithy_organization_acting")).toBe(0);
+    });
+
+    test("removing the last owner is refused, naming the ownership route", async () => {
+      const ada = await join(ADA, "owner");
+      await join(BOB, "admin");
+      const payload = await refusal(
+        removeMemberAsOperator(env.DB, OWNED, { organizationId: acme, membershipId: ada, owner: OWNER }),
+      );
+      expect(payload.code).toBe("organization/last_owner");
+      expect(payload.status).toBe(409);
+      expect(payload.action).toContain(OWNER.transferRoute);
+      expect(await roleOf(ada)).toBe("owner");
+    });
+
+    test("**removing an owner is refused to a caller not granted ownership**, even with another owner left", async () => {
+      // A removal takes somebody out of the owning role as surely as a demotion does, and the demotion is refused.
+      const ada = await join(ADA, "owner");
+      await join(BOB, "owner");
+      await standingOffer(await join(CAT, "member"), ADA);
+      const payload = await refusal(
+        removeMemberAsOperator(env.DB, OWNED, { organizationId: acme, membershipId: ada, owner: ROSTER_ONLY }),
+      );
+      expect(payload.code).toBe("controlplane/insufficient_scope");
+      expect(payload.status).toBe(403);
+      expect(await roleOf(ada)).toBe("owner");
+      expect(await countRows("pithy_organization_ownership_nominations")).toBe(1);
+      // Anybody else is the roster's to remove.
+      const dan = await join(DAN, "member");
+      await removeMemberAsOperator(env.DB, OWNED, { organizationId: acme, membershipId: dan, owner: ROSTER_ONLY });
+      expect(await roleOf(dan)).toBeUndefined();
+    });
+
+    test("removing one of two owners is allowed", async () => {
+      const ada = await join(ADA, "owner");
+      await join(BOB, "owner");
+      await removeMemberAsOperator(env.DB, OWNED, { organizationId: acme, membershipId: ada, owner: OWNER });
+      expect(await roleOf(ada)).toBeUndefined();
+    });
+
+    test("the last administrator is refused where nothing is owned", async () => {
+      const steward = await join(ADA, "steward");
+      const payload = await refusal(
+        removeMemberAsOperator(env.DB, STEWARDED, { organizationId: acme, membershipId: steward }),
+      );
+      expect(payload.code).toBe("organization/last_administrator");
+      expect(await roleOf(steward)).toBe("steward");
+    });
+
+    test("any other member goes, whatever the member surface would have said about their role", async () => {
+      // `owner` is unassignable, so the member surface refuses to remove an owner at all. The operator's
+      // door is the owner floor, and with two owners there is nothing to refuse.
+      await join(ADA, "owner");
+      const bob = await join(BOB, "owner");
+      await removeMemberAsOperator(env.DB, OWNED, { organizationId: acme, membershipId: bob, owner: OWNER });
+      expect(await roleOf(bob)).toBeUndefined();
+    });
+
+    test("**removing an owner spends the offers they made**", async () => {
+      const ada = await join(ADA, "owner");
+      await join(BOB, "owner");
+      const cat = await join(CAT, "member");
+      await standingOffer(cat, ADA);
+
+      await removeMemberAsOperator(env.DB, OWNED, { organizationId: acme, membershipId: ada, owner: OWNER });
+      expect(await roleOf(ada)).toBeUndefined();
+      expect(await countRows("pithy_organization_ownership_nominations")).toBe(0);
+    });
+
+    test("removing somebody who is not an owner leaves an owner's offer standing", async () => {
+      await join(ADA, "owner");
+      const bob = await join(BOB, "admin");
+      const cat = await join(CAT, "member");
+      await standingOffer(cat, ADA);
+
+      await removeMemberAsOperator(env.DB, OWNED, { organizationId: acme, membershipId: bob, owner: OWNER });
+      expect(await countRows("pithy_organization_ownership_nominations")).toBe(1);
+    });
+
+    test("**of two concurrent removals of the only two owners, exactly one lands** — the floor in the statement", async () => {
+      const ada = await join(ADA, "owner");
+      const bob = await join(BOB, "owner");
+      await join(CAT, "admin");
+
+      const results = await Promise.allSettled([
+        removeMemberAsOperator(env.DB, OWNED, { organizationId: acme, membershipId: ada, owner: OWNER }),
+        removeMemberAsOperator(env.DB, OWNED, { organizationId: acme, membershipId: bob, owner: OWNER }),
+      ]);
+      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(await owners()).toBe(1);
+      const payload = loser(results);
+      expect(payload.code).toBe("organization/last_owner");
+      expect(payload.params?.ownershipRoute).toBe(OWNER.transferRoute);
+    });
+  });
+
+  describe("a roster write racing a forced transfer", () => {
+    /**
+     * The real D1, except that `interloper` runs once just before the first batch does — a forced
+     * transfer landing between an operator write's read of the member and its own batch, made
+     * deterministic rather than raced.
+     */
+    function beforeFirstBatch(interloper: () => Promise<unknown>): D1Database {
+      let pending: (() => Promise<unknown>) | null = interloper;
+      return new Proxy(env.DB, {
+        get(target, property) {
+          if (property === "batch") {
+            return async (statements: D1PreparedStatement[]) => {
+              const run = pending;
+              pending = null;
+              if (run) await run();
+              return target.batch(statements);
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    }
+
+    /** Make `membershipId` the only owner, removing whoever held it. The operator's break-glass call. */
+    function forceTo(membershipId: string): () => Promise<unknown> {
+      return () =>
+        forceOwnership(env.DB, OWNED, {
+          organizationId: acme,
+          membershipId,
+          previousOwner: "remove",
+          roles: { confers: "owner", demotesTo: "admin" },
+        });
+    }
+
+    test("**removing a member who became the owner in between is refused, and the account keeps its owner**", async () => {
+      // Read as a member, so the removal chose no owner floor and no ownership grant. Without the role in
+      // the delete, it then deleted the account's only owner under a roster scope.
+      await join(OLIVE, "owner");
+      const bob = await join(BOB, "member");
+
+      await expect(
+        removeMemberAsOperator(beforeFirstBatch(forceTo(bob)), OWNED, {
+          organizationId: acme,
+          membershipId: bob,
+          owner: ROSTER_ONLY,
+        }),
+      ).rejects.toMatchObject({ payload: { code: "core/conflict", status: 409 } });
+
+      expect(await roleOf(bob)).toBe("owner");
+      expect(await owners()).toBe(1);
+    });
+
+    test("**changing the role of a member who became the owner in between is refused, and the account keeps its owner**", async () => {
+      await join(OLIVE, "owner");
+      const bob = await join(BOB, "member");
+
+      await expect(
+        changeRoleAsOperator(beforeFirstBatch(forceTo(bob)), OWNED, {
+          organizationId: acme,
+          membershipId: bob,
+          role: "member",
+          owner: ROSTER_ONLY,
+        }),
+      ).rejects.toMatchObject({ payload: { code: "core/conflict", status: 409 } });
+
+      expect(await roleOf(bob)).toBe("owner");
+      expect(await owners()).toBe(1);
+    });
+
+    test("a member leaving after being made the owner in between is refused too — the member surface shares the delete", async () => {
+      await join(OLIVE, "owner");
+      const bob = await join(BOB, "member");
+
+      await expect(
+        leaveOrganization(beforeFirstBatch(forceTo(bob)), OWNED, {
+          organizationId: acme,
+          actor: { userId: BOB, role: "member" },
+        }),
+      ).rejects.toMatchObject({ payload: { code: "core/conflict", status: 409 } });
+
+      expect(await roleOf(bob)).toBe("owner");
+    });
   });
 });

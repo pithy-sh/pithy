@@ -2,7 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { CreateOrganization, createOrganizationBody } from "./schemas";
+import {
+  AdminAddMember,
+  AdminInvitationsQuery,
+  AdminReason,
+  AdminUpdateOrganization,
+  CreateOrganization,
+  createOrganizationBody,
+  OperatorReason,
+} from "./schemas";
 
 /**
  * The one thing about the request schemas that is not obvious from reading them.
@@ -37,5 +45,50 @@ describe("createOrganizationBody", () => {
       expect(body.safeParse({ name: "" }).success, slugs).toBe(false);
       expect(body.safeParse({ name: "a".repeat(129) }).success, slugs).toBe(false);
     }
+  });
+});
+
+describe("OperatorReason", () => {
+  test("is required, trimmed and bounded", () => {
+    expect(OperatorReason.safeParse("  Ticket 4411.  ").data).toBe("Ticket 4411.");
+    expect(OperatorReason.safeParse("").success).toBe(false);
+    expect(OperatorReason.safeParse("   ").success).toBe(false);
+    expect(OperatorReason.safeParse("r".repeat(500)).success).toBe(true);
+    expect(OperatorReason.safeParse("r".repeat(501)).success).toBe(false);
+  });
+
+  test("refuses an address, so the trail is never asked to drop the operator's reason", () => {
+    const refused = OperatorReason.safeParse("Invitation went to ada@exmaple.com by mistake");
+    expect(refused.success).toBe(false);
+    expect(refused.error?.issues[0]?.message).toContain("no address");
+  });
+
+  test("every operator body and the invitation query require one", () => {
+    expect(AdminReason.safeParse({}).success).toBe(false);
+    expect(AdminAddMember.safeParse({ userId: "user-ada", role: "member" }).success).toBe(false);
+    expect(AdminUpdateOrganization.safeParse({ name: "Acme" }).success).toBe(false);
+    expect(AdminInvitationsQuery.safeParse({}).success).toBe(false);
+    expect(AdminInvitationsQuery.safeParse({ reason: "Fixing an invite.", limit: "5" }).data).toEqual({
+      reason: "Fixing an invite.",
+      limit: 5,
+    });
+  });
+});
+
+describe("AdminUpdateOrganization", () => {
+  test("needs a field to change beside the reason", () => {
+    expect(AdminUpdateOrganization.safeParse({ reason: "Rebrand." }).success).toBe(false);
+    expect(AdminUpdateOrganization.safeParse({ reason: "Rebrand.", name: "Globex" }).success).toBe(true);
+  });
+
+  test("a null seat limit lifts it, and a seat limit is a whole number from one", () => {
+    expect(AdminUpdateOrganization.safeParse({ reason: "r", seatLimit: null }).data?.seatLimit).toBeNull();
+    for (const seatLimit of [0, -1, 2.5]) {
+      expect(AdminUpdateOrganization.safeParse({ reason: "r", seatLimit }).success, String(seatLimit)).toBe(false);
+    }
+  });
+
+  test("an unknown field is refused rather than quietly dropped", () => {
+    expect(AdminUpdateOrganization.safeParse({ reason: "r", name: "Globex", logo: null }).success).toBe(false);
   });
 });

@@ -186,7 +186,20 @@ export function requireControlPlane(requirement: ControlPlaneRequirement): Middl
       },
       c.var.log,
     );
-    await next();
+    // A handler can need a grant the gate's requirement does not name — an operator roster write that
+    // moves the owning role needs `organization:ownership:transfer` beside `organization:members:write` —
+    // and refuses it itself, past this gate. That refusal is still a blocked attempt, and the trail must
+    // say so: `call_allowed` alone would hide a credential probing for the grant it lacks.
+    //
+    // Both paths, as the organization routes' refusal recorder reads them: a throw that reaches here, and
+    // `c.error`, which is where Hono's `compose` leaves a downstream throw it rendered through `onError`.
+    try {
+      await next();
+    } catch (error) {
+      await auditHandlerDenial(c, requirement, context, error);
+      throw error;
+    }
+    await auditHandlerDenial(c, requirement, context, c.error);
   };
   (guard as unknown as Record<symbol, unknown>)[CONTROL_PLANE_GUARD] = true;
   return guard;
@@ -240,6 +253,51 @@ async function auditDenial(
       ip: c.req.header("cf-connecting-ip"),
       userAgent: c.req.header("user-agent"),
       metadata: { reason: code, required: String(requirement), method: c.req.method, path: c.req.path },
+    },
+    c.var.log,
+  );
+}
+
+/**
+ * Record a scope refusal a handler raised after the gate let the call in.
+ *
+ * Only `controlplane/insufficient_scope`: every other refusal past the gate is the handler's own to
+ * record, and a 404 or a validation error is not a credential reaching beyond its grant. The same row as
+ * {@link auditDenial}, with two differences that follow from the call having been verified: the actor is
+ * the proven subject and its connection, and `refusedBy` says the gate passed it — `required` is the
+ * gate's requirement, which this call met; what it lacked is in the log, with the rest of `detail`.
+ */
+async function auditHandlerDenial(
+  c: Parameters<MiddlewareHandler<PithyHonoEnv>>[0],
+  requirement: ControlPlaneRequirement,
+  context: ControlPlaneContext,
+  cause: unknown,
+): Promise<void> {
+  // Read by its code, not `instanceof`: a capability that throws it may hold its own copy of this module,
+  // and a refusal that slipped past a class check would be exactly the unaudited attempt this exists for.
+  const code = (cause as { payload?: { code?: unknown } } | null)?.payload?.code;
+  if (code !== "controlplane/insufficient_scope") return;
+  await safeEmit(
+    c.var.emit,
+    {
+      action: ControlPlaneAuditActions.callDenied,
+      outcome: "denied",
+      severity: "warning",
+      actorType: "control-plane",
+      actorId: context.subject,
+      resourceType: "controlplane_connection",
+      resourceId: context.connectionId,
+      requestId: c.req.header("cf-ray"),
+      ip: c.req.header("cf-connecting-ip"),
+      userAgent: c.req.header("user-agent"),
+      metadata: {
+        reason: code,
+        required: String(requirement),
+        refusedBy: "handler",
+        connectionId: context.connectionId,
+        method: c.req.method,
+        path: c.req.path,
+      },
     },
     c.var.log,
   );

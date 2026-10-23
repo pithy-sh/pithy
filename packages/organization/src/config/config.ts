@@ -69,6 +69,27 @@ export const OrganizationConfig = z
       .describe(
         "Whether an invitation is mailed through the composed `@pithy-sh/email`. False hands the link back to the caller instead, for a product that delivers it its own way — the token is minted and digested identically either way.",
       ),
+    operatorEmails: z
+      .object({
+        memberAdded: z
+          .boolean()
+          .default(true)
+          .describe("Tell somebody an operator added them to an organization, naming it and their role."),
+        memberRemoved: z
+          .boolean()
+          .default(true)
+          .describe(
+            "Tell somebody an operator removed them from an organization — including a previous owner removed by a forced transfer.",
+          ),
+        ownershipTransferred: z
+          .boolean()
+          .default(true)
+          .describe("Tell somebody an operator made them the owner of an organization."),
+      })
+      .default({ memberAdded: true, memberRemoved: true, ownershipTransferred: true })
+      .describe(
+        "Which notices an operator's membership change sends, through the composed `@pithy-sh/email` (#624). All three send by default; set one to false to turn it off. With no email composed nothing is sent and nothing is refused: the change has already happened, and the audit event records `mailed: null`.",
+      ),
   })
   .describe(
     "The tenancy capability's configuration. The role catalog is not here: it is a module in the project, because the project's own handlers import its powers.",

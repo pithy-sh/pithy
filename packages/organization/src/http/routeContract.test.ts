@@ -17,8 +17,11 @@ import { defineRoles } from "../roles/roles";
 import { ORGANIZATION_ROUTES, registerOrganizationRoutes } from "./routes";
 import {
   ORGANIZATION_ACCOUNTS_READ_SCOPE,
+  ORGANIZATION_ACCOUNTS_WRITE_SCOPE,
   ORGANIZATION_CONTROL_PLANE_SCOPES,
   ORGANIZATION_MEMBERS_READ_SCOPE,
+  ORGANIZATION_MEMBERS_WRITE_SCOPE,
+  ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE,
   organizationAdminRoutes,
 } from "./scopes";
 
@@ -208,13 +211,14 @@ describe("the declared surface and the mounted one are the same surface", () => 
     }
   });
 
-  test("with no transfer wired, exactly the three ownership routes are absent", () => {
+  test("with no transfer wired, exactly the ownership routes are absent", () => {
     const withOwnership = new Set(mountedKeys(makeApp()));
     const without = new Set(mountedKeys(makeAppWithoutOwnership()));
     const missing = [...withOwnership].filter((key) => !without.has(key)).sort();
     expect(missing).toEqual([
       `DELETE ${BASE}/current/ownership`,
       `GET ${BASE}/current/ownership`,
+      `POST ${BASE}/admin/organizations/:organizationId/ownership`,
       `POST ${BASE}/current/ownership`,
       `POST ${BASE}/ownership/accept`,
     ]);
@@ -234,12 +238,15 @@ describe("the declared surface and the mounted one are the same surface", () => 
     // Anti-vacuity, exact rather than a floor. A route added on purpose is one line here; a route added
     // by accident is a failing test with a name on it.
     expect(mountedKeys(makeApp())).toEqual([
+      `DELETE ${BASE}/admin/organizations/:organizationId/invitations/:invitationId`,
+      `DELETE ${BASE}/admin/organizations/:organizationId/members/:membershipId`,
       `DELETE ${BASE}/current`,
       `DELETE ${BASE}/current/invitations/:invitationId`,
       `DELETE ${BASE}/current/members/:membershipId`,
       `DELETE ${BASE}/current/ownership`,
       `GET ${BASE}`,
       `GET ${BASE}/admin/organizations`,
+      `GET ${BASE}/admin/organizations/:organizationId/invitations`,
       `GET ${BASE}/admin/organizations/:organizationId/members`,
       `GET ${BASE}/current`,
       `GET ${BASE}/current/invitations`,
@@ -248,10 +255,15 @@ describe("the declared surface and the mounted one are the same surface", () => 
       `GET ${BASE}/invitations/:token`,
       `GET ${BASE}/marks/organization/:organizationId`,
       `GET ${BASE}/members/:membershipId/image`,
+      `PATCH ${BASE}/admin/organizations/:organizationId`,
+      `PATCH ${BASE}/admin/organizations/:organizationId/members/:membershipId`,
       `PATCH ${BASE}/current`,
       `PATCH ${BASE}/current/members/:membershipId`,
       `POST ${BASE}`,
       `POST ${BASE}/acting`,
+      `POST ${BASE}/admin/organizations/:organizationId/invitations/:invitationId/resend`,
+      `POST ${BASE}/admin/organizations/:organizationId/members`,
+      `POST ${BASE}/admin/organizations/:organizationId/ownership`,
       `POST ${BASE}/current/invitations`,
       `POST ${BASE}/current/invitations/:invitationId/resend`,
       `POST ${BASE}/current/members/leave`,
@@ -296,7 +308,13 @@ describe("the request contract: every path param is validated", () => {
       ),
     ].sort();
     expect(paramPaths).toEqual([
+      `${BASE}/admin/organizations/:organizationId`,
+      `${BASE}/admin/organizations/:organizationId/invitations`,
+      `${BASE}/admin/organizations/:organizationId/invitations/:invitationId`,
+      `${BASE}/admin/organizations/:organizationId/invitations/:invitationId/resend`,
       `${BASE}/admin/organizations/:organizationId/members`,
+      `${BASE}/admin/organizations/:organizationId/members/:membershipId`,
+      `${BASE}/admin/organizations/:organizationId/ownership`,
       `${BASE}/current/invitations/:invitationId`,
       `${BASE}/current/invitations/:invitationId/resend`,
       `${BASE}/current/members/:membershipId`,
@@ -321,7 +339,9 @@ describe("the gates, as the router behaves rather than as anything declares", ()
     // publishing an origin policy the gate denies with `auth/forbidden`; a mutating route that lost the
     // guard would fall through to the session gate and answer `auth/invalid_token` instead, which is a
     // different code and a failing test rather than a silent CSRF hole.
-    for (const route of ORGANIZATION_ROUTES.filter((entry) => entry.mutating)) {
+    // A control-plane write is authenticated by a signed header no browser sends on its own, so it wears
+    // `requireControlPlane` first instead — asserted in its own test below.
+    for (const route of ORGANIZATION_ROUTES.filter((entry) => entry.mutating && entry.strategy !== "control-plane")) {
       const response = await callWithNothing(makeApp(), {
         method: route.method,
         path: fullPath(route.path),
@@ -371,6 +391,20 @@ describe("the gates, as the router behaves rather than as anything declares", ()
     expect(await errorCode(response)).toBe("controlplane/not_connected");
   });
 
+  test("and before its body validator, so a malformed write is not reported to an unverified caller", async () => {
+    // A body with no reason, a junk role and an unknown field is three 400s to a verified caller and one
+    // 403 to everybody else. The order is what keeps the shape of an operator's write from being probed.
+    for (const route of ORGANIZATION_ROUTES.filter((entry) => entry.strategy === "control-plane" && entry.mutating)) {
+      const response = await callWithNothing(
+        makeApp(),
+        { method: route.method, path: fullPath(route.path) },
+        JSON.stringify({ role: 42, nonsense: true }),
+      );
+      expect(response.status, `${route.method} ${route.path}`).toBe(403);
+      expect(await errorCode(response), `${route.method} ${route.path}`).toBe("controlplane/not_connected");
+    }
+  });
+
   test("the one public route is genuinely public, and it is the only one", async () => {
     // It reaches its handler with no credential — which, with no `DB` binding on this app, is a stated
     // wiring failure rather than a refusal. That distinction is the proof: every other route answers
@@ -397,7 +431,7 @@ describe("the surface a client is told about", () => {
 
   test("every advertised admin route is mounted, with its declared scope", () => {
     const keys = new Set(mountedKeys(makeApp()));
-    for (const route of organizationAdminRoutes(BASE)) {
+    for (const route of organizationAdminRoutes(BASE, { ownership: true })) {
       expect(keys.has(`${route.method} ${route.path}`), route.path).toBe(true);
       expect(ORGANIZATION_CONTROL_PLANE_SCOPES, route.path).toContain(route.scope);
       // The scope a route demands and the scope the manifest advertises are the same constant, read
@@ -410,7 +444,9 @@ describe("the surface a client is told about", () => {
   });
 
   test("and nothing is mounted behind the control-plane gate that the manifest does not declare", async () => {
-    const advertised = new Set(organizationAdminRoutes(BASE).map((route) => `${route.method} ${route.path}`));
+    const advertised = new Set(
+      organizationAdminRoutes(BASE, { ownership: true }).map((route) => `${route.method} ${route.path}`),
+    );
     const gated: string[] = [];
     for (const route of mounted(makeApp())) {
       const response = await callWithNothing(makeApp(), route, route.method === "GET" ? undefined : "{}");
@@ -422,6 +458,13 @@ describe("the surface a client is told about", () => {
     expect(gated.sort()).toEqual([...advertised].sort());
   });
 
+  test("with no transfer wired, the forced-ownership route is neither mounted nor advertised", () => {
+    const keys = new Set(mountedKeys(makeAppWithoutOwnership()));
+    const advertised = organizationAdminRoutes(BASE).map((route) => `${route.method} ${route.path}`);
+    for (const key of advertised) expect(keys.has(key), key).toBe(true);
+    expect(advertised).not.toContain(`POST ${BASE}/admin/organizations/:organizationId/ownership`);
+  });
+
   test("the advertised paths follow a moved basePath", () => {
     for (const route of organizationAdminRoutes("/accounts")) {
       expect(route.path.startsWith("/accounts/admin/")).toBe(true);
@@ -429,19 +472,33 @@ describe("the surface a client is told about", () => {
     expect(new Set(mountedKeys(makeApp({ basePath: "/accounts" })))).toContain(`GET /accounts/admin/organizations`);
   });
 
-  test("the two management scopes are separate, and neither is a write", () => {
+  test("five management scopes, all separate, and no write is gated by a read scope", () => {
     // One `organization:admin` flag would mean a credential issued to find the right tenant also carried
-    // every customer's address. `scopeCovers` matches exactly, with no prefix rule.
-    expect(new Set([ORGANIZATION_ACCOUNTS_READ_SCOPE, ORGANIZATION_MEMBERS_READ_SCOPE]).size).toBe(2);
-    expect(ORGANIZATION_CONTROL_PLANE_SCOPES).toHaveLength(2);
+    // every customer's address and the power to hand their account to somebody. `scopeCovers` matches
+    // exactly, with no prefix rule, so five constants are five grants.
+    const reads = [ORGANIZATION_ACCOUNTS_READ_SCOPE, ORGANIZATION_MEMBERS_READ_SCOPE];
+    const writes = [
+      ORGANIZATION_MEMBERS_WRITE_SCOPE,
+      ORGANIZATION_ACCOUNTS_WRITE_SCOPE,
+      ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE,
+    ];
+    expect(new Set([...reads, ...writes]).size).toBe(5);
+    expect([...ORGANIZATION_CONTROL_PLANE_SCOPES].sort()).toEqual([...reads, ...writes].sort());
     for (const route of ORGANIZATION_ROUTES.filter((entry) => entry.strategy === "control-plane")) {
-      expect(route.method, route.path).toBe("GET");
-      expect(route.mutating, route.path).toBe(false);
+      if (route.mutating) expect(writes, `${route.method} ${route.path}`).toContain(route.scope);
+      // Reads are the two listings and the one read under a write scope: the invitations an operator is
+      // about to fix.
+      else expect(route.method, route.path).toBe("GET");
     }
+    expect(
+      ORGANIZATION_ROUTES.filter((entry) => entry.strategy === "control-plane" && reads.includes(entry.scope ?? ""))
+        .map((entry) => entry.path)
+        .sort(),
+    ).toEqual(["/admin/organizations", "/admin/organizations/:organizationId/members"]);
   });
 
   test("no admin route is a member route, and no member route is an admin one", () => {
-    const advertised = new Set(organizationAdminRoutes(BASE).map((route) => route.path));
+    const advertised = new Set(organizationAdminRoutes(BASE, { ownership: true }).map((route) => route.path));
     for (const route of ORGANIZATION_ROUTES) {
       const isAdmin = fullPath(route.path).startsWith(`${BASE}/admin/`);
       expect(advertised.has(fullPath(route.path)), route.path).toBe(isAdmin);

@@ -157,6 +157,27 @@ const EMAIL_EN: MessageCatalog = {
     "Your {app} account and its data were erased on {purgedOn}. This cannot be undone.",
   "email/deletion_complete.last": "This is the last email this account will receive.",
 
+  // --- Membership administration (#624) ---
+  // An operator changed somebody's membership. Each names the organization, because a person in two
+  // accounts has to know which one changed, and closes on who to answer.
+  "email/organization_member_added.subject": "You were added to {organization}",
+  "email/organization_member_added.heading": "You were added to an organization",
+  "email/organization_member_added.body": "you were added to {organization} on {app}, as {role}.",
+  "email/organization_member_added.text_body": "You were added to {organization} on {app}, as {role}.",
+  "email/organization_member_removed.subject": "You were removed from {organization}",
+  "email/organization_member_removed.heading": "You were removed from an organization",
+  "email/organization_member_removed.body":
+    "you were removed from {organization} on {app}. You can no longer act in it.",
+  "email/organization_member_removed.text_body":
+    "You were removed from {organization} on {app}. You can no longer act in it.",
+  "email/organization_ownership_transferred.subject": "You now own {organization}",
+  "email/organization_ownership_transferred.heading": "You now own an organization",
+  "email/organization_ownership_transferred.body":
+    "you are now the owner of {organization} on {app}. You administer it, and you answer for it.",
+  "email/organization_ownership_transferred.text_body":
+    "You are now the owner of {organization} on {app}. You administer it, and you answer for it.",
+  "email/organization_member.contact": "If you did not expect this, reply to this email.",
+
   // --- leadCapture ---
   "email/lead_capture.subject": "Your download: {asset}",
   "email/lead_capture.heading": "Your download is ready",

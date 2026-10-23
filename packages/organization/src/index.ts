@@ -76,8 +76,12 @@ export {
 export { ORGANIZATION_ROUTES, type OrganizationRouteDeclaration } from "./http/routes";
 export {
   ORGANIZATION_ACCOUNTS_READ_SCOPE,
+  ORGANIZATION_ACCOUNTS_WRITE_SCOPE,
   ORGANIZATION_CONTROL_PLANE_SCOPES,
   ORGANIZATION_MEMBERS_READ_SCOPE,
+  ORGANIZATION_MEMBERS_WRITE_SCOPE,
+  ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE,
+  type OrganizationAdminRouteOptions,
   organizationAdminRoutes,
 } from "./http/scopes";
 export { requireMayAssign } from "./members/members";

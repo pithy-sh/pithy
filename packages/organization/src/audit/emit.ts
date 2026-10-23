@@ -45,6 +45,19 @@ const FACT_MAX_LENGTH = 200;
 /** Anything shaped like an address. Content, not a pointer — and the realistic way content creeps in. */
 const LOOKS_LIKE_AN_ADDRESS = /[^\s@]+@[^\s@]+\.[^\s@]+/;
 
+/** Whether a value carries something shaped like an address. The one spelling of the rule, for every reader. */
+export function looksLikeAnAddress(value: string): boolean {
+  return LOOKS_LIKE_AN_ADDRESS.test(value);
+}
+
+/**
+ * The longest reason an operator's write may carry. A sentence, a ticket number — not a case file.
+ *
+ * Longer than a fact, because a reason is the one piece of free text the trail holds on purpose: it is
+ * the answer to *why*, read by somebody a fortnight later deciding whether the act was right.
+ */
+export const MAX_OPERATOR_REASON_LENGTH = 500;
+
 /**
  * One value a fact may carry: a short scalar and nothing else.
  *
@@ -57,7 +70,7 @@ export const AuditFact = z
     z
       .string()
       .max(FACT_MAX_LENGTH)
-      .refine((value) => !LOOKS_LIKE_AN_ADDRESS.test(value), "An address is content; record the id instead."),
+      .refine((value) => !looksLikeAnAddress(value), "An address is content; record the id instead."),
     z.number(),
     z.boolean(),
     z.null(),
@@ -199,6 +212,100 @@ export async function recordOrganizationAction(emit: AuditEmit, event: Organizat
     requestId: event.requestId ?? undefined,
     ...(event.severity ? { severity: event.severity } : {}),
     ...(metadata ? { metadata } : {}),
+  };
+
+  try {
+    await emit(input);
+  } catch {
+    // An audit write is non-fatal by contract. The act it records already happened.
+  }
+}
+
+/**
+ * Who acted from the control plane, and inside which organization.
+ *
+ * **The operator and the tenant arrive as one object, as a member and their account do.** `subject` is
+ * the token's verified `sub` — *which person at the management client* — and `connectionId` is which
+ * client, so the trail reads from both ends: every act one operator took, and everything ever done to
+ * one account. Both come from `c.var.controlPlane`, never from a request field.
+ */
+export interface OrganizationOperator {
+  /** The organization the act was taken in. Becomes the event's `tenant`. */
+  readonly organizationId: string;
+  /** The management client's own id for the person acting, from the verified token. */
+  readonly subject: string;
+  /** The connection the call authenticated against. */
+  readonly connectionId: string;
+}
+
+/** One act an operator took inside an account, as a caller describes it. */
+export interface OrganizationOperatorEvent {
+  /** What happened, from `./actions.ts`. One of the `admin_*` codes. */
+  readonly action: OrganizationAuditAction;
+  /** Who did it and where. */
+  readonly operator: OrganizationOperator;
+  /**
+   * Why, in the operator's words. Required by every route that calls this.
+   *
+   * **Carried whole, and held to the same rule as a fact.** It is the one piece of free text this trail
+   * holds on purpose, so it is not cut at a fact's length — but an address in it is still an address in
+   * an append-only table, so a reason shaped like one is dropped and `reasonRejected` says so. The
+   * request schema refuses one before it gets here; this is the second door.
+   */
+  readonly reason: string;
+  /** What it was done to. */
+  readonly resource: OrganizationAuditResource;
+  /** Structured detail, held to {@link AuditFact} value by value. */
+  readonly facts?: Readonly<Record<string, unknown>>;
+  /** The client IP, for correlation. */
+  readonly ip?: string | null;
+  /** The client user-agent, for correlation. */
+  readonly userAgent?: string | null;
+  /** The request correlation id. */
+  readonly requestId?: string | null;
+  /** How loudly the trail should say it. Absent means `info`. */
+  readonly severity?: AuditSeverity;
+}
+
+/** Whether a reason may be written into the trail as it stands. */
+function reasonFits(reason: string): boolean {
+  const trimmed = reason.trim();
+  return trimmed.length > 0 && trimmed.length <= MAX_OPERATOR_REASON_LENGTH && !looksLikeAnAddress(trimmed);
+}
+
+/**
+ * Record one act an operator took inside an account, through the control plane (#624).
+ *
+ * `actorType` is `control-plane` and never `user`: the operator holds no session and no membership, and
+ * recording them as a user would put a support desk's id in the column an adopter reads to find out which
+ * of *their* people did something. The tenant is still stamped, because the act was taken inside one
+ * account and a per-tenant reading of the trail must find it.
+ *
+ * Never throws and never rejects, for the reason {@link recordOrganizationAction} gives.
+ */
+export async function recordOperatorAction(emit: AuditEmit, event: OrganizationOperatorEvent): Promise<void> {
+  const facts = checkFacts(event.facts);
+  const fits = reasonFits(event.reason);
+  const metadata: Record<string, unknown> = {
+    connectionId: event.operator.connectionId,
+    ...(fits ? { reason: event.reason.trim() } : { reasonRejected: true }),
+    ...(facts?.kept ?? {}),
+    ...(facts && facts.rejected.length > 0 ? { factsRejected: facts.rejected } : {}),
+  };
+
+  const input: AuditEventInput = {
+    action: event.action,
+    outcome: "success",
+    actorType: "control-plane",
+    actorId: event.operator.subject,
+    tenant: event.operator.organizationId,
+    resourceType: event.resource.type,
+    resourceId: event.resource.id,
+    ip: event.ip ?? undefined,
+    userAgent: event.userAgent ?? undefined,
+    requestId: event.requestId ?? undefined,
+    ...(event.severity ? { severity: event.severity } : {}),
+    metadata,
   };
 
   try {

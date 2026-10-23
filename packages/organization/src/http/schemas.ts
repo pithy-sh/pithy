@@ -5,8 +5,9 @@ import { MAX_ADDRESS_LENGTH } from "@pithy-sh/core/src/address/address";
 import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { StoredImage } from "@pithy-sh/core/src/image/storedImage";
 import { z } from "zod";
+import { looksLikeAnAddress, MAX_OPERATOR_REASON_LENGTH } from "../audit/emit";
 import { MAX_ROLE_LENGTH } from "../data/membership";
-import { MAX_ORGANIZATION_NAME_LENGTH, Organization } from "../data/organization";
+import { MAX_ORGANIZATION_NAME_LENGTH, MAX_SEAT_LIMIT, Organization } from "../data/organization";
 
 /**
  * What the tenancy routes accept, declared on the route line with
@@ -297,3 +298,159 @@ export const InvitationTokenParam = z
   })
   .describe("Which offer the screen behind an invitation link is about to render.");
 export type InvitationTokenParam = z.output<typeof InvitationTokenParam>;
+
+/**
+ * ## Membership administration, below (#624)
+ *
+ * What an **operator** may send through the control plane to change somebody else's account. Every body
+ * and every query here carries a {@link OperatorReason}, required, because the trail's answer to *why*
+ * is the one an operator's act most needs and the one nobody can reconstruct later. A DELETE carries it
+ * in a JSON body like every other write: the control-plane token signs the body's digest, so the reason
+ * is part of what the credential vouched for rather than a query string a proxy logs.
+ *
+ * Roles arrive as bounded text, for the reason the module note gives, and are decoded by the store
+ * against every role the catalog **declares** — the operator surface is not bound by `unassignable`.
+ */
+
+/** The longest user id an operator may name. `pithy_auth_users` ids are the auth capability's to mint. */
+const MAX_USER_ID_LENGTH = 255;
+
+/**
+ * Why an operator did it. Required on every operator write and read here, and recorded verbatim on the
+ * audit event.
+ *
+ * **No address, refused here rather than dropped later.** The trail is append-only and refuses anything
+ * address-shaped, so a reason naming one — *sent to ada@exmaple.com by mistake* — would reach the row as
+ * `reasonRejected`, the one answer an operator least wants recorded. Saying so at the boundary lets them
+ * name the invitation by its id instead.
+ */
+export const OperatorReason = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MAX_OPERATOR_REASON_LENGTH)
+  .refine((value) => !looksLikeAnAddress(value), "A reason names no address. Name the member or invitation by id.")
+  .describe(
+    "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event.",
+  );
+export type OperatorReason = z.output<typeof OperatorReason>;
+
+/** The path parameters of an operator route that names one membership of one tenant. */
+export const AdminMembershipParam = z
+  .object({
+    organizationId: z.uuid().describe("Which tenant."),
+    membershipId: z
+      .uuid()
+      .describe("The membership acted on. Resolved inside that tenant, so an id from another one is a 404."),
+  })
+  .describe("Which membership of which tenant an operator's write names.");
+export type AdminMembershipParam = z.output<typeof AdminMembershipParam>;
+
+/** The path parameters of an operator route that names one invitation of one tenant. */
+export const AdminInvitationParam = z
+  .object({
+    organizationId: z.uuid().describe("Which tenant."),
+    invitationId: z
+      .uuid()
+      .describe("The invitation acted on. Resolved inside that tenant, so an id from another one is refused."),
+  })
+  .describe("Which invitation of which tenant an operator's write names.");
+export type AdminInvitationParam = z.output<typeof AdminInvitationParam>;
+
+/** The body of an operator write that needs nothing but its reason: a removal, a resend, a revoke. */
+export const AdminReason = z
+  .strictObject({ reason: OperatorReason })
+  .describe("An operator's write that names its subject in the path and says why in the body.");
+export type AdminReason = z.output<typeof AdminReason>;
+
+/** The body of `POST {base}/admin/organizations/:organizationId/members`. */
+export const AdminAddMember = z
+  .strictObject({
+    userId: z
+      .string()
+      .min(1)
+      .max(MAX_USER_ID_LENGTH)
+      .describe(
+        "The person, as `pithy_auth_users` ids them. They must already have an account; an unknown id is a 404. Not a UUID shape: that generator is the auth capability's and is configurable.",
+      ),
+    role: RoleName.describe(
+      "The role they take, as this project's catalog names it. Any role the catalog declares but the owning one, which is refused naming the ownership route; one it does not declare is refused, listing the ones it does.",
+    ),
+    overrideSeatLimit: z
+      .boolean()
+      .optional()
+      .describe(
+        "True adds them even when the account is at its seat limit. Recorded on the audit event when it was needed. Absent or false, a full account refuses the add, naming its limit.",
+      ),
+    reason: OperatorReason,
+  })
+  .describe("An operator adding an existing user to a tenant, directly, at a named role. No invitation is sent.");
+export type AdminAddMember = z.output<typeof AdminAddMember>;
+
+/** The body of `PATCH {base}/admin/organizations/:organizationId/members/:membershipId`. */
+export const AdminChangeRole = z
+  .strictObject({
+    role: RoleName.describe(
+      "The role the membership becomes. Any role the catalog declares, never to or from the owning one: that move is the ownership route's, and the refusal names it.",
+    ),
+    reason: OperatorReason,
+  })
+  .describe("An operator changing one member's role.");
+export type AdminChangeRole = z.output<typeof AdminChangeRole>;
+
+/** The body of `POST {base}/admin/organizations/:organizationId/ownership`. */
+export const AdminForceOwnership = z
+  .strictObject({
+    membershipId: z
+      .uuid()
+      .describe("The new owner's membership. They must already be in the account; add them first if not."),
+    previousOwner: z
+      .enum(["keep", "remove"])
+      .describe(
+        "What happens to whoever owned it: `keep` demotes them to the role a transfer falls back to, `remove` ends their membership. Required, because the two are different answers to what happened to the person who left.",
+      ),
+    reason: OperatorReason,
+  })
+  .describe("An operator making a member the owner now — no nomination and no acceptance.");
+export type AdminForceOwnership = z.output<typeof AdminForceOwnership>;
+
+/** The body of `PATCH {base}/admin/organizations/:organizationId`. */
+export const AdminUpdateOrganization = z
+  .strictObject({
+    name: z
+      .string()
+      .min(1)
+      .max(MAX_ORGANIZATION_NAME_LENGTH)
+      .optional()
+      .describe("A new display name. Absent leaves the current one."),
+    slug: Organization.shape.slug
+      .optional()
+      .describe(
+        "A new short name, under the column's own rule. Refused when another tenant holds it, naming that tenant. Absent leaves the current one.",
+      ),
+    seatLimit: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_SEAT_LIMIT)
+      .nullable()
+      .optional()
+      .describe(
+        "How many members the tenant may hold, or null for no limit. Lowering it below the roster removes nobody; it refuses the next add. Absent leaves it.",
+      ),
+    reason: OperatorReason,
+  })
+  .refine((body) => body.name !== undefined || body.slug !== undefined || body.seatLimit !== undefined, {
+    message: "Name the field to change.",
+    path: ["name"],
+  })
+  .describe("An operator changing a tenant's name, short name or seat limit. At least one, and a reason.");
+export type AdminUpdateOrganization = z.output<typeof AdminUpdateOrganization>;
+
+/** The query of `GET {base}/admin/organizations/:organizationId/invitations`. */
+export const AdminInvitationsQuery = AdminListQuery.extend({
+  reason: OperatorReason.describe(
+    "Why the operator is reading them — the list holds addresses, so the read is recorded with its reason. Required.",
+  ),
+}).describe("The bound on a tenant's invitation listing, and why it is being read.");
+export type AdminInvitationsQuery = z.output<typeof AdminInvitationsQuery>;

@@ -176,3 +176,61 @@ export class OrganizationNominationInvalidError extends PithyError {
     );
   }
 }
+
+/**
+ * An operator's write would leave the account with no owner — the role a transfer of ownership confers.
+ *
+ * **Not {@link OrganizationLastAdministratorError}, because the way out is different.** The last
+ * administrator is repaired by promoting somebody. The last owner is repaired by moving ownership, which
+ * is its own route, so the refusal names it in `action` for the operator's log and in
+ * `params.ownershipRoute` for the management client that has to render the next step.
+ */
+export class OrganizationLastOwnerError extends PithyError {
+  constructor(args: OrganizationErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "organization/last_owner",
+        status: 409,
+        message: args.message ?? "That would leave this organization with nobody who owns it.",
+        action: args.action ?? "Force ownership onto somebody else first.",
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}
+
+/** An operator tried to add somebody who is already in the account. `params.role` names what they hold. */
+export class OrganizationAlreadyMemberError extends PithyError {
+  constructor(args: OrganizationErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "organization/already_member",
+        status: 409,
+        message: args.message ?? "That person is already a member of this organization.",
+        action: args.action ?? "Change their role instead.",
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}
+
+/** The account is at its seat limit. `params.seatLimit` names it. */
+export class OrganizationSeatLimitReachedError extends PithyError {
+  constructor(args: OrganizationErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "organization/seat_limit_reached",
+        status: 409,
+        message: args.message ?? "This organization has no free seat.",
+        action: args.action ?? "Free a seat, or raise the seat limit.",
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}

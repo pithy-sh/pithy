@@ -266,6 +266,40 @@ const DeletionCompletePayload = z
   })
   .describe("Inputs for the notice that an account's data was erased — sent before the address is.");
 
+/**
+ * The three notices `@pithy-sh/organization` sends when an operator changes somebody's membership through
+ * the control plane (#624). Each names the organization, because a person in two accounts must be able to
+ * tell which one changed, and none carries the operator's reason: that is the trail's, written for the
+ * people who answer for the account, not for the person it happened to.
+ */
+const OrganizationMemberAddedPayload = z
+  .object({
+    name: z.string().optional().describe("The recipient's name, for a personal greeting. Optional."),
+    organizationName: z
+      .string()
+      .describe("The organization they were added to, by display name. Tenant text, escaped like every value."),
+    role: z.string().describe("The role they hold there now, as the project's catalog names it."),
+  })
+  .describe("Inputs for the notice that an operator added somebody to an organization.");
+
+const OrganizationMemberRemovedPayload = z
+  .object({
+    name: z.string().optional().describe("The recipient's name, for a personal greeting. Optional."),
+    organizationName: z
+      .string()
+      .describe("The organization they were removed from, by display name. Tenant text, escaped like every value."),
+  })
+  .describe("Inputs for the notice that an operator removed somebody from an organization.");
+
+const OrganizationOwnershipTransferredPayload = z
+  .object({
+    name: z.string().optional().describe("The recipient's name, for a personal greeting. Optional."),
+    organizationName: z
+      .string()
+      .describe("The organization they now own, by display name. Tenant text, escaped like every value."),
+  })
+  .describe("Inputs for the notice that an operator made somebody the owner of an organization.");
+
 /** One labeled fact in an operational notice — what makes the notice specific rather than a mood. */
 const OperationalNoticeFact = z
   .object({
@@ -566,6 +600,48 @@ export const templates: Record<string, EmailTemplate> = {
       `${heading('{{t "email/deletion_complete.heading"}}')}<p style="margin:0 0 8px">${greeting} {{t "email/deletion_complete.body" app=theme.appName purgedOn=purgedOn}}</p><p class="t-subtle" style="margin:16px 0 0; font-size:13px; color:{{theme.light.textSubtle}}">{{t "email/deletion_complete.last"}}</p>`,
     ),
     text: `${greeting}\n\n{{t "email/deletion_complete.text_body" app=theme.appName purgedOn=purgedOn}}\n\n{{t "email/deletion_complete.last"}}`,
+    links: [],
+  },
+  // Membership administration (#624). Transactional in both axes: somebody whose access to an account was
+  // changed by somebody else is owed the word, and an unsubscribe from a newsletter is not a request to stop
+  // being told. Each closes on who to answer — a reply — as the lifecycle notices do.
+  organizationMemberAdded: {
+    id: "organizationMemberAdded",
+    category: "transactional",
+    kind: "transactional",
+    width: "narrow",
+    payload: OrganizationMemberAddedPayload,
+    subject: `{{t "email/organization_member_added.subject" organization=organizationName}}`,
+    html: layout(
+      `${heading('{{t "email/organization_member_added.heading"}}')}<p style="margin:0 0 8px">${greeting} {{t "email/organization_member_added.body" organization=organizationName role=role app=theme.appName}}</p><p class="t-subtle" style="margin:16px 0 0; font-size:13px; color:{{theme.light.textSubtle}}">{{t "email/organization_member.contact"}}</p>`,
+    ),
+    text: `${greeting}\n\n{{t "email/organization_member_added.text_body" organization=organizationName role=role app=theme.appName}}\n\n{{t "email/organization_member.contact"}}`,
+    links: [],
+  },
+  organizationMemberRemoved: {
+    id: "organizationMemberRemoved",
+    category: "transactional",
+    kind: "transactional",
+    width: "narrow",
+    payload: OrganizationMemberRemovedPayload,
+    subject: `{{t "email/organization_member_removed.subject" organization=organizationName}}`,
+    html: layout(
+      `${heading('{{t "email/organization_member_removed.heading"}}')}<p style="margin:0 0 8px">${greeting} {{t "email/organization_member_removed.body" organization=organizationName app=theme.appName}}</p><p class="t-subtle" style="margin:16px 0 0; font-size:13px; color:{{theme.light.textSubtle}}">{{t "email/organization_member.contact"}}</p>`,
+    ),
+    text: `${greeting}\n\n{{t "email/organization_member_removed.text_body" organization=organizationName app=theme.appName}}\n\n{{t "email/organization_member.contact"}}`,
+    links: [],
+  },
+  organizationOwnershipTransferred: {
+    id: "organizationOwnershipTransferred",
+    category: "transactional",
+    kind: "transactional",
+    width: "narrow",
+    payload: OrganizationOwnershipTransferredPayload,
+    subject: `{{t "email/organization_ownership_transferred.subject" organization=organizationName}}`,
+    html: layout(
+      `${heading('{{t "email/organization_ownership_transferred.heading"}}')}<p style="margin:0 0 8px">${greeting} {{t "email/organization_ownership_transferred.body" organization=organizationName app=theme.appName}}</p><p class="t-subtle" style="margin:16px 0 0; font-size:13px; color:{{theme.light.textSubtle}}">{{t "email/organization_member.contact"}}</p>`,
+    ),
+    text: `${greeting}\n\n{{t "email/organization_ownership_transferred.text_body" organization=organizationName app=theme.appName}}\n\n{{t "email/organization_member.contact"}}`,
     links: [],
   },
   operationalNotice: {

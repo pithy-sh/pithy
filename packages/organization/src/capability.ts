@@ -13,7 +13,8 @@ import { organizationTables } from "./data/tables";
 import { registerOrganizationRoutes } from "./http/routes";
 import { organizationAdminRoutes } from "./http/scopes";
 import type { EnqueueInvitation } from "./mail/invitation";
-import { ORGANIZATION_MIGRATION_ORDER, organization_0001_init } from "./migrations/0001_init";
+import { ORGANIZATION_MIGRATION_ORDER } from "./migrations/0001_init";
+import { ORGANIZATION_MIGRATIONS } from "./migrations/set";
 import { type OwnershipRoles, requireTransferableRoles } from "./ownership/ownership";
 import { founderRole, type OrganizationDeleteSweep } from "./provision/provision";
 import { type RoleCatalog, requireComposedPowers } from "./roles/roles";
@@ -213,7 +214,7 @@ export function organization<const Power extends string = never, const Role exte
   // the same rule asked earlier, in the one place that knows it applies.
   founderRole(roles);
 
-  const migrations: Record<string, Migration> = { "0001_init": organization_0001_init };
+  const migrations: Record<string, Migration> = { ...ORGANIZATION_MIGRATIONS };
 
   /**
    * The email seam, filled by `compose`.
@@ -278,7 +279,7 @@ export function organization<const Power extends string = never, const Role exte
     },
     // Built from the resolved `basePath`, never the default: an adopter who mounts this at `/accounts`
     // gets a manifest naming their paths, where a client assuming the default would 404.
-    adminRoutes: organizationAdminRoutes(resolved.basePath),
+    adminRoutes: organizationAdminRoutes(resolved.basePath, { ownership: ownership !== undefined }),
     routes: registerOrganizationRoutes({
       catalog: roles,
       config: resolved,

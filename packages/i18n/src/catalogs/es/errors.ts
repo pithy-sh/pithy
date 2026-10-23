@@ -212,6 +212,9 @@ export const esErrors: MessageCatalog = {
   "organization/last_administrator": "La organización se quedaría sin nadie que pueda administrarla.",
   "organization/slug_taken": "Ese identificador ya está en uso.",
   "organization/nomination_invalid": "No hay ninguna oferta de titularidad que puedas aceptar.",
+  "organization/last_owner": "Es la única persona titular de la organización. Transfiere la titularidad primero.",
+  "organization/already_member": "Esa persona ya es miembro de la organización.",
+  "organization/seat_limit_reached": "La organización no tiene plazas libres.",
 
   // Artifacts.
   "artifacts/not_found": "Ese repositorio no existe.",

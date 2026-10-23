@@ -5,7 +5,7 @@ import { AuditAction, type AuditEventInput } from "@pithy-sh/core/src/audit/audi
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import { describe, expect, test } from "vitest";
 import { ORGANIZATION_AUDIT_DOMAIN, OrganizationAuditActions } from "./actions";
-import { correlation, recordOrganizationAction } from "./emit";
+import { correlation, MAX_OPERATOR_REASON_LENGTH, recordOperatorAction, recordOrganizationAction } from "./emit";
 
 /**
  * The register and its one writer.
@@ -57,6 +57,16 @@ describe("OrganizationAuditActions", () => {
     // codes themselves are stable forever once a row holds one: a renamed code orphans every event already
     // written under the old one, and nothing in this package can repair that.
     expect([...codes].sort()).toEqual([
+      // An operator's acts, through the control plane (#624). Their own codes, not the member codes with
+      // another actor.
+      "organization/admin_invitation_resent",
+      "organization/admin_invitation_revoked",
+      "organization/admin_invitations_listed",
+      "organization/admin_member_added",
+      "organization/admin_member_removed",
+      "organization/admin_member_role_changed",
+      "organization/admin_organization_updated",
+      "organization/admin_ownership_forced",
       "organization/created",
       "organization/deleted",
       "organization/invitation_resent",
@@ -203,6 +213,95 @@ describe("recordOrganizationAction", () => {
         action: OrganizationAuditActions.created,
         actor: ACTOR,
         resource: { type: "organization", id: "org-1" },
+      }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe("recordOperatorAction", () => {
+  const OPERATOR = { organizationId: "org-1", subject: "operator-7", connectionId: "connection-1" } as const;
+
+  test("the actor is the operator, the tenant is the account, and the reason is on the row", async () => {
+    const { emit, written } = collecting();
+    await recordOperatorAction(emit, {
+      action: OrganizationAuditActions.adminMemberRemoved,
+      operator: OPERATOR,
+      reason: "  Left the company; ticket 4411.  ",
+      resource: RESOURCE,
+      facts: { role: "member", subjectUserId: "user-bo" },
+      requestId: "ray-1",
+    });
+
+    const event = written[0];
+    // A management client is not a user of this app. Recorded as one, a support desk's id would land in
+    // the column an adopter reads to find out which of their own people did something.
+    expect(event?.actorType).toBe("control-plane");
+    expect(event?.actorId).toBe("operator-7");
+    expect(event?.tenant).toBe("org-1");
+    expect(event?.resourceType).toBe("membership");
+    expect(event?.resourceId).toBe("m-1");
+    expect(event?.requestId).toBe("ray-1");
+    expect(event?.metadata).toEqual({
+      connectionId: "connection-1",
+      reason: "Left the company; ticket 4411.",
+      role: "member",
+      subjectUserId: "user-bo",
+    });
+  });
+
+  test("a reason longer than a fact is kept whole, because it is the one free text the trail holds on purpose", async () => {
+    const { emit, written } = collecting();
+    const reason = "r".repeat(MAX_OPERATOR_REASON_LENGTH);
+    await recordOperatorAction(emit, {
+      action: OrganizationAuditActions.adminOwnershipForced,
+      operator: OPERATOR,
+      reason,
+      resource: RESOURCE,
+      severity: "warning",
+    });
+    expect(written[0]?.metadata?.reason).toBe(reason);
+    expect(written[0]?.severity).toBe("warning");
+  });
+
+  test("a reason carrying an address is dropped, and the row says a reason was refused", async () => {
+    const { emit, written } = collecting();
+    await recordOperatorAction(emit, {
+      action: OrganizationAuditActions.adminInvitationRevoked,
+      operator: OPERATOR,
+      reason: "Sent to ada@exmaple.com by mistake",
+      resource: { type: "invitation", id: "inv-1" },
+    });
+    expect(written[0]?.metadata).toEqual({ connectionId: "connection-1", reasonRejected: true });
+    expect(JSON.stringify(written[0])).not.toContain("exmaple.com");
+  });
+
+  test("a fact is held to the same rule as a member's", async () => {
+    const { emit, written } = collecting();
+    await recordOperatorAction(emit, {
+      action: OrganizationAuditActions.adminMemberAdded,
+      operator: OPERATOR,
+      reason: "Onboarding.",
+      resource: RESOURCE,
+      facts: { email: "ada@example.com", role: "member" },
+    });
+    expect(written[0]?.metadata).toEqual({
+      connectionId: "connection-1",
+      reason: "Onboarding.",
+      role: "member",
+      factsRejected: ["email"],
+    });
+  });
+
+  test("a recorder that throws does not break the act it was recording", async () => {
+    const exploding: AuditEmit = async () => {
+      throw new Error("the audit database is on fire");
+    };
+    await expect(
+      recordOperatorAction(exploding, {
+        action: OrganizationAuditActions.adminMemberRoleChanged,
+        operator: OPERATOR,
+        reason: "Promotion.",
+        resource: RESOURCE,
       }),
     ).resolves.toBeUndefined();
   });

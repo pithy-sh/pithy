@@ -34,6 +34,9 @@ const validPayloads: Record<string, unknown> = {
   accountReinstated: {},
   deletionScheduled: { purgeOn: "19 November 2026" },
   deletionComplete: { purgedOn: "19 November 2026" },
+  organizationMemberAdded: { organizationName: "Acme", role: "member" },
+  organizationMemberRemoved: { organizationName: "Acme" },
+  organizationOwnershipTransferred: { organizationName: "Acme" },
   operationalNotice: {
     severity: "critical",
     summary: "Sign-in is failing for every user",
@@ -68,7 +71,7 @@ const validPayloads: Record<string, unknown> = {
 };
 
 describe("template registry", () => {
-  test("ships the nine starter templates, the four lifecycle notices, plus the testers envelope", () => {
+  test("ships the nine starter templates, the four lifecycle notices, the three membership notices, plus the testers envelope", () => {
     expect(
       listTemplates()
         .map((t) => t.id)
@@ -86,6 +89,10 @@ describe("template registry", () => {
         "marketingCampaign",
         "supportReply",
         "newsletter",
+        // The membership notices `@pithy-sh/organization` sends when an operator acts (#624).
+        "organizationMemberAdded",
+        "organizationMemberRemoved",
+        "organizationOwnershipTransferred",
         // *Something about your own infrastructure needs attention* — the shape `securityAlert` cannot
         // carry, because it is about a session and closes by saying no action is needed.
         "operationalNotice",
@@ -217,6 +224,10 @@ describe("tracking", () => {
       accountReinstated: "transactional",
       deletionScheduled: "transactional",
       deletionComplete: "transactional",
+      // Somebody's access to an account changed at somebody else's hand. They are owed the word.
+      organizationMemberAdded: "transactional",
+      organizationMemberRemoved: "transactional",
+      organizationOwnershipTransferred: "transactional",
       supportReply: "transactional",
       testerNudge: "elective",
       leadCapture: "elective",
