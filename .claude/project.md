@@ -63,4 +63,7 @@ Security: <the issue's Security sentence — omit this line entirely when it is 
 bun run typecheck
 bunx biome check .
 bun run test        # or: bun run --filter <pkg> test
+bun run build && bun run dist-types
 ```
+
+`dist-types` holds the shipped tables to `CENSUS` in `packages/cli/src/ci/distTypes.ts`, and it reads `dist`, so it runs after `build`. CI runs it as "Shipped declarations". A change that adds or removes a table bumps `CENSUS` in the same commit; #623 reached CI without the bump.
