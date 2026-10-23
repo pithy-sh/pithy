@@ -4,7 +4,7 @@
 import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
-import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
+import { SQLiteBoolean, SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { ConflictError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { formattingLocaleOf } from "@pithy-sh/core/src/i18n/locale";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
@@ -163,6 +163,8 @@ interface HistoryRow {
   readonly at: Date;
   readonly suspendedUntil?: Date | null;
   readonly step?: string | null;
+  /** A hard deletion's choice for the purge's last mail; see `UserLifecycleEvent.notify`. */
+  readonly notify?: boolean | null;
 }
 
 /** The history row's values, as the table stores them. */
@@ -175,6 +177,7 @@ function encoded(row: HistoryRow) {
     reason: row.reason,
     suspendedUntil: row.suspendedUntil ? SQLiteDate.encode(row.suspendedUntil) : null,
     step: row.step ?? null,
+    notify: row.notify === undefined || row.notify === null ? null : SQLiteBoolean.encode(row.notify),
     createdAt: SQLiteDate.encode(row.at),
   };
 }
@@ -200,7 +203,7 @@ async function move(deps: LifecycleDeps, update: { compile(): CompiledQuery }, r
   const v = encoded(row);
   const insert = deps.db
     .insertInto("pithyAuthUserLifecycle")
-    .columns(["userId", "action", "actorType", "actorId", "reason", "suspendedUntil", "step", "createdAt"])
+    .columns(["userId", "action", "actorType", "actorId", "reason", "suspendedUntil", "step", "notify", "createdAt"])
     .expression(
       deps.db
         .selectNoFrom([
@@ -211,6 +214,7 @@ async function move(deps: LifecycleDeps, update: { compile(): CompiledQuery }, r
           sql.val(v.reason).as("reason"),
           sql.val(v.suspendedUntil).as("suspendedUntil"),
           sql.val(v.step).as("step"),
+          sql.val(v.notify).as("notify"),
           sql.val(v.createdAt).as("createdAt"),
         ])
         .where(sql<number>`changes()`, ">", 0),
@@ -308,6 +312,31 @@ function raced(userId: string): ConflictError {
   return new ConflictError({
     message: "The account changed while this request was being made. Send it again.",
     detail: `lifecycle write for user ${userId} matched no row; another request moved the account first`,
+  });
+}
+
+/**
+ * The instant a purge-window guard compares against, **read when the statement runs**, as ms-epoch (#622).
+ *
+ * A restore and a purge's `due` check race for one account, and each has to see the window the other saw. A
+ * timestamp the restore took before its statement went out is stale by the time D1 runs it: the window can
+ * close in between, by itself or because a hard deletion brought it forward, and a purge whose `due` check ran
+ * in that gap goes on to erase an account the restore reported back. So on the system clock the guard is the
+ * database's own time, evaluated inside the statement, and D1 runs statements one at a time: whichever lands
+ * first, the other sees it. An injected clock is a test's, and is read afresh here, at the statement.
+ */
+function windowClock(deps: LifecycleDeps) {
+  return deps.now
+    ? sql<number>`${deps.now().getTime()}`
+    : sql<number>`cast(round(unixepoch('subsec') * 1000) as integer)`;
+}
+
+/** The conflict for an account whose purge window has closed: nothing can restore it now. */
+function windowClosed(userId: string, closes: Date): ConflictError {
+  return new ConflictError({
+    message: `This account's purge window closed on ${closes.toISOString()}. It can no longer be restored.`,
+    action: "The purge is due and erases its data once it runs. There is nothing to restore.",
+    detail: `restore for user ${userId}, whose purge was due at ${closes.toISOString()}`,
   });
 }
 
@@ -475,48 +504,120 @@ export async function reinstateUser(
   return { changed: true, mailed };
 }
 
+/** How a deletion runs: shut now and purged once the window closes, or purged now. */
+export type DeletionMode = "soft" | "hard";
+
+/** What a deletion did, and the deletion it left in force. */
+export interface DeleteTransition extends LifecycleTransition {
+  /**
+   * `deleted` when this call deleted an account in good standing; `brought_forward` when the account was
+   * already deleted and a hard deletion moved its purge to now; `unchanged` when it was already deleted and
+   * this call had nothing to move.
+   */
+  readonly outcome: "deleted" | "brought_forward" | "unchanged";
+  /** When the account was deleted. A deletion brought forward keeps its original start. */
+  readonly deletedAt: Date;
+  /** When the purge may erase it — now, for a hard deletion. Restorable until then. */
+  readonly purgeAfter: Date;
+}
+
 /**
- * Delete an account, softly: it is shut now, and its data is erased once `retention.purgeAfterDays` have
- * passed. Restorable until then. Audited as the account's own deletion when its holder is the actor.
+ * Delete an account. Audited as the account's own deletion when its holder is the actor.
+ *
+ * **Soft, the default**: it is shut now, and its data is erased once `retention.purgeAfterDays` have passed.
+ * Restorable until then. The deletion-scheduled mail carries the purge date and, when the config names one,
+ * the restore path. A deleted account deleted softly again is no transition.
+ *
+ * **Hard** (#622): `purgeAfter` is now, so the window is already closed — nothing can restore it — and the
+ * caller starts the purge. No deletion-scheduled mail, because nothing is scheduled; the purge sends the
+ * deletion-complete one. An account already deleted softly has its purge brought forward to now, which is
+ * written and audited but fires no hook: the account was deleted and still is. One already due is unchanged.
  *
  * A suspension the account was under is left in place, so restoring the account does not lift it.
+ * `notify: false` sends no mail, whatever the config says.
  */
 export async function deleteUser(
   deps: LifecycleDeps,
-  input: { userId: string; actor: LifecycleActor; reason: string | null },
-): Promise<LifecycleTransition> {
+  input: { userId: string; actor: LifecycleActor; reason: string | null; mode?: DeletionMode; notify?: boolean },
+): Promise<DeleteTransition> {
   const at = (deps.now ?? (() => new Date()))();
   const reason = reasonOf(input.reason);
-  const purgeAfter = new Date(at.getTime() + deps.config.retention.purgeAfterDays * 86_400_000);
+  const hard = input.mode === "hard";
+  const purgeAfter = hard ? at : new Date(at.getTime() + deps.config.retention.purgeAfterDays * 86_400_000);
   const subject = await subjectOf(deps.db, input.userId);
-  if (subject.columns.deletedAt) return { changed: false, mailed: false };
+  // A hard deletion's `notify` is the purge's to read, so it is written on the row: the purge that sends the last
+  // mail may be one the daily pass started, with no request to carry it (#622).
+  const row: HistoryRow = {
+    userId: input.userId,
+    action: "deleted",
+    actor: input.actor,
+    reason,
+    at,
+    ...(hard && input.notify !== undefined ? { notify: input.notify } : {}),
+  };
+  const existing = subject.columns.deletedAt;
+  if (existing) {
+    const due = subject.columns.purgeAfter ?? existing;
+    const unchanged = {
+      changed: false,
+      mailed: false,
+      outcome: "unchanged",
+      deletedAt: existing,
+      purgeAfter: due,
+    } as const;
+    if (!hard || due.getTime() <= at.getTime()) return unchanged;
+    // Brought forward: the same deletion, with its window closed now. Pinned by its start, so a restore and a
+    // fresh deletion in between is a different deletion and this write matches nothing.
+    const forward = deps.db
+      .updateTable("pithyAuthUsers")
+      .set({ purgeAfter: SQLiteDate.encode(at) })
+      .where("id", "=", input.userId)
+      .where("deletedAt", "=", SQLiteDate.encode(existing))
+      .where("purgeAfter", ">", SQLiteDate.encode(at));
+    if (!(await move(deps, forward, row))) return unchanged;
+    await audit(deps, AuthAuditActions.adminUserHardDeleted, input.userId, input.actor, {
+      reason,
+      purgeAfter: at.toISOString(),
+      broughtForward: true,
+    });
+    return { changed: false, mailed: false, outcome: "brought_forward", deletedAt: existing, purgeAfter: at };
+  }
   const update = deps.db
     .updateTable("pithyAuthUsers")
     .set({ deletedAt: SQLiteDate.encode(at), purgeAfter: SQLiteDate.encode(purgeAfter) })
     .where("id", "=", input.userId)
     .where("deletedAt", "is", null);
-  const row: HistoryRow = { userId: input.userId, action: "deleted", actor: input.actor, reason, at };
-  if (!(await move(deps, update, row))) return { changed: false, mailed: false };
+  if (!(await move(deps, update, row))) {
+    // Another deletion landed first. The account is where this call asked to put it, so it is no transition;
+    // anything else moved it is a conflict, and a retry reads it afresh.
+    const now = await subjectOf(deps.db, input.userId);
+    if (!now.columns.deletedAt) throw raced(input.userId);
+    const due = now.columns.purgeAfter ?? now.columns.deletedAt;
+    return { changed: false, mailed: false, outcome: "unchanged", deletedAt: now.columns.deletedAt, purgeAfter: due };
+  }
 
   const self = input.actor.type === "user" && input.actor.id === input.userId;
-  await audit(
-    deps,
-    self ? AuthAuditActions.userSelfDeleted : AuthAuditActions.adminUserSoftDeleted,
-    input.userId,
-    input.actor,
-    { reason, purgeAfter: purgeAfter.toISOString() },
-  );
-  const mailed = await mail(
-    deps,
-    deps.config.lifecycleEmails.deletionScheduled,
-    subject.email,
-    subject.locale,
-    "deletionScheduled",
-    {
-      ...named(subject.name),
-      purgeOn: readable(purgeAfter, subject.locale),
-    },
-  );
+  const action = hard
+    ? AuthAuditActions.adminUserHardDeleted
+    : self
+      ? AuthAuditActions.userSelfDeleted
+      : AuthAuditActions.adminUserSoftDeleted;
+  await audit(deps, action, input.userId, input.actor, { reason, purgeAfter: purgeAfter.toISOString() });
+  const restoreUrl = deps.config.retention.restoreUrl;
+  const mailed = hard
+    ? false
+    : await mail(
+        deps,
+        deps.config.lifecycleEmails.deletionScheduled && input.notify !== false,
+        subject.email,
+        subject.locale,
+        "deletionScheduled",
+        {
+          ...named(subject.name),
+          purgeOn: readable(purgeAfter, subject.locale),
+          ...(restoreUrl ? { restoreUrl } : {}),
+        },
+      );
   await fire(deps, "onUserDeleted", deps.hooks.onUserDeleted, {
     userId: input.userId,
     actor: input.actor,
@@ -524,69 +625,248 @@ export async function deleteUser(
     at,
     purgeAfter,
   });
-  return { changed: true, mailed };
+  return { changed: true, mailed, outcome: "deleted", deletedAt: at, purgeAfter };
+}
+
+/** What a restoration did, and where it left the account. */
+export interface RestoreTransition extends LifecycleTransition {
+  /** Where the account stands now: `active`, or `suspended` when a suspension it was under is still in force. */
+  readonly state: "active" | "suspended";
 }
 
 /**
- * Restore a deleted account inside its purge window. After the purge there is no account, and that is a 404
- * whose action says the data is gone.
+ * Restore a deleted account inside its purge window.
+ *
+ * **Only inside it.** Once `purgeAfter` has passed the purge is due, may already be running, and erases each
+ * capability's rows in turn, so restoring then would hand back an account with some of its data gone. That
+ * is a conflict naming the date the window closed. After the purge there is no account at all, and that is a
+ * 404 whose action says the data is gone — read off the history row the purge leaves behind, so it is told
+ * apart from an id that never existed.
+ *
+ * An account that is not deleted is no transition. A suspension it was under is still in force after.
  */
 export async function restoreUser(
   deps: LifecycleDeps,
   input: { userId: string; actor: LifecycleActor; reason: string | null },
-): Promise<LifecycleTransition> {
+): Promise<RestoreTransition> {
   const at = (deps.now ?? (() => new Date()))();
   const reason = reasonOf(input.reason);
-  const subject = await subjectOf(deps.db, input.userId);
-  if (!subject.columns.deletedAt) return { changed: false, mailed: false };
+  const subject = await subjectOf(deps.db, input.userId).catch(async (error: unknown) => {
+    throw (await purgedRefusal(deps.db, input.userId)) ?? error;
+  });
+  const suspended = (columns: LifecycleColumns) =>
+    accountStanding({ ...columns, deletedAt: null, purgeAfter: null }, at).state === "suspended";
+  const state = suspended(subject.columns) ? "suspended" : "active";
+  if (!subject.columns.deletedAt) return { changed: false, mailed: false, state };
+  // Early, and only ever early: `at` was read before the account was, so a window it finds closed is closed. One
+  // it finds open may not be by the time the update runs, which is why the update guards on its own clock.
+  const closes = subject.columns.purgeAfter;
+  if (closes && closes.getTime() <= at.getTime()) throw windowClosed(input.userId, closes);
   const update = deps.db
     .updateTable("pithyAuthUsers")
     .set({ deletedAt: null, purgeAfter: null })
     .where("id", "=", input.userId)
-    .where("deletedAt", "is not", null);
+    .where("deletedAt", "is not", null)
+    .where("purgeAfter", ">", windowClock(deps));
   const row: HistoryRow = { userId: input.userId, action: "restored", actor: input.actor, reason, at };
-  if (!(await move(deps, update, row))) return { changed: false, mailed: false };
+  if (!(await move(deps, update, row))) {
+    // Another restoration landed first: no transition. A window that closed while this one was in flight — by
+    // itself, or brought forward by a hard deletion — is the conflict above. Anything else a retry reads afresh.
+    const now = await subjectOf(deps.db, input.userId).catch(async (error: unknown) => {
+      throw (await purgedRefusal(deps.db, input.userId)) ?? error;
+    });
+    if (!now.columns.deletedAt) {
+      return { changed: false, mailed: false, state: suspended(now.columns) ? "suspended" : "active" };
+    }
+    // Read afresh: a window still open now means something else moved the account — a restore and a new
+    // deletion both landed in between — and that is the retry's to read.
+    const closed = now.columns.purgeAfter;
+    if (closed && closed.getTime() <= (deps.now ?? (() => new Date()))().getTime()) {
+      throw windowClosed(input.userId, closed);
+    }
+    throw raced(input.userId);
+  }
 
   await audit(deps, AuthAuditActions.adminUserRestored, input.userId, input.actor, { reason });
-  return { changed: true, mailed: false };
+  return { changed: true, mailed: false, state };
+}
+
+/**
+ * The refusal for an account the purge has erased, or `null` when none was. A 404, because there is no
+ * account, with the date in the action so an operator answering a restore request knows it is final.
+ */
+async function purgedRefusal(db: AuthDatabase, userId: string): Promise<NotFoundError | null> {
+  const purged = await db
+    .selectFrom("pithyAuthUserLifecycle")
+    .select("createdAt")
+    .where("userId", "=", userId)
+    .where("action", "=", "purged")
+    .orderBy("id", "desc")
+    .executeTakeFirst();
+  if (!purged) return null;
+  const on = SQLiteDate.parse(purged.createdAt).toISOString();
+  return new NotFoundError({
+    message: "No such account.",
+    action: `This account was purged on ${on}. Its data is gone, and there is nothing to restore or export.`,
+    detail: `user ${userId} was purged at ${on}`,
+  });
+}
+
+/**
+ * The account's row, or the refusal for one that is not there — the 404 that says the data is gone when the
+ * purge erased it, and the plain one otherwise. For a route that reads an account outside a transition: the
+ * export.
+ */
+export async function requirePresent(db: AuthDatabase, userId: string): Promise<void> {
+  const row = await db.selectFrom("pithyAuthUsers").select("id").where("id", "=", userId).executeTakeFirst();
+  if (row) return;
+  throw (
+    (await purgedRefusal(db, userId)) ??
+    new NotFoundError({ message: "No such user.", detail: `no pithy_auth_users row for ${userId}` })
+  );
 }
 
 /** The purge's own actor: a scheduled job, with nobody calling. */
 const PURGE: LifecycleActor = { type: "system", id: null };
 
-/** Record that one purge step — one capability's contribution — erased its rows. */
-export async function recordPurgeStep(deps: LifecycleDeps, input: { userId: string; step: string }): Promise<void> {
-  const at = (deps.now ?? (() => new Date()))();
-  await record(deps, { userId: input.userId, action: "purge_step", actor: PURGE, reason: null, at, step: input.step });
+/** Who the purge's last mail goes to, captured before any step erases the address. */
+export interface PurgeRecipient {
+  readonly email: string;
+  readonly name: string | null;
+  readonly locale: string | null;
 }
 
 /**
- * Finish a purge: the last mail, the record, the audit event, the hook.
+ * Whether one account is due for its purge, who its last mail goes to, and whether it goes (#622).
  *
- * **The address is handed in, not read**, because by the time a purge finishes the user row is gone — the
- * Workflow captures the recipient before its first step and passes it here. Finishing a purge that already
- * finished is a no-op, so a retried Workflow step mails nobody twice.
+ * `due` only for an account that is deleted and whose `purgeAfter` has passed — the cron and a hard deletion
+ * both start a purge, and this is the one check either passes through, so an account restored in between is
+ * `not_due` and nothing is erased. `gone` when there is no row: the purge already erased it, or the id never
+ * existed, and either way there is nothing to do. The recipient is read here, before the first step, because
+ * the last step erases it.
+ *
+ * `notify` is what the deletion in force asked of the last mail — its newest `deleted` row's — so a hard
+ * deletion's `notify: false` holds for a purge the daily pass started, which was handed no such parameter.
  */
-export async function completePurge(
+export async function purgeSubject(
   deps: LifecycleDeps,
-  input: { userId: string; recipient: { email: string; name: string | null; locale: string | null } },
+  userId: string,
+): Promise<
+  { state: "due"; recipient: PurgeRecipient; notify: boolean | null } | { state: "not_due" } | { state: "gone" }
+> {
+  // The instant is the database's, read in the same statement as the row — the clock `restoreUser` guards on, so
+  // a restore and this check agree on whether the window has closed, whichever runs first (#622).
+  const row = await deps.db
+    .selectFrom("pithyAuthUsers")
+    .select(["email", "name", "locale", "suspendedAt", "suspendedUntil", "deletedAt", "purgeAfter"])
+    .select(windowClock(deps).as("checkedAt"))
+    .where("id", "=", userId)
+    .executeTakeFirst();
+  if (!row) return { state: "gone" };
+  const columns = LifecycleColumns.parse(row);
+  if (!columns.deletedAt || !columns.purgeAfter || columns.purgeAfter.getTime() > Number(row.checkedAt)) {
+    return { state: "not_due" };
+  }
+  const deletion = await deps.db
+    .selectFrom("pithyAuthUserLifecycle")
+    .select("notify")
+    .where("userId", "=", userId)
+    .where("action", "=", "deleted")
+    .orderBy("id", "desc")
+    .limit(1)
+    .executeTakeFirst();
+  const saved = deletion?.notify;
+  const notify = saved === undefined || saved === null ? null : SQLiteBoolean.decode(saved);
+  return { state: "due", recipient: { email: row.email, name: row.name, locale: row.locale ?? null }, notify };
+}
+
+/** One account whose purge is due: which, and the deletion it is due under — ms-epoch, so a Workflow journal holds it. */
+export interface DuePurge {
+  readonly userId: string;
+  readonly deletedAt: number;
+}
+
+/**
+ * The accounts whose purge is due — deleted, with `purgeAfter` passed — oldest first, at most `limit` (#622).
+ * What the daily cron starts a purge for. An account still inside its window is not here, and neither is one
+ * that was restored. Each carries its deletion's start, which names the purge's instance (`../purge/start.ts`).
+ */
+export async function duePurges(deps: LifecycleDeps, limit: number): Promise<DuePurge[]> {
+  const at = (deps.now ?? (() => new Date()))();
+  const rows = await deps.db
+    .selectFrom("pithyAuthUsers")
+    .select(["id", "deletedAt"])
+    .where("deletedAt", "is not", null)
+    .where("purgeAfter", "is not", null)
+    .where("purgeAfter", "<=", SQLiteDate.encode(at))
+    .orderBy("purgeAfter", "asc")
+    .orderBy("id", "asc")
+    .limit(limit)
+    .execute();
+  return rows.map((row) => ({ userId: row.id, deletedAt: Number(row.deletedAt) }));
+}
+
+/**
+ * Record that one purge step — one capability's contribution — erased its rows. The contribution's summary is
+ * the row's reason, so the history says what the step erased and not only that it ran.
+ */
+export async function recordPurgeStep(
+  deps: LifecycleDeps,
+  input: { userId: string; step: string; summary?: string | null },
+): Promise<void> {
+  const at = (deps.now ?? (() => new Date()))();
+  await record(deps, {
+    userId: input.userId,
+    action: "purge_step",
+    actor: PURGE,
+    reason: input.summary?.trim() ? input.summary.trim().slice(0, MAX_REASON) : null,
+    at,
+    step: input.step,
+  });
+}
+
+/**
+ * The deletion-complete mail, sent **before the address is erased** (#622). The purge calls this after every
+ * other capability's rows are gone and before auth's own, which holds the address, so the last mail is
+ * enqueued while there is still an account to have sent it to. The address is handed in, captured before the
+ * first step. `notify: false` sends nothing, whatever the config says.
+ */
+export async function mailPurgeComplete(
+  deps: LifecycleDeps,
+  input: { recipient: PurgeRecipient; notify?: boolean },
 ): Promise<LifecycleTransition> {
   const at = (deps.now ?? (() => new Date()))();
-  const already = await deps.db
-    .selectFrom("pithyAuthUserLifecycle")
-    .select("id")
-    .where("userId", "=", input.userId)
-    .where("action", "=", "purged")
-    .executeTakeFirst();
-  if (already) return { changed: false, mailed: false };
-
-  await record(deps, { userId: input.userId, action: "purged", actor: PURGE, reason: null, at });
-  await audit(deps, AuthAuditActions.adminUserPurged, input.userId, PURGE, {});
   const { email, name, locale } = input.recipient;
-  const mailed = await mail(deps, deps.config.lifecycleEmails.deletionComplete, email, locale, "deletionComplete", {
-    ...named(name ?? ""),
-    purgedOn: readable(at, locale),
-  });
+  const mailed = await mail(
+    deps,
+    deps.config.lifecycleEmails.deletionComplete && input.notify !== false,
+    email,
+    locale,
+    "deletionComplete",
+    { ...named(name ?? ""), purgedOn: readable(at, locale) },
+  );
+  return { changed: false, mailed };
+}
+
+/**
+ * Finish a purge: the record, the audit event, the hook. The last thing that happens to the account.
+ *
+ * By the time a purge finishes the user row is gone, so this reads nothing about the account. Finishing a
+ * purge that already finished is a no-op, so a retried Workflow step records and fires once — and so do two
+ * purges of one account that overlapped. **The insert is the check**: `0005_purge_once` allows one `purged` row
+ * per account, the insert ignores a second, and only the call whose row landed audits and fires. A read
+ * before the insert would let two concurrent calls both find nothing and both write.
+ */
+export async function completePurge(deps: LifecycleDeps, input: { userId: string }): Promise<LifecycleTransition> {
+  const at = (deps.now ?? (() => new Date()))();
+  const inserted = await deps.db
+    .insertInto("pithyAuthUserLifecycle")
+    .values(encoded({ userId: input.userId, action: "purged", actor: PURGE, reason: null, at }))
+    .onConflict((conflict) => conflict.doNothing())
+    .executeTakeFirst();
+  if (Number(inserted.numInsertedOrUpdatedRows ?? 0n) === 0) return { changed: false, mailed: false };
+
+  await audit(deps, AuthAuditActions.adminUserPurged, input.userId, PURGE, {});
   await fire(deps, "onUserPurged", deps.hooks.onUserPurged, { userId: input.userId, actor: PURGE, reason: null, at });
-  return { changed: true, mailed };
+  return { changed: true, mailed: false };
 }

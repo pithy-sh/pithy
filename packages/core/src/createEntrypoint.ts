@@ -28,7 +28,13 @@ export interface PithyEntrypoint {
    */
   email?: (message: ForwardableEmailMessage, env: Record<string, unknown>, ctx: ExecutionContext) => Promise<void>;
   /**
-   * The Worker `scheduled` handler — starts every registered job that declares a `schedule`.
+   * The Worker `scheduled` handler — starts every registered job whose `schedule` is the cron that fired.
+   *
+   * A Worker carries one `scheduled` entry for all of its `triggers.crons`, and the runtime names the one
+   * that fired on `controller.cron`, verbatim as `wrangler.jsonc` declares it. Only the jobs whose
+   * `schedule` is that string start: a daily job composed beside an hourly one must not run every hour,
+   * and the hourly one must not run an extra time at the daily job's minute (#622). An event that names
+   * no cron, or one no job declares, starts nothing.
    *
    * **Present only when at least one job carries a cron.** The reason differs from `email`'s: an
    * inert `email()` silently *drops* mail, which is a correctness bug, whereas an inert `scheduled()`
@@ -48,6 +54,13 @@ export interface PithyEntrypoint {
    * tested in staging.
    */
   scheduled?: (controller: unknown, env: Record<string, unknown>, ctx: ExecutionContext) => Promise<void>;
+}
+
+/** The cron expression a `scheduled` event fired for, or `undefined` when the event names none. */
+function firedCron(controller: unknown): string | undefined {
+  if (typeof controller !== "object" || controller === null) return undefined;
+  const cron = (controller as { cron?: unknown }).cron;
+  return typeof cron === "string" ? cron : undefined;
 }
 
 /**
@@ -99,9 +112,11 @@ export function createEntrypoint<
   // job whose binding is missing cannot stop the rest of the schedule from running; the failure is
   // rethrown after the pass so the invocation is still recorded as failed.
   if (scheduled.length > 0) {
-    entrypoint.scheduled = async (_controller, env) => {
+    entrypoint.scheduled = async (controller, env) => {
+      const cron = firedCron(controller);
       const failures: unknown[] = [];
       for (const entry of scheduled) {
+        if (entry.spec.schedule !== cron) continue;
         // A cron supplies no caller input, which is an *empty* parameter object, not an absent one —
         // `z.object({})` accepts `{}` and rejects `undefined`. A job whose schema requires fields it
         // can never receive on a schedule therefore fails loudly here, which is the author's bug and

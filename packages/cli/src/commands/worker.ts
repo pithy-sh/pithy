@@ -702,6 +702,8 @@ const sync = withContract(
                 workerDir: target.dir,
                 project,
                 app,
+                // Their adopter-hosted jobs' entries and crons are the adopter's, and stay (#622).
+                capabilities: target.config.capabilities,
                 ...(env === undefined ? {} : { env }),
               })
             : [];

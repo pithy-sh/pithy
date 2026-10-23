@@ -9,7 +9,7 @@ import type { Context, MiddlewareHandler } from "hono";
 import type { AuthWiring, ScopeResolver, ScopeResolverSession } from "../capability";
 import { authDatabase } from "../data/tables";
 import type { AuthInstance } from "../instance/auth";
-import { lifecycleRefusalFor, noteRefusal, noticedRefusal } from "../lifecycle/enforce";
+import { lifecycleRefusalFor, noteRefusal, noticedRefusal, suspendedHolder } from "../lifecycle/enforce";
 import { LifecycleColumns } from "../lifecycle/state";
 import { withResignedCredentials } from "./credentialResign";
 import { getAuthInstance, resolveDb } from "./resolve";
@@ -103,7 +103,7 @@ async function resolveSession(c: Context<PithyHonoEnv>, wiring: AuthWiring, inst
       // capability's own guard raises the refusal itself, with its code; see `requireAuth` below.
       const refusal = await standingRefusal(c, wiring, session.user);
       if (refusal) {
-        noteRefusal(c, refusal);
+        noteRefusal(c, refusal, { userId: session.user.id, sessionId: session.session.id });
         return;
       }
       // Before the context is built, so a resolver sees the request exactly as it arrived and the
@@ -192,6 +192,49 @@ async function standingRefusal(
 export function requireAuth(): MiddlewareHandler<PithyHonoEnv> {
   return async (c, next) => {
     if (!c.var.auth) {
+      const refusal = noticedRefusal(c);
+      if (refusal) throw refusal;
+      throw new UnauthorizedError({
+        message: "Authentication required.",
+        action: "Sign in and retry with a valid session or bearer token.",
+      });
+    }
+    await next();
+  };
+}
+
+/** Whose account a request may act on as its own holder: the signed-in account, or a suspended one's. */
+export interface AccountHolder {
+  /** The account. */
+  readonly userId: string;
+  /** The session the request presented. */
+  readonly sessionId: string;
+  /** Whether the account is suspended — every other route refuses it. */
+  readonly suspended: boolean;
+}
+
+/**
+ * The account this request's credential opens, for a route a **suspended** account may still use — and there is
+ * exactly one, deleting it (#622). The App Store and Google Play require that a person can delete their account
+ * from inside the app, and a suspension is no reason to keep somebody who wants to leave.
+ *
+ * A deleted account is not admitted: there is nothing left to delete. Neither is a request whose standing could
+ * not be checked.
+ */
+export function accountHolder(c: Context<PithyHonoEnv>): AccountHolder | null {
+  if (c.var.auth) return { userId: c.var.auth.userId, sessionId: c.var.auth.sessionId, suspended: false };
+  const held = suspendedHolder(c);
+  return held ? { ...held, suspended: true } : null;
+}
+
+/**
+ * The gate for that route: `requireAuth()`, with a suspended account's genuine credential admitted. Everything
+ * `requireAuth()` refuses otherwise, it refuses the same way — a deleted account with its code, anything else
+ * with `auth/invalid_token`.
+ */
+export function requireAccountHolder(): MiddlewareHandler<PithyHonoEnv> {
+  return async (c, next) => {
+    if (!accountHolder(c)) {
       const refusal = noticedRefusal(c);
       if (refusal) throw refusal;
       throw new UnauthorizedError({

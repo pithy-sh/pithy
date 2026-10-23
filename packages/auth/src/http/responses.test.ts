@@ -6,18 +6,34 @@ import type { z } from "zod";
 import type { Session, User } from "../data/betterAuth";
 import type { Device } from "../data/device";
 import {
+  AccountDeleteResponse,
   AdminDeviceRevokeResponse,
   AdminDevicesResponse,
   AdminDeviceView,
   AdminRevokeResponse,
   AdminSessionView,
+  AdminUserDeleteResponse,
+  AdminUserExportResponse,
   AdminUserReinstateResponse,
   AdminUserResponse,
+  AdminUserRestoreResponse,
   AdminUserSuspendResponse,
   AdminUsersResponse,
   AdminUserView,
+  AuthUserExport,
 } from "./responses";
-import { deviceView, reinstatementView, sessionView, suspensionView, userView } from "./views";
+import {
+  accountDeletionView,
+  authUserExportView,
+  deletionView,
+  deviceView,
+  exportView,
+  reinstatementView,
+  restorationView,
+  sessionView,
+  suspensionView,
+  userView,
+} from "./views";
 
 /**
  * The response schemas against what the projections actually produce.
@@ -68,6 +84,128 @@ const DEVICE: Device = {
   lastSeenAt: new Date("2026-06-02T00:00:00.000Z"),
   createdAt: new Date("2026-06-01T00:00:00.000Z"),
 };
+
+describe("the deletion lifecycle's responses (#622)", () => {
+  const at = new Date("2026-10-20T12:00:00.000Z");
+  const later = new Date("2026-11-19T12:00:00.000Z");
+
+  test("the deletion projection is exactly what its schema declares, every outcome and purge", () => {
+    const soft = deletionView(
+      "u-1",
+      "soft",
+      { changed: true, mailed: true, outcome: "deleted", deletedAt: at, purgeAfter: later },
+      "scheduled",
+      2,
+    );
+    accepts(AdminUserDeleteResponse, soft);
+    expect(soft).toEqual({
+      userId: "u-1",
+      state: "deleted",
+      mode: "soft",
+      outcome: "deleted",
+      deletedAt: at.toISOString(),
+      purgeAfter: later.toISOString(),
+      purge: "scheduled",
+      sessionsRevoked: 2,
+      mailed: true,
+    });
+    for (const purge of ["started", "pending"] as const) {
+      for (const outcome of ["deleted", "brought_forward", "unchanged"] as const) {
+        accepts(
+          AdminUserDeleteResponse,
+          deletionView(
+            "u-1",
+            "hard",
+            { changed: false, mailed: false, outcome, deletedAt: at, purgeAfter: at },
+            purge,
+            0,
+          ),
+        );
+      }
+    }
+  });
+
+  test("the restoration projection is exactly what its schema declares, both outcomes and both states", () => {
+    const restored = restorationView("u-1", { changed: true, mailed: false, state: "suspended" });
+    accepts(AdminUserRestoreResponse, restored);
+    expect(restored).toEqual({ userId: "u-1", state: "suspended", outcome: "restored" });
+    accepts(AdminUserRestoreResponse, restorationView("u-1", { changed: false, mailed: false, state: "active" }));
+  });
+
+  test("the self-service projection says when, and whether the person was mailed — and names nobody", () => {
+    const own = accountDeletionView({
+      changed: true,
+      mailed: true,
+      outcome: "deleted",
+      deletedAt: at,
+      purgeAfter: later,
+    });
+    accepts(AccountDeleteResponse, own);
+    expect(own).toEqual({ state: "deleted", purgeAfter: later.toISOString(), mailed: true });
+  });
+
+  test("none of them carries the reason", () => {
+    for (const schema of [AdminUserDeleteResponse, AdminUserRestoreResponse, AccountDeleteResponse]) {
+      expect(Object.keys(schema.shape)).not.toContain("reason");
+    }
+  });
+
+  test("auth's export is exactly what its schema declares, and carries no credential", () => {
+    const exported = authUserExportView({
+      user: { ...USER, deletedAt: at, purgeAfter: later, suspendedAt: null, suspendedUntil: null },
+      sessions: [SESSION],
+      accounts: [{ providerId: "google", createdAt: at }],
+      devices: [DEVICE],
+      history: [
+        {
+          id: 1,
+          userId: "u-1",
+          action: "deleted",
+          actorType: "control-plane",
+          actorId: "ops@dashboard.test",
+          reason: "Asked by email.",
+          suspendedUntil: null,
+          step: null,
+          notify: null,
+          createdAt: at,
+        },
+      ],
+    });
+    accepts(AuthUserExport, exported);
+    expect(exported.user).toMatchObject({ deletedAt: at.toISOString(), purgeAfter: later.toISOString() });
+    expect(exported.history).toEqual([
+      {
+        action: "deleted",
+        actorType: "control-plane",
+        reason: "Asked by email.",
+        suspendedUntil: null,
+        createdAt: at.toISOString(),
+      },
+    ]);
+    const wire = JSON.stringify(exported);
+    for (const secret of ["session-token-must-not-leak", "apns-push-credential-must-not-leak", "ops@dashboard.test"]) {
+      expect(wire).not.toContain(secret);
+    }
+  });
+
+  test("the export document is exactly what its schema declares, every entry state included", () => {
+    const document = exportView("u-1", at, [
+      { capability: "auth", summary: "Deletes the account.", state: "exported", data: { user: { id: "u-1" } } },
+      { capability: "media", summary: "Deletes the uploads.", state: "not_exported" },
+      { capability: "app", summary: "Erases the drafts.", state: "unavailable" },
+    ]);
+    accepts(AdminUserExportResponse, document);
+    expect(document.subject).toEqual({ type: "user", id: "u-1" });
+    expect(document.exportedAt).toBe(at.toISOString());
+    // An unread part carries no `data`, so it cannot be rendered as a capability that holds nothing.
+    expect(
+      AdminUserExportResponse.parse({
+        ...document,
+        capabilities: [{ capability: "x", summary: "y", state: "unavailable", data: {} }],
+      }).capabilities[0],
+    ).not.toHaveProperty("data");
+  });
+});
 
 describe("auth admin response schemas", () => {
   test("the suspension projection is exactly what its schema declares, both outcomes (#621)", () => {

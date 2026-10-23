@@ -66,9 +66,10 @@ describe("auth_0002_session_authenticated_at", () => {
 
   test("down removes it again, leaving 0001's own columns untouched", async () => {
     // Every migration's `down` is tested, and this one has a specific trap: a careless inverse that
-    // rebuilt the table would drop `family_id` and `device_id` with it. `0004` and `0003` sit above it in
-    // the chain, so they come down first.
+    // rebuilt the table would drop `family_id` and `device_id` with it. `0005`, `0004` and `0003` sit above
+    // it in the chain, so they come down first.
     await runMigrations(env.DB, provider());
+    await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());

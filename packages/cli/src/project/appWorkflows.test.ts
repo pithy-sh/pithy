@@ -11,7 +11,7 @@ import { featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
-import { planAppWorkflows, reconcileAppWorkflows, unhostableAppJobs } from "./appWorkflows";
+import { adopterHostedJobs, planAppWorkflows, reconcileAppWorkflows, unhostableAppJobs } from "./appWorkflows";
 
 /**
  * Workflows the adopter's **own app capability** declares.
@@ -396,5 +396,109 @@ describe("reconcileAppWorkflows", () => {
       reconcileAppWorkflows({ workerDir: dir, project: PROJECT, app: appCapability(), env: "staging" }),
     ).rejects.toBeInstanceOf(PithyError);
     expect(await readFile(join(dir, "wrangler.jsonc"), "utf8")).toBe(before);
+  });
+});
+
+/**
+ * A library capability's job the adopter's own Worker hosts — `@pithy-sh/auth`'s purge, `@pithy-sh/payments`'
+ * usage pass (#622). Its class is the adopter's, so its `workflows` entry and its cron are theirs too, written by
+ * hand from the capability's docs. `pithy worker sync` must leave both where they are: replacing every same-script
+ * entry with the app's own table stripped them, and with them the purge, which then never ran and said nothing.
+ */
+function purgingCapability(): Capability {
+  return defineCapability({
+    name: "auth",
+    requiredBindings: [],
+    workflows: {
+      purge: { binding: "AUTH_PURGE", params: z.object({}), optional: true },
+      "purge-due": { binding: "AUTH_PURGE_DUE", params: z.object({}), schedule: "0 2 * * *", optional: true },
+      // A job with a class is a host's, and not the adopter's to keep.
+      hosted: { binding: "AUTH_HOSTED", params: z.object({}), className: "HostedWorkflow", schedule: "0 9 * * *" },
+    },
+  });
+}
+
+describe("adopterHostedJobs (#622)", () => {
+  test("names the bindings and schedules of every composed library job with no class", () => {
+    const kept = adopterHostedJobs([purgingCapability()]);
+    expect([...kept.bindings].sort()).toEqual(["AUTH_PURGE", "AUTH_PURGE_DUE"]);
+    expect([...kept.schedules]).toEqual(["0 2 * * *"]);
+  });
+
+  test("a composition with none keeps nothing", () => {
+    const kept = adopterHostedJobs([]);
+    expect(kept.bindings.size).toBe(0);
+    expect(kept.schedules.size).toBe(0);
+  });
+});
+
+describe("reconcileAppWorkflows leaves a library's adopter-hosted entries alone (#622)", () => {
+  const PURGE = { binding: "AUTH_PURGE", name: "acme-staging-auth-purge", class_name: "AuthPurgeWorkflow" };
+  const PURGE_DUE = {
+    binding: "AUTH_PURGE_DUE",
+    name: "acme-staging-auth-purge-due",
+    class_name: "AuthPurgeDueWorkflow",
+  };
+
+  async function handWritten(crons: string[]): Promise<void> {
+    await writeFile(
+      join(dir, "wrangler.jsonc"),
+      JSON.stringify({ name: "pithy-app", env: { staging: { workflows: [PURGE, PURGE_DUE], triggers: { crons } } } }),
+    );
+  }
+
+  test("keeps the hand-written entries and their cron beside the app's own table", async () => {
+    await handWritten(["0 2 * * *"]);
+    await reconcileAppWorkflows({
+      workerDir: dir,
+      project: PROJECT,
+      app: appCapability(),
+      capabilities: [purgingCapability()],
+      env: "staging",
+    });
+    const stanza = (await read()).env?.staging;
+    expect(stanza?.workflows?.map((entry) => entry.binding)).toEqual([
+      "AUTH_PURGE",
+      "AUTH_PURGE_DUE",
+      "KEY_ROTATION",
+      "REINDEX",
+    ]);
+    expect(stanza?.triggers?.crons).toEqual(["0 3 * * *", "0 2 * * *"]);
+  });
+
+  test("and is idempotent over them", async () => {
+    await handWritten(["0 2 * * *"]);
+    const options = {
+      workerDir: dir,
+      project: PROJECT,
+      app: appCapability(),
+      capabilities: [purgingCapability()],
+      env: "staging",
+    };
+    await reconcileAppWorkflows(options);
+    const once = await readFile(join(dir, "wrangler.jsonc"), "utf8");
+    const again = await reconcileAppWorkflows(options);
+    expect(again.every((run) => !run.changed)).toBe(true);
+    expect(await readFile(join(dir, "wrangler.jsonc"), "utf8")).toBe(once);
+  });
+
+  test("keeps a schedule only when it is there: a cron the adopter never wrote is not added for them", async () => {
+    await handWritten([]);
+    await reconcileAppWorkflows({
+      workerDir: dir,
+      project: PROJECT,
+      app: appCapability(),
+      capabilities: [purgingCapability()],
+      env: "staging",
+    });
+    expect((await read()).env?.staging?.triggers?.crons).toEqual(["0 3 * * *"]);
+  });
+
+  test("without the composition, they are the app's own and replaced, as before", async () => {
+    await handWritten(["0 2 * * *"]);
+    await reconcileAppWorkflows({ workerDir: dir, project: PROJECT, app: appCapability(), env: "staging" });
+    const stanza = (await read()).env?.staging;
+    expect(stanza?.workflows?.map((entry) => entry.binding)).toEqual(["KEY_ROTATION", "REINDEX"]);
+    expect(stanza?.triggers?.crons).toEqual(["0 3 * * *"]);
   });
 });

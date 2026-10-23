@@ -7,6 +7,7 @@ import type { BetterAuthPlugin } from "better-auth";
 import { getSchema } from "better-auth/db";
 import { admin } from "better-auth/plugins/admin";
 import { organization } from "better-auth/plugins/organization";
+import { twoFactor } from "better-auth/plugins/two-factor";
 import { describe, expect, test } from "vitest";
 import { User } from "../data/betterAuth";
 import { KIT_SESSION_FIELDS, KIT_USER_FIELDS } from "../data/kitFields";
@@ -147,13 +148,28 @@ describe("pluginMigrationKey()", () => {
 
 describe("authPluginPlan()", () => {
   test("no plugins → no migrations, so a project that adds none has an unchanged ledger", () => {
-    expect(authPluginPlan([])).toEqual({ migrations: {}, extensions: [] });
+    expect(authPluginPlan([])).toEqual({ migrations: {}, extensions: [], userTables: [] });
   });
 
   test("one migration per plugin that has a schema, keyed by its id", () => {
     expect(Object.keys(authPluginPlan([organization(), admin()]).migrations)).toEqual([
       "0002_plugin_organization",
       "0002_plugin_admin",
+    ]);
+  });
+
+  test("the user-keyed tables a plugin created are named for the purge — two-factor's, not organization's (#622)", () => {
+    const keyed: BetterAuthPlugin = {
+      id: "keyed",
+      schema: { keyedThing: { fields: { userId: { type: "string" }, label: { type: "string" } } } },
+    };
+    const unkeyed: BetterAuthPlugin = {
+      id: "unkeyed",
+      schema: { looseThing: { fields: { label: { type: "string" } } } },
+    };
+    expect(authPluginPlan([twoFactor(), keyed, unkeyed, organization(), admin()]).userTables).toEqual([
+      "twoFactor",
+      "keyedThing",
     ]);
   });
 

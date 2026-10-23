@@ -227,7 +227,8 @@ describe("pithy setup on a fresh clone", () => {
 
     const outcome = await pithy(["doctor"], dir, config);
 
-    expect(outcome.stdout).toContain("dev: 9 pending — run: pithy setup");
+    // Ten: auth's `0005_purge_once` (#622) joined the chain.
+    expect(outcome.stdout).toContain("dev: 10 pending — run: pithy setup");
     expect(outcome.stdout).toContain("Run `pithy setup` — it mints one into");
     expect(outcome.stdout).not.toContain("pithy add secrets");
   }, 300_000);

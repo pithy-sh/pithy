@@ -192,3 +192,40 @@ describe("audit capability through createBackend", () => {
     expect(dropped?.error?.detail).toBeTruthy();
   });
 });
+
+describe("the recorder for code with no request (#622)", () => {
+  test("auditRecorder writes a row over the env it is handed, stamped with that env's origin", async () => {
+    // A Workflow step has `env` and nothing else. The recorder is built over it, and a step that audits
+    // through core's `composedAuditEmit` reaches exactly this.
+    const recorder = audit().auditRecorder;
+    expect(recorder).toBeDefined();
+    await recorder?.({ ...env, PROJECT: "acme", ENVIRONMENT: "prod" })({
+      action: "auth/admin_user_purged",
+      outcome: "success",
+      actorType: "system",
+      resourceType: "user",
+      resourceId: "u-purged",
+    });
+    const [event] = await queryAuditEvents(auditDatabase(env.DB), { resourceId: "u-purged" });
+    expect(event).toMatchObject({
+      action: "auth/admin_user_purged",
+      actorType: "system",
+      project: "acme",
+      environment: "prod",
+    });
+  });
+
+  test("it reads the binding the config names, and a missing one drops the event rather than throwing", async () => {
+    const recorder = audit({ database: "AUDIT_DB" }).auditRecorder;
+    await expect(
+      recorder?.({ ...env })({ action: "auth/admin_user_purged", outcome: "success", actorType: "system" }),
+    ).resolves.toBeUndefined();
+    await recorder?.({ ...env, AUDIT_DB: env.DB })({
+      action: "auth/admin_user_purged",
+      outcome: "success",
+      actorType: "system",
+      resourceId: "u-named-binding",
+    });
+    expect(await queryAuditEvents(auditDatabase(env.DB), { resourceId: "u-named-binding" })).toHaveLength(1);
+  });
+});

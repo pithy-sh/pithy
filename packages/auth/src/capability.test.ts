@@ -57,6 +57,7 @@ describe("auth capability", () => {
       "0002_session_authenticated_at",
       "0003_account_issuer_nullable",
       "0004_user_lifecycle",
+      "0005_purge_once",
     ]);
     // A second migration never gets a second order. Renumbering would rename `0300_auth_0001_init`, and
     // Kysely would then read every applied auth migration as unapplied and run it again.
@@ -152,6 +153,7 @@ describe("additional Better Auth plugins", () => {
       "0002_session_authenticated_at",
       "0003_account_issuer_nullable",
       "0004_user_lifecycle",
+      "0005_purge_once",
     ]);
     expect(cap.extensions).toEqual([]);
   });
@@ -163,6 +165,7 @@ describe("additional Better Auth plugins", () => {
       "0002_session_authenticated_at",
       "0003_account_issuer_nullable",
       "0004_user_lifecycle",
+      "0005_purge_once",
       "0002_plugin_organization",
     ]);
   });
@@ -453,5 +456,48 @@ describe("the account lifecycle config (#620)", () => {
       "onUserReinstated",
       "onUserSuspended",
     ]);
+  });
+});
+
+describe("the deletion lifecycle on the capability (#622)", () => {
+  test("restoreUrl is optional, takes an http(s) page, and refuses anything else", () => {
+    expect(build().authConfig.retention.restoreUrl).toBeUndefined();
+    expect(
+      build({ retention: { restoreUrl: "https://app.example.com/restore" } }).authConfig.retention.restoreUrl,
+    ).toBe("https://app.example.com/restore");
+    // The mail's button is a tracked click when click tracking is on, and a tracked click redirects only to a web
+    // address — so a mailto: would be a button that answers `email/invalid_token`.
+    for (const restoreUrl of ["mailto:help@example.com", "the support page", "javascript:alert(1)"]) {
+      expect(() => build({ retention: { restoreUrl } }), restoreUrl).toThrow();
+    }
+  });
+
+  test("declares its own purge contribution for a user, and the two Workflows the adopter hosts", () => {
+    const cap = build();
+    expect(cap.purge?.map((contribution) => contribution.subject)).toEqual(["user"]);
+    expect(Object.keys(cap.workflows ?? {}).sort()).toEqual(["purge", "purge-due"]);
+    // No class, because the class is the adopter's; optional, so a Worker boots before they bind it.
+    for (const spec of Object.values(cap.workflows ?? {})) {
+      expect(spec.className).toBeUndefined();
+      expect(spec.optional).toBe(true);
+    }
+  });
+
+  test("compose fills the purge steps from every composed capability, auth's own among them", () => {
+    const cap = build();
+    expect(cap.purgeSteps).toEqual([]);
+    const media: Capability = {
+      name: "media",
+      requiredBindings: [],
+      purge: [{ subject: "user", summary: "Deletes uploads.", erase: async () => {} }],
+    };
+    const email = {
+      name: "email",
+      requiredBindings: [],
+      enqueue: async () => ({}),
+      emailConfig: {},
+    } as unknown as Capability;
+    cap.compose?.({ capabilities: [email, cap, media] });
+    expect(cap.purgeSteps.map((step) => step.step)).toEqual(["auth", "media"]);
   });
 });

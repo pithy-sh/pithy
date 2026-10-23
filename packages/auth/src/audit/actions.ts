@@ -173,12 +173,25 @@ export const AuthAuditActions = {
   adminUserReinstated: "auth/admin_user_reinstated",
   /** An account was deleted from the management surface, with its purge window starting now. */
   adminUserSoftDeleted: "auth/admin_user_soft_deleted",
+  /**
+   * An account was deleted from the management surface with no window — its purge starts now (#622). Also
+   * written when a hard deletion brings an already-deleted account's purge forward, with
+   * `metadata.broughtForward: true`. Never written by omission: the route reaches it only for `mode: "hard"`.
+   */
+  adminUserHardDeleted: "auth/admin_user_hard_deleted",
   /** A deleted account was restored inside its purge window, from the management surface. */
   adminUserRestored: "auth/admin_user_restored",
   /** A deleted account's data was erased. Recorded once, when the last purge step has run. */
   adminUserPurged: "auth/admin_user_purged",
   /** The account's own holder deleted their account. Always a soft deletion, on the configured window. */
   userSelfDeleted: "auth/user_self_deleted",
+  /**
+   * Everything the kit holds about one account was exported from the management surface — an access request
+   * answered (#622). A **disclosure**, and the largest one on this surface: it carries every composed
+   * capability's rows about the person. Recorded with the caller, the reason they gave, and which capabilities
+   * answered; never with any of the data.
+   */
+  adminUserExported: "auth/admin_user_exported",
 } as const;
 
 /** One of the auth audit action codes. */

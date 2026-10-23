@@ -10,12 +10,15 @@ import { STORED_IMAGE_HEADERS, storedImageBytes } from "@pithy-sh/core/src/image
 import { TURNSTILE_LOGIN_ACTION } from "@pithy-sh/turnstile/src/config/config";
 import { turnstile } from "@pithy-sh/turnstile/src/http/middleware";
 import type { Context, Hono } from "hono";
+import { userSessionTokens } from "../admin/users";
 import { correlation, emitDenied, emitDeviceRevoked, emitTokenRefresh, emitTokenReuseDetected } from "../audit/emit";
 import type { AuthWiring } from "../capability";
 import { authDatabase } from "../data/tables";
 import { deleteDevice, deviceSessionTokens, listDevices } from "../device/registry";
 import { noticedRefusal } from "../lifecycle/enforce";
+import { lifecycleDeps } from "../lifecycle/request";
 import { isLifecycleRefusal } from "../lifecycle/state";
+import { deleteUser } from "../lifecycle/transitions";
 import { PROFILE_IMAGE_PATH } from "../profile/profile";
 import {
   consumeSession,
@@ -28,12 +31,13 @@ import { registerAuthAdminRoutes } from "./adminRoutes";
 import { guardErrorCallbackURL } from "./errorCallbackUrl";
 import { apiErrorToPithy } from "./errors";
 import { admitsRefusedAccount, lifecycleRedirect } from "./lifecycleGate";
-import { requireAuth } from "./middleware";
+import { accountHolder, requireAccountHolder, requireAuth } from "./middleware";
 import { requireFreshAuthentication } from "./providerFreshness";
 import { collapseProviderRefusal } from "./providerRefusal";
 import { getAuthInstance, resolveDb } from "./resolve";
-import { MyDeviceRevokeResponse, MyDevicesResponse, TokenRotateResponse } from "./responses";
-import { RevokeDeviceBody } from "./schemas";
+import { AccountDeleteResponse, MyDeviceRevokeResponse, MyDevicesResponse, TokenRotateResponse } from "./responses";
+import { DeleteAccountBody, RevokeDeviceBody } from "./schemas";
+import { accountDeletionView } from "./views";
 
 type Ctx = Context<PithyHonoEnv>;
 
@@ -67,6 +71,7 @@ function db(c: Ctx, wiring: AuthWiring) {
  * | `POST /token/rotate`       | bearer/session  | none — the credential only  |
  * | `GET  /devices`            | bearer/session  | none                        |
  * | `POST /devices/revoke`     | bearer/session  | json `RevokeDeviceBody`     |
+ * | `DELETE /account`          | bearer/session  | json `DeleteAccountBody`    |
  * | `*    /admin/*`            | control-plane   | see `./adminRoutes`         |
  *
  * The catch-all takes NO validator, deliberately: `handleBetterAuth` hands Better Auth `c.req.raw`,
@@ -133,6 +138,25 @@ export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) 
       csrf,
       validate("json", RevokeDeviceBody),
       (c) => revokeMyDevice(c, wiring, c.req.valid("json")),
+    );
+
+    // The signed-in person deletes their own account (#622) — always soft, on the configured window. The one
+    // route a suspended account still reaches: the app stores require that somebody can always leave, and a
+    // suspension is no reason to keep them. CSRF-guarded as a mutating route; the subject is the session's own,
+    // and nothing in the body can name another.
+    app.delete(
+      `${base}/account`,
+      describeRoute({
+        summary: "Delete the caller's own account. Always soft: restorable until the purge window closes.",
+        description:
+          "What the App Store and Google Play require of an app with accounts. A suspended account may still delete itself, with the session a sign-in carrying `x-pithy-intent: delete-account` gets it; a deleted one is refused with `auth/account_deleted`. Every session ends, this one included. The body must carry `confirm: true`.",
+        verification: ["bearer", "session"],
+        responses: { 200: AccountDeleteResponse },
+      }),
+      requireAccountHolder(),
+      csrf,
+      validate("json", DeleteAccountBody),
+      (c) => deleteMyAccount(c, wiring),
     );
 
     // **Changing which providers can sign you in requires a recent authentication — both directions.**
@@ -500,6 +524,34 @@ async function listMyDevices(c: Ctx, wiring: AuthWiring): Promise<Response> {
   const userId = c.var.auth?.userId;
   if (!userId) throw new UnauthorizedError({ message: "Authentication required." });
   return c.json({ devices: await listDevices(db(c, wiring), userId) });
+}
+
+/**
+ * Delete the caller's own account (#622): soft, on the configured window, audited as `auth/user_self_deleted`
+ * with them as the actor, and every session they hold ended after the columns are written — through Better
+ * Auth's adapter, so `onSessionRevoked` hears each. No reason: a person leaving owes nobody one.
+ */
+async function deleteMyAccount(c: Ctx, wiring: AuthWiring): Promise<Response> {
+  const holder = accountHolder(c);
+  if (!holder) throw new UnauthorizedError({ message: "Authentication required." });
+  const { ip, userAgent } = correlation(c.req.raw.headers);
+  const deps = lifecycleDeps(c, wiring, {
+    ip,
+    userAgent,
+    requestId: c.req.header("cf-ray"),
+    metadata: { sessionId: holder.sessionId, suspended: holder.suspended },
+  });
+  const result = await deleteUser(deps, {
+    userId: holder.userId,
+    actor: { type: "user", id: holder.userId },
+    reason: null,
+  });
+  const tokens = await userSessionTokens(db(c, wiring), holder.userId);
+  const ctx = await (await getAuthInstance(c, wiring)).$context;
+  for (const token of tokens) {
+    await ctx.internalAdapter.deleteSession(token);
+  }
+  return c.json(accountDeletionView(result) satisfies AccountDeleteResponse);
 }
 
 /** Revoke one of the authenticated user's devices: sign out its sessions, then drop the device row. */

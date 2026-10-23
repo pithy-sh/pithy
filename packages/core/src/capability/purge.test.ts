@@ -4,7 +4,7 @@
 import { describe, expect, test } from "vitest";
 import { PithyError } from "../error/pithyError";
 import { type Capability, defineCapability } from "./capability";
-import { type PurgeContribution, PurgeSubject, purgeSteps } from "./purge";
+import { type PurgeContribution, PurgeSubject, purgeExports, purgeSteps } from "./purge";
 
 /** A contribution that records the subject it was asked to erase, so a test can see it ran. */
 function recording(seen: string[], summary = "Erases this capability's rows for one user."): PurgeContribution {
@@ -51,6 +51,11 @@ describe("the purge contribution on the Capability contract", () => {
     );
   });
 
+  test("an export that is not a function is refused, because the export route would call it (#622)", () => {
+    const broken = { ...recording([]), export: "everything" } as unknown as PurgeContribution;
+    expect(() => defineCapability({ name: "media", requiredBindings: [], purge: [broken] })).toThrow(/media.*export/);
+  });
+
   test("the subject vocabulary is closed, and today it is one word", () => {
     expect(PurgeSubject.options).toEqual(["user"]);
   });
@@ -73,5 +78,75 @@ describe("purgeSteps", () => {
 
   test("a project that composes no contribution has no steps, not an error", () => {
     expect(purgeSteps([defineCapability({ name: "turnstile", requiredBindings: [] })], "user")).toEqual([]);
+  });
+});
+
+describe("purgeExports (#622)", () => {
+  const SUBJECT = { type: "user", id: "u1" } as const;
+
+  test("one entry per step, in step order: what each exported, said none, or could not read", async () => {
+    const capabilities: Capability[] = [
+      defineCapability({
+        name: "auth",
+        requiredBindings: [],
+        purge: [{ ...recording([]), export: async ({ subject }) => ({ user: { id: subject.id } }) }],
+      }),
+      defineCapability({ name: "media", requiredBindings: [], purge: [recording([], "Deletes the uploads.")] }),
+      defineCapability({
+        name: "app",
+        requiredBindings: [],
+        purge: [
+          {
+            ...recording([], "Erases the drafts."),
+            export: async () => {
+              throw new Error("the drafts table is gone");
+            },
+          },
+        ],
+      }),
+    ];
+    const entries = await purgeExports(purgeSteps(capabilities, "user"), { subject: SUBJECT, env: {} });
+    expect(entries).toEqual([
+      {
+        capability: "auth",
+        summary: "Erases this capability's rows for one user.",
+        state: "exported",
+        data: { user: { id: "u1" } },
+      },
+      { capability: "media", summary: "Deletes the uploads.", state: "not_exported" },
+      { capability: "app", summary: "Erases the drafts.", state: "unavailable" },
+    ]);
+  });
+
+  test("an export that answers something other than an object is unavailable, not passed through", async () => {
+    const capabilities: Capability[] = [
+      defineCapability({
+        name: "media",
+        requiredBindings: [],
+        purge: [{ ...recording([]), export: async () => ["a", "b"] as unknown as Record<string, unknown> }],
+      }),
+    ];
+    const [entry] = await purgeExports(purgeSteps(capabilities, "user"), { subject: SUBJECT, env: {} });
+    expect(entry?.state).toBe("unavailable");
+  });
+
+  test("each export is read concurrently and one that throws costs only its own entry", async () => {
+    const order: string[] = [];
+    const slow = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      order.push("slow");
+      return { rows: 1 };
+    };
+    const fast = async () => {
+      order.push("fast");
+      return { rows: 2 };
+    };
+    const capabilities: Capability[] = [
+      defineCapability({ name: "slow", requiredBindings: [], purge: [{ ...recording([]), export: slow }] }),
+      defineCapability({ name: "fast", requiredBindings: [], purge: [{ ...recording([]), export: fast }] }),
+    ];
+    const entries = await purgeExports(purgeSteps(capabilities, "user"), { subject: SUBJECT, env: {} });
+    expect(order).toEqual(["fast", "slow"]);
+    expect(entries.map((entry) => entry.capability)).toEqual(["slow", "fast"]);
   });
 });

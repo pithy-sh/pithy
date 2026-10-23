@@ -132,12 +132,14 @@ const DECLARED_ONLY: Record<string, string> = {
  * `lifecycle/hooks.ts` hands an adopter's hook the request's D1, and `lifecycle/transitions.ts` carries it.
  * Encrypted fields (#390) moved `core` by one, `privacy/fieldRotation.ts`, which re-seals a column through its D1,
  * and `secrets` by two: `rotation/fieldKeyRotation.ts` and `manager/fieldKeyWorkflow.ts`, which hand it the
- * adopter's own databases.
+ * adopter's own databases. The purge (#622) moved `auth` by two — `purge/contribution.ts` erases the account's rows
+ * through one D1 batch, and `test-utils/accountFootprint.ts` seeds them — and `audit` by one: `capability.ts` builds
+ * the recorder a Workflow step audits through over the env's own D1.
  */
 const IMPORTERS: Record<string, number> = {
   "packages/artifacts": 2,
-  "packages/audit": 2,
-  "packages/auth": 8,
+  "packages/audit": 3,
+  "packages/auth": 10,
   "packages/cli": 15,
   "packages/cloudflare": 2,
   "packages/core": 17,

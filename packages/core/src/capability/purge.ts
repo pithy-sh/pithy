@@ -23,6 +23,14 @@ import { ValidationError } from "../error/pithyError";
  * a step is retried after a failure that may have come after its rows were already gone, and erasing
  * nothing must then succeed.
  *
+ * ## The same contribution answers an export (#622)
+ *
+ * An access request arrives before an erasure, not after. So a contribution may also say what this capability
+ * holds about the subject, on the read side: `export` answers one JSON object, and the control plane's export
+ * route assembles one document from every composed contribution, in the same order the purge runs them. A
+ * contribution with no `export` is listed as holding rows it did not say how to export, which is the honest
+ * answer and the one an operator can act on.
+ *
  * ## An adopter declares one too
  *
  * On their own `app` capability, for their own tables, with the same types. The contract is exported for
@@ -63,6 +71,13 @@ export interface PurgeContribution {
    * and only this step.
    */
   readonly erase: (context: PurgeContext) => Promise<void>;
+  /**
+   * What this capability holds about the subject, as one JSON object — the read side of `erase` (#622). It
+   * answers an access request, so it carries the subject's own data and never a credential: no session token,
+   * no provider token, no push token. Optional: a contribution without one is listed in the export as rows it
+   * erases and did not say how to export. A throw costs this capability's entry, never the document.
+   */
+  readonly export?: (context: PurgeContext) => Promise<Record<string, unknown>>;
 }
 
 /** One step of a purge: which capability it runs, and the contribution that capability declared. */
@@ -101,6 +116,12 @@ export function assertPurgeContributions(capability: string, contributions: read
         action: "Say in one sentence what it erases. The purge records it with the step.",
       });
     }
+    if (contribution.export !== undefined && typeof contribution.export !== "function") {
+      throw new ValidationError({
+        message: `The ${capability} capability's ${subject.data} purge has an export that is not a function.`,
+        action: "Give it an `export` that answers what this capability holds about the subject, or leave it out.",
+      });
+    }
     if (typeof contribution.erase !== "function") {
       throw new ValidationError({
         message: `The ${capability} capability's ${subject.data} purge has no erase function.`,
@@ -121,4 +142,45 @@ export function purgeSteps(
     if (contribution) steps.push({ step: capability.name, contribution });
   }
   return steps;
+}
+
+/** What one step's export answered: its data, that it declared none, or that it could not be read. */
+export type PurgeExportEntry =
+  | {
+      readonly capability: string;
+      readonly summary: string;
+      readonly state: "exported";
+      readonly data: Record<string, unknown>;
+    }
+  | { readonly capability: string; readonly summary: string; readonly state: "not_exported" }
+  | { readonly capability: string; readonly summary: string; readonly state: "unavailable" };
+
+/** Whether an export answered what the contract promises: one plain object. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Read every step's export for one subject — the export document's body, in step order (#622).
+ *
+ * **Each read is guarded on its own and they run concurrently**, the shape the user pane's sub-reads have
+ * (#380): one capability whose table will not read costs its own entry as `unavailable`, and the rest of the
+ * document still answers the request. What the read threw is not carried — it names a query and a table, and
+ * the document crosses a trust boundary. An answer that is not one object is `unavailable` too, because the
+ * document promises an object per capability and a client validates it.
+ */
+export async function purgeExports(steps: readonly PurgeStep[], context: PurgeContext): Promise<PurgeExportEntry[]> {
+  return Promise.all(
+    steps.map(async ({ step, contribution }): Promise<PurgeExportEntry> => {
+      const base = { capability: step, summary: contribution.summary };
+      const read = contribution.export;
+      if (read === undefined) return { ...base, state: "not_exported" };
+      try {
+        const data = await read(context);
+        return isRecord(data) ? { ...base, state: "exported", data } : { ...base, state: "unavailable" };
+      } catch {
+        return { ...base, state: "unavailable" };
+      }
+    }),
+  );
 }

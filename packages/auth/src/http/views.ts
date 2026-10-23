@@ -1,15 +1,28 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { Session, User } from "../data/betterAuth";
+import type { PurgeExportEntry } from "@pithy-sh/core/src/capability/purge";
+import type { Account, Session, User } from "../data/betterAuth";
 import type { Device } from "../data/device";
-import type { LifecycleTransition, SuspendTransition } from "../lifecycle/transitions";
+import type { UserLifecycleEvent } from "../data/userLifecycle";
 import type {
+  DeleteTransition,
+  DeletionMode,
+  LifecycleTransition,
+  RestoreTransition,
+  SuspendTransition,
+} from "../lifecycle/transitions";
+import type {
+  AccountDeleteResponse,
   AdminDeviceView,
   AdminSessionView,
+  AdminUserDeleteResponse,
+  AdminUserExportResponse,
   AdminUserReinstateResponse,
+  AdminUserRestoreResponse,
   AdminUserSuspendResponse,
   AdminUserView,
+  AuthUserExport,
 } from "./responses";
 
 /**
@@ -126,5 +139,100 @@ export function reinstatementView(userId: string, result: LifecycleTransition): 
     state: "active",
     outcome: result.changed ? "reinstated" : "unchanged",
     mailed: result.mailed,
+  };
+}
+
+/** What became of a deletion's purge: due later, started by the call, or due with nothing bound to start it. */
+export type PurgeDisposition = AdminUserDeleteResponse["purge"];
+
+/**
+ * The deletion projection (#622): the deletion the transition left in force, the sessions the route revoked
+ * after it, and what became of the purge.
+ */
+export function deletionView(
+  userId: string,
+  mode: DeletionMode,
+  result: DeleteTransition,
+  purge: PurgeDisposition,
+  sessionsRevoked: number,
+): AdminUserDeleteResponse {
+  return {
+    userId,
+    state: "deleted",
+    mode,
+    outcome: result.outcome,
+    deletedAt: result.deletedAt.toISOString(),
+    purgeAfter: result.purgeAfter.toISOString(),
+    purge,
+    sessionsRevoked,
+    mailed: result.mailed,
+  };
+}
+
+/** The restoration projection (#622). A call that found the account not deleted is `unchanged`. */
+export function restorationView(userId: string, result: RestoreTransition): AdminUserRestoreResponse {
+  return { userId, state: result.state, outcome: result.changed ? "restored" : "unchanged" };
+}
+
+/** The self-service deletion projection (#622). */
+export function accountDeletionView(result: DeleteTransition): AccountDeleteResponse {
+  return { state: "deleted", purgeAfter: result.purgeAfter.toISOString(), mailed: result.mailed };
+}
+
+/** A date as the wire carries it, or null. */
+function iso(date: Date | null | undefined): string | null {
+  return date ? date.toISOString() : null;
+}
+
+/**
+ * What auth holds about one account, as its export carries it (#622) — the person's own data, projected through
+ * the same views a support pane sees, so a session token, a provider token and a push token are absent here by
+ * the same construction that keeps them out of every other response. The operator who made a transition is
+ * theirs to disclose, not the person's, so the history carries the kind of actor and not its id.
+ */
+export function authUserExportView(input: {
+  user: User;
+  sessions: readonly Session[];
+  accounts: readonly Pick<Account, "providerId" | "createdAt">[];
+  devices: readonly Device[];
+  history: readonly UserLifecycleEvent[];
+  plugins?: Record<string, Record<string, unknown>[]>;
+}): AuthUserExport {
+  const { user } = input;
+  return {
+    user: {
+      ...userView(user),
+      suspendedAt: iso(user.suspendedAt),
+      suspendedUntil: iso(user.suspendedUntil),
+      deletedAt: iso(user.deletedAt),
+      purgeAfter: iso(user.purgeAfter),
+    },
+    sessions: input.sessions.map(sessionView),
+    providers: input.accounts.map((account) => ({
+      providerId: account.providerId,
+      createdAt: account.createdAt.toISOString(),
+    })),
+    devices: input.devices.map(deviceView),
+    history: input.history.map((event) => ({
+      action: event.action,
+      actorType: event.actorType,
+      reason: event.reason,
+      suspendedUntil: iso(event.suspendedUntil),
+      createdAt: event.createdAt.toISOString(),
+    })),
+    plugins: input.plugins ?? {},
+  };
+}
+
+/** The export document (#622): who it is about, when it was read, and every capability's part. */
+export function exportView(
+  userId: string,
+  exportedAt: Date,
+  entries: readonly PurgeExportEntry[],
+): AdminUserExportResponse {
+  return {
+    subject: { type: "user", id: userId },
+    exportedAt: exportedAt.toISOString(),
+    capabilities: entries.map((entry) => ({ ...entry })),
   };
 }

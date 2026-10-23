@@ -100,15 +100,16 @@ export const AUTH_DEVICES_REVOKE_SCOPE: ControlPlaneScope = "auth:devices:revoke
 export const AUTH_USERS_SUSPEND_SCOPE: ControlPlaneScope = "auth:users:suspend";
 
 /**
- * Delete an account, restore one inside its purge window, and start a purge (#620, the routes in #622). The
+ * Delete an account, restore one inside its purge window, and start a purge (#620):
+ * `DELETE {base}/admin/users/:userId` and `POST …/restore` (#622). The
  * one scope on this surface whose worst case cannot be undone: once the window closes, the person's rows are
  * gone from every capability that held them.
  */
 export const AUTH_USERS_DELETE_SCOPE: ControlPlaneScope = "auth:users:delete";
 
 /**
- * Export everything the kit holds about one account — the answer to an access request (#620, the route in
- * #622). A disclosure, and a far larger one than reading the user: it carries every capability's rows about
+ * Export everything the kit holds about one account — the answer to an access request (#620):
+ * `GET {base}/admin/users/:userId/export` (#622). A disclosure, and a far larger one than reading the user: it carries every capability's rows about
  * them, so it is granted on its own and audited as one.
  */
 export const AUTH_USERS_EXPORT_SCOPE: ControlPlaneScope = "auth:users:export";
@@ -117,9 +118,9 @@ export const AUTH_USERS_EXPORT_SCOPE: ControlPlaneScope = "auth:users:export";
  * Every control-plane scope auth defines — what `pithy dashboard connect` offers for this capability,
  * and the list a manifest or a doc quotes rather than re-typing.
  *
- * **The lifecycle scopes were declared before the routes that require them.** Suspend and reinstate landed in
- * #621; the delete, restore and export routes land in #622. Declaring the vocabulary here, once, is what lets
- * those issues build on one name each rather than each choosing its own.
+ * **The lifecycle scopes were declared before the routes that require them** (#620): suspend and reinstate
+ * landed in #621, delete, restore and export in #622. Declaring the vocabulary here, once, is what let those
+ * issues build on one name each rather than each choosing its own.
  */
 export const AUTH_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
   AUTH_USERS_READ_SCOPE,
@@ -193,6 +194,25 @@ export function authAdminRoutes(basePath: string): AdminRoute[] {
       path: `${basePath}/admin/users/:userId/reinstate`,
       scope: AUTH_USERS_SUSPEND_SCOPE,
       summary: "Lift a suspension, with a reason. They sign in again; no session comes back.",
+    },
+    {
+      method: "DELETE",
+      path: `${basePath}/admin/users/:userId`,
+      scope: AUTH_USERS_DELETE_SCOPE,
+      summary:
+        "Delete a user, with a reason. Soft by default: restorable until the purge window closes. Hard, when named: erased now.",
+    },
+    {
+      method: "POST",
+      path: `${basePath}/admin/users/:userId/restore`,
+      scope: AUTH_USERS_DELETE_SCOPE,
+      summary: "Restore a deleted user inside the purge window, with a reason. They sign in again.",
+    },
+    {
+      method: "GET",
+      path: `${basePath}/admin/users/:userId/export`,
+      scope: AUTH_USERS_EXPORT_SCOPE,
+      summary: "Everything the kit holds about one user, from every capability — the answer to an access request.",
     },
   ];
 }

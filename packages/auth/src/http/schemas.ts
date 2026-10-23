@@ -162,3 +162,67 @@ export const ReinstateUserBody = z
   .object({ reason: LifecycleReason, notify: Notify })
   .describe("A reinstatement: why, and whether to tell the person. It restores no session.");
 export type ReinstateUserBody = z.output<typeof ReinstateUserBody>;
+
+/**
+ * How a deletion runs (#622). `soft` is the default and the only thing an omission reaches: the account is shut
+ * now and erased once the window closes, restorable until then. `hard` starts the purge at once, with no
+ * window, and is reached only by naming it — a typo is a 400, never either mode.
+ */
+export const DeletionMode = z
+  .enum(["soft", "hard"])
+  .describe(
+    "`soft` (the default): the account is shut now and its data erased once `retention.purgeAfterDays` have passed; it can be restored until then. `hard`: the purge starts now, with no window and nothing to restore.",
+  );
+export type DeletionMode = z.output<typeof DeletionMode>;
+
+/** The body of `DELETE /admin/users/:userId`. */
+export const DeleteUserBody = z
+  .object({
+    mode: DeletionMode.default("soft").describe(
+      "`soft` unless named: the window, then the purge. `hard` purges now. Anything else is refused.",
+    ),
+    reason: LifecycleReason,
+    notify: z
+      .boolean()
+      .optional()
+      .describe(
+        "Whether to mail the person. Absent is true. It silences the mail this call sends: the deletion-scheduled notice for `soft`, the deletion-complete notice for `hard`.",
+      ),
+  })
+  .describe("A deletion: soft or hard, why, and whether to tell the person.");
+export type DeleteUserBody = z.output<typeof DeleteUserBody>;
+
+/** The body of `POST /admin/users/:userId/restore`. */
+export const RestoreUserBody = z
+  .object({ reason: LifecycleReason })
+  .describe("A restoration inside the purge window: why. It restores no session; the person signs in again.");
+export type RestoreUserBody = z.output<typeof RestoreUserBody>;
+
+/**
+ * The query of `GET /admin/users/:userId/export`. A disclosure of everything the kit holds about one person
+ * says why, like every lifecycle call: the reason goes on the trail beside who asked.
+ */
+export const ExportUserQuery = z
+  .object({
+    reason: LifecycleReason.describe(
+      "Why this person's data is being exported — the access request it answers. Recorded on the audit trail.",
+    ),
+  })
+  .describe("An export: why it is being made.");
+export type ExportUserQuery = z.output<typeof ExportUserQuery>;
+
+/**
+ * The body of `DELETE /account`, the signed-in person deleting their own account (#622).
+ *
+ * The confirmation is the literal `true`, so a client must say it on purpose: a stray `DELETE` with an empty
+ * body, or a form posting `"false"`, deletes nothing. There is no field naming an account — the subject is the
+ * session's own, always — and a key that tries is dropped.
+ */
+export const DeleteAccountBody = z
+  .object({
+    confirm: z
+      .literal(true)
+      .describe("Must be `true`. The person confirmed, in your app, that they want their account deleted."),
+  })
+  .describe("A self-service deletion: the person's own confirmation. Always soft, on the configured window.");
+export type DeleteAccountBody = z.output<typeof DeleteAccountBody>;

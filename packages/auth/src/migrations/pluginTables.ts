@@ -279,7 +279,21 @@ export interface AuthPluginPlan {
   migrations: Record<string, Migration>;
   /** One entry per plugin, whatever it declared — what `pithy doctor` reports. */
   extensions: { id: string; tables: string[] }[];
+  /**
+   * The tables a plugin created that are keyed to one account by a `userId` column — `twoFactor`, `passkey`,
+   * an API key's table — which the purge erases and the export reads with auth's own (#622). Every one of them
+   * holds rows about the person and nothing else does, because a plugin's tables have no foreign key to cascade
+   * from the user row. `organization`'s are not here: a membership is the organization's as much as the
+   * person's, and what erasing one means is #623's.
+   */
+  userTables: string[];
 }
+
+/** The column a plugin's table names its account by — Better Auth's own convention for a user-keyed row. */
+const USER_KEY = "userId";
+
+/** Plugins whose user-keyed tables the purge leaves to their own issue — see {@link AuthPluginPlan.userTables}. */
+const PURGE_DEFERRED_PLUGINS: readonly string[] = ["organization"];
 
 /**
  * Derive everything the auth capability needs from an adopter's plugin list, in one pass.
@@ -297,6 +311,7 @@ export interface AuthPluginPlan {
 export function authPluginPlan(plugins: readonly BetterAuthPlugin[]): AuthPluginPlan {
   const migrations: Record<string, Migration> = {};
   const extensions: { id: string; tables: string[] }[] = [];
+  const userTables: string[] = [];
   const claimed = new Map<string, string>();
 
   for (const plugin of plugins) {
@@ -319,6 +334,9 @@ export function authPluginPlan(plugins: readonly BetterAuthPlugin[]): AuthPlugin
         });
       }
       claimed.set(table.name, plugin.id);
+      if (!PURGE_DEFERRED_PLUGINS.includes(plugin.id) && table.columns.some((column) => column.name === USER_KEY)) {
+        userTables.push(table.name);
+      }
     }
 
     if (delta.tables.length === 0 && delta.columns.length === 0) continue;
@@ -333,5 +351,5 @@ export function authPluginPlan(plugins: readonly BetterAuthPlugin[]): AuthPlugin
     migrations[key] = pluginMigration(delta);
   }
 
-  return { migrations, extensions };
+  return { migrations, extensions, userTables };
 }

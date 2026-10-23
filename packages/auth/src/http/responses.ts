@@ -254,6 +254,178 @@ export const AdminUserReinstateResponse = z
   .describe("A reinstated account, and whether the person was told. Its revoked sessions stay revoked.");
 export type AdminUserReinstateResponse = z.output<typeof AdminUserReinstateResponse>;
 
+/** When the purge may erase a deleted account, ISO-8601. */
+const PurgeAfter = z.iso
+  .datetime()
+  .describe(
+    "When the purge may erase the account, ISO-8601. It can be restored until then; a hard deletion's is the moment it was deleted.",
+  );
+
+/**
+ * `DELETE {base}/admin/users/:userId` (#622).
+ *
+ * What the deletion left in force, how many sessions ended with it, whether the person was told, and what
+ * became of the purge. Not the reason: the caller wrote it and the trail keeps it.
+ */
+export const AdminUserDeleteResponse = z
+  .object({
+    userId: z.string().describe("The account deleted, as `pithy_auth_users.id` stores it."),
+    state: z.literal("deleted").describe("Where the account stands now. Every sign-in and refresh is refused."),
+    mode: z.enum(["soft", "hard"]).describe("The mode this call ran in — `soft` unless the caller named `hard`."),
+    outcome: z
+      .enum(["deleted", "brought_forward", "unchanged"])
+      .describe(
+        "`deleted` when this call deleted an account in good standing; `brought_forward` when a hard deletion moved an already-deleted account's purge to now; `unchanged` when it was already deleted and there was nothing to move.",
+      ),
+    deletedAt: z.iso.datetime().describe("When the account was deleted, ISO-8601. Kept by a deletion brought forward."),
+    purgeAfter: PurgeAfter,
+    purge: z
+      .enum(["scheduled", "started", "pending"])
+      .describe(
+        "`scheduled`: the daily purge erases it once `purgeAfter` passes. `started`: the purge Workflow was started by this call. `pending`: the purge is due and this Worker binds no purge Workflow to start, so it runs once one is bound.",
+      ),
+    sessionsRevoked: RevokedCount,
+    mailed: z
+      .boolean()
+      .describe(
+        "Whether the deletion-scheduled mail was enqueued. Always false for `hard`, whose mail the purge sends, for `notify: false`, and when the config turns it off.",
+      ),
+  })
+  .describe("A deleted account: when, until when it can be restored, what became of the purge, and its sessions.");
+export type AdminUserDeleteResponse = z.output<typeof AdminUserDeleteResponse>;
+
+/**
+ * `POST {base}/admin/users/:userId/restore` (#622). No session count: a restoration restores none.
+ */
+export const AdminUserRestoreResponse = z
+  .object({
+    userId: z.string().describe("The account restored, as `pithy_auth_users.id` stores it."),
+    state: z
+      .enum(["active", "suspended"])
+      .describe(
+        "Where the account stands now: `active`, or `suspended` when a suspension it was under before the deletion is still in force.",
+      ),
+    outcome: z
+      .enum(["restored", "unchanged"])
+      .describe("`restored` when this call restored a deleted account; `unchanged` when it was not deleted."),
+  })
+  .describe("A restored account, inside its purge window. Its revoked sessions stay revoked.");
+export type AdminUserRestoreResponse = z.output<typeof AdminUserRestoreResponse>;
+
+/** One provider link an account holds, as an export carries it — no provider token. */
+const AuthExportProvider = z
+  .object({
+    providerId: z.string().describe("The sign-in provider's slug — `google`, `apple`, `github`."),
+    createdAt: z.iso.datetime().describe("When the provider was linked, ISO-8601."),
+  })
+  .describe("One sign-in provider linked to the account. The provider's tokens are credentials and are not here.");
+
+/** One transition in an account's history, as an export carries it — not who made it. */
+const AuthExportTransition = z
+  .object({
+    action: z
+      .string()
+      .describe("What happened: `suspended`, `reinstated`, `deleted`, `restored`, `purge_step`, `purged`."),
+    actorType: z.string().describe("Who made it: `control-plane`, `user` (the account's holder), or `system`."),
+    reason: z.string().nullable().describe("The reason given, in the words of whoever made the transition, or null."),
+    suspendedUntil: z.iso.datetime().nullable().describe("For a suspension, when it ends by itself, ISO-8601."),
+    createdAt: z.iso.datetime().describe("When it happened, ISO-8601."),
+  })
+  .describe(
+    "One transition in the account's history. The operator's identity is theirs, not the person's, so it is not here.",
+  );
+
+/**
+ * What `@pithy-sh/auth` holds about one account, as its purge contribution exports it (#622) — the `data` of
+ * the `auth` entry in an export.
+ *
+ * The person's own data and none of their credentials: no session token, no provider token, no push token.
+ * Every list is whole, because an export that stopped at a bound would answer an access request with part of
+ * an answer.
+ */
+export const AuthUserExport = z
+  .object({
+    user: AdminUserView.extend({
+      suspendedAt: z.iso.datetime().nullable().describe("When a suspension in force began, ISO-8601, or null."),
+      suspendedUntil: z.iso.datetime().nullable().describe("When that suspension ends by itself, ISO-8601, or null."),
+      deletedAt: z.iso.datetime().nullable().describe("When the account was deleted, ISO-8601, or null."),
+      purgeAfter: z.iso.datetime().nullable().describe("When the purge may erase it, ISO-8601, or null."),
+    }).describe("The account itself, with where it stands."),
+    sessions: z.array(AdminSessionView).describe("Every live session, newest first. Without the tokens."),
+    providers: z.array(AuthExportProvider).describe("Every linked sign-in provider."),
+    devices: z
+      .array(AdminDeviceView)
+      .describe("Every registered device, most recently seen first. Without push tokens."),
+    history: z.array(AuthExportTransition).describe("Every lifecycle transition, oldest first."),
+    plugins: z
+      .record(z.string(), z.array(z.record(z.string(), z.unknown())))
+      .describe(
+        "The account's rows in each table a composed Better Auth plugin created keyed by `userId` — two-factor, passkeys, API keys — keyed by table. Without a column that holds a credential. Empty when no such plugin is composed.",
+      ),
+  })
+  .describe("Everything `@pithy-sh/auth` holds about one account, without a credential.");
+export type AuthUserExport = z.output<typeof AuthUserExport>;
+
+/** Fields every capability's export entry carries. */
+const exportEntry = {
+  capability: z.string().describe("The capability whose rows these are — the purge step that erases them."),
+  summary: z.string().describe("What that capability's purge erases or anonymizes, in its own sentence."),
+};
+
+/** One capability's part of an export. */
+const AdminUserExportEntry = z
+  .discriminatedUnion("state", [
+    z
+      .object({
+        ...exportEntry,
+        state: z.literal("exported").describe("The capability answered."),
+        data: z
+          .record(z.string(), z.unknown())
+          .describe(
+            "What it holds about the account, in the shape that capability exports. `auth`'s is `AuthUserExport`.",
+          ),
+      })
+      .describe("A capability's rows about the account."),
+    z
+      .object({
+        ...exportEntry,
+        state: z
+          .literal("not_exported")
+          .describe("The capability erases rows about the account and does not say how to export them."),
+      })
+      .describe("A capability that holds rows it does not export. Ask its owner."),
+    z
+      .object({
+        ...exportEntry,
+        state: z.literal("unavailable").describe("The capability's rows could not be read on this request."),
+      })
+      .describe("Nothing was established about this capability's rows. Deliberately empty — it is not 'none'."),
+  ])
+  .describe("One capability's part of an export, behind a state, so an unread part cannot be taken for an empty one.");
+
+/**
+ * `GET {base}/admin/users/:userId/export` (#622).
+ *
+ * Everything the kit holds about one account — the answer to an access request. One entry per composed
+ * capability that declares a purge contribution, in the order the purge runs them, each read on its own so
+ * one that will not read costs its own entry and not the document.
+ */
+export const AdminUserExportResponse = z
+  .object({
+    subject: z
+      .object({
+        type: z.literal("user").describe("The kind of subject: one person's account."),
+        id: z.string().describe("The account's id, as `pithy_auth_users.id` stores it."),
+      })
+      .describe("Who this export is about."),
+    exportedAt: z.iso.datetime().describe("When the export was read, ISO-8601."),
+    capabilities: z
+      .array(AdminUserExportEntry)
+      .describe("Every composed capability's part, in the order the purge erases them."),
+  })
+  .describe("Everything the kit holds about one account, from every composed capability, as one document.");
+export type AdminUserExportResponse = z.output<typeof AdminUserExportResponse>;
+
 /*
  * The routes a signed-in person calls on their own account. These are not read across the management
  * version boundary the admin schemas above are, but a client generated from the contract reads Workers on
@@ -307,3 +479,20 @@ export const MyDeviceRevokeResponse = z
   .object({ revoked: RevokedCount })
   .describe("How many of the device's sessions the revocation signed out. The device's row goes with them.");
 export type MyDeviceRevokeResponse = z.output<typeof MyDeviceRevokeResponse>;
+
+/**
+ * `DELETE {base}/account` (#622) — the signed-in person deleted their own account. Always soft, on the
+ * configured window. Their sessions end with it, this one included.
+ */
+export const AccountDeleteResponse = z
+  .object({
+    state: z.literal("deleted").describe("The account is deleted. This session and every other one has ended."),
+    purgeAfter: PurgeAfter,
+    mailed: z
+      .boolean()
+      .describe(
+        "Whether the deletion-scheduled mail, with the purge date and how to ask for the account back, was sent.",
+      ),
+  })
+  .describe("The caller's own account, deleted: when its data will be erased, and whether they were mailed.");
+export type AccountDeleteResponse = z.output<typeof AccountDeleteResponse>;

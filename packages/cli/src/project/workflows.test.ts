@@ -63,7 +63,12 @@ interface Job {
  * and a Workflow as `<project>-<env>-<capability>-<job>`, so a fixture where the two match hides
  * every mistake that swaps one for the other.
  */
-async function worker(name: string, wrangler: Record<string, unknown>, jobs?: Record<string, Job>): Promise<string> {
+async function worker(
+  name: string,
+  wrangler: Record<string, unknown>,
+  jobs?: Record<string, Job>,
+  libraries = "[]",
+): Promise<string> {
   const workerDir = join(dir, "apps", name);
   await mkdir(workerDir, { recursive: true });
   await writeFile(
@@ -74,7 +79,7 @@ async function worker(name: string, wrangler: Record<string, unknown>, jobs?: Re
   const app = jobs === undefined ? "" : `app: { name: "${name}", workflows: ${JSON.stringify(jobs)} },`;
   await writeFile(
     join(workerDir, "pithy.config.ts"),
-    `const config = {\n  ${app}\n  capabilities: []\n};\nexport default config;\n`,
+    `const config = {\n  ${app}\n  capabilities: ${libraries}\n};\nexport default config;\n`,
   );
   return workerDir;
 }
@@ -229,6 +234,54 @@ describe("workflowDrift", () => {
   test("a Worker with no app capability is not held to a declaration it does not have", async () => {
     await worker("board", { env: { prod: { workflows: [DIGEST_PROD] } } });
 
+    expect(await workflowDrift(dir, PROJECT, ["prod"])).toEqual([]);
+  });
+});
+
+describe("a library's adopter-hosted jobs are not drift (#622)", () => {
+  /** `@pithy-sh/auth`'s purge, as `auth()` declares it: no class, optional, the daily pass on a cron. */
+  const AUTH = `[{ name: "auth", requiredBindings: [], workflows: {
+    purge: { binding: "AUTH_PURGE", optional: true },
+    "purge-due": { binding: "AUTH_PURGE_DUE", schedule: "0 2 * * *", optional: true },
+  } }]`;
+  const PURGE = { binding: "AUTH_PURGE", name: "replay-prod-auth-purge", class_name: "AuthPurgeWorkflow" };
+
+  test("the entries and cron the adopter wrote for them beside the app's own table are clean", async () => {
+    await worker(
+      "board",
+      { env: { prod: { workflows: [DIGEST_PROD, PURGE], triggers: { crons: ["0 4 * * *", "0 2 * * *"] } } } },
+      DIGEST,
+      AUTH,
+    );
+    expect(await workflowDrift(dir, PROJECT, ["prod"])).toEqual([]);
+  });
+
+  test("and the app's own table is still held to its declaration beside them", async () => {
+    await worker("board", { env: { prod: { workflows: [PURGE], triggers: { crons: ["0 2 * * *"] } } } }, DIGEST, AUTH);
+    const [drift] = await workflowDrift(dir, PROJECT, ["prod"]);
+    expect(drift).toMatchObject({
+      fault: "unsynced-stanza",
+      declared: { workflows: [DIGEST_PROD], crons: ["0 4 * * *"] },
+      bound: { workflows: [], crons: [] },
+    });
+  });
+
+  test("pithy worker sync keeps them, and the result is clean", async () => {
+    const workerDir = await worker(
+      "board",
+      { env: { prod: { workflows: [PURGE], triggers: { crons: ["0 2 * * *"] } } } },
+      DIGEST,
+      AUTH,
+    );
+    const config = await composeFor("prod", async (load) => load(workerDir));
+    if (!config.app) throw new Error("expected an app capability");
+    await reconcileAppWorkflows({
+      workerDir,
+      project: PROJECT,
+      app: config.app,
+      capabilities: config.capabilities,
+      env: "prod",
+    });
     expect(await workflowDrift(dir, PROJECT, ["prod"])).toEqual([]);
   });
 });

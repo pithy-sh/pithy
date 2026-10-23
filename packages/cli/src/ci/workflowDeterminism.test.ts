@@ -88,6 +88,15 @@ const SHIPPED_WORKFLOWS = [
  * re-executes from the top on every resume.
  */
 const SHIPPED_DELEGATES = [
+  // #622. The purge's two bodies — one account's purge, one step per composed contribution, and the daily pass that
+  // starts every due one — and the step each contribution runs in. Their classes are the adopter's, five lines in
+  // their own entry, so the walk meets the kit's half here. The clock is read inside the transitions each step
+  // calls, never in a body.
+  "packages/auth/src/purge/run.ts#eraseStep",
+  "packages/auth/src/purge/run.ts#purgeUser",
+  "packages/auth/src/purge/run.ts#startDuePurges",
+  "packages/auth/src/purge/workflow.ts#runAuthPurge",
+  "packages/auth/src/purge/workflow.ts#runAuthPurgeDue",
   // #338. Not a capability's driver but the classifier every driver's steps now pass through, which is
   // exactly why it belongs in this population: a clock or a random source read here would be read by all
   // of them at once.

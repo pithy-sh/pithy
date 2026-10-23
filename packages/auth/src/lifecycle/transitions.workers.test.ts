@@ -3,7 +3,7 @@
 
 import { env } from "cloudflare:test";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
-import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { email } from "@pithy-sh/email/src/capability";
@@ -14,14 +14,19 @@ import { authDatabase } from "../data/tables";
 import { UserLifecycleEvent } from "../data/userLifecycle";
 import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
 import { AUTH_MIGRATIONS } from "../migrations/set";
+import { purgeOps } from "../purge/run";
 import { readLifecycleColumns, suspensionReason } from "./enforce";
 import type { UserLifecycleHookEvent, UserLifecycleHooks } from "./hooks";
 import {
   completePurge,
   deleteUser,
+  duePurges,
   type LifecycleDeps,
+  mailPurgeComplete,
+  purgeSubject,
   recordPurgeStep,
   reinstateUser,
+  requirePresent,
   restoreUser,
   suspendUser,
 } from "./transitions";
@@ -114,6 +119,11 @@ async function seedUser(id = "u1", locale: string | null = null): Promise<void> 
   )
     .bind(id, `${id}@test.com`, locale, NOW.toISOString(), NOW.toISOString())
     .run();
+}
+
+/** The accounts `duePurges` lists, by id. */
+async function dueIds(deps: LifecycleDeps, limit: number): Promise<string[]> {
+  return (await duePurges(deps, limit)).map((due) => due.userId);
 }
 
 async function history(userId = "u1"): Promise<UserLifecycleEvent[]> {
@@ -600,7 +610,8 @@ describe("deleteUser", () => {
     await seedUser();
     const h = harness();
     const result = await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Asked by email." });
-    expect(result.changed).toBe(true);
+    expect(result).toMatchObject({ changed: true, mailed: true, outcome: "deleted" });
+    expect(result.purgeAfter.getTime()).toBe(NOW.getTime() + 30 * DAY);
     const columns = await readLifecycleColumns(h.deps.db, "u1");
     expect(columns?.deletedAt?.getTime()).toBe(NOW.getTime());
     expect(columns?.purgeAfter?.getTime()).toBe(NOW.getTime() + 30 * DAY);
@@ -609,6 +620,7 @@ describe("deleteUser", () => {
       template: "deletionScheduled",
       payload: { name: "Sam", purgeOn: "November 19, 2026" },
     });
+    expect(job?.payload).not.toHaveProperty("restoreUrl");
     expect(h.fired.map((call) => call.hook)).toEqual(["onUserDeleted"]);
     expect(h.fired[0]?.event.purgeAfter?.getTime()).toBe(NOW.getTime() + 30 * DAY);
     expect(h.events[0]?.action).toBe("auth/admin_user_soft_deleted");
@@ -619,6 +631,23 @@ describe("deleteUser", () => {
     const h = harness({ config: { retention: { purgeAfterDays: 7 } } });
     await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x" });
     expect((await readLifecycleColumns(h.deps.db, "u1"))?.purgeAfter?.getTime()).toBe(NOW.getTime() + 7 * DAY);
+  });
+
+  test("the deletion-scheduled mail carries the configured restore path (#622)", async () => {
+    await seedUser();
+    const h = harness({ config: { retention: { restoreUrl: "https://app.example.test/restore" } } });
+    await deleteUser(h.deps, { userId: "u1", actor: { type: "user", id: "u1" }, reason: null });
+    const [job] = await jobs();
+    expect(job?.payload.restoreUrl).toBeDefined();
+    expect(String(job?.payload.restoreUrl)).toContain("restore");
+  });
+
+  test("notify: false sends no deletion-scheduled mail, and says so (#622)", async () => {
+    await seedUser();
+    const h = harness();
+    const result = await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x", notify: false });
+    expect(result.mailed).toBe(false);
+    expect(await jobs()).toEqual([]);
   });
 
   test("the account's own holder deleting it is audited as user_self_deleted, with them as the actor", async () => {
@@ -633,8 +662,52 @@ describe("deleteUser", () => {
     await seedUser();
     const h = harness();
     await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x" });
-    expect((await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x" })).changed).toBe(false);
+    const again = await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x" });
+    expect(again).toMatchObject({ changed: false, outcome: "unchanged", mailed: false });
+    expect(again.purgeAfter.getTime()).toBe(NOW.getTime() + 30 * DAY);
     expect(h.fired).toHaveLength(1);
+  });
+});
+
+describe("deleteUser, hard (#622)", () => {
+  test("closes the window now: purgeAfter is the deletion's own instant, audited as a hard deletion", async () => {
+    await seedUser();
+    const h = harness();
+    const result = await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Fraud.", mode: "hard" });
+    expect(result).toMatchObject({ changed: true, outcome: "deleted", mailed: false });
+    expect(result.purgeAfter.getTime()).toBe(NOW.getTime());
+    const columns = await readLifecycleColumns(h.deps.db, "u1");
+    expect(columns?.deletedAt?.getTime()).toBe(NOW.getTime());
+    expect(columns?.purgeAfter?.getTime()).toBe(NOW.getTime());
+    expect(h.events.map((event) => event.action)).toEqual(["auth/admin_user_hard_deleted"]);
+    expect((await history()).map((row) => [row.action, row.reason])).toEqual([["deleted", "Fraud."]]);
+    // Nothing is scheduled, so nothing says it is. The purge sends the deletion-complete mail.
+    expect(await jobs()).toEqual([]);
+    expect(h.fired.map((call) => call.hook)).toEqual(["onUserDeleted"]);
+  });
+
+  test("brings an already-deleted account's purge forward to now, written and audited, with no second hook", async () => {
+    await seedUser();
+    const h = harness();
+    await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Asked." });
+    const result = await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Now, please.", mode: "hard" });
+    expect(result).toMatchObject({ changed: false, outcome: "brought_forward" });
+    expect(result.deletedAt.getTime()).toBe(NOW.getTime());
+    expect((await readLifecycleColumns(h.deps.db, "u1"))?.purgeAfter?.getTime()).toBe(NOW.getTime());
+    expect(h.events.map((event) => [event.action, event.metadata?.broughtForward])).toEqual([
+      ["auth/admin_user_soft_deleted", undefined],
+      ["auth/admin_user_hard_deleted", true],
+    ]);
+    expect(h.fired.map((call) => call.hook)).toEqual(["onUserDeleted"]);
+  });
+
+  test("an account already due is unchanged by a second hard deletion", async () => {
+    await seedUser();
+    const h = harness();
+    await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x", mode: "hard" });
+    const again = await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x", mode: "hard" });
+    expect(again.outcome).toBe("unchanged");
+    expect(h.events).toHaveLength(1);
   });
 });
 
@@ -643,9 +716,8 @@ describe("restoreUser", () => {
     await seedUser();
     const h = harness();
     await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x" });
-    expect((await restoreUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Changed their mind." })).changed).toBe(
-      true,
-    );
+    const result = await restoreUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Changed their mind." });
+    expect(result).toMatchObject({ changed: true, state: "active" });
     const columns = await readLifecycleColumns(h.deps.db, "u1");
     expect(columns?.deletedAt ?? null).toBeNull();
     expect(columns?.purgeAfter ?? null).toBeNull();
@@ -653,56 +725,279 @@ describe("restoreUser", () => {
     expect(h.events.map((event) => event.action)).toEqual(["auth/admin_user_soft_deleted", "auth/admin_user_restored"]);
   });
 
-  test("restoring a deleted account that was suspended leaves it suspended", async () => {
+  test("restoring a deleted account that was suspended leaves it suspended, and says so", async () => {
     await seedUser();
     const h = harness();
     await suspendUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Review." });
     await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x" });
-    await restoreUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "y" });
+    expect((await restoreUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "y" })).state).toBe("suspended");
     expect((await readLifecycleColumns(h.deps.db, "u1"))?.suspendedAt).toBeInstanceOf(Date);
   });
 
-  test("after the purge there is nothing to restore, and it says so with a 404", async () => {
+  test("restoring an account that is not deleted is no transition", async () => {
+    await seedUser();
+    const h = harness();
+    expect(await restoreUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "y" })).toMatchObject({
+      changed: false,
+      state: "active",
+    });
+    expect(await history()).toEqual([]);
+  });
+
+  test("once the window has closed it is a conflict, and nothing is written (#622)", async () => {
+    await seedUser();
+    const h = harness();
+    await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x", mode: "hard" });
+    await expect(restoreUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "y" })).rejects.toBeInstanceOf(
+      ConflictError,
+    );
+    expect((await readLifecycleColumns(h.deps.db, "u1"))?.deletedAt).toBeInstanceOf(Date);
+    expect((await history()).map((row) => row.action)).toEqual(["deleted"]);
+  });
+
+  /**
+   * A clock that reads `first` once and `after` from then on: a restore that read the time, and a window that
+   * closed before its statement ran. A restore guarded by the first reading lands after the purge's `due` check
+   * passed, and the purge erases an account the restore reported back.
+   */
+  const moving = (first: number, after: number) => {
+    let reads = 0;
+    return () => new Date(NOW.getTime() + (reads++ === 0 ? first : after));
+  };
+
+  test("a window that closes while the restore is in flight is a conflict, and the purge still finds it due (#622)", async () => {
+    await seedUser();
+    const h = harness();
+    await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x" });
+    const closes = 30 * DAY;
+    const restoring = { ...h.deps, now: moving(closes - 1, closes + 1) };
+    const refusal = await restoreUser(restoring, { userId: "u1", actor: OPERATOR, reason: "y" }).catch((e) => e);
+    expect(refusal).toBeInstanceOf(ConflictError);
+    expect((refusal as ConflictError).payload.message).toMatch(/purge window closed on/);
+    expect((await readLifecycleColumns(h.deps.db, "u1"))?.deletedAt).toBeInstanceOf(Date);
+    expect((await history()).map((row) => row.action)).toEqual(["deleted"]);
+    expect(h.events.map((event) => event.action)).toEqual(["auth/admin_user_soft_deleted"]);
+    const later = { ...h.deps, now: () => new Date(NOW.getTime() + closes + 1) };
+    expect((await purgeSubject(later, "u1")).state).toBe("due");
+  });
+
+  test("a hard deletion that brings the purge forward while the restore is in flight wins (#622)", async () => {
+    await seedUser();
+    const h = harness();
+    await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x" });
+    // The operator brings the purge forward to NOW + 10; the restore read the time at NOW + 5, before it did.
+    const forward = { ...h.deps, now: () => new Date(NOW.getTime() + 10) };
+    await deleteUser(forward, { userId: "u1", actor: OPERATOR, reason: "now", mode: "hard" });
+    const restoring = { ...h.deps, now: moving(5, 20) };
+    await expect(restoreUser(restoring, { userId: "u1", actor: OPERATOR, reason: "y" })).rejects.toBeInstanceOf(
+      ConflictError,
+    );
+    expect((await readLifecycleColumns(h.deps.db, "u1"))?.purgeAfter?.getTime()).toBe(NOW.getTime() + 10);
+    expect((await history()).map((row) => row.action)).toEqual(["deleted", "deleted"]);
+    expect((await purgeSubject({ ...h.deps, now: () => new Date(NOW.getTime() + 20) }, "u1")).state).toBe("due");
+  });
+
+  test("on the system clock, the guard is the database's own time when the statement runs (#622)", async () => {
+    await seedUser("open");
+    await seedUser("closed");
+    const h = harness();
+    const system = { ...h.deps, now: undefined };
+    await deleteUser(system, { userId: "open", actor: OPERATOR, reason: "x" });
+    await deleteUser(system, { userId: "closed", actor: OPERATOR, reason: "x" });
+    // Closed a second ago, by the database's clock and the Worker's alike.
+    await env.DB.prepare("update pithy_auth_users set purge_after = ? where id = 'closed'")
+      .bind(Date.now() - 1000)
+      .run();
+    expect((await purgeSubject(system, "open")).state).toBe("not_due");
+    expect((await purgeSubject(system, "closed")).state).toBe("due");
+    await expect(restoreUser(system, { userId: "closed", actor: OPERATOR, reason: "y" })).rejects.toBeInstanceOf(
+      ConflictError,
+    );
+    expect(await restoreUser(system, { userId: "open", actor: OPERATOR, reason: "y" })).toMatchObject({
+      changed: true,
+    });
+  });
+
+  test("an id that never existed is a plain 404", async () => {
     const h = harness();
     await expect(restoreUser(h.deps, { userId: "gone", actor: OPERATOR, reason: "x" })).rejects.toBeInstanceOf(
       NotFoundError,
     );
   });
+
+  test("after the purge it is a 404 whose action says the data is gone (#622)", async () => {
+    const h = harness();
+    await completePurge(h.deps, { userId: "gone" });
+    const refusal = await restoreUser(h.deps, { userId: "gone", actor: OPERATOR, reason: "x" }).catch((e) => e);
+    expect(refusal).toBeInstanceOf(NotFoundError);
+    expect((refusal as NotFoundError).payload.action).toMatch(/purged on 2026-10-20.*data is gone/);
+    await expect(requirePresent(h.deps.db, "gone")).rejects.toThrow(NotFoundError);
+    const export404 = await requirePresent(h.deps.db, "gone").catch((e) => e);
+    expect((export404 as NotFoundError).payload.action).toMatch(/data is gone/);
+  });
 });
 
 describe("the purge's records", () => {
-  test("recordPurgeStep writes one row naming the capability whose rows went", async () => {
+  test("recordPurgeStep writes one row naming the capability whose rows went, and what it erased", async () => {
     const h = harness();
-    await recordPurgeStep(h.deps, { userId: "u1", step: "media" });
-    expect((await history())[0]).toMatchObject({ action: "purge_step", actorType: "system", step: "media" });
+    await recordPurgeStep(h.deps, { userId: "u1", step: "media", summary: "Deletes the user's uploads." });
+    expect((await history())[0]).toMatchObject({
+      action: "purge_step",
+      actorType: "system",
+      step: "media",
+      reason: "Deletes the user's uploads.",
+    });
   });
 
-  test("completePurge mails the address it is handed, records, audits as system, and fires onUserPurged", async () => {
-    // The purge Workflow (#622) captures the address before its steps erase it and hands it here, so the
-    // last mail reaches somebody even though the user row is already gone.
+  test("mailPurgeComplete mails the address it is handed, in the account's language", async () => {
+    // The purge Workflow (#622) captures the address before its steps erase it and hands it here, before
+    // auth's own step erases the row the address lives on.
     const h = harness();
-    const result = await completePurge(h.deps, {
-      userId: "u1",
+    const result = await mailPurgeComplete(h.deps, {
       recipient: { email: "u1@test.com", name: "Sam", locale: null },
     });
-    expect(result.changed).toBe(true);
+    expect(result.mailed).toBe(true);
     const [job] = await jobs();
     expect(job).toMatchObject({
       template: "deletionComplete",
       to: "u1@test.com",
       payload: { purgedOn: "October 20, 2026" },
     });
+  });
+
+  test("mailPurgeComplete sends nothing for notify: false, or when the config turns it off", async () => {
+    const recipient = { email: "u1@test.com", name: null, locale: null };
+    expect((await mailPurgeComplete(harness().deps, { recipient, notify: false })).mailed).toBe(false);
+    const off = harness({ config: { lifecycleEmails: { deletionComplete: false } } });
+    expect((await mailPurgeComplete(off.deps, { recipient })).mailed).toBe(false);
+    expect(await jobs()).toEqual([]);
+  });
+
+  test("completePurge records, audits as system, and fires onUserPurged", async () => {
+    const h = harness();
+    const result = await completePurge(h.deps, { userId: "u1" });
+    expect(result.changed).toBe(true);
     expect((await history())[0]).toMatchObject({ action: "purged", actorType: "system" });
     expect(h.events[0]).toMatchObject({ action: "auth/admin_user_purged", actorType: "system" });
     expect(h.fired.map((call) => call.hook)).toEqual(["onUserPurged"]);
+    expect(await jobs()).toEqual([]);
   });
 
-  test("completing a purge twice records it, mails and fires once", async () => {
+  test("completing a purge twice records it and fires once", async () => {
     const h = harness();
-    const recipient = { email: "u1@test.com", name: "Sam", locale: null };
-    await completePurge(h.deps, { userId: "u1", recipient });
-    expect((await completePurge(h.deps, { userId: "u1", recipient })).changed).toBe(false);
-    expect(await jobs()).toHaveLength(1);
+    await completePurge(h.deps, { userId: "u1" });
+    expect((await completePurge(h.deps, { userId: "u1" })).changed).toBe(false);
+    expect((await history()).filter((row) => row.action === "purged")).toHaveLength(1);
     expect(h.fired).toHaveLength(1);
+  });
+});
+
+describe("which purges are due (#622)", () => {
+  test("purgeSubject: due only once deleted and past purgeAfter, with the address captured", async () => {
+    await seedUser();
+    const h = harness();
+    expect(await purgeSubject(h.deps, "u1")).toEqual({ state: "not_due" });
+    await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x" });
+    expect(await purgeSubject(h.deps, "u1")).toEqual({ state: "not_due" });
+    const later = { ...h.deps, now: () => new Date(NOW.getTime() + 30 * DAY) };
+    expect(await purgeSubject(later, "u1")).toEqual({
+      state: "due",
+      recipient: { email: "u1@test.com", name: "Sam", locale: null },
+      // A soft deletion saves no choice for the purge's mail: the config decides.
+      notify: null,
+    });
+    expect(await purgeSubject(h.deps, "nobody")).toEqual({ state: "gone" });
+  });
+
+  test("purgeSubject: a hard deletion is due at once, and a restored account is not", async () => {
+    await seedUser("u1");
+    await seedUser("u2");
+    const h = harness();
+    await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x", mode: "hard" });
+    expect((await purgeSubject(h.deps, "u1")).state).toBe("due");
+    await deleteUser(h.deps, { userId: "u2", actor: OPERATOR, reason: "x" });
+    await restoreUser(h.deps, { userId: "u2", actor: OPERATOR, reason: "y" });
+    const later = { ...h.deps, now: () => new Date(NOW.getTime() + 31 * DAY) };
+    expect((await purgeSubject(later, "u2")).state).toBe("not_due");
+  });
+
+  test("duePurges lists every account past purgeAfter, oldest first, and none before it", async () => {
+    for (const id of ["early", "late", "inside", "active"]) await seedUser(id);
+    const h = harness();
+    const at = (offset: number) => ({ ...h.deps, now: () => new Date(NOW.getTime() + offset) });
+    await deleteUser(at(-40 * DAY), { userId: "late", actor: OPERATOR, reason: "x" });
+    await deleteUser(at(-45 * DAY), { userId: "early", actor: OPERATOR, reason: "x" });
+    await deleteUser(at(-29 * DAY), { userId: "inside", actor: OPERATOR, reason: "x" });
+    expect(await dueIds(h.deps, 100)).toEqual(["early", "late"]);
+    expect(await dueIds(h.deps, 1)).toEqual(["early"]);
+    // The instant purgeAfter names is due: the window is closed at its end, not one tick after.
+    expect(await dueIds(at(1 * DAY), 100)).toEqual(["early", "late", "inside"]);
+    // Each carries the start of the deletion it is due under, which names its purge's instance.
+    expect((await duePurges(h.deps, 1))[0]?.deletedAt).toBe(NOW.getTime() - 45 * DAY);
+  });
+});
+
+describe("the purge's operations over the transitions (#622)", () => {
+  test("due, mail, record and complete, each read off the account's own rows", async () => {
+    await seedUser();
+    const h = harness();
+    const ops = purgeOps(h.deps);
+    expect(await ops.due("u1")).toBe("not_due");
+    // Not due, so nothing is mailed: the mail is only ever the last word on an erasure that is happening.
+    expect(await ops.mailComplete("u1", undefined)).toBe(false);
+    await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x", mode: "hard" });
+    expect(await ops.due("u1")).toBe("due");
+    expect(await ops.mailComplete("u1", false)).toBe(false);
+    expect(await ops.mailComplete("u1", undefined)).toBe(true);
+    expect((await jobs()).map((job) => [job.template, job.to])).toEqual([["deletionComplete", "u1@test.com"]]);
+    await ops.recordStep("u1", "media", "Deletes uploads.");
+    expect(await ops.complete("u1")).toBe(true);
+    expect(await ops.complete("u1")).toBe(false);
+    expect(await ops.due("nobody")).toBe("gone");
+  });
+
+  test("a hard deletion's notify: false is written on its row, so a purge started with no parameter sends no mail", async () => {
+    await seedUser();
+    const h = harness();
+    const ops = purgeOps(h.deps);
+    await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x", mode: "hard", notify: false });
+    expect((await history()).map((row) => [row.action, row.notify])).toEqual([["deleted", false]]);
+    expect(await purgeSubject(h.deps, "u1")).toMatchObject({ state: "due", notify: false });
+    // The daily pass starts a purge with `{ userId }` alone: the saved choice still holds.
+    expect(await ops.mailComplete("u1", undefined)).toBe(false);
+    expect(await jobs()).toEqual([]);
+  });
+
+  test("the saved choice is the deletion in force's: a soft deletion saves none, and a hard one brought forward does", async () => {
+    await seedUser();
+    const h = harness();
+    await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x", notify: false });
+    // A soft deletion's notify silenced the deletion-scheduled mail; it says nothing of the purge's.
+    expect((await history()).map((row) => row.notify)).toEqual([null]);
+    await deleteUser(h.deps, {
+      userId: "u1",
+      actor: OPERATOR,
+      reason: "now",
+      mode: "hard",
+      notify: false,
+    });
+    const later = { ...h.deps, now: () => new Date(NOW.getTime() + 1) };
+    expect(await purgeSubject(later, "u1")).toMatchObject({ state: "due", notify: false });
+    expect(await purgeOps(later).mailComplete("u1", undefined)).toBe(false);
+  });
+
+  test("two purges that finish at once record, audit and fire once between them", async () => {
+    await seedUser();
+    const h = harness();
+    await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x", mode: "hard" });
+    const results = await Promise.all([
+      completePurge(h.deps, { userId: "u1" }),
+      completePurge(h.deps, { userId: "u1" }),
+      completePurge(h.deps, { userId: "u1" }),
+    ]);
+    expect(results.filter((result) => result.changed)).toHaveLength(1);
+    expect((await history()).filter((row) => row.action === "purged")).toHaveLength(1);
+    expect(h.fired.filter((each) => each.hook === "onUserPurged")).toHaveLength(1);
+    expect(h.events.filter((event) => event.action === "auth/admin_user_purged")).toHaveLength(1);
   });
 });
