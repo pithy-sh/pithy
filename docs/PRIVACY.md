@@ -307,4 +307,4 @@ The `privacy` block on `GET /control-plane/manifest`, and the posture on `GET /c
 - **Decide what you must mark.** No gate fires on an unmarked field.
 - **Require `@pithy-sh/audit`.** Declaring a class offers it, at a terminal. It never demands it.
 - **Mark the kit's own schemas.** This ships the mechanism; each capability adopts it in turn.
-- **Erasure, retention, subject-access requests.**
+- **Erasure, retention, subject-access requests.** A class drives none of them. Deleting an account, its purge window and its export are `@pithy-sh/auth`'s [account lifecycle](../packages/auth/docs/account-lifecycle.md), which works from each capability's purge contribution, not from how a field is marked.

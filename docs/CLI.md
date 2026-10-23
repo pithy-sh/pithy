@@ -1261,8 +1261,8 @@ A library capability's Workflows are provisioned: `pithy <capability> provision`
 
 Three rules govern what it writes:
 
-- **The app's entries are replaced, not merged.** A job renamed or dropped leaves — including the last one, so an app that declares no Workflows still has its stale bindings and crons taken out. An entry carrying a `script_name` belongs to a library capability's provisioner and is never touched.
-- **`triggers.crons` is set to the declared schedules.** A Worker has one `scheduled` handler and it starts *every* job that declares a schedule, whatever cron fired — so an expression nothing declares is not an extra job, it is every job running again at a time nobody asked for.
+- **The app's entries are replaced, not merged.** A job renamed or dropped leaves — including the last one, so an app that declares no Workflows still has its stale bindings and crons taken out. An entry carrying a `script_name` belongs to a library capability's provisioner and is never touched. Neither is an entry the adopter wrote for a library capability's job their own Worker hosts — a job declared with no class, like `@pithy-sh/auth`'s purge or `@pithy-sh/payments`' usage pass, whose class only the adopter's entry can export. `pithy doctor` and `pithy deploy` do not count it against the app's declaration either.
+- **`triggers.crons` is set to the declared schedules.** A Worker has one `scheduled` handler, and it starts the jobs whose `schedule` is the cron that fired, matched as written — so an expression nothing declares starts nothing, and a declared one this list lacks never fires. A schedule an adopter-hosted library job declares is kept when it is already there, and never added.
 - **The class stays yours.** Cloudflare resolves `class_name` in the script the binding names, so the `WorkflowEntrypoint` subclass has to be exported from the Worker's `main`. That is five lines written once; the command names the classes it expects.
 
 Idempotent, comment-preserving, and all-or-nothing: a run with nothing to change reports that nothing moved, and a stanza wrangler would reject aborts the run rather than leaving half a config behind.

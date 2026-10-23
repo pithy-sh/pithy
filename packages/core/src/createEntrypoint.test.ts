@@ -137,7 +137,7 @@ describe("createEntrypoint scheduled", () => {
     });
     const entry = createEntrypoint({ capabilities: [cap] });
     if (!entry.scheduled) throw new Error("expected a scheduled handler");
-    await entry.scheduled(null, { EMAIL_SCHEDULER: binding }, ctx);
+    await entry.scheduled({ cron: "* * * * *" }, { EMAIL_SCHEDULER: binding }, ctx);
     expect(binding.started).toEqual([{}]);
   });
 
@@ -158,12 +158,46 @@ describe("createEntrypoint scheduled", () => {
       },
     });
     const entry = createEntrypoint({ capabilities: [cap] });
-    await entry.scheduled?.(null, { EMAIL_SENDER: sender, EMAIL_SCHEDULER: scheduler }, ctx);
+    await entry.scheduled?.({ cron: "0 * * * *" }, { EMAIL_SENDER: sender, EMAIL_SCHEDULER: scheduler }, ctx);
     expect(sender.started).toEqual([]);
     expect(scheduler.started).toEqual([{}]);
   });
 
-  test("crons across capabilities all fire from the one handler", async () => {
+  test("crons across capabilities share the one handler, and each fires only on its own cron (#622)", async () => {
+    const daily = fakeWorkflow();
+    const hourly = fakeWorkflow();
+    const entry = createEntrypoint({
+      capabilities: [
+        defineCapability({
+          name: "storage",
+          requiredBindings: [],
+          workflows: {
+            sweep: { binding: "STORAGE_SWEEP", params: NoParams, className: "S", schedule: "0 2 * * *" },
+          },
+        }),
+        defineCapability({
+          name: "payments",
+          requiredBindings: [],
+          workflows: {
+            usage: { binding: "PAYMENTS_USAGE", params: NoParams, className: "P", schedule: "15 * * * *" },
+          },
+        }),
+      ],
+    });
+    const env = { STORAGE_SWEEP: daily, PAYMENTS_USAGE: hourly };
+
+    // The hourly cron, all day: the daily job never starts on it.
+    for (let hour = 0; hour < 24; hour++) await entry.scheduled?.({ cron: "15 * * * *" }, env, ctx);
+    expect(hourly.started).toHaveLength(24);
+    expect(daily.started).toEqual([]);
+
+    // The daily cron: the daily job starts once, and the hourly job gets no extra run.
+    await entry.scheduled?.({ cron: "0 2 * * *" }, env, ctx);
+    expect(daily.started).toEqual([{}]);
+    expect(hourly.started).toHaveLength(24);
+  });
+
+  test("every job that declares the cron that fired starts on it", async () => {
     const a = fakeWorkflow();
     const b = fakeWorkflow();
     const entry = createEntrypoint({
@@ -176,17 +210,36 @@ describe("createEntrypoint scheduled", () => {
           },
         }),
         defineCapability({
-          name: "email",
+          name: "media",
           requiredBindings: [],
           workflows: {
-            schedule: { binding: "EMAIL_SCHEDULER", params: NoParams, className: "E", schedule: "* * * * *" },
+            sweep: { binding: "MEDIA_SWEEP", params: NoParams, className: "M", schedule: "0 3 * * *" },
           },
         }),
       ],
     });
-    await entry.scheduled?.(null, { STORAGE_SWEEP: a, EMAIL_SCHEDULER: b }, ctx);
+    await entry.scheduled?.({ cron: "0 3 * * *" }, { STORAGE_SWEEP: a, MEDIA_SWEEP: b }, ctx);
     expect(a.started).toEqual([{}]);
     expect(b.started).toEqual([{}]);
+  });
+
+  test("an event that names no cron, or a cron no job declares, starts nothing", async () => {
+    const binding = fakeWorkflow();
+    const entry = createEntrypoint({
+      capabilities: [
+        defineCapability({
+          name: "storage",
+          requiredBindings: [],
+          workflows: {
+            sweep: { binding: "STORAGE_SWEEP", params: NoParams, className: "S", schedule: "0 3 * * *" },
+          },
+        }),
+      ],
+    });
+    await entry.scheduled?.(null, { STORAGE_SWEEP: binding }, ctx);
+    await entry.scheduled?.({}, { STORAGE_SWEEP: binding }, ctx);
+    await entry.scheduled?.({ cron: "0 4 * * *" }, { STORAGE_SWEEP: binding }, ctx);
+    expect(binding.started).toEqual([]);
   });
 
   test("one failing job does not stop the rest of the schedule, and the failure still surfaces", async () => {
@@ -205,13 +258,15 @@ describe("createEntrypoint scheduled", () => {
           name: "email",
           requiredBindings: [],
           workflows: {
-            schedule: { binding: "EMAIL_SCHEDULER", params: NoParams, className: "E", schedule: "* * * * *" },
+            schedule: { binding: "EMAIL_SCHEDULER", params: NoParams, className: "E", schedule: "0 3 * * *" },
           },
         }),
       ],
     });
 
-    const error = await entry.scheduled?.(null, { EMAIL_SCHEDULER: healthy }, ctx).catch((e: unknown) => e);
+    const error = await entry
+      .scheduled?.({ cron: "0 3 * * *" }, { EMAIL_SCHEDULER: healthy }, ctx)
+      .catch((e: unknown) => e);
     expect(healthy.started).toEqual([{}]);
     expect(error).toBeInstanceOf(PithyError);
     expect((error as PithyError).payload.code).toBe("core/missing_workflow_binding");
@@ -232,13 +287,13 @@ describe("createEntrypoint scheduled", () => {
           name: "email",
           requiredBindings: [],
           workflows: {
-            schedule: { binding: "EMAIL_SCHEDULER", params: NoParams, className: "E", schedule: "* * * * *" },
+            schedule: { binding: "EMAIL_SCHEDULER", params: NoParams, className: "E", schedule: "0 3 * * *" },
           },
         }),
       ],
     });
 
-    await expect(entry.scheduled?.(null, { EMAIL_SCHEDULER: healthy }, ctx)).resolves.toBeUndefined();
+    await expect(entry.scheduled?.({ cron: "0 3 * * *" }, { EMAIL_SCHEDULER: healthy }, ctx)).resolves.toBeUndefined();
     expect(healthy.started).toEqual([{}]);
   });
 });

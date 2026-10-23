@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import { composedAuditEmit } from "@pithy-sh/core/src/audit/composed";
+import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import type { Capability, PithyHonoEnv, PithyMiddleware } from "@pithy-sh/core/src/capability/capability";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { type PurgeStep, purgeSteps } from "@pithy-sh/core/src/capability/purge";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { EmailCapability } from "@pithy-sh/email/src/capability";
 import { isEmailCapability } from "@pithy-sh/email/src/capability";
@@ -27,6 +30,8 @@ import { AUTH_MIGRATION_ORDER } from "./migrations/0001_init";
 import { authPluginPlan } from "./migrations/pluginTables";
 import { AUTH_MIGRATIONS } from "./migrations/set";
 import { type AuthPeer, authPeer } from "./peer";
+import { authPurgeContribution } from "./purge/contribution";
+import { authWorkflows } from "./purge/specs";
 import { authDevSessionSeed } from "./seeds/devSession";
 import { authExampleSeed } from "./seeds/example";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
@@ -141,6 +146,12 @@ export const AuthConfig = z
           .describe(
             "How many days a deleted account waits before its data is erased. Inside the window it cannot sign in and can be restored; after it, the purge erases its rows from every capability that holds them. Defaults to 30.",
           ),
+        restoreUrl: z
+          .url({ protocol: /^https?$/ })
+          .optional()
+          .describe(
+            "Where a person whose account is deleted asks for it back inside the window: an http(s) page of yours. Carried in the deletion-scheduled mail as its restore button, so it must be a web address — a tracked click redirects only to one. Absent, the mail still tells them to reply before the purge date.",
+          ),
       })
       .prefault({})
       .describe(
@@ -209,6 +220,12 @@ export interface AuthWiring {
    * Optional on the wiring for the reason `onSessionRevoked` is: no hook is the ordinary composition.
    */
   lifecycleHooks?: UserLifecycleHooks | undefined;
+  /**
+   * Every composed capability's purge step for a user, auth's own among them, in composition order (#622). Filled
+   * by `compose`; the export route reads every capability's contribution from it, and the purge runs it.
+   * Optional on the wiring for the reason `onSessionRevoked` is: a harness that builds this by hand composes none.
+   */
+  purgeSteps?: readonly PurgeStep[] | undefined;
 }
 
 /** The session a {@link ScopeResolver} is asked about — the one Better Auth just resolved for this request. */
@@ -313,6 +330,16 @@ export interface AuthCapability extends Capability {
    */
   lifecycleHooks: UserLifecycleHooks;
   /**
+   * Every composed capability's purge step for a user, auth's own among them, in composition order (#622). Empty
+   * until `compose` has run. Read by the purge Workflow, which runs in the Worker that composed it.
+   */
+  purgeSteps: readonly PurgeStep[];
+  /**
+   * The audit recorder for code with no request, over one run's env — the composed audit capability's, or the
+   * no-op (#622). Read by the purge Workflow, which owes the trail its `auth/admin_user_purged`.
+   */
+  auditFor: (env: Record<string, unknown>) => AuditEmit;
+  /**
    * What a capability composed beside this one reads an account through — `matchmaking`, `support`,
    * `testers`. Found in their `compose` hooks, so none of them imports this package and a project without
    * auth bundles them (#645). See `peer.ts`.
@@ -398,7 +425,13 @@ export function auth(options: AuthOptions): AuthCapability {
     onSessionRevoked,
     resolveScopes,
     lifecycleHooks,
+    purgeSteps: [],
   };
+  // Filled by `compose`, read by the purge Workflow through the capability and by the export route through the
+  // wiring. One array, so both read the same steps.
+  const steps: PurgeStep[] = [];
+  wiring.purgeSteps = steps;
+  let composition: readonly Capability[] = [];
 
   // Tier-1 edge rate limiter, contributed as middleware so it runs before session resolution.
   const rateLimitMiddleware: PithyMiddleware = (app) => {
@@ -457,6 +490,11 @@ export function auth(options: AuthOptions): AuthCapability {
         migrations: { ...AUTH_MIGRATIONS, ...pluginPlan.migrations },
       },
     },
+    // What erasing a person means for the `pithy_auth_*` tables, and what exporting them hands back (#622).
+    purge: [authPurgeContribution(resolved.database, pluginPlan.userTables)],
+    // The purge of one account, and the daily pass that starts every due one. Both hosted by the adopter's own
+    // Worker, because a purge runs every composed capability's contribution — see `purge/specs.ts`.
+    workflows: authWorkflows,
     compose: ({ capabilities }) => {
       const email = capabilities.find(isEmailCapability);
       if (!email) {
@@ -478,6 +516,9 @@ export function auth(options: AuthOptions): AuthCapability {
       // Refused at boot, naming both sides: the alternative is a `create table` that fails halfway
       // through `pithy migrate`, or two capabilities quietly reading and writing one table.
       assertPluginTablesUnclaimed(capabilities, resolved.database, pluginPlan.extensions);
+      // Every composed capability's purge step, auth's own among them, for the export route and the purge (#622).
+      steps.splice(0, steps.length, ...purgeSteps(capabilities, "user"));
+      composition = capabilities;
     },
     /**
      * The client-safe projection — what a sign-in screen needs and nothing more: where to call
@@ -541,7 +582,13 @@ export function auth(options: AuthOptions): AuthCapability {
     seeds: [authExampleSeed, authDevSessionSeed],
   });
 
-  return Object.assign(capability, { authConfig: resolved, authPeer, lifecycleHooks });
+  return Object.assign(capability, {
+    authConfig: resolved,
+    authPeer,
+    lifecycleHooks,
+    purgeSteps: steps,
+    auditFor: (env: Record<string, unknown>) => composedAuditEmit(composition, env),
+  });
 }
 
 /** Type guard: is this capability the auth capability? */

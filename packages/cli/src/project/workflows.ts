@@ -7,7 +7,9 @@ import { messageOf, PreconditionFailedError } from "@pithy-sh/core/src/error/pit
 import { isSourceEnvironment } from "../provision/featureConfig";
 import { withFix } from "../terminal/exitClass";
 import {
+  type AdopterHostedJobs,
   type AppWorkflowPlan,
+  adopterHostedJobs,
   appOwnedWorkflows,
   planAppWorkflows,
   type WorkflowConfig,
@@ -129,9 +131,21 @@ function canonical(plan: AppWorkflowPlan): string {
   });
 }
 
-/** What one environment's stanza binds for this Worker's own script — the right-hand side of the comparison. */
-function boundBy(stanza: WorkflowStanza | undefined): AppWorkflowPlan {
-  return { workflows: appOwnedWorkflows(stanza), crons: [...(stanza?.triggers?.crons ?? [])] };
+/**
+ * What one environment's stanza binds for this Worker's own script — the right-hand side of the comparison.
+ *
+ * Without what the adopter wrote for a library's jobs they host (#622): an entry under one of those bindings, and
+ * a cron that is one of those schedules and not also the app's. Both are theirs, and neither is the app's to declare.
+ */
+function boundBy(
+  stanza: WorkflowStanza | undefined,
+  kept: AdopterHostedJobs,
+  declared: AppWorkflowPlan,
+): AppWorkflowPlan {
+  return {
+    workflows: appOwnedWorkflows(stanza, kept),
+    crons: (stanza?.triggers?.crons ?? []).filter((cron) => !kept.schedules.has(cron) || declared.crons.includes(cron)),
+  };
 }
 
 /**
@@ -145,9 +159,13 @@ function boundBy(stanza: WorkflowStanza | undefined): AppWorkflowPlan {
  * environment alone, so each stanza is compared with its own environment's declaration. The loader without
  * the primitive took the module cache, which holds whichever environment this process composed last.
  */
-async function workerApp(workerDir: string, environment: string): Promise<Capability | undefined> {
+async function workerApp(
+  workerDir: string,
+  environment: string,
+): Promise<{ app: Capability; capabilities: readonly Capability[] } | undefined> {
   try {
-    return await composeFor(environment, async (load) => (await load(workerDir)).app);
+    const config = await composeFor(environment, async (load) => load(workerDir));
+    return config.app ? { app: config.app, capabilities: config.capabilities ?? [] } : undefined;
   } catch {
     return undefined;
   }
@@ -173,11 +191,11 @@ export async function workflowDrift(
     if (!config) continue;
     const worker = workerDirName(target);
     for (const env of environments) {
-      const app = await workerApp(target.dir, env);
-      if (!app) continue;
+      const composed = await workerApp(target.dir, env);
+      if (!composed) continue;
       let declared: AppWorkflowPlan;
       try {
-        declared = planAppWorkflows(app, { project, env });
+        declared = planAppWorkflows(composed.app, { project, env });
       } catch (error) {
         // Reported, never rethrown. `planAppWorkflows` refuses a job it cannot name, and a check that
         // let that escape would take doctor's whole block down to a `catch` and say nothing at all —
@@ -192,7 +210,7 @@ export async function workflowDrift(
         });
         continue;
       }
-      const bound = boundBy(config.env?.[env]);
+      const bound = boundBy(config.env?.[env], adopterHostedJobs(composed.capabilities), declared);
       if (canonical(declared) !== canonical(bound)) {
         drift.push({ worker, env, fault: "unsynced-stanza", declared, bound });
       }

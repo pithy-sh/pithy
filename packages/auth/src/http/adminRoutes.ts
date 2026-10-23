@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import { purgeExports } from "@pithy-sh/core/src/capability/purge";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { validate } from "@pithy-sh/core/src/http/validation";
+import { workflowBindingFor } from "@pithy-sh/core/src/workflow/dispatch";
 import type { Context, Hono } from "hono";
 import type { z } from "zod";
 import {
@@ -29,11 +31,23 @@ import { deleteDevice, deviceSessionTokens } from "../device/registry";
 import { auditedLifecycleCall, recordLifecycleRefusal } from "../lifecycle/audited";
 import { MAX_REASON } from "../lifecycle/reason";
 import { lifecycleDeps } from "../lifecycle/request";
-import { type LifecycleActor, reinstateUser, suspendUser } from "../lifecycle/transitions";
+import {
+  type DeleteTransition,
+  deleteUser,
+  type LifecycleActor,
+  reinstateUser,
+  requirePresent,
+  restoreUser,
+  suspendUser,
+} from "../lifecycle/transitions";
+import { AUTH_PURGE_BINDING } from "../purge/specs";
+import { startPurgeInstance } from "../purge/start";
 import {
   AUTH_DEVICES_READ_SCOPE,
   AUTH_DEVICES_REVOKE_SCOPE,
   AUTH_SESSIONS_REVOKE_SCOPE,
+  AUTH_USERS_DELETE_SCOPE,
+  AUTH_USERS_EXPORT_SCOPE,
   AUTH_USERS_LOGOUT_SCOPE,
   AUTH_USERS_READ_SCOPE,
   AUTH_USERS_SUSPEND_SCOPE,
@@ -43,21 +57,37 @@ import {
   AdminDeviceRevokeResponse,
   AdminDevicesResponse,
   AdminRevokeResponse,
+  AdminUserDeleteResponse,
+  AdminUserExportResponse,
   AdminUserReinstateResponse,
   AdminUserResponse,
+  AdminUserRestoreResponse,
   AdminUserSuspendResponse,
   AdminUsersResponse,
 } from "./responses";
 import {
+  DeleteUserBody,
+  ExportUserQuery,
   ListDevicesQuery,
   ListUsersQuery,
   ReinstateUserBody,
+  RestoreUserBody,
   RevokeDeviceBody,
   RevokeSessionBody,
   SuspendUserBody,
   UserIdParam,
 } from "./schemas";
-import { deviceView, reinstatementView, sessionView, suspensionView, userView } from "./views";
+import {
+  deletionView,
+  deviceView,
+  exportView,
+  type PurgeDisposition,
+  reinstatementView,
+  restorationView,
+  sessionView,
+  suspensionView,
+  userView,
+} from "./views";
 
 type Ctx = Context<PithyHonoEnv>;
 
@@ -73,6 +103,9 @@ type Ctx = Context<PithyHonoEnv>;
  *   POST {base}/admin/users/:userId/devices/revoke   auth:devices:revoke   param + json
  *   POST {base}/admin/users/:userId/suspend          auth:users:suspend    param + json: SuspendUserBody
  *   POST {base}/admin/users/:userId/reinstate        auth:users:suspend    param + json: ReinstateUserBody
+ *   DELETE {base}/admin/users/:userId                auth:users:delete     param + json: DeleteUserBody
+ *   POST {base}/admin/users/:userId/restore          auth:users:delete     param + json: RestoreUserBody
+ *   GET  {base}/admin/users/:userId/export           auth:users:export     param + query: ExportUserQuery
  *
  * ## Registered before the catch-all, or dead
  *
@@ -199,7 +232,7 @@ function lifecycleCall(c: Ctx, wiring: AuthWiring, caller: ControlPlaneContext, 
   return {
     deps: lifecycleDeps(c, wiring, { ...correlated, metadata: { connectionId: caller.connectionId } }),
     actor: { type: "control-plane", id: caller.subject } satisfies LifecycleActor,
-    // Named so the refusal for a deleted account says which route comes first. The route lands in #622.
+    // Named so the refusal for a deleted account says which route comes first.
     restoreRoute: `POST ${wiring.config.basePath}/admin/users/${userId}/restore`,
     audit: { subject: caller.subject, connectionId: caller.connectionId, userId, reason, ...correlated },
   };
@@ -211,7 +244,7 @@ function lifecycleCall(c: Ctx, wiring: AuthWiring, caller: ControlPlaneContext, 
  * recorded here, as `denied` under the route's own action, with whatever reason the body carried — cut to the
  * reason's own limit, so a refused essay is not stored whole — and the 400 is thrown as before.
  */
-function lifecycleBody<Schema extends z.ZodType>(schema: Schema, action: string) {
+function lifecycleBody<Schema extends z.ZodType>(schema: Schema, action: string | ((body: unknown) => string)) {
   return validate("json", schema, async (raw, error, body) => {
     // The route validated its `:userId` before its body, so it is readable here.
     const c = raw as Context<PithyHonoEnv, string, { out: { param: z.output<typeof UserIdParam> } }>;
@@ -220,7 +253,7 @@ function lifecycleBody<Schema extends z.ZodType>(schema: Schema, action: string)
     await recordLifecycleRefusal(
       c.var.emit,
       {
-        action,
+        action: typeof action === "string" ? action : action(body),
         subject: caller.subject,
         connectionId: caller.connectionId,
         userId: c.req.valid("param").userId,
@@ -232,6 +265,75 @@ function lifecycleBody<Schema extends z.ZodType>(schema: Schema, action: string)
       { code: "validation/invalid_input", outcome: "denied" },
     );
   });
+}
+
+/**
+ * End every session an account holds, after its columns are written — never before, for the reason the suspend
+ * route gives: enforcement refuses the account the moment the columns land, and revoking first would leave a
+ * window for a sign-in the revocation never saw. Through Better Auth's adapter, so `onSessionRevoked` hears
+ * each, and recorded under `auth/admin_user_sessions_revoked` with the cause.
+ */
+async function endSessions(
+  c: Ctx,
+  wiring: AuthWiring,
+  caller: ControlPlaneContext,
+  userId: string,
+  cause: string,
+): Promise<number> {
+  const revoked = await revokeTokens(c, wiring, await userSessionTokens(db(c, wiring), userId));
+  await emitControlPlaneAction(c.var.emit, {
+    action: AuthAuditActions.adminUserSessionsRevoked,
+    subject: caller.subject,
+    connectionId: caller.connectionId,
+    resourceType: "user",
+    resourceId: userId,
+    ...context(c),
+    metadata: { revoked, cause },
+  });
+  return revoked;
+}
+
+/**
+ * Start the purge of one account now (#622): `started` when this Worker binds the purge Workflow and it took the
+ * instance — or already held it — and `pending` when it binds none or the start failed; the account is due
+ * either way, and the daily pass starts it. A failed start is not this call's failure: the deletion is already
+ * written, and a 500 over it would invite a retry that finds the account deleted and says nothing new.
+ *
+ * Under the instance id the deletion names (`../purge/start.ts`), so a hard deletion repeated, or one the daily
+ * pass also finds due, is the one purge and never a second.
+ */
+async function startPurge(
+  c: Ctx,
+  result: DeleteTransition,
+  userId: string,
+  notify: boolean | undefined,
+): Promise<PurgeDisposition> {
+  const log = c.var.log.child("auth");
+  const binding = workflowBindingFor(c.env as Record<string, unknown>, AUTH_PURGE_BINDING);
+  if (!binding) {
+    log.warn("a deletion found no purge Workflow bound; the purge is pending", { userId });
+    return "pending";
+  }
+  try {
+    await startPurgeInstance(binding, {
+      userId,
+      deletedAt: result.deletedAt.getTime(),
+      ...(notify === undefined ? {} : { notify }),
+      at: new Date(),
+    });
+    return "started";
+  } catch (error) {
+    log.warn("the purge could not be started; the daily pass will start it", {
+      userId,
+      reason: error instanceof Error ? error.message : String(error),
+    });
+    return "pending";
+  }
+}
+
+/** What becomes of a soft deletion's purge: due later, or — when its window has already closed — due now. */
+function scheduledOrDue(result: DeleteTransition): PurgeDisposition | "due" {
+  return result.purgeAfter.getTime() > Date.now() ? "scheduled" : "due";
 }
 
 /**
@@ -554,6 +656,144 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
         );
 
         return c.json(reinstatementView(userId, result) satisfies AdminUserReinstateResponse);
+      },
+    );
+
+    app.delete(
+      `${base}/admin/users/:userId`,
+      describeRoute({
+        summary:
+          "Delete one user, with a reason: soft by default, restorable until the purge window closes; hard when named, purged now.",
+        verification: "control-plane",
+        scopes: [AUTH_USERS_DELETE_SCOPE],
+        responses: { 200: AdminUserDeleteResponse },
+      }),
+      requireControlPlane(AUTH_USERS_DELETE_SCOPE),
+      validate("param", UserIdParam),
+      // A refused body is recorded under the mode it asked for, so a malformed hard deletion is on the trail as
+      // an attempt at one. Only the exact `"hard"` reads as hard, as only it parses as hard.
+      lifecycleBody(DeleteUserBody, (body) =>
+        (body as { mode?: unknown } | null)?.mode === "hard"
+          ? AuthAuditActions.adminUserHardDeleted
+          : AuthAuditActions.adminUserSoftDeleted,
+      ),
+      async (c) => {
+        const { userId } = c.req.valid("param");
+        const { mode, reason, notify } = c.req.valid("json");
+        const caller = controlPlaneCaller(c);
+        const call = lifecycleCall(c, wiring, caller, userId, reason);
+        const action = mode === "hard" ? AuthAuditActions.adminUserHardDeleted : AuthAuditActions.adminUserSoftDeleted;
+
+        // Every call is audited: the transition audits a deletion it writes, this records the refusals and the
+        // call that found the account already deleted.
+        const result = await auditedLifecycleCall(
+          c.var.emit,
+          { action, ...call.audit },
+          () =>
+            deleteUser(call.deps, {
+              userId,
+              actor: call.actor,
+              reason,
+              mode,
+              ...(notify === undefined ? {} : { notify }),
+            }),
+          (outcome) => outcome.outcome === "unchanged",
+        );
+
+        const sessionsRevoked = await endSessions(c, wiring, caller, userId, "deleted");
+        // A hard deletion starts its purge here. A soft one waits for the daily pass — unless its window has
+        // already closed, in which case it is due now and is started like a hard one.
+        const disposition = mode === "hard" ? "due" : scheduledOrDue(result);
+        const purge =
+          disposition === "due"
+            ? await startPurge(c, result, userId, mode === "hard" ? notify : undefined)
+            : disposition;
+        return c.json(deletionView(userId, mode, result, purge, sessionsRevoked) satisfies AdminUserDeleteResponse);
+      },
+    );
+
+    app.post(
+      `${base}/admin/users/:userId/restore`,
+      describeRoute({
+        summary:
+          "Restore one deleted user inside the purge window, with a reason. They sign in again; no session is restored.",
+        verification: "control-plane",
+        scopes: [AUTH_USERS_DELETE_SCOPE],
+        responses: { 200: AdminUserRestoreResponse },
+      }),
+      requireControlPlane(AUTH_USERS_DELETE_SCOPE),
+      validate("param", UserIdParam),
+      lifecycleBody(RestoreUserBody, AuthAuditActions.adminUserRestored),
+      async (c) => {
+        const { userId } = c.req.valid("param");
+        const { reason } = c.req.valid("json");
+        const caller = controlPlaneCaller(c);
+        const call = lifecycleCall(c, wiring, caller, userId, reason);
+
+        // After the purge there is no account, and the transition's 404 says the data is gone. A window that has
+        // closed is a conflict naming when. Both are refusals, and both are on the trail.
+        const result = await auditedLifecycleCall(
+          c.var.emit,
+          { action: AuthAuditActions.adminUserRestored, ...call.audit },
+          () => restoreUser(call.deps, { userId, actor: call.actor, reason }),
+          (outcome) => !outcome.changed,
+        );
+
+        return c.json(restorationView(userId, result) satisfies AdminUserRestoreResponse);
+      },
+    );
+
+    app.get(
+      `${base}/admin/users/:userId/export`,
+      describeRoute({
+        summary: "Export everything the kit holds about one user, from every composed capability, as one document.",
+        description:
+          "The answer to an access request. One entry per composed capability that declares a purge contribution, in the order the purge erases them. Audited as a disclosure, with the reason.",
+        verification: "control-plane",
+        scopes: [AUTH_USERS_EXPORT_SCOPE],
+        responses: { 200: AdminUserExportResponse },
+      }),
+      requireControlPlane(AUTH_USERS_EXPORT_SCOPE),
+      validate("param", UserIdParam),
+      validate("query", ExportUserQuery),
+      async (c) => {
+        const { userId } = c.req.valid("param");
+        const { reason } = c.req.valid("query");
+        const caller = controlPlaneCaller(c);
+        const call = lifecycleCall(c, wiring, caller, userId, reason);
+        const exportedAt = new Date();
+
+        // The account first, so an unknown or purged one is a 404 — the purged one saying its data is gone —
+        // and never a document of empty parts. Then every composed capability's part, each guarded on its own.
+        const entries = await auditedLifecycleCall(
+          c.var.emit,
+          { action: AuthAuditActions.adminUserExported, ...call.audit },
+          async () => {
+            await requirePresent(db(c, wiring), userId);
+            return purgeExports(wiring.purgeSteps ?? [], {
+              subject: { type: "user", id: userId },
+              env: c.env as Record<string, unknown>,
+            });
+          },
+          () => false,
+        );
+
+        // A disclosure, recorded with who asked, why, and which parts answered — never with any of the data.
+        await emitControlPlaneAction(c.var.emit, {
+          action: AuthAuditActions.adminUserExported,
+          subject: caller.subject,
+          connectionId: caller.connectionId,
+          resourceType: "user",
+          resourceId: userId,
+          ...context(c),
+          metadata: {
+            reason,
+            disclosure: true,
+            capabilities: entries.map((entry) => `${entry.capability}:${entry.state}`),
+          },
+        });
+
+        return c.json(exportView(userId, exportedAt, entries) satisfies AdminUserExportResponse);
       },
     );
   };

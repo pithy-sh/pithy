@@ -138,6 +138,75 @@ describe("worker sync", () => {
     });
   });
 
+  test("keeps the entries and cron the adopter wrote for a library's adopter-hosted jobs, beside the app's own (#622)", async () => {
+    const workerDir = join(dir, "apps", "board");
+    await mkdir(workerDir, { recursive: true });
+    await writeFile(join(dir, "pithy.config.ts"), 'export default { name: "replay" };\n');
+    await writeFile(join(workerDir, "pithy.worker.jsonc"), '{ "dev": {} }\n');
+    // `@pithy-sh/auth`'s purge as `auth()` declares it — no class, so the adopter's Worker hosts it — and the
+    // stanza the account-lifecycle docs tell the adopter to write by hand for it.
+    const purge = { binding: "AUTH_PURGE", name: "replay-prod-auth-purge", class_name: "AuthPurgeWorkflow" };
+    const purgeDue = {
+      binding: "AUTH_PURGE_DUE",
+      name: "replay-prod-auth-purge-due",
+      class_name: "AuthPurgeDueWorkflow",
+    };
+    await writeFile(
+      join(workerDir, "wrangler.jsonc"),
+      `${JSON.stringify(
+        {
+          name: "replay-board",
+          env: {
+            prod: {
+              vars: { ENVIRONMENT: "prod" },
+              workflows: [purge, purgeDue],
+              triggers: { crons: ["0 2 * * *"] },
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    await writeFile(
+      join(workerDir, "pithy.config.ts"),
+      `const auth = {
+  name: "auth",
+  requiredBindings: [],
+  workflows: {
+    purge: { binding: "AUTH_PURGE", optional: true },
+    "purge-due": { binding: "AUTH_PURGE_DUE", schedule: "0 2 * * *", optional: true },
+  },
+};
+const config = {
+  app: {
+    name: "board",
+    requiredBindings: [],
+    workflows: { digest: { binding: "DIGEST", className: "DigestWorkflow", schedule: "0 4 * * *" } },
+  },
+  capabilities: [auth],
+};
+export default config;
+`,
+    );
+
+    await run({ env: "prod" });
+
+    const config = JSON.parse(await readFile(join(workerDir, "wrangler.jsonc"), "utf8")) as {
+      env: { prod: { workflows?: unknown[]; triggers?: { crons?: string[] } } };
+    };
+    // The app's own table is written from its declaration, and the adopter's entries for auth's jobs survive it.
+    expect(config.env.prod.workflows).toEqual(
+      expect.arrayContaining([
+        purge,
+        purgeDue,
+        { binding: "DIGEST", name: "replay-prod-board-digest", class_name: "DigestWorkflow" },
+      ]),
+    );
+    expect(config.env.prod.workflows).toHaveLength(3);
+    expect([...(config.env.prod.triggers?.crons ?? [])].sort()).toEqual(["0 2 * * *", "0 4 * * *"]);
+  });
+
   test("a Worker that declares neither domains nor an app is told so, rather than told about workflows", async () => {
     await project("undefined");
     const said: string[] = [];

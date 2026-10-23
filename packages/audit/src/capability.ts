@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: FSL-1.1-MIT
 
+import type { D1Database } from "@cloudflare/workers-types";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
 import { workerIdentity } from "@pithy-sh/core/src/worker/identity";
 import { z } from "zod";
 import type { AuditDatabase } from "./data/tables";
-import { auditTables } from "./data/tables";
+import { auditDatabase, auditTables } from "./data/tables";
 import { auditAdminRoutes } from "./http/guards";
 import { registerAuditRoutes } from "./http/routes";
 import { audit_0001_init } from "./migrations/0001_init";
@@ -93,6 +95,24 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
       },
     },
     seeds: [auditExampleSeed],
+    // The same recorder for code with no request — a Workflow step, which has `env` and nothing else (#622).
+    // Built over the binding this config names, stamped with the env's own origin, and non-fatal on the same
+    // terms as the middleware's: a missing binding or a failed insert drops the event and logs it, and the
+    // step it records stands. Found by core's `composedAuditEmit`, so the step imports nothing from here.
+    auditRecorder: (env) => {
+      const log = createWorkerLogger({ name: "audit" });
+      const binding = env[resolved.database];
+      return async (event: AuditEventInput) => {
+        if (typeof binding !== "object" || binding === null) {
+          log.error("audit event dropped", { reason: `no ${resolved.database} binding`, action: event.action });
+          return;
+        }
+        await recordAuditEvent(auditDatabase(binding as D1Database), event, {
+          origin: workerIdentity(env),
+          onError: (error) => log.error("audit event dropped", { error }),
+        });
+      };
+    },
     // Built from the resolved `basePath`, never the default: an adopter who mounts this at `/trail`
     // gets a manifest naming their paths, where a client assuming the default would 404.
     adminRoutes: auditAdminRoutes(resolved.basePath),

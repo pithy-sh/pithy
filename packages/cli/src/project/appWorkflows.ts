@@ -151,6 +151,43 @@ export function unhostableAppJobs(app: Capability): string[] {
     .map((entry) => entry.key);
 }
 
+/**
+ * **The jobs a composed library capability leaves to the adopter's own Worker (#622)** — the bindings and the
+ * schedules of every library job that carries no `className`.
+ *
+ * `WorkflowSpec.className` says what its absence means: a job whose host config is hand-maintained. For a library
+ * capability that is a job whose class the **adopter** exports from their own entry, because its body runs code
+ * only their Worker has — `@pithy-sh/auth`'s purge runs every composed capability's contribution, the adopter's
+ * own among them, and `@pithy-sh/payments`' usage pass calls their `resolveQuantity`. Its `workflows` entry and
+ * its cron are written by hand from that capability's docs, and they are same-script, so by the rule below they
+ * looked like the app's own: `pithy worker sync` replaced them away and the deploy gate refused the stanza that
+ * carried them. Neither is this table's to write — there is no class name to write — so both are left alone.
+ *
+ * Read from the composed **library** capabilities, never the app: an app's own class-less job is the
+ * hand-maintained case {@link isHandMaintained} already answers, and its entry points at another script.
+ */
+export interface AdopterHostedJobs {
+  /** The binding of every such job — a same-script entry under one of these is the adopter's, not the app's. */
+  readonly bindings: ReadonlySet<string>;
+  /** Their schedules — a cron among these that is already in a stanza is kept there. */
+  readonly schedules: ReadonlySet<string>;
+}
+
+/** No library composed, or none that leaves a job to the adopter. */
+const NO_ADOPTER_HOSTED: AdopterHostedJobs = { bindings: new Set(), schedules: new Set() };
+
+/** The adopter-hosted jobs of these composed library capabilities. See {@link AdopterHostedJobs}. */
+export function adopterHostedJobs(capabilities: readonly Capability[]): AdopterHostedJobs {
+  const bindings = new Set<string>();
+  const schedules = new Set<string>();
+  for (const entry of Object.values(composeWorkflows([...capabilities]))) {
+    if (entry.spec.className !== undefined) continue;
+    bindings.add(entry.spec.binding);
+    if (entry.spec.schedule !== undefined) schedules.add(entry.spec.schedule);
+  }
+  return bindings.size === 0 ? NO_ADOPTER_HOSTED : { bindings, schedules };
+}
+
 /** The wrangler slice this module reads and writes. Unknown keys survive untouched — comment-json holds them. */
 export interface WorkflowStanza {
   workflows?: (AppOwnedWorkflow & { script_name?: string })[];
@@ -167,13 +204,14 @@ export interface WorkflowConfig extends WorkflowStanza {
  *
  * **One predicate, because the writer and the reader have to mean the same thing by it.** An entry
  * carrying a `script_name` is a library capability's, written by that capability's provisioner and
- * pointing at its host Worker. Everything else is same-script, which in this Worker means app-declared —
+ * pointing at its host Worker. An entry under a binding a composed library leaves to the adopter
+ * ({@link AdopterHostedJobs}) is theirs, hand-written. Everything else is same-script, which in this Worker means app-declared —
  * that is what lets {@link reconcileAppWorkflows} replace the whole set rather than upsert it, and it is
  * what `project/workflows.ts` reads back to ask whether the stanza binds what the app declares. Two
  * copies of this rule would be two answers to "whose entry is this?", and drift the check could not see.
  */
-function isAppOwned(entry: { script_name?: string }): boolean {
-  return entry.script_name === undefined;
+function isAppOwned(entry: { binding?: string; script_name?: string }, kept: AdopterHostedJobs): boolean {
+  return entry.script_name === undefined && !(entry.binding !== undefined && kept.bindings.has(entry.binding));
 }
 
 /**
@@ -183,9 +221,12 @@ function isAppOwned(entry: { script_name?: string }): boolean {
  * The extra `script_name` field is not carried, because by definition these have none: the shape returned
  * is exactly {@link planAppWorkflows}'s, so the comparison is between two values of one type.
  */
-export function appOwnedWorkflows(stanza: WorkflowStanza | undefined): AppOwnedWorkflow[] {
+export function appOwnedWorkflows(
+  stanza: WorkflowStanza | undefined,
+  kept: AdopterHostedJobs = NO_ADOPTER_HOSTED,
+): AppOwnedWorkflow[] {
   return (stanza?.workflows ?? [])
-    .filter(isAppOwned)
+    .filter((entry) => isAppOwned(entry, kept))
     .map(({ binding, name, class_name }) => ({ binding, name, class_name }));
 }
 
@@ -199,6 +240,11 @@ export interface ReconcileAppWorkflowsOptions {
   app: Capability;
   /** Narrow to one environment. Omitted reconciles the top-level stanza and every `env.<name>` already declared. */
   env?: string;
+  /**
+   * The Worker's composed library capabilities, whose adopter-hosted jobs' entries and crons are left where the
+   * adopter wrote them (#622) — see {@link AdopterHostedJobs}. Omitted, every same-script entry is the app's.
+   */
+  capabilities?: readonly Capability[];
 }
 
 /** What one environment's reconciliation did. */
@@ -235,8 +281,8 @@ function environmentsOf(config: WorkflowConfig, env: string | undefined): string
  * leave, and an upsert by binding name would strand it. The provisioned entries keep their positions ahead
  * of the app's, so a re-run produces a byte-identical file.
  */
-function replaceOwnWorkflows(stanza: WorkflowStanza, plan: AppWorkflowPlan): void {
-  const provisioned = (stanza.workflows ?? []).filter((entry) => !isAppOwned(entry));
+function replaceOwnWorkflows(stanza: WorkflowStanza, plan: AppWorkflowPlan, kept: AdopterHostedJobs): void {
+  const provisioned = (stanza.workflows ?? []).filter((entry) => !isAppOwned(entry, kept));
   const next = [...provisioned, ...plan.workflows];
   if (stanza.workflows) {
     // In place: comment-json keeps an array's comments as symbol-keyed properties on the array object,
@@ -251,10 +297,10 @@ function replaceOwnWorkflows(stanza: WorkflowStanza, plan: AppWorkflowPlan): voi
 /**
  * Set the stanza's cron schedule to what the app declares.
  *
- * Set, not merge. `createEntrypoint` gives a Worker one `scheduled` handler that starts **every** job
- * carrying a schedule, whatever cron fired — so an expression nothing declares is not an extra job, it is
- * every job running again at a time nobody asked for. The declaration is therefore the whole truth, and a
- * schedule the adopter changes takes its old value with it.
+ * Set, not merge. `createEntrypoint` gives a Worker one `scheduled` handler that starts the jobs whose
+ * `schedule` is the cron that fired, matched as written — so an expression nothing declares is an invocation
+ * that starts nothing, and a declared one missing here never fires. The declaration is
+ * therefore the whole truth, and a schedule the adopter changes takes its old value with it.
  *
  * **An emptied schedule is written as `[]`, never as a deleted key.** Wrangler reads an absent `crons` as
  * "not declared" and leaves the deployed Worker's schedule exactly as it was, so deleting the key when the
@@ -262,10 +308,14 @@ function replaceOwnWorkflows(stanza: WorkflowStanza, plan: AppWorkflowPlan): voi
  * reports `Done.` and changes nothing where it matters. A stanza that never carried crons is still left
  * alone, because a `triggers` block a project never had is noise in every config whose jobs all dispatch.
  */
-function setCrons(stanza: WorkflowStanza, crons: string[]): void {
-  if (crons.length === 0 && stanza.triggers?.crons === undefined) return;
+function setCrons(stanza: WorkflowStanza, crons: string[], kept: AdopterHostedJobs): void {
+  // A schedule an adopter wrote for a library's job they host stays, after the app's own (#622). Kept only when
+  // it is already there: a cron nobody wrote is not this table's to add, for the same reason its entry is not.
+  const theirs = (stanza.triggers?.crons ?? []).filter((cron) => kept.schedules.has(cron) && !crons.includes(cron));
+  const next = [...crons, ...theirs];
+  if (next.length === 0 && stanza.triggers?.crons === undefined) return;
   stanza.triggers ??= {};
-  stanza.triggers.crons = crons;
+  stanza.triggers.crons = next;
 }
 
 /**
@@ -281,9 +331,13 @@ function setCrons(stanza: WorkflowStanza, crons: string[]): void {
  * Nothing is validated here: `reconcileAppWorkflows` checks the whole stanza against wrangler's own
  * requirements after it writes, and the feature writer's config is checked by the isolation gates.
  */
-export function applyAppWorkflows(stanza: WorkflowStanza, plan: AppWorkflowPlan): void {
-  replaceOwnWorkflows(stanza, plan);
-  setCrons(stanza, plan.crons);
+export function applyAppWorkflows(
+  stanza: WorkflowStanza,
+  plan: AppWorkflowPlan,
+  kept: AdopterHostedJobs = NO_ADOPTER_HOSTED,
+): void {
+  replaceOwnWorkflows(stanza, plan, kept);
+  setCrons(stanza, plan.crons, kept);
 }
 
 /**
@@ -305,6 +359,7 @@ export function applyAppWorkflows(stanza: WorkflowStanza, plan: AppWorkflowPlan)
  */
 export async function reconcileAppWorkflows(options: ReconcileAppWorkflowsOptions): Promise<AppWorkflowRun[]> {
   const { workerDir, project, app, env } = options;
+  const kept = adopterHostedJobs(options.capabilities ?? []);
 
   const config = (await readWranglerConfig(workerDir)) as WorkflowConfig;
   const before = stringify(config);
@@ -318,7 +373,7 @@ export async function reconcileAppWorkflows(options: ReconcileAppWorkflowsOption
     const stanza = stanzaFor(config, target) as WorkflowStanza;
     const stanzaBefore = stringify(stanza);
 
-    applyAppWorkflows(stanza, plan);
+    applyAppWorkflows(stanza, plan, kept);
 
     // Never write a config wrangler will not load. A hand-edited entry that lost a field lands here too,
     // which is the right place to hear about it — before the next deploy.

@@ -634,6 +634,17 @@ export interface Capability<
    */
   email?: CapabilityEmailHandler;
   /**
+   * The audit recorder this capability provides **for code that has no request** — a Workflow step, which the
+   * runtime constructs with `env` and nothing else (#622). `@pithy-sh/audit` declares it; nothing else does.
+   *
+   * A route records through `c.var.emit`, which the same capability's middleware fills, and keeps doing that.
+   * This is the other door, for the purge that erases a deleted account: it runs in a Workflow and still owes
+   * the trail its event. `../audit/composed.ts` finds it among the composed capabilities, so a capability that
+   * audits from a step imports no audit package — principle 4, the same reason `c.var.emit` is a seam. Built
+   * from the env per call, like the request recorder is built per request. Non-fatal by the same contract.
+   */
+  auditRecorder?: (env: Record<string, unknown>) => AuditEmit;
+  /**
    * Named D1 databases this capability contributes tables to (database name → {@link DatabaseSpec}).
    * `createBackend` merges every capability's slices per database (via `composeDatabases`) and serves
    * one typed `Kysely` per database on `c.var.db.<name>`. Multiple databases (app, analytics, …)

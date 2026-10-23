@@ -17,7 +17,7 @@ import { KIT_SESSION_FIELDS, KIT_USER_FIELDS } from "../data/kitFields";
 import type { AuthDatabase } from "../data/tables";
 import { parseDeviceMeta, registerDevice } from "../device/registry";
 import { PROVIDER_CHANGE_FRESH_AGE_SECONDS } from "../http/providerFreshness";
-import { lifecycleRefusalFor } from "../lifecycle/enforce";
+import { admitsDeletionSignIn, lifecycleRefusalFor } from "../lifecycle/enforce";
 import { refuseUnsafeProfile, sanitizeProfile } from "../profile/profile";
 import { defaultGithubUserInfo, type GithubUserInfoResolver } from "./githubUserInfo";
 import { microsoftProfileToUser } from "./microsoftEmail";
@@ -522,8 +522,13 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
             // so this one check is what makes a suspension hold at every door, and the reason it is not
             // written once per endpoint. The row is read rather than trusted from the caller: nothing
             // that arrives with a sign-in may say whether its own account is suspended.
+            //
+            // **One exception: a suspended account that signs in to delete itself (#622).** The app stores
+            // require that a person can always leave, and a suspension has already revoked every session the
+            // account held. The session this admits is still a suspended account's, so every request it makes
+            // is refused except `DELETE /auth/account` — see `admitsDeletionSignIn`.
             const refusal = await lifecycleRefusalFor(deps.db, session.userId, null, new Date());
-            if (refusal) refuseSession(refusal, ctx);
+            if (refusal && !admitsDeletionSignIn(refusal, ctx?.headers)) refuseSession(refusal, ctx);
             // **`undefined` and `null` are different answers here, and collapsing them is a hole.**
             // Absent means nobody supplied one, which is a sign-in: stamp it. Present-and-null is a
             // rotation of a session written before the column existed, and it must stay null so the gate

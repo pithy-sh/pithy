@@ -133,7 +133,9 @@ describe("route contract: every path param is validated", () => {
     ).toEqual([
       "/auth/admin/users/:userId",
       "/auth/admin/users/:userId/devices/revoke",
+      "/auth/admin/users/:userId/export",
       "/auth/admin/users/:userId/reinstate",
+      "/auth/admin/users/:userId/restore",
       "/auth/admin/users/:userId/sessions/revoke",
       "/auth/admin/users/:userId/suspend",
     ]);
@@ -194,9 +196,9 @@ describe("the control-plane admin surface", () => {
     // A validator ahead of the gate turns a 403 into a 400 and tells an unverified caller which requests
     // were well-formed. On an identity surface that is a live oracle for the adopter's user model, so
     // the ordering is asserted rather than trusted to the order somebody typed the arguments in.
-    for (const route of ADMIN_ROUTES.filter((entry) => entry.method === "POST")) {
+    for (const route of ADMIN_ROUTES.filter((entry) => entry.method === "POST" || entry.method === "DELETE")) {
       const response = await makeApp().request(route.path.replace(":userId", "u-1"), {
-        method: "POST",
+        method: route.method,
         body: JSON.stringify({ nonsense: true, sessionId: 42, deviceId: null }),
         headers: { "content-type": "application/json" },
       });
@@ -209,6 +211,20 @@ describe("the control-plane admin surface", () => {
     // has not proved anything.
     const response = await makeApp().request("/auth/admin/users?limit=99999");
     expect(response.status).toBe(403);
+    // And an export with no reason, which a verified caller is refused with a 400.
+    expect((await makeApp().request("/auth/admin/users/u-1/export")).status).toBe(403);
+  });
+
+  test("delete and restore are advertised under auth:users:delete, export under auth:users:export (#622)", () => {
+    const of = (scope: string) =>
+      ADMIN_ROUTES.filter((route) => route.scope === scope)
+        .map((route) => `${route.method} ${route.path}`)
+        .sort();
+    expect(of(AUTH_USERS_DELETE_SCOPE)).toEqual([
+      "DELETE /auth/admin/users/:userId",
+      "POST /auth/admin/users/:userId/restore",
+    ]);
+    expect(of(AUTH_USERS_EXPORT_SCOPE)).toEqual(["GET /auth/admin/users/:userId/export"]);
   });
 
   test("suspend and reinstate are advertised under auth:users:suspend, and nothing else is (#621)", () => {
@@ -277,7 +293,7 @@ describe("the control-plane admin surface", () => {
     // its credential can never open, and an admin route reachable with a user's bearer token would be
     // the escalation `controlPlaneIsolation.workers.test.ts` exists to forbid.
     const advertised = new Set(ADMIN_ROUTES.map((route) => route.path));
-    for (const path of ["/auth/devices", "/auth/devices/revoke", "/auth/token/rotate"]) {
+    for (const path of ["/auth/devices", "/auth/devices/revoke", "/auth/token/rotate", "/auth/account"]) {
       expect(advertised.has(path), path).toBe(false);
     }
     for (const route of ADMIN_ROUTES) {
@@ -318,23 +334,28 @@ describe("the advertised admin surface matches what is mounted", () => {
   });
 
   test("the probe reads the whole mounted surface, not a slice of it", () => {
-    // Anti-vacuity for the check above, exact rather than a floor: thirteen routes carry a method — the eight
-    // admin ones and the five a signed-in person calls. A fourteenth is either a new admin route, which the
+    // Anti-vacuity for the check above, exact rather than a floor: seventeen routes carry a method — the eleven
+    // admin ones and the six a signed-in person calls. An eighteenth is either a new admin route, which the
     // check above then demands a declaration for, or a new user route, which is a deliberate edit here.
     expect(
       mountedRoutes(makeApp())
         .map((route) => `${route.method} ${route.path}`)
         .sort(),
     ).toEqual([
+      // The signed-in person deleting their own account (#622). The one route a suspended account reaches.
+      "DELETE /auth/account",
+      "DELETE /auth/admin/users/:userId",
       "GET /auth/admin/devices",
       "GET /auth/admin/users",
       "GET /auth/admin/users/:userId",
+      "GET /auth/admin/users/:userId/export",
       "GET /auth/devices",
       // The caller's own stored picture. No id in the path — `routes.ts`'s `serveMyImage` says why.
       "GET /auth/profile/image",
       "POST /auth/admin/sessions/revoke",
       "POST /auth/admin/users/:userId/devices/revoke",
       "POST /auth/admin/users/:userId/reinstate",
+      "POST /auth/admin/users/:userId/restore",
       "POST /auth/admin/users/:userId/sessions/revoke",
       "POST /auth/admin/users/:userId/suspend",
       "POST /auth/devices/revoke",

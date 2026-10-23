@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
+import { SQLiteBoolean, SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { z } from "zod";
 
 /**
@@ -72,6 +72,9 @@ export const UserLifecycleEvent = z
       .describe(
         "For a `purge_step` row, the capability whose rows that step erased — the purge's step name. Null for every other action.",
       ),
+    notify: SQLiteBoolean.nullable().describe(
+      "For a hard deletion's `deleted` row, whether the purge sends the deletion-complete mail — false when the deletion asked for none. Null for every other row, and for a hard deletion that did not say. The purge reads it, so a purge the daily pass starts keeps the choice (#622).",
+    ),
     createdAt: SQLiteDate.describe("When the transition happened. Ms-epoch in SQLite; a `Date` in app code."),
   })
   .describe(

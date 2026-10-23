@@ -134,6 +134,8 @@ describe("auth_0004_user_lifecycle", () => {
 
   test("down drops the table and the four columns, leaving everything before it intact", async () => {
     await runMigrations(env.DB, provider());
+    // `0005` sits above it in the chain, so it comes down first.
+    await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());
     expect(await tableExists("pithy_auth_user_lifecycle")).toBe(false);
     const names = (await columns("pithy_auth_users")).map((row) => row.name);
@@ -144,6 +146,7 @@ describe("auth_0004_user_lifecycle", () => {
 
   test("down, then up again, is clean — the inverse is exact", async () => {
     await runMigrations(env.DB, provider());
+    await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());
     await runMigrations(env.DB, provider());
     expect(await tableExists("pithy_auth_user_lifecycle")).toBe(true);

@@ -4089,6 +4089,88 @@
         ]
       }
     },
+    "/auth/account": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "deleteAuthAccount",
+        "summary": "Delete the caller's own account. Always soft: restorable until the purge window closes.",
+        "description": "What the App Store and Google Play require of an app with accounts. A suspended account may still delete itself, with the session a sign-in carrying `x-pithy-intent: delete-account` gets it; a deleted one is refused with `auth/account_deleted`. Every session ends, this one included. The body must carry `confirm: true`.",
+        "requestBody": {
+          "required": true,
+          "description": "A self-service deletion: the person's own confirmation. Always soft, on the configured window.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "confirm": {
+                    "type": "boolean",
+                    "const": true,
+                    "description": "Must be `true`. The person confirmed, in your app, that they want their account deleted."
+                  }
+                },
+                "required": [
+                  "confirm"
+                ],
+                "description": "A self-service deletion: the person's own confirmation. Always soft, on the configured window."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The caller's own account, deleted: when its data will be erased, and whether they were mailed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "state": {
+                      "type": "string",
+                      "const": "deleted",
+                      "description": "The account is deleted. This session and every other one has ended."
+                    },
+                    "purgeAfter": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the purge may erase the account, ISO-8601. It can be restored until then; a hard deletion's is the moment it was deleted."
+                    },
+                    "mailed": {
+                      "type": "boolean",
+                      "description": "Whether the deletion-scheduled mail, with the purge date and how to ask for the account back, was sent."
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "purgeAfter",
+                    "mailed"
+                  ],
+                  "description": "The caller's own account, deleted: when its data will be erased, and whether they were mailed."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      }
+    },
     "/auth/link-social": {
       "post": {
         "tags": [
@@ -4732,6 +4814,159 @@
         ],
         "x-pithy-scopes": [
           "auth:users:read"
+        ]
+      },
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "deleteAuthAdminUsersByUserId",
+        "summary": "Delete one user, with a reason: soft by default, restorable until the purge window closes; hard when named, purged now.",
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The user's id, as `pithy_auth_users.id` stores it.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A deletion: soft or hard, why, and whether to tell the person.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "default": "soft",
+                    "description": "`soft` unless named: the window, then the purge. `hard` purges now. Anything else is refused.",
+                    "type": "string",
+                    "enum": [
+                      "soft",
+                      "hard"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why, in a sentence written for the person. A suspension's reason is what every refused sign-in shows them."
+                  },
+                  "notify": {
+                    "description": "Whether to mail the person. Absent is true. It silences the mail this call sends: the deletion-scheduled notice for `soft`, the deletion-complete notice for `hard`.",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "description": "A deletion: soft or hard, why, and whether to tell the person."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A deleted account: when, until when it can be restored, what became of the purge, and its sessions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "userId": {
+                      "type": "string",
+                      "description": "The account deleted, as `pithy_auth_users.id` stores it."
+                    },
+                    "state": {
+                      "type": "string",
+                      "const": "deleted",
+                      "description": "Where the account stands now. Every sign-in and refresh is refused."
+                    },
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "soft",
+                        "hard"
+                      ],
+                      "description": "The mode this call ran in — `soft` unless the caller named `hard`."
+                    },
+                    "outcome": {
+                      "type": "string",
+                      "enum": [
+                        "deleted",
+                        "brought_forward",
+                        "unchanged"
+                      ],
+                      "description": "`deleted` when this call deleted an account in good standing; `brought_forward` when a hard deletion moved an already-deleted account's purge to now; `unchanged` when it was already deleted and there was nothing to move."
+                    },
+                    "deletedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the account was deleted, ISO-8601. Kept by a deletion brought forward."
+                    },
+                    "purgeAfter": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the purge may erase the account, ISO-8601. It can be restored until then; a hard deletion's is the moment it was deleted."
+                    },
+                    "purge": {
+                      "type": "string",
+                      "enum": [
+                        "scheduled",
+                        "started",
+                        "pending"
+                      ],
+                      "description": "`scheduled`: the daily purge erases it once `purgeAfter` passes. `started`: the purge Workflow was started by this call. `pending`: the purge is due and this Worker binds no purge Workflow to start, so it runs once one is bound."
+                    },
+                    "sessionsRevoked": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "How many sessions were revoked. Zero is a success: revoking nothing is the idempotent case."
+                    },
+                    "mailed": {
+                      "type": "boolean",
+                      "description": "Whether the deletion-scheduled mail was enqueued. Always false for `hard`, whose mail the purge sends, for `notify: false`, and when the config turns it off."
+                    }
+                  },
+                  "required": [
+                    "userId",
+                    "state",
+                    "mode",
+                    "outcome",
+                    "deletedAt",
+                    "purgeAfter",
+                    "purge",
+                    "sessionsRevoked",
+                    "mailed"
+                  ],
+                  "description": "A deleted account: when, until when it can be restored, what became of the purge, and its sessions."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "auth:users:delete"
         ]
       }
     },
@@ -5383,6 +5618,288 @@
         ],
         "x-pithy-scopes": [
           "auth:users:suspend"
+        ]
+      }
+    },
+    "/auth/admin/users/{userId}/restore": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "postAuthAdminUsersByUserIdRestore",
+        "summary": "Restore one deleted user inside the purge window, with a reason. They sign in again; no session is restored.",
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The user's id, as `pithy_auth_users.id` stores it.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A restoration inside the purge window: why. It restores no session; the person signs in again.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why, in a sentence written for the person. A suspension's reason is what every refused sign-in shows them."
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "description": "A restoration inside the purge window: why. It restores no session; the person signs in again."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A restored account, inside its purge window. Its revoked sessions stay revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "userId": {
+                      "type": "string",
+                      "description": "The account restored, as `pithy_auth_users.id` stores it."
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "suspended"
+                      ],
+                      "description": "Where the account stands now: `active`, or `suspended` when a suspension it was under before the deletion is still in force."
+                    },
+                    "outcome": {
+                      "type": "string",
+                      "enum": [
+                        "restored",
+                        "unchanged"
+                      ],
+                      "description": "`restored` when this call restored a deleted account; `unchanged` when it was not deleted."
+                    }
+                  },
+                  "required": [
+                    "userId",
+                    "state",
+                    "outcome"
+                  ],
+                  "description": "A restored account, inside its purge window. Its revoked sessions stay revoked."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "auth:users:delete"
+        ]
+      }
+    },
+    "/auth/admin/users/{userId}/export": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "getAuthAdminUsersByUserIdExport",
+        "summary": "Export everything the kit holds about one user, from every composed capability, as one document.",
+        "description": "The answer to an access request. One entry per composed capability that declares a purge contribution, in the order the purge erases them. Audited as a disclosure, with the reason.",
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The user's id, as `pithy_auth_users.id` stores it.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "reason",
+            "in": "query",
+            "required": true,
+            "description": "Why this person's data is being exported — the access request it answers. Recorded on the audit trail.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Everything the kit holds about one account, from every composed capability, as one document.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "subject": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "user",
+                          "description": "The kind of subject: one person's account."
+                        },
+                        "id": {
+                          "type": "string",
+                          "description": "The account's id, as `pithy_auth_users.id` stores it."
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "id"
+                      ],
+                      "description": "Who this export is about."
+                    },
+                    "exportedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the export was read, ISO-8601."
+                    },
+                    "capabilities": {
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "capability": {
+                                "type": "string",
+                                "description": "The capability whose rows these are — the purge step that erases them."
+                              },
+                              "summary": {
+                                "type": "string",
+                                "description": "What that capability's purge erases or anonymizes, in its own sentence."
+                              },
+                              "state": {
+                                "type": "string",
+                                "const": "exported",
+                                "description": "The capability answered."
+                              },
+                              "data": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {},
+                                "description": "What it holds about the account, in the shape that capability exports. `auth`'s is `AuthUserExport`."
+                              }
+                            },
+                            "required": [
+                              "capability",
+                              "summary",
+                              "state",
+                              "data"
+                            ],
+                            "description": "A capability's rows about the account."
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "capability": {
+                                "type": "string",
+                                "description": "The capability whose rows these are — the purge step that erases them."
+                              },
+                              "summary": {
+                                "type": "string",
+                                "description": "What that capability's purge erases or anonymizes, in its own sentence."
+                              },
+                              "state": {
+                                "type": "string",
+                                "const": "not_exported",
+                                "description": "The capability erases rows about the account and does not say how to export them."
+                              }
+                            },
+                            "required": [
+                              "capability",
+                              "summary",
+                              "state"
+                            ],
+                            "description": "A capability that holds rows it does not export. Ask its owner."
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "capability": {
+                                "type": "string",
+                                "description": "The capability whose rows these are — the purge step that erases them."
+                              },
+                              "summary": {
+                                "type": "string",
+                                "description": "What that capability's purge erases or anonymizes, in its own sentence."
+                              },
+                              "state": {
+                                "type": "string",
+                                "const": "unavailable",
+                                "description": "The capability's rows could not be read on this request."
+                              }
+                            },
+                            "required": [
+                              "capability",
+                              "summary",
+                              "state"
+                            ],
+                            "description": "Nothing was established about this capability's rows. Deliberately empty — it is not 'none'."
+                          }
+                        ],
+                        "description": "One capability's part of an export, behind a state, so an unread part cannot be taken for an empty one."
+                      },
+                      "description": "Every composed capability's part, in the order the purge erases them."
+                    }
+                  },
+                  "required": [
+                    "subject",
+                    "exportedAt",
+                    "capabilities"
+                  ],
+                  "description": "Everything the kit holds about one account, from every composed capability, as one document."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "auth:users:export"
         ]
       }
     },
