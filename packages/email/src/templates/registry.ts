@@ -300,6 +300,48 @@ const OrganizationOwnershipTransferredPayload = z
   })
   .describe("Inputs for the notice that an operator made somebody the owner of an organization.");
 
+/**
+ * The three notices `@pithy-sh/organization` sends an organization's owners when an operator acts on the
+ * organization itself (#623): it was suspended, reinstated, or deleted with a date its data is erased. Each names
+ * the organization. The suspension carries the operator's reason, because the suspended screen tells every member
+ * the owners were told why.
+ */
+const OrganizationSuspendedPayload = z
+  .object({
+    name: z.string().optional().describe("The recipient's name, for a personal greeting. Optional."),
+    organizationName: z
+      .string()
+      .describe("The organization that was suspended, by display name. Tenant text, escaped like every value."),
+    reason: z
+      .string()
+      .optional()
+      .describe("Why it was suspended, in the operator's words. Rendered escaped. Omitted when none was given."),
+    until: z
+      .string()
+      .optional()
+      .describe("When the suspension ends by itself, written for the reader. Omitted for one with no end."),
+  })
+  .describe("Inputs for the notice to an owner that their organization was suspended.");
+
+const OrganizationReinstatedPayload = z
+  .object({
+    name: z.string().optional().describe("The recipient's name, for a personal greeting. Optional."),
+    organizationName: z
+      .string()
+      .describe("The organization that was reinstated, by display name. Tenant text, escaped like every value."),
+  })
+  .describe("Inputs for the notice to an owner that their organization's suspension was lifted.");
+
+const OrganizationDeletionScheduledPayload = z
+  .object({
+    name: z.string().optional().describe("The recipient's name, for a personal greeting. Optional."),
+    organizationName: z
+      .string()
+      .describe("The organization that was deleted, by display name. Tenant text, escaped like every value."),
+    purgeOn: z.string().describe("When its data will be erased, written for the reader. Restorable until then."),
+  })
+  .describe("Inputs for the notice to an owner that their organization was deleted and when it will be erased.");
+
 /** One labeled fact in an operational notice — what makes the notice specific rather than a mood. */
 const OperationalNoticeFact = z
   .object({
@@ -642,6 +684,47 @@ export const templates: Record<string, EmailTemplate> = {
       `${heading('{{t "email/organization_ownership_transferred.heading"}}')}<p style="margin:0 0 8px">${greeting} {{t "email/organization_ownership_transferred.body" organization=organizationName app=theme.appName}}</p><p class="t-subtle" style="margin:16px 0 0; font-size:13px; color:{{theme.light.textSubtle}}">{{t "email/organization_member.contact"}}</p>`,
     ),
     text: `${greeting}\n\n{{t "email/organization_ownership_transferred.text_body" organization=organizationName app=theme.appName}}\n\n{{t "email/organization_member.contact"}}`,
+    links: [],
+  },
+  // The organization lifecycle (#623), to its owners. Transactional in both axes, as the account notices are:
+  // somebody whose organization an operator shut is owed the word.
+  organizationSuspended: {
+    id: "organizationSuspended",
+    category: "transactional",
+    kind: "transactional",
+    width: "narrow",
+    payload: OrganizationSuspendedPayload,
+    subject: `{{t "email/organization_suspended.subject" organization=organizationName}}`,
+    html: layout(
+      `${heading('{{t "email/organization_suspended.heading"}}')}<p style="margin:0 0 8px">${greeting} {{t "email/organization_suspended.body" organization=organizationName app=theme.appName}}</p>{{#if reason}}<p style="margin:0 0 8px">{{t "email/organization_suspended.reason" reason=reason}}</p>{{/if}}{{#if until}}<p style="margin:0 0 8px">{{t "email/organization_suspended.until" until=until}}</p>{{/if}}<p class="t-subtle" style="margin:16px 0 0; font-size:13px; color:{{theme.light.textSubtle}}">{{t "email/organization_member.contact"}}</p>`,
+    ),
+    text: `${greeting}\n\n{{t "email/organization_suspended.text_body" organization=organizationName app=theme.appName}}{{#if reason}}\n\n{{t "email/organization_suspended.reason" reason=reason}}{{/if}}{{#if until}}\n\n{{t "email/organization_suspended.until" until=until}}{{/if}}\n\n{{t "email/organization_member.contact"}}`,
+    links: [],
+  },
+  organizationReinstated: {
+    id: "organizationReinstated",
+    category: "transactional",
+    kind: "transactional",
+    width: "narrow",
+    payload: OrganizationReinstatedPayload,
+    subject: `{{t "email/organization_reinstated.subject" organization=organizationName}}`,
+    html: layout(
+      `${heading('{{t "email/organization_reinstated.heading"}}')}<p style="margin:0 0 8px">${greeting} {{t "email/organization_reinstated.body" organization=organizationName app=theme.appName}}</p><p class="t-subtle" style="margin:16px 0 0; font-size:13px; color:{{theme.light.textSubtle}}">{{t "email/organization_member.contact"}}</p>`,
+    ),
+    text: `${greeting}\n\n{{t "email/organization_reinstated.text_body" organization=organizationName app=theme.appName}}\n\n{{t "email/organization_member.contact"}}`,
+    links: [],
+  },
+  organizationDeletionScheduled: {
+    id: "organizationDeletionScheduled",
+    category: "transactional",
+    kind: "transactional",
+    width: "narrow",
+    payload: OrganizationDeletionScheduledPayload,
+    subject: `{{t "email/organization_deletion_scheduled.subject" organization=organizationName}}`,
+    html: layout(
+      `${heading('{{t "email/organization_deletion_scheduled.heading"}}')}<p style="margin:0 0 8px">${greeting} {{t "email/organization_deletion_scheduled.body" organization=organizationName app=theme.appName purgeOn=purgeOn}}</p><p class="t-subtle" style="margin:16px 0 0; font-size:13px; color:{{theme.light.textSubtle}}">{{t "email/organization_deletion_scheduled.contact" purgeOn=purgeOn}}</p>`,
+    ),
+    text: `${greeting}\n\n{{t "email/organization_deletion_scheduled.text_body" organization=organizationName app=theme.appName purgeOn=purgeOn}}\n\n{{t "email/organization_deletion_scheduled.contact" purgeOn=purgeOn}}`,
     links: [],
   },
   operationalNotice: {

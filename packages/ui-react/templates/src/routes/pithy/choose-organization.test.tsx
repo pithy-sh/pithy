@@ -46,7 +46,23 @@ const OTHER = { ...ONLY, id: "22222222-2222-4222-8222-222222222222", name: "Beta
 const listOrganizations = vi.fn();
 const chooseOrganization = vi.fn();
 
-vi.mock("@pithy-sh/organization/src/index", () => ({ listOrganizations, chooseOrganization }));
+vi.mock("@pithy-sh/organization/src/index", () => ({
+  listOrganizations,
+  chooseOrganization,
+  organizationRefusal: (code: string) => (code === "organization/organization_suspended" ? "suspended" : null),
+}));
+
+/**
+ * The router, with a destination invented here, so a screen that wrote the suspended screen's path as a literal
+ * goes red. Its `navigate` pushes history as the real one does, so the document-load test below still catches a
+ * screen that reaches for it.
+ */
+const SUSPENDED_CANARY = "/canary-organization-suspended";
+vi.mock("../../router", () => ({
+  navigate: (to: string) => window.history.pushState(null, "", to),
+  routeTable: async () => ({ byRole: new Map([["organization-suspended", SUSPENDED_CANARY]]) }),
+  screenPath: (table: { byRole: Map<string, string> }, role: string) => table.byRole.get(role),
+}));
 
 let host: HTMLElement;
 let assign: ReturnType<typeof vi.fn>;
@@ -137,6 +153,20 @@ test("belonging nowhere is its own answer, not an empty picker", async () => {
   expect(assign).not.toHaveBeenCalled();
 });
 
+test("somebody whose only accounts are suspended is sent to the suspended screen, not told they belong nowhere (#623)", async () => {
+  listOrganizations.mockResolvedValue({
+    ok: true,
+    value: { organizations: [], acting: null, chosen: false, suspended: 1 },
+  });
+
+  await render();
+
+  expect(pushState).toHaveBeenCalledWith(null, "", SUSPENDED_CANARY);
+  expect(host.textContent).not.toContain("No accounts yet");
+  expect(chooseOrganization).not.toHaveBeenCalled();
+  expect(assign).not.toHaveBeenCalled();
+});
+
 test("a refused choice stays on the screen rather than leaving for an account nobody has", async () => {
   // Including the ordinary 404 somebody naming an account they do not belong to gets — which is the
   // same answer an account that does not exist gets, deliberately.
@@ -157,4 +187,29 @@ test("a refused choice stays on the screen rather than leaving for an account no
 
   expect(assign).not.toHaveBeenCalled();
   expect(host.textContent).toContain("couldn't load your accounts");
+});
+
+test("an account suspended since the list was drawn goes on to the suspended screen, by role (#623)", async () => {
+  listOrganizations.mockResolvedValue({
+    ok: true,
+    value: { organizations: [ONLY, OTHER], acting: null, chosen: false },
+  });
+  chooseOrganization.mockResolvedValue({
+    ok: false,
+    failure: {
+      code: "organization/organization_suspended",
+      message: "This organization is suspended. Your own account is not affected.",
+      action: null,
+    },
+  });
+
+  await render();
+  const acme = [...host.querySelectorAll("button")].find((button) => button.textContent?.includes("Acme Games"));
+  await act(async () => {
+    acme?.click();
+  });
+
+  expect(pushState).toHaveBeenCalledWith(null, "", SUSPENDED_CANARY);
+  // Not a document load: nothing is in force, so there is no previous account's data to shed.
+  expect(assign).not.toHaveBeenCalled();
 });

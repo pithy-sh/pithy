@@ -49,6 +49,7 @@ export {
   type OrganizationFailure,
   type OrganizationResult,
 } from "./client/api";
+export { ORGANIZATION_SUSPENDED, organizationRefusal } from "./client/lifecycle";
 export { OrganizationConfig, type OrganizationConfigInput } from "./config/config";
 export { ActingOrganization } from "./data/actingOrganization";
 export { Invitation, InvitationStatus } from "./data/invitation";
@@ -58,6 +59,7 @@ export { OwnershipNomination } from "./data/ownershipNomination";
 export {
   ACTING_TABLE,
   INVITATIONS_TABLE,
+  LIFECYCLE_TABLE,
   MEMBERSHIPS_TABLE,
   ORGANIZATIONS_TABLE,
   type OrganizationDatabase,
@@ -75,7 +77,9 @@ export {
 } from "./http/guard";
 export { ORGANIZATION_ROUTES, type OrganizationRouteDeclaration } from "./http/routes";
 export {
+  ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
   ORGANIZATION_ACCOUNTS_READ_SCOPE,
+  ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
   ORGANIZATION_ACCOUNTS_WRITE_SCOPE,
   ORGANIZATION_CONTROL_PLANE_SCOPES,
   ORGANIZATION_MEMBERS_READ_SCOPE,

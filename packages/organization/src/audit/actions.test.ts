@@ -65,6 +65,12 @@ describe("OrganizationAuditActions", () => {
       "organization/admin_member_added",
       "organization/admin_member_removed",
       "organization/admin_member_role_changed",
+      // The organization's own lifecycle (#623).
+      "organization/admin_organization_deleted",
+      "organization/admin_organization_hard_deleted",
+      "organization/admin_organization_reinstated",
+      "organization/admin_organization_restored",
+      "organization/admin_organization_suspended",
       "organization/admin_organization_updated",
       "organization/admin_ownership_forced",
       "organization/created",
@@ -80,6 +86,8 @@ describe("OrganizationAuditActions", () => {
       "organization/ownership_accepted",
       "organization/ownership_nominated",
       "organization/ownership_withdrawn",
+      // Not an act anybody took: the purge, with nobody calling, erased a deleted organization (#623).
+      "organization/purged",
       // Not an act somebody took, but an act somebody was stopped from taking — recorded because a
       // refusal of a caller the account had already let in is what an intrusion looks like from inside.
       "organization/refused",

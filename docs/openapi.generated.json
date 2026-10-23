@@ -27814,6 +27814,12 @@
                     "chosen": {
                       "type": "boolean",
                       "description": "Whether somebody picked what is in force, as against being put into the only account they have. False with a non-null `acting` is what an account switcher keys on; a single `activeOrganizationId` column cannot carry this."
+                    },
+                    "suspended": {
+                      "description": "How many of the caller's own organizations are suspended, and so absent from `organizations` (#623). Non-zero with an empty list is somebody whose only organizations are suspended, not somebody who belongs nowhere: the chooser sends them to the `organization-suspended` screen. A deleted organization is not counted. Optional because a Worker from before #623 omits it, and a reader treats it absent as no count rather than as zero suspended; every current Worker sends it.",
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
                     }
                   },
                   "required": [
@@ -29785,6 +29791,41 @@
                               }
                             ]
                           },
+                          "state": {
+                            "description": "Where the tenant stands (#623): `active`, `suspended` (nobody can act in it), or `deleted` (shut, and restorable until `purgeAfter`). Absent from a Worker older than the organization lifecycle, which cannot say.",
+                            "type": "string",
+                            "enum": [
+                              "active",
+                              "suspended",
+                              "deleted"
+                            ]
+                          },
+                          "suspendedUntil": {
+                            "description": "For a suspended tenant, when the suspension ends by itself, ISO-8601; null for one that lasts until a reinstatement, and for every other state.",
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "purgeAfter": {
+                            "description": "For a deleted tenant, when the purge may erase it, ISO-8601. Restorable until then. Null otherwise.",
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "createdAt": {
                             "type": "string",
                             "format": "date-time",
@@ -30221,6 +30262,41 @@
                             }
                           ]
                         },
+                        "state": {
+                          "description": "Where the tenant stands (#623): `active`, `suspended` (nobody can act in it), or `deleted` (shut, and restorable until `purgeAfter`). Absent from a Worker older than the organization lifecycle, which cannot say.",
+                          "type": "string",
+                          "enum": [
+                            "active",
+                            "suspended",
+                            "deleted"
+                          ]
+                        },
+                        "suspendedUntil": {
+                          "description": "For a suspended tenant, when the suspension ends by itself, ISO-8601; null for one that lasts until a reinstatement, and for every other state.",
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "purgeAfter": {
+                          "description": "For a deleted tenant, when the purge may erase it, ISO-8601. Restorable until then. Null otherwise.",
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "createdAt": {
                           "type": "string",
                           "format": "date-time",
@@ -30267,6 +30343,713 @@
         ],
         "x-pithy-scopes": [
           "organization:accounts:write"
+        ]
+      },
+      "delete": {
+        "tags": [
+          "organization"
+        ],
+        "operationId": "deleteOrganizationsAdminOrganizationsByOrganizationId",
+        "summary": "Delete a tenant, with a reason: soft by default and restorable for its window; hard when named, purged now.",
+        "description": "`members: \"sole\"` also deletes the accounts of the members whose only organization this is; a member of any other is never modified. Takes a reason, in the body.",
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "description": "Which tenant's roster to read.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "An operator deleting a tenant, softly or hard, with a reason.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event."
+                  },
+                  "mode": {
+                    "description": "`soft`, the default, shuts the tenant now and keeps it restorable, memberships and all, for `retention.purgeAfterDays`. `hard` closes the window at once and starts the purge, which erases its rows from every composed capability that declares an organization purge contribution — in the kit, organization, media and storage.",
+                    "type": "string",
+                    "enum": [
+                      "soft",
+                      "hard"
+                    ]
+                  },
+                  "members": {
+                    "type": "string",
+                    "enum": [
+                      "none",
+                      "sole"
+                    ],
+                    "description": "Which members' own accounts this reaches: `none`, the default, touches nobody; `sole` suspends or deletes, through the user lifecycle and with this reason, only the members whose one and only organization this is. A member of any other organization is never modified."
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "An operator deleting a tenant, softly or hard, with a reason."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A tenant's deletion: when, how, what becomes of its purge, and who it reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "organizationId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                      "description": "The tenant."
+                    },
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "soft",
+                        "hard"
+                      ],
+                      "description": "How it was deleted."
+                    },
+                    "outcome": {
+                      "type": "string",
+                      "enum": [
+                        "deleted",
+                        "brought_forward",
+                        "unchanged"
+                      ],
+                      "description": "`deleted` by this call; `brought_forward` when it was already deleted and a hard deletion closed its window now; `unchanged` when it was already deleted and nothing moved."
+                    },
+                    "deletedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When it was deleted, ISO-8601."
+                    },
+                    "purgeAfter": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the purge may erase it, ISO-8601. Restorable until then."
+                    },
+                    "purge": {
+                      "type": "string",
+                      "enum": [
+                        "scheduled",
+                        "started",
+                        "pending"
+                      ],
+                      "description": "What became of the purge: `scheduled` for the daily pass after `purgeAfter`; `started` now; `pending` when this Worker binds no purge Workflow or the start failed — it is due, and the daily pass starts it."
+                    },
+                    "mailed": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "How many owners were sent the deletion notice, or null when nothing was sent. A hard deletion sends none."
+                    },
+                    "members": {
+                      "type": "object",
+                      "properties": {
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "none",
+                            "sole"
+                          ],
+                          "description": "Which members it reached for: `none`, nobody, or `sole`, those whose only organization this is."
+                        },
+                        "reached": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "userId": {
+                                "type": "string",
+                                "description": "The member, as `pithy_auth_users` ids them."
+                              },
+                              "outcome": {
+                                "type": "string",
+                                "enum": [
+                                  "suspended",
+                                  "deleted"
+                                ],
+                                "description": "What the user lifecycle did to their own account, with this tenant's reason."
+                              }
+                            },
+                            "required": [
+                              "userId",
+                              "outcome"
+                            ],
+                            "description": "One member whose own account the cascade suspended or deleted."
+                          },
+                          "description": "The members whose own accounts it suspended or deleted. Empty for `none`."
+                        },
+                        "skipped": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "userId": {
+                                "type": "string",
+                                "description": "The member, as `pithy_auth_users` ids them."
+                              },
+                              "reason": {
+                                "type": "string",
+                                "enum": [
+                                  "member_elsewhere",
+                                  "already_suspended",
+                                  "account_deleted",
+                                  "no_account",
+                                  "failed"
+                                ],
+                                "description": "Why they were left alone: `member_elsewhere`, they belong to another organization and are never modified; `already_suspended`, their own suspension stands as it was; `account_deleted`, their account is already deleted; `no_account`, the membership names no account; `failed`, the user transition refused — the log says why."
+                              }
+                            },
+                            "required": [
+                              "userId",
+                              "reason"
+                            ],
+                            "description": "One member the cascade left alone, and why."
+                          },
+                          "description": "The members it left alone, and why. Empty for `none`."
+                        }
+                      },
+                      "required": [
+                        "mode",
+                        "reached",
+                        "skipped"
+                      ],
+                      "description": "What the cascade did to the members."
+                    }
+                  },
+                  "required": [
+                    "organizationId",
+                    "mode",
+                    "outcome",
+                    "deletedAt",
+                    "purgeAfter",
+                    "purge",
+                    "mailed",
+                    "members"
+                  ],
+                  "description": "A tenant's deletion: when, how, what becomes of its purge, and who it reached."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "organization:accounts:delete"
+        ]
+      }
+    },
+    "/organizations/admin/organizations/{organizationId}/suspend": {
+      "post": {
+        "tags": [
+          "organization"
+        ],
+        "operationId": "postOrganizationsAdminOrganizationsByOrganizationIdSuspend",
+        "summary": "Suspend a tenant, with a reason: nobody can act in it until it is reinstated or its end passes.",
+        "description": "`members: \"sole\"` also suspends the accounts of the members whose only organization this is; a member of any other is never modified. The owners are told why. Takes a reason.",
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "description": "Which tenant's roster to read.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "An operator suspending a tenant: nobody can act in it until it is reinstated or the end passes.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why the operator is suspending it. Required, at most 500 characters, carrying no email address. Recorded verbatim, and sent to the organization's owners — the suspended screen tells every member the owners were told why."
+                  },
+                  "until": {
+                    "description": "When the suspension ends by itself, ISO-8601, in the future. Absent, it lasts until a reinstatement. Nothing needs to run for it to end.",
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  "members": {
+                    "type": "string",
+                    "enum": [
+                      "none",
+                      "sole"
+                    ],
+                    "description": "Which members' own accounts this reaches: `none`, the default, touches nobody; `sole` suspends or deletes, through the user lifecycle and with this reason, only the members whose one and only organization this is. A member of any other organization is never modified."
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "An operator suspending a tenant: nobody can act in it until it is reinstated or the end passes."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A tenant's suspension: when it began, when it ends, and who it reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "organizationId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                      "description": "The tenant."
+                    },
+                    "changed": {
+                      "type": "boolean",
+                      "description": "Whether this call suspended it. False when it restated a suspension in force."
+                    },
+                    "updated": {
+                      "type": "boolean",
+                      "description": "True when it was already suspended and this call replaced the reason and the end, keeping the start."
+                    },
+                    "suspendedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the suspension in force began, ISO-8601."
+                    },
+                    "suspendedUntil": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "When it ends by itself, ISO-8601, or null for one that lasts until a reinstatement."
+                    },
+                    "mailed": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "How many owners were sent the notice, or null when it is switched off or no email is composed."
+                    },
+                    "members": {
+                      "type": "object",
+                      "properties": {
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "none",
+                            "sole"
+                          ],
+                          "description": "Which members it reached for: `none`, nobody, or `sole`, those whose only organization this is."
+                        },
+                        "reached": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "userId": {
+                                "type": "string",
+                                "description": "The member, as `pithy_auth_users` ids them."
+                              },
+                              "outcome": {
+                                "type": "string",
+                                "enum": [
+                                  "suspended",
+                                  "deleted"
+                                ],
+                                "description": "What the user lifecycle did to their own account, with this tenant's reason."
+                              }
+                            },
+                            "required": [
+                              "userId",
+                              "outcome"
+                            ],
+                            "description": "One member whose own account the cascade suspended or deleted."
+                          },
+                          "description": "The members whose own accounts it suspended or deleted. Empty for `none`."
+                        },
+                        "skipped": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "userId": {
+                                "type": "string",
+                                "description": "The member, as `pithy_auth_users` ids them."
+                              },
+                              "reason": {
+                                "type": "string",
+                                "enum": [
+                                  "member_elsewhere",
+                                  "already_suspended",
+                                  "account_deleted",
+                                  "no_account",
+                                  "failed"
+                                ],
+                                "description": "Why they were left alone: `member_elsewhere`, they belong to another organization and are never modified; `already_suspended`, their own suspension stands as it was; `account_deleted`, their account is already deleted; `no_account`, the membership names no account; `failed`, the user transition refused — the log says why."
+                              }
+                            },
+                            "required": [
+                              "userId",
+                              "reason"
+                            ],
+                            "description": "One member the cascade left alone, and why."
+                          },
+                          "description": "The members it left alone, and why. Empty for `none`."
+                        }
+                      },
+                      "required": [
+                        "mode",
+                        "reached",
+                        "skipped"
+                      ],
+                      "description": "What the cascade did to the members."
+                    }
+                  },
+                  "required": [
+                    "organizationId",
+                    "changed",
+                    "updated",
+                    "suspendedAt",
+                    "suspendedUntil",
+                    "mailed",
+                    "members"
+                  ],
+                  "description": "A tenant's suspension: when it began, when it ends, and who it reached."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "organization:accounts:suspend"
+        ]
+      }
+    },
+    "/organizations/admin/organizations/{organizationId}/reinstate": {
+      "post": {
+        "tags": [
+          "organization"
+        ],
+        "operationId": "postOrganizationsAdminOrganizationsByOrganizationIdReinstate",
+        "summary": "Lift a tenant's suspension, with a reason. It is back in every member's list.",
+        "description": "Reinstates no member's own account, a cascade's included; `membersStillShut` names each one still refused. Takes a reason.",
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "description": "Which tenant's roster to read.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "An operator's write that names its subject in the path and says why in the body.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event."
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "An operator's write that names its subject in the path and says why in the body."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A tenant's reinstatement, and the members it deliberately did not reinstate.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "organizationId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                      "description": "The tenant."
+                    },
+                    "changed": {
+                      "type": "boolean",
+                      "description": "Whether this call lifted a suspension. False when none was in force."
+                    },
+                    "mailed": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "How many owners were sent the notice, or null when nothing was sent."
+                    },
+                    "membersStillShut": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "userId": {
+                            "type": "string",
+                            "description": "The member, as `pithy_auth_users` ids them."
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "suspended",
+                              "deleted"
+                            ],
+                            "description": "Where their own account stands. Reinstate or restore it through the user's own route."
+                          }
+                        },
+                        "required": [
+                          "userId",
+                          "state"
+                        ],
+                        "description": "A member of the tenant whose own account is suspended or deleted."
+                      },
+                      "description": "The members whose own accounts are still suspended or deleted — a cascade's included. A reinstatement lifts none of them; each is reinstated on its own."
+                    }
+                  },
+                  "required": [
+                    "organizationId",
+                    "changed",
+                    "mailed",
+                    "membersStillShut"
+                  ],
+                  "description": "A tenant's reinstatement, and the members it deliberately did not reinstate."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "organization:accounts:suspend"
+        ]
+      }
+    },
+    "/organizations/admin/organizations/{organizationId}/restore": {
+      "post": {
+        "tags": [
+          "organization"
+        ],
+        "operationId": "postOrganizationsAdminOrganizationsByOrganizationIdRestore",
+        "summary": "Restore a deleted tenant inside its purge window, with every membership it had, and a reason.",
+        "description": "Restores no member's own account; `membersStillShut` names each one still suspended or deleted. A suspension the tenant was under stays. Takes a reason.",
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "description": "Which tenant's roster to read.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "An operator's write that names its subject in the path and says why in the body.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event."
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "An operator's write that names its subject in the path and says why in the body."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A tenant's restoration inside its window, with every membership it had.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "organizationId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                      "description": "The tenant."
+                    },
+                    "changed": {
+                      "type": "boolean",
+                      "description": "Whether this call restored it. False when it was not deleted."
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "suspended"
+                      ],
+                      "description": "Where it stands now: `active`, or `suspended` when a suspension it was under is still in force."
+                    },
+                    "membersStillShut": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "userId": {
+                            "type": "string",
+                            "description": "The member, as `pithy_auth_users` ids them."
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "suspended",
+                              "deleted"
+                            ],
+                            "description": "Where their own account stands. Reinstate or restore it through the user's own route."
+                          }
+                        },
+                        "required": [
+                          "userId",
+                          "state"
+                        ],
+                        "description": "A member of the tenant whose own account is suspended or deleted."
+                      },
+                      "description": "The members whose own accounts are still suspended or deleted. A restore brings back every membership and reinstates none of their accounts."
+                    }
+                  },
+                  "required": [
+                    "organizationId",
+                    "changed",
+                    "state",
+                    "membersStillShut"
+                  ],
+                  "description": "A tenant's restoration inside its window, with every membership it had."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "organization:accounts:delete"
         ]
       }
     },

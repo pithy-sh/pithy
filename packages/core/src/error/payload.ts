@@ -1561,6 +1561,18 @@ const OrganizationSeatLimitReachedPublic = z
   })
   .describe("The account has no free seat (409).");
 
+const OrganizationSuspendedPublic = z
+  .object({
+    code: z
+      .literal("organization/organization_suspended")
+      .describe(
+        "The organization this request acts in is suspended by an operator, so nobody can act in it until it is reinstated (#623). The caller's own account is not affected, and their other organizations are not either. `params.suspendedUntil`, when present, is when the suspension ends by itself, ISO-8601. Not `organization/forbidden`, because no role would let them, and not `organization/not_found`, because the caller is a proved member and already knows the organization exists.",
+      ),
+    status: z.literal(403).describe("Forbidden — the organization may not be acted in, whoever asks."),
+    ...publicFields,
+  })
+  .describe("The organization is suspended (403).");
+
 // --- @pithy-sh/artifacts: Git repositories, ownership, grants and short-lived tokens ---
 
 const ArtifactsNotFoundPublic = z
@@ -1947,6 +1959,7 @@ export const KitPublicErrorPayload = z
     OrganizationLastOwnerPublic,
     OrganizationAlreadyMemberPublic,
     OrganizationSeatLimitReachedPublic,
+    OrganizationSuspendedPublic,
     ArtifactsNotFoundPublic,
     ArtifactsForbiddenPublic,
     ArtifactsInvalidNamePublic,
@@ -2352,6 +2365,9 @@ const OrganizationAlreadyMember = OrganizationAlreadyMemberPublic.extend(interna
 const OrganizationSeatLimitReached = OrganizationSeatLimitReachedPublic.extend(internalFields).describe(
   OrganizationSeatLimitReachedPublic.description ?? "",
 );
+const OrganizationSuspended = OrganizationSuspendedPublic.extend(internalFields).describe(
+  OrganizationSuspendedPublic.description ?? "",
+);
 
 const ArtifactsNotFound = ArtifactsNotFoundPublic.extend(internalFields).describe(
   ArtifactsNotFoundPublic.description ?? "",
@@ -2520,6 +2536,7 @@ export const KitErrorPayload = z
     OrganizationLastOwner,
     OrganizationAlreadyMember,
     OrganizationSeatLimitReached,
+    OrganizationSuspended,
     ArtifactsNotFound,
     ArtifactsForbidden,
     ArtifactsInvalidName,

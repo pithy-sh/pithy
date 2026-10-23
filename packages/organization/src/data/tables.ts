@@ -9,6 +9,7 @@ import { ActingOrganization } from "./actingOrganization";
 import { Invitation } from "./invitation";
 import { Membership } from "./membership";
 import { Organization } from "./organization";
+import { OrganizationLifecycleEvent } from "./organizationLifecycle";
 import { OwnershipNomination } from "./ownershipNomination";
 
 /** The tenant itself. `CamelCasePlugin` snake-cases it to `pithy_organization_organizations`. */
@@ -21,8 +22,10 @@ export const INVITATIONS_TABLE = "pithyOrganizationInvitations";
 export const OWNERSHIP_NOMINATIONS_TABLE = "pithyOrganizationOwnershipNominations";
 /** Which organization a session is acting in. → `pithy_organization_acting`. */
 export const ACTING_TABLE = "pithyOrganizationActing";
+/** Every lifecycle transition an organization went through (#623). → `pithy_organization_lifecycle`. */
+export const LIFECYCLE_TABLE = "pithyOrganizationLifecycle";
 
-/** The tenancy tables map. All five are always present — none is behind a config flag. */
+/** The tenancy tables map. All six are always present — none is behind a config flag. */
 export function organizationTables(): Record<string, z.ZodObject> {
   return {
     [ORGANIZATIONS_TABLE]: Organization,
@@ -30,6 +33,7 @@ export function organizationTables(): Record<string, z.ZodObject> {
     [INVITATIONS_TABLE]: Invitation,
     [OWNERSHIP_NOMINATIONS_TABLE]: OwnershipNomination,
     [ACTING_TABLE]: ActingOrganization,
+    [LIFECYCLE_TABLE]: OrganizationLifecycleEvent,
   };
 }
 
@@ -40,6 +44,7 @@ export type OrganizationTables = {
   [INVITATIONS_TABLE]: typeof Invitation;
   [OWNERSHIP_NOMINATIONS_TABLE]: typeof OwnershipNomination;
   [ACTING_TABLE]: typeof ActingOrganization;
+  [LIFECYCLE_TABLE]: typeof OrganizationLifecycleEvent;
 };
 export type OrganizationDatabase = Kysely<DatabaseSchema<OrganizationTables>>;
 
@@ -51,5 +56,6 @@ export function organizationDatabase(d1: D1Database): OrganizationDatabase {
     [INVITATIONS_TABLE]: Invitation,
     [OWNERSHIP_NOMINATIONS_TABLE]: OwnershipNomination,
     [ACTING_TABLE]: ActingOrganization,
+    [LIFECYCLE_TABLE]: OrganizationLifecycleEvent,
   }) as unknown as OrganizationDatabase;
 }

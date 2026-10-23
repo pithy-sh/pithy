@@ -149,10 +149,14 @@ describe("migrations", () => {
   });
 
   test("registers its migration under the stable local key", () => {
-    expect(Object.keys(organization(BASE).databases?.app?.migrations ?? {})).toEqual(["0001_init", "0002_seat_limit"]);
+    expect(Object.keys(organization(BASE).databases?.app?.migrations ?? {})).toEqual([
+      "0001_init",
+      "0002_seat_limit",
+      "0003_organization_lifecycle",
+    ]);
   });
 
-  test("contributes all five tables to the app database", () => {
+  test("contributes all six tables to the app database", () => {
     expect(Object.keys(organization(BASE).databases?.app?.tables ?? {})).toEqual(Object.keys(organizationTables()));
   });
 });
@@ -462,5 +466,40 @@ describe("the email an invitation is mailed through", () => {
 
   test("a project that delivers the link itself needs no email", () => {
     expect(assemble({ ...BASE, sendInvitationEmail: false }, [])).toBeUndefined();
+  });
+});
+
+describe("the organization lifecycle (#623)", () => {
+  test("declares its own purge contribution for the organization subject, and the two purge Workflows", () => {
+    const capability = organization(BASE);
+    expect(capability.purge?.map((contribution) => contribution.subject)).toEqual(["organization"]);
+    expect(Object.keys(capability.workflows ?? {}).sort()).toEqual(["purge", "purge-due"]);
+  });
+
+  test("compose collects every composed capability's organization purge step, its own among them, in order", () => {
+    const capability = organization(BASE);
+    const media = {
+      name: "media",
+      requiredBindings: [],
+      purge: [
+        { subject: "user", summary: "user rows", erase: async () => {} },
+        { subject: "organization", summary: "org rows", erase: async () => {} },
+      ],
+    } as unknown as Capability;
+    capability.compose?.({ capabilities: [EMAIL, media, capability] });
+    expect(capability.organizationPurgeSteps.map((step) => step.step)).toEqual(["media", "organization"]);
+  });
+
+  test("carries the hooks it was handed, and drops the ones it was not", () => {
+    const onOrganizationSuspended = () => {};
+    const capability = organization({ ...BASE, onOrganizationSuspended });
+    expect(capability.organizationLifecycleHooks).toEqual({ onOrganizationSuspended });
+  });
+
+  test("the retention window and the three notices default, and each can be set", () => {
+    expect(organization(BASE).organizationConfig.retention).toEqual({ purgeAfterDays: 30 });
+    const configured = organization({ ...BASE, retention: { purgeAfterDays: 7 } });
+    expect(configured.organizationConfig.retention.purgeAfterDays).toBe(7);
+    expect(() => organization({ ...BASE, retention: { purgeAfterDays: 0 } })).toThrow();
   });
 });

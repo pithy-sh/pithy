@@ -178,6 +178,29 @@ const EMAIL_EN: MessageCatalog = {
     "You are now the owner of {organization} on {app}. You administer it, and you answer for it.",
   "email/organization_member.contact": "If you did not expect this, reply to this email.",
 
+  // --- The organization lifecycle (#623) ---
+  // To an owner, when an operator acts on the organization itself. Each names it, and says the owner's own
+  // account is not what changed.
+  "email/organization_suspended.subject": "{organization} is suspended",
+  "email/organization_suspended.heading": "Your organization is suspended",
+  "email/organization_suspended.body":
+    "{organization} on {app} is suspended. Nobody can act in it until it is reinstated. Your own account is not affected.",
+  "email/organization_suspended.text_body":
+    "{organization} on {app} is suspended. Nobody can act in it until it is reinstated. Your own account is not affected.",
+  "email/organization_suspended.reason": "The reason given: {reason}",
+  "email/organization_suspended.until": "It ends on {until}.",
+  "email/organization_reinstated.subject": "{organization} is reinstated",
+  "email/organization_reinstated.heading": "Your organization is reinstated",
+  "email/organization_reinstated.body": "{organization} on {app} is reinstated. Its members can act in it again.",
+  "email/organization_reinstated.text_body": "{organization} on {app} is reinstated. Its members can act in it again.",
+  "email/organization_deletion_scheduled.subject": "{organization} is deleted",
+  "email/organization_deletion_scheduled.heading": "Your organization is deleted",
+  "email/organization_deletion_scheduled.body":
+    "{organization} on {app} is deleted. Nobody can act in it, and its data will be erased on {purgeOn}.",
+  "email/organization_deletion_scheduled.text_body":
+    "{organization} on {app} is deleted. Nobody can act in it, and its data will be erased on {purgeOn}.",
+  "email/organization_deletion_scheduled.contact": "To keep it, reply to this email before {purgeOn}.",
+
   // --- leadCapture ---
   "email/lead_capture.subject": "Your download: {asset}",
   "email/lead_capture.heading": "Your download is ready",

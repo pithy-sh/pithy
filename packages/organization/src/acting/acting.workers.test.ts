@@ -105,6 +105,7 @@ function clientPayload(error: unknown): Record<string, unknown> {
 
 beforeEach(async () => {
   for (const table of [
+    "pithy_organization_lifecycle",
     "pithy_organization_acting",
     "pithy_organization_ownership_nominations",
     "pithy_organization_invitations",
@@ -400,5 +401,94 @@ describe("hasAnyMembership and clearActing", () => {
     await choose(INSIDER, ACME, OTHER_SESSION);
     await clearActing(db(), { sessionId: SESSION });
     expect((await resolveActing(db(), catalog, { userId: INSIDER, sessionId: OTHER_SESSION }))?.slug).toBe("acme");
+  });
+});
+
+describe("a suspended or deleted organization is no organization to act in (#623)", () => {
+  const HOUR = 60 * 60 * 1000;
+
+  async function suspend(organizationId: string, until: Date | null = null): Promise<void> {
+    await db()
+      .updateTable(ORGANIZATIONS_TABLE)
+      .set({ suspendedAt: NOW.getTime() - HOUR, suspendedUntil: until ? until.getTime() : null })
+      .where("id", "=", organizationId)
+      .execute();
+  }
+
+  async function remove(organizationId: string): Promise<void> {
+    await db()
+      .updateTable(ORGANIZATIONS_TABLE)
+      .set({ deletedAt: NOW.getTime() - HOUR, purgeAfter: NOW.getTime() + HOUR })
+      .where("id", "=", organizationId)
+      .execute();
+  }
+
+  async function selected(): Promise<string | undefined> {
+    const row = await db()
+      .selectFrom(ACTING_TABLE)
+      .select("organizationId")
+      .where("sessionId", "=", SESSION)
+      .executeTakeFirst();
+    return row?.organizationId;
+  }
+
+  test("a selection naming a suspended organization is refused 403 and cleared in the same call", async () => {
+    await choose(INSIDER, ACME);
+    await suspend(ACME);
+    const refusal = await resolveActing(db(), catalog, { userId: INSIDER, sessionId: SESSION, now: NOW }).catch(
+      (error: unknown) => error,
+    );
+    expect(clientPayload(refusal)).toMatchObject({ code: "organization/organization_suspended", status: 403 });
+    expect(await selected()).toBeUndefined();
+    expect(await resolveActing(db(), catalog, { userId: INSIDER, sessionId: SESSION, now: NOW })).toBeNull();
+  });
+
+  test("a timed suspension names its end, and is over at it with nothing written", async () => {
+    const until = new Date(NOW.getTime() + HOUR);
+    await choose(INSIDER, ACME);
+    await suspend(ACME, until);
+    const refusal = await resolveActing(db(), catalog, { userId: INSIDER, sessionId: SESSION, now: NOW }).catch(
+      (error: unknown) => error,
+    );
+    expect(clientPayload(refusal)).toMatchObject({ params: { suspendedUntil: until.toISOString() } });
+    await chooseActing(db(), { userId: INSIDER, sessionId: SESSION, organizationId: ACME, now: until });
+    expect(
+      (await resolveActing(db(), catalog, { userId: INSIDER, sessionId: SESSION, now: until }))?.organizationId,
+    ).toBe(ACME);
+  });
+
+  test("a selection naming a deleted organization resolves to nothing, and is cleared", async () => {
+    await choose(INSIDER, ACME);
+    await remove(ACME);
+    expect(await resolveActing(db(), catalog, { userId: INSIDER, sessionId: SESSION, now: NOW })).toBeNull();
+    expect(await selected()).toBeUndefined();
+  });
+
+  test("a named suspended organization is refused only to its member; deleted is no organization", async () => {
+    await suspend(ACME);
+    await expect(
+      resolveActingIn(db(), catalog, { userId: INSIDER, organizationId: ACME, now: NOW }),
+    ).rejects.toMatchObject({ payload: { code: "organization/organization_suspended" } });
+    // Somebody who is not in it learns nothing: the membership proof comes first.
+    expect(await resolveActingIn(db(), catalog, { userId: STRANGER, organizationId: ACME, now: NOW })).toBeNull();
+    await remove(ACME);
+    expect(await resolveActingIn(db(), catalog, { userId: INSIDER, organizationId: ACME, now: NOW })).toBeNull();
+  });
+
+  test("neither can be chosen, and neither is in the list, while the person's other organization is", async () => {
+    await membership(BETA, INSIDER, "member");
+    await suspend(ACME);
+    await expect(
+      chooseActing(db(), { userId: INSIDER, sessionId: SESSION, organizationId: ACME, now: NOW }),
+    ).rejects.toMatchObject({ payload: { code: "organization/organization_suspended" } });
+    expect((await listActable(db(), catalog, INSIDER, NOW)).map((acting) => acting.organizationId)).toEqual([BETA]);
+    expect(await hasAnyMembership(db(), INSIDER, NOW)).toBe(true);
+    await remove(BETA);
+    await expect(
+      chooseActing(db(), { userId: INSIDER, sessionId: SESSION, organizationId: BETA, now: NOW }),
+    ).rejects.toMatchObject({ payload: { code: "organization/not_found" } });
+    expect(await listActable(db(), catalog, INSIDER, NOW)).toEqual([]);
+    // Nothing a chooser could offer, so the refusal says to join one rather than to choose.
+    expect(await hasAnyMembership(db(), INSIDER, NOW)).toBe(false);
   });
 });

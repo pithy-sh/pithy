@@ -1,7 +1,13 @@
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
-import { type ActableOrganization, chooseOrganization, listOrganizations } from "@pithy-sh/organization/src/index";
+import {
+  type ActableOrganization,
+  chooseOrganization,
+  listOrganizations,
+  organizationRefusal,
+} from "@pithy-sh/organization/src/index";
 import { useCallback, useEffect, useState } from "react";
+import { navigate, routeTable, screenPath } from "../../router";
 import "../../pithy-screens.css";
 
 export const path = "/choose-organization";
@@ -15,7 +21,9 @@ export const path = "/choose-organization";
 //   Exactly one — go straight through without asking, *and still record the choice*, so what is in force
 //     is a row rather than an inference every later request has to make again.
 //   None — a different answer entirely. Somebody who belongs nowhere is not choosing; they are waiting
-//     for an invitation, and a picker with an empty list tells them nothing.
+//     for an invitation, and a picker with an empty list tells them nothing. And somebody whose every
+//     account is suspended does not belong nowhere: the list counts those (#623), and they go on to the
+//     suspended screen, by role, rather than being told to ask for an invitation.
 //
 // The middle one is the one that gets written wrong. A screen that renders a one-item list and waits is
 // asking somebody to confirm a decision that was never theirs; a screen that redirects without writing
@@ -56,6 +64,12 @@ export default function ChooseOrganization() {
     setBusy(true);
     const result = await chooseOrganization(organizationId);
     if (!result.ok) {
+      // An account suspended since the list was drawn says so, on its own screen, by role — so renaming
+      // that screen moves this with it. Nothing is in force, so an in-app navigation carries nothing over.
+      if (organizationRefusal(result.failure.code) === "suspended") {
+        navigate(screenPath(await routeTable(), "organization-suspended"));
+        return;
+      }
       // Including the ordinary 404 a caller naming an account they do not belong to gets — which is
       // the same answer as one that does not exist, deliberately, so there is nothing to say about
       // which it was.
@@ -71,6 +85,11 @@ export default function ChooseOrganization() {
     const result = await listOrganizations();
     if (!result.ok) {
       setFailed(true);
+      return;
+    }
+    // Nothing to act in, and something suspended: that is the suspended screen's answer, not "no accounts yet".
+    if (result.value.organizations.length === 0 && (result.value.suspended ?? 0) > 0) {
+      navigate(screenPath(await routeTable(), "organization-suspended"));
       return;
     }
     // Somebody with exactly one account is put into it rather than asked. The write still happens, so

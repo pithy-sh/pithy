@@ -3,6 +3,7 @@
 
 import { organization_0001_init } from "./0001_init";
 import { organization_0002_seat_limit } from "./0002_seat_limit";
+import { organization_0003_organization_lifecycle } from "./0003_organization_lifecycle";
 
 /**
  * Every migration `@pithy-sh/organization` ships, keyed as `pithy migrate` composes them.
@@ -17,4 +18,5 @@ import { organization_0002_seat_limit } from "./0002_seat_limit";
 export const ORGANIZATION_MIGRATIONS = {
   "0001_init": organization_0001_init,
   "0002_seat_limit": organization_0002_seat_limit,
+  "0003_organization_lifecycle": organization_0003_organization_lifecycle,
 } as const;

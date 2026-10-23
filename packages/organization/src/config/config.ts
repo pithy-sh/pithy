@@ -90,6 +90,40 @@ export const OrganizationConfig = z
       .describe(
         "Which notices an operator's membership change sends, through the composed `@pithy-sh/email` (#624). All three send by default; set one to false to turn it off. With no email composed nothing is sent and nothing is refused: the change has already happened, and the audit event records `mailed: null`.",
       ),
+    retention: z
+      .object({
+        purgeAfterDays: z
+          .number()
+          .int()
+          .positive()
+          .default(30)
+          .describe(
+            "How many days a deleted organization waits before its data is erased. Inside the window nobody can act in it and an operator can restore it, memberships and all; after it, the purge erases its rows from every composed capability that declares an organization purge contribution — in the kit, organization, media and storage. Defaults to 30.",
+          ),
+      })
+      .prefault({})
+      .describe("How long a deleted organization is kept before it is purged (#623)."),
+    lifecycleEmails: z
+      .object({
+        organizationSuspended: z
+          .boolean()
+          .default(true)
+          .describe("Tell the organization's owners when an operator suspends it, with the reason and any end date."),
+        organizationReinstated: z
+          .boolean()
+          .default(true)
+          .describe("Tell the organization's owners when an operator lifts its suspension."),
+        organizationDeletionScheduled: z
+          .boolean()
+          .default(true)
+          .describe(
+            "Tell the organization's owners when an operator deletes it, with the date its data will be erased.",
+          ),
+      })
+      .prefault({})
+      .describe(
+        "Which organization-lifecycle notices are sent to its owners, through the composed `@pithy-sh/email` (#623). All three send by default; set one to false to turn it off. With no email composed nothing is sent and nothing is refused.",
+      ),
   })
   .describe(
     "The tenancy capability's configuration. The role catalog is not here: it is a module in the project, because the project's own handlers import its powers.",

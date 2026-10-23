@@ -9,10 +9,16 @@ import type { Invitation } from "../data/invitation";
 import type { Membership } from "../data/membership";
 import type { Organization } from "../data/organization";
 import type { OwnershipNomination } from "../data/ownershipNomination";
+import type { CascadeOutcome } from "../lifecycle/cascade";
+import { organizationStanding } from "../lifecycle/state";
+import type { OrganizationDeleteTransition, OrganizationSuspendTransition } from "../lifecycle/transitions";
 import { memberImagePath } from "../people/people";
 import type {
   ActingResponse,
+  AdminMemberCascade,
   AdminMemberView,
+  AdminOrganizationDeleteResponse,
+  AdminOrganizationSuspendResponse,
   AdminOrganizationView,
   InvitationOfferResponse,
   InvitationView,
@@ -195,15 +201,72 @@ export function nominationView(nomination: OwnershipNomination): NominationView 
  * management credential can never satisfy — so the field would be a link that 404s for the only caller
  * it was rendered for. The account list exists to say which tenant to look at, not to draw it.
  */
-export function adminOrganizationView(organization: Organization, members: number): AdminOrganizationView {
+export function adminOrganizationView(
+  organization: Organization,
+  members: number,
+  now: Date = new Date(),
+): AdminOrganizationView {
+  // Through `organizationStanding`, never off the raw columns: a suspension past its end is not one (#623).
+  const standing = organizationStanding(organization, now);
   return {
     id: organization.id,
     name: organization.name,
     slug: organization.slug,
     members,
     seatLimit: organization.seatLimit ?? null,
+    state: standing.state,
+    suspendedUntil: standing.state === "suspended" ? (standing.until?.toISOString() ?? null) : null,
+    purgeAfter: standing.state === "deleted" ? (standing.purgeAfter?.toISOString() ?? null) : null,
     createdAt: organization.createdAt.toISOString(),
     updatedAt: organization.updatedAt.toISOString(),
+  };
+}
+
+/** A cascade's outcome, as the wire carries it. */
+export function memberCascadeView(outcome: CascadeOutcome): AdminMemberCascade {
+  return {
+    mode: outcome.mode,
+    reached: outcome.reached.map((member) => ({ userId: member.userId, outcome: member.outcome })),
+    skipped: outcome.skipped.map((member) => ({ userId: member.userId, reason: member.reason })),
+  };
+}
+
+/** What a suspension did, for `POST {base}/admin/organizations/:organizationId/suspend`. */
+export function suspensionView(
+  organizationId: string,
+  result: OrganizationSuspendTransition,
+  mailed: number | null,
+  members: CascadeOutcome,
+): AdminOrganizationSuspendResponse {
+  return {
+    organizationId,
+    changed: result.changed,
+    updated: result.updated,
+    suspendedAt: result.suspendedAt.toISOString(),
+    suspendedUntil: result.suspendedUntil?.toISOString() ?? null,
+    mailed,
+    members: memberCascadeView(members),
+  };
+}
+
+/** What a deletion did, for `DELETE {base}/admin/organizations/:organizationId`. */
+export function deletionView(
+  organizationId: string,
+  mode: "soft" | "hard",
+  result: OrganizationDeleteTransition,
+  purge: "scheduled" | "started" | "pending",
+  mailed: number | null,
+  members: CascadeOutcome,
+): AdminOrganizationDeleteResponse {
+  return {
+    organizationId,
+    mode,
+    outcome: result.outcome,
+    deletedAt: result.deletedAt.toISOString(),
+    purgeAfter: result.purgeAfter.toISOString(),
+    purge,
+    mailed,
+    members: memberCascadeView(members),
   };
 }
 

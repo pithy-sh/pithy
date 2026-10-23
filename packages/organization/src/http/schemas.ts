@@ -454,3 +454,51 @@ export const AdminInvitationsQuery = AdminListQuery.extend({
   ),
 }).describe("The bound on a tenant's invitation listing, and why it is being read.");
 export type AdminInvitationsQuery = z.output<typeof AdminInvitationsQuery>;
+
+/**
+ * ## The organization's own lifecycle, below (#623)
+ *
+ * Suspend, reinstate, delete and restore — an operator acting on the account itself. Each takes a reason, under
+ * the same rule as every operator write here. `members` is the one choice that reaches beyond the account, and
+ * it defaults to reaching nobody.
+ */
+
+/** Which members a suspension or a deletion reaches. */
+export const MemberCascade = z
+  .enum(["none", "sole"])
+  .describe(
+    "Which members' own accounts this reaches: `none`, the default, touches nobody; `sole` suspends or deletes, through the user lifecycle and with this reason, only the members whose one and only organization this is. A member of any other organization is never modified.",
+  );
+export type MemberCascade = z.output<typeof MemberCascade>;
+
+/** The body of `POST {base}/admin/organizations/:organizationId/suspend`. */
+export const AdminSuspendOrganization = z
+  .strictObject({
+    reason: OperatorReason.describe(
+      "Why the operator is suspending it. Required, at most 500 characters, carrying no email address. Recorded verbatim, and sent to the organization's owners — the suspended screen tells every member the owners were told why.",
+    ),
+    until: z.iso
+      .datetime()
+      .optional()
+      .describe(
+        "When the suspension ends by itself, ISO-8601, in the future. Absent, it lasts until a reinstatement. Nothing needs to run for it to end.",
+      ),
+    members: MemberCascade.optional(),
+  })
+  .describe("An operator suspending a tenant: nobody can act in it until it is reinstated or the end passes.");
+export type AdminSuspendOrganization = z.output<typeof AdminSuspendOrganization>;
+
+/** The body of `DELETE {base}/admin/organizations/:organizationId`. */
+export const AdminDeleteOrganization = z
+  .strictObject({
+    reason: OperatorReason,
+    mode: z
+      .enum(["soft", "hard"])
+      .optional()
+      .describe(
+        "`soft`, the default, shuts the tenant now and keeps it restorable, memberships and all, for `retention.purgeAfterDays`. `hard` closes the window at once and starts the purge, which erases its rows from every composed capability that declares an organization purge contribution — in the kit, organization, media and storage.",
+      ),
+    members: MemberCascade.optional(),
+  })
+  .describe("An operator deleting a tenant, softly or hard, with a reason.");
+export type AdminDeleteOrganization = z.output<typeof AdminDeleteOrganization>;

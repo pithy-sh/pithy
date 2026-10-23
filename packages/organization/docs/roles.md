@@ -58,7 +58,7 @@ Counting a role *name* gets this wrong in both directions. In the nesting catalo
 
 ## Assignability is derived by exclusion
 
-`unassignable` names the roles no member may hand another person. Everything else is assignable. An operator is not bound by it: the control plane's membership administration may add a member at, or change a role to, any role the catalog declares ([README](../README.md#membership-administration)).
+`unassignable` names the roles no member may hand another person. Everything else is assignable. An operator is not bound by it: the control plane's membership administration may add a member at, or change a role to, any role the catalog declares but the owning one, which moves only through the forced-ownership route ([README](../README.md#membership-administration)).
 
 Derived by exclusion rather than listed, so a role added to the catalog is assignable by default and *excluding* it is the deliberate act. The alternative fails the quiet way: a new role nobody can be given, discovered weeks later when somebody asks why the dropdown is short.
 
@@ -92,7 +92,7 @@ All of it at the moment the constant is written, because every one of these is a
 
 One more is refused later, at compose, because only the composed Worker knows it: **a power a composed capability gates on that no role holds** — `media:manage` beside `media()`, `storage:manage` beside `storage()`. The refusal names the power and the capability.
 
-One more is raised on the first founding rather than at boot: a catalog whose only administering roles are all excluded from assignment leaves nobody who could found an organization. `defineRoles` cannot know that this capability founds accounts, so the refusal lands where the fact is known — but it still names the catalog, not the request, because that is what is wrong.
+One more is raised when `organization()` is called, at assembly rather than at the first founding: a catalog whose only administering roles are all excluded from assignment leaves nobody who could found an organization. `defineRoles` cannot know that this capability founds accounts, so the refusal lands in the factory, where the fact is known — but it still names the catalog, not the request, because that is what is wrong.
 
 ## A role name is stable forever once a membership holds one
 

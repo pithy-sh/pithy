@@ -154,6 +154,29 @@ export const EMAIL_ES: MessageCatalog = {
     "Ahora eres titular de {organization} en {app}. La administras y respondes por ella.",
   "email/organization_member.contact": "Si no lo esperabas, responde a este correo.",
 
+  // --- Ciclo de vida de la organización ---
+  "email/organization_suspended.subject": "{organization} está suspendida",
+  "email/organization_suspended.heading": "Tu organización está suspendida",
+  "email/organization_suspended.body":
+    "{organization} en {app} está suspendida. Nadie puede actuar en ella hasta que se restablezca. Tu propia cuenta no se ve afectada.",
+  "email/organization_suspended.text_body":
+    "{organization} en {app} está suspendida. Nadie puede actuar en ella hasta que se restablezca. Tu propia cuenta no se ve afectada.",
+  "email/organization_suspended.reason": "El motivo indicado: {reason}",
+  "email/organization_suspended.until": "Termina el {until}.",
+  "email/organization_reinstated.subject": "{organization} está restablecida",
+  "email/organization_reinstated.heading": "Tu organización está restablecida",
+  "email/organization_reinstated.body":
+    "{organization} en {app} está restablecida. Sus miembros pueden volver a actuar en ella.",
+  "email/organization_reinstated.text_body":
+    "{organization} en {app} está restablecida. Sus miembros pueden volver a actuar en ella.",
+  "email/organization_deletion_scheduled.subject": "{organization} está eliminada",
+  "email/organization_deletion_scheduled.heading": "Tu organización está eliminada",
+  "email/organization_deletion_scheduled.body":
+    "{organization} en {app} está eliminada. Nadie puede actuar en ella, y sus datos se borrarán el {purgeOn}.",
+  "email/organization_deletion_scheduled.text_body":
+    "{organization} en {app} está eliminada. Nadie puede actuar en ella, y sus datos se borrarán el {purgeOn}.",
+  "email/organization_deletion_scheduled.contact": "Para conservarla, responde a este correo antes del {purgeOn}.",
+
   // --- leadCapture ---
   "email/lead_capture.subject": "Tu descarga: {asset}",
   "email/lead_capture.heading": "Tu descarga está lista",

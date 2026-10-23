@@ -87,6 +87,14 @@ export const OrganizationsResponse = z
       .describe(
         "Whether somebody picked what is in force, as against being put into the only account they have. False with a non-null `acting` is what an account switcher keys on; a single `activeOrganizationId` column cannot carry this.",
       ),
+    suspended: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe(
+        "How many of the caller's own organizations are suspended, and so absent from `organizations` (#623). Non-zero with an empty list is somebody whose only organizations are suspended, not somebody who belongs nowhere: the chooser sends them to the `organization-suspended` screen. A deleted organization is not counted. Optional because a Worker from before #623 omits it, and a reader treats it absent as no count rather than as zero suspended; every current Worker sends it.",
+      ),
   })
   .describe("What the caller may act in, and what they are acting in. The one route here that spans organizations.");
 export type OrganizationsResponse = z.output<typeof OrganizationsResponse>;
@@ -383,6 +391,24 @@ export const AdminOrganizationView = z
       .describe(
         "How many members the account may hold, or null for no limit. Absent from a Worker older than seat limits (#624), which cannot say.",
       ),
+    state: z
+      .enum(["active", "suspended", "deleted"])
+      .optional()
+      .describe(
+        "Where the tenant stands (#623): `active`, `suspended` (nobody can act in it), or `deleted` (shut, and restorable until `purgeAfter`). Absent from a Worker older than the organization lifecycle, which cannot say.",
+      ),
+    suspendedUntil: z.iso
+      .datetime()
+      .nullable()
+      .optional()
+      .describe(
+        "For a suspended tenant, when the suspension ends by itself, ISO-8601; null for one that lasts until a reinstatement, and for every other state.",
+      ),
+    purgeAfter: z.iso
+      .datetime()
+      .nullable()
+      .optional()
+      .describe("For a deleted tenant, when the purge may erase it, ISO-8601. Restorable until then. Null otherwise."),
     createdAt: z.iso.datetime().describe("When the organization was created, ISO-8601."),
     updatedAt: z.iso.datetime().describe("When its row was last written, ISO-8601."),
   })
@@ -481,3 +507,147 @@ export const AdminInvitationsResponse = z
   })
   .describe("One tenant's outstanding invitations, bounded, with an honest flag where it was cut short.");
 export type AdminInvitationsResponse = z.output<typeof AdminInvitationsResponse>;
+
+/**
+ * ## The organization's own lifecycle, below (#623)
+ *
+ * What suspending, reinstating, deleting and restoring a tenant did — to the tenant, and to the members a
+ * cascade reached or deliberately left alone.
+ */
+
+/** What a suspension's or a deletion's member cascade did, member by member. */
+export const AdminMemberCascade = z
+  .object({
+    mode: z
+      .enum(["none", "sole"])
+      .describe("Which members it reached for: `none`, nobody, or `sole`, those whose only organization this is."),
+    reached: z
+      .array(
+        z
+          .object({
+            userId: z.string().describe("The member, as `pithy_auth_users` ids them."),
+            outcome: z
+              .enum(["suspended", "deleted"])
+              .describe("What the user lifecycle did to their own account, with this tenant's reason."),
+          })
+          .describe("One member whose own account the cascade suspended or deleted."),
+      )
+      .describe("The members whose own accounts it suspended or deleted. Empty for `none`."),
+    skipped: z
+      .array(
+        z
+          .object({
+            userId: z.string().describe("The member, as `pithy_auth_users` ids them."),
+            reason: z
+              .enum(["member_elsewhere", "already_suspended", "account_deleted", "no_account", "failed"])
+              .describe(
+                "Why they were left alone: `member_elsewhere`, they belong to another organization and are never modified; `already_suspended`, their own suspension stands as it was; `account_deleted`, their account is already deleted; `no_account`, the membership names no account; `failed`, the user transition refused — the log says why.",
+              ),
+          })
+          .describe("One member the cascade left alone, and why."),
+      )
+      .describe("The members it left alone, and why. Empty for `none`."),
+  })
+  .describe("What a tenant's suspension or deletion did to the people in it.");
+export type AdminMemberCascade = z.output<typeof AdminMemberCascade>;
+
+/** One member whose own account is still refused after the tenant came back. */
+const ShutMember = z
+  .object({
+    userId: z.string().describe("The member, as `pithy_auth_users` ids them."),
+    state: z
+      .enum(["suspended", "deleted"])
+      .describe("Where their own account stands. Reinstate or restore it through the user's own route."),
+  })
+  .describe("A member of the tenant whose own account is suspended or deleted.");
+
+/** `POST {base}/admin/organizations/:organizationId/suspend`. */
+export const AdminOrganizationSuspendResponse = z
+  .object({
+    organizationId: z.uuid().describe("The tenant."),
+    changed: z.boolean().describe("Whether this call suspended it. False when it restated a suspension in force."),
+    updated: z
+      .boolean()
+      .describe("True when it was already suspended and this call replaced the reason and the end, keeping the start."),
+    suspendedAt: z.iso.datetime().describe("When the suspension in force began, ISO-8601."),
+    suspendedUntil: z.iso
+      .datetime()
+      .nullable()
+      .describe("When it ends by itself, ISO-8601, or null for one that lasts until a reinstatement."),
+    mailed: z
+      .number()
+      .int()
+      .min(0)
+      .nullable()
+      .describe("How many owners were sent the notice, or null when it is switched off or no email is composed."),
+    members: AdminMemberCascade.describe("What the cascade did to the members."),
+  })
+  .describe("A tenant's suspension: when it began, when it ends, and who it reached.");
+export type AdminOrganizationSuspendResponse = z.output<typeof AdminOrganizationSuspendResponse>;
+
+/** `POST {base}/admin/organizations/:organizationId/reinstate`. */
+export const AdminOrganizationReinstateResponse = z
+  .object({
+    organizationId: z.uuid().describe("The tenant."),
+    changed: z.boolean().describe("Whether this call lifted a suspension. False when none was in force."),
+    mailed: z
+      .number()
+      .int()
+      .min(0)
+      .nullable()
+      .describe("How many owners were sent the notice, or null when nothing was sent."),
+    membersStillShut: z
+      .array(ShutMember)
+      .describe(
+        "The members whose own accounts are still suspended or deleted — a cascade's included. A reinstatement lifts none of them; each is reinstated on its own.",
+      ),
+  })
+  .describe("A tenant's reinstatement, and the members it deliberately did not reinstate.");
+export type AdminOrganizationReinstateResponse = z.output<typeof AdminOrganizationReinstateResponse>;
+
+/** `DELETE {base}/admin/organizations/:organizationId`. */
+export const AdminOrganizationDeleteResponse = z
+  .object({
+    organizationId: z.uuid().describe("The tenant."),
+    mode: z.enum(["soft", "hard"]).describe("How it was deleted."),
+    outcome: z
+      .enum(["deleted", "brought_forward", "unchanged"])
+      .describe(
+        "`deleted` by this call; `brought_forward` when it was already deleted and a hard deletion closed its window now; `unchanged` when it was already deleted and nothing moved.",
+      ),
+    deletedAt: z.iso.datetime().describe("When it was deleted, ISO-8601."),
+    purgeAfter: z.iso.datetime().describe("When the purge may erase it, ISO-8601. Restorable until then."),
+    purge: z
+      .enum(["scheduled", "started", "pending"])
+      .describe(
+        "What became of the purge: `scheduled` for the daily pass after `purgeAfter`; `started` now; `pending` when this Worker binds no purge Workflow or the start failed — it is due, and the daily pass starts it.",
+      ),
+    mailed: z
+      .number()
+      .int()
+      .min(0)
+      .nullable()
+      .describe(
+        "How many owners were sent the deletion notice, or null when nothing was sent. A hard deletion sends none.",
+      ),
+    members: AdminMemberCascade.describe("What the cascade did to the members."),
+  })
+  .describe("A tenant's deletion: when, how, what becomes of its purge, and who it reached.");
+export type AdminOrganizationDeleteResponse = z.output<typeof AdminOrganizationDeleteResponse>;
+
+/** `POST {base}/admin/organizations/:organizationId/restore`. */
+export const AdminOrganizationRestoreResponse = z
+  .object({
+    organizationId: z.uuid().describe("The tenant."),
+    changed: z.boolean().describe("Whether this call restored it. False when it was not deleted."),
+    state: z
+      .enum(["active", "suspended"])
+      .describe("Where it stands now: `active`, or `suspended` when a suspension it was under is still in force."),
+    membersStillShut: z
+      .array(ShutMember)
+      .describe(
+        "The members whose own accounts are still suspended or deleted. A restore brings back every membership and reinstates none of their accounts.",
+      ),
+  })
+  .describe("A tenant's restoration inside its window, with every membership it had.");
+export type AdminOrganizationRestoreResponse = z.output<typeof AdminOrganizationRestoreResponse>;

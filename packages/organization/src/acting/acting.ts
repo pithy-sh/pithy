@@ -6,7 +6,8 @@ import { z } from "zod";
 import { ActingOrganization } from "../data/actingOrganization";
 import { MAX_ROLE_LENGTH } from "../data/membership";
 import { ACTING_TABLE, MEMBERSHIPS_TABLE, ORGANIZATIONS_TABLE, type OrganizationDatabase } from "../data/tables";
-import { OrganizationNotFoundError } from "../error/errors";
+import { OrganizationNotFoundError, OrganizationSuspendedError } from "../error/errors";
+import { OrganizationLifecycleColumns, organizationStanding } from "../lifecycle/state";
 import type { RoleCatalog } from "../roles/roles";
 
 /**
@@ -43,6 +44,13 @@ import type { RoleCatalog } from "../roles/roles";
  * anything in it. A role matching no entry in the matrix would deny everything today and, one refactor
  * later, allow it; decoding through `catalog.Role` makes an unrecognized value a refusal while there is
  * still a request to refuse.
+ *
+ * **A suspended or deleted organization is no organization to act in (#623).** Every read here joins the
+ * organization's lifecycle columns and asks `organizationStanding` about them, so a deleted organization drops
+ * out of every answer — the chooser's list included — and a suspended one is refused with
+ * {@link OrganizationSuspendedError} to a proved member, and only to one. A session whose selection names
+ * either loses the selection on the request that finds it. A member of other organizations carries on in
+ * those: nothing here reads past the one organization a request named or selected.
  *
  * **Refusals are {@link OrganizationNotFoundError}, always, and identical.** "Not a member" and "no such
  * organization" are one answer to a client, because a distinguishable one is an existence oracle and
@@ -103,6 +111,8 @@ export interface ActingLookup {
   readonly userId: string;
   /** The session, from `c.var.auth.sessionId`. What the selection is keyed by. */
   readonly sessionId: string;
+  /** The instant a suspension is judged at. Defaults to now; injected so tests are deterministic. */
+  readonly now?: Date;
 }
 
 /** Who is asking, and which organization a route named. The pair is matched in one predicate. */
@@ -111,6 +121,8 @@ export interface ActingInLookup {
   readonly userId: string;
   /** The organization the route named. Proved against a membership of this person, never trusted. */
   readonly organizationId: string;
+  /** The instant a suspension is judged at. Defaults to now. */
+  readonly now?: Date;
 }
 
 /** What choosing takes. The membership is proved here before anything is written. */
@@ -139,6 +151,11 @@ interface ActingRow {
   readonly name: string;
   readonly slug: string;
   readonly role: string;
+  /** The organization's lifecycle columns, as stored — decoded by {@link standingOf}, never read raw. */
+  readonly suspendedAt?: unknown;
+  readonly suspendedUntil?: unknown;
+  readonly deletedAt?: unknown;
+  readonly purgeAfter?: unknown;
 }
 
 /**
@@ -157,9 +174,35 @@ function memberOrganizations(db: OrganizationDatabase, userId: string) {
       `${ORGANIZATIONS_TABLE}.name as name`,
       `${ORGANIZATIONS_TABLE}.slug as slug`,
       `${MEMBERSHIPS_TABLE}.role as role`,
+      `${ORGANIZATIONS_TABLE}.suspendedAt as suspendedAt`,
+      `${ORGANIZATIONS_TABLE}.suspendedUntil as suspendedUntil`,
+      `${ORGANIZATIONS_TABLE}.deletedAt as deletedAt`,
+      `${ORGANIZATIONS_TABLE}.purgeAfter as purgeAfter`,
     ])
     .where(`${MEMBERSHIPS_TABLE}.userId`, "=", userId);
 }
+
+/** Where the organization on one joined row stands at `now`. */
+function standingOf(row: ActingRow, now: Date) {
+  return organizationStanding(OrganizationLifecycleColumns.parse(row), now);
+}
+
+/** The refusal for a proved member of a suspended organization, naming its end when it has one. */
+export function organizationSuspended(
+  organizationId: string,
+  until: Date | null,
+  why: string,
+): OrganizationSuspendedError {
+  return new OrganizationSuspendedError({
+    ...(until ? { params: { suspendedUntil: until.toISOString() } } : {}),
+    detail: `organization ${organizationId} is suspended${until ? ` until ${until.toISOString()}` : ""}; ${why}`,
+  });
+}
+
+/** What a session's selection resolves to: a membership to act in, a suspended organization, or nothing. */
+export type ActingSelection<Role extends string = string> =
+  | { readonly kind: "acting"; readonly acting: ActingMembership<Role> }
+  | { readonly kind: "suspended"; readonly organizationId: string; readonly until: Date | null };
 
 /**
  * The one refusal for "no such organization" and "not one of yours".
@@ -188,6 +231,33 @@ export async function resolveActing<Power extends string, Role extends string>(
   catalog: RoleCatalog<Power, Role>,
   lookup: ActingLookup,
 ): Promise<ActingMembership<Role> | null> {
+  const selection = await resolveSelection(db, catalog, lookup);
+  if (selection === null) return null;
+  if (selection.kind === "suspended") {
+    throw organizationSuspended(
+      selection.organizationId,
+      selection.until,
+      `session ${lookup.sessionId} had it selected, and the selection was cleared`,
+    );
+  }
+  return selection.acting;
+}
+
+/**
+ * The session's selection, resolved without refusing: what {@link resolveActing} decides on, and what the
+ * chooser's list reads, which must answer even when the selection named an organization since suspended.
+ *
+ * **A selection naming a suspended or deleted organization is cleared here, on the request that finds it**
+ * (#623). The organization is no longer one to act in, so the session is left with no selection rather than
+ * one every later request would have to refuse again — and the request that found it is told which, so a
+ * screen can say the organization is suspended rather than that nothing is chosen. A deleted one answers as
+ * no selection at all: it is gone from the member's list, and naming it would say more than that list does.
+ */
+export async function resolveSelection<Power extends string, Role extends string>(
+  db: OrganizationDatabase,
+  catalog: RoleCatalog<Power, Role>,
+  lookup: ActingLookup,
+): Promise<ActingSelection<Role> | null> {
   const row = await memberOrganizations(db, lookup.userId)
     .innerJoin(ACTING_TABLE, `${ACTING_TABLE}.organizationId`, `${MEMBERSHIPS_TABLE}.organizationId`)
     .select(`${ACTING_TABLE}.chosen as chosen`)
@@ -197,13 +267,24 @@ export async function resolveActing<Power extends string, Role extends string>(
     .where(`${ACTING_TABLE}.userId`, "=", lookup.userId)
     .executeTakeFirst();
   if (!row) return null;
+  const standing = standingOf(row, lookup.now ?? new Date());
+  if (standing.state !== "active") {
+    await db
+      .deleteFrom(ACTING_TABLE)
+      .where("sessionId", "=", lookup.sessionId)
+      .where("organizationId", "=", row.organizationId)
+      .execute();
+    return standing.state === "suspended"
+      ? { kind: "suspended", organizationId: row.organizationId, until: standing.until }
+      : null;
+  }
   // **Read off the row, not assumed true.** The column is the half a single `activeOrganizationId`
   // cannot express, and a resolver that hardcoded it would make the chooser unable to tell somebody who
   // picked from somebody who was put there. A value SQLite holds that is neither 0 nor 1 lands as *not
   // chosen*, which is the safe direction because nothing authorizes on it — at worst a chooser offers a
   // choice that had already been made.
   const chosen = SQLiteBoolean.safeParse(row.chosen);
-  return decode(catalog, row, lookup.userId, chosen.success && chosen.data);
+  return { kind: "acting", acting: decode(catalog, row, lookup.userId, chosen.success && chosen.data) };
 }
 
 /**
@@ -227,6 +308,13 @@ export async function resolveActingIn<Power extends string, Role extends string>
     .where(`${ORGANIZATIONS_TABLE}.id`, "=", lookup.organizationId)
     .executeTakeFirst();
   if (!row) return null;
+  // A deleted organization is no organization, to a member as to a stranger. A suspended one is refused, and
+  // only here — past the membership proof — so the 403 never answers somebody who is not in it.
+  const standing = standingOf(row, lookup.now ?? new Date());
+  if (standing.state === "deleted") return null;
+  if (standing.state === "suspended") {
+    throw organizationSuspended(row.organizationId, standing.until, `user ${lookup.userId} named it`);
+  }
   return decode(catalog, row, lookup.userId, false);
 }
 
@@ -249,15 +337,21 @@ export async function resolveActingIn<Power extends string, Role extends string>
  * id reused after a sign-out cannot inherit the previous person's selection.
  */
 export async function chooseActing(db: OrganizationDatabase, options: ChooseActingOptions): Promise<void> {
-  const membership = await db
-    .selectFrom(MEMBERSHIPS_TABLE)
-    .select("id")
+  const membership = await memberOrganizations(db, options.userId)
     // Both halves, in one predicate. Neither is meaningful without the other.
-    .where("userId", "=", options.userId)
-    .where("organizationId", "=", options.organizationId)
+    .where(`${ORGANIZATIONS_TABLE}.id`, "=", options.organizationId)
     .executeTakeFirst();
   if (!membership) {
     throw noSuchOrganization(`user ${options.userId} has no membership in organization ${options.organizationId}`);
+  }
+  // Nothing is written for an organization nobody may act in (#623): a deleted one is the same 404 as one that
+  // was never there, and a suspended one is refused to the member who chose it, naming why.
+  const standing = standingOf(membership, options.now ?? new Date());
+  if (standing.state === "deleted") {
+    throw noSuchOrganization(`user ${options.userId} chose organization ${options.organizationId}, which is deleted`);
+  }
+  if (standing.state === "suspended") {
+    throw organizationSuspended(options.organizationId, standing.until, `user ${options.userId} chose it`);
   }
 
   const values = ActingOrganization.encode({
@@ -290,9 +384,32 @@ export async function listActable<Power extends string, Role extends string>(
   db: OrganizationDatabase,
   catalog: RoleCatalog<Power, Role>,
   userId: string,
+  now: Date = new Date(),
 ): Promise<ActingMembership<Role>[]> {
   const rows = await memberOrganizations(db, userId).orderBy(`${ORGANIZATIONS_TABLE}.name`, "asc").execute();
-  return rows.map((row) => decode(catalog, row, userId, false));
+  // A suspended or deleted organization is not one this person may act in, so it is not in the list (#623).
+  // Their other organizations are, unchanged.
+  return rows
+    .filter((row) => standingOf(row, now).state === "active")
+    .map((row) => decode(catalog, row, userId, false));
+}
+
+/**
+ * How many of this person's organizations are suspended at `now` (#623) — what the chooser's list reports beside
+ * the ones they may act in.
+ *
+ * A suspended organization is not in the list, and the session's selection of it is cleared on the request that
+ * finds it, so without this count somebody whose one organization is suspended would be told they belong
+ * nowhere. A deleted organization is not counted: it is gone from the member's list altogether. Only the
+ * person's own memberships are read, so the count says nothing about a tenant they are not in.
+ */
+export async function countSuspended(
+  db: OrganizationDatabase,
+  userId: string,
+  now: Date = new Date(),
+): Promise<number> {
+  const rows = await memberOrganizations(db, userId).execute();
+  return rows.filter((row) => standingOf(row, now).state === "suspended").length;
 }
 
 /**
@@ -303,9 +420,15 @@ export async function listActable<Power extends string, Role extends string>(
  * this counts rows and nothing else, so a catalog that cannot name one role does not turn "you belong
  * somewhere" into an error on the path that was about to say so.
  */
-export async function hasAnyMembership(db: OrganizationDatabase, userId: string): Promise<boolean> {
-  const row = await db.selectFrom(MEMBERSHIPS_TABLE).select("id").where("userId", "=", userId).executeTakeFirst();
-  return row !== undefined;
+export async function hasAnyMembership(
+  db: OrganizationDatabase,
+  userId: string,
+  now: Date = new Date(),
+): Promise<boolean> {
+  // Only an organization they could choose counts (#623): somebody whose one organization is suspended has
+  // nothing a chooser could offer, and telling them to choose would send them to an empty list.
+  const rows = await memberOrganizations(db, userId).execute();
+  return rows.some((row) => standingOf(row, now).state === "active");
 }
 
 /**

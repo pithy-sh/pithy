@@ -1,8 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { AuthCapability } from "@pithy-sh/auth/src/capability";
+import { composedAuditEmit } from "@pithy-sh/core/src/audit/composed";
+import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { type PurgeStep, purgeSteps } from "@pithy-sh/core/src/capability/purge";
 import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { EmailCapability } from "@pithy-sh/email/src/capability";
@@ -12,11 +16,15 @@ import { OrganizationConfig, type OrganizationConfigInput } from "./config/confi
 import { organizationTables } from "./data/tables";
 import { registerOrganizationRoutes } from "./http/routes";
 import { organizationAdminRoutes } from "./http/scopes";
+import type { UserLifecycleWiring } from "./lifecycle/cascade";
+import type { OrganizationLifecycleHooks } from "./lifecycle/hooks";
 import type { EnqueueInvitation } from "./mail/invitation";
 import { ORGANIZATION_MIGRATION_ORDER } from "./migrations/0001_init";
 import { ORGANIZATION_MIGRATIONS } from "./migrations/set";
 import { type OwnershipRoles, requireTransferableRoles } from "./ownership/ownership";
 import { founderRole, type OrganizationDeleteSweep } from "./provision/provision";
+import { organizationPurgeContribution } from "./purge/contribution";
+import { organizationWorkflows } from "./purge/specs";
 import { type RoleCatalog, requireComposedPowers } from "./roles/roles";
 import { organizationExampleSeed } from "./seeds/example";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
@@ -25,8 +33,8 @@ import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
  * The tenancy capability: organizations, memberships, the roles a project declares, and the gates that
  * read them.
  *
- * It contributes five tables to the app `DB`, the route surface in `./http/routes.ts`, two control-plane
- * reads, and a worked fixture. `@pithy-sh/auth` is a **hard peer** — a membership is a row keyed by a
+ * It contributes six tables to the app `DB`, the route surface in `./http/routes.ts`, the control-plane
+ * reads and writes, the organization purge and its two Workflows (#623), and a worked fixture. `@pithy-sh/auth` is a **hard peer** — a membership is a row keyed by a
  * user id this capability does not own, and every route here resolves a session before it resolves a
  * membership — so a Worker composing tenancy without sign-in is refused at assembly rather than serving
  * routes that could never pass their first gate. `@pithy-sh/email` is optional and fills the invitation
@@ -77,6 +85,17 @@ const BETTER_AUTH_ORGANIZATION_PLUGIN_ID = "organization";
 function composedEmail(capabilities: readonly Capability[]): EmailCapability | undefined {
   return capabilities.find(
     (capability): capability is EmailCapability => capability.name === "email" && "emailConfig" in capability,
+  );
+}
+
+/**
+ * The composed auth capability, recognized by its shape, for what a member cascade needs of it (#623): its
+ * lifecycle config and the adopter's user hooks. By shape rather than through `isAuthCapability`, so this module
+ * imports auth's capability only as a type — the predicate is the same two lines the guard holds.
+ */
+function composedAuth(capabilities: readonly Capability[]): AuthCapability | undefined {
+  return capabilities.find(
+    (capability): capability is AuthCapability => capability.name === "auth" && "authConfig" in capability,
   );
 }
 
@@ -163,7 +182,7 @@ export type OrganizationOptions<Power extends string, Role extends string> = Org
    * Ordered first, so a statement may still read a membership while composing itself.
    */
   readonly onDelete?: OrganizationDeleteSweep;
-};
+} & OrganizationLifecycleHooks;
 
 /** The tenancy capability, with its resolved config and the catalog it was composed with attached. */
 export interface OrganizationCapability<Power extends string = string, Role extends string = string>
@@ -177,6 +196,18 @@ export interface OrganizationCapability<Power extends string = string, Role exte
   organizationRoles: RoleCatalog<Power, Role>;
   /** The transfer's two roles, or `undefined` where this project has no transfer. */
   organizationOwnership: OwnershipRoles<Role> | undefined;
+  /**
+   * The adopter's organization-lifecycle hooks, as `organization()` was handed them (#623). Read by the purge
+   * Workflow, which fires `onOrganizationPurged` with no request.
+   */
+  organizationLifecycleHooks: OrganizationLifecycleHooks;
+  /**
+   * Every composed capability's purge step for an organization, this one's among them, in composition order
+   * (#623). Empty until `compose` has run. Read by the purge Workflow, which runs in the Worker that composed it.
+   */
+  organizationPurgeSteps: readonly PurgeStep[];
+  /** The audit recorder for code with no request, over one run's env — the purge's. */
+  auditFor: (env: Record<string, unknown>) => AuditEmit;
 }
 
 /** Whether a composed capability is the tenancy capability — carries its resolved config and catalog. */
@@ -196,7 +227,24 @@ export function isOrganizationCapability(capability: Capability): capability is 
 export function organization<const Power extends string = never, const Role extends string = string>(
   options: OrganizationOptions<Power, Role>,
 ): OrganizationCapability<Power, Role> {
-  const { roles, ownership, onDelete, ...configInput } = options;
+  const {
+    roles,
+    ownership,
+    onDelete,
+    onOrganizationSuspended,
+    onOrganizationReinstated,
+    onOrganizationDeleted,
+    onOrganizationPurged,
+    ...configInput
+  } = options;
+  // The hooks, kept only where one was given, so an absent hook is an absent key. Destructured before the parse,
+  // because Zod strips an unknown key silently and a hook handed to it would simply never run.
+  const lifecycleHooks: OrganizationLifecycleHooks = {
+    ...(onOrganizationSuspended ? { onOrganizationSuspended } : {}),
+    ...(onOrganizationReinstated ? { onOrganizationReinstated } : {}),
+    ...(onOrganizationDeleted ? { onOrganizationDeleted } : {}),
+    ...(onOrganizationPurged ? { onOrganizationPurged } : {}),
+  };
   const resolved = OrganizationConfig.parse(configInput);
 
   // The transfer's roles, checked against the catalog they will be spent against. `nominate` and
@@ -222,7 +270,13 @@ export function organization<const Power extends string = never, const Role exte
    * A mutable slot rather than an argument, because `compose` runs after the factory: the routes are
    * registered at assembly and need a way to reach an enqueue that does not exist yet.
    */
-  const wiring: { enqueue: EmailCapability["enqueue"] | undefined } = { enqueue: undefined };
+  const wiring: { enqueue: EmailCapability["enqueue"] | undefined; users: UserLifecycleWiring | undefined } = {
+    enqueue: undefined,
+    users: undefined,
+  };
+  // Filled by `compose`, read by the purge Workflow through the capability. One array, so both read the same steps.
+  const steps: PurgeStep[] = [];
+  let composition: readonly Capability[] = [];
 
   // One binding. Every tenancy table lives in the app database, beside the `pithy_auth_users` rows the
   // roster resolves people through — the one join this capability makes across a capability boundary,
@@ -264,6 +318,12 @@ export function organization<const Power extends string = never, const Role exte
         });
       }
       wiring.enqueue = email?.enqueue;
+      // What a member cascade runs through: auth's own lifecycle config and the adopter's user hooks (#623).
+      const auth = composedAuth(capabilities);
+      wiring.users = auth ? { config: auth.authConfig, hooks: auth.lifecycleHooks } : undefined;
+      // Every composed capability's purge step for an organization, this one's among them.
+      steps.splice(0, steps.length, ...purgeSteps(capabilities, "organization"));
+      composition = capabilities;
     },
     requiredBindings,
     // Core's acting-organization seam, filled for every request: media and storage scope each record to
@@ -285,6 +345,8 @@ export function organization<const Power extends string = never, const Role exte
       config: resolved,
       ownership,
       onDelete,
+      lifecycleHooks,
+      userLifecycle: () => wiring.users,
       enqueue: (env) => {
         const enqueue = wiring.enqueue;
         if (!enqueue) return undefined;
@@ -293,6 +355,11 @@ export function organization<const Power extends string = never, const Role exte
         return ((input) => enqueue(env as never, input)) as EnqueueInvitation;
       },
     }),
+    // What erasing an organization means for the tenancy tables — and, in the same batch, the adopter's (#623).
+    purge: [organizationPurgeContribution("DB", onDelete)],
+    // The purge of one organization, and the daily pass that starts every due one. Both hosted by the adopter's
+    // own Worker, because a purge runs every composed capability's contribution — see `purge/specs.ts`.
+    workflows: organizationWorkflows,
     // Built against the catalog this Worker composed, not a constant: a fixture holding `"admin"` in a
     // project whose roles are `coach` and `student` writes memberships every gate correctly refuses.
     seeds: [organizationExampleSeed(roles)],
@@ -302,5 +369,8 @@ export function organization<const Power extends string = never, const Role exte
     organizationConfig: resolved,
     organizationRoles: roles,
     organizationOwnership: ownership,
+    organizationLifecycleHooks: lifecycleHooks,
+    organizationPurgeSteps: steps,
+    auditFor: (env: Record<string, unknown>) => composedAuditEmit(composition, env),
   });
 }

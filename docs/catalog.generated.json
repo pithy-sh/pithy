@@ -1829,6 +1829,14 @@
       "remedy": "Run the `fix` command"
     },
     {
+      "code": "organization/organization_suspended",
+      "status": 403,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
+    },
+    {
       "code": "organization/seat_limit_reached",
       "status": 409,
       "exitClass": "precondition",

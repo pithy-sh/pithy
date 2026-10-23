@@ -41,6 +41,7 @@ const LIST = OrganizationsResponse.parse({
   ],
   acting: null,
   chosen: false,
+  suspended: 0,
 });
 
 const CHOSEN = ActingResponse.parse({
@@ -139,6 +140,18 @@ describe("nothing throws, and every failure is renderable", () => {
     // The guard is the boundary. A row missing `role` is a row the chooser would draw wrong.
     const { send } = answering({ organizations: [{ id: "x", name: "y", slug: "z" }], acting: null, chosen: false });
     await expect(listOrganizations({ fetch: send })).resolves.toEqual({ ok: false, failure: ORGANIZATION_UNREADABLE });
+  });
+
+  test("a suspended count that is not a count is unreadable, and its absence is a server from before #623", async () => {
+    const bad = answering({ ...LIST, suspended: "1" });
+    await expect(listOrganizations({ fetch: bad.send })).resolves.toEqual({
+      ok: false,
+      failure: ORGANIZATION_UNREADABLE,
+    });
+    const { suspended: _absent, ...older } = LIST;
+    const old = answering(older);
+    const result = await listOrganizations({ fetch: old.send });
+    expect(result.ok && result.value.suspended).toBeUndefined();
   });
 });
 

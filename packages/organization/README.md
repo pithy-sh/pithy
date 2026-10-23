@@ -12,7 +12,7 @@ pithy add organization
 
 _Everything else is on the site. `pithy.sh/docs` is canonical — new prose goes there, not here._
 
-Three pages ship in the package as well, because each has to be readable from the code rather than only from a website: [`docs/roles.md`](docs/roles.md), where roles are defined, how two unrelated role sets coexist, and which parts of a catalog can still be changed after somebody has joined; [`docs/scoping-your-own-tables.md`](docs/scoping-your-own-tables.md), the pattern that keeps *your* tenanted tables scoped — which this capability cannot do for you, because it has no view of them; and [`docs/why-not-better-auth-organization.md`](docs/why-not-better-auth-organization.md), the record of why this model rather than Better Auth's plugin.
+Four pages ship in the package as well, because each has to be readable from the code rather than only from a website: [`docs/organization-lifecycle.md`](docs/organization-lifecycle.md), what suspending, deleting, restoring and purging an organization does, and what it means for a member of several; [`docs/roles.md`](docs/roles.md), where roles are defined, how two unrelated role sets coexist, and which parts of a catalog can still be changed after somebody has joined; [`docs/scoping-your-own-tables.md`](docs/scoping-your-own-tables.md), the pattern that keeps *your* tenanted tables scoped — which this capability cannot do for you, because it has no view of them; and [`docs/why-not-better-auth-organization.md`](docs/why-not-better-auth-organization.md), the record of why this model rather than Better Auth's plugin.
 
 ## The seam
 
@@ -140,8 +140,8 @@ The acting selection is keyed by session id, so it has to go when the session do
 ```ts
 auth({
   // Fires on a sign-out, a revoke, an admin ending somebody's devices: anything that deletes the row.
-  onSessionRevoked: async ({ id }) => {
-    await clearActing(organizationDatabase(env.DB), { sessionId: id });
+  onSessionRevoked: async ({ id }, d1) => {
+    await clearActing(organizationDatabase(d1), { sessionId: id });
   },
 }),
 ```
@@ -171,8 +171,10 @@ They are two settings because they are two things: one is where this capability'
 | `GET {base}/current/invitations` | The offers outstanding | session | `organization:manage` |
 | `POST {base}/current/invitations` | Invite an address, at a role | session | `organization:manage` |
 | `DELETE {base}/current/invitations/:invitationId` | Withdraw an offer | session | `organization:manage` |
+| `POST {base}/current/invitations/:invitationId/resend` | Send an offer again with a new link; the old one stops working | session | `organization:manage`, and `members:manage` when the offered role administers |
 | `GET {base}/invitations/:token` | What an invitation is offering, for the accept screen | public | — |
 | `POST {base}/invitations/accept` | Accept one, as the address it names | session | — |
+| `GET {base}/current/ownership` | Read the standing offer of ownership, if there is one | session | — (membership) |
 | `POST {base}/current/ownership` | Offer ownership to a member | session | holding the account, or — where nobody does — volunteering yourself, if you administer it |
 | `DELETE {base}/current/ownership` | Withdraw the standing offer | session | holding the account, or the offer being your own |
 | `POST {base}/ownership/accept` | Accept ownership, and become the one who pays | session | — |
@@ -188,6 +190,10 @@ They are two settings because they are two things: one is where this capability'
 | `POST {base}/admin/organizations/:organizationId/invitations/:invitationId/resend` | Send one again with a fresh link, expired or not | control-plane | `organization:members:write` |
 | `DELETE {base}/admin/organizations/:organizationId/invitations/:invitationId` | Revoke one, so its link stops working | control-plane | `organization:members:write` |
 | `POST {base}/admin/organizations/:organizationId/ownership` | Make a member the owner now, with no nomination and no acceptance | control-plane | `organization:ownership:transfer` |
+| `POST {base}/admin/organizations/:organizationId/suspend` | Suspend a tenant: nobody can act in it until it is reinstated or its end passes | control-plane | `organization:accounts:suspend` |
+| `POST {base}/admin/organizations/:organizationId/reinstate` | Lift a tenant's suspension | control-plane | `organization:accounts:suspend` |
+| `DELETE {base}/admin/organizations/:organizationId` | Delete a tenant: soft and restorable by default, hard to purge now | control-plane | `organization:accounts:delete` |
+| `POST {base}/admin/organizations/:organizationId/restore` | Restore a deleted tenant inside its window, with every membership it had | control-plane | `organization:accounts:delete` |
 
 **`slug` is optional on `POST {base}`, and who may pick one is a setting.** Send one and it behaves as it always has: held to the column's rule, unique across every organization, and a collision refuses rather than renaming — an address somebody picked is theirs to keep or to be told is gone. Omit it and the server derives one from the name.
 
@@ -207,7 +213,7 @@ Two read scopes rather than one, because these are two blast radii: the account 
 
 ## Membership administration
 
-Support can act on an account through the control plane: add or remove a member, change a role, force ownership when the owner is gone, fix an invitation, and hold a seat limit. The routes are the last eight rows of the table above.
+Support can act on an account through the control plane: add or remove a member, change a role, force ownership when the owner is gone, fix an invitation, and hold a seat limit. The routes are the eight rows of the table above from the `PATCH` of a tenant to the forced transfer.
 
 **Every one takes a reason, and every one is audited.** The reason is a required field of the JSON body — a `DELETE` included, because the control-plane token signs the body — and of the query on the invitation listing. It is at most 500 characters and may not contain an email address, because the trail refuses addresses; name a member or an invitation by its id. Each act writes an `organization/admin_*` audit event with `actorType: "control-plane"`, the token's `sub` as the actor, the connection, the reason, the tenant, and the membership, invitation or organization it was done to.
 
@@ -241,6 +247,10 @@ organization({
 With no email composed nothing is sent and nothing is refused: the change has already happened, and the audit event records `mailed: null`.
 
 **`ORGANIZATION_ROUTES` in `src/http/routes.ts` is the registry this table mirrors**, and `routeContract.test.ts` compares that registry against what Hono actually mounted, in both directions, then calls every route with no credential and asserts which gate answered. A route added without an entry is a route whose verification nobody declared; an entry naming a route nobody mounts is a promise to a client that 404s.
+
+## Suspending and deleting an organization
+
+An operator can suspend, reinstate, delete and restore an organization through the last four rows of the table above, each with a reason. Nobody can act in a suspended or deleted organization, and it is gone from every member's list: a member's request to act in a suspended one is refused with `organization/organization_suspended` (403), and a deleted one answers `organization/not_found` (404), to a member as to a stranger. Either way their selection of it is cleared. **A member of several organizations carries on in the others, unchanged** — the suspended one simply stops being theirs. A cascade to members' own accounts is opt-in, `members: "sole"`, and reaches only those whose one and only organization this is. Deletion is soft by default, with a window and a restore, and a purge erases a deleted organization from every composed capability that declares an organization purge contribution — in the kit, organization, media and storage. [`docs/organization-lifecycle.md`](docs/organization-lifecycle.md) has the rules, the purge Workflows to export, and the config.
 
 ## What this deliberately does not do
 

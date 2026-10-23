@@ -102,6 +102,13 @@ const SHIPPED_DELEGATES = [
   // of them at once.
   "packages/core/src/workflow/faults.ts#classifiedSteps",
   "packages/email/src/workflows/sendBatch.ts#runSendBatch",
+  // #623. The organization purge's two bodies and the step each contribution runs in — the shape #622 gave a
+  // user's. Their classes are the adopter's; the clock is read inside the transitions each step calls.
+  "packages/organization/src/purge/run.ts#eraseStep",
+  "packages/organization/src/purge/run.ts#purgeOrganization",
+  "packages/organization/src/purge/run.ts#startDueOrganizationPurges",
+  "packages/organization/src/purge/workflow.ts#runOrganizationPurge",
+  "packages/organization/src/purge/workflow.ts#runOrganizationPurgeDue",
   "packages/payments/src/workflows/reconcile.ts#reconcilePayments",
   // #561. The usage-reporting body. Its class is the adopter's, five lines in their own entry, so the walk
   // meets the kit's half here: one step, and the clock the pass reads is a thunk handed into it.
