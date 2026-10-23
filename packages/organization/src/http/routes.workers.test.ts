@@ -32,11 +32,28 @@ import {
   organizationDatabase,
 } from "../data/tables";
 import type { EnqueueInvitation } from "../mail/invitation";
-import { ORGANIZATION_MIGRATION_ORDER, organization_0001_init } from "../migrations/0001_init";
+import { ORGANIZATION_MIGRATION_ORDER } from "../migrations/0001_init";
+import { ORGANIZATION_MIGRATIONS } from "../migrations/set";
 import type { OwnershipRoles } from "../ownership/ownership";
 import { defineRoles } from "../roles/roles";
+import {
+  AdminInvitationsResponse,
+  AdminMemberResponse,
+  AdminMembersResponse,
+  AdminOrganizationResponse,
+  AdminOwnershipResponse,
+  AdminRemovedMemberResponse,
+  InviteResponse,
+  WithdrawnInvitationResponse,
+} from "./responses";
 import { registerOrganizationRoutes } from "./routes";
-import { ORGANIZATION_ACCOUNTS_READ_SCOPE, ORGANIZATION_MEMBERS_READ_SCOPE } from "./scopes";
+import {
+  ORGANIZATION_ACCOUNTS_READ_SCOPE,
+  ORGANIZATION_ACCOUNTS_WRITE_SCOPE,
+  ORGANIZATION_MEMBERS_READ_SCOPE,
+  ORGANIZATION_MEMBERS_WRITE_SCOPE,
+  ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE,
+} from "./scopes";
 
 /**
  * Every route, over real D1, through a real Hono app with the real error codec.
@@ -120,7 +137,7 @@ function provider(): MigrationProvider {
       database: "app",
       namespace: "organization",
       order: ORGANIZATION_MIGRATION_ORDER,
-      migrations: { "0001_init": organization_0001_init },
+      migrations: ORGANIZATION_MIGRATIONS,
     },
   ]);
   const found = registry.app;
@@ -1565,5 +1582,634 @@ describe("the management surface", () => {
     await chooseActing(db(), { userId: ADA, sessionId: SESSION, organizationId: ACME, now: NOW });
     // No control-plane verifier composed, which is the state every ordinary Worker is in.
     expect((await call("GET", `${BASE}/admin/organizations`, { as: ADA })).status).toBe(403);
+  });
+});
+
+describe("membership administration through the control plane (#624)", () => {
+  const WRITES = [
+    ORGANIZATION_MEMBERS_WRITE_SCOPE,
+    ORGANIZATION_ACCOUNTS_WRITE_SCOPE,
+    ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE,
+  ] as const;
+  const REASON = "Support ticket 4411.";
+  const ADMIN = `${BASE}/admin/organizations`;
+
+  /** An app whose management caller holds every write scope, with the config the test names. */
+  function operatorApp(options: AppOptions = {}): Hono<PithyHonoEnv> {
+    return buildApp({ verifier: verifierFor([...WRITES]), ...options });
+  }
+
+  /** The one operator event a route wrote, by action. */
+  function operatorEvent(action: string): AuditEventInput {
+    const found = events.filter((event) => event.action === action);
+    expect(found, action).toHaveLength(1);
+    return found[0] as AuditEventInput;
+  }
+
+  /** A response body, parsed with the schema the route declares — and equal to what came over the wire. */
+  async function bound<T>(response: Response, schema: { parse(value: unknown): T }): Promise<T> {
+    const body = (await response.json()) as unknown;
+    const parsed = schema.parse(body);
+    // No transform anywhere in `responses.ts`, so parsing hands back exactly what went in. A field the
+    // handler wrote and the schema forgot, or the other way round, fails here.
+    expect(parsed).toEqual(body);
+    return parsed;
+  }
+
+  async function errorOf(
+    response: Response,
+  ): Promise<{ code: string; message: string; params?: Record<string, unknown> }> {
+    return ((await response.json()) as { error: { code: string; message: string; params?: Record<string, unknown> } })
+      .error;
+  }
+
+  async function roleIn(organizationId: string, userId: string): Promise<string | undefined> {
+    const row = await db()
+      .selectFrom(MEMBERSHIPS_TABLE)
+      .select("role")
+      .where("organizationId", "=", organizationId)
+      .where("userId", "=", userId)
+      .executeTakeFirst();
+    return row?.role;
+  }
+
+  async function setSeatLimit(limit: number | null): Promise<void> {
+    await db().updateTable(ORGANIZATIONS_TABLE).set({ seatLimit: limit }).where("id", "=", ACME).execute();
+  }
+
+  describe("the gate", () => {
+    /** Every operator route, with a well-formed request, so only the scope can refuse it. */
+    async function everyWrite(): Promise<{ method: string; path: string; body?: unknown }[]> {
+      const bob = await membershipIdOf(ACME, BOB);
+      const invitation = crypto.randomUUID();
+      return [
+        { method: "PATCH", path: `${ADMIN}/${ACME}`, body: { name: "Renamed", reason: REASON } },
+        {
+          method: "POST",
+          path: `${ADMIN}/${ACME}/members`,
+          body: { userId: STRANGER, role: "member", reason: REASON },
+        },
+        { method: "PATCH", path: `${ADMIN}/${ACME}/members/${bob}`, body: { role: "member", reason: REASON } },
+        { method: "DELETE", path: `${ADMIN}/${ACME}/members/${bob}`, body: { reason: REASON } },
+        { method: "GET", path: `${ADMIN}/${ACME}/invitations?reason=${encodeURIComponent(REASON)}` },
+        { method: "POST", path: `${ADMIN}/${ACME}/invitations/${invitation}/resend`, body: { reason: REASON } },
+        { method: "DELETE", path: `${ADMIN}/${ACME}/invitations/${invitation}`, body: { reason: REASON } },
+        {
+          method: "POST",
+          path: `${ADMIN}/${ACME}/ownership`,
+          body: { membershipId: bob, previousOwner: "keep", reason: REASON },
+        },
+      ];
+    }
+
+    test("a client holding only the read scopes is refused 403 on every one, and nothing changes", async () => {
+      const readsOnly = buildApp({
+        verifier: verifierFor([ORGANIZATION_ACCOUNTS_READ_SCOPE, ORGANIZATION_MEMBERS_READ_SCOPE]),
+      });
+      for (const route of await everyWrite()) {
+        const response = await call(route.method, route.path, { app: readsOnly, body: route.body });
+        expect(response.status, `${route.method} ${route.path}`).toBe(403);
+      }
+      expect(await roleIn(ACME, BOB)).toBe("admin");
+      expect(await roleIn(ACME, STRANGER)).toBeUndefined();
+    });
+
+    test("each route demands its own write scope, and the other two confer nothing", async () => {
+      const expected: Record<string, string> = {
+        [`PATCH ${ADMIN}/${ACME}`]: ORGANIZATION_ACCOUNTS_WRITE_SCOPE,
+        [`POST ${ADMIN}/${ACME}/ownership`]: ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE,
+      };
+      for (const route of await everyWrite()) {
+        const key = `${route.method} ${route.path.split("?")[0]}`;
+        const demanded = expected[key] ?? ORGANIZATION_MEMBERS_WRITE_SCOPE;
+        const others = buildApp({ verifier: verifierFor(WRITES.filter((scope) => scope !== demanded)) });
+        const response = await call(route.method, route.path, { app: others, body: route.body });
+        expect(response.status, key).toBe(403);
+      }
+    });
+
+    test("**the roster scope alone cannot move the owning role**: an add at it, a change to or from it, or a removal of an owner, is 403", async () => {
+      // Without this, `members:write` hands the account to anybody: add a second owner, then remove Ada.
+      // Cai is a second owner here, so the owner floor would let Ada's removal through — only the grant stops it.
+      await db()
+        .updateTable(MEMBERSHIPS_TABLE)
+        .set({ role: "owner" })
+        .where("organizationId", "=", ACME)
+        .where("userId", "=", CAI)
+        .execute();
+      const rosterOnly = buildApp({ verifier: verifierFor([ORGANIZATION_MEMBERS_WRITE_SCOPE]) });
+      const bob = await membershipIdOf(ACME, BOB);
+      const ada = await membershipIdOf(ACME, ADA);
+      const attempts = [
+        { method: "POST", path: `${ADMIN}/${ACME}/members`, body: { userId: STRANGER, role: "owner", reason: REASON } },
+        { method: "PATCH", path: `${ADMIN}/${ACME}/members/${bob}`, body: { role: "owner", reason: REASON } },
+        { method: "PATCH", path: `${ADMIN}/${ACME}/members/${ada}`, body: { role: "admin", reason: REASON } },
+        { method: "DELETE", path: `${ADMIN}/${ACME}/members/${ada}`, body: { reason: REASON } },
+      ];
+      for (const attempt of attempts) {
+        events = [];
+        const response = await call(attempt.method, attempt.path, { app: rosterOnly, body: attempt.body });
+        expect(response.status, `${attempt.method} ${attempt.path}`).toBe(403);
+        expect((await errorOf(response)).code).toBe("controlplane/insufficient_scope");
+        // A blocked attempt is in the trail as one, not only as the call the gate let in.
+        expect(
+          events.filter((event) => event.action === "controlplane/call_denied"),
+          `${attempt.method} ${attempt.path}`,
+        ).toEqual([
+          expect.objectContaining({
+            outcome: "denied",
+            actorType: "control-plane",
+            metadata: expect.objectContaining({
+              reason: "controlplane/insufficient_scope",
+              required: ORGANIZATION_MEMBERS_WRITE_SCOPE,
+              method: attempt.method,
+            }),
+          }),
+        ]);
+        expect(events.filter((event) => event.action.startsWith("organization/admin_"))).toEqual([]);
+      }
+      expect(await roleIn(ACME, STRANGER)).toBeUndefined();
+      expect(await roleIn(ACME, BOB)).toBe("admin");
+      expect(await roleIn(ACME, ADA)).toBe("owner");
+
+      // Granted ownership as well, the same add lands.
+      const both = buildApp({
+        verifier: verifierFor([ORGANIZATION_MEMBERS_WRITE_SCOPE, ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE]),
+      });
+      const response = await call("POST", `${ADMIN}/${ACME}/members`, {
+        app: both,
+        body: { userId: STRANGER, role: "owner", reason: REASON },
+      });
+      expect(response.status).toBe(201);
+      expect(await roleIn(ACME, STRANGER)).toBe("owner");
+    });
+
+    test("every route takes a required reason", async () => {
+      const app = operatorApp();
+      for (const route of await everyWrite()) {
+        const [path] = route.path.split("?");
+        const body =
+          route.body === undefined
+            ? undefined
+            : Object.fromEntries(
+                Object.entries(route.body as Record<string, unknown>).filter(([key]) => key !== "reason"),
+              );
+        const response = await call(route.method, path ?? route.path, { app, body });
+        expect(response.status, `${route.method} ${path}`).toBe(400);
+        expect((await errorOf(response)).code, `${route.method} ${path}`).toBe("validation/invalid_input");
+      }
+    });
+
+    test("an unknown organization is a 404 on every route, never a 403", async () => {
+      const app = operatorApp();
+      for (const route of await everyWrite()) {
+        const path = route.path.replace(ACME, ABSENT);
+        const response = await call(route.method, path, { app, body: route.body });
+        expect(response.status, `${route.method} ${path}`).toBe(404);
+        expect((await errorOf(response)).code, `${route.method} ${path}`).toBe("organization/not_found");
+      }
+    });
+
+    test("the read roster answers 404 for an unknown organization, rather than an empty list", async () => {
+      const managed = buildApp({ verifier: verifierFor([ORGANIZATION_MEMBERS_READ_SCOPE]) });
+      const response = await call("GET", `${ADMIN}/${ABSENT}/members`, { app: managed });
+      expect(response.status).toBe(404);
+      const present = await call("GET", `${ADMIN}/${ACME}/members`, { app: managed });
+      await bound(present, AdminMembersResponse);
+    });
+  });
+
+  describe("adding a member", () => {
+    test("creates the membership at the named role, records the operator, the reason and the subject, and tells them", async () => {
+      const response = await call("POST", `${ADMIN}/${ACME}/members`, {
+        app: operatorApp(),
+        body: { userId: STRANGER, role: "member", reason: REASON },
+      });
+      expect(response.status).toBe(201);
+      const body = await bound(response, AdminMemberResponse);
+      expect(body.member).toMatchObject({ userId: STRANGER, role: "member", email: "sam@example.com" });
+      expect(await roleIn(ACME, STRANGER)).toBe("member");
+
+      const event = operatorEvent("organization/admin_member_added");
+      expect(event.actorType).toBe("control-plane");
+      expect(event.actorId).toBe("operator-1");
+      expect(event.tenant).toBe(ACME);
+      expect(event.resourceType).toBe("membership");
+      expect(event.resourceId).toBe(body.member.membershipId);
+      expect(event.metadata).toMatchObject({
+        connectionId: "connection-1",
+        reason: REASON,
+        role: "member",
+        subjectUserId: STRANGER,
+        overrodeSeatLimit: false,
+        mailed: "queued",
+      });
+
+      expect(mailed).toEqual([
+        {
+          to: "sam@example.com",
+          template: "organizationMemberAdded",
+          payload: expect.objectContaining({ organizationName: "Acme Games", role: "member" }),
+        },
+      ]);
+    });
+
+    test("an existing member is refused, naming their current role", async () => {
+      const response = await call("POST", `${ADMIN}/${ACME}/members`, {
+        app: operatorApp(),
+        body: { userId: BOB, role: "member", reason: REASON },
+      });
+      expect(response.status).toBe(409);
+      const error = await errorOf(response);
+      expect(error.code).toBe("organization/already_member");
+      expect(error.message).toContain("`admin`");
+      expect(error.params?.role).toBe("admin");
+      expect(await roleIn(ACME, BOB)).toBe("admin");
+    });
+
+    test("an unknown user is a 404, and so is an unknown organization", async () => {
+      const app = operatorApp();
+      const nobody = await call("POST", `${ADMIN}/${ACME}/members`, {
+        app,
+        body: { userId: "user_nobody", role: "member", reason: REASON },
+      });
+      expect(nobody.status).toBe(404);
+      const nowhere = await call("POST", `${ADMIN}/${ABSENT}/members`, {
+        app,
+        body: { userId: STRANGER, role: "member", reason: REASON },
+      });
+      expect(nowhere.status).toBe(404);
+      expect((await errorOf(nowhere)).code).toBe("organization/not_found");
+    });
+
+    test("a seat limit is stored, an add past it is refused naming the limit, and an override is recorded", async () => {
+      const app = operatorApp();
+      const set = await call("PATCH", `${ADMIN}/${ACME}`, { app, body: { seatLimit: 3, reason: REASON } });
+      const updated = await bound(set, AdminOrganizationResponse);
+      expect(updated.organization.seatLimit).toBe(3);
+      const row = await db()
+        .selectFrom(ORGANIZATIONS_TABLE)
+        .select("seatLimit")
+        .where("id", "=", ACME)
+        .executeTakeFirst();
+      expect(row?.seatLimit).toBe(3);
+
+      const refusedAdd = await call("POST", `${ADMIN}/${ACME}/members`, {
+        app,
+        body: { userId: STRANGER, role: "member", reason: REASON },
+      });
+      expect(refusedAdd.status).toBe(409);
+      const error = await errorOf(refusedAdd);
+      expect(error.code).toBe("organization/seat_limit_reached");
+      expect(error.message).toContain("3");
+      expect(error.params?.seatLimit).toBe(3);
+      expect(await roleIn(ACME, STRANGER)).toBeUndefined();
+
+      const overridden = await call("POST", `${ADMIN}/${ACME}/members`, {
+        app,
+        body: {
+          userId: STRANGER,
+          role: "member",
+          overrideSeatLimit: true,
+          reason: "Contract signed, seats to follow.",
+        },
+      });
+      expect(overridden.status).toBe(201);
+      expect(operatorEvent("organization/admin_member_added").metadata).toMatchObject({
+        seatLimit: 3,
+        overrodeSeatLimit: true,
+        reason: "Contract signed, seats to follow.",
+      });
+    });
+
+    test("the notice is switchable off", async () => {
+      const quiet = operatorApp({ config: { operatorEmails: { memberAdded: false } } });
+      const response = await call("POST", `${ADMIN}/${ACME}/members`, {
+        app: quiet,
+        body: { userId: STRANGER, role: "member", reason: REASON },
+      });
+      expect(response.status).toBe(201);
+      expect(mailed).toEqual([]);
+      expect(operatorEvent("organization/admin_member_added").metadata).toMatchObject({ mailed: null });
+    });
+  });
+
+  describe("removing a member", () => {
+    test("removes the membership, clears their selection of the account, and tells them", async () => {
+      await chooseActing(db(), { userId: BOB, sessionId: "session_bob", organizationId: ACME, now: NOW });
+      const bob = await membershipIdOf(ACME, BOB);
+      const response = await call("DELETE", `${ADMIN}/${ACME}/members/${bob}`, {
+        app: operatorApp(),
+        body: { reason: REASON },
+      });
+      expect(response.status).toBe(200);
+      expect(await bound(response, AdminRemovedMemberResponse)).toEqual({ membershipId: bob, userId: BOB });
+      expect(await roleIn(ACME, BOB)).toBeUndefined();
+      const selection = await db().selectFrom(ACTING_TABLE).selectAll().where("userId", "=", BOB).execute();
+      expect(selection).toEqual([]);
+
+      const event = operatorEvent("organization/admin_member_removed");
+      expect(event.actorType).toBe("control-plane");
+      expect(event.metadata).toMatchObject({ reason: REASON, role: "admin", subjectUserId: BOB, mailed: "queued" });
+      expect(mailed.map((mail) => [mail.to, mail.template])).toEqual([
+        ["bob@example.com", "organizationMemberRemoved"],
+      ]);
+    });
+
+    test("removing the last owner is refused, with an action naming the ownership route", async () => {
+      const ada = await membershipIdOf(ACME, ADA);
+      const response = await call("DELETE", `${ADMIN}/${ACME}/members/${ada}`, {
+        app: operatorApp(),
+        body: { reason: REASON },
+      });
+      expect(response.status).toBe(409);
+      const error = await errorOf(response);
+      const route = `${ADMIN}/${ACME}/ownership`;
+      expect(error.code).toBe("organization/last_owner");
+      expect(error.params?.ownershipRoute).toBe(route);
+      // `action` is the operator's half and never crosses the wire; it is in the log the throw site wrote.
+      expect(refused?.payload.action).toContain(`POST ${route}`);
+      expect(await roleIn(ACME, ADA)).toBe("owner");
+    });
+
+    test("the notice is switchable off", async () => {
+      const cai = await membershipIdOf(ACME, CAI);
+      const quiet = operatorApp({ config: { operatorEmails: { memberRemoved: false } } });
+      expect(
+        (await call("DELETE", `${ADMIN}/${ACME}/members/${cai}`, { app: quiet, body: { reason: REASON } })).status,
+      ).toBe(200);
+      expect(mailed).toEqual([]);
+    });
+  });
+
+  describe("changing a role", () => {
+    test("accepts every role the organization declares, to and from owner", async () => {
+      const app = operatorApp();
+      const cai = await membershipIdOf(ACME, CAI);
+      for (const role of catalog.roles) {
+        const response = await call("PATCH", `${ADMIN}/${ACME}/members/${cai}`, {
+          app,
+          body: { role, reason: REASON },
+        });
+        expect(response.status, role).toBe(200);
+        expect((await bound(response, AdminMemberResponse)).member.role, role).toBe(role);
+      }
+      // Back from owner to member: Ada still owns it, so Cai is not the last.
+      const back = await call("PATCH", `${ADMIN}/${ACME}/members/${cai}`, {
+        app,
+        body: { role: "member", reason: REASON },
+      });
+      expect(back.status).toBe(200);
+      expect(
+        events.filter((event) => event.action === "organization/admin_member_role_changed").at(-1)?.metadata,
+      ).toMatchObject({
+        role: "member",
+        previousRole: "owner",
+        subjectUserId: CAI,
+        reason: REASON,
+      });
+    });
+
+    test("refuses a role the organization does not declare, listing the valid roles", async () => {
+      const cai = await membershipIdOf(ACME, CAI);
+      const response = await call("PATCH", `${ADMIN}/${ACME}/members/${cai}`, {
+        app: operatorApp(),
+        body: { role: "emperor", reason: REASON },
+      });
+      expect(response.status).toBe(400);
+      const error = await errorOf(response);
+      expect(error.message).toContain("Valid roles: member, admin, owner.");
+      expect(await roleIn(ACME, CAI)).toBe("member");
+    });
+
+    test("demoting the last owner is refused, with an action naming the ownership route", async () => {
+      const ada = await membershipIdOf(ACME, ADA);
+      const response = await call("PATCH", `${ADMIN}/${ACME}/members/${ada}`, {
+        app: operatorApp(),
+        body: { role: "admin", reason: REASON },
+      });
+      expect(response.status).toBe(409);
+      const error = await errorOf(response);
+      expect(error.code).toBe("organization/last_owner");
+      expect(error.params?.ownershipRoute).toBe(`${ADMIN}/${ACME}/ownership`);
+      expect(refused?.payload.action).toContain(`POST ${ADMIN}/${ACME}/ownership`);
+      expect(await roleIn(ACME, ADA)).toBe("owner");
+    });
+  });
+
+  describe("forcing ownership", () => {
+    test("transfers immediately and keeps the previous owner, as the request said", async () => {
+      const bob = await membershipIdOf(ACME, BOB);
+      const ada = await membershipIdOf(ACME, ADA);
+      const response = await call("POST", `${ADMIN}/${ACME}/ownership`, {
+        app: operatorApp(),
+        body: { membershipId: bob, previousOwner: "keep", reason: "Ada left the company." },
+      });
+      expect(response.status).toBe(200);
+      expect(await bound(response, AdminOwnershipResponse)).toEqual({
+        newHolderMembershipId: bob,
+        previousHolderMembershipIds: [ada],
+        previousOwner: "keep",
+      });
+      // No offer was made and nobody accepted one.
+      expect(await roleIn(ACME, BOB)).toBe("owner");
+      expect(await roleIn(ACME, ADA)).toBe("admin");
+
+      const event = operatorEvent("organization/admin_ownership_forced");
+      expect(event.severity).toBe("warning");
+      expect(event.actorType).toBe("control-plane");
+      expect(event.metadata).toMatchObject({
+        reason: "Ada left the company.",
+        subjectUserId: BOB,
+        previousOwner: "keep",
+        previousHolders: 1,
+        mailed: "queued",
+      });
+      // The previous owner is named in the trail, by an event of their own with the same reason.
+      const demoted = operatorEvent("organization/admin_member_role_changed");
+      expect(demoted.actorType).toBe("control-plane");
+      expect(demoted.metadata).toMatchObject({
+        reason: "Ada left the company.",
+        role: "admin",
+        previousRole: "owner",
+        subjectUserId: ADA,
+        forcedOwnershipTo: bob,
+      });
+      expect([demoted.resourceType, demoted.resourceId]).toEqual(["membership", ada]);
+      expect(mailed.map((mail) => [mail.to, mail.template])).toEqual([
+        ["bob@example.com", "organizationOwnershipTransferred"],
+      ]);
+    });
+
+    test("removes the previous owner when the request says so, and tells both", async () => {
+      await chooseActing(db(), { userId: ADA, sessionId: SESSION, organizationId: ACME, now: NOW });
+      const bob = await membershipIdOf(ACME, BOB);
+      const ada = await membershipIdOf(ACME, ADA);
+      const response = await call("POST", `${ADMIN}/${ACME}/ownership`, {
+        app: operatorApp(),
+        body: { membershipId: bob, previousOwner: "remove", reason: "Ada left the company." },
+      });
+      expect(response.status).toBe(200);
+      expect(await roleIn(ACME, BOB)).toBe("owner");
+      expect(await roleIn(ACME, ADA)).toBeUndefined();
+      expect(await db().selectFrom(ACTING_TABLE).selectAll().where("userId", "=", ADA).execute()).toEqual([]);
+      expect(mailed.map((mail) => [mail.to, mail.template]).sort()).toEqual([
+        ["ada@example.com", "organizationMemberRemoved"],
+        ["bob@example.com", "organizationOwnershipTransferred"],
+      ]);
+      // Ada's membership is gone in the same batch, so this event is the only thing that names her.
+      const removed = operatorEvent("organization/admin_member_removed");
+      expect(removed.metadata).toMatchObject({
+        reason: "Ada left the company.",
+        role: "owner",
+        subjectUserId: ADA,
+        forcedOwnershipTo: bob,
+        mailed: "queued",
+      });
+      expect([removed.resourceType, removed.resourceId]).toEqual(["membership", ada]);
+    });
+
+    test("the notice to the new owner is switchable off", async () => {
+      const bob = await membershipIdOf(ACME, BOB);
+      const quiet = operatorApp({ config: { operatorEmails: { ownershipTransferred: false } } });
+      await call("POST", `${ADMIN}/${ACME}/ownership`, {
+        app: quiet,
+        body: { membershipId: bob, previousOwner: "keep", reason: REASON },
+      });
+      expect(mailed).toEqual([]);
+    });
+  });
+
+  describe("editing the organization", () => {
+    test("changes its name and its short name, and records both", async () => {
+      const response = await call("PATCH", `${ADMIN}/${ACME}`, {
+        app: operatorApp(),
+        body: { name: "Acme Interactive", slug: "acme-interactive", reason: REASON },
+      });
+      expect(response.status).toBe(200);
+      const body = await bound(response, AdminOrganizationResponse);
+      expect(body.organization).toMatchObject({ name: "Acme Interactive", slug: "acme-interactive", members: 3 });
+      expect(operatorEvent("organization/admin_organization_updated").metadata).toMatchObject({
+        reason: REASON,
+        name: "Acme Interactive",
+        slug: "acme-interactive",
+      });
+    });
+
+    test("a short name another organization holds is refused, naming the holder", async () => {
+      const response = await call("PATCH", `${ADMIN}/${ACME}`, {
+        app: operatorApp(),
+        body: { slug: "beta", reason: REASON },
+      });
+      expect(response.status).toBe(409);
+      const error = await errorOf(response);
+      expect(error.code).toBe("organization/slug_taken");
+      expect(error.message).toContain("Beta Studio");
+      expect(error.params).toMatchObject({ holderId: BETA, holderName: "Beta Studio" });
+    });
+  });
+
+  describe("invitations", () => {
+    /** An offer, made by Ada through the member surface the way it always is. */
+    async function invited(email = "new@example.com"): Promise<{ id: string; token: string }> {
+      await chooseActing(db(), { userId: ADA, sessionId: SESSION, organizationId: ACME, now: NOW });
+      const response = await call("POST", `${BASE}/current/invitations`, { as: ADA, body: { email, role: "member" } });
+      expect(response.status).toBe(201);
+      const token = mailedToken();
+      mailed = [];
+      events = [];
+      return { id: (await json<{ invitation: { id: string } }>(response)).invitation.id, token };
+    }
+
+    async function offerStatus(token: string): Promise<number> {
+      return (await call("GET", `${BASE}/invitations/${token}`)).status;
+    }
+
+    test("lists what is outstanding, and records the read with its reason", async () => {
+      const offer = await invited();
+      const response = await call("GET", `${ADMIN}/${ACME}/invitations?reason=${encodeURIComponent(REASON)}`, {
+        app: operatorApp(),
+      });
+      expect(response.status).toBe(200);
+      const body = await bound(response, AdminInvitationsResponse);
+      expect(body.invitations.map((invitation) => invitation.id)).toEqual([offer.id]);
+      expect(body.truncated).toBe(false);
+      expect(operatorEvent("organization/admin_invitations_listed").metadata).toMatchObject({
+        reason: REASON,
+        count: 1,
+      });
+    });
+
+    test("resending an expired invitation issues a fresh token, and the old one stops working", async () => {
+      const offer = await invited();
+      // Past its date: the clock is pinned, so the row is moved instead.
+      await db()
+        .updateTable(INVITATIONS_TABLE)
+        .set({ expiresAt: NOW.getTime() - 1 })
+        .where("id", "=", offer.id)
+        .execute();
+      expect(await offerStatus(offer.token)).toBe(400);
+
+      const response = await call("POST", `${ADMIN}/${ACME}/invitations/${offer.id}/resend`, {
+        app: operatorApp(),
+        body: { reason: "The first link expired." },
+      });
+      expect(response.status).toBe(200);
+      const body = await bound(response, InviteResponse);
+      // A fresh life, and the link was mailed rather than handed back.
+      expect(new Date(body.invitation.expiresAt).getTime()).toBeGreaterThan(NOW.getTime());
+      expect(body.acceptUrl).toBeNull();
+
+      const fresh = mailedToken();
+      expect(fresh).not.toBe(offer.token);
+      expect(await offerStatus(fresh)).toBe(200);
+      expect(await offerStatus(offer.token)).toBe(400);
+      expect(operatorEvent("organization/admin_invitation_resent").metadata).toMatchObject({
+        reason: "The first link expired.",
+        role: "member",
+        mailed: "queued",
+      });
+    });
+
+    test("revoking one makes its token unusable", async () => {
+      const offer = await invited();
+      expect(await offerStatus(offer.token)).toBe(200);
+      const response = await call("DELETE", `${ADMIN}/${ACME}/invitations/${offer.id}`, {
+        app: operatorApp(),
+        body: { reason: "Sent to the wrong person." },
+      });
+      expect(response.status).toBe(200);
+      expect((await bound(response, WithdrawnInvitationResponse)).invitation.status).toBe("canceled");
+      expect(await offerStatus(offer.token)).toBe(400);
+
+      // And redeeming it as the invited address is refused too, not only reading it.
+      await seedUser("user_new", { email: "new@example.com" });
+      const accept = await call("POST", `${BASE}/invitations/accept`, { as: "user_new", body: { token: offer.token } });
+      expect(accept.status).toBe(400);
+      expect(await roleIn(ACME, "user_new")).toBeUndefined();
+      expect(operatorEvent("organization/admin_invitation_revoked").metadata).toMatchObject({
+        reason: "Sent to the wrong person.",
+      });
+    });
+
+    test("an invitation of another organization is refused, and nothing changes", async () => {
+      const offer = await invited();
+      const response = await call("DELETE", `${ADMIN}/${BETA}/invitations/${offer.id}`, {
+        app: operatorApp(),
+        body: { reason: REASON },
+      });
+      expect(response.status).toBe(400);
+      expect(await offerStatus(offer.token)).toBe(200);
+    });
+  });
+
+  test("an accepted invitation is refused against a full account", async () => {
+    await setSeatLimit(3);
+    await chooseActing(db(), { userId: ADA, sessionId: SESSION, organizationId: ACME, now: NOW });
+    await call("POST", `${BASE}/current/invitations`, { as: ADA, body: { email: "sam@example.com", role: "member" } });
+    const response = await call("POST", `${BASE}/invitations/accept`, { as: STRANGER, body: { token: mailedToken() } });
+    expect(response.status).toBe(409);
+    expect((await errorOf(response)).code).toBe("organization/seat_limit_reached");
+    expect(await roleIn(ACME, STRANGER)).toBeUndefined();
   });
 });

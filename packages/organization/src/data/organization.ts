@@ -27,6 +27,9 @@ export const MAX_SLUG_LENGTH = 64;
 /** Bounded because a name is rendered in every chooser, every log line and every invitation email. */
 export const MAX_ORGANIZATION_NAME_LENGTH = 128;
 
+/** The largest seat limit an account may carry. A bound on a number an operator types, not a product tier. */
+export const MAX_SEAT_LIMIT = 1_000_000;
+
 export const Organization = z
   .object({
     id: z
@@ -52,6 +55,16 @@ export const Organization = z
     logo: StoredImage.nullable().describe(
       "The organization's mark, or null when nobody has set one — and then a caller draws initials, which is a real answer and not a placeholder. Bytes under the kit's one image rule (`@pithy-sh/core/src/image/storedImage`), never a link to somebody else's host: a remote URL would mean fetching an attacker-chosen host from a page listing somebody's tenancies. Nullable rather than an empty string, because a column that could hold both would have two spellings of *no logo*.",
     ),
+    seatLimit: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_SEAT_LIMIT)
+      .nullable()
+      .optional()
+      .describe(
+        "How many memberships the account may hold, or null for no limit. Set by an operator through the control plane (`0002_seat_limit`, #624). An operator's add counts against it and may override it, which the audit event records; an accepted invitation is refused against a full account. Optional because a row written before the column existed, or by a writer that never names it, reads as no limit.",
+      ),
     createdAt: SQLiteDate.describe(
       "When the organization was created. Ms-epoch in SQLite; a `Date` in app code. Indexed for listing.",
     ),

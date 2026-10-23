@@ -356,7 +356,10 @@ function foundingFailure(taken: boolean, slug: string, reason: string, cause?: u
   );
 }
 
-/** What a rename needs. The slug is not among them, and there is no function here that changes one. */
+/**
+ * What a rename needs. The slug is not among them: a member never changes one. The one function that does
+ * is {@link updateOrganizationAsOperator}, an operator's act behind a control-plane scope (#624).
+ */
 export interface RenameOrganizationInput {
   /** Which account. Resolved from the acting selection by the caller, never from a request field. */
   readonly organizationId: string;
@@ -422,12 +425,16 @@ export async function setLogo(d1: D1Database, input: SetLogoInput): Promise<void
 async function changeOrganization(
   d1: D1Database,
   organizationId: string,
-  change: { name?: string; logo?: string | null },
+  change: { name?: string; logo?: string | null; slug?: string; seatLimit?: number | null },
   now: Date,
 ): Promise<void> {
-  const set: { name?: string; logo?: string | null; updatedAt: number } = { updatedAt: now.getTime() };
+  const set: { name?: string; logo?: string | null; slug?: string; seatLimit?: number | null; updatedAt: number } = {
+    updatedAt: now.getTime(),
+  };
   if (change.name !== undefined) set.name = change.name;
   if (change.logo !== undefined) set.logo = change.logo;
+  if (change.slug !== undefined) set.slug = change.slug;
+  if (change.seatLimit !== undefined) set.seatLimit = change.seatLimit;
 
   const changed = await organizationDatabase(d1)
     .updateTable(ORGANIZATIONS_TABLE)
@@ -442,6 +449,102 @@ async function changeOrganization(
       detail: `updating organization ${organizationId} matched ${changed.numUpdatedRows} rows`,
     });
   }
+}
+
+/** What an operator's edit of an account names. Absent is *leave it*; `seatLimit: null` is *no limit*. */
+export interface OperatorUpdateInput {
+  /** Which account, from the path. */
+  readonly organizationId: string;
+  /** A new display name. */
+  readonly name?: string;
+  /** A new short name. Refused, naming the holder, when another account has it. */
+  readonly slug?: string;
+  /** A new seat limit, or null to lift it. Lowering it below the roster removes nobody; it refuses the next add. */
+  readonly seatLimit?: number | null;
+  /** The clock. */
+  readonly now: Date;
+}
+
+/** The refusal a taken short name earns on the operator surface: who holds it, by name and id. */
+function slugHeld(
+  slug: string,
+  holder: { id: string; name: string },
+  organizationId: string,
+): OrganizationSlugTakenError {
+  return new OrganizationSlugTakenError({
+    message: `The short name \`${slug}\` is held by ${holder.name}.`,
+    action: `Pick another, or free it on organization ${holder.id} first.`,
+    detail: `organization ${organizationId} asked for slug ${slug}, held by organization ${holder.id}`,
+    params: { slug, holderId: holder.id, holderName: holder.name },
+  });
+}
+
+/** The account holding a slug, other than the one asking. */
+async function slugHolder(
+  d1: D1Database,
+  slug: string,
+  organizationId: string,
+): Promise<{ id: string; name: string } | undefined> {
+  return await organizationDatabase(d1)
+    .selectFrom(ORGANIZATIONS_TABLE)
+    .select(["id", "name"])
+    .where("slug", "=", slug)
+    .where("id", "!=", organizationId)
+    .executeTakeFirst();
+}
+
+/**
+ * Change an account's name, its short name, or its seat limit — the operator's edit (#624).
+ *
+ * **The short name moves here and nowhere else.** A member renames; only an operator re-addresses an
+ * account, because every link and log line that names it by slug is somebody else's. A slug another
+ * account holds is refused **naming that account**, because the operator holds the scope to read every
+ * tenant's name already and the next step is deciding what to do about the other one.
+ *
+ * Asked before the write for the sentence, and settled by the unique index for the rule: a write that
+ * loses a race to another account is asked again who holds it, so the refusal names the winner.
+ *
+ * Everything is checked against the column's own schema before anything is written, so a name or a slug
+ * that fails is refused whole rather than half-applied.
+ */
+export async function updateOrganizationAsOperator(d1: D1Database, input: OperatorUpdateInput): Promise<Organization> {
+  const change: { name?: string; slug?: string; seatLimit?: number | null } = {};
+  if (input.name !== undefined) {
+    const name = Organization.shape.name.safeParse(input.name);
+    if (!name.success) throw fromZodError(name.error);
+    change.name = name.data;
+  }
+  if (input.slug !== undefined) {
+    const slug = Organization.shape.slug.safeParse(input.slug);
+    if (!slug.success) throw fromZodError(slug.error);
+    change.slug = slug.data;
+    const holder = await slugHolder(d1, slug.data, input.organizationId);
+    if (holder) throw slugHeld(slug.data, holder, input.organizationId);
+  }
+  if (input.seatLimit !== undefined) {
+    const seatLimit = Organization.shape.seatLimit.safeParse(input.seatLimit);
+    if (!seatLimit.success) throw fromZodError(seatLimit.error);
+    change.seatLimit = seatLimit.data ?? null;
+  }
+
+  try {
+    await changeOrganization(d1, input.organizationId, change, input.now);
+  } catch (cause) {
+    if (change.slug !== undefined && !(cause instanceof PithyError)) {
+      const holder = await slugHolder(d1, change.slug, input.organizationId);
+      if (holder) throw slugHeld(change.slug, holder, input.organizationId);
+    }
+    throw cause;
+  }
+
+  const row = await organizationDatabase(d1)
+    .selectFrom(ORGANIZATIONS_TABLE)
+    .selectAll()
+    .where("id", "=", input.organizationId)
+    .executeTakeFirst();
+  if (!row)
+    throw new OrganizationNotFoundError({ detail: `organization ${input.organizationId} was gone after its edit` });
+  return Organization.parse(row);
 }
 
 /**

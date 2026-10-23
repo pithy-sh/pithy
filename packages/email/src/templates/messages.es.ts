@@ -136,6 +136,24 @@ export const EMAIL_ES: MessageCatalog = {
     "Tu cuenta de {app} y sus datos se borraron el {purgedOn}. No se puede deshacer.",
   "email/deletion_complete.last": "Es el último correo que recibirá esta cuenta.",
 
+  // --- Administración de la pertenencia ---
+  "email/organization_member_added.subject": "Te han añadido a {organization}",
+  "email/organization_member_added.heading": "Te han añadido a una organización",
+  "email/organization_member_added.body": "te han añadido a {organization} en {app}, con la función {role}.",
+  "email/organization_member_added.text_body": "Te han añadido a {organization} en {app}, con la función {role}.",
+  "email/organization_member_removed.subject": "Te han quitado de {organization}",
+  "email/organization_member_removed.heading": "Te han quitado de una organización",
+  "email/organization_member_removed.body": "te han quitado de {organization} en {app}. Ya no puedes actuar en ella.",
+  "email/organization_member_removed.text_body":
+    "Te han quitado de {organization} en {app}. Ya no puedes actuar en ella.",
+  "email/organization_ownership_transferred.subject": "Ahora eres titular de {organization}",
+  "email/organization_ownership_transferred.heading": "Ahora eres titular de una organización",
+  "email/organization_ownership_transferred.body":
+    "ahora eres titular de {organization} en {app}. La administras y respondes por ella.",
+  "email/organization_ownership_transferred.text_body":
+    "Ahora eres titular de {organization} en {app}. La administras y respondes por ella.",
+  "email/organization_member.contact": "Si no lo esperabas, responde a este correo.",
+
   // --- leadCapture ---
   "email/lead_capture.subject": "Tu descarga: {asset}",
   "email/lead_capture.heading": "Tu descarga está lista",

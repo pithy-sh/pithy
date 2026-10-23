@@ -18,7 +18,8 @@ import { Membership } from "../data/membership";
 import { Organization } from "../data/organization";
 import { MEMBERSHIPS_TABLE, ORGANIZATIONS_TABLE, organizationDatabase } from "../data/tables";
 import { requireMayAssign } from "../members/members";
-import { ORGANIZATION_MIGRATION_ORDER, organization_0001_init } from "../migrations/0001_init";
+import { ORGANIZATION_MIGRATION_ORDER } from "../migrations/0001_init";
+import { ORGANIZATION_MIGRATIONS } from "../migrations/set";
 import { defineRoles } from "../roles/roles";
 import { type OrganizationGuardDeps, type OrganizationHonoEnv, requireOrganization, requirePower } from "./guard";
 
@@ -158,7 +159,7 @@ function provider(): MigrationProvider {
       database: "app",
       namespace: "organization",
       order: ORGANIZATION_MIGRATION_ORDER,
-      migrations: { "0001_init": organization_0001_init },
+      migrations: ORGANIZATION_MIGRATIONS,
     },
   ]);
   const found = registry.app;

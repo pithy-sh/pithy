@@ -97,7 +97,17 @@ describe("capability identity", () => {
     // A manifest naming `/organizations` for a Worker mounted at `/accounts` is a client that 404s, and
     // the whole point of the manifest is that a client composes its calls from the Worker.
     const paths = (organization({ ...BASE, basePath: "/accounts" }).adminRoutes ?? []).map((route) => route.path);
-    expect(paths).toEqual(["/accounts/admin/organizations", "/accounts/admin/organizations/:organizationId/members"]);
+    expect(paths.length).toBeGreaterThan(2);
+    for (const path of paths) expect(path.startsWith("/accounts/admin/organizations"), path).toBe(true);
+    expect(paths).toContain("/accounts/admin/organizations/:organizationId/members/:membershipId");
+  });
+
+  test("the forced-ownership route is advertised exactly where a transfer is wired (#624)", () => {
+    const route = "/organizations/admin/organizations/:organizationId/ownership";
+    const without = (organization(BASE).adminRoutes ?? []).map((entry) => entry.path);
+    const withTransfer = (organization({ ...BASE, ownership: TRANSFER }).adminRoutes ?? []).map((entry) => entry.path);
+    expect(without).not.toContain(route);
+    expect(withTransfer).toContain(route);
   });
 });
 
@@ -139,7 +149,7 @@ describe("migrations", () => {
   });
 
   test("registers its migration under the stable local key", () => {
-    expect(Object.keys(organization(BASE).databases?.app?.migrations ?? {})).toEqual(["0001_init"]);
+    expect(Object.keys(organization(BASE).databases?.app?.migrations ?? {})).toEqual(["0001_init", "0002_seat_limit"]);
   });
 
   test("contributes all five tables to the app database", () => {

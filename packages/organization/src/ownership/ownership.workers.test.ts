@@ -6,14 +6,17 @@ import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry"
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
+import { ActingOrganization } from "../data/actingOrganization";
 import { Membership } from "../data/membership";
 import { Organization } from "../data/organization";
-import { MEMBERSHIPS_TABLE, ORGANIZATIONS_TABLE, organizationDatabase } from "../data/tables";
+import { ACTING_TABLE, MEMBERSHIPS_TABLE, ORGANIZATIONS_TABLE, organizationDatabase } from "../data/tables";
 import { changeRole, countAdministrators, leaveOrganization, listMembers, removeMember } from "../members/members";
-import { ORGANIZATION_MIGRATION_ORDER, organization_0001_init } from "../migrations/0001_init";
+import { ORGANIZATION_MIGRATION_ORDER } from "../migrations/0001_init";
+import { ORGANIZATION_MIGRATIONS } from "../migrations/set";
 import { defineRoles } from "../roles/roles";
 import {
   acceptNomination,
+  forceOwnership,
   holdersOf,
   nominate,
   type OwnershipRoles,
@@ -102,7 +105,7 @@ function provider(): MigrationProvider {
       database: "app",
       namespace: "organization",
       order: ORGANIZATION_MIGRATION_ORDER,
-      migrations: { "0001_init": organization_0001_init },
+      migrations: ORGANIZATION_MIGRATIONS,
     },
   ]);
   const found = registry.app;
@@ -797,5 +800,175 @@ describe("an unowned account, end to end", () => {
     await expect(
       leaveOrganization(env.DB, OWNED, { organizationId: acme, actor: { userId: ADA, role: "owner" } }),
     ).rejects.toThrow(/cannot leave while you hold `owner`/);
+  });
+});
+
+describe("forceOwnership", () => {
+  async function selection(userId: string): Promise<void> {
+    await organizationDatabase(env.DB)
+      .insertInto(ACTING_TABLE)
+      .values(
+        ActingOrganization.encode({
+          sessionId: `s-${userId}`,
+          userId,
+          organizationId: acme,
+          chosen: true,
+          chosenAt: NOW,
+        }),
+      )
+      .execute();
+  }
+
+  async function selections(): Promise<string[]> {
+    const rows = await env.DB.prepare("select user_id from pithy_organization_acting order by user_id").all<{
+      user_id: string;
+    }>();
+    return rows.results.map((row) => row.user_id);
+  }
+
+  test("transfers immediately, with no nomination and no acceptance, and keeps the previous owner as asked", async () => {
+    await join(OLIVE, "owner");
+    const bob = await join(BOB, "member");
+
+    const forced = await forceOwnership(env.DB, OWNED, {
+      organizationId: acme,
+      membershipId: bob,
+      previousOwner: "keep",
+      roles: TRANSFER,
+    });
+
+    // No offer was made and nobody accepted one: one call, and the account changed hands.
+    expect(await roles()).toEqual({ [OLIVE]: "admin", [BOB]: "owner" });
+    expect(forced.newHolder).toEqual({ id: bob, userId: BOB });
+    expect(forced.previousHolders.map((holder) => holder.userId)).toEqual([OLIVE]);
+    expect(forced.removed).toBe(false);
+  });
+
+  test("removes the previous owner and their selection when the request says so", async () => {
+    await join(OLIVE, "owner");
+    await join(ADA, "admin");
+    const bob = await join(BOB, "member");
+    await selection(OLIVE);
+    await selection(ADA);
+
+    const forced = await forceOwnership(env.DB, OWNED, {
+      organizationId: acme,
+      membershipId: bob,
+      previousOwner: "remove",
+      roles: TRANSFER,
+    });
+
+    expect(await roles()).toEqual({ [ADA]: "admin", [BOB]: "owner" });
+    expect(forced.removed).toBe(true);
+    // Olive's selection went with her membership. Ada's, who is still inside, did not.
+    expect(await selections()).toEqual([ADA]);
+  });
+
+  test("an account nobody owned gains an owner, and nobody is demoted or removed", async () => {
+    await join(ADA, "admin");
+    const bob = await join(BOB, "member");
+    const forced = await forceOwnership(env.DB, OWNED, {
+      organizationId: acme,
+      membershipId: bob,
+      previousOwner: "remove",
+      roles: TRANSFER,
+    });
+    expect(await roles()).toEqual({ [ADA]: "admin", [BOB]: "owner" });
+    expect(forced.previousHolders).toEqual([]);
+    expect(forced.removed).toBe(false);
+  });
+
+  test("a standing offer made under the previous owner is spent", async () => {
+    await join(OLIVE, "owner");
+    const cat = await join(CAT, "admin");
+    const bob = await join(BOB, "member");
+    await offer(cat);
+
+    await forceOwnership(env.DB, OWNED, {
+      organizationId: acme,
+      membershipId: bob,
+      previousOwner: "keep",
+      roles: TRANSFER,
+    });
+
+    // Cat could otherwise take the account back from Bob with an offer Bob never made.
+    expect(await standingNomination(organizationDatabase(env.DB), acme, NOW)).toBeNull();
+  });
+
+  /**
+   * The real D1, except that `beforeBatch` runs just before the batch does — the window between
+   * `forceOwnership`'s reads and its write, made deterministic rather than raced.
+   */
+  function interleaved(beforeBatch: () => Promise<void>): D1Database {
+    return new Proxy(env.DB, {
+      get(target, property) {
+        if (property === "batch") {
+          return async (statements: D1PreparedStatement[]) => {
+            await beforeBatch();
+            return target.batch(statements);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  }
+
+  async function removeMembership(id: string): Promise<void> {
+    await organizationDatabase(env.DB).deleteFrom(MEMBERSHIPS_TABLE).where("id", "=", id).execute();
+  }
+
+  for (const previousOwner of ["keep", "remove"] as const) {
+    test(`**a nominee who leaves before the batch takes nothing with them** (${previousOwner})`, async () => {
+      // The nominee is read, then the batch runs. Removed in between — an operator's DELETE, or the
+      // nominee leaving — an unconditioned batch demotes or deletes the owner and promotes nobody: an
+      // account with no owner, and here no administrator either, that nothing can undo.
+      await join(OLIVE, "owner");
+      const bob = await join(BOB, "member");
+      const cat = await join(CAT, "member");
+      await selection(OLIVE);
+      await offer(cat);
+
+      await expect(
+        forceOwnership(
+          interleaved(() => removeMembership(bob)),
+          OWNED,
+          { organizationId: acme, membershipId: bob, previousOwner, roles: TRANSFER },
+        ),
+      ).rejects.toMatchObject({ payload: { code: "organization/not_found" } });
+
+      // Olive still owns it, still has it selected, and the offer to Cat still stands.
+      expect(await roles()).toEqual({ [OLIVE]: "owner", [CAT]: "member" });
+      expect(await selections()).toEqual([OLIVE]);
+      expect((await standingNomination(organizationDatabase(env.DB), acme, NOW))?.membershipId).toBe(cat);
+    });
+  }
+
+  test("a membership in another organization is the ordinary 404, and nothing moves", async () => {
+    await join(OLIVE, "owner");
+    const beta = await makeOrganization("beta");
+    const elsewhere = await join(BOB, "member", beta);
+    await expect(
+      forceOwnership(env.DB, OWNED, {
+        organizationId: acme,
+        membershipId: elsewhere,
+        previousOwner: "keep",
+        roles: TRANSFER,
+      }),
+    ).rejects.toMatchObject({ payload: { code: "organization/not_found" } });
+    expect(await roles()).toEqual({ [OLIVE]: "owner" });
+  });
+
+  test("the owner already holding it is a conflict rather than a demotion of themselves", async () => {
+    const olive = await join(OLIVE, "owner");
+    await expect(
+      forceOwnership(env.DB, OWNED, {
+        organizationId: acme,
+        membershipId: olive,
+        previousOwner: "remove",
+        roles: TRANSFER,
+      }),
+    ).rejects.toMatchObject({ payload: { status: 409 } });
+    expect(await roles()).toEqual({ [OLIVE]: "owner" });
   });
 });

@@ -201,6 +201,7 @@ export function adminOrganizationView(organization: Organization, members: numbe
     name: organization.name,
     slug: organization.slug,
     members,
+    seatLimit: organization.seatLimit ?? null,
     createdAt: organization.createdAt.toISOString(),
     updatedAt: organization.updatedAt.toISOString(),
   };

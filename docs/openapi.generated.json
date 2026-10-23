@@ -29772,6 +29772,19 @@
                             "maximum": 9007199254740991,
                             "description": "How many people are in the account."
                           },
+                          "seatLimit": {
+                            "description": "How many members the account may hold, or null for no limit. Absent from a Worker older than seat limits (#624), which cannot say.",
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "createdAt": {
                             "type": "string",
                             "format": "date-time",
@@ -29947,6 +29960,1116 @@
         ],
         "x-pithy-scopes": [
           "organization:members:read"
+        ]
+      },
+      "post": {
+        "tags": [
+          "organization"
+        ],
+        "operationId": "postOrganizationsAdminOrganizationsByOrganizationIdMembers",
+        "summary": "Add an existing user to a tenant, at a named role.",
+        "description": "Refused for somebody already in it, naming their role, and past the seat limit unless the request overrides it. Adding at the owning role also needs the connection to hold organization:ownership:transfer. Takes a reason.",
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "description": "Which tenant's roster to read.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "An operator adding an existing user to a tenant, directly, at a named role. No invitation is sent.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "userId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "description": "The person, as `pithy_auth_users` ids them. They must already have an account; an unknown id is a 404. Not a UUID shape: that generator is the auth capability's and is configurable."
+                  },
+                  "role": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "The role they take, as this project's catalog names it. Any role the catalog declares; one it does not is refused, listing the ones it does."
+                  },
+                  "overrideSeatLimit": {
+                    "description": "True adds them even when the account is at its seat limit. Recorded on the audit event when it was needed. Absent or false, a full account refuses the add, naming its limit.",
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event."
+                  }
+                },
+                "required": [
+                  "userId",
+                  "role",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "An operator adding an existing user to a tenant, directly, at a named role. No invitation is sent."
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "What an operator's add or role change left behind.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "member": {
+                      "type": "object",
+                      "properties": {
+                        "membershipId": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                          "description": "The membership's id."
+                        },
+                        "userId": {
+                          "type": "string",
+                          "description": "The person, as `pithy_auth_users` ids them."
+                        },
+                        "role": {
+                          "type": "string",
+                          "description": "What they may do in this account."
+                        },
+                        "name": {
+                          "description": "Their display name, or null when the user row is gone.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "email": {
+                          "description": "Their address, or null when the user row is gone.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "joinedAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When they joined, ISO-8601."
+                        }
+                      },
+                      "required": [
+                        "membershipId",
+                        "userId",
+                        "role",
+                        "name",
+                        "email",
+                        "joinedAt"
+                      ],
+                      "description": "The membership, with the person behind it."
+                    }
+                  },
+                  "required": [
+                    "member"
+                  ],
+                  "description": "What an operator's add or role change left behind."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "organization:members:write"
+        ]
+      }
+    },
+    "/organizations/admin/organizations/{organizationId}": {
+      "patch": {
+        "tags": [
+          "organization"
+        ],
+        "operationId": "patchOrganizationsAdminOrganizationsByOrganizationId",
+        "summary": "Rename a tenant, give it a free short name, or set its seat limit.",
+        "description": "A short name another tenant holds is refused, naming that tenant. Takes a reason.",
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "description": "Which tenant's roster to read.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "An operator changing a tenant's name, short name or seat limit. At least one, and a reason.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "description": "A new display name. Absent leaves the current one.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "slug": {
+                    "description": "A new short name, under the column's own rule. Refused when another tenant holds it, naming that tenant. Absent leaves the current one.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                  },
+                  "seatLimit": {
+                    "description": "How many members the tenant may hold, or null for no limit. Lowering it below the roster removes nobody; it refuses the next add. Absent leaves it.",
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1000000
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event."
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "An operator changing a tenant's name, short name or seat limit. At least one, and a reason."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "What an operator's edit of a tenant left behind.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "organization": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                          "description": "The organization's id."
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "The display name."
+                        },
+                        "slug": {
+                          "type": "string",
+                          "description": "The URL-safe short name."
+                        },
+                        "members": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991,
+                          "description": "How many people are in the account."
+                        },
+                        "seatLimit": {
+                          "description": "How many members the account may hold, or null for no limit. Absent from a Worker older than seat limits (#624), which cannot say.",
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When the organization was created, ISO-8601."
+                        },
+                        "updatedAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When its row was last written, ISO-8601."
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "slug",
+                        "members",
+                        "createdAt",
+                        "updatedAt"
+                      ],
+                      "description": "The tenant, as the edit left it."
+                    }
+                  },
+                  "required": [
+                    "organization"
+                  ],
+                  "description": "What an operator's edit of a tenant left behind."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "organization:accounts:write"
+        ]
+      }
+    },
+    "/organizations/admin/organizations/{organizationId}/members/{membershipId}": {
+      "patch": {
+        "tags": [
+          "organization"
+        ],
+        "operationId": "patchOrganizationsAdminOrganizationsByOrganizationIdMembersByMembershipId",
+        "summary": "Change a member's role to any role the catalog declares.",
+        "description": "To and from the owning role, which also needs the connection to hold organization:ownership:transfer. Demoting the last owner is refused, naming the ownership route; demoting the last administrator is refused. Takes a reason.",
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "description": "Which tenant.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "membershipId",
+            "in": "path",
+            "required": true,
+            "description": "The membership acted on. Resolved inside that tenant, so an id from another one is a 404.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "An operator changing one member's role.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "role": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "The role the membership becomes. Any role the catalog declares, to and from the owning one; demoting the last owner is refused."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event."
+                  }
+                },
+                "required": [
+                  "role",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "An operator changing one member's role."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "What an operator's add or role change left behind.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "member": {
+                      "type": "object",
+                      "properties": {
+                        "membershipId": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                          "description": "The membership's id."
+                        },
+                        "userId": {
+                          "type": "string",
+                          "description": "The person, as `pithy_auth_users` ids them."
+                        },
+                        "role": {
+                          "type": "string",
+                          "description": "What they may do in this account."
+                        },
+                        "name": {
+                          "description": "Their display name, or null when the user row is gone.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "email": {
+                          "description": "Their address, or null when the user row is gone.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "joinedAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When they joined, ISO-8601."
+                        }
+                      },
+                      "required": [
+                        "membershipId",
+                        "userId",
+                        "role",
+                        "name",
+                        "email",
+                        "joinedAt"
+                      ],
+                      "description": "The membership, with the person behind it."
+                    }
+                  },
+                  "required": [
+                    "member"
+                  ],
+                  "description": "What an operator's add or role change left behind."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "organization:members:write"
+        ]
+      },
+      "delete": {
+        "tags": [
+          "organization"
+        ],
+        "operationId": "deleteOrganizationsAdminOrganizationsByOrganizationIdMembersByMembershipId",
+        "summary": "Remove a member from a tenant, and clear their selection of it.",
+        "description": "Never the last owner — the refusal names the ownership route — and never the last administrator. Removing an owner also needs the connection to hold organization:ownership:transfer. Takes a reason, in the body.",
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "description": "Which tenant.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "membershipId",
+            "in": "path",
+            "required": true,
+            "description": "The membership acted on. Resolved inside that tenant, so an id from another one is a 404.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "An operator's write that names its subject in the path and says why in the body.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event."
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "An operator's write that names its subject in the path and says why in the body."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Which membership an operator ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "membershipId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                      "description": "The membership that ended."
+                    },
+                    "userId": {
+                      "type": "string",
+                      "description": "The person it belonged to. Their selection of the account was cleared with it."
+                    }
+                  },
+                  "required": [
+                    "membershipId",
+                    "userId"
+                  ],
+                  "description": "Which membership an operator ended."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "organization:members:write"
+        ]
+      }
+    },
+    "/organizations/admin/organizations/{organizationId}/invitations": {
+      "get": {
+        "tags": [
+          "organization"
+        ],
+        "operationId": "getOrganizationsAdminOrganizationsByOrganizationIdInvitations",
+        "summary": "List a tenant's outstanding invitations, to fix one.",
+        "description": "Under the write scope, because the list is addresses and it is read to change one. The reason is recorded.",
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "description": "Which tenant's roster to read.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many rows to return. Bounded, because a verified client can still have a bug.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "reason",
+            "in": "query",
+            "required": true,
+            "description": "Why the operator is reading them — the list holds addresses, so the read is recorded with its reason. Required.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One tenant's outstanding invitations, bounded, with an honest flag where it was cut short.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "invitations": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                            "description": "The offer's id — what a withdrawal names."
+                          },
+                          "email": {
+                            "type": "string",
+                            "description": "The address invited. The binding that makes a forwarded link useless."
+                          },
+                          "role": {
+                            "type": "string",
+                            "description": "What is being offered. Written onto the membership at acceptance, never re-read from the request that accepts."
+                          },
+                          "invitedByUserId": {
+                            "type": "string",
+                            "description": "Who sent it. An invitation with no author would be a membership nobody answers for."
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "pending",
+                              "accepted",
+                              "rejected",
+                              "canceled"
+                            ],
+                            "description": "Where the offer stands. `pending` is the only redeemable state."
+                          },
+                          "expiresAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the link stops working, ISO-8601. Compared against now on every redemption, so an unswept row is still refused."
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When it was sent, ISO-8601. A resend moves this, because a resent invitation is a new offer with a new life."
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "email",
+                          "role",
+                          "invitedByUserId",
+                          "status",
+                          "expiresAt",
+                          "createdAt"
+                        ],
+                        "description": "One offer of membership, as somebody who manages the account sees it. Never the token."
+                      },
+                      "description": "What is outstanding, newest first — `pending` only, expired ones included, as the member route lists them."
+                    },
+                    "truncated": {
+                      "type": "boolean",
+                      "description": "True when more are outstanding than the bound allowed."
+                    }
+                  },
+                  "required": [
+                    "invitations",
+                    "truncated"
+                  ],
+                  "description": "One tenant's outstanding invitations, bounded, with an honest flag where it was cut short."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "organization:members:write"
+        ]
+      }
+    },
+    "/organizations/admin/organizations/{organizationId}/invitations/{invitationId}/resend": {
+      "post": {
+        "tags": [
+          "organization"
+        ],
+        "operationId": "postOrganizationsAdminOrganizationsByOrganizationIdInvitationsByInvitationIdResend",
+        "summary": "Send a tenant's invitation again, with a fresh link.",
+        "description": "Expired or not. The old link stops working. Takes a reason.",
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "description": "Which tenant.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "invitationId",
+            "in": "path",
+            "required": true,
+            "description": "The invitation acted on. Resolved inside that tenant, so an id from another one is refused.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "An operator's write that names its subject in the path and says why in the body.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event."
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "An operator's write that names its subject in the path and says why in the body."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "What inviting somebody wrote, and the link when nobody else is going to send it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "invitation": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                          "description": "The offer's id — what a withdrawal names."
+                        },
+                        "email": {
+                          "type": "string",
+                          "description": "The address invited. The binding that makes a forwarded link useless."
+                        },
+                        "role": {
+                          "type": "string",
+                          "description": "What is being offered. Written onto the membership at acceptance, never re-read from the request that accepts."
+                        },
+                        "invitedByUserId": {
+                          "type": "string",
+                          "description": "Who sent it. An invitation with no author would be a membership nobody answers for."
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "accepted",
+                            "rejected",
+                            "canceled"
+                          ],
+                          "description": "Where the offer stands. `pending` is the only redeemable state."
+                        },
+                        "expiresAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When the link stops working, ISO-8601. Compared against now on every redemption, so an unswept row is still refused."
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When it was sent, ISO-8601. A resend moves this, because a resent invitation is a new offer with a new life."
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "email",
+                        "role",
+                        "invitedByUserId",
+                        "status",
+                        "expiresAt",
+                        "createdAt"
+                      ],
+                      "description": "The offer."
+                    },
+                    "acceptUrl": {
+                      "description": "The link, **only** for a project that set `sendInvitationEmail: false` and delivers it itself. Null when the capability mailed it — the token is then in the mail and in no response, which is the whole point of putting it there.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "invitation",
+                    "acceptUrl"
+                  ],
+                  "description": "What inviting somebody wrote, and the link when nobody else is going to send it."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "organization:members:write"
+        ]
+      }
+    },
+    "/organizations/admin/organizations/{organizationId}/invitations/{invitationId}": {
+      "delete": {
+        "tags": [
+          "organization"
+        ],
+        "operationId": "deleteOrganizationsAdminOrganizationsByOrganizationIdInvitationsByInvitationId",
+        "summary": "Revoke a tenant's invitation, so its link stops working.",
+        "description": "Takes a reason, in the body.",
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "description": "Which tenant.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "invitationId",
+            "in": "path",
+            "required": true,
+            "description": "The invitation acted on. Resolved inside that tenant, so an id from another one is refused.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "An operator's write that names its subject in the path and says why in the body.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event."
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "An operator's write that names its subject in the path and says why in the body."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "What withdrawing an offer left behind.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "invitation": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                          "description": "The offer's id — what a withdrawal names."
+                        },
+                        "email": {
+                          "type": "string",
+                          "description": "The address invited. The binding that makes a forwarded link useless."
+                        },
+                        "role": {
+                          "type": "string",
+                          "description": "What is being offered. Written onto the membership at acceptance, never re-read from the request that accepts."
+                        },
+                        "invitedByUserId": {
+                          "type": "string",
+                          "description": "Who sent it. An invitation with no author would be a membership nobody answers for."
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "accepted",
+                            "rejected",
+                            "canceled"
+                          ],
+                          "description": "Where the offer stands. `pending` is the only redeemable state."
+                        },
+                        "expiresAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When the link stops working, ISO-8601. Compared against now on every redemption, so an unswept row is still refused."
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When it was sent, ISO-8601. A resend moves this, because a resent invitation is a new offer with a new life."
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "email",
+                        "role",
+                        "invitedByUserId",
+                        "status",
+                        "expiresAt",
+                        "createdAt"
+                      ],
+                      "description": "The offer, now `canceled`. Returned rather than an empty body because a withdrawal is a state change on a row a client is already rendering, and re-reading a list to learn the outcome of a write is how a pane shows a stale one."
+                    }
+                  },
+                  "required": [
+                    "invitation"
+                  ],
+                  "description": "What withdrawing an offer left behind."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "organization:members:write"
+        ]
+      }
+    },
+    "/organizations/admin/organizations/{organizationId}/ownership": {
+      "post": {
+        "tags": [
+          "organization"
+        ],
+        "operationId": "postOrganizationsAdminOrganizationsByOrganizationIdOwnership",
+        "summary": "Make a member the owner now, with no nomination and no acceptance.",
+        "description": "The previous owner is kept, at the role a transfer falls back to, or removed, as the request says. Takes a reason.",
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "description": "Which tenant's roster to read.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "An operator making a member the owner now — no nomination and no acceptance.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "membershipId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                    "description": "The new owner's membership. They must already be in the account; add them first if not."
+                  },
+                  "previousOwner": {
+                    "type": "string",
+                    "enum": [
+                      "keep",
+                      "remove"
+                    ],
+                    "description": "What happens to whoever owned it: `keep` demotes them to the role a transfer falls back to, `remove` ends their membership. Required, because the two are different answers to what happened to the person who left."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event."
+                  }
+                },
+                "required": [
+                  "membershipId",
+                  "previousOwner",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "An operator making a member the owner now — no nomination and no acceptance."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A forced transfer of ownership: who holds it now, who held it, and what became of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "newHolderMembershipId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                      "description": "Who owns it now."
+                    },
+                    "previousHolderMembershipIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                      },
+                      "description": "Who owned it before, in the same write. Empty for an account nobody owned. Plural for the reason `TransferResponse` gives."
+                    },
+                    "previousOwner": {
+                      "type": "string",
+                      "enum": [
+                        "keep",
+                        "remove"
+                      ],
+                      "description": "What happened to them: kept at the role a transfer falls back to, or removed."
+                    }
+                  },
+                  "required": [
+                    "newHolderMembershipId",
+                    "previousHolderMembershipIds",
+                    "previousOwner"
+                  ],
+                  "description": "A forced transfer of ownership: who holds it now, who held it, and what became of them."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "organization:ownership:transfer"
         ]
       }
     },

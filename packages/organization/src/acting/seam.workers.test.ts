@@ -12,7 +12,8 @@ import { beforeEach, describe, expect, test } from "vitest";
 import { Membership } from "../data/membership";
 import { Organization } from "../data/organization";
 import { MEMBERSHIPS_TABLE, ORGANIZATIONS_TABLE, organizationDatabase } from "../data/tables";
-import { ORGANIZATION_MIGRATION_ORDER, organization_0001_init } from "../migrations/0001_init";
+import { ORGANIZATION_MIGRATION_ORDER } from "../migrations/0001_init";
+import { ORGANIZATION_MIGRATIONS } from "../migrations/set";
 import { defineRoles, ORGANIZATION_POWERS } from "../roles/roles";
 import { chooseActing } from "./acting";
 import { actingOrganizationMiddleware } from "./seam";
@@ -43,7 +44,7 @@ function provider(): MigrationProvider {
       database: "app",
       namespace: "organization",
       order: ORGANIZATION_MIGRATION_ORDER,
-      migrations: { "0001_init": organization_0001_init },
+      migrations: ORGANIZATION_MIGRATIONS,
     },
   ]);
   const found = registry.app;

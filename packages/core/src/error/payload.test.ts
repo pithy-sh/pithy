@@ -272,6 +272,12 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  * not that a permission is missing; and not each other, because a deleted account can be restored until
  * its purge and a suspension can simply end.
  *
+ * `organization/last_owner`, `organization/already_member` and `organization/seat_limit_reached` (#624)
+ * took it to 150 — the three refusals of membership administration through the control plane. The last
+ * owner is not `organization/last_administrator`, because the way out is a forced transfer rather than a
+ * promotion; an existing member names the role they hold, which the next request changes; and a full
+ * account names its seat limit, which an operator may override.
+ *
  * `media/forbidden` (#727) took it to 134 — a media record the caller may read but not change. A record
  * the caller cannot read is `media/not_found`, so this one only ever answers somebody who already knows
  * the record exists, and it is storage's `storage/forbidden` given to media.
@@ -330,7 +336,7 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  * And the code itself also needs: the Spanish sentence in `packages/i18n/src/catalogs/es/errors.ts`,
  * and `bun run docs-catalog` to regenerate `docs/catalog.generated.json`.
  */
-const KIT_ERROR_CODE_COUNT = 147;
+const KIT_ERROR_CODE_COUNT = 150;
 
 /** One member of either kit union — the public projection or its `action`/`detail` twin. */
 type KitUnionMember = (typeof KitErrorPayload | typeof KitPublicErrorPayload)["options"][number];

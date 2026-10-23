@@ -11,8 +11,11 @@ import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { Invitation } from "../data/invitation";
-import { INVITATIONS_TABLE, MEMBERSHIPS_TABLE, organizationDatabase } from "../data/tables";
-import { ORGANIZATION_MIGRATION_ORDER, organization_0001_init } from "../migrations/0001_init";
+import { Membership } from "../data/membership";
+import { Organization } from "../data/organization";
+import { INVITATIONS_TABLE, MEMBERSHIPS_TABLE, ORGANIZATIONS_TABLE, organizationDatabase } from "../data/tables";
+import { ORGANIZATION_MIGRATION_ORDER } from "../migrations/0001_init";
+import { ORGANIZATION_MIGRATIONS } from "../migrations/set";
 import { defineRoles } from "../roles/roles";
 import { acceptInvitation, invite, listInvitations, resendInvitation, withdrawInvitation } from "./invite";
 import { invitationDigest, mintInvitationToken } from "./token";
@@ -66,7 +69,7 @@ function provider(): MigrationProvider {
       database: "app",
       namespace: "organization",
       order: ORGANIZATION_MIGRATION_ORDER,
-      migrations: { "0001_init": organization_0001_init },
+      migrations: ORGANIZATION_MIGRATIONS,
     },
   ]);
   const found = registry.app;
@@ -291,6 +294,108 @@ describe("listInvitations", () => {
   test("does not list another organization's offers", async () => {
     await offer({ organizationId: OTHER_ORG });
     expect(await listInvitations(db, ORG)).toHaveLength(0);
+  });
+
+  test("a bound reaches the statement, and returns one past it so a caller can say there is more", async () => {
+    for (const [index, email] of ["a@example.com", "b@example.com", "c@example.com"].entries()) {
+      await offer({ email, now: new Date(NOW.getTime() + index * 1000) });
+    }
+    expect(await listInvitations(db, ORG, 1)).toHaveLength(2);
+    expect(await listInvitations(db, ORG, 5)).toHaveLength(3);
+  });
+});
+
+describe("acceptInvitation against a seat limit", () => {
+  /** Acme, at a seat limit, holding `members` people already. */
+  async function account(seatLimit: number | null, members: number): Promise<void> {
+    await db
+      .insertInto(ORGANIZATIONS_TABLE)
+      .values(
+        Organization.encode({
+          id: ORG,
+          name: "Acme",
+          slug: "acme",
+          logo: null,
+          seatLimit,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      )
+      .execute();
+    for (let index = 0; index < members; index += 1) {
+      await db
+        .insertInto(MEMBERSHIPS_TABLE)
+        .values(
+          Membership.encode({
+            id: crypto.randomUUID(),
+            organizationId: ORG,
+            userId: `user-${index}`,
+            role: "member",
+            createdAt: NOW,
+          }),
+        )
+        .execute();
+    }
+  }
+
+  test("a full account refuses the join, and the offer stays pending for when a seat frees", async () => {
+    await account(2, 2);
+    const minted = await offer();
+    const error = await refusal(() =>
+      acceptInvitation(d1, catalog, {
+        token: minted.token,
+        session: { userId: ADA, email: "ada@example.com" },
+        now: NOW,
+      }),
+    );
+    expect(error.payload.code).toBe("organization/seat_limit_reached");
+    expect(error.payload.params?.seatLimit).toBe(2);
+    expect(await membershipCount()).toBe(2);
+    expect((await listInvitations(db, ORG)).map((row) => row.status)).toEqual(["pending"]);
+  });
+
+  test("an account with room takes the join", async () => {
+    await account(3, 2);
+    const minted = await offer();
+    const accepted = await acceptInvitation(d1, catalog, {
+      token: minted.token,
+      session: { userId: ADA, email: "ada@example.com" },
+      now: NOW,
+    });
+    expect(accepted.joined).toBe(true);
+    expect(await membershipCount()).toBe(3);
+  });
+
+  test("two acceptances racing for the last seat leave one membership, and the loser's offer pending", async () => {
+    await account(1, 0);
+    const first = await offer({ email: "ada@example.com" });
+    const second = await offer({ email: "grace@example.com" });
+    const results = await Promise.allSettled([
+      acceptInvitation(d1, catalog, {
+        token: first.token,
+        session: { userId: ADA, email: "ada@example.com" },
+        now: NOW,
+      }),
+      acceptInvitation(d1, catalog, {
+        token: second.token,
+        session: { userId: "user-grace", email: "grace@example.com" },
+        now: NOW,
+      }),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(await membershipCount()).toBe(1);
+    expect(await listInvitations(db, ORG)).toHaveLength(1);
+  });
+
+  test("no limit is no limit", async () => {
+    await account(null, 5);
+    const minted = await offer();
+    await acceptInvitation(d1, catalog, {
+      token: minted.token,
+      session: { userId: ADA, email: "ada@example.com" },
+      now: NOW,
+    });
+    expect(await membershipCount()).toBe(6);
   });
 });
 

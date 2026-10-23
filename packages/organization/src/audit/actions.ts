@@ -86,6 +86,39 @@ export const OrganizationAuditActions = {
   /** A nominee accepted, so the account and its bill changed hands. The heaviest membership event. */
   ownershipAccepted: "organization/ownership_accepted",
   /**
+   * ## An operator's acts, below
+   *
+   * Everything above is taken by a member, inside their own account. The eight below are taken by an
+   * operator, through the control plane, inside somebody else's (#624) — recorded with
+   * `actorType: "control-plane"`, the token's `sub` as the actor, and the reason the request carried.
+   * **Their own codes rather than the member codes with a different actor**, because "who removed this
+   * person" has a different next question when the answer is the support desk: a reader filtering on
+   * `member_removed` to audit an account's administrators must not find an operator's break-glass
+   * removal among them, and a reader asking what support did must not have to know which actor types to
+   * exclude.
+   */
+  /** An operator added an existing user to the account, at a named role. No invitation was sent. */
+  adminMemberAdded: "organization/admin_member_added",
+  /** An operator removed a member, and cleared their selection of the account. */
+  adminMemberRemoved: "organization/admin_member_removed",
+  /** An operator changed a member's role, to any role the catalog declares. */
+  adminMemberRoleChanged: "organization/admin_member_role_changed",
+  /**
+   * An operator made a member the owner, with no nomination and no acceptance.
+   *
+   * The break-glass path for an owner who has gone, and the one act here whose reason matters most —
+   * recorded at `warning`, as a two-party transfer is, because the account changed hands.
+   */
+  adminOwnershipForced: "organization/admin_ownership_forced",
+  /** An operator renamed the account, moved its short name, or set its seat limit. */
+  adminOrganizationUpdated: "organization/admin_organization_updated",
+  /** An operator read the account's outstanding invitations — addresses, read under a write scope. */
+  adminInvitationsListed: "organization/admin_invitations_listed",
+  /** An operator sent an invitation again, with a fresh link. */
+  adminInvitationResent: "organization/admin_invitation_resent",
+  /** An operator revoked an invitation, so its link no longer works. */
+  adminInvitationRevoked: "organization/admin_invitation_revoked",
+  /**
    * Somebody inside the account was refused.
    *
    * **One code for every interesting refusal, carrying the refusal's own code in `facts`.** A code per

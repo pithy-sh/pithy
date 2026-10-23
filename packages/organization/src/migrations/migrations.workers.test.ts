@@ -6,6 +6,7 @@ import { createDatabase } from "@pithy-sh/core/src/data/db";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { ORGANIZATION_MIGRATION_ORDER, organization_0001_init } from "./0001_init";
+import { organization_0002_seat_limit } from "./0002_seat_limit";
 
 /**
  * The one migration, both ways, against real D1.
@@ -185,5 +186,46 @@ describe("the constraints SQLite hides", () => {
         .run();
     await insert("55555555-5555-4555-8555-555555555555", "org-1");
     await expect(insert("66666666-6666-4666-8666-666666666666", "org-2")).rejects.toThrow();
+  });
+});
+
+describe("0002_seat_limit", () => {
+  /** The organizations table's columns, as SQLite reports them. */
+  async function organizationColumns(): Promise<string[]> {
+    const { results } = await env.DB.prepare("PRAGMA table_info(pithy_organization_organizations)").all<{
+      name: string;
+    }>();
+    return results.map((row) => row.name);
+  }
+
+  beforeEach(async () => {
+    await organization_0001_init.up(db());
+  });
+
+  test("up adds one nullable column, and an account that existed before it has no limit", async () => {
+    await env.DB.prepare(
+      "insert into pithy_organization_organizations (id, name, slug, logo, created_at, updated_at) values ('11111111-1111-4111-8111-111111111111', 'Acme', 'acme', null, 0, 0)",
+    ).run();
+    await organization_0002_seat_limit.up(db());
+    expect(await organizationColumns()).toContain("seat_limit");
+    const row = await env.DB.prepare("select seat_limit from pithy_organization_organizations").first<{
+      seat_limit: number | null;
+    }>();
+    // Null is "no limit", which is what every account had before this ran. Nothing is backfilled.
+    expect(row?.seat_limit).toBeNull();
+  });
+
+  test("down takes the column back out and leaves the table it was added to", async () => {
+    await organization_0002_seat_limit.up(db());
+    await organization_0002_seat_limit.down?.(db());
+    expect(await organizationColumns()).not.toContain("seat_limit");
+    expect(await catalog()).toEqual(EXPECTED_CATALOG);
+  });
+
+  test("up after down is clean", async () => {
+    await organization_0002_seat_limit.up(db());
+    await organization_0002_seat_limit.down?.(db());
+    await organization_0002_seat_limit.up(db());
+    expect(await organizationColumns()).toContain("seat_limit");
   });
 });

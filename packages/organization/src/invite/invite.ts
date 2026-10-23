@@ -9,8 +9,18 @@ import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { type CompiledQuery, sql } from "kysely";
 import { Invitation } from "../data/invitation";
 import { Membership } from "../data/membership";
-import { INVITATIONS_TABLE, MEMBERSHIPS_TABLE, type OrganizationDatabase, organizationDatabase } from "../data/tables";
-import { OrganizationForbiddenError, OrganizationInvitationInvalidError } from "../error/errors";
+import {
+  INVITATIONS_TABLE,
+  MEMBERSHIPS_TABLE,
+  ORGANIZATIONS_TABLE,
+  type OrganizationDatabase,
+  organizationDatabase,
+} from "../data/tables";
+import {
+  OrganizationForbiddenError,
+  OrganizationInvitationInvalidError,
+  OrganizationSeatLimitReachedError,
+} from "../error/errors";
 import type { RoleCatalog } from "../roles/roles";
 import { invitationDigest, mintInvitationToken } from "./token";
 
@@ -206,6 +216,7 @@ export async function invite<Power extends string, Role extends string>(
 export async function listInvitations(
   db: OrganizationDatabase,
   organizationId: string,
+  limit?: number,
 ): Promise<readonly Invitation[]> {
   const rows = await db
     .selectFrom(INVITATIONS_TABLE)
@@ -213,6 +224,10 @@ export async function listInvitations(
     .where("organizationId", "=", organizationId)
     .where("status", "=", "pending")
     .orderBy("createdAt", "desc")
+    // The id breaks a tie, so a bounded page is the same page twice. One past the bound, so a caller can
+    // say "there is more" as a fact — the shape `listMembers` uses. Absent, the account's whole list.
+    .orderBy("id", "desc")
+    .$if(limit !== undefined, (query) => query.limit((limit as number) + 1))
     .execute();
   return rows.map((row) => Invitation.parse(row));
 }
@@ -449,6 +464,15 @@ export async function acceptInvitation<Power extends string, Role extends string
     };
   }
 
+  /*
+    **A full account refuses the join (#624).** An operator sets the seat limit and an operator's add
+    counts against it; an offer accepted past it would make the limit a rule with a second door. Read in
+    front for the sentence, and carried in both statements below for the rule, so two acceptances racing
+    for the last seat cannot both land. The offer stays pending when this refuses: a seat that frees
+    makes it redeemable again, and the person was invited.
+  */
+  await refuseIfFull(db, invitation.organizationId);
+
   const membership = Membership.encode({
     id: (options.newId ?? (() => crypto.randomUUID()))(),
     organizationId: invitation.organizationId,
@@ -458,16 +482,27 @@ export async function acceptInvitation<Power extends string, Role extends string
   });
   const acceptedAt = SQLiteDate.encode(options.now);
 
+  // The seat limit, as a predicate both statements carry: the account has no limit, or room under it.
+  const roomFor = sql`(
+    (select seat_limit from pithy_organization_organizations where id = ${invitation.organizationId}) is null
+    or (select count(*) from pithy_organization_memberships where organization_id = ${invitation.organizationId})
+      < (select seat_limit from pithy_organization_organizations where id = ${invitation.organizationId})
+  )`;
   const join = sql`
     insert into pithy_organization_memberships (id, organization_id, user_id, role, created_at)
     select ${membership.id}, ${membership.organizationId}, ${membership.userId}, ${membership.role}, ${membership.createdAt}
     from pithy_organization_invitations
     where pithy_organization_invitations.id = ${invitation.id}
       and pithy_organization_invitations.status = 'pending'
+      and ${roomFor}
   `;
+  // The claim spends the offer only when this batch's insert landed, so a join refused for want of a seat
+  // leaves the offer pending rather than consumed with no membership behind it. The batch is one
+  // transaction and the insert runs first, so the row is visible here exactly when it was written.
   const claim = sql`
     update pithy_organization_invitations set status = 'accepted', accepted_at = ${acceptedAt}
     where id = ${invitation.id} and status = 'pending'
+      and exists (select 1 from pithy_organization_memberships where id = ${membership.id})
   `;
 
   let written: D1Result<unknown>[] | undefined;
@@ -526,6 +561,12 @@ export async function acceptInvitation<Power extends string, Role extends string
   // `undefined` is `withD1Retry`'s idempotency guard — a constraint failure on a *retry*, which it reads
   // as "my own earlier attempt committed". Here that inference is sound: the key it would have collided
   // on is the membership this call is creating, and nobody else can create that row.
+  if (written !== undefined && written[0]?.meta.changes !== 1) {
+    // The insert matched nothing, so the transaction wrote no membership. Either the last seat went
+    // between the read and the batch — asked again, so the refusal says so — or somebody else redeemed.
+    await refuseIfFull(db, invitation.organizationId);
+    throw invitationInvalid(`invitation ${invitation.id} was no longer pending when the batch ran`);
+  }
   if (written !== undefined && written[1]?.meta.changes !== 1) {
     // The claim matched nothing, so the insert's identical condition matched nothing either and the
     // transaction wrote no membership. Somebody else redeemed, or the offer moved under us.
@@ -538,6 +579,34 @@ export async function acceptInvitation<Power extends string, Role extends string
     role: role.data,
     joined: true,
   };
+}
+
+/**
+ * Refuse a join into an account at its seat limit.
+ *
+ * The person holding the offer is not inside yet, and this tells them the account is full and nothing
+ * else — the limit rides in `params` for the screen that wants to say it.
+ */
+async function refuseIfFull(db: OrganizationDatabase, organizationId: string): Promise<void> {
+  const organization = await db
+    .selectFrom(ORGANIZATIONS_TABLE)
+    .select(["seatLimit"])
+    .where("id", "=", organizationId)
+    .executeTakeFirst();
+  const seatLimit = organization?.seatLimit ?? null;
+  if (seatLimit === null) return;
+  const row = await db
+    .selectFrom(MEMBERSHIPS_TABLE)
+    .select((eb) => eb.fn.countAll<number>().as("members"))
+    .where("organizationId", "=", organizationId)
+    .executeTakeFirstOrThrow();
+  if (Number(row.members) < seatLimit) return;
+  throw new OrganizationSeatLimitReachedError({
+    message: "This organization has no free seat, so the invitation cannot be accepted yet.",
+    action: "Ask somebody who runs the organization to free a seat.",
+    detail: `organization ${organizationId} holds ${row.members} memberships against a seat limit of ${seatLimit}`,
+    params: { seatLimit },
+  });
 }
 
 /** The invitation as it stands once accepted, without a re-read of the row we just wrote. */

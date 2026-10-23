@@ -359,9 +359,8 @@ export type TransferResponse = z.output<typeof TransferResponse>;
  * ## The management surface, below
  *
  * Everything above answers a member's session. Everything below answers a control-plane credential the
- * adopter issued, and it is **read-only**: every mutation this capability ships is an administrative act
- * inside one account, audited against the membership that took it, and a management caller holds no
- * membership by design. `scopes.ts` argues it at length.
+ * adopter issued: two reads, and the writes of membership administration (#624), each recorded against
+ * the operator who took it. `scopes.ts` argues the scopes.
  *
  * Both listings are **bounded and say so**, rather than paged. A management client walking a tenant list
  * wants the first hundred and a truthful flag; a cursor would be machinery for a surface whose whole job
@@ -375,6 +374,15 @@ export const AdminOrganizationView = z
     name: z.string().describe("The display name."),
     slug: z.string().describe("The URL-safe short name."),
     members: z.number().int().min(0).describe("How many people are in the account."),
+    seatLimit: z
+      .number()
+      .int()
+      .min(1)
+      .nullable()
+      .optional()
+      .describe(
+        "How many members the account may hold, or null for no limit. Absent from a Worker older than seat limits (#624), which cannot say.",
+      ),
     createdAt: z.iso.datetime().describe("When the organization was created, ISO-8601."),
     updatedAt: z.iso.datetime().describe("When its row was last written, ISO-8601."),
   })
@@ -423,3 +431,53 @@ export const AdminMembersResponse = z
   })
   .describe("One tenant's roster, bounded, with an honest flag where it was cut short.");
 export type AdminMembersResponse = z.output<typeof AdminMembersResponse>;
+
+/** `POST` and `PATCH {base}/admin/organizations/:organizationId/members…` — the membership as it now stands. */
+export const AdminMemberResponse = z
+  .object({ member: AdminMemberView.describe("The membership, with the person behind it.") })
+  .describe("What an operator's add or role change left behind.");
+export type AdminMemberResponse = z.output<typeof AdminMemberResponse>;
+
+/** `DELETE {base}/admin/organizations/:organizationId/members/:membershipId`. */
+export const AdminRemovedMemberResponse = z
+  .object({
+    membershipId: z.uuid().describe("The membership that ended."),
+    userId: z.string().describe("The person it belonged to. Their selection of the account was cleared with it."),
+  })
+  .describe("Which membership an operator ended.");
+export type AdminRemovedMemberResponse = z.output<typeof AdminRemovedMemberResponse>;
+
+/** `POST {base}/admin/organizations/:organizationId/ownership`. */
+export const AdminOwnershipResponse = z
+  .object({
+    newHolderMembershipId: z.uuid().describe("Who owns it now."),
+    previousHolderMembershipIds: z
+      .array(z.uuid())
+      .describe(
+        "Who owned it before, in the same write. Empty for an account nobody owned. Plural for the reason `TransferResponse` gives.",
+      ),
+    previousOwner: z
+      .enum(["keep", "remove"])
+      .describe("What happened to them: kept at the role a transfer falls back to, or removed."),
+  })
+  .describe("A forced transfer of ownership: who holds it now, who held it, and what became of them.");
+export type AdminOwnershipResponse = z.output<typeof AdminOwnershipResponse>;
+
+/** `PATCH {base}/admin/organizations/:organizationId`. */
+export const AdminOrganizationResponse = z
+  .object({ organization: AdminOrganizationView.describe("The tenant, as the edit left it.") })
+  .describe("What an operator's edit of a tenant left behind.");
+export type AdminOrganizationResponse = z.output<typeof AdminOrganizationResponse>;
+
+/** `GET {base}/admin/organizations/:organizationId/invitations`. */
+export const AdminInvitationsResponse = z
+  .object({
+    invitations: z
+      .array(InvitationView)
+      .describe(
+        "What is outstanding, newest first — `pending` only, expired ones included, as the member route lists them.",
+      ),
+    truncated: z.boolean().describe("True when more are outstanding than the bound allowed."),
+  })
+  .describe("One tenant's outstanding invitations, bounded, with an honest flag where it was cut short.");
+export type AdminInvitationsResponse = z.output<typeof AdminInvitationsResponse>;

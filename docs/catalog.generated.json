@@ -1765,6 +1765,14 @@
       "remedy": "Run the `fix` command"
     },
     {
+      "code": "organization/already_member",
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
+    },
+    {
       "code": "organization/forbidden",
       "status": 403,
       "exitClass": "precondition",
@@ -1797,6 +1805,14 @@
       "remedy": "Run the `fix` command"
     },
     {
+      "code": "organization/last_owner",
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
+    },
+    {
       "code": "organization/nomination_invalid",
       "status": 400,
       "exitClass": "usage",
@@ -1807,6 +1823,14 @@
     {
       "code": "organization/not_found",
       "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
+    },
+    {
+      "code": "organization/seat_limit_reached",
+      "status": 409,
       "exitClass": "precondition",
       "exit": 3,
       "retryable": false,

@@ -4,6 +4,7 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { type AuthDatabase, authDatabase } from "@pithy-sh/auth/src/data/tables";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
@@ -18,9 +19,16 @@ import { migrateStep } from "@pithy-sh/core/src/migrations/migrateStep";
 import type { Context, Hono, MiddlewareHandler } from "hono";
 import { chooseActing, listActable, noSuchOrganization, resolveActing } from "../acting/acting";
 import { OrganizationAuditActions } from "../audit/actions";
-import { correlation, type OrganizationAuditEvent, recordOrganizationAction } from "../audit/emit";
+import {
+  correlation,
+  type OrganizationAuditEvent,
+  type OrganizationOperatorEvent,
+  recordOperatorAction,
+  recordOrganizationAction,
+} from "../audit/emit";
 import type { OrganizationConfig } from "../config/config";
 import { Invitation } from "../data/invitation";
+import { Membership } from "../data/membership";
 import { Organization } from "../data/organization";
 import {
   INVITATIONS_TABLE,
@@ -40,16 +48,22 @@ import {
 } from "../invite/invite";
 import { invitationDigest } from "../invite/token";
 import { type EnqueueInvitation, invitationAcceptUrl, sendInvitationMail } from "../mail/invitation";
+import { sendMembershipNotice } from "../mail/membership";
 import {
+  addMember,
   changeRole,
+  changeRoleAsOperator,
   leaveOrganization,
   listMembers,
+  type OwnerRule,
   removeMember,
+  removeMemberAsOperator,
   requireMayAssign,
   requireMembershipInOrganization,
 } from "../members/members";
 import {
   acceptNomination,
+  forceOwnership,
   nominate,
   type OwnershipRoles,
   standingNomination,
@@ -62,14 +76,20 @@ import {
   type OrganizationDeleteSweep,
   renameOrganization,
   setLogo,
+  updateOrganizationAsOperator,
 } from "../provision/provision";
 import type { KitPower, RoleCatalog } from "../roles/roles";
 import { type OrganizationGuardDeps, type OrganizationHonoEnv, requireOrganization, requirePower } from "./guard";
 import {
   AcceptInvitationResponse,
   ActingResponse,
+  AdminInvitationsResponse,
+  AdminMemberResponse,
   AdminMembersResponse,
+  AdminOrganizationResponse,
   AdminOrganizationsResponse,
+  AdminOwnershipResponse,
+  AdminRemovedMemberResponse,
   DeletedOrganizationResponse,
   InvitationOfferResponse,
   InvitationsResponse,
@@ -86,8 +106,16 @@ import {
 } from "./responses";
 import {
   AcceptInvitation,
+  AdminAddMember,
+  AdminChangeRole,
+  AdminForceOwnership,
+  AdminInvitationParam,
+  AdminInvitationsQuery,
   AdminListQuery,
+  AdminMembershipParam,
   AdminOrganizationParam,
+  AdminReason,
+  AdminUpdateOrganization,
   ChangeRole,
   ChooseOrganization,
   createOrganizationBody,
@@ -100,7 +128,13 @@ import {
   OrganizationMarkParam,
   UpdateOrganization,
 } from "./schemas";
-import { ORGANIZATION_ACCOUNTS_READ_SCOPE, ORGANIZATION_MEMBERS_READ_SCOPE } from "./scopes";
+import {
+  ORGANIZATION_ACCOUNTS_READ_SCOPE,
+  ORGANIZATION_ACCOUNTS_WRITE_SCOPE,
+  ORGANIZATION_MEMBERS_READ_SCOPE,
+  ORGANIZATION_MEMBERS_WRITE_SCOPE,
+  ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE,
+} from "./scopes";
 import {
   actingView,
   adminMemberView,
@@ -141,6 +175,26 @@ import {
  * | `GET    {base}/members/:membershipId/image`    | session        | `organization:read`   | param `MemberMarkParam`        |
  * | `GET    {base}/admin/organizations`            | control-plane  | scope                 | query `AdminListQuery`         |
  * | `GET    {base}/admin/organizations/:id/members`| control-plane  | scope                 | param + query                  |
+ * | `PATCH  {base}/admin/organizations/:id`        | control-plane  | `accounts:write`      | param + json `AdminUpdateOrganization` |
+ * | `POST   {base}/admin/organizations/:id/members`| control-plane  | `members:write` ¹     | param + json `AdminAddMember`  |
+ * | `PATCH  {base}/admin/…/members/:membershipId`  | control-plane  | `members:write` ¹     | param + json `AdminChangeRole` |
+ * | `DELETE {base}/admin/…/members/:membershipId`  | control-plane  | `members:write`       | param + json `AdminReason`     |
+ * | `GET    {base}/admin/…/invitations`            | control-plane  | `members:write`       | param + query `AdminInvitationsQuery` |
+ * | `POST   {base}/admin/…/invitations/:id/resend` | control-plane  | `members:write`       | param + json `AdminReason`     |
+ * | `DELETE {base}/admin/…/invitations/:id`        | control-plane  | `members:write`       | param + json `AdminReason`     |
+ * | `POST   {base}/admin/…/ownership`              | control-plane  | `ownership:transfer`  | param + json `AdminForceOwnership` |
+ *
+ * ¹ An add at the owning role, or a role change to or from it, also needs the connection to be granted
+ * `ownership:transfer`. Otherwise a roster credential could add a second owner and remove the first —
+ * a transfer by another door, with no ownership grant and no forced-ownership event.
+ *
+ * ## The operator's writes take no CSRF gate, and every one takes a reason
+ *
+ * A control-plane call is authenticated by a signed token in a header a browser never attaches on its
+ * own, so the cross-site request `requireSameOrigin()` exists to refuse cannot carry one. Its gate is
+ * `requireControlPlane(scope)`, first on the line, ahead of every validator — the same ordering rule,
+ * for the same reason. The reason is a required field of every body and of the one query, and it reaches
+ * the trail through `recordOperatorAction` with the operator, the connection and the subject beside it.
  *
  * ## Three routes name an organization, and every other one is the session's
  *
@@ -188,7 +242,11 @@ export interface OrganizationRouteDeclaration {
   readonly power?: KitPower;
   /** The control-plane scope, for a `control-plane` route. */
   readonly scope?: ControlPlaneScope;
-  /** Whether the route changes something, and therefore wears `requireSameOrigin()`. */
+  /**
+   * Whether the route changes something. A mutating `session` route wears `requireSameOrigin()`; a
+   * mutating `control-plane` route is authenticated by a signed header no browser sends on its own, and
+   * wears `requireControlPlane(scope)` first instead.
+   */
   readonly mutating: boolean;
   /** Whether the route exists only where {@link OrganizationRoutesOptions.ownership} is wired. */
   readonly ownership?: true;
@@ -288,6 +346,65 @@ export const ORGANIZATION_ROUTES: readonly OrganizationRouteDeclaration[] = [
     strategy: "control-plane",
     scope: ORGANIZATION_MEMBERS_READ_SCOPE,
     mutating: false,
+  },
+  // Membership administration (#624). Every one takes a reason; each scope names a blast radius.
+  {
+    method: "PATCH",
+    path: "/admin/organizations/:organizationId",
+    strategy: "control-plane",
+    scope: ORGANIZATION_ACCOUNTS_WRITE_SCOPE,
+    mutating: true,
+  },
+  {
+    method: "POST",
+    path: "/admin/organizations/:organizationId/members",
+    strategy: "control-plane",
+    scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
+    mutating: true,
+  },
+  {
+    method: "PATCH",
+    path: "/admin/organizations/:organizationId/members/:membershipId",
+    strategy: "control-plane",
+    scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
+    mutating: true,
+  },
+  {
+    method: "DELETE",
+    path: "/admin/organizations/:organizationId/members/:membershipId",
+    strategy: "control-plane",
+    scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
+    mutating: true,
+  },
+  // A read, under the write scope: the list is addresses, and it is read to fix one of them.
+  {
+    method: "GET",
+    path: "/admin/organizations/:organizationId/invitations",
+    strategy: "control-plane",
+    scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
+    mutating: false,
+  },
+  {
+    method: "POST",
+    path: "/admin/organizations/:organizationId/invitations/:invitationId/resend",
+    strategy: "control-plane",
+    scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
+    mutating: true,
+  },
+  {
+    method: "DELETE",
+    path: "/admin/organizations/:organizationId/invitations/:invitationId",
+    strategy: "control-plane",
+    scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
+    mutating: true,
+  },
+  {
+    method: "POST",
+    path: "/admin/organizations/:organizationId/ownership",
+    strategy: "control-plane",
+    scope: ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE,
+    mutating: true,
+    ownership: true,
   },
 ];
 
@@ -446,6 +563,83 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
       sessionId: c.var.auth?.sessionId ?? null,
     });
   }
+
+  /** The verified management caller. Every route calling this has `requireControlPlane` above it. */
+  function operator(c: Ctx): ControlPlaneContext {
+    const caller = c.var.controlPlane;
+    if (!caller) {
+      throw new InternalError({
+        detail: "requireControlPlane() must run before an operator handler reads the caller.",
+      });
+    }
+    return caller;
+  }
+
+  /** Record one operator act inside `organizationId`, with this request's correlation and the verified caller. */
+  async function recordOperator(
+    c: Ctx,
+    organizationId: string,
+    event: Omit<OrganizationOperatorEvent, "operator" | "ip" | "userAgent" | "requestId">,
+  ): Promise<void> {
+    const caller = operator(c);
+    await recordOperatorAction(c.var.emit, {
+      ...event,
+      operator: { organizationId, subject: caller.subject, connectionId: caller.connectionId },
+      ...correlation(c.req.raw.headers),
+      requestId: c.req.header("cf-ray") ?? null,
+    });
+  }
+
+  /**
+   * The tenant an operator route names, or the ordinary 404.
+   *
+   * A 404 and never a 403: the caller has already been verified and scoped, so the only thing left to say
+   * about an id is whether it names an account. Asked first on every operator route, so a refusal about a
+   * member or a role is never what an operator naming a typo'd account is told.
+   */
+  async function operatorOrganization(c: Ctx, organizationId: string): Promise<Organization> {
+    const found = await findOrganization(db(c), organizationId);
+    if (!found) throw noSuchOrganization(`operator named organization ${organizationId}, which does not exist`);
+    return found;
+  }
+
+  /**
+   * The owning role, as the operator's roster writes read it, or nothing where there is no transfer.
+   *
+   * `mayConfer` is the connection's own ownership grant: a roster write that moves the owning role is a
+   * transfer by another door, and `organization:members:write` alone must not be able to make one.
+   */
+  function ownerRule(c: Ctx, organizationId: string): OwnerRule<Role> | undefined {
+    if (!options.ownership) return undefined;
+    return {
+      role: options.ownership.confers,
+      transferRoute: `${base}/admin/organizations/${organizationId}/ownership`,
+      mayConfer: operator(c).grantedScopes.includes(ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE),
+    };
+  }
+
+  /** One membership row, decoded, or the ordinary member 404. */
+  async function readMembership(
+    database: OrganizationDatabase,
+    organizationId: string,
+    id: string,
+  ): Promise<Membership> {
+    const row = await database
+      .selectFrom(MEMBERSHIPS_TABLE)
+      .selectAll()
+      .where("id", "=", id)
+      .where("organizationId", "=", organizationId)
+      .executeTakeFirst();
+    if (!row)
+      throw new NotFoundError({
+        message: "No such member.",
+        detail: `membership ${id} is gone from ${organizationId}`,
+      });
+    return Membership.parse(row);
+  }
+
+  /** The enqueue seam for this request, or undefined where no email is composed. */
+  const mailer = (c: Ctx): EnqueueInvitation | undefined => options.enqueue?.(c.env as Record<string, unknown>);
 
   /**
    * The refusals worth a row, and the reason each one is.
@@ -1561,7 +1755,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
       },
     );
 
-    // ── the management surface: two reads, and no writes ───────────────────────────────────────
+    // ── the management surface: two reads ──────────────────────────────────────────────────────
 
     app.get(
       `${base}/admin/organizations`,
@@ -1611,6 +1805,10 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
       validate("query", AdminListQuery),
       async (c) => {
         const limit = c.req.valid("query").limit ?? MAX_PAGE_SIZE;
+        // An account that does not exist is a 404, not an empty roster: "nobody is in it" and "there is no
+        // it" are two answers, and a support pane that rendered the first for a typo'd id would send
+        // somebody looking for people who were never there.
+        await operatorOrganization(c, c.req.valid("param").organizationId);
         // The limit goes to the statement, the way the accounts listing above does it. One row past the
         // bound comes back, so `truncated` is a fact the page carries rather than an inference from a
         // full one — and D1 is never asked for a whole tenant's roster to throw most of it away.
@@ -1626,6 +1824,440 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
         } satisfies AdminMembersResponse);
       },
     );
+
+    // ── membership administration: an operator's writes, each with a reason (#624) ────────────────
+
+    app.patch(
+      `${base}/admin/organizations/:organizationId`,
+      describeRoute({
+        summary: "Rename a tenant, give it a free short name, or set its seat limit.",
+        description: "A short name another tenant holds is refused, naming that tenant. Takes a reason.",
+        verification: "control-plane",
+        scopes: [ORGANIZATION_ACCOUNTS_WRITE_SCOPE],
+        responses: { 200: AdminOrganizationResponse },
+      }),
+      gate(ORGANIZATION_ACCOUNTS_WRITE_SCOPE),
+      validate("param", AdminOrganizationParam),
+      validate("json", AdminUpdateOrganization),
+      async (c) => {
+        const { organizationId } = c.req.valid("param");
+        const body = c.req.valid("json");
+        await operatorOrganization(c, organizationId);
+        const updated = await updateOrganizationAsOperator(d1(c), {
+          organizationId,
+          ...(body.name !== undefined ? { name: body.name } : {}),
+          ...(body.slug !== undefined ? { slug: body.slug } : {}),
+          ...(body.seatLimit !== undefined ? { seatLimit: body.seatLimit } : {}),
+          now: clock(),
+        });
+        await recordOperator(c, organizationId, {
+          action: OrganizationAuditActions.adminOrganizationUpdated,
+          reason: body.reason,
+          resource: { type: "organization", id: organizationId },
+          // What it is now, field by field, and only the fields the request named.
+          facts: {
+            ...(body.name !== undefined ? { name: updated.name } : {}),
+            ...(body.slug !== undefined ? { slug: updated.slug } : {}),
+            ...(body.seatLimit !== undefined ? { seatLimit: updated.seatLimit ?? null } : {}),
+          },
+        });
+        const counts = await memberCounts(db(c), [organizationId]);
+        return c.json({
+          organization: adminOrganizationView(updated, counts.get(organizationId) ?? 0),
+        } satisfies AdminOrganizationResponse);
+      },
+    );
+
+    /**
+     * Add an existing user to a tenant, directly.
+     *
+     * **A membership, not an invitation**, because an operator adding somebody has already established that
+     * they belong. The tenant is resolved first and the user second, so a typo'd account is a 404 about the
+     * account and a typo'd user is a 404 about the user — never a 403, since the caller is already scoped.
+     */
+    app.post(
+      `${base}/admin/organizations/:organizationId/members`,
+      describeRoute({
+        summary: "Add an existing user to a tenant, at a named role.",
+        description:
+          "Refused for somebody already in it, naming their role, and past the seat limit unless the request overrides it. Adding at the owning role also needs the connection to hold organization:ownership:transfer. Takes a reason.",
+        verification: "control-plane",
+        scopes: [ORGANIZATION_MEMBERS_WRITE_SCOPE],
+        responses: { 201: AdminMemberResponse },
+      }),
+      gate(ORGANIZATION_MEMBERS_WRITE_SCOPE),
+      validate("param", AdminOrganizationParam),
+      validate("json", AdminAddMember),
+      async (c) => {
+        const { organizationId } = c.req.valid("param");
+        const body = c.req.valid("json");
+        const organization = await operatorOrganization(c, organizationId);
+        const person = (await readPeople(auth(c), [body.userId])).get(body.userId);
+        if (!person) {
+          throw new NotFoundError({
+            message: "No such user.",
+            detail: `operator add of user ${body.userId}, who has no pithy_auth_users row`,
+          });
+        }
+        const added = await addMember(d1(c), catalog, {
+          organizationId,
+          userId: body.userId,
+          role: body.role,
+          overrideSeatLimit: body.overrideSeatLimit ?? false,
+          now: clock(),
+          newId: ids,
+          owner: ownerRule(c, organizationId),
+        });
+        const mailed = await sendMembershipNotice(config, mailer(c), {
+          notice: "memberAdded",
+          to: person,
+          organizationName: organization.name,
+          role: added.membership.role,
+        });
+        await recordOperator(c, organizationId, {
+          action: OrganizationAuditActions.adminMemberAdded,
+          reason: body.reason,
+          resource: { type: "membership", id: added.membership.id },
+          facts: {
+            role: added.membership.role,
+            subjectUserId: body.userId,
+            seatLimit: added.seatLimit,
+            // Only true when the add went past the limit because the request said to.
+            overrodeSeatLimit: added.overrodeSeatLimit,
+            mailed,
+          },
+        });
+        return c.json({ member: adminMemberView(added.membership, person) } satisfies AdminMemberResponse, 201);
+      },
+    );
+
+    app.patch(
+      `${base}/admin/organizations/:organizationId/members/:membershipId`,
+      describeRoute({
+        summary: "Change a member's role to any role the catalog declares.",
+        description:
+          "To and from the owning role, which also needs the connection to hold organization:ownership:transfer. Demoting the last owner is refused, naming the ownership route; demoting the last administrator is refused. Takes a reason.",
+        verification: "control-plane",
+        scopes: [ORGANIZATION_MEMBERS_WRITE_SCOPE],
+        responses: { 200: AdminMemberResponse },
+      }),
+      gate(ORGANIZATION_MEMBERS_WRITE_SCOPE),
+      validate("param", AdminMembershipParam),
+      validate("json", AdminChangeRole),
+      async (c) => {
+        const { organizationId, membershipId } = c.req.valid("param");
+        const body = c.req.valid("json");
+        await operatorOrganization(c, organizationId);
+        const database = db(c);
+        const changed = await changeRoleAsOperator(d1(c), catalog, {
+          organizationId,
+          membershipId,
+          role: body.role,
+          owner: ownerRule(c, organizationId),
+        });
+        await recordOperator(c, organizationId, {
+          action: OrganizationAuditActions.adminMemberRoleChanged,
+          reason: body.reason,
+          resource: { type: "membership", id: changed.membership.id },
+          facts: {
+            role: changed.membership.role,
+            previousRole: changed.previousRole,
+            subjectUserId: changed.membership.userId,
+          },
+        });
+        const membership = await readMembership(database, organizationId, changed.membership.id);
+        const person = (await readPeople(auth(c), [membership.userId])).get(membership.userId);
+        return c.json({ member: adminMemberView(membership, person) } satisfies AdminMemberResponse);
+      },
+    );
+
+    app.delete(
+      `${base}/admin/organizations/:organizationId/members/:membershipId`,
+      describeRoute({
+        summary: "Remove a member from a tenant, and clear their selection of it.",
+        description:
+          "Never the last owner — the refusal names the ownership route — and never the last administrator. Removing an owner also needs the connection to hold organization:ownership:transfer. Takes a reason, in the body.",
+        verification: "control-plane",
+        scopes: [ORGANIZATION_MEMBERS_WRITE_SCOPE],
+        responses: { 200: AdminRemovedMemberResponse },
+      }),
+      gate(ORGANIZATION_MEMBERS_WRITE_SCOPE),
+      validate("param", AdminMembershipParam),
+      validate("json", AdminReason),
+      async (c) => {
+        const { organizationId, membershipId } = c.req.valid("param");
+        const body = c.req.valid("json");
+        const organization = await operatorOrganization(c, organizationId);
+        const removed = await removeMemberAsOperator(d1(c), catalog, {
+          organizationId,
+          membershipId,
+          owner: ownerRule(c, organizationId),
+        });
+        const person = (await readPeople(auth(c), [removed.userId])).get(removed.userId);
+        const mailed = person
+          ? await sendMembershipNotice(config, mailer(c), {
+              notice: "memberRemoved",
+              to: person,
+              organizationName: organization.name,
+            })
+          : null;
+        await recordOperator(c, organizationId, {
+          action: OrganizationAuditActions.adminMemberRemoved,
+          reason: body.reason,
+          resource: { type: "membership", id: removed.id },
+          facts: { role: removed.role, subjectUserId: removed.userId, mailed },
+        });
+        return c.json({ membershipId: removed.id, userId: removed.userId } satisfies AdminRemovedMemberResponse);
+      },
+    );
+
+    app.get(
+      `${base}/admin/organizations/:organizationId/invitations`,
+      describeRoute({
+        summary: "List a tenant's outstanding invitations, to fix one.",
+        description:
+          "Under the write scope, because the list is addresses and it is read to change one. The reason is recorded.",
+        verification: "control-plane",
+        scopes: [ORGANIZATION_MEMBERS_WRITE_SCOPE],
+        responses: { 200: AdminInvitationsResponse },
+      }),
+      gate(ORGANIZATION_MEMBERS_WRITE_SCOPE),
+      validate("param", AdminOrganizationParam),
+      validate("query", AdminInvitationsQuery),
+      async (c) => {
+        const { organizationId } = c.req.valid("param");
+        const query = c.req.valid("query");
+        await operatorOrganization(c, organizationId);
+        const limit = query.limit ?? MAX_PAGE_SIZE;
+        const invitations = await listInvitations(db(c), organizationId, limit);
+        const page = invitations.slice(0, limit);
+        await recordOperator(c, organizationId, {
+          action: OrganizationAuditActions.adminInvitationsListed,
+          reason: query.reason,
+          resource: { type: "organization", id: organizationId },
+          // A count, never the rows: the trail is not a second copy of who was invited.
+          facts: { count: page.length, truncated: invitations.length > limit },
+        });
+        return c.json({
+          invitations: page.map(invitationView),
+          truncated: invitations.length > limit,
+        } satisfies AdminInvitationsResponse);
+      },
+    );
+
+    /**
+     * Send an invitation again, with a fresh link — the fix for one that expired or went astray.
+     *
+     * **Expired or not**, because an expired offer is exactly the one an operator is asked to fix, and
+     * `resendInvitation` restarts its life with a new token and kills the old one. The mail names the
+     * person who first invited them, since that is whose offer it is; the operator's reason stays in the
+     * trail.
+     */
+    app.post(
+      `${base}/admin/organizations/:organizationId/invitations/:invitationId/resend`,
+      describeRoute({
+        summary: "Send a tenant's invitation again, with a fresh link.",
+        description: "Expired or not. The old link stops working. Takes a reason.",
+        verification: "control-plane",
+        scopes: [ORGANIZATION_MEMBERS_WRITE_SCOPE],
+        responses: { 200: InviteResponse },
+      }),
+      gate(ORGANIZATION_MEMBERS_WRITE_SCOPE),
+      validate("param", AdminInvitationParam),
+      validate("json", AdminReason),
+      async (c) => {
+        const { organizationId, invitationId } = c.req.valid("param");
+        const body = c.req.valid("json");
+        const organization = await operatorOrganization(c, organizationId);
+        const database = db(c);
+
+        const enqueue = config.sendInvitationEmail ? mailer(c) : undefined;
+        if (config.sendInvitationEmail && !enqueue) {
+          throw new InternalError({
+            message: "That invitation could not be sent.",
+            action: "Add `email(...)` to this Worker's capabilities, or set `sendInvitationEmail: false`.",
+            detail: "sendInvitationEmail is true and no email capability published an enqueue seam",
+          });
+        }
+        invitationAcceptUrl(config, "preflight");
+
+        const existing = await requireInvitationInOrganization(database, organizationId, invitationId);
+        // A role the catalog no longer assigns is dead rather than renewable: acceptance would refuse it,
+        // so a fresh link would be a fresh refusal mailed to somebody.
+        if (!catalog.AssignableRole.safeParse(existing.role).success) {
+          throw offerInvalid(
+            `invitation ${existing.id} offers role ${JSON.stringify(existing.role)}, which this catalog no longer assigns`,
+          );
+        }
+        const minted = await resendInvitation(database, {
+          organizationId,
+          invitationId: existing.id,
+          ttlDays: config.invitationTtlDays,
+          now: clock(),
+        });
+        const acceptUrl = invitationAcceptUrl(config, minted.token);
+
+        let sent: string | null = null;
+        if (enqueue) {
+          const inviter = (await readPeople(auth(c), [existing.invitedByUserId])).get(existing.invitedByUserId);
+          const result = await sendInvitationMail(enqueue, {
+            to: minted.invitation.email,
+            organizationName: organization.name,
+            inviterName: inviter?.name?.trim() || "Somebody",
+            acceptUrl,
+          });
+          sent = result.status;
+        }
+
+        await recordOperator(c, organizationId, {
+          action: OrganizationAuditActions.adminInvitationResent,
+          reason: body.reason,
+          resource: { type: "invitation", id: minted.invitation.id },
+          facts: { role: minted.invitation.role, mailed: sent },
+        });
+        return c.json({
+          invitation: invitationView(minted.invitation),
+          acceptUrl: enqueue ? null : acceptUrl,
+        } satisfies InviteResponse);
+      },
+    );
+
+    app.delete(
+      `${base}/admin/organizations/:organizationId/invitations/:invitationId`,
+      describeRoute({
+        summary: "Revoke a tenant's invitation, so its link stops working.",
+        description: "Takes a reason, in the body.",
+        verification: "control-plane",
+        scopes: [ORGANIZATION_MEMBERS_WRITE_SCOPE],
+        responses: { 200: WithdrawnInvitationResponse },
+      }),
+      gate(ORGANIZATION_MEMBERS_WRITE_SCOPE),
+      validate("param", AdminInvitationParam),
+      validate("json", AdminReason),
+      async (c) => {
+        const { organizationId, invitationId } = c.req.valid("param");
+        const body = c.req.valid("json");
+        await operatorOrganization(c, organizationId);
+        const invitation = await withdrawInvitation(db(c), { organizationId, invitationId, now: clock() });
+        await recordOperator(c, organizationId, {
+          action: OrganizationAuditActions.adminInvitationRevoked,
+          reason: body.reason,
+          resource: { type: "invitation", id: invitation.id },
+          facts: { role: invitation.role },
+        });
+        return c.json({ invitation: invitationView(invitation) } satisfies WithdrawnInvitationResponse);
+      },
+    );
+
+    const transfer = options.ownership;
+    if (transfer) {
+      /**
+       * Make a member the owner now. The break-glass path for an owner who has gone.
+       *
+       * **Mounted only where the project wires a transfer**, for the reason the member ownership routes are:
+       * a catalog with nothing to own has no owner to force. Its own scope, so a credential that may fix a
+       * roster cannot hand an account to somebody, and recorded at `warning`, because the account changed
+       * hands and this is the act whose reason matters most.
+       */
+      app.post(
+        `${base}/admin/organizations/:organizationId/ownership`,
+        describeRoute({
+          summary: "Make a member the owner now, with no nomination and no acceptance.",
+          description:
+            "The previous owner is kept, at the role a transfer falls back to, or removed, as the request says. Takes a reason.",
+          verification: "control-plane",
+          scopes: [ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE],
+          responses: { 200: AdminOwnershipResponse },
+        }),
+        gate(ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE),
+        validate("param", AdminOrganizationParam),
+        validate("json", AdminForceOwnership),
+        async (c) => {
+          const { organizationId } = c.req.valid("param");
+          const body = c.req.valid("json");
+          const organization = await operatorOrganization(c, organizationId);
+          const forced = await forceOwnership(d1(c), catalog, {
+            organizationId,
+            membershipId: body.membershipId,
+            previousOwner: body.previousOwner,
+            roles: transfer,
+          });
+
+          const people = await readPeople(auth(c), [
+            forced.newHolder.userId,
+            ...forced.previousHolders.map((holder) => holder.userId),
+          ]);
+          const owner = people.get(forced.newHolder.userId);
+          const mailed = owner
+            ? await sendMembershipNotice(config, mailer(c), {
+                notice: "ownershipTransferred",
+                to: owner,
+                organizationName: organization.name,
+              })
+            : null;
+          /*
+            **Each previous holder gets an event of their own**, naming them, with this request's reason.
+            A fact cannot be a list — `AuditFact` refuses containers — and with `remove` the membership is
+            gone in the same batch, so without these nothing in the append-only trail would say whose
+            ownership this act ended. A removed holder is a member removed by an operator, and is told so.
+          */
+          for (const holder of forced.previousHolders) {
+            if (forced.removed) {
+              const person = people.get(holder.userId);
+              const removedMail = person
+                ? await sendMembershipNotice(config, mailer(c), {
+                    notice: "memberRemoved",
+                    to: person,
+                    organizationName: organization.name,
+                  })
+                : null;
+              await recordOperator(c, organizationId, {
+                action: OrganizationAuditActions.adminMemberRemoved,
+                reason: body.reason,
+                resource: { type: "membership", id: holder.id },
+                facts: {
+                  role: transfer.confers,
+                  subjectUserId: holder.userId,
+                  forcedOwnershipTo: forced.newHolder.id,
+                  mailed: removedMail,
+                },
+              });
+            } else {
+              await recordOperator(c, organizationId, {
+                action: OrganizationAuditActions.adminMemberRoleChanged,
+                reason: body.reason,
+                resource: { type: "membership", id: holder.id },
+                facts: {
+                  role: transfer.demotesTo,
+                  previousRole: transfer.confers,
+                  subjectUserId: holder.userId,
+                  forcedOwnershipTo: forced.newHolder.id,
+                },
+              });
+            }
+          }
+
+          await recordOperator(c, organizationId, {
+            action: OrganizationAuditActions.adminOwnershipForced,
+            reason: body.reason,
+            resource: { type: "membership", id: forced.newHolder.id },
+            severity: "warning",
+            facts: {
+              confers: transfer.confers,
+              subjectUserId: forced.newHolder.userId,
+              previousOwner: body.previousOwner,
+              previousHolders: forced.previousHolders.length,
+              mailed,
+            },
+          });
+          return c.json({
+            newHolderMembershipId: forced.newHolder.id,
+            previousHolderMembershipIds: forced.previousHolders.map((holder) => holder.id),
+            previousOwner: body.previousOwner,
+          } satisfies AdminOwnershipResponse);
+        },
+      );
+    }
   };
 
   /** How many people each named organization holds, in one grouped statement per chunk. */

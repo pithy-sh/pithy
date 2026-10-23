@@ -58,11 +58,11 @@ Counting a role *name* gets this wrong in both directions. In the nesting catalo
 
 ## Assignability is derived by exclusion
 
-`unassignable` names the roles nobody may hand another person. Everything else is assignable.
+`unassignable` names the roles no member may hand another person. Everything else is assignable. An operator is not bound by it: the control plane's membership administration may add a member at, or change a role to, any role the catalog declares ([README](../README.md#membership-administration)).
 
 Derived by exclusion rather than listed, so a role added to the catalog is assignable by default and *excluding* it is the deliberate act. The alternative fails the quiet way: a new role nobody can be given, discovered weeks later when somebody asks why the dropdown is short.
 
-The dashboard excludes `owner`, and that exclusion is the whole of its ownership model. Ownership is who pays the bill and signs, so it is accepted rather than conferred: it moves only by a two-party transfer, and a newly founded organization therefore has none. The founder gets the first declared role that administers **and may be assigned** — being first is not owning.
+The dashboard excludes `owner`, and that exclusion is the whole of its ownership model. Ownership is who pays the bill and signs, so it is accepted rather than conferred: inside the account it moves only by a two-party transfer, and a newly founded organization therefore has none. The one other way is an operator forcing it through the control plane, the break-glass path for an owner who has gone. The founder gets the first declared role that administers **and may be assigned** — being first is not owning.
 
 **Handing somebody an administering role goes through one predicate, and both doors call it.** Offering a role in an invitation and promoting a member to it are the same act arriving by two routes. A rule checked in one of the two is a rule with a second door.
 
