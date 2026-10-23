@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { JsonDate } from "@pithy-sh/core/src/data/codecs";
 import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { z } from "zod";
 import { DevicePlatform } from "../data/device";
+import { MAX_REASON } from "../lifecycle/reason";
 
 /**
  * The request schemas for the auth routes Pithy owns. Validation happens at the HTTP boundary
@@ -116,3 +118,47 @@ export const RevokeSessionBody = z
   })
   .describe("The body identifying which single session to revoke.");
 export type RevokeSessionBody = z.output<typeof RevokeSessionBody>;
+
+/**
+ * Why an account's access is changing — required on both lifecycle routes (#621).
+ *
+ * Trimmed, then bounded by the same constant the transition enforces, so a reason the transition would refuse
+ * is a 400 here rather than a conflict later. Required rather than defaulted: a suspension nobody explained is
+ * a lockout the person cannot answer, and the trail would record nothing about why.
+ */
+const LifecycleReason = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MAX_REASON)
+  .describe(
+    "Why, in a sentence written for the person. A suspension's reason is what every refused sign-in shows them.",
+  );
+
+/** Whether the person is mailed. */
+const Notify = z
+  .boolean()
+  .optional()
+  .describe(
+    "Whether to mail the person. Absent is true. The config can turn a lifecycle mail off for every call; this turns it off for one.",
+  );
+
+/** The body of `POST /admin/users/:userId/suspend`. */
+export const SuspendUserBody = z
+  .object({
+    reason: LifecycleReason,
+    until: JsonDate.optional().describe(
+      "When the suspension ends by itself, as an ISO-8601 timestamp. Must be in the future. Absent lasts until a reinstatement. Nothing is written when it passes.",
+    ),
+    notify: Notify,
+  })
+  .describe(
+    "A suspension: why, until when, and whether to tell the person. Suspending a suspended account restates the reason and the end.",
+  );
+export type SuspendUserBody = z.output<typeof SuspendUserBody>;
+
+/** The body of `POST /admin/users/:userId/reinstate`. */
+export const ReinstateUserBody = z
+  .object({ reason: LifecycleReason, notify: Notify })
+  .describe("A reinstatement: why, and whether to tell the person. It restores no session.");
+export type ReinstateUserBody = z.output<typeof ReinstateUserBody>;

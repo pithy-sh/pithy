@@ -5136,6 +5136,256 @@
         ]
       }
     },
+    "/auth/admin/users/{userId}/suspend": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "postAuthAdminUsersByUserIdSuspend",
+        "summary": "Suspend one user, with a reason: their sessions end and every sign-in is refused.",
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The user's id, as `pithy_auth_users.id` stores it.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A suspension: why, until when, and whether to tell the person. Suspending a suspended account restates the reason and the end.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why, in a sentence written for the person. A suspension's reason is what every refused sign-in shows them."
+                  },
+                  "until": {
+                    "description": "When the suspension ends by itself, as an ISO-8601 timestamp. Must be in the future. Absent lasts until a reinstatement. Nothing is written when it passes.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {}
+                    ]
+                  },
+                  "notify": {
+                    "description": "Whether to mail the person. Absent is true. The config can turn a lifecycle mail off for every call; this turns it off for one.",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "description": "A suspension: why, until when, and whether to tell the person. Suspending a suspended account restates the reason and the end."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A suspended account: since when, until when, how many sessions it cost, and whether the person was told.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "userId": {
+                      "type": "string",
+                      "description": "The account suspended, as `pithy_auth_users.id` stores it."
+                    },
+                    "state": {
+                      "type": "string",
+                      "const": "suspended",
+                      "description": "Where the account stands now. Every sign-in and refresh is refused."
+                    },
+                    "outcome": {
+                      "type": "string",
+                      "enum": [
+                        "suspended",
+                        "updated"
+                      ],
+                      "description": "`suspended` when this call suspended an account in good standing; `updated` when it was already suspended and this call restated the reason and the end."
+                    },
+                    "suspendedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the suspension in force began, ISO-8601. A restatement keeps the original start."
+                    },
+                    "suspendedUntil": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "When it ends by itself, ISO-8601, with nothing written to end it. Null lasts until a reinstatement."
+                    },
+                    "sessionsRevoked": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "How many sessions were revoked. Zero is a success: revoking nothing is the idempotent case."
+                    },
+                    "mailed": {
+                      "type": "boolean",
+                      "description": "Whether the account-suspended mail was enqueued. False for `notify: false`, when the config turns it off, or when no email capability is composed."
+                    }
+                  },
+                  "required": [
+                    "userId",
+                    "state",
+                    "outcome",
+                    "suspendedAt",
+                    "suspendedUntil",
+                    "sessionsRevoked",
+                    "mailed"
+                  ],
+                  "description": "A suspended account: since when, until when, how many sessions it cost, and whether the person was told."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "auth:users:suspend"
+        ]
+      }
+    },
+    "/auth/admin/users/{userId}/reinstate": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "postAuthAdminUsersByUserIdReinstate",
+        "summary": "Lift one user's suspension, with a reason. They sign in again; no session is restored.",
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The user's id, as `pithy_auth_users.id` stores it.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A reinstatement: why, and whether to tell the person. It restores no session.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why, in a sentence written for the person. A suspension's reason is what every refused sign-in shows them."
+                  },
+                  "notify": {
+                    "description": "Whether to mail the person. Absent is true. The config can turn a lifecycle mail off for every call; this turns it off for one.",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "description": "A reinstatement: why, and whether to tell the person. It restores no session."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A reinstated account, and whether the person was told. Its revoked sessions stay revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "userId": {
+                      "type": "string",
+                      "description": "The account reinstated, as `pithy_auth_users.id` stores it."
+                    },
+                    "state": {
+                      "type": "string",
+                      "const": "active",
+                      "description": "Where the account stands now. It can sign in again."
+                    },
+                    "outcome": {
+                      "type": "string",
+                      "enum": [
+                        "reinstated",
+                        "unchanged"
+                      ],
+                      "description": "`reinstated` when this call lifted a suspension; `unchanged` when there was none in force — never suspended, or past its end — and nothing was written."
+                    },
+                    "mailed": {
+                      "type": "boolean",
+                      "description": "Whether the account-reinstated mail was enqueued. Always false for `unchanged`, and on the same rule as a suspension's otherwise."
+                    }
+                  },
+                  "required": [
+                    "userId",
+                    "state",
+                    "outcome",
+                    "mailed"
+                  ],
+                  "description": "A reinstated account, and whether the person was told. Its revoked sessions stay revoked."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "auth:users:suspend"
+        ]
+      }
+    },
     "/auth/{path}": {
       "get": {
         "tags": [

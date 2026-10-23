@@ -1,6 +1,6 @@
 # Account lifecycle
 
-An account can be suspended or deleted. The kit holds the state, enforces it at every door, records every transition, and sends the mail. The routes that suspend, delete, restore and export arrive with their own issues, and so does the purge that erases a deleted account's data: the suspend routes with #621, the delete, restore and export routes and the purge Workflow with #622. This page is the seam they are built on.
+An account can be suspended or deleted. The kit holds the state, enforces it at every door, records every transition, and sends the mail. An operator suspends and reinstates an account through two control-plane routes, below. The delete, restore and export routes, and the purge that erases a deleted account's data, arrive with #622.
 
 ## Two states
 
@@ -36,7 +36,9 @@ A magic link for a refused account returns to the screen it named, with the code
 
 `pithy_auth_user_lifecycle` holds every transition: the action, the actor, the reason, the time. The columns say what is true now; the table says what happened and who did it. The two are written in one transaction, so neither is ever there without the other. It has no foreign key to the user, because a purge erases the user row and this record must outlive it. It is the one `pithy_auth_*` row the purge will leave behind.
 
-A transition that finds the account already where it was asked to put it does nothing: no row, no event, no mail, no hook. A suspension past its end counts as no suspension, so reinstating it is nothing too. A deleted account cannot be suspended or reinstated; restore it first, and its suspension is still there to lift.
+A transition that finds the account already where it was asked to put it does nothing: no row, no event, no mail, no hook. The control-plane routes still record the call on the trail, as below. A suspension past its end counts as no suspension, so reinstating it is nothing too. A deleted account cannot be suspended or reinstated; restore it first, and its suspension is still there to lift.
+
+Suspending an account that is already suspended is the one exception. It restates the suspension: the new reason and end replace the old, a row records them, and the mail and the audit event go out. The start stays, and no hook fires, because the account was suspended and still is.
 
 Each transition also writes an audit event: `auth/admin_user_suspended`, `auth/admin_user_reinstated`, `auth/admin_user_soft_deleted`, `auth/admin_user_restored`, `auth/admin_user_purged`, and `auth/user_self_deleted` when the account's holder deletes it.
 
@@ -49,6 +51,27 @@ Reading a user, ending their access, and erasing them are three grants, beside `
 - `auth:users:export` — everything the kit holds about one account, for an access request.
 
 None of them is implied by another. See [CONTROL-PLANE.md](../../../docs/CONTROL-PLANE.md) for how a connection is granted one.
+
+## Suspend and reinstate
+
+Two routes, each gated by `auth:users:suspend`. A connection holding only `auth:users:read` is refused 403, and the scope is checked before the body is read.
+
+```
+POST /auth/admin/users/:userId/suspend     { reason, until?, notify? }
+POST /auth/admin/users/:userId/reinstate   { reason, notify? }
+```
+
+The paths are under auth's `basePath` (`/auth` by default), which the manifest reports — not under `/control-plane`, which holds only the seam's own routes. `reason` is required on both: one sentence, at most 500 characters, written for the person, because a suspension's reason is what every refused sign-in shows them. A request without one is `validation/invalid_input`.
+
+**Suspend** stamps the columns, writes the row, and then revokes every session the account holds. A refresh token is a session token, so it goes with them. Revoked after the columns, never before: a session alive in between meets `auth/account_suspended`. The person's held credential stops working, a refresh is refused, and signing in again answers `auth/account_suspended` with the reason. `until` is an ISO-8601 time in the future; one in the past is refused. The suspension ends by itself when it passes, with nothing written. Suspending a suspended account restates it, and the response says `outcome: "updated"`. The response carries the suspension in force, `sessionsRevoked`, and `mailed`.
+
+**Reinstate** lifts the suspension. It restores no session: the person signs in again. An account with no suspension in force answers 200 with `outcome: "unchanged"`, and nothing is written.
+
+Neither touches a deleted account. Both answer `core/conflict`, naming the restore route, because a deleted account is restored, not reinstated. An unknown `:userId` is a 404.
+
+`notify` is true when absent. It sends the account-suspended mail, or the account-reinstated mail, through `@pithy-sh/email`. `notify: false` sends none. The config can turn a mail off for every call; `notify` turns it off for one.
+
+Every call is audited, as `auth/admin_user_suspended` or `auth/admin_user_reinstated`, with the operator, the connection, the reason and the user id. A refusal is recorded as `denied` with its code — a body the validator turns away included, with whatever reason it carried — and a reinstatement that changed nothing as a success with `changed: false`. The sessions a suspension ends are recorded as `auth/admin_user_sessions_revoked`, `cause: "suspended"`.
 
 ## Config
 
@@ -78,7 +101,7 @@ auth({
 });
 ```
 
-Each fires once per transition. A call that finds the account already where it asked to put it fires nothing. A hook that throws is logged and changes nothing: the transition is already written.
+Each fires once per transition. A call that finds the account already where it asked to put it fires nothing, and neither does restating a suspension. A hook that throws is logged and changes nothing: the transition is already written.
 
 ## Screens
 

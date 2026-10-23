@@ -371,11 +371,13 @@ export async function emitControlPlaneAction(
     userAgent?: string;
     requestId?: string;
     metadata?: Record<string, unknown>;
+    /** `success` unless the call was refused (`denied`) or broke (`failure`) — #621 records both. */
+    outcome?: "success" | "denied" | "failure";
   },
 ): Promise<void> {
   await safeEmit(emit, {
     action: event.action,
-    outcome: "success",
+    outcome: event.outcome ?? "success",
     actorType: "control-plane",
     actorId: event.subject,
     resourceType: event.resourceType,

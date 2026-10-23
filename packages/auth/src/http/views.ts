@@ -3,7 +3,14 @@
 
 import type { Session, User } from "../data/betterAuth";
 import type { Device } from "../data/device";
-import type { AdminDeviceView, AdminSessionView, AdminUserView } from "./responses";
+import type { LifecycleTransition, SuspendTransition } from "../lifecycle/transitions";
+import type {
+  AdminDeviceView,
+  AdminSessionView,
+  AdminUserReinstateResponse,
+  AdminUserSuspendResponse,
+  AdminUserView,
+} from "./responses";
 
 /**
  * The admin projections — what a management client is shown of a user, a session, and a device.
@@ -89,5 +96,35 @@ export function deviceView(device: Device): AdminDeviceView {
     lastIp: device.lastIp,
     lastSeenAt: device.lastSeenAt.toISOString(),
     createdAt: device.createdAt.toISOString(),
+  };
+}
+
+/**
+ * The suspension projection (#621): the suspension the transition left in force, and the sessions the route
+ * revoked after it. Dates cross as ISO-8601, like every other response here.
+ */
+export function suspensionView(
+  userId: string,
+  result: SuspendTransition,
+  sessionsRevoked: number,
+): AdminUserSuspendResponse {
+  return {
+    userId,
+    state: "suspended",
+    outcome: result.updated ? "updated" : "suspended",
+    suspendedAt: result.suspendedAt.toISOString(),
+    suspendedUntil: result.suspendedUntil?.toISOString() ?? null,
+    sessionsRevoked,
+    mailed: result.mailed,
+  };
+}
+
+/** The reinstatement projection (#621). A call that found no suspension in force is `unchanged`. */
+export function reinstatementView(userId: string, result: LifecycleTransition): AdminUserReinstateResponse {
+  return {
+    userId,
+    state: "active",
+    outcome: result.changed ? "reinstated" : "unchanged",
+    mailed: result.mailed,
   };
 }

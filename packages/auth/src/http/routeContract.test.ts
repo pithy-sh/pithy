@@ -133,7 +133,9 @@ describe("route contract: every path param is validated", () => {
     ).toEqual([
       "/auth/admin/users/:userId",
       "/auth/admin/users/:userId/devices/revoke",
+      "/auth/admin/users/:userId/reinstate",
       "/auth/admin/users/:userId/sessions/revoke",
+      "/auth/admin/users/:userId/suspend",
     ]);
   });
 
@@ -207,6 +209,15 @@ describe("the control-plane admin surface", () => {
     // has not proved anything.
     const response = await makeApp().request("/auth/admin/users?limit=99999");
     expect(response.status).toBe(403);
+  });
+
+  test("suspend and reinstate are advertised under auth:users:suspend, and nothing else is (#621)", () => {
+    // One grant ends an account's access and gives it back. Reading the user confers neither.
+    const lifecycle = ADMIN_ROUTES.filter((route) => route.scope === AUTH_USERS_SUSPEND_SCOPE);
+    expect(lifecycle.map((route) => `${route.method} ${route.path}`).sort()).toEqual([
+      "POST /auth/admin/users/:userId/reinstate",
+      "POST /auth/admin/users/:userId/suspend",
+    ]);
   });
 
   test("each advertised route names a scope this capability defines", () => {
@@ -307,8 +318,8 @@ describe("the advertised admin surface matches what is mounted", () => {
   });
 
   test("the probe reads the whole mounted surface, not a slice of it", () => {
-    // Anti-vacuity for the check above, exact rather than a floor: eleven routes carry a method — the six
-    // admin ones and the five a signed-in person calls. A twelfth is either a new admin route, which the
+    // Anti-vacuity for the check above, exact rather than a floor: thirteen routes carry a method — the eight
+    // admin ones and the five a signed-in person calls. A fourteenth is either a new admin route, which the
     // check above then demands a declaration for, or a new user route, which is a deliberate edit here.
     expect(
       mountedRoutes(makeApp())
@@ -323,7 +334,9 @@ describe("the advertised admin surface matches what is mounted", () => {
       "GET /auth/profile/image",
       "POST /auth/admin/sessions/revoke",
       "POST /auth/admin/users/:userId/devices/revoke",
+      "POST /auth/admin/users/:userId/reinstate",
       "POST /auth/admin/users/:userId/sessions/revoke",
+      "POST /auth/admin/users/:userId/suspend",
       "POST /auth/devices/revoke",
       // Better Auth's own endpoint, mounted explicitly ahead of the catch-all so the link-freshness gate
       // can sit in front of it. It takes no kit validator for the catch-all's own reason: the body is

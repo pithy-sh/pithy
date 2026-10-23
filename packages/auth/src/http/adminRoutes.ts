@@ -9,6 +9,7 @@ import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyErro
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { validate } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
+import type { z } from "zod";
 import {
   type AdminSubList,
   findSessionById,
@@ -25,23 +26,38 @@ import { correlation, emitControlPlaneAction } from "../audit/emit";
 import type { AuthWiring } from "../capability";
 import { authDatabase } from "../data/tables";
 import { deleteDevice, deviceSessionTokens } from "../device/registry";
+import { auditedLifecycleCall, recordLifecycleRefusal } from "../lifecycle/audited";
+import { MAX_REASON } from "../lifecycle/reason";
+import { lifecycleDeps } from "../lifecycle/request";
+import { type LifecycleActor, reinstateUser, suspendUser } from "../lifecycle/transitions";
 import {
   AUTH_DEVICES_READ_SCOPE,
   AUTH_DEVICES_REVOKE_SCOPE,
   AUTH_SESSIONS_REVOKE_SCOPE,
   AUTH_USERS_LOGOUT_SCOPE,
   AUTH_USERS_READ_SCOPE,
+  AUTH_USERS_SUSPEND_SCOPE,
 } from "./guards";
 import { getAuthInstance, resolveDb } from "./resolve";
 import {
   AdminDeviceRevokeResponse,
   AdminDevicesResponse,
   AdminRevokeResponse,
+  AdminUserReinstateResponse,
   AdminUserResponse,
+  AdminUserSuspendResponse,
   AdminUsersResponse,
 } from "./responses";
-import { ListDevicesQuery, ListUsersQuery, RevokeDeviceBody, RevokeSessionBody, UserIdParam } from "./schemas";
-import { deviceView, sessionView, userView } from "./views";
+import {
+  ListDevicesQuery,
+  ListUsersQuery,
+  ReinstateUserBody,
+  RevokeDeviceBody,
+  RevokeSessionBody,
+  SuspendUserBody,
+  UserIdParam,
+} from "./schemas";
+import { deviceView, reinstatementView, sessionView, suspensionView, userView } from "./views";
 
 type Ctx = Context<PithyHonoEnv>;
 
@@ -55,6 +71,8 @@ type Ctx = Context<PithyHonoEnv>;
  *   POST {base}/admin/sessions/revoke                auth:sessions:revoke  json:  RevokeSessionBody
  *   POST {base}/admin/users/:userId/sessions/revoke  auth:users:logout     param: UserIdParam
  *   POST {base}/admin/users/:userId/devices/revoke   auth:devices:revoke   param + json
+ *   POST {base}/admin/users/:userId/suspend          auth:users:suspend    param + json: SuspendUserBody
+ *   POST {base}/admin/users/:userId/reinstate        auth:users:suspend    param + json: ReinstateUserBody
  *
  * ## Registered before the catch-all, or dead
  *
@@ -167,6 +185,53 @@ async function revokeTokens(c: Ctx, wiring: AuthWiring, tokens: readonly string[
     await ctx.internalAdapter.deleteSession(token);
   }
   return tokens.length;
+}
+
+/**
+ * What a lifecycle route hands `../lifecycle/`: the transitions' dependencies, with the request's correlation
+ * and the connection on every audit event they write, and the operator as the actor.
+ *
+ * The actor is the token's verified `sub` — which person at the dashboard — the same id every other admin
+ * event records, so the trail and the history table name the same somebody.
+ */
+function lifecycleCall(c: Ctx, wiring: AuthWiring, caller: ControlPlaneContext, userId: string, reason: string) {
+  const correlated = context(c);
+  return {
+    deps: lifecycleDeps(c, wiring, { ...correlated, metadata: { connectionId: caller.connectionId } }),
+    actor: { type: "control-plane", id: caller.subject } satisfies LifecycleActor,
+    // Named so the refusal for a deleted account says which route comes first. The route lands in #622.
+    restoreRoute: `POST ${wiring.config.basePath}/admin/users/${userId}/restore`,
+    audit: { subject: caller.subject, connectionId: caller.connectionId, userId, reason, ...correlated },
+  };
+}
+
+/**
+ * A lifecycle route's body validator, which audits the bodies it refuses (#621). Every call is on the trail,
+ * a refusal included, and a body the validator turns away never reaches `auditedLifecycleCall`. So it is
+ * recorded here, as `denied` under the route's own action, with whatever reason the body carried — cut to the
+ * reason's own limit, so a refused essay is not stored whole — and the 400 is thrown as before.
+ */
+function lifecycleBody<Schema extends z.ZodType>(schema: Schema, action: string) {
+  return validate("json", schema, async (raw, error, body) => {
+    // The route validated its `:userId` before its body, so it is readable here.
+    const c = raw as Context<PithyHonoEnv, string, { out: { param: z.output<typeof UserIdParam> } }>;
+    const caller = controlPlaneCaller(c);
+    const reason = body && typeof body === "object" ? (body as { reason?: unknown }).reason : undefined;
+    await recordLifecycleRefusal(
+      c.var.emit,
+      {
+        action,
+        subject: caller.subject,
+        connectionId: caller.connectionId,
+        userId: c.req.valid("param").userId,
+        reason: typeof reason === "string" ? reason.slice(0, MAX_REASON) : null,
+        ...context(c),
+      },
+      error,
+      // Hono's own refusal of a body that is not JSON carries no code; the client sees this one.
+      { code: "validation/invalid_input", outcome: "denied" },
+    );
+  });
 }
 
 /**
@@ -398,6 +463,97 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
         });
 
         return c.json({ revoked, removed } satisfies AdminDeviceRevokeResponse);
+      },
+    );
+
+    app.post(
+      `${base}/admin/users/:userId/suspend`,
+      describeRoute({
+        summary: "Suspend one user, with a reason: their sessions end and every sign-in is refused.",
+        verification: "control-plane",
+        scopes: [AUTH_USERS_SUSPEND_SCOPE],
+        responses: { 200: AdminUserSuspendResponse },
+      }),
+      requireControlPlane(AUTH_USERS_SUSPEND_SCOPE),
+      validate("param", UserIdParam),
+      lifecycleBody(SuspendUserBody, AuthAuditActions.adminUserSuspended),
+      async (c) => {
+        const { userId } = c.req.valid("param");
+        const { reason, until, notify } = c.req.valid("json");
+        const caller = controlPlaneCaller(c);
+        const call = lifecycleCall(c, wiring, caller, userId, reason);
+
+        // Every call is audited: the transition audits a suspension it writes, and this records the refusals.
+        // A suspension always writes — a fresh one or a restatement — so there is no no-op to record.
+        const result = await auditedLifecycleCall(
+          c.var.emit,
+          { action: AuthAuditActions.adminUserSuspended, ...call.audit },
+          () =>
+            suspendUser(call.deps, {
+              userId,
+              actor: call.actor,
+              reason,
+              until: until ?? null,
+              ...(notify === undefined ? {} : { notify }),
+              restoreRoute: call.restoreRoute,
+            }),
+          () => false,
+        );
+
+        // After the columns, never before. Enforcement refuses the account the moment they are written, so a
+        // session alive in between meets `auth/account_suspended`; revoking first would leave a window where a
+        // sign-in could mint one the revocation never saw. Every call revokes, a restatement included, so a
+        // credential that slipped past an earlier one does not outlive this one. Through Better Auth's adapter,
+        // so `onSessionRevoked` hears each. A refresh token is a session token here, so this ends both.
+        const revoked = await revokeTokens(c, wiring, await userSessionTokens(db(c, wiring), userId));
+        await emitControlPlaneAction(c.var.emit, {
+          action: AuthAuditActions.adminUserSessionsRevoked,
+          subject: caller.subject,
+          connectionId: caller.connectionId,
+          resourceType: "user",
+          resourceId: userId,
+          ...context(c),
+          metadata: { revoked, cause: "suspended" },
+        });
+
+        return c.json(suspensionView(userId, result, revoked) satisfies AdminUserSuspendResponse);
+      },
+    );
+
+    app.post(
+      `${base}/admin/users/:userId/reinstate`,
+      describeRoute({
+        summary: "Lift one user's suspension, with a reason. They sign in again; no session is restored.",
+        verification: "control-plane",
+        scopes: [AUTH_USERS_SUSPEND_SCOPE],
+        responses: { 200: AdminUserReinstateResponse },
+      }),
+      requireControlPlane(AUTH_USERS_SUSPEND_SCOPE),
+      validate("param", UserIdParam),
+      lifecycleBody(ReinstateUserBody, AuthAuditActions.adminUserReinstated),
+      async (c) => {
+        const { userId } = c.req.valid("param");
+        const { reason, notify } = c.req.valid("json");
+        const caller = controlPlaneCaller(c);
+        const call = lifecycleCall(c, wiring, caller, userId, reason);
+
+        // An account with no suspension in force is a 200 that changed nothing — the state the caller asked
+        // for already holds — and is audited as exactly that.
+        const result = await auditedLifecycleCall(
+          c.var.emit,
+          { action: AuthAuditActions.adminUserReinstated, ...call.audit },
+          () =>
+            reinstateUser(call.deps, {
+              userId,
+              actor: call.actor,
+              reason,
+              ...(notify === undefined ? {} : { notify }),
+              restoreRoute: call.restoreRoute,
+            }),
+          (outcome) => !outcome.changed,
+        );
+
+        return c.json(reinstatementView(userId, result) satisfies AdminUserReinstateResponse);
       },
     );
   };

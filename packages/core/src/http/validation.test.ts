@@ -117,6 +117,33 @@ describe("validate", () => {
     expect(requestContractOf(middleware)).toEqual({ target: "param", schema: Params });
   });
 
+  test("tells its listener of a refusal, with what the request sent, and then throws the same 400", async () => {
+    const heard: { code: unknown; body: unknown }[] = [];
+    const a = new Hono();
+    a.onError(pithyErrorHandler);
+    const middleware = validate("json", Body, (_c, error, input) => {
+      heard.push({ code: (error as { payload?: { code?: string } }).payload?.code ?? "thrown", body: input });
+    });
+    a.post("/body", middleware, () => {
+      throw new Error("the handler's own failure is not a refusal");
+    });
+    const post = (body: string) =>
+      a.request("/body", { method: "POST", headers: { "content-type": "application/json" }, body });
+
+    const refused = await post(JSON.stringify({ score: "high" }));
+    expect(refused.status).toBe(400);
+    expect((await errorOf(refused)).code).toBe("validation/invalid_input");
+    const malformed = await post("{ not json");
+    expect(malformed.status).toBe(400);
+    expect((await post(JSON.stringify({ score: 1 }))).status).toBe(500);
+
+    expect(heard).toEqual([
+      { code: "validation/invalid_input", body: { score: "high" } },
+      { code: "thrown", body: undefined },
+    ]);
+    expect(requestContractOf(middleware)).toEqual({ target: "json", schema: Body });
+  });
+
   test("a bare zValidator, or anything else, carries no contract", () => {
     expect(requestContractOf(zValidator("json", Body, validationHook))).toBeUndefined();
     expect(requestContractOf(() => undefined)).toBeUndefined();

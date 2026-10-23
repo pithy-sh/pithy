@@ -93,7 +93,7 @@ export const AUTH_USERS_LOGOUT_SCOPE: ControlPlaneScope = "auth:users:logout";
 export const AUTH_DEVICES_REVOKE_SCOPE: ControlPlaneScope = "auth:devices:revoke";
 
 /**
- * Suspend an account and reinstate it (#620, the routes in #621). Ending somebody's access is an availability
+ * Suspend an account and reinstate it (#620): `POST {base}/admin/users/:userId/suspend` and `/reinstate` (#621). Ending somebody's access is an availability
  * operation on one person, and reversible — which is what separates it from deleting them, and why it is
  * granted apart from both reading them and erasing them.
  */
@@ -117,9 +117,9 @@ export const AUTH_USERS_EXPORT_SCOPE: ControlPlaneScope = "auth:users:export";
  * Every control-plane scope auth defines — what `pithy dashboard connect` offers for this capability,
  * and the list a manifest or a doc quotes rather than re-typing.
  *
- * **The three lifecycle scopes are declared before the routes that require them.** The suspend, delete and
- * export routes land in #621 and #622; declaring the vocabulary here, once, is what lets those issues build on
- * one name each rather than three issues each choosing their own.
+ * **The lifecycle scopes were declared before the routes that require them.** Suspend and reinstate landed in
+ * #621; the delete, restore and export routes land in #622. Declaring the vocabulary here, once, is what lets
+ * those issues build on one name each rather than each choosing its own.
  */
 export const AUTH_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
   AUTH_USERS_READ_SCOPE,
@@ -181,6 +181,18 @@ export function authAdminRoutes(basePath: string): AdminRoute[] {
       path: `${basePath}/admin/users/:userId/devices/revoke`,
       scope: AUTH_DEVICES_REVOKE_SCOPE,
       summary: "Sign one device out and forget it — for a phone reported lost.",
+    },
+    {
+      method: "POST",
+      path: `${basePath}/admin/users/:userId/suspend`,
+      scope: AUTH_USERS_SUSPEND_SCOPE,
+      summary: "Suspend a user, with a reason. Their sessions end and every sign-in is refused.",
+    },
+    {
+      method: "POST",
+      path: `${basePath}/admin/users/:userId/reinstate`,
+      scope: AUTH_USERS_SUSPEND_SCOPE,
+      summary: "Lift a suspension, with a reason. They sign in again; no session comes back.",
     },
   ];
 }
