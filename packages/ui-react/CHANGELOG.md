@@ -1,5 +1,13 @@
 # @pithy-sh/ui-react
 
+## 0.4.0
+
+### Minor Changes
+
+- [#800](https://github.com/pithy-sh/pithy/pull/800) [`69b84a8`](https://github.com/pithy-sh/pithy/commit/69b84a8d9b9016969ff317825e398a739fb525c3) Thanks [@kingmesal](https://github.com/kingmesal)! - An account can be suspended or deleted, and the kit enforces it: two error codes a client can render, scoped control-plane grants, a recorded history, and the screens and mail to match.
+
+- [#799](https://github.com/pithy-sh/pithy/pull/799) [`1b2b263`](https://github.com/pithy-sh/pithy/commit/1b2b2631fecd61533f1a668631131444de3700fc) Thanks [@kingmesal](https://github.com/kingmesal)! - Sign in with Microsoft — work, school, or personal accounts, optional per app. Entra ID cannot vouch for an email it did not verify, so Pithy verifies it before linking.
+
 ## 0.3.3
 
 ### Patch Changes

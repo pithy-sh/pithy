@@ -1,5 +1,21 @@
 # @pithy-sh/support
 
+## 0.5.0
+
+### Minor Changes
+
+- [#803](https://github.com/pithy-sh/pithy/pull/803) [`fc57559`](https://github.com/pithy-sh/pithy/commit/fc5755924da66f7b01c818084d21ff91ae10602c) Thanks [@kingmesal](https://github.com/kingmesal)! - Mark a field `pii`, `phi`, `secret`, or `pci` and it can no longer reach a log, an audit record, or an error detail — the call stops compiling, and `redact` gives you the masked view instead. Declare your classes with `pithy privacy enable` and `console` closes, deploys refuse to ship past it, and your control plane reports exactly which schemas and fields hold what — derived from the running code, so unmarking a field is a change leadership can see. `pithy privacy scan` suggests what to mark. It never decides for you.
+
+### Patch Changes
+
+- Updated dependencies [[`69b84a8`](https://github.com/pithy-sh/pithy/commit/69b84a8d9b9016969ff317825e398a739fb525c3), [`2ec361e`](https://github.com/pithy-sh/pithy/commit/2ec361e9ab36d3f9a2907e0d5ca14d78914e3d3b), [`1b2b263`](https://github.com/pithy-sh/pithy/commit/1b2b2631fecd61533f1a668631131444de3700fc), [`fc57559`](https://github.com/pithy-sh/pithy/commit/fc5755924da66f7b01c818084d21ff91ae10602c)]:
+  - @pithy-sh/auth@0.10.0
+  - @pithy-sh/core@0.12.0
+  - @pithy-sh/email@0.6.0
+  - @pithy-sh/secrets@0.6.0
+  - @pithy-sh/payments@0.6.0
+  - @pithy-sh/storage@0.5.0
+
 ## 0.4.1
 
 ### Patch Changes

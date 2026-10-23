@@ -1,5 +1,15 @@
 # @pithy-sh/core
 
+## 0.12.0
+
+### Minor Changes
+
+- [#800](https://github.com/pithy-sh/pithy/pull/800) [`69b84a8`](https://github.com/pithy-sh/pithy/commit/69b84a8d9b9016969ff317825e398a739fb525c3) Thanks [@kingmesal](https://github.com/kingmesal)! - An account can be suspended or deleted, and the kit enforces it: two error codes a client can render, scoped control-plane grants, a recorded history, and the screens and mail to match.
+
+- [#804](https://github.com/pithy-sh/pithy/pull/804) [`2ec361e`](https://github.com/pithy-sh/pithy/commit/2ec361e9ab36d3f9a2907e0d5ca14d78914e3d3b) Thanks [@kingmesal](https://github.com/kingmesal)! - Mark a field `encrypted()` and it rests in D1 as an AES-256-GCM envelope bound to its row, findable by an optional blind index, and re-sealed onto each new key version by the nightly rotator, which retires the old one once nothing needs it.
+
+- [#803](https://github.com/pithy-sh/pithy/pull/803) [`fc57559`](https://github.com/pithy-sh/pithy/commit/fc5755924da66f7b01c818084d21ff91ae10602c) Thanks [@kingmesal](https://github.com/kingmesal)! - Mark a field `pii`, `phi`, `secret`, or `pci` and it can no longer reach a log, an audit record, or an error detail — the call stops compiling, and `redact` gives you the masked view instead. Declare your classes with `pithy privacy enable` and `console` closes, deploys refuse to ship past it, and your control plane reports exactly which schemas and fields hold what — derived from the running code, so unmarking a field is a change leadership can see. `pithy privacy scan` suggests what to mark. It never decides for you.
+
 ## 0.11.0
 
 ### Minor Changes
