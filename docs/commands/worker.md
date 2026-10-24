@@ -18,7 +18,7 @@ pithy worker unbind --from <worker> (--to <worker> | --binding <NAME>) [--json]
 
 `apps/` *is* the registry. There is no hand-maintained list: `pithy dev`, `pithy deploy`, `pithy migrate`, and the rest enumerate `apps/*` and read each Worker's `pithy.worker.jsonc`. Add, remove, or rename a Worker here and the set follows automatically. The **dev** set is larger than this registry — it is `apps/*` plus the host Worker of every capability those Workers compose — which is why `pithy dev --list` exists and this command does not answer that question.
 
-**Only `rename` reaches Cloudflare, and only to ask a question.** It asks the account which scripts are live under the old name before anything moves; it never writes there. `add`, `list`, `remove`, `sync`, `bind` and `unbind` touch no account at all — `sync` in particular writes config and runs no deploy, so it is safe on any branch, at any time, as often as you like. An interactive `worker add` reads the account's zones to offer a domain picker; under `--json` it asks nothing and reads nothing.
+**Only `rename` and an interactive `add` reach Cloudflare, and only to ask a question.** `rename` asks the account which scripts are live under the old name before anything moves. An interactive `worker add` reads the account's zones to offer a domain picker; under `--json` it asks nothing and reads nothing. Neither ever writes there. `list`, `remove`, `sync`, `bind` and `unbind` touch no account at all — `sync` in particular writes config and runs no deploy, so it is safe on any branch, at any time, as often as you like.
 
 ## Flags
 
@@ -235,7 +235,7 @@ Run pithy worker list to see the workers this project has.
 
 ```
 Worker name must be kebab-case (got "Admin_API").
-Use lowercase words joined by hyphens, e.g. web or admin-api.
+Use lowercase words joined by hyphens, e.g. api or admin-api.
 ```
 
 **The destination already exists.**
@@ -339,7 +339,7 @@ Scaffold a second Worker.
 ```
 $ pithy worker add web
 Worker web scaffolded at /repo/apps/web.
-Ports are assigned when you run pithy feature create or sync.
+Ports are assigned when you run pithy feature create or pithy feature sync.
 Done.
 ```
 
@@ -440,6 +440,6 @@ prod: routed to api.example.com. BASE_URL https://api.example.com.
 Done.
 
 $ pithy worker sync --worker api
-api is already in sync.
+acme-api is already in sync.
 Done.
 ```
