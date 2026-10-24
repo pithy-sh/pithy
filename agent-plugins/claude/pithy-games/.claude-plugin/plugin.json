@@ -1,7 +1,7 @@
 {
   "name": "pithy-games",
   "displayName": "Pithy Game Kit",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "description": "A game add-on to the pithy agent team: game design, a Unity client in C#, and playtests with simulated players against pithy dev. Installs pithy with it.",
   "author": {
     "name": "Pithy",

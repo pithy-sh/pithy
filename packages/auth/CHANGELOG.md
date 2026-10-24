@@ -1,5 +1,23 @@
 # @pithy-sh/auth
 
+## 0.11.0
+
+### Minor Changes
+
+- [#808](https://github.com/pithy-sh/pithy/pull/808) [`b9d0453`](https://github.com/pithy-sh/pithy/commit/b9d0453e25c61d80eece0d8a08ac9d25c8bbadea) Thanks [@kingmesal](https://github.com/kingmesal)! - Delete a user the way you meant to: soft with a 30-day window and a restore, or hard when you mean it. Users can delete their own account, every capability erases its own rows, and an export answers an access request before any of it happens.
+
+- [#809](https://github.com/pithy-sh/pithy/pull/809) [`4ea8960`](https://github.com/pithy-sh/pithy/commit/4ea8960e54418748aea3ac5864ec61c7573ce4a3) Thanks [@kingmesal](https://github.com/kingmesal)! - Suspend, reinstate or delete an organization, with the same window and restore a user gets. A member of other organizations keeps those: the suspended one simply stops being theirs.
+
+- [#806](https://github.com/pithy-sh/pithy/pull/806) [`b576f58`](https://github.com/pithy-sh/pithy/commit/b576f58fcda3962faeae75ec04ec37f8c1947f41) Thanks [@kingmesal](https://github.com/kingmesal)! - Suspend a user and reinstate them, with a recorded reason. Their sessions end, sign-in is refused, and the trail says who did it.
+
+### Patch Changes
+
+- Updated dependencies [[`b9d0453`](https://github.com/pithy-sh/pithy/commit/b9d0453e25c61d80eece0d8a08ac9d25c8bbadea), [`4ea8960`](https://github.com/pithy-sh/pithy/commit/4ea8960e54418748aea3ac5864ec61c7573ce4a3), [`afe98cc`](https://github.com/pithy-sh/pithy/commit/afe98cc0686356fe7b5267cbc39ca452df0242b6), [`b576f58`](https://github.com/pithy-sh/pithy/commit/b576f58fcda3962faeae75ec04ec37f8c1947f41)]:
+  - @pithy-sh/core@0.13.0
+  - @pithy-sh/email@0.7.0
+  - @pithy-sh/secrets@0.6.1
+  - @pithy-sh/turnstile@0.6.1
+
 ## 0.10.0
 
 ### Minor Changes

@@ -1,5 +1,18 @@
 # @pithy-sh/storage
 
+## 0.6.0
+
+### Minor Changes
+
+- [#809](https://github.com/pithy-sh/pithy/pull/809) [`4ea8960`](https://github.com/pithy-sh/pithy/commit/4ea8960e54418748aea3ac5864ec61c7573ce4a3) Thanks [@kingmesal](https://github.com/kingmesal)! - Suspend, reinstate or delete an organization, with the same window and restore a user gets. A member of other organizations keeps those: the suspended one simply stops being theirs.
+
+### Patch Changes
+
+- Updated dependencies [[`b9d0453`](https://github.com/pithy-sh/pithy/commit/b9d0453e25c61d80eece0d8a08ac9d25c8bbadea), [`4ea8960`](https://github.com/pithy-sh/pithy/commit/4ea8960e54418748aea3ac5864ec61c7573ce4a3), [`afe98cc`](https://github.com/pithy-sh/pithy/commit/afe98cc0686356fe7b5267cbc39ca452df0242b6), [`b576f58`](https://github.com/pithy-sh/pithy/commit/b576f58fcda3962faeae75ec04ec37f8c1947f41)]:
+  - @pithy-sh/core@0.13.0
+  - @pithy-sh/cloudflare@0.7.1
+  - @pithy-sh/secrets@0.6.1
+
 ## 0.5.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # @pithy-sh/ui-react
 
+## 0.5.0
+
+### Minor Changes
+
+- [#809](https://github.com/pithy-sh/pithy/pull/809) [`4ea8960`](https://github.com/pithy-sh/pithy/commit/4ea8960e54418748aea3ac5864ec61c7573ce4a3) Thanks [@kingmesal](https://github.com/kingmesal)! - Suspend, reinstate or delete an organization, with the same window and restore a user gets. A member of other organizations keeps those: the suspended one simply stops being theirs.
+
 ## 0.4.0
 
 ### Minor Changes
