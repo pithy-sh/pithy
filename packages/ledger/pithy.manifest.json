@@ -13,7 +13,7 @@
     "Run `pithy migrate` to create pithy_ledger_accounts, pithy_ledger_transactions, and pithy_ledger_holds.",
     "Add `@pithy-sh/auth` if it is not already installed. Balance reads scope to the authenticated user; admin credit/debit routes need the `ledger:admin` scope. Compose a `resolveScopes` on `@pithy-sh/auth` that answers it for a request your trusted backend proves it sent, never for a player. packages/auth/docs/server-authoritative.md ranks the three proofs.",
     "Move balances in-process from your own code with `openLedger(env.DB)` — credit, debit, transfer, hold, release, capture — passing a unique `ref` for each operation so retries are safe.",
-    "Add `controlplane()` if you want a dashboard to read balances and entry logs. The ledger's management surface is read-only — `ledger:accounts:read` for balances, `ledger:transactions:read` for the history behind them — and grants nothing that can move money."
+    "Add `controlplane()` if you want a dashboard to read balances and entry logs, and to correct one. `ledger:accounts:read` reads balances and `ledger:transactions:read` the history behind them. `ledger:accounts:adjust` credits, debits, reverses an entry and releases a hold — each with an idempotency key, a required reason and an audit event — and is granted only when you pick it at `pithy dashboard connect`."
   ],
   "configOptions": [
     {

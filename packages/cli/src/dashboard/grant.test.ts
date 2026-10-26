@@ -6,6 +6,7 @@ import { controlplane } from "@pithy-sh/core/src/controlPlane/capability";
 import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import { type ControlPlaneScope, SEAM_SCOPES } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { ledger } from "@pithy-sh/ledger/src/capability";
 import { matchmaking } from "@pithy-sh/matchmaking/src/capability";
 import { turnstile } from "@pithy-sh/turnstile/src/capability";
 import { vector } from "@pithy-sh/vector/src/capability";
@@ -109,6 +110,18 @@ describe("defaultGrant", () => {
     expect(resolveScopeRequest(readScopeRequest(["manifest:read"]), grantableScopes([controlplane()]))).toEqual([
       "manifest:read",
     ]);
+  });
+
+  test("offers ledger:accounts:adjust as a write, off the real capability, and never grants it unasked (#811)", () => {
+    // The ledger's two reads are granted by default; its one write moves money, so it is offered at the
+    // prompt and granted only when an adopter picks it.
+    const capability = ledger({ currencies: [{ code: "chips", name: "Chips" }] });
+    const adjust = grantableScopes([capability]).find((entry) => entry.scope === "ledger:accounts:adjust");
+    expect(adjust).toMatchObject({ read: false, capability: "ledger", routes: 4 });
+    expect(defaultGrant([capability])).toEqual([...SEAM_SCOPES, "ledger:accounts:read", "ledger:transactions:read"]);
+    expect(resolveScopeRequest(readScopeRequest(["all"]), grantableScopes([capability]))).toContain(
+      "ledger:accounts:adjust",
+    );
   });
 
   test("adds every declared read, so a fresh connection opens to panes that read", () => {

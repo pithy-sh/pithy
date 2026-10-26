@@ -855,6 +855,42 @@ const LedgerInvalidAmountPublic = z
   })
   .describe("An amount is not a positive integer (400).");
 
+const LedgerEntryNotFoundPublic = z
+  .object({
+    code: z
+      .literal("ledger/entry_not_found")
+      .describe(
+        "No ledger entry with that reference exists on the account named. An entry on another account is answered the same way, so a reversal can never reach past the account its path names.",
+      ),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("A referenced ledger entry does not exist on that account (404).");
+
+const LedgerEntryNotReversiblePublic = z
+  .object({
+    code: z
+      .literal("ledger/entry_not_reversible")
+      .describe(
+        "Only a credit or a debit reverses, and never one that is itself a reversal. A hold has release; a capture spends escrow and a transfer touches a second account, so both are refused. `params.kind` names the entry's kind, and `params.reverses` the entry a reversal reversed. Nothing was written.",
+      ),
+    status: z.literal(409).describe("Conflict — the entry's kind does not reverse."),
+    ...publicFields,
+  })
+  .describe("A ledger entry of a kind that does not reverse (409).");
+
+const LedgerRefConflictPublic = z
+  .object({
+    code: z
+      .literal("ledger/ref_conflict")
+      .describe(
+        "The ref a control-plane write would be written under is already held by a different entry, so the write cannot be recorded and is not a replay either: a credit's or a debit's key already used for another account, the other act, another amount or a hold, or the derived ref of a reversal or a hold's resolution held by an unrelated entry. Nothing moved; the entry stays unreversed, or the hold stays open.",
+      ),
+    status: z.literal(409).describe("Conflict — the ref belongs to another entry."),
+    ...publicFields,
+  })
+  .describe("A write whose ref another entry already holds (409).");
+
 // --- @pithy-sh/rating: skill-rating + experience tracker codes ---
 
 const RatingUnknownAlgorithmPublic = z
@@ -1898,6 +1934,9 @@ export const KitPublicErrorPayload = z
     LedgerInsufficientFundsPublic,
     LedgerHoldNotOpenPublic,
     LedgerInvalidAmountPublic,
+    LedgerEntryNotFoundPublic,
+    LedgerEntryNotReversiblePublic,
+    LedgerRefConflictPublic,
     RatingUnknownAlgorithmPublic,
     RatingUnsupportedPlayerCountPublic,
     RatingInvalidParamsPublic,
@@ -2149,6 +2188,15 @@ const LedgerHoldNotOpen = LedgerHoldNotOpenPublic.extend(internalFields).describ
 );
 const LedgerInvalidAmount = LedgerInvalidAmountPublic.extend(internalFields).describe(
   LedgerInvalidAmountPublic.description ?? "",
+);
+const LedgerEntryNotFound = LedgerEntryNotFoundPublic.extend(internalFields).describe(
+  LedgerEntryNotFoundPublic.description ?? "",
+);
+const LedgerEntryNotReversible = LedgerEntryNotReversiblePublic.extend(internalFields).describe(
+  LedgerEntryNotReversiblePublic.description ?? "",
+);
+const LedgerRefConflict = LedgerRefConflictPublic.extend(internalFields).describe(
+  LedgerRefConflictPublic.description ?? "",
 );
 const RatingUnknownAlgorithm = RatingUnknownAlgorithmPublic.extend(internalFields).describe(
   RatingUnknownAlgorithmPublic.description ?? "",
@@ -2475,6 +2523,9 @@ export const KitErrorPayload = z
     LedgerInsufficientFunds,
     LedgerHoldNotOpen,
     LedgerInvalidAmount,
+    LedgerEntryNotFound,
+    LedgerEntryNotReversible,
+    LedgerRefConflict,
     RatingUnknownAlgorithm,
     RatingUnsupportedPlayerCount,
     RatingInvalidParams,
