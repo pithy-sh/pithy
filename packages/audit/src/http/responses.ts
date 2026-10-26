@@ -305,3 +305,55 @@ export const ControlPlaneReachResponse = z
   })
   .describe("Everything one control-plane credential reached over a window, by tenant, route and outcome.");
 export type ControlPlaneReachResponse = z.output<typeof ControlPlaneReachResponse>;
+
+/**
+ * One `(scope, keyId)` a control-plane connection exercised (#812).
+ *
+ * Counts, two instants, and the method and path of the last allowed call. No IP, no user-agent, no other metadata key:
+ * this is the management client's own footprint, which is why it sits behind the listing scope.
+ */
+export const ControlPlaneUsageView = z
+  .object({
+    scope: z
+      .string()
+      .describe(
+        "The scope exercised — what an allowed call's token carried, or what a refused call required. A scope never exercised has no row.",
+      ),
+    keyId: z.string().nullable().describe("The registered key that signed the calls, or null when none was recorded."),
+    allowed: z.number().int().describe("How many calls under this scope and key were admitted in the window."),
+    denied: z
+      .number()
+      .int()
+      .describe(
+        "How many verified calls naming this scope were refused in the window. An under-grant shows here, beside an over-grant's zero. A refusal that failed verification proves no connection and is not counted.",
+      ),
+    lastAllowedAt: z.iso
+      .datetime()
+      .nullable()
+      .describe("When the last admitted call landed, ISO-8601, or null when none was admitted."),
+    lastAllowedMethod: z.string().nullable().describe("The HTTP method of the last admitted call, or null."),
+    lastAllowedPath: z.string().nullable().describe("The path of the last admitted call, or null."),
+    lastDeniedAt: z.iso
+      .datetime()
+      .nullable()
+      .describe("When the last refusal landed, ISO-8601, or null when none was refused."),
+  })
+  .describe("One scope and key a control-plane connection exercised in a window.");
+export type ControlPlaneUsageView = z.output<typeof ControlPlaneUsageView>;
+
+/** `GET {base}/control-plane/usage`. */
+export const ControlPlaneUsageResponse = z
+  .object({
+    connectionId: z.string().describe("The connection counted, as asked for."),
+    since: z.iso.datetime().describe("The window's inclusive start, ISO-8601."),
+    until: z.iso.datetime().describe("The window's inclusive end, ISO-8601 — now, when the query named none."),
+    usage: z.array(ControlPlaneUsageView).describe("One row per scope and key exercised, ordered by scope then key."),
+    oldestEventAt: z.iso
+      .datetime()
+      .nullable()
+      .describe(
+        "The oldest event the trail holds, for any connection, or null on an empty trail. A window starting before it was not fully covered: retention removed what came before.",
+      ),
+  })
+  .describe("Which scopes one control-plane connection exercised and was refused, by key, over a window.");
+export type ControlPlaneUsageResponse = z.output<typeof ControlPlaneUsageResponse>;

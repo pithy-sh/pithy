@@ -17,15 +17,29 @@ import type { AuditDatabase } from "../data/tables";
 import { pageAuditEvents, readAuditEvent } from "../query";
 import { controlPlaneReach, controlPlaneReachSubjects } from "../reach";
 import { reachPatterns } from "../routePattern";
+import { controlPlaneUsage } from "../usage";
 import { AUDIT_EVENT_DETAIL_READ_SCOPE, AUDIT_TRAIL_READ_SCOPE } from "./guards";
-import { AccessHistoryResponse, AuditEventResponse, AuditEventsResponse, ControlPlaneReachResponse } from "./responses";
-import { AccessHistoryQuery, AuditEventIdParam, ControlPlaneReachQuery, ListAuditEventsQuery } from "./schemas";
+import {
+  AccessHistoryResponse,
+  AuditEventResponse,
+  AuditEventsResponse,
+  ControlPlaneReachResponse,
+  ControlPlaneUsageResponse,
+} from "./responses";
+import {
+  AccessHistoryQuery,
+  AuditEventIdParam,
+  ControlPlaneReachQuery,
+  ControlPlaneUsageQuery,
+  ListAuditEventsQuery,
+} from "./schemas";
 import {
   accessChangeView,
   auditEventDetailView,
   auditEventView,
   controlPlaneReachSubjectView,
   controlPlaneReachView,
+  controlPlaneUsageView,
 } from "./views";
 
 /**
@@ -37,6 +51,8 @@ import {
  *                                                       (control-plane: audit:events:read)        query: AccessHistoryQuery
  *   GET /audit/control-plane/reach → what one credential reached, by tenant, route and outcome
  *                                                       (control-plane: audit:events:read)        query: ControlPlaneReachQuery
+ *   GET /audit/control-plane/usage → one connection's calls, counted by scope and key
+ *                                                       (control-plane: audit:events:read)        query: ControlPlaneUsageQuery
  *
  * **All are reads, and there is nothing else.** The trail is append-only: no route here deletes,
  * edits, or prunes, because a management credential that could erase an audit row could erase the
@@ -77,6 +93,7 @@ export const AUDIT_ROUTES: readonly AuditRouteDeclaration[] = [
   { method: "GET", path: "/events/:eventId", strategy: "control-plane", scope: AUDIT_EVENT_DETAIL_READ_SCOPE },
   { method: "GET", path: "/control-plane/access-history", strategy: "control-plane", scope: AUDIT_TRAIL_READ_SCOPE },
   { method: "GET", path: "/control-plane/reach", strategy: "control-plane", scope: AUDIT_TRAIL_READ_SCOPE },
+  { method: "GET", path: "/control-plane/usage", strategy: "control-plane", scope: AUDIT_TRAIL_READ_SCOPE },
 ];
 
 /** How the audit sub-router is built. */
@@ -360,6 +377,62 @@ export function registerAuditRoutes(options: AuditRoutesOptions): (app: Hono<Pit
               ? { subjects: expanded.subjects.map(controlPlaneReachSubjectView) }
               : {}),
           } satisfies ControlPlaneReachResponse,
+          200,
+        );
+      },
+    );
+
+    /**
+     * CONTROL-PLANE READ (#812). Which scopes one connection exercised and was refused, by key, over a window —
+     * counted in one SQL statement, never by paging events here. Behind the listing scope, not the detail one: the
+     * answer is the scope, the key, and the last allowed call's method and path, and never an IP, a user-agent or any
+     * other metadata key.
+     */
+    app.get(
+      `${base}/control-plane/usage`,
+      describeRoute({
+        summary: "Count which scopes one control-plane connection exercised and was refused, by key, over a window.",
+        verification: "control-plane",
+        scopes: [AUDIT_TRAIL_READ_SCOPE],
+        responses: { 200: ControlPlaneUsageResponse },
+      }),
+      requireControlPlane(AUDIT_TRAIL_READ_SCOPE),
+      validate("query", ControlPlaneUsageQuery),
+      async (c) => {
+        const operator = caller(c);
+        const query = c.req.valid("query");
+        const window = { since: query.since, until: query.until ?? new Date() };
+        const result = await controlPlaneUsage(database(c), { connectionId: query.connectionId, ...window });
+        // Audited like the listing, and against the connection whose usage was read: "who reviewed this
+        // connection's grants" is a question the trail should answer about that connection.
+        await c.var.emit({
+          action: AuditTrailActions.usageRead,
+          outcome: "success",
+          actorType: "control-plane",
+          actorId: operator.subject,
+          resourceType: "controlplane_connection",
+          resourceId: query.connectionId,
+          requestId: c.req.header("cf-ray"),
+          ip: c.req.header("cf-connecting-ip"),
+          userAgent: c.req.header("user-agent"),
+          metadata: {
+            connectionId: operator.connectionId,
+            query: {
+              connectionId: query.connectionId,
+              since: window.since.toISOString(),
+              until: window.until.toISOString(),
+            },
+            returned: result.usage.length,
+          },
+        });
+        return c.json(
+          {
+            connectionId: query.connectionId,
+            since: window.since.toISOString(),
+            until: window.until.toISOString(),
+            usage: result.usage.map(controlPlaneUsageView),
+            oldestEventAt: result.oldestEventAt?.toISOString() ?? null,
+          } satisfies ControlPlaneUsageResponse,
           200,
         );
       },

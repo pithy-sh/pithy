@@ -309,6 +309,237 @@ describe("requireControlPlane", () => {
     });
   });
 
+  /**
+   * **A refusal is attributed exactly as far as it is proven (#812).** A call that failed verification names nobody:
+   * its `sub` is unproven, and writing it as the actor is how a forged token gets to name someone. A call whose
+   * credential verified and whose scope was not granted is a known connection asking for something it lacks — the
+   * shape scope probing takes — so its row names the connection, the subject and the key.
+   */
+  describe("the denial row (#812)", () => {
+    /** A scope the fixture connection is never granted. */
+    const UNGRANTED = "audit:events:read";
+
+    function deniedApp(events: AuditEventInput[], options: { verifier?: ControlPlaneVerifier | null } = {}) {
+      const app = new Hono<PithyHonoEnv>();
+      app.onError(pithyErrorHandler);
+      app.use("*", async (c, next) => {
+        c.set("auth", null);
+        c.set("controlPlane", null);
+        c.set("controlPlaneVerifier", options.verifier === undefined ? verifier() : options.verifier);
+        c.set("emit", async (event: AuditEventInput) => {
+          events.push(event);
+        });
+        await next();
+      });
+      app.get("/control-plane/ungranted", requireControlPlane(UNGRANTED), (c) => c.json({ ok: true }));
+      app.get("/control-plane/manifest", requireControlPlane(MANIFEST_READ_SCOPE), (c) => c.json({ ok: true }));
+      return app;
+    }
+
+    async function denied(
+      path: string,
+      headers: Record<string, string>,
+      options: { verifier?: ControlPlaneVerifier | null } = {},
+    ): Promise<{ status: number; body: string; event: AuditEventInput | undefined }> {
+      const events: AuditEventInput[] = [];
+      const response = await deniedApp(events, options).request(path, {
+        headers: { "cf-connecting-ip": "203.0.113.9", "user-agent": "Probe/1.0", ...headers },
+      });
+      expect(events).toHaveLength(1);
+      return { status: response.status, body: await response.text(), event: events[0] };
+    }
+
+    /** The row every unverified refusal writes, exactly as it did before #812. */
+    function unattributed(reason: string, required: string, path: string): AuditEventInput {
+      return {
+        action: "controlplane/call_denied",
+        outcome: "denied",
+        severity: "warning",
+        actorType: "control-plane",
+        actorId: null,
+        requestId: undefined,
+        ip: "203.0.113.9",
+        userAgent: "Probe/1.0",
+        metadata: { reason, required, method: "GET", path },
+      };
+    }
+
+    test("a verified call refused an ungranted scope names its connection, subject and key", async () => {
+      const { status, event } = await denied("/control-plane/ungranted", {
+        [CONTROL_PLANE_HEADER]: await token({ scope: UNGRANTED }),
+      });
+      expect(status).toBe(403);
+      expect(event).toEqual({
+        action: "controlplane/call_denied",
+        outcome: "denied",
+        severity: "warning",
+        actorType: "control-plane",
+        actorKind: "agent",
+        actorId: SUBJECT,
+        resourceType: "controlplane_connection",
+        resourceId: CONNECTION_ID,
+        requestId: undefined,
+        ip: "203.0.113.9",
+        userAgent: "Probe/1.0",
+        metadata: {
+          reason: "controlplane/insufficient_scope",
+          required: UNGRANTED,
+          method: "GET",
+          path: "/control-plane/ungranted",
+          keyId: KEY_ID,
+        },
+      });
+    });
+
+    test("an attributed refusal carries the connection's actor kind, so filtering on kind finds the probing", async () => {
+      // An operator who filters the trail on actorKind=agent must get an agent's refusals beside its allowed calls.
+      const { event } = await denied("/control-plane/ungranted", {
+        [CONTROL_PLANE_HEADER]: await token({ scope: UNGRANTED }),
+      });
+      expect(event?.actorKind).toBe("agent");
+    });
+
+    test("an attributed refusal from a connection with no recorded kind carries none", async () => {
+      const saved = connection;
+      connection = { ...connection, actorKind: null };
+      try {
+        const { event } = await denied("/control-plane/ungranted", {
+          [CONTROL_PLANE_HEADER]: await token({ scope: UNGRANTED }),
+        });
+        expect(event).toMatchObject({ actorId: SUBJECT, resourceId: CONNECTION_ID });
+        expect(event).not.toHaveProperty("actorKind");
+      } finally {
+        connection = saved;
+      }
+    });
+
+    test("a verified token minted for a different operation is attributed the same way", async () => {
+      // Both scopes are granted; the token named the wrong one. Still a proven caller, still traceable.
+      const { event } = await denied("/control-plane/ungranted", {
+        [CONTROL_PLANE_HEADER]: await token({ scope: MANIFEST_READ_SCOPE }),
+      });
+      expect(event).toMatchObject({
+        actorId: SUBJECT,
+        resourceType: "controlplane_connection",
+        resourceId: CONNECTION_ID,
+        metadata: { reason: "controlplane/insufficient_scope", keyId: KEY_ID },
+      });
+    });
+
+    test("the refusal sent to the caller is unchanged — no connection, subject or key on the wire", async () => {
+      const { body } = await denied("/control-plane/ungranted", {
+        [CONTROL_PLANE_HEADER]: await token({ scope: UNGRANTED }),
+      });
+      expect(JSON.parse(body)).toEqual({
+        error: {
+          code: "controlplane/insufficient_scope",
+          status: 403,
+          message: "This connection is not scoped for that operation.",
+        },
+      });
+      expect(body).not.toContain(CONNECTION_ID);
+      expect(body).not.toContain(SUBJECT);
+      expect(body).not.toContain(KEY_ID);
+    });
+
+    test("one token replayed at an ungranted route is attributed once, then names nobody", async () => {
+      // A token binds no path, and a signature proves who minted it, not who presented it. The first refusal spends
+      // the jti; every replay after it is unproven, so a captured token cannot inflate a connection's denials.
+      // One verifier for both requests, so they share one replay guard the way they share one KV namespace.
+      const events: AuditEventInput[] = [];
+      const replayed = deniedApp(events, { verifier: verifier() });
+      const presented = await token({ scope: UNGRANTED });
+      const headers = {
+        "cf-connecting-ip": "203.0.113.9",
+        "user-agent": "Probe/1.0",
+        [CONTROL_PLANE_HEADER]: presented,
+      };
+      const first = await replayed.request("/control-plane/ungranted", { headers });
+      const second = await replayed.request("/control-plane/ungranted", { headers });
+
+      expect(first.status).toBe(403);
+      expect(second.status).toBe(403);
+      expect(await second.text()).toBe(await first.text());
+      expect(events).toHaveLength(2);
+      expect(events[0]).toMatchObject({ actorId: SUBJECT, resourceId: CONNECTION_ID, metadata: { keyId: KEY_ID } });
+      expect(events[1]).toEqual(unattributed("controlplane/insufficient_scope", UNGRANTED, "/control-plane/ungranted"));
+    });
+
+    test("no credential at all names nobody", async () => {
+      const { event } = await denied("/control-plane/manifest", {});
+      expect(event).toEqual(
+        unattributed("controlplane/invalid_credential", MANIFEST_READ_SCOPE, "/control-plane/manifest"),
+      );
+    });
+
+    test("no connection on the seam names nobody", async () => {
+      const { event } = await denied("/control-plane/manifest", {}, { verifier: null });
+      expect(event).toEqual(unattributed("controlplane/not_connected", MANIFEST_READ_SCOPE, "/control-plane/manifest"));
+    });
+
+    test("a token for a connection this Worker does not hold names nobody", async () => {
+      const forged = await mintControlPlaneToken({
+        privateKey: keyPair.privateKey,
+        keyId: KEY_ID,
+        issuer: ISSUER,
+        connectionId: "6b2e9a41-3f8d-4c17-b0a5-91d7e4c62f38",
+        subject: SUBJECT,
+        scope: MANIFEST_READ_SCOPE,
+        now: () => NOW,
+      });
+      const { event } = await denied("/control-plane/manifest", { [CONTROL_PLANE_HEADER]: forged });
+      expect(event).toEqual(
+        unattributed("controlplane/invalid_credential", MANIFEST_READ_SCOPE, "/control-plane/manifest"),
+      );
+    });
+
+    test("a bad signature names nobody, even naming a real connection, subject and key", async () => {
+      const attacker = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, [
+        "sign",
+        "verify",
+      ])) as CryptoKeyPair;
+      const forged = await mintControlPlaneToken({
+        privateKey: attacker.privateKey,
+        keyId: KEY_ID,
+        issuer: ISSUER,
+        connectionId: CONNECTION_ID,
+        subject: SUBJECT,
+        scope: UNGRANTED,
+        now: () => NOW,
+      });
+      const { event } = await denied("/control-plane/ungranted", { [CONTROL_PLANE_HEADER]: forged });
+      expect(event).toEqual(unattributed("controlplane/invalid_credential", UNGRANTED, "/control-plane/ungranted"));
+    });
+
+    test("an unknown key names nobody", async () => {
+      const forged = await mintControlPlaneToken({
+        privateKey: keyPair.privateKey,
+        keyId: "key_never_registered",
+        issuer: ISSUER,
+        connectionId: CONNECTION_ID,
+        subject: SUBJECT,
+        scope: UNGRANTED,
+        now: () => NOW,
+      });
+      const { event } = await denied("/control-plane/ungranted", { [CONTROL_PLANE_HEADER]: forged });
+      expect(event).toEqual(unattributed("controlplane/invalid_credential", UNGRANTED, "/control-plane/ungranted"));
+    });
+
+    test("an expired token names nobody", async () => {
+      const expired = await mintControlPlaneToken({
+        privateKey: keyPair.privateKey,
+        keyId: KEY_ID,
+        issuer: ISSUER,
+        connectionId: CONNECTION_ID,
+        subject: SUBJECT,
+        scope: UNGRANTED,
+        now: () => new Date(NOW.getTime() - 3_600_000),
+      });
+      const { event } = await denied("/control-plane/ungranted", { [CONTROL_PLANE_HEADER]: expired });
+      expect(event).toEqual(unattributed("controlplane/invalid_credential", UNGRANTED, "/control-plane/ungranted"));
+    });
+  });
+
   describe("a scope refusal raised by the handler, past the gate", () => {
     /**
      * A route whose handler needs a grant the gate's own requirement does not name — the operator roster

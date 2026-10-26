@@ -42,12 +42,13 @@ export function defineAuditActions<const T extends Record<string, string>>(actio
  * every other capability, so a management client paging through it is doing something that has to be
  * answerable later; a trail that records every write and no read cannot answer "who looked".
  *
- * They are separate codes rather than one, because the two reads disclose different things and a
+ * They are separate codes rather than one, because the reads disclose different things and a
  * reviewer filtering the trail should not have to inspect metadata to tell them apart:
  * `audit/trail_read` is a filtered page of structural fields, while `audit/event_read` is the full
  * record of one event — the IP, the user-agent, and the capability metadata included.
  * `audit/access_history_read` is the access changes in a window: who held what, and when it changed.
  * `audit/reach_read` is one credential's reach: counts by tenant and route, and on request one route's subjects.
+ * `audit/usage_read` is counts: which scopes one connection exercised and was refused, by key, over a window.
  *
  * Yes, this appends to the table it just read. That is a loop by design, not by accident: the row it
  * writes is one row, it is the only durable evidence the read happened, and the alternative is a
@@ -62,4 +63,6 @@ export const AuditTrailActions = defineAuditActions({
   accessHistoryRead: "audit/access_history_read",
   /** One control-plane credential's reach was read — tenants, routes and subjects, never an event in full (#828). */
   reachRead: "audit/reach_read",
+  /** One control-plane connection's usage was counted — scopes and keys, never an event in full (#812). */
+  usageRead: "audit/usage_read",
 });

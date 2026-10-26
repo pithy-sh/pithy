@@ -158,13 +158,30 @@ export async function verifyControlPlaneCall(
   await verifyBodyDigest(call.body, claims.bodySha256);
 
   // 11. Scope. Both sides must agree: what the adopter granted, and what this one token was minted for.
+  //     A signature proves who minted the token, not who presented it, and a token binds no path: one captured
+  //     token can be presented at every route it does not cover. So the refusal spends the jti, and names the
+  //     caller only when this presentation was the first (#812). A replay gets the same refusal and names nobody.
+  //     Spending costs the caller nothing — the call is refused either way — and it still happens only after
+  //     step 7, so a forgery cannot burn a jti it merely observed.
   if (!scopeCovers(call.requirement, claims.scope, connection.scopes)) {
+    const firstPresentation = await deps.replay.claim(claims.jti, connection.id);
+    const spent = firstPresentation ? "" : `; jti ${claims.jti} was already spent`;
     throw new ControlPlaneInsufficientScopeError({
-      detail: `required ${String(call.requirement)}; token carried ${claims.scope}; connection grants [${connection.scopes.join(", ")}]`,
+      detail: `required ${String(call.requirement)}; token carried ${claims.scope}; connection grants [${connection.scopes.join(", ")}]${spent}`,
+      ...(firstPresentation
+        ? {
+            caller: {
+              connectionId: connection.id,
+              subject: claims.sub,
+              keyId: key.keyId,
+              actorKind: connection.actorKind,
+            },
+          }
+        : {}),
     });
   }
 
-  // 12. Spend the token. Last, because it is the only step that writes anything.
+  // 12. Spend the token. Last, because it is the only step that writes anything a granted call depends on.
   if (!(await deps.replay.claim(claims.jti, connection.id))) {
     deny(`jti ${claims.jti} was already spent`);
   }
