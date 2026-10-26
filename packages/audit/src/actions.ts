@@ -46,6 +46,7 @@ export function defineAuditActions<const T extends Record<string, string>>(actio
  * reviewer filtering the trail should not have to inspect metadata to tell them apart:
  * `audit/trail_read` is a filtered page of structural fields, while `audit/event_read` is the full
  * record of one event — the IP, the user-agent, and the capability metadata included.
+ * `audit/access_history_read` is the access changes in a window: who held what, and when it changed.
  *
  * Yes, this appends to the table it just read. That is a loop by design, not by accident: the row it
  * writes is one row, it is the only durable evidence the read happened, and the alternative is a
@@ -56,4 +57,6 @@ export const AuditTrailActions = defineAuditActions({
   trailRead: "audit/trail_read",
   /** One event was read in full, network identifiers and metadata included. */
   eventRead: "audit/event_read",
+  /** The access changes in a window were read — before and after, never an event in full (#831). */
+  accessHistoryRead: "audit/access_history_read",
 });

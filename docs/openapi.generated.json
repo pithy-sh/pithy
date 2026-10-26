@@ -7333,6 +7333,505 @@
         ]
       }
     },
+    "/audit/control-plane/access-history": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "operationId": "getAuditControlPlaneAccessHistory",
+        "summary": "Replay every membership, connection and key change in a window, oldest first, with its before and after.",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": true,
+            "description": "Inclusive lower bound on when a change happened, ISO-8601. Required.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive upper bound on when a change happened, ISO-8601. Defaults to now.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Where to resume, from the previous page's `nextCursor`. Opaque; a malformed one is a first page.",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many changes to return. Bounded, because a verified client can still have a bug.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every membership, connection and key change in a window, oldest first, with its before and after.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "since": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "The window's inclusive start, ISO-8601."
+                    },
+                    "until": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "The window's inclusive end, ISO-8601 — now, when the query named none."
+                    },
+                    "changes": {
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "eventId": {
+                                "type": "string",
+                                "description": "The event the change was read from — the listing's `eventId`."
+                              },
+                              "occurredAt": {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                "description": "When it changed, ISO-8601."
+                              },
+                              "action": {
+                                "type": "string",
+                                "description": "The `domain/reason` code it was recorded under."
+                              },
+                              "actorType": {
+                                "type": "string",
+                                "enum": [
+                                  "user",
+                                  "service",
+                                  "system",
+                                  "anonymous",
+                                  "control-plane"
+                                ],
+                                "description": "The kind of principal that made the change."
+                              },
+                              "actorId": {
+                                "description": "The principal that made the change, or null.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "actorKind": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "agent",
+                                      "dashboard",
+                                      "script"
+                                    ],
+                                    "description": "What kind of client a connection is for: `agent` (an automated client acting on its own judgment, often unattended), `dashboard` (a management dashboard a person drives, registered through the device-code flow), or `script` (an operator's own automation, doing one fixed thing)."
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "For a `control-plane` actor, which kind of management client made the change, or null."
+                              },
+                              "detail": {
+                                "type": "string",
+                                "enum": [
+                                  "recorded",
+                                  "not_recorded"
+                                ],
+                                "description": "Whether the event recorded this change's before and after. `not_recorded` means a null before or after is unknown, not none: the event predates the emitter recording it."
+                              },
+                              "subject": {
+                                "type": "string",
+                                "const": "member",
+                                "description": "A membership changed."
+                              },
+                              "organizationId": {
+                                "description": "The organization the membership is in.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "membershipId": {
+                                "description": "The membership that changed.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "userId": {
+                                "description": "Whose membership it is, or null when the event did not say.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "roleBefore": {
+                                "description": "The role it held before. Null for a join, or when `detail` is `not_recorded`.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "roleAfter": {
+                                "description": "The role it holds after. Null for a leave or a removal, or when `detail` is `not_recorded`.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "eventId",
+                              "occurredAt",
+                              "action",
+                              "actorType",
+                              "actorId",
+                              "actorKind",
+                              "detail",
+                              "subject",
+                              "organizationId",
+                              "membershipId",
+                              "userId",
+                              "roleBefore",
+                              "roleAfter"
+                            ],
+                            "description": "A membership joined, changed role, or ended."
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "eventId": {
+                                "type": "string",
+                                "description": "The event the change was read from — the listing's `eventId`."
+                              },
+                              "occurredAt": {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                "description": "When it changed, ISO-8601."
+                              },
+                              "action": {
+                                "type": "string",
+                                "description": "The `domain/reason` code it was recorded under."
+                              },
+                              "actorType": {
+                                "type": "string",
+                                "enum": [
+                                  "user",
+                                  "service",
+                                  "system",
+                                  "anonymous",
+                                  "control-plane"
+                                ],
+                                "description": "The kind of principal that made the change."
+                              },
+                              "actorId": {
+                                "description": "The principal that made the change, or null.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "actorKind": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "agent",
+                                      "dashboard",
+                                      "script"
+                                    ],
+                                    "description": "What kind of client a connection is for: `agent` (an automated client acting on its own judgment, often unattended), `dashboard` (a management dashboard a person drives, registered through the device-code flow), or `script` (an operator's own automation, doing one fixed thing)."
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "For a `control-plane` actor, which kind of management client made the change, or null."
+                              },
+                              "detail": {
+                                "type": "string",
+                                "enum": [
+                                  "recorded",
+                                  "not_recorded"
+                                ],
+                                "description": "Whether the event recorded this change's before and after. `not_recorded` means a null before or after is unknown, not none: the event predates the emitter recording it."
+                              },
+                              "subject": {
+                                "type": "string",
+                                "const": "connection",
+                                "description": "A control-plane connection changed."
+                              },
+                              "connectionId": {
+                                "description": "The connection that changed.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "connectionKind": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "agent",
+                                      "dashboard",
+                                      "script"
+                                    ],
+                                    "description": "What kind of client a connection is for: `agent` (an automated client acting on its own judgment, often unattended), `dashboard` (a management dashboard a person drives, registered through the device-code flow), or `script` (an operator's own automation, doing one fixed thing)."
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "What kind of client the connection is for, or null when it was not recorded."
+                              },
+                              "purpose": {
+                                "description": "What the connection is for, in its registrant's words, or null.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "principal": {
+                                "description": "Who sanctioned the connection — the registering session's email address — or null.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "scopesBefore": {
+                                "anyOf": [
+                                  {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "description": "A granted scope."
+                                    }
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "The scopes it held before. Null for a registration, or when `detail` is `not_recorded`."
+                              },
+                              "scopesAfter": {
+                                "anyOf": [
+                                  {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "description": "A granted scope."
+                                    }
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "The scopes it holds after. Null for a removal, or when `detail` is `not_recorded`."
+                              },
+                              "replacedConnectionId": {
+                                "description": "For a registration that started over, the connection it replaced: that connection's grant ended here. Null otherwise. A start-over recorded by a current CLI also has the old connection's own removal, just before.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "eventId",
+                              "occurredAt",
+                              "action",
+                              "actorType",
+                              "actorId",
+                              "actorKind",
+                              "detail",
+                              "subject",
+                              "connectionId",
+                              "connectionKind",
+                              "purpose",
+                              "principal",
+                              "scopesBefore",
+                              "scopesAfter",
+                              "replacedConnectionId"
+                            ],
+                            "description": "A control-plane connection was registered, updated, or removed."
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "eventId": {
+                                "type": "string",
+                                "description": "The event the change was read from — the listing's `eventId`."
+                              },
+                              "occurredAt": {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                "description": "When it changed, ISO-8601."
+                              },
+                              "action": {
+                                "type": "string",
+                                "description": "The `domain/reason` code it was recorded under."
+                              },
+                              "actorType": {
+                                "type": "string",
+                                "enum": [
+                                  "user",
+                                  "service",
+                                  "system",
+                                  "anonymous",
+                                  "control-plane"
+                                ],
+                                "description": "The kind of principal that made the change."
+                              },
+                              "actorId": {
+                                "description": "The principal that made the change, or null.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "actorKind": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "agent",
+                                      "dashboard",
+                                      "script"
+                                    ],
+                                    "description": "What kind of client a connection is for: `agent` (an automated client acting on its own judgment, often unattended), `dashboard` (a management dashboard a person drives, registered through the device-code flow), or `script` (an operator's own automation, doing one fixed thing)."
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "For a `control-plane` actor, which kind of management client made the change, or null."
+                              },
+                              "detail": {
+                                "type": "string",
+                                "enum": [
+                                  "recorded",
+                                  "not_recorded"
+                                ],
+                                "description": "Whether the event recorded this change's before and after. `not_recorded` means a null before or after is unknown, not none: the event predates the emitter recording it."
+                              },
+                              "subject": {
+                                "type": "string",
+                                "const": "key",
+                                "description": "A key on a control-plane connection changed."
+                              },
+                              "connectionId": {
+                                "description": "The connection the key belongs to.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "keyId": {
+                                "description": "The key's id. Never key material.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "change": {
+                                "type": "string",
+                                "enum": [
+                                  "registered",
+                                  "expired",
+                                  "revoked"
+                                ],
+                                "description": "What happened to it: registered, expired at the end of a rotation, or revoked."
+                              }
+                            },
+                            "required": [
+                              "eventId",
+                              "occurredAt",
+                              "action",
+                              "actorType",
+                              "actorId",
+                              "actorKind",
+                              "detail",
+                              "subject",
+                              "connectionId",
+                              "keyId",
+                              "change"
+                            ],
+                            "description": "A key on a control-plane connection was registered, expired, or revoked."
+                          }
+                        ],
+                        "description": "One change to who can reach this environment's data, with its before and after."
+                      },
+                      "description": "The page, oldest first."
+                    },
+                    "nextCursor": {
+                      "description": "Where the next page resumes. Null at the end of the list. Opaque — pass it back verbatim.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "since",
+                    "until",
+                    "changes",
+                    "nextCursor"
+                  ],
+                  "description": "Every membership, connection and key change in a window, oldest first, with its before and after."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "audit:events:read"
+        ]
+      }
+    },
     "/storage": {
       "post": {
         "tags": [

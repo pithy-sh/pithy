@@ -7,7 +7,7 @@ import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { z } from "zod";
 
 /**
- * The request contracts audit's two routes declare (CLAUDE.md §HTTP).
+ * The request contracts audit's routes declare (CLAUDE.md §HTTP).
  *
  * Every one of these is a **bound on something a caller chose**, which is the whole job here: a
  * control-plane credential is verified, but verified is not trusted, and a management client with a
@@ -113,3 +113,34 @@ export const ListAuditEventsQuery = z
   })
   .describe("The audit trail query: what to filter the trail by, and where to resume reading it.");
 export type ListAuditEventsQuery = z.infer<typeof ListAuditEventsQuery>;
+
+/**
+ * The access-history query (#831): over what window, and where to resume.
+ *
+ * `since` is required, so an unbounded replay of the whole trail is a 400 before any query runs; `until` defaults to
+ * now in the handler, the one value a schema cannot compute for a request. A window that ends before it starts is
+ * refused rather than answered with nothing, because nothing would read as nobody's access having changed.
+ */
+export const AccessHistoryQuery = z
+  .object({
+    since: TimeBound.describe("Inclusive lower bound on when a change happened, ISO-8601. Required."),
+    until: TimeBound.optional().describe("Inclusive upper bound on when a change happened, ISO-8601. Defaults to now."),
+    cursor: z
+      .string()
+      .max(512)
+      .optional()
+      .describe("Where to resume, from the previous page's `nextCursor`. Opaque; a malformed one is a first page."),
+    limit: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_PAGE_SIZE)
+      .optional()
+      .describe("How many changes to return. Bounded, because a verified client can still have a bug."),
+  })
+  .refine((query) => query.until === undefined || query.until.getTime() >= query.since.getTime(), {
+    message: "`until` must not be before `since`.",
+    path: ["until"],
+  })
+  .describe("The access-history query: a window, oldest first, and where to resume reading it.");
+export type AccessHistoryQuery = z.infer<typeof AccessHistoryQuery>;

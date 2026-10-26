@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: FSL-1.1-MIT
 
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import type { AccessHistoryRow } from "../accessHistory";
 import type { AuditEventRow } from "../data/auditEvent";
-import type { AuditEventDetailView, AuditEventView } from "./responses";
+import type { AccessChangeView, AuditEventDetailView, AuditEventView } from "./responses";
 
 /**
  * What a management client is shown of an audit event — decided here, once, rather than by whichever
@@ -84,4 +86,56 @@ export function auditEventView(row: AuditEventRow): AuditEventView {
 /** Project one row for the single-event read, network identifiers and metadata included. */
 export function auditEventDetailView(row: AuditEventRow): AuditEventDetailView {
   return { ...auditEventView(row), ip: row.ip, userAgent: row.userAgent, metadata: row.metadata };
+}
+
+/**
+ * Project one access change (#831) into the wire union, by what changed.
+ *
+ * The statement already read nothing but the named metadata keys, so this drops nothing personal; what it does is
+ * keep each subject's fields to that subject, so a member change never carries a null `scopesBefore` a client could
+ * read as a connection that held nothing.
+ */
+export function accessChangeView(row: AccessHistoryRow): AccessChangeView {
+  const base = {
+    eventId: row.eventId,
+    occurredAt: row.occurredAt.toISOString(),
+    action: row.action,
+    actorType: row.actorType,
+    actorId: row.actorId,
+    actorKind: row.actorKind,
+    detail: row.recorded ? ("recorded" as const) : ("not_recorded" as const),
+  };
+  if (row.subject === "member") {
+    return {
+      ...base,
+      subject: "member",
+      organizationId: row.organizationId,
+      membershipId: row.membershipId,
+      userId: row.userId,
+      roleBefore: row.roleBefore,
+      roleAfter: row.roleAfter,
+    };
+  }
+  if (row.subject === "connection") {
+    return {
+      ...base,
+      subject: "connection",
+      connectionId: row.connectionId,
+      connectionKind: row.connectionKind,
+      purpose: row.purpose,
+      principal: row.principal,
+      scopesBefore: row.scopesBefore,
+      scopesAfter: row.scopesAfter,
+      replacedConnectionId: row.replacedConnectionId,
+    };
+  }
+  if (row.keyChange === null) {
+    // The statement answers a change for every key subject, so this is a programming-error guard rather than a
+    // runtime path. Guessing one would put a registration in the history that may have been a revocation.
+    throw new InternalError({
+      message: "Audit could not read a key change.",
+      detail: `access-history row for event ${row.eventId} is a key change with no change recorded`,
+    });
+  }
+  return { ...base, subject: "key", connectionId: row.connectionId, keyId: row.keyId, change: row.keyChange };
 }

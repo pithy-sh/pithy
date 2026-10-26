@@ -323,6 +323,14 @@ describe("a write records itself", () => {
       changed: ["purpose"],
       purpose: { from: "Support triage, reading threads and replying.", to: "Support triage, read-only." },
     });
+    // The grant before and after, and what did not move, on every update (#831): the access history replays a
+    // connection from its events alone, and an update that changed no scope still says what the scopes were.
+    expect(metadata(events, 1)).toMatchObject({
+      scopesBefore: ["keys:rotate", "manifest:read"],
+      scopesAfter: ["keys:rotate", "manifest:read"],
+      authorizedBy: "ada@example.com",
+      actorKind: "agent",
+    });
   });
 
   test("a new principal and kind, as a key registered on a dead connection records them, say what they were", async () => {
@@ -394,6 +402,9 @@ describe("a write records itself", () => {
       changed: ["workerUrl", "scopes"],
       workerUrl: { from: "https://api.example.com", to: "https://moved.example.com" },
       scopes: { from: ["keys:rotate", "manifest:read"], to: ["manifest:read"] },
+      scopesBefore: ["keys:rotate", "manifest:read"],
+      scopesAfter: ["manifest:read"],
+      purpose: "Support triage, reading threads and replying.",
     });
   });
 
@@ -408,14 +419,41 @@ describe("a write records itself", () => {
     expect(metadata(events, 1).changed).toEqual([]);
   });
 
-  test("starting over is a registration, and names the connection that stopped working", async () => {
+  test("starting over ends the old connection with what it held, then registers the new one naming it", async () => {
     const { events, record } = recorder();
     const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
     await registry.save(connection());
-    await registry.save(connection({ id: "9a0b1c2d-3e4f-4a5b-8c9d-0e1f2a3b4c5d" }));
+    await registry.save(connection({ id: "9a0b1c2d-3e4f-4a5b-8c9d-0e1f2a3b4c5d", scopes: ["manifest:read"] }));
 
-    expect(events[1]?.action).toBe("controlplane/connection_registered");
-    expect(metadata(events, 1).replacedConnectionId).toBe("5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31");
+    // The old connection's grant ended here, so the trail says so in its own row (#831): a reader replaying who
+    // held what would otherwise keep the old connection's scopes live for ever.
+    expect(events.map((event) => [event.action, event.resourceId])).toEqual([
+      ["controlplane/connection_registered", "5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31"],
+      ["controlplane/connection_removed", "5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31"],
+      ["controlplane/connection_registered", "9a0b1c2d-3e4f-4a5b-8c9d-0e1f2a3b4c5d"],
+    ]);
+    expect(metadata(events, 1)).toMatchObject({
+      connectionId: "5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31",
+      scopes: ["manifest:read", "keys:rotate"],
+      removedKeyIds: ["key_1"],
+      authorizedBy: "ada@example.com",
+      actorKind: "agent",
+      purpose: "Support triage, reading threads and replying.",
+      replacedByConnectionId: "9a0b1c2d-3e4f-4a5b-8c9d-0e1f2a3b4c5d",
+    });
+    expect(metadata(events, 2)).toMatchObject({
+      scopes: ["manifest:read"],
+      replacedConnectionId: "5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31",
+    });
+  });
+
+  test("a first connect ends nothing, because nothing was there", async () => {
+    const { events, record } = recorder();
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
+    await registry.save(connection());
+
+    expect(events.map((event) => event.action)).toEqual(["controlplane/connection_registered"]);
+    expect(metadata(events)).not.toHaveProperty("replacedConnectionId");
   });
 
   test("a recovered key is a change to the connection, not a registration of one", async () => {
@@ -464,6 +502,11 @@ describe("a write records itself", () => {
       issuer: "https://app.pithy.sh",
       workerUrl: "https://api.example.com",
       removedKeyIds: ["key_1"],
+      // What the connection was, as the access history reads a removal (#831).
+      scopes: ["manifest:read", "keys:rotate"],
+      authorizedBy: "ada@example.com",
+      actorKind: "agent",
+      purpose: "Support triage, reading threads and replying.",
     });
   });
 

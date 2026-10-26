@@ -448,6 +448,10 @@ export interface TransferredOwnership {
    * it finds instead of assuming it finds one.
    */
   readonly previousHolderMembershipIds: readonly string[];
+  /** The same memberships, and whose they were — so each demotion can be recorded against its person (#831). */
+  readonly previousHolders: readonly { readonly id: string; readonly userId: string }[];
+  /** The role the new holder held before the transfer. The trail records it as the acceptance's before. */
+  readonly previousRole: string;
 }
 
 /** What an acceptance names: where, by whom, when, and which roles move. */
@@ -488,7 +492,7 @@ export async function acceptNomination<Power extends string, Role extends string
 
   const nominee = await db
     .selectFrom(MEMBERSHIPS_TABLE)
-    .select(["id", "userId"])
+    .select(["id", "userId", "role"])
     .where("id", "=", nomination.membershipId)
     .where("organizationId", "=", options.organizationId)
     .executeTakeFirst();
@@ -580,7 +584,12 @@ export async function acceptNomination<Power extends string, Role extends string
     throw noOffer(options, `the nomination naming membership ${nominee.id} was gone by the time it was accepted`);
   }
 
-  return { newHolderMembershipId: nominee.id, previousHolderMembershipIds: previous.map((holder) => holder.id) };
+  return {
+    newHolderMembershipId: nominee.id,
+    previousHolderMembershipIds: previous.map((holder) => holder.id),
+    previousHolders: previous.map((holder) => ({ id: holder.id, userId: holder.userId })),
+    previousRole: nominee.role,
+  };
 }
 
 /** What an operator's forced transfer names. */
@@ -603,8 +612,8 @@ export interface ForceOwnershipOptions<Role extends string> {
 
 /** What a forced transfer moved. */
 export interface ForcedOwnership {
-  /** The membership that now holds the conferred role, and whose it is. */
-  readonly newHolder: { readonly id: string; readonly userId: string };
+  /** The membership that now holds the conferred role, whose it is, and the role it held before (#831). */
+  readonly newHolder: { readonly id: string; readonly userId: string; readonly previousRole: string };
   /** The memberships that held it, and whose they were. Empty for an account nobody owned. */
   readonly previousHolders: readonly { readonly id: string; readonly userId: string }[];
   /** Whether those memberships were ended rather than demoted. */
@@ -791,7 +800,7 @@ export async function forceOwnership<Power extends string, Role extends string>(
   });
 
   return {
-    newHolder: { id: nominee.id, userId: nominee.userId },
+    newHolder: { id: nominee.id, userId: nominee.userId, previousRole: nominee.role },
     previousHolders,
     removed: options.previousOwner === "remove" && previousHolders.length > 0,
   };
