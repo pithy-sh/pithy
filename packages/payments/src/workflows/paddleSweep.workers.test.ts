@@ -9,6 +9,7 @@ import { PaymentsConfig, type PaymentsConfigInput } from "../config/config";
 import { paymentsDatabase } from "../data/tables";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
 import { payments_0002_allowances } from "../migrations/0002_allowances";
+import { payments_0003_webhook_targets } from "../migrations/0003_webhook_targets";
 import type { PaddleHttpFetch, PaddleHttpRequest } from "../rails/paddle/api";
 import { accountReferenceProof } from "../rails/paddle/objects";
 import type { PaymentsPaddleCredentials } from "../secret/registry";
@@ -75,6 +76,7 @@ beforeEach(async () => {
   for (const table of TABLES) await env.DB.exec(`DROP TABLE IF EXISTS ${table}`);
   await payments_0001_purchases.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
   await payments_0002_allowances.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
+  await payments_0003_webhook_targets.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
   seq = 0;
 });
 
@@ -82,6 +84,9 @@ const db = () => paymentsDatabase(env.DB);
 const purchases = () => db().selectFrom("pithyPaymentsPurchases").selectAll().execute();
 const webhookRows = () =>
   db().selectFrom("pithyPaymentsWebhookEvents").selectAll().orderBy("providerEventId").execute();
+/** A row's recorded targets as stored — the JSON the codec wrote, decoded — or null when none were recorded. */
+const targetsOf = (row: { projectedTargets?: unknown } | undefined): unknown =>
+  typeof row?.projectedTargets === "string" ? JSON.parse(row.projectedTargets) : (row?.projectedTargets ?? null);
 const cursors = () => db().selectFrom("pithyPaymentsSyncCursors").selectAll().execute();
 
 /**
@@ -254,6 +259,8 @@ describe("sweepPaddle", () => {
     // reference decodes to, never to a bare id read as a user.
     const links = await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute();
     expect(links[0]).toMatchObject({ rail: "paddle", providerAccountId: CUSTOMER, ...SUBJECT });
+    // And the event records the row it wrote, exactly as a delivered one does (#830).
+    expect(targetsOf((await webhookRows())[0])).toEqual({ purchaseIds: [], subscriptionIds: [rows[0]?.id] });
   });
 
   test("an organization's subscription lands on the organization, both halves, off the reference alone", async () => {
@@ -350,6 +357,7 @@ describe("sweepPaddle", () => {
     // The failure is recorded with its reason, which is what makes it findable.
     const failed = (await webhookRows()).find((row) => row.providerEventId === "evt_02");
     expect(failed?.error).toContain("payments/");
+    expect(targetsOf(failed), "a failure changed nothing yet, so nothing is recorded").toBeNull();
   });
 
   test("a cursor past Paddle's retention reports a gap and leaves the cursor alone", async () => {
@@ -516,6 +524,8 @@ describe("sweepPaddle", () => {
     const recorded = (await webhookRows()).find((row) => row.providerEventId === "evt_partial");
     expect(recorded?.error).toContain("4950");
     expect(recorded?.error).toContain("9900");
+    // Finished, and it moved no row: recorded as changed nothing, which is not the same as unrecorded.
+    expect(targetsOf(recorded)).toEqual({ purchaseIds: [], subscriptionIds: [] });
   });
 
   /**
@@ -846,6 +856,9 @@ describe("sweepPaddle", () => {
     expect(repaired?.error).toBeNull();
     // Kept: how close this sale came to being lost belongs on the record.
     expect(repaired?.abandonedAt).not.toBeNull();
+    // The relink repair finishes the row the way a delivery would: naming the row it projected (#830).
+    const orphanRow = rows.find((row) => row.providerTransactionId === "sub_orphan");
+    expect(targetsOf(repaired)).toEqual({ purchaseIds: [], subscriptionIds: [orphanRow?.id] });
   });
 
   test("walks more than one page, and stops when Paddle says there is no more", async () => {

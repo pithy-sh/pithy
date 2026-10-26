@@ -173,6 +173,17 @@ export const PAYMENTS_OVERRIDE_CLEAR_SCOPE: ControlPlaneScope = "payments:overri
 export const PAYMENTS_USAGE_READ_SCOPE: ControlPlaneScope = "payments:usage:read";
 
 /**
+ * Read the webhook-event log — every notification a store sent, whether it became a purchase, is still
+ * pending with its attempts, or was given up on, and which purchase and subscription rows it changed (#830).
+ *
+ * Its own scope, and a read in kind. The rows name no subject, but they are a record of every customer's
+ * commerce as the stores reported it, so a tool reading them should hold exactly this — not the purchase log,
+ * which `scopeCovers` keeps separate. Neither the provider's payload nor the store's sentence about a failure
+ * crosses on it: the event's type, its state and the error's code do.
+ */
+export const PAYMENTS_WEBHOOKS_READ_SCOPE: ControlPlaneScope = "payments:webhooks:read";
+
+/**
  * Every control-plane scope payments defines — what `pithy dashboard connect` offers for this capability, and
  * the list a manifest or a doc quotes rather than re-typing. Core's `SEAM_SCOPES` is the same idea for the
  * seam's own routes.
@@ -188,6 +199,7 @@ export const PAYMENTS_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
   PAYMENTS_DISCOUNT_READ_SCOPE,
   PAYMENTS_RECONCILE_READ_SCOPE,
   PAYMENTS_USAGE_READ_SCOPE,
+  PAYMENTS_WEBHOOKS_READ_SCOPE,
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
   PAYMENTS_OVERRIDE_SET_SCOPE,
@@ -295,6 +307,13 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       scope: PAYMENTS_USAGE_READ_SCOPE,
       summary:
         "The usage-reporting passes this deployment has run — what each reported, and which subjects it skipped and why. The answer to why a quantity-billed customer was not billed.",
+    },
+    {
+      method: "GET",
+      path: `${basePath}/admin/webhook-events`,
+      scope: PAYMENTS_WEBHOOKS_READ_SCOPE,
+      summary:
+        "Page every notification a store sent — whether it became a purchase, is still pending, or was given up on, and what it changed. The answer to why a purchase is paid and not entitled, or entitled and not paid.",
     },
     {
       method: "GET",

@@ -1,12 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { PaymentsPurchaseRecord } from "../admin/read";
+import type { PaymentsPurchaseRecord, PaymentsWebhookEventListing } from "../admin/read";
 import { compOnlyEntitlements, type PaymentsConfig } from "../config/config";
 import type { PaymentsEntitlement } from "../data/entitlement";
 import { isEmptyOverride, type PaymentsOverride } from "../data/override";
 import type { PaymentsReconcileRun } from "../data/reconcileRun";
 import type { PaymentsUsageRun } from "../data/usageRun";
+import { webhookEventErrorCode, webhookEventReadState } from "../data/webhookEvent";
 import type { ResolvedAllowances } from "../entitlement/allowance";
 import type { PurchaseProjection } from "../projection/writer";
 import type {
@@ -17,6 +18,7 @@ import type {
   PaymentsAdminPurchaseView,
   PaymentsAdminReconcileRunView,
   PaymentsAdminUsageRunView,
+  PaymentsAdminWebhookEventView,
   PaymentsEntitlementView,
   PaymentsPurchaseView,
 } from "./responses";
@@ -212,6 +214,34 @@ export function adminUsageRunView(run: PaymentsUsageRun): PaymentsAdminUsageRunV
     invalid: run.invalid,
     failed: run.failed,
     findings: run.findings.map((finding) => ({ ...finding })),
+  };
+}
+
+/**
+ * Project one recorded notification for a management client (#830).
+ *
+ * The state is derived, the error is reduced to its code, and the targets are copied — so the stored sentence
+ * and the payload (which the read never selected) have no field to land in.
+ */
+export function adminWebhookEventView(event: PaymentsWebhookEventListing): PaymentsAdminWebhookEventView {
+  const targets = event.projectedTargets ?? null;
+  return {
+    id: event.id,
+    rail: event.rail,
+    providerEventId: event.providerEventId,
+    eventType: event.eventType,
+    receivedAt: event.receivedAt.toISOString(),
+    state: webhookEventReadState({
+      processedAt: event.processedAt?.getTime() ?? null,
+      abandonedAt: event.abandonedAt?.getTime() ?? null,
+      error: event.error,
+    }),
+    attempts: event.attempts ?? 0,
+    errorCode: webhookEventErrorCode(event.error),
+    targets:
+      targets === null
+        ? null
+        : { purchaseIds: [...targets.purchaseIds], subscriptionIds: [...targets.subscriptionIds] },
   };
 }
 

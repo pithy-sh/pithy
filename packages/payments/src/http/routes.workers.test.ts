@@ -33,10 +33,12 @@ import { renderMoney } from "../data/renderMoney";
 import type { PurchaseStatus } from "../data/status";
 import { encodeSubjectReference, type PaymentsSubject } from "../data/subject";
 import { PAYMENTS_PURCHASES_TABLE, paymentsDatabase } from "../data/tables";
+import { PaymentsWebhookEvent } from "../data/webhookEvent";
 import type { PaymentsSubjectSeam } from "../entitlement/subjectSeam";
-import { ledgerAccountId } from "../grants/ledgerSeam";
+import { ledgerAccountId, type PaymentsLedgerPeer } from "../grants/ledgerSeam";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
 import { payments_0002_allowances } from "../migrations/0002_allowances";
+import { payments_0003_webhook_targets } from "../migrations/0003_webhook_targets";
 import { linkProviderAccount } from "../projection/owner";
 import { projectPurchase } from "../projection/writer";
 import {
@@ -339,6 +341,7 @@ beforeEach(async () => {
   const migrationDb = createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
   await payments_0001_purchases.up(migrationDb);
   await payments_0002_allowances.up(migrationDb);
+  await payments_0003_webhook_targets.up(migrationDb);
   await ledger_0001_accounts.up(migrationDb);
   emitted = [];
   stripeCalls = [];
@@ -427,6 +430,11 @@ interface AppOptions {
    * one in, because that is the only way a holder that is not the caller can ever be named.
    */
   subject?: PaymentsSubjectSeam;
+  /**
+   * The ledger the composition hands over, asked for on every fulfillment. Absent is the real `ledgerPeer`; a
+   * case about a fulfillment that fails once and is redelivered hands in one that refuses the first time.
+   */
+  ledger?: () => PaymentsLedgerPeer | undefined;
 }
 
 /** Every call the Stripe rail made, so a test can assert what left the Worker and not only what came back. */
@@ -597,7 +605,7 @@ function makeApp(input: PaymentsConfigInput = CATALOG, options: AppOptions = {})
     ...(options.subject === undefined ? {} : { subject: options.subject }),
     // The ledger `payments()`'s `compose` hook would have found: this app stands for a Worker that composes
     // `ledger()` beside payments, which the catalog's coin packs require.
-    ledger: () => ledgerPeer,
+    ledger: options.ledger ?? (() => ledgerPeer),
     trust: {
       ...(options.trustedApple === false ? {} : { appleTrustedRoots: [chain.root] }),
       ...(options.trustedGoogle === false ? {} : { googleTrustedKeys: [googleKey.jwk] }),
@@ -746,6 +754,24 @@ const db = () => paymentsDatabase(env.DB);
 const purchases = () => db().selectFrom("pithyPaymentsPurchases").selectAll().orderBy("createdAt").execute();
 const entitlements = () => db().selectFrom("pithyPaymentsEntitlements").selectAll().orderBy("entitlement").execute();
 const webhookEvents = () => db().selectFrom("pithyPaymentsWebhookEvents").selectAll().orderBy("receivedAt").execute();
+/** An event row's recorded targets, decoded the way the row schema decodes them — or null when none were recorded. */
+const targetsOf = (row: { projectedTargets?: unknown } | undefined) =>
+  row === undefined
+    ? undefined
+    : (PaymentsWebhookEvent.parse({ ...BLANK_EVENT_ROW, projectedTargets: row.projectedTargets }).projectedTargets ??
+      null);
+/** The columns `targetsOf` does not read, filled so the row schema parses. */
+const BLANK_EVENT_ROW = {
+  id: "w",
+  rail: "stripe",
+  providerEventId: "e",
+  payload: "{}",
+  receivedAt: 0,
+  processedAt: null,
+  abandonedAt: null,
+  error: null,
+  createdAt: 0,
+};
 const actions = () => emitted.map((event) => `${event.action}:${event.outcome}`);
 
 describe("POST /payments/purchases", () => {
@@ -1715,6 +1741,9 @@ describe("POST /payments/webhooks/google", () => {
     expect(row?.status).toBe("refunded");
     expect((await entitlements())[0]).toMatchObject({ entitlement: "ads_removed", active: 0 });
     expect(actions()).toEqual(["payments/webhook_received:success"]);
+    // The void names an order; the event records the purchase row it moved (#830). A one-time product, so
+    // it is a purchase id and not a subscription id.
+    expect(targetsOf((await webhookEvents())[0])).toEqual({ purchaseIds: [row?.id], subscriptionIds: [] });
   });
 
   test("a void naming an order we never projected is recorded as orphaned, not silently dropped", async () => {
@@ -1729,6 +1758,7 @@ describe("POST /payments/webhooks/google", () => {
     // restore, or a client submission — and a redelivery must then be able to revoke it. Nothing here is
     // done with (#337).
     expect(events[0]?.processedAt).toBeNull();
+    expect(targetsOf(events[0]), "nothing projected, so nothing is recorded").toBeNull();
     expect(actions()).toEqual(["payments/webhook_received:failure"]);
   });
 
@@ -4436,6 +4466,9 @@ describe("an orphan and the link that arrives after it", () => {
     const repaired = (await webhookEvents()).find((row) => row.providerEventId === "evt_stripeSubscriptionCreated");
     expect(repaired?.processedAt, "the purchase is projected, so the event is finished").not.toBeNull();
     expect(repaired?.error).toBeNull();
+    // Repaired by the link, and recorded as a delivery would be: the row the orphan's own event wrote (#830).
+    const january = rows.find((row) => row.providerTransactionId === "in_1PithyAdaJan");
+    expect(targetsOf(repaired)).toEqual({ purchaseIds: [], subscriptionIds: [january?.id] });
 
     // And a late redelivery of the orphan costs one short-circuit, not a second projection.
     const late = await stripeHook(app, orphan);
@@ -4900,6 +4933,117 @@ describe("a delivery with nothing to project, and a reason", () => {
     const again = await push(app, rtdnRenewed);
     expect(await again.json()).toEqual({ received: true, projected: true, outcome: "created" });
     expect(await purchases()).toHaveLength(1);
+  });
+});
+
+/**
+ * **A finished delivery records what it changed.** (#830)
+ *
+ * The event is the explanation a management client reads beside a purchase — "why did this renew", "why is
+ * this not entitled" — and an explanation that cannot name the rows it explains is half of one. So every
+ * finishing path writes the purchase and subscription ids it moved onto the event, and every unfinished one
+ * writes nothing, so null stays the honest "nothing recorded".
+ */
+describe("what a finished delivery records it changed", () => {
+  for (const rail of ORPHANED) {
+    test(`${rail.rail}: a projection names the row it wrote; a failure names none`, async () => {
+      const app = rail.app();
+      expect((await rail.send(app)).status).toBe(200);
+      // Orphaned: arrived, failed, nothing projected — and nothing recorded, rather than an empty list that
+      // would say the event finished and changed nothing.
+      expect(targetsOf((await webhookEvents())[0])).toBeNull();
+
+      await rail.link();
+      expect(await (await rail.send(app)).json()).toMatchObject({ projected: true, outcome: "created" });
+      const ids = (await purchases()).map((row) => row.id);
+      expect(ids).toHaveLength(1);
+      // `pro_monthly` renews, so its row is a subscription id and only that.
+      expect(targetsOf((await webhookEvents())[0])).toEqual({ purchaseIds: [], subscriptionIds: ids });
+    });
+  }
+
+  test("an event with nothing to project is recorded as having changed nothing", async () => {
+    const app = makeApp(CATALOG, { play: { subscription: playSubscription } });
+    expect((await push(app, { ...rtdnTest, testNotification: undefined })).status).toBe(200);
+    expect(targetsOf((await webhookEvents())[0])).toEqual({ purchaseIds: [], subscriptionIds: [] });
+  });
+
+  test("an event older than the row the projection ignored changes nothing, and says so", async () => {
+    // A second event id, signed before the first: the row is strictly newer than it, so the writer answers
+    // `ignored` and the second event names no row it did not move. (An event at the row's *own* version is
+    // the other `ignored`, the retry of the write that made it — the case below.)
+    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, user("ada"), { now: NOW });
+    const app = makeApp();
+    await request(app, "POST", "/payments/webhooks/apple", { body: { signedPayload: await notification() } });
+    const replay: NotificationFixture = {
+      notification: {
+        ...didRenew.notification,
+        notificationUUID: "bbbbbbbb-0000-4000-8000-000000000002",
+        signedDate: didRenew.notification.signedDate - 60_000,
+      },
+      transaction: didRenew.transaction,
+    };
+    const second = await request(app, "POST", "/payments/webhooks/apple", {
+      body: { signedPayload: await notification(replay) },
+    });
+    expect(await second.json()).toMatchObject({ projected: true, outcome: "ignored" });
+    const events = await webhookEvents();
+    const first = events.find((row) => row.providerEventId === didRenew.notification.notificationUUID);
+    const later = events.find((row) => row.providerEventId === replay.notification.notificationUUID);
+    expect(targetsOf(first)?.subscriptionIds).toHaveLength(1);
+    expect(targetsOf(later)).toEqual({ purchaseIds: [], subscriptionIds: [] });
+  });
+
+  test("a delivery whose fulfillment failed once still names the row when the redelivery finishes it", async () => {
+    // The charge projects, then the ledger refuses, so the store gets a non-2xx and the row stays unfinished.
+    // The redelivery finds the purchase row already carrying this event's own version, so the writer answers
+    // `ignored` — but the row is this event's write, made on its first attempt, and recording an empty list
+    // would say the event finished and changed nothing.
+    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, user("ada"), { now: NOW });
+    let attempts = 0;
+    const app = makeApp(CATALOG, {
+      ledger: () => {
+        attempts += 1;
+        if (attempts > 1) return ledgerPeer;
+        return {
+          openLedger: () => {
+            throw new Error("ledger unavailable");
+          },
+        };
+      },
+    });
+    const signedPayload = await signNotification(oneTimeCharge, chain);
+    const first = await request(app, "POST", "/payments/webhooks/apple", { body: { signedPayload } });
+    expect(first.status).toBeGreaterThanOrEqual(500);
+    expect((await webhookEvents())[0]?.processedAt).toBeNull();
+
+    const again = await request(app, "POST", "/payments/webhooks/apple", { body: { signedPayload } });
+    expect(again.status).toBe(200);
+    expect(await coinBalance(user("ada"))).toBe(100);
+    const rows = await purchases();
+    expect(rows).toHaveLength(1);
+    expect(targetsOf((await webhookEvents())[0])).toEqual({ purchaseIds: [rows[0]?.id], subscriptionIds: [] });
+  });
+
+  test("lemonSqueezy: a refund names both rows one notification moved", async () => {
+    // The one rail that writes two rows from one delivery: the invoice goes `refunded` and the standing goes
+    // `revoked`. A single id would have to pick, and whichever it dropped is the half an operator asks after.
+    await linkProviderAccount(env.DB, "lemonSqueezy", String(LEMON_CUSTOMER), user("ada"), { now: NOW });
+    const app = makeApp(LEMON_CATALOG, {
+      lemonSqueezy: { subscription: JSON.parse(subscriptionResponse()) as unknown },
+    });
+    const refund = await invoiceDelivery(
+      "subscription_payment_refunded",
+      undefined,
+      { refunded: true, refunded_at: "2026-02-11T12:00:00.000000Z", updated_at: "2026-02-11T12:00:00.000000Z" },
+      { stamped: false },
+    );
+    expect(await (await lemonHook(app, refund)).json()).toMatchObject({ projected: true });
+    const rows = await purchases();
+    expect(rows).toHaveLength(2);
+    const recorded = targetsOf((await webhookEvents())[0]);
+    expect(recorded?.purchaseIds).toEqual([]);
+    expect([...(recorded?.subscriptionIds ?? [])].sort()).toEqual(rows.map((row) => row.id).sort());
   });
 });
 

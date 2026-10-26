@@ -169,6 +169,7 @@ describe("payments()", () => {
       "/billing/admin/reconcile-runs",
       "/billing/admin/subscriptions",
       "/billing/admin/usage-runs",
+      "/billing/admin/webhook-events",
       "/billing/checkout",
       "/billing/checkout/resume",
       "/billing/entitlements",
@@ -220,8 +221,8 @@ describe("payments()", () => {
 
   test("ships its migrations under stable local keys, at its allocated order", () => {
     const spec = payments(CATALOG).databases?.app;
-    // Append-only since 0.1.0: `0001` is history, and what #561 added is a migration of its own.
-    expect(Object.keys(spec?.migrations ?? {})).toEqual(["0001_purchases", "0002_allowances"]);
+    // Append-only since 0.1.0: `0001` is history, and what #561 and #830 added are migrations of their own.
+    expect(Object.keys(spec?.migrations ?? {})).toEqual(["0001_purchases", "0002_allowances", "0003_webhook_targets"]);
     expect(spec?.migrationOrder).toBe(PAYMENTS_MIGRATION_ORDER);
     expect(PAYMENTS_MIGRATION_ORDER).toBe(1000);
   });
@@ -240,6 +241,7 @@ describe("payments()", () => {
     expect(Object.keys(await (registry.app?.getMigrations() ?? Promise.resolve({})))).toEqual([
       "1000_payments_0001_purchases",
       "1000_payments_0002_allowances",
+      "1000_payments_0003_webhook_targets",
     ]);
   });
 

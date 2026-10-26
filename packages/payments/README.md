@@ -48,6 +48,7 @@ _Everything else is on the site. `pithy.sh/docs` is canonical — new prose goes
 | `GET /payments/admin/entitlements/:subjectType/:subjectId` | One subject's entitlements, override and resolved allowances | control-plane: `payments:entitlements:read` |
 | `GET /payments/admin/overrides` | Every subject's override, and who is unrestricted | control-plane: `payments:entitlements:read` |
 | `GET /payments/admin/usage-runs` | The usage-reporting passes this deployment has run | control-plane: `payments:usage:read` |
+| `GET /payments/admin/webhook-events` | Every notification a store sent — projected, pending with its attempts, or abandoned — and the purchase and subscription rows it changed. Never the payload; an error crosses as its code | control-plane: `payments:webhooks:read` |
 | `GET /payments/admin/reconcile-runs` | The reconciliation passes this deployment has run | control-plane: `payments:reconcile:read` |
 | `POST /payments/admin/reconcile-runs` | Start a pass now, rather than waiting for the nightly one | control-plane: `payments:reconcile:run` |
 

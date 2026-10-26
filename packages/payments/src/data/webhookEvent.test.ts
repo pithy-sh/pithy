@@ -8,7 +8,10 @@ import {
   PaymentsWebhookEvent,
   type PaymentsWebhookEventState,
   WEBHOOK_EVENT_ORPHANED,
+  WEBHOOK_EVENT_QUARANTINED,
   webhookEventAwaitsOwner,
+  webhookEventErrorCode,
+  webhookEventReadState,
   webhookEventState,
 } from "./webhookEvent";
 
@@ -150,5 +153,90 @@ describe("the row schema", () => {
       createdAt: AT,
     });
     expect(parsed.abandonedAt).toBeNull();
+  });
+});
+
+/**
+ * **What a management read may say about `error`: its code, never its sentence.** (#830)
+ *
+ * The column is free text an operator reads, and three writers put three kinds of sentence in it — a kit
+ * error's code and its throw-site `detail`, the sweep's own words, and a rail's note quoting store ids. Only
+ * the first segment is ours to publish, and only when it is a code the kit actually defines.
+ */
+describe("webhookEventErrorCode", () => {
+  test("no error is no code", () => {
+    expect(webhookEventErrorCode(null)).toBeNull();
+    expect(webhookEventErrorCode(undefined)).toBeNull();
+  });
+
+  test("a kit error's code crosses, and the detail behind it does not", () => {
+    expect(webhookEventErrorCode('payments/product_not_found: No catalog product maps the apple SKU "x".')).toBe(
+      "payments/product_not_found",
+    );
+    expect(webhookEventErrorCode("payments/environment_mismatch: apple transaction t1 is sandbox")).toBe(
+      "payments/environment_mismatch",
+    );
+  });
+
+  test("the two markers this package writes are named by the marker", () => {
+    expect(webhookEventErrorCode(`${WEBHOOK_EVENT_ORPHANED} no subject could be resolved`)).toBe("orphaned");
+    expect(
+      webhookEventErrorCode(
+        `${WEBHOOK_EVENT_QUARANTINED}: after 3 attempts; the sweep has moved past it. Last failure: core/internal: boom`,
+      ),
+    ).toBe("quarantined");
+  });
+
+  test("anything else is unclassified — a rail's note, a code the kit does not define, prose", () => {
+    // A note quotes store ids and amounts. A prefix that merely looks like a code is not one: the set is
+    // the kit's own union, so nothing a sender wrote can be promoted onto the wire by its shape.
+    expect(webhookEventErrorCode("stripe: charge ch_1 names no payment intent")).toBe("unclassified");
+    expect(webhookEventErrorCode("payments/not_a_real_code: whatever")).toBe("unclassified");
+    expect(webhookEventErrorCode("projection failed")).toBe("unclassified");
+    expect(webhookEventErrorCode("")).toBe("unclassified");
+  });
+});
+
+describe("the projected targets", () => {
+  test("round-trip through the row codec, and an older row with none still parses", () => {
+    const base = {
+      id: "w3",
+      rail: "stripe" as const,
+      providerEventId: "evt_03",
+      payload: { hello: "world" },
+      receivedAt: new Date(AT),
+      processedAt: new Date(AT),
+      abandonedAt: null,
+      error: null,
+      attempts: 0,
+      createdAt: new Date(AT),
+    };
+    const targets = { purchaseIds: ["p1"], subscriptionIds: ["s1", "s2"] };
+    const row = PaymentsWebhookEvent.encode({ ...base, projectedTargets: targets });
+    expect(typeof row.projectedTargets).toBe("string");
+    expect(PaymentsWebhookEvent.parse(row).projectedTargets).toEqual(targets);
+    // A row written before 0003: the column is null, which is "unrecorded", not "changed nothing".
+    expect(
+      PaymentsWebhookEvent.parse({ ...PaymentsWebhookEvent.encode(base), projectedTargets: null }).projectedTargets,
+    ).toBeNull();
+  });
+});
+
+/**
+ * **What a management client is told about a row's state: three answers, never four.** (#830)
+ *
+ * The package needs `failed` apart from `pending` — a repair pass counts its attempts on one and not the
+ * other. A client reading the log needs to know whether the event became a purchase, is still waiting, or was
+ * given up on, and how many tries it took. So the two outstanding states read as one, with `attempts` beside
+ * them, and nothing a row can hold reads as missing.
+ */
+describe("webhookEventReadState", () => {
+  test("finished reads projected; pending and failed read pending; abandoned reads abandoned", () => {
+    expect(webhookEventReadState({ processedAt: AT })).toBe("projected");
+    expect(webhookEventReadState({})).toBe("pending");
+    expect(webhookEventReadState({ error: "projection failed" })).toBe("pending");
+    expect(webhookEventReadState({ abandonedAt: AT, error: "quarantined: after 3" })).toBe("abandoned");
+    // Finished wins, exactly as it does for the package's own readers.
+    expect(webhookEventReadState({ processedAt: AT, abandonedAt: AT })).toBe("projected");
   });
 });

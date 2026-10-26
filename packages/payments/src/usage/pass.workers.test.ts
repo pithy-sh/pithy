@@ -12,6 +12,7 @@ import { PaymentsConfig, type PaymentsConfigInput } from "../config/config";
 import type { PaymentsSubject } from "../data/subject";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
 import { payments_0002_allowances } from "../migrations/0002_allowances";
+import { payments_0003_webhook_targets } from "../migrations/0003_webhook_targets";
 import { judgeQuantity, type PaymentsQuantityResolver, runUsageReport } from "./pass";
 import type { UsageReporter, UsageReportRequest } from "./reporter";
 
@@ -155,6 +156,7 @@ beforeEach(async () => {
   }
   await payments_0001_purchases.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
   await payments_0002_allowances.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
+  await payments_0003_webhook_targets.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
   await customer(ACME, "cus_PithyAcme");
   await customer(GLOBEX, "cus_PithyGlobex");
 });

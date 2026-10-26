@@ -21,6 +21,8 @@ import {
   PaymentsAdminPurchaseView,
   PaymentsAdminSubjectEntitlementsResponse,
   PaymentsAdminSubscriptionsResponse,
+  PaymentsAdminWebhookEventsResponse,
+  PaymentsAdminWebhookEventView,
   PaymentsCheckoutHandoffResponse,
   PaymentsDeferredSubscriptionSettlement,
   PaymentsEntitlementResponse,
@@ -44,7 +46,7 @@ import {
   PaymentsSubscriptionStandingResponse,
   PaymentsSubscriptionView,
 } from "./responses";
-import { adminCatalogView, adminEntitlementView, adminPurchaseView } from "./view";
+import { adminCatalogView, adminEntitlementView, adminPurchaseView, adminWebhookEventView } from "./view";
 
 /**
  * The response schemas against the shapes the handlers build.
@@ -735,5 +737,73 @@ describe("the fields #561 added cross the version boundary", () => {
     for (const [schema, key] of optional) {
       expect((schema.shape[key] as z.ZodType).safeParse(undefined).success, key).toBe(true);
     }
+  });
+});
+
+/**
+ * The webhook-event projection (#830), unit by unit: what each stored shape reads as, and that the stored
+ * sentence has no field to land in. The executed read is `webhookEvents.workers.test.ts`.
+ */
+describe("adminWebhookEventView", () => {
+  const AT = new Date("2026-06-10T12:00:00.000Z");
+  const row = {
+    id: "w1",
+    rail: "stripe" as const,
+    providerEventId: "evt_1",
+    eventType: "invoice.paid",
+    receivedAt: AT,
+    processedAt: null,
+    abandonedAt: null,
+    error: null,
+    attempts: 0,
+    projectedTargets: null,
+  };
+
+  test("a projected event names what it changed, and the schema accepts exactly that", () => {
+    const view = adminWebhookEventView({
+      ...row,
+      processedAt: AT,
+      projectedTargets: { purchaseIds: ["p1"], subscriptionIds: ["s1"] },
+    });
+    expect(view).toEqual({
+      id: "w1",
+      rail: "stripe",
+      providerEventId: "evt_1",
+      eventType: "invoice.paid",
+      receivedAt: AT.toISOString(),
+      state: "projected",
+      attempts: 0,
+      errorCode: null,
+      targets: { purchaseIds: ["p1"], subscriptionIds: ["s1"] },
+    });
+    accepts(PaymentsAdminWebhookEventView, view);
+    accepts(PaymentsAdminWebhookEventsResponse, { events: [view], nextCursor: null });
+  });
+
+  test("a failed event is pending with its attempts, its error a code, and nothing recorded", () => {
+    const view = adminWebhookEventView({
+      ...row,
+      error: "payments/product_not_found: No catalog product maps the stripe SKU price_x on in_9 for 9900.",
+      attempts: 2,
+    });
+    expect(view).toMatchObject({
+      state: "pending",
+      attempts: 2,
+      errorCode: "payments/product_not_found",
+      targets: null,
+    });
+    expect(JSON.stringify(view)).not.toContain("price_x");
+  });
+
+  test("an abandoned event reads abandoned, and an absent attempt count reads zero", () => {
+    const view = adminWebhookEventView({ ...row, abandonedAt: AT, error: "orphaned: nobody", attempts: undefined });
+    expect(view).toMatchObject({ state: "abandoned", attempts: 0, errorCode: "orphaned" });
+  });
+
+  test("the targets are copied, so the view shares no array with the row it came from", () => {
+    const targets = { purchaseIds: ["p1"], subscriptionIds: [] as string[] };
+    const view = adminWebhookEventView({ ...row, processedAt: AT, projectedTargets: targets });
+    targets.purchaseIds.push("p2");
+    expect(view.targets).toEqual({ purchaseIds: ["p1"], subscriptionIds: [] });
   });
 });

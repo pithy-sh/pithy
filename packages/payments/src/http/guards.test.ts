@@ -34,6 +34,7 @@ import {
   PAYMENTS_RECONCILE_RUN_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
   PAYMENTS_USAGE_READ_SCOPE,
+  PAYMENTS_WEBHOOKS_READ_SCOPE,
 } from "./scopes";
 
 /**
@@ -128,7 +129,7 @@ describe("the payments control-plane scopes", () => {
     for (const scope of PAYMENTS_CONTROL_PLANE_SCOPES) expect(ControlPlaneScope.parse(scope)).toBe(scope);
   });
 
-  test("the aggregate is exactly the fourteen operations, reads first, in a stable order", () => {
+  test("the aggregate is exactly the fifteen operations, reads first, in a stable order", () => {
     // What `pithy dashboard connect` offers for payments. A scope that exists and is offered nowhere is a
     // scope an adopter cannot grant, so the list and the route lines are asserted against each other.
     // Reads lead because they are the grant most connections want and the smallest one that makes a
@@ -142,6 +143,8 @@ describe("the payments control-plane scopes", () => {
       PAYMENTS_DISCOUNT_READ_SCOPE,
       PAYMENTS_RECONCILE_READ_SCOPE,
       PAYMENTS_USAGE_READ_SCOPE,
+      // The notifications the stores sent (#830) — the last read, and the one that explains the other logs.
+      PAYMENTS_WEBHOOKS_READ_SCOPE,
       PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
       PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
       // The override writes, between the comps and the money: a pinned number shades what a key gives, and

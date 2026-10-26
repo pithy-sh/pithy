@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { SQLiteDate, sqliteJson } from "@pithy-sh/core/src/data/codecs";
+import { KitErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { z } from "zod";
 import { PaymentsRail } from "./rail";
 
@@ -9,6 +10,52 @@ import { PaymentsRail } from "./rail";
 const NotificationPayload = z
   .record(z.string(), z.unknown())
   .describe("The notification body as received, before any rail-specific interpretation.");
+
+/**
+ * What one event changed when it projected — every purchase row it wrote, split by whether the row renews.
+ *
+ * **A list, because one notification can touch several rows.** Lemon Squeezy's refund writes the invoice row
+ * and the subscription's standing row from one delivery, and a list of one would have to pick. Split the way
+ * the management reads split — `payments:purchases:read` and `payments:subscriptions:read` — so a client
+ * holding only the narrower grant can still follow the ids it is allowed to open. Disjoint: a subscription
+ * row's id is in `subscriptionIds` and nowhere else.
+ *
+ * A row the projection read and left alone — an exact replay, an event older than the row — is not a row
+ * this event changed, so it is not listed. Two empty lists is a real answer: the event finished and changed
+ * nothing. That is a different fact from the column being null, which is an event finished before #830
+ * recorded anything.
+ */
+export const PaymentsWebhookEventTargets = z
+  .object({
+    purchaseIds: z
+      .array(z.string())
+      .describe("The purchase rows this event created or moved that do not renew — their own UUIDs."),
+    subscriptionIds: z
+      .array(z.string())
+      .describe("The purchase rows this event created or moved that renew — the ids the subscription read lists."),
+  })
+  .describe("Every purchase and subscription row one event changed when it projected.");
+export type PaymentsWebhookEventTargets = z.output<typeof PaymentsWebhookEventTargets>;
+
+/** The `projected_targets` column: the targets as JSON text, Zod-validated on write and on read. */
+const WebhookEventTargetsColumn = sqliteJson(PaymentsWebhookEventTargets);
+
+/**
+ * The column value a finishing writer stores. One encoder for the three writers that finish an event — the
+ * webhook, the Paddle sweep, the orphan repair — so they cannot write the JSON three ways, and it goes
+ * through the codec the row schema reads it back with.
+ */
+export function encodeWebhookEventTargets(targets: PaymentsWebhookEventTargets): string {
+  // The codec's encode side is the JSON text; its declared output admits the decoded object too, because the
+  // decode side accepts an already-parsed value.
+  return WebhookEventTargetsColumn.encode(targets) as string;
+}
+
+/** The answer for an event that finished and changed nothing — recorded, and empty. */
+export const NO_WEBHOOK_EVENT_TARGETS: PaymentsWebhookEventTargets = Object.freeze({
+  purchaseIds: [],
+  subscriptionIds: [],
+}) as PaymentsWebhookEventTargets;
 
 /**
  * One received provider notification — the row in `pithy_payments_webhook_events`, keyed
@@ -78,6 +125,11 @@ export const PaymentsWebhookEvent = z
       .describe(
         "How many times a repair pass has tried this event and failed. Optional because the webhook path neither retries nor counts, and the column defaults to 0 for it; the sweep uses it to bound how long one unprojectable event may hold the stream up before it is quarantined.",
       ),
+    projectedTargets: WebhookEventTargetsColumn.nullable()
+      .optional()
+      .describe(
+        "What this event changed when it finished — every purchase and subscription row it wrote — or null when nothing was recorded: an event not finished yet, or one finished before `payments_0003_webhook_targets` added the column. Written by every finishing path, so it is the join from a notification to the rows it explains.",
+      ),
     createdAt: SQLiteDate.describe("When this row was written."),
   })
   .describe("One received provider notification — the row in `pithy_payments_webhook_events`, the replay source.");
@@ -126,6 +178,33 @@ export function webhookEventState(row: PaymentsWebhookEventProgress): PaymentsWe
 }
 
 /**
+ * What a management read says a recorded delivery became (#830). **Three answers**, the ones a client acts on:
+ *
+ * - `projected` — finished: it became a purchase, or there was nothing in it to become one. What it changed is
+ *   in `projectedTargets`.
+ * - `pending` — arrived and not finished, whether or not it has been tried. `attempts` says how often.
+ * - `abandoned` — a repair pass gave up on it. Still repairable by a delivery, and the reason is on the row.
+ *
+ * `failed` and `pending` are one answer here because the difference between them is a repair pass's
+ * bookkeeping, and the count beside the state already carries it.
+ */
+export type PaymentsWebhookEventReadState = "projected" | "pending" | "abandoned";
+
+/** Classify one recorded delivery for a management read. Derived from {@link webhookEventState}, never stored. */
+export function webhookEventReadState(row: PaymentsWebhookEventProgress): PaymentsWebhookEventReadState {
+  const state = webhookEventState(row);
+  switch (state) {
+    case "finished":
+      return "projected";
+    case "pending":
+    case "failed":
+      return "pending";
+    case "abandoned":
+      return "abandoned";
+  }
+}
+
+/**
  * May a redelivery be answered as a duplicate without running anything?
  *
  * **Only for a delivery that is finished with.** This is the webhook guard's short-circuit, and it is the
@@ -159,6 +238,42 @@ export function isWebhookEventFinished(state: PaymentsWebhookEventState): boolea
  * See {@link webhookEventAwaitsOwner} for the reader, and `projection/orphans.ts` for what it is read by.
  */
 export const WEBHOOK_EVENT_ORPHANED = "orphaned:";
+
+/**
+ * The word the Paddle sweep writes at the head of `error` when it gives up on an event after a bounded number
+ * of attempts. Here beside {@link WEBHOOK_EVENT_ORPHANED} rather than private to the sweep, because a reader —
+ * {@link webhookEventErrorCode} — names it, and a writer and a reader spelling one word twice drift.
+ */
+export const WEBHOOK_EVENT_QUARANTINED = "quarantined";
+
+/** Every code the kit defines. A prefix is published only when it is one of these. */
+const KIT_ERROR_CODES: ReadonlySet<string> = new Set(
+  KitErrorPayload.options.map((member) => member.shape.code.value as string),
+);
+
+/**
+ * What a management read may say about a stored `error`: **its code, never its sentence**. (#830)
+ *
+ * The column is operator text, and the sentence after the code is throw-site context — a store's
+ * transaction ids, an amount, a SKU — which is exactly what `clientError` strips from every other surface.
+ * So the read publishes a classification and nothing more:
+ *
+ * - the kit error code a projection failure was recorded under (`payments/product_not_found`), and only
+ *   when the prefix is one the kit's own union defines — so text that merely *looks* like a code is not
+ *   promoted onto the wire by its shape;
+ * - `orphaned` or `quarantined`, the two markers this package writes for itself;
+ * - `unclassified` for everything else — a rail's note, prose from an older build.
+ *
+ * Null when there is no error at all.
+ */
+export function webhookEventErrorCode(error: string | null | undefined): string | null {
+  if (error === null || error === undefined) return null;
+  if (error.startsWith(WEBHOOK_EVENT_ORPHANED)) return "orphaned";
+  if (error.startsWith(`${WEBHOOK_EVENT_QUARANTINED}:`)) return "quarantined";
+  const colon = error.indexOf(":");
+  const head = colon === -1 ? error : error.slice(0, colon);
+  return KIT_ERROR_CODES.has(head) ? head : "unclassified";
+}
 
 /**
  * Is this event outstanding for want of an owner, rather than for want of anything else?

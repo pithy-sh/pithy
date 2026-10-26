@@ -9,6 +9,7 @@ import {
   PAYMENTS_RECONCILE_READ_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
   PAYMENTS_USAGE_READ_SCOPE,
+  PAYMENTS_WEBHOOKS_READ_SCOPE,
 } from "../http/scopes";
 
 /**
@@ -74,16 +75,19 @@ export const PAYMENTS_TABLE_DISCLOSURE: Record<keyof PaymentsTables, PaymentsDis
       "Every row pairs a provider-side account identifier with a subject — a Pithy user, or an organization from the adopter's own membership model. In bulk that is a cross-reference from a store's id space into the adopter's, and nothing on this surface needs it: a purchase already names its subject and its rail.",
   },
   /**
-   * Withheld. Each row holds the raw verified provider notification exactly as it arrived, and that
-   * payload is a bearer artifact — the same thing `responses.ts` refuses to put on a purchase view, for
-   * the same reason. There is no projection of a delivery log worth a read scope either: what an operator
-   * wants from it is "why did this purchase not update", and that question is answered by the purchase's
-   * own status and the audit trail's `payments/webhook_received` events, neither of which is a receipt.
+   * The webhook-event log, on its own scope (#830).
+   *
+   * It was withheld, on the argument that every row is a raw provider payload and that the purchase's status
+   * and the audit trail answer what a delivery log is read for. The second half did not survive contact with
+   * the first adopter: a notification that arrived and **never** projected leaves no purchase status to read
+   * and no `payments/webhook_received` success to find — it is precisely the row nothing else explains, and
+   * the one `pithy-sh/dashboard#167` needs to say why a purchase is paid and not entitled.
+   *
+   * The first half still holds, so the read is a projection rather than a table dump: the payload is never
+   * selected (the event's type is read out of it by the database), and the stored `error` crosses as its code
+   * alone. See `read.ts`'s `listWebhookEvents` and `http/view.ts`'s `adminWebhookEventView`.
    */
-  pithyPaymentsWebhookEvents: {
-    withheld:
-      "Each row is a raw verified provider payload — a bearer artifact. The question a delivery log is read for is answered by the purchase's status and the audit trail, without handing anyone a receipt.",
-  },
+  pithyPaymentsWebhookEvents: { reads: [PAYMENTS_WEBHOOKS_READ_SCOPE] },
   /**
    * The reconciliation run log — operational state, on its own scope.
    *

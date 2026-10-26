@@ -1402,6 +1402,72 @@ export const PaymentsAdminUsageRunsResponse = z
   .describe("A page of the usage-reporting run log.");
 export type PaymentsAdminUsageRunsResponse = z.output<typeof PaymentsAdminUsageRunsResponse>;
 
+/**
+ * One recorded notification, as a management client sees it (#830).
+ *
+ * **What crosses is a classification, never a document.** The provider's payload carries the customer's
+ * details and is not selected; the event's type is read out of it by the database and published only in the
+ * shape of an event name. The stored `error` is the store's or the throw site's sentence, so it crosses as its
+ * code alone — the way a refund refused by the store crosses with no reason.
+ *
+ * New in #830, so every field is required: no Worker answered this route before it existed.
+ */
+export const PaymentsAdminWebhookEventView = z
+  .object({
+    id: z.string().describe("The event row's UUID."),
+    rail: PaymentsRail.describe("Which store sent the notification."),
+    providerEventId: z
+      .string()
+      .describe("The store's own id for the notification — what an operator searches the store's dashboard for."),
+    eventType: z
+      .string()
+      .nullable()
+      .describe(
+        "The store's name for what happened — `customer.subscription.updated`, `DID_RENEW`, `subscription.4` — or null when the notification names none in that shape.",
+      ),
+    receivedAt: z.iso.datetime().describe("When the notification reached this Worker, ISO-8601."),
+    state: z
+      .enum(["projected", "pending", "abandoned"])
+      .describe(
+        "`projected` — finished: it became a purchase, or there was nothing in it to become one. `pending` — arrived and not finished; `attempts` says how often it was tried. `abandoned` — a repair pass gave up on it; a later delivery can still project it.",
+      ),
+    attempts: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe("How many times a repair pass tried it and failed. 0 for a delivery nothing retried."),
+    errorCode: z
+      .string()
+      .nullable()
+      .describe(
+        "Why it did not project, as a code: a kit error code (`payments/product_not_found`), `orphaned` for a notification nobody could be resolved for, `quarantined` for one a repair pass gave up on, or `unclassified`. Null when nothing went wrong. Never the sentence behind it.",
+      ),
+    targets: z
+      .object({
+        purchaseIds: z
+          .array(z.string())
+          .describe("The purchase rows it created or moved that do not renew — ids `payments:purchases:read` lists."),
+        subscriptionIds: z
+          .array(z.string())
+          .describe("The rows it created or moved that renew — ids `payments:subscriptions:read` lists."),
+      })
+      .nullable()
+      .describe(
+        "What it changed when it finished. Two empty lists: it finished and changed nothing. Null: nothing recorded — not finished, or finished before the Worker recorded targets.",
+      ),
+  })
+  .describe("One notification a store sent, and what became of it. Never the payload, never an error's sentence.");
+export type PaymentsAdminWebhookEventView = z.output<typeof PaymentsAdminWebhookEventView>;
+
+/** `GET {base}/admin/webhook-events`. */
+export const PaymentsAdminWebhookEventsResponse = z
+  .object({
+    events: z.array(PaymentsAdminWebhookEventView).describe("The page, most recently received first."),
+    nextCursor: NextCursor,
+  })
+  .describe("A page of the webhook-event log.");
+export type PaymentsAdminWebhookEventsResponse = z.output<typeof PaymentsAdminWebhookEventsResponse>;
+
 /** `GET {base}/admin/purchases`. */
 export const PaymentsAdminPurchasesResponse = z
   .object({

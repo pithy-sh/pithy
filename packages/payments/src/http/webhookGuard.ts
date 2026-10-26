@@ -13,7 +13,14 @@ import { PaymentsAuditActions } from "../audit/actions";
 import type { PaymentsConfig } from "../config/config";
 import type { PaymentsRail } from "../data/rail";
 import { PAYMENTS_WEBHOOK_EVENTS_TABLE, paymentsDatabase } from "../data/tables";
-import { isWebhookEventFinished, PaymentsWebhookEvent, webhookEventState } from "../data/webhookEvent";
+import {
+  encodeWebhookEventTargets,
+  isWebhookEventFinished,
+  NO_WEBHOOK_EVENT_TARGETS,
+  PaymentsWebhookEvent,
+  type PaymentsWebhookEventTargets,
+  webhookEventState,
+} from "../data/webhookEvent";
 import { PaymentsWebhookUnverifiedError } from "../error/errors";
 import type { VerifiedNotification } from "../rails/contract";
 import { type RailTrustOptions, resolveRailProvider } from "../rails/providers";
@@ -303,7 +310,11 @@ export function requireSignedWebhook(
 /**
  * What became of a verified delivery, as the handler reports it. **Three cases, because there are three.**
  *
- * `{ at }` — it projected. Finished.
+ * `{ at, targets }` — it projected, and these are the purchase and subscription rows it changed (#830).
+ * Finished. `targets` is required rather than defaulted: a projecting path that forgot it would record
+ * "changed nothing" about an event that changed something, which is the one wrong answer worse than none.
+ * A delivery about no transaction at all passes {@link NO_WEBHOOK_EVENT_TARGETS} — it is finished, and it
+ * genuinely changed nothing.
  *
  * `{ at, note }` — it was never going to project, and here is why. The rail read the notification and said
  * it carries no transaction state: a partial refund that takes nothing away, a token Play will not show us
@@ -331,7 +342,7 @@ export function requireSignedWebhook(
  * decide what a row means that claims to be finished and failed at once. That contradiction was #337.
  */
 export type WebhookCompletion =
-  | { readonly at: Date }
+  | { readonly at: Date; readonly targets: PaymentsWebhookEventTargets }
   | { readonly at: Date; readonly note: string }
   | { readonly at: Date; readonly error: string };
 
@@ -367,6 +378,15 @@ export async function completeWebhook(d1: D1Database, eventRowId: string, outcom
         processedAt: repairable ? null : outcome.at.getTime(),
         // One column: it is "why", and an operator reads it the same way whichever of the two it is.
         error: "error" in outcome ? outcome.error : "note" in outcome ? outcome.note : null,
+        // What the event changed, on every finish and on no failure (#830): a repairable row has changed
+        // nothing yet, and leaving the column alone keeps null meaning "nothing recorded".
+        ...(repairable
+          ? {}
+          : {
+              projectedTargets: encodeWebhookEventTargets(
+                "targets" in outcome ? outcome.targets : NO_WEBHOOK_EVENT_TARGETS,
+              ),
+            }),
         // biome-ignore lint/suspicious/noExplicitAny: encoded column values, not the app shape.
       } as any)
       .where("id", "=", eventRowId)

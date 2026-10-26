@@ -11,15 +11,20 @@ import { decodeSubjectReference } from "../data/subject";
 import { PADDLE_EVENTS_CURSOR, PaymentsSyncCursor } from "../data/syncCursor";
 import { PAYMENTS_SYNC_CURSORS_TABLE, PAYMENTS_WEBHOOK_EVENTS_TABLE, paymentsDatabase } from "../data/tables";
 import {
+  encodeWebhookEventTargets,
   isWebhookEventOutstanding,
+  NO_WEBHOOK_EVENT_TARGETS,
   PaymentsWebhookEvent,
+  type PaymentsWebhookEventTargets,
   WEBHOOK_EVENT_ORPHANED,
+  WEBHOOK_EVENT_QUARANTINED,
   webhookEventState,
 } from "../data/webhookEvent";
 import { fulfillPurchase } from "../grants/apply";
 import type { PaymentsLedgerPeer } from "../grants/ledgerSeam";
 import { repairOrphanedEvents } from "../projection/orphans";
 import { linkProviderAccount, resolveNotificationOwner } from "../projection/owner";
+import { notificationTargets } from "../projection/targets";
 import { projectPurchase } from "../projection/writer";
 import { noteIsRepairable, noteText } from "../rails/contract";
 import { type PaddleEnvironment, type PaddleHttpFetch, paddleHttpFetch } from "../rails/paddle/api";
@@ -308,12 +313,24 @@ async function record(
  * it, so "handled" is tempting — but the guard reads this column, and the event's repair is precisely the
  * redelivery that follows the missing link. See {@link abandon} and the module doc.
  */
-async function complete(d1: D1Database, id: string, now: Date, note?: string): Promise<void> {
+async function complete(
+  d1: D1Database,
+  id: string,
+  now: Date,
+  finished: { readonly targets: PaymentsWebhookEventTargets } | { readonly note: string | undefined },
+): Promise<void> {
   await withD1Retry(() =>
     paymentsDatabase(d1)
       .updateTable(PAYMENTS_WEBHOOK_EVENTS_TABLE)
-      // biome-ignore lint/suspicious/noExplicitAny: encoded column values, not the app shape.
-      .set({ processedAt: now.getTime(), error: note ?? null } as any)
+      .set({
+        processedAt: now.getTime(),
+        error: "note" in finished ? (finished.note ?? null) : null,
+        // What it changed (#830): the rows it projected, or nothing for an event it decided to do nothing with.
+        projectedTargets: encodeWebhookEventTargets(
+          "targets" in finished ? finished.targets : NO_WEBHOOK_EVENT_TARGETS,
+        ),
+        // biome-ignore lint/suspicious/noExplicitAny: encoded column values, not the app shape.
+      } as any)
       .where("id", "=", id)
       .execute(),
   );
@@ -342,8 +359,11 @@ async function fail(d1: D1Database, id: string, attempt: number, error: string):
   );
 }
 
-/** The word an operator greps `error` for. One string, so the writer and a runbook cannot drift apart. */
-const QUARANTINED = "quarantined";
+/**
+ * The word an operator greps `error` for. One string, so the writer and a runbook cannot drift apart — and
+ * shared through `data/webhookEvent.ts`, because the management read classifies on it (#830).
+ */
+const QUARANTINED = WEBHOOK_EVENT_QUARANTINED;
 
 /**
  * The word for the other reason this sweep walks away from an event, likewise greppable.
@@ -636,7 +656,7 @@ export async function sweepPaddle(deps: PaddleSweepDeps): Promise<PaddleSweepRep
           return report;
         }
         report.ignored += 1;
-        await complete(deps.d1, id, at, noteText(notification.note));
+        await complete(deps.d1, id, at, { note: noteText(notification.note) });
         cursor = event.eventId;
         continue;
       }
@@ -673,13 +693,13 @@ export async function sweepPaddle(deps: PaddleSweepDeps): Promise<PaddleSweepRep
           { ...notification.event, ...subject },
           { config: deps.config, environment: deps.environment, now: at },
         );
-        if (notification.stateEvent) {
-          await projectPurchase(
-            deps.d1,
-            { ...notification.stateEvent, ...subject },
-            { config: deps.config, environment: deps.environment, now: at },
-          );
-        }
+        const standing = notification.stateEvent
+          ? await projectPurchase(
+              deps.d1,
+              { ...notification.stateEvent, ...subject },
+              { config: deps.config, environment: deps.environment, now: at },
+            )
+          : undefined;
         // The same fulfillment the webhook path performs. A sweep that repaired a renewal and did not
         // credit its coins would leave the entitlement right and the balance wrong, and nothing else would
         // ever fix it — the renewal this sweep discovered is the one the webhook lost.
@@ -688,7 +708,12 @@ export async function sweepPaddle(deps: PaddleSweepDeps): Promise<PaddleSweepRep
           ((d1, value) =>
             fulfillPurchase(d1, value, { config: deps.config, ledgerPeer: deps.ledgerPeer, now: () => at.getTime() }));
         await fulfill(deps.d1, projection);
-        await complete(deps.d1, id, at);
+        await complete(deps.d1, id, at, {
+          targets: notificationTargets(
+            { event: notification.event, projection },
+            { event: notification.stateEvent, projection: standing },
+          ),
+        });
         report.projected += 1;
         cursor = event.eventId;
       } catch (cause) {

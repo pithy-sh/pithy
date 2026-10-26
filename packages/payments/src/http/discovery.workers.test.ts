@@ -23,6 +23,7 @@ import type { PaymentsConfigInput } from "../config/config";
 import type { PaymentsSubjectType } from "../data/subject";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
 import { payments_0002_allowances } from "../migrations/0002_allowances";
+import { payments_0003_webhook_targets } from "../migrations/0003_webhook_targets";
 import { projectPurchase } from "../projection/writer";
 import { PAYMENTS_BILLING_SUBJECT } from "./manifestConfig";
 import {
@@ -329,6 +330,7 @@ beforeEach(async () => {
   await controlplane_0003_connection_principal.up(db);
   await payments_0001_purchases.up(db);
   await payments_0002_allowances.up(db);
+  await payments_0003_webhook_targets.up(db);
 });
 
 describe("what a management client discovers about payments", () => {
@@ -344,6 +346,7 @@ describe("what a management client discovers about payments", () => {
       "/billing/admin/discounts",
       "/billing/admin/reconcile-runs",
       "/billing/admin/usage-runs",
+      "/billing/admin/webhook-events",
       "/billing/admin/overrides",
     ]);
   });
