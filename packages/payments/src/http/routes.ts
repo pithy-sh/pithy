@@ -23,6 +23,7 @@ import {
   listReconcileRuns,
   listSubscriptions,
   listUsageRuns,
+  listWebhookEvents,
   readEntitlements,
   unrestrictedSubjects,
 } from "../admin/read";
@@ -54,7 +55,7 @@ import {
   type SubscriptionStanding,
 } from "../data/subscription";
 import { PAYMENTS_PURCHASES_TABLE, paymentsDatabase } from "../data/tables";
-import { WEBHOOK_EVENT_ORPHANED } from "../data/webhookEvent";
+import { NO_WEBHOOK_EVENT_TARGETS, WEBHOOK_EVENT_ORPHANED } from "../data/webhookEvent";
 import { resolveAllowances } from "../entitlement/allowance";
 import { grantEntitlement, revokeEntitlement } from "../entitlement/manual";
 import { allowanceInputFor } from "../entitlement/meter";
@@ -82,6 +83,7 @@ import type { PaymentsLedgerPeer } from "../grants/ledgerSeam";
 import { repairOrphanedEvents } from "../projection/orphans";
 import { linkProviderAccount, providerAccountForSubject, resolveNotificationOwner } from "../projection/owner";
 import { resolveEntitlements } from "../projection/resolve";
+import { notificationTargets, projectionTargets } from "../projection/targets";
 import { type PurchaseProjection, projectPurchase } from "../projection/writer";
 import {
   type CheckoutRail,
@@ -110,6 +112,7 @@ import {
   PaymentsAdminSubjectEntitlementsResponse,
   PaymentsAdminSubscriptionsResponse,
   PaymentsAdminUsageRunsResponse,
+  PaymentsAdminWebhookEventsResponse,
   PaymentsCheckoutHandoffResponse,
   PaymentsDiscountResponse,
   PaymentsEntitlementResponse,
@@ -139,6 +142,7 @@ import {
   AdminSubjectParam,
   AdminSubscriptionsQuery,
   AdminUsageRunsQuery,
+  AdminWebhookEventsQuery,
   AppleWebhookNotification,
   CheckoutRequest,
   DiscountCreateRequest,
@@ -173,6 +177,7 @@ import {
   PAYMENTS_RECONCILE_RUN_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
   PAYMENTS_USAGE_READ_SCOPE,
+  PAYMENTS_WEBHOOKS_READ_SCOPE,
 } from "./scopes";
 import {
   adminAllowancesView,
@@ -182,6 +187,7 @@ import {
   adminPurchaseView,
   adminReconcileRunView,
   adminUsageRunView,
+  adminWebhookEventView,
   entitlementView,
   overrideView,
   purchaseView,
@@ -231,6 +237,7 @@ import { completeWebhook, requireSignedWebhook, verifiedWebhook } from "./webhoo
  *   GET  /payments/admin/entitlements/:subjectType/:subjectId
  *                                              → one subject's entitlements     (control-plane: payments:entitlements:read)   param: AdminSubjectParam
  *   GET  /payments/admin/reconcile-runs         → the reconciliation run log     (control-plane: payments:reconcile:read)      query: AdminReconcileRunsQuery
+ *   GET  /payments/admin/webhook-events         → every store notification       (control-plane: payments:webhooks:read)       query: AdminWebhookEventsQuery
  *   GET  /payments/admin/discounts              → the codes this project issued  (control-plane: payments:discounts:read)      query: AdminDiscountsQuery
  *   POST /payments/admin/discounts              → mint one at a store            (control-plane: payments:discounts:create)    json: DiscountCreateRequest
  *
@@ -1731,6 +1738,50 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
             runs: page.items.map(adminUsageRunView),
             nextCursor: page.nextCursor,
           } satisfies PaymentsAdminUsageRunsResponse,
+          200,
+        );
+      },
+    );
+
+    /**
+     * CONTROL PLANE. Every notification a store sent, newest received first (#830).
+     *
+     * **The read that explains the other two revenue-integrity findings.** A purchase paid and not entitled, or
+     * entitled and not paid, is usually a notification that arrived and never projected — and that row was
+     * invisible to every management client. Here it reads as `pending` with its attempts or `abandoned`, never
+     * as missing, and a projected one names the purchase and subscription rows it changed.
+     *
+     * Its own scope. The rows name no subject, but they are every customer's commerce as the stores reported it.
+     * The payload is never selected, and the stored error crosses as its code alone — see `adminWebhookEventView`.
+     */
+    app.get(
+      `${base}/admin/webhook-events`,
+      describeRoute({
+        summary: "Read every notification a store sent, and what became of it.",
+        verification: "control-plane",
+        scopes: [PAYMENTS_WEBHOOKS_READ_SCOPE],
+        responses: { 200: PaymentsAdminWebhookEventsResponse },
+      }),
+      requireControlPlane(PAYMENTS_WEBHOOKS_READ_SCOPE),
+      validate("query", AdminWebhookEventsQuery),
+      async (c) => {
+        const query = c.req.valid("query");
+        const page = await listWebhookEvents(database(c), query);
+        await recordRead(c, PaymentsAuditActions.webhookEventsRead, null, {
+          returned: page.items.length,
+          resumed: query.cursor !== undefined,
+          filters: {
+            rail: query.rail ?? null,
+            state: query.state ?? null,
+            since: query.since?.toISOString() ?? null,
+            until: query.until?.toISOString() ?? null,
+          },
+        });
+        return c.json(
+          {
+            events: page.items.map(adminWebhookEventView),
+            nextCursor: page.nextCursor,
+          } satisfies PaymentsAdminWebhookEventsResponse,
           200,
         );
       },
@@ -3371,7 +3422,8 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
             ? { at: now, error: outcome.error }
             : outcome.note !== undefined
               ? { at: now, note: outcome.note }
-              : { at: now },
+              : // About no transaction and unexplained: finished, and it changed nothing.
+                { at: now, targets: NO_WEBHOOK_EVENT_TARGETS },
         );
         await c.var.emit({
           action: PaymentsAuditActions.webhookReceived,
@@ -3447,7 +3499,10 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
             { config, environment: deploymentEnvironment(c), now },
           );
           await fulfill(c, projection);
-          await completeWebhook(d1, eventRowId, { at: now });
+          await completeWebhook(d1, eventRowId, {
+            at: now,
+            targets: projectionTargets([{ projection, eventAt: now }]),
+          });
           await c.var.emit({
             action: PaymentsAuditActions.webhookReceived,
             outcome: "success",
@@ -3542,13 +3597,13 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       // Projected with the same owner, and outside the catch above on purpose: it is the half that revokes
       // access, so a failure must reach the store as a non-2xx and be redelivered rather than be acknowledged
       // as handled. Never fulfilled — a `state` row refuses both credit and clawback by role.
-      if (notification.stateEvent) {
-        await projectPurchase(
-          d1,
-          { ...notification.stateEvent, ...subject },
-          { config, environment: deploymentEnvironment(c), now },
-        );
-      }
+      const standing = notification.stateEvent
+        ? await projectPurchase(
+            d1,
+            { ...notification.stateEvent, ...subject },
+            { config, environment: deploymentEnvironment(c), now },
+          )
+        : undefined;
 
       // Fulfillment sits outside that catch, and the asymmetry is deliberate. Every refusal the catch answers
       // is deterministic — an unmapped SKU, a sandbox transaction — so a retry reproduces it and a 200 is the
@@ -3557,7 +3612,14 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       // non-2xx and be redelivered, which the stable grant ref makes free.
       await fulfill(c, projection);
 
-      await completeWebhook(d1, eventRowId, { at: now });
+      // Every row this delivery moved — the charge, and the standing beside it where there is one (#830).
+      await completeWebhook(d1, eventRowId, {
+        at: now,
+        targets: notificationTargets(
+          { event: notification.event, projection },
+          { event: notification.stateEvent, projection: standing },
+        ),
+      });
       await c.var.emit({
         action: PaymentsAuditActions.webhookReceived,
         outcome: "success",

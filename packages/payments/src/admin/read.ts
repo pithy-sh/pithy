@@ -4,6 +4,7 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { chunkByBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
 import { decodeCursor, type PageCursor, pageLimit, toPage } from "@pithy-sh/core/src/data/cursor";
+import { sql } from "kysely";
 import type { z } from "zod";
 import { PaymentsEntitlement } from "../data/entitlement";
 import { PaymentsOverride } from "../data/override";
@@ -19,10 +20,12 @@ import {
   PAYMENTS_RECONCILE_RUNS_TABLE,
   PAYMENTS_USAGE_REPORTS_TABLE,
   PAYMENTS_USAGE_RUNS_TABLE,
+  PAYMENTS_WEBHOOK_EVENTS_TABLE,
   paymentsDatabase,
 } from "../data/tables";
 import { PaymentsUsageReport } from "../data/usageReport";
 import { PaymentsUsageRun } from "../data/usageRun";
+import { PaymentsWebhookEvent, type PaymentsWebhookEventReadState } from "../data/webhookEvent";
 
 /**
  * The management read model — the queries behind the control-plane reads, and nothing else.
@@ -528,5 +531,137 @@ export async function listReconcileRuns(
     rows.map((row) => PaymentsReconcileRun.parse(row)),
     limit,
     (run) => ({ sort: run.startedAt.getTime(), id: run.id }),
+  );
+}
+
+/**
+ * A recorded delivery as the management read selects it — every column but the payload, and the one fact read
+ * out of the payload by the database: the store's own name for the event.
+ *
+ * Derived from {@link PaymentsWebhookEvent} with `.pick`, so the row schema stays the one definition of the
+ * table and the codecs still decode the timestamps and the targets on the way out of D1.
+ */
+export const PaymentsWebhookEventRecord = PaymentsWebhookEvent.pick({
+  id: true,
+  rail: true,
+  providerEventId: true,
+  receivedAt: true,
+  processedAt: true,
+  abandonedAt: true,
+  error: true,
+  attempts: true,
+  projectedTargets: true,
+}).describe("One recorded delivery as a management read selects it — never the stored provider payload.");
+
+/** {@link PaymentsWebhookEventRecord}, with the event type the database read out of the payload. */
+export type PaymentsWebhookEventListing = z.output<typeof PaymentsWebhookEventRecord> & {
+  /** The store's own name for the event, or null when the payload names none in the shape of one. */
+  eventType: string | null;
+};
+
+/** The columns {@link PaymentsWebhookEventRecord} covers, as Kysely needs them. */
+const WEBHOOK_EVENT_COLUMNS = Object.keys(PaymentsWebhookEventRecord.shape) as (keyof z.output<
+  typeof PaymentsWebhookEventRecord
+>)[];
+
+/**
+ * The shape an event name takes in every store's vocabulary — `customer.subscription.updated`,
+ * `DID_FAIL_TO_RENEW.GRACE_PERIOD`, `subscription_payment_refunded`, `subscription.4`. Anything else the
+ * payload holds at that path is withheld rather than echoed: it is the one string this read lifts out of a
+ * document it otherwise never touches.
+ */
+const EVENT_TYPE = /^[A-Za-z0-9_.]{1,128}$/;
+
+/**
+ * Each store's event name, read **by the database** out of the stored payload, so the payload itself never
+ * reaches the Worker's memory on a management read.
+ *
+ * One path per rail, because each store names the field differently: Stripe's `type`, Paddle's `event_type`,
+ * Lemon Squeezy's `meta.event_name`, Apple's `notificationType` qualified by its `subtype`, and Google's
+ * notification block with its numeric type. `json_valid` first, so a payload that is somehow not JSON reads as
+ * no type rather than failing the page.
+ */
+const EVENT_TYPE_SQL = sql<unknown>`case when json_valid(${sql.ref("payload")}) then case ${sql.ref("rail")}
+  when 'stripe' then json_extract(${sql.ref("payload")}, '$.type')
+  when 'paddle' then json_extract(${sql.ref("payload")}, '$.event_type')
+  when 'lemonSqueezy' then json_extract(${sql.ref("payload")}, '$.meta.event_name')
+  when 'apple' then json_extract(${sql.ref("payload")}, '$.notificationType') || coalesce('.' || json_extract(${sql.ref("payload")}, '$.subtype'), '')
+  when 'google' then coalesce(
+    'subscription.' || json_extract(${sql.ref("payload")}, '$.notification.subscriptionNotification.notificationType'),
+    'oneTimeProduct.' || json_extract(${sql.ref("payload")}, '$.notification.oneTimeProductNotification.notificationType'),
+    case when json_type(${sql.ref("payload")}, '$.notification.voidedPurchaseNotification') is not null then 'voidedPurchase' end,
+    case when json_type(${sql.ref("payload")}, '$.notification.testNotification') is not null then 'test' end
+  )
+end end`;
+
+/** What {@link listWebhookEvents} accepts. Every filter is optional; together they are an AND. */
+export interface WebhookEventsQuery {
+  /** Restrict to one store. */
+  rail?: PaymentsRail;
+  /** Restrict to one state, as a management read names them. */
+  state?: PaymentsWebhookEventReadState;
+  /** Received at or after this instant. */
+  since?: Date;
+  /** Received before this instant. */
+  until?: Date;
+  /** Where to resume, from a previous page's `nextCursor`. A malformed one is a first page. */
+  cursor?: string;
+  /** How many rows to return, clamped by `pageLimit`. */
+  limit?: number;
+}
+
+/**
+ * Every notification a store sent, newest received first (#830).
+ *
+ * Ordered on `receivedAt` — when the delivery reached us — with the id as the tiebreak, on the index
+ * `payments_0003_webhook_targets` creates for exactly this. Named columns and never `payload`: the provider's
+ * document carries the customer's details, so it is not selected, and the one thing read out of it — the
+ * event's type — is read by the database.
+ *
+ * The state filter is the SQL spelling of `webhookEventReadState`, and `read.workers.test.ts` holds the two to
+ * each other over every shape a row takes.
+ */
+export async function listWebhookEvents(
+  d1: D1Database,
+  query: WebhookEventsQuery = {},
+): Promise<PaymentsPage<PaymentsWebhookEventListing>> {
+  const limit = pageLimit(query.limit);
+  const after = resume(query.cursor);
+
+  let selection = paymentsDatabase(d1)
+    .selectFrom(PAYMENTS_WEBHOOK_EVENTS_TABLE)
+    .select(WEBHOOK_EVENT_COLUMNS)
+    .select(EVENT_TYPE_SQL.as("eventType"))
+    .orderBy("receivedAt", "desc")
+    .orderBy("id", "desc")
+    .limit(limit + 1);
+
+  if (query.rail !== undefined) selection = selection.where("rail", "=", query.rail);
+  if (query.state === "projected") selection = selection.where("processedAt", "is not", null);
+  if (query.state === "pending") {
+    selection = selection.where("processedAt", "is", null).where("abandonedAt", "is", null);
+  }
+  if (query.state === "abandoned") {
+    selection = selection.where("processedAt", "is", null).where("abandonedAt", "is not", null);
+  }
+  if (query.since !== undefined) selection = selection.where("receivedAt", ">=", query.since.getTime());
+  if (query.until !== undefined) selection = selection.where("receivedAt", "<", query.until.getTime());
+  if (after) {
+    selection = selection.where((eb) =>
+      eb.or([eb("receivedAt", "<", after.sort), eb.and([eb("receivedAt", "=", after.sort), eb("id", "<", after.id)])]),
+    );
+  }
+
+  const rows = await selection.execute();
+  return toPage(
+    rows.map((row) => {
+      const { eventType, ...columns } = row as typeof row & { eventType: unknown };
+      return {
+        ...PaymentsWebhookEventRecord.parse(columns),
+        eventType: typeof eventType === "string" && EVENT_TYPE.test(eventType) ? eventType : null,
+      };
+    }),
+    limit,
+    (event) => ({ sort: event.receivedAt.getTime(), id: event.id }),
   );
 }

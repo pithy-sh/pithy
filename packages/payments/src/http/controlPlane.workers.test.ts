@@ -23,6 +23,7 @@ import type { PaymentsSubject } from "../data/subject";
 import { grantEntitlement } from "../entitlement/manual";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
 import { payments_0002_allowances } from "../migrations/0002_allowances";
+import { payments_0003_webhook_targets } from "../migrations/0003_webhook_targets";
 import { projectPurchase } from "../projection/writer";
 import {
   PaymentsAdminCatalogDefaults,
@@ -254,6 +255,7 @@ beforeEach(async () => {
   const db = createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
   await payments_0001_purchases.up(db);
   await payments_0002_allowances.up(db);
+  await payments_0003_webhook_targets.up(db);
   emitted = [];
 });
 

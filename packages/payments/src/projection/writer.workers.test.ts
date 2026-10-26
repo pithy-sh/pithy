@@ -10,6 +10,7 @@ import { PaymentsPurchase, type PaymentsPurchaseRow } from "../data/purchase";
 import { grantEntitlement } from "../entitlement/manual";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
 import { payments_0002_allowances } from "../migrations/0002_allowances";
+import { payments_0003_webhook_targets } from "../migrations/0003_webhook_targets";
 import type { ProviderEventInput } from "./event";
 import { projectPurchase, upsertPurchaseStatement } from "./writer";
 
@@ -162,6 +163,7 @@ beforeEach(async () => {
   }
   await payments_0001_purchases.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
   await payments_0002_allowances.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
+  await payments_0003_webhook_targets.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
 });
 
 describe("projectPurchase — the first write", () => {

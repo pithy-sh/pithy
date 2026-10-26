@@ -32,6 +32,7 @@ import {
   PAYMENTS_RECONCILE_RUN_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
   PAYMENTS_USAGE_READ_SCOPE,
+  PAYMENTS_WEBHOOKS_READ_SCOPE,
 } from "./scopes";
 
 /**
@@ -141,6 +142,7 @@ describe("payments route contract", () => {
       "GET /payments/admin/reconcile-runs",
       "GET /payments/admin/subscriptions",
       "GET /payments/admin/usage-runs",
+      "GET /payments/admin/webhook-events",
       // The one unauthenticated route payments mounts. `#680`: Paddle appends `?_ptxn=` to a seller's
       // Default payment link, and the buyer following one from a dunning mail is frequently signed out —
       // which is the population it serves, so `requireAuth()` would break it for exactly them.
@@ -368,7 +370,7 @@ describe("the admin surface payments advertises", () => {
     // each needs. A declaration that drifted from `routes.ts` would have the client calling a path
     // nothing serves — and blaming the adopter's Worker for it.
     const { capability, app } = composed();
-    expect(capability.adminRoutes).toHaveLength(16);
+    expect(capability.adminRoutes).toHaveLength(17);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
     // And the other direction. Since #468 the CORS surface derives from `adminRoutes`, so a guarded
     // route nobody declared gets no preflight and no browser can reach it — while this suite stays green.
@@ -392,6 +394,7 @@ describe("the admin surface payments advertises", () => {
       "/billing/entitlements/grant",
       "/billing/entitlements/revoke",
       "/billing/admin/usage-runs",
+      "/billing/admin/webhook-events",
       "/billing/admin/overrides",
       "/billing/entitlements/overrides",
       "/billing/entitlements/overrides/unrestricted",
@@ -417,6 +420,7 @@ describe("the admin surface payments advertises", () => {
       PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
       PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
       PAYMENTS_USAGE_READ_SCOPE,
+      PAYMENTS_WEBHOOKS_READ_SCOPE,
       PAYMENTS_ENTITLEMENTS_READ_SCOPE,
       PAYMENTS_OVERRIDE_SET_SCOPE,
       PAYMENTS_OVERRIDE_UNRESTRICTED_SCOPE,
@@ -446,7 +450,7 @@ describe("the admin surface payments advertises", () => {
     // are asserted together because either alone permits the mistake.
     const { capability } = composed();
     const reads = capability.adminRoutes?.filter((route) => route.method === "GET") ?? [];
-    expect(reads).toHaveLength(9);
+    expect(reads).toHaveLength(10);
     expect(reads.every((route) => route.path.startsWith("/payments/admin/"))).toBe(true);
   });
 });

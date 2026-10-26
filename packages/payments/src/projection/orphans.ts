@@ -7,9 +7,16 @@ import type { PaymentsConfig } from "../config/config";
 import type { PurchaseEnvironment } from "../data/purchase";
 import type { PaymentsRail } from "../data/rail";
 import { PAYMENTS_WEBHOOK_EVENTS_TABLE, paymentsDatabase } from "../data/tables";
-import { PaymentsWebhookEvent, WEBHOOK_EVENT_ORPHANED, webhookEventAwaitsOwner } from "../data/webhookEvent";
+import {
+  encodeWebhookEventTargets,
+  PaymentsWebhookEvent,
+  type PaymentsWebhookEventTargets,
+  WEBHOOK_EVENT_ORPHANED,
+  webhookEventAwaitsOwner,
+} from "../data/webhookEvent";
 import type { VerifiedNotification } from "../rails/contract";
 import { resolveNotificationOwner } from "./owner";
+import { notificationTargets } from "./targets";
 import { type PurchaseProjection, projectPurchase } from "./writer";
 
 /**
@@ -174,19 +181,20 @@ export async function repairOrphanedEvents(
     }
 
     let projection: PurchaseProjection;
+    let standing: PurchaseProjection | undefined;
     try {
       projection = await projectPurchase(
         d1,
         { ...notification.event, ...subject },
         { config: options.config, environment: options.environment, now: options.now },
       );
-      if (notification.stateEvent) {
-        await projectPurchase(
-          d1,
-          { ...notification.stateEvent, ...subject },
-          { config: options.config, environment: options.environment, now: options.now },
-        );
-      }
+      standing = notification.stateEvent
+        ? await projectPurchase(
+            d1,
+            { ...notification.stateEvent, ...subject },
+            { config: options.config, environment: options.environment, now: options.now },
+          )
+        : undefined;
       await options.fulfill?.(projection);
     } catch {
       // An unmapped SKU, a sandbox row in a production database, a ledger that would not assemble. None of
@@ -196,7 +204,15 @@ export async function repairOrphanedEvents(
       continue;
     }
 
-    await finish(d1, row.id, options.now);
+    await finish(
+      d1,
+      row.id,
+      options.now,
+      notificationTargets(
+        { event: notification.event, projection },
+        { event: notification.stateEvent, projection: standing },
+      ),
+    );
     projected.push(row.providerEventId);
   }
 
@@ -214,12 +230,13 @@ export async function repairOrphanedEvents(
  * `abandonedAt` is left exactly where it was. A sweep having given up on this row is a fact about that pass
  * and a record of how close the purchase came to being lost; `finished` already wins over it by construction.
  */
-async function finish(d1: D1Database, id: string, now: Date): Promise<void> {
+async function finish(d1: D1Database, id: string, now: Date, targets: PaymentsWebhookEventTargets): Promise<void> {
   await withD1Retry(() =>
     paymentsDatabase(d1)
       .updateTable(PAYMENTS_WEBHOOK_EVENTS_TABLE)
+      // What the repair projected, recorded the way a delivery records it (#830).
       // biome-ignore lint/suspicious/noExplicitAny: encoded column values, not the app shape.
-      .set({ processedAt: now.getTime(), error: null } as any)
+      .set({ processedAt: now.getTime(), error: null, projectedTargets: encodeWebhookEventTargets(targets) } as any)
       .where("id", "=", id)
       .execute(),
   );

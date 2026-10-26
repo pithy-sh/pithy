@@ -16,6 +16,7 @@ import type { PaymentsRail } from "../data/rail";
 import { PaymentsProviderUnavailableError, PaymentsVerificationFailedError } from "../error/errors";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
 import { payments_0002_allowances } from "../migrations/0002_allowances";
+import { payments_0003_webhook_targets } from "../migrations/0003_webhook_targets";
 import type { ProviderEventInput } from "../projection/event";
 import { projectPurchase } from "../projection/writer";
 import type { PaymentsRailProvider, UnboundProviderEvent } from "../rails/contract";
@@ -86,6 +87,7 @@ beforeEach(async () => {
   for (const table of TABLES) await env.DB.exec(`DROP TABLE IF EXISTS ${table}`);
   await payments_0001_purchases.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
   await payments_0002_allowances.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
+  await payments_0003_webhook_targets.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
 });
 
 /** Seed one purchase through the real writer, so the row under test is one the projection actually produces. */

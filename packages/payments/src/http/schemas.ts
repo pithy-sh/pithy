@@ -686,6 +686,32 @@ export const AdminReconcileRunsQuery = z
   .describe("The reconciliation-run query: what to narrow it to, and where to resume.");
 export type AdminReconcileRunsQuery = z.output<typeof AdminReconcileRunsQuery>;
 
+/**
+ * A window bound, as ISO-8601, decoded to a `Date` by the schema rather than by the handler — the handler takes
+ * typed values, so no handler parses a caller's string.
+ */
+const WindowBound = z.iso.datetime({ offset: true }).transform((value) => new Date(value));
+
+export const AdminWebhookEventsQuery = z
+  .object({
+    rail: PaymentsRail.optional().describe("Restrict to the notifications one store sent."),
+    state: z
+      .enum(["projected", "pending", "abandoned"])
+      .optional()
+      .describe(
+        "Restrict to one state: `projected` — finished; `pending` — arrived and not finished, tried or not; `abandoned` — a repair pass gave up on it.",
+      ),
+    since: WindowBound.optional().describe("Received at or after this instant, ISO-8601. Inclusive."),
+    until: WindowBound.optional().describe("Received before this instant, ISO-8601. Exclusive."),
+    cursor: Cursor,
+    limit: Limit,
+  })
+  .refine((query) => query.since === undefined || query.until === undefined || query.since < query.until, {
+    message: "`since` must be before `until`. A window that ends before it starts holds nothing.",
+  })
+  .describe("The webhook-event query: which store, which state, which window of receipt, and where to resume.");
+export type AdminWebhookEventsQuery = z.output<typeof AdminWebhookEventsQuery>;
+
 export const AdminUsageRunsQuery = z
   .object({ cursor: Cursor, limit: Limit })
   .describe("The usage-run query: where to resume, and how many.");

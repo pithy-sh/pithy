@@ -18857,6 +18857,236 @@
         ]
       }
     },
+    "/payments/admin/webhook-events": {
+      "get": {
+        "tags": [
+          "payments"
+        ],
+        "operationId": "getPaymentsAdminWebhookEvents",
+        "summary": "Read every notification a store sent, and what became of it.",
+        "parameters": [
+          {
+            "name": "rail",
+            "in": "query",
+            "required": false,
+            "description": "Restrict to the notifications one store sent.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "apple",
+                "google",
+                "stripe",
+                "lemonSqueezy",
+                "paddle"
+              ]
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "description": "Restrict to one state: `projected` — finished; `pending` — arrived and not finished, tried or not; `abandoned` — a repair pass gave up on it.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "projected",
+                "pending",
+                "abandoned"
+              ]
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "Received at or after this instant, ISO-8601. Inclusive.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "description": "Received before this instant, ISO-8601. Exclusive.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Where to resume, from the previous page's `nextCursor`. Opaque; a malformed one is a first page.",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many rows to return, from 1 to 100. Defaults to a page a dashboard can render.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of the webhook-event log.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "events": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The event row's UUID."
+                          },
+                          "rail": {
+                            "type": "string",
+                            "enum": [
+                              "apple",
+                              "google",
+                              "stripe",
+                              "lemonSqueezy",
+                              "paddle"
+                            ],
+                            "description": "Which store sent the notification."
+                          },
+                          "providerEventId": {
+                            "type": "string",
+                            "description": "The store's own id for the notification — what an operator searches the store's dashboard for."
+                          },
+                          "eventType": {
+                            "description": "The store's name for what happened — `customer.subscription.updated`, `DID_RENEW`, `subscription.4` — or null when the notification names none in that shape.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "receivedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the notification reached this Worker, ISO-8601."
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "projected",
+                              "pending",
+                              "abandoned"
+                            ],
+                            "description": "`projected` — finished: it became a purchase, or there was nothing in it to become one. `pending` — arrived and not finished; `attempts` says how often it was tried. `abandoned` — a repair pass gave up on it; a later delivery can still project it."
+                          },
+                          "attempts": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "How many times a repair pass tried it and failed. 0 for a delivery nothing retried."
+                          },
+                          "errorCode": {
+                            "description": "Why it did not project, as a code: a kit error code (`payments/product_not_found`), `orphaned` for a notification nobody could be resolved for, `quarantined` for one a repair pass gave up on, or `unclassified`. Null when nothing went wrong. Never the sentence behind it.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "targets": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "purchaseIds": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "description": "The purchase rows it created or moved that do not renew — ids `payments:purchases:read` lists."
+                                  },
+                                  "subscriptionIds": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "description": "The rows it created or moved that renew — ids `payments:subscriptions:read` lists."
+                                  }
+                                },
+                                "required": [
+                                  "purchaseIds",
+                                  "subscriptionIds"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "What it changed when it finished. Two empty lists: it finished and changed nothing. Null: nothing recorded — not finished, or finished before the Worker recorded targets."
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "rail",
+                          "providerEventId",
+                          "eventType",
+                          "receivedAt",
+                          "state",
+                          "attempts",
+                          "errorCode",
+                          "targets"
+                        ],
+                        "description": "One notification a store sent, and what became of it. Never the payload, never an error's sentence."
+                      },
+                      "description": "The page, most recently received first."
+                    },
+                    "nextCursor": {
+                      "description": "Where the next page resumes. Null at the end of the list. Opaque — pass it back verbatim.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "events",
+                    "nextCursor"
+                  ],
+                  "description": "A page of the webhook-event log."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "payments:webhooks:read"
+        ]
+      }
+    },
     "/payments/purchases": {
       "post": {
         "tags": [

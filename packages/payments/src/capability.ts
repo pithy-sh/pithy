@@ -26,6 +26,7 @@ import { registerPaymentsRoutes } from "./http/routes";
 import { paymentsAdminRoutes } from "./http/scopes";
 import { payments_0001_purchases } from "./migrations/0001_purchases";
 import { payments_0002_allowances } from "./migrations/0002_allowances";
+import { payments_0003_webhook_targets } from "./migrations/0003_webhook_targets";
 import { type PaymentsPeer, paymentsPeer } from "./peer";
 import { paymentsInapplicableSecrets, paymentsSecretBranches } from "./secret/branches";
 import { paymentsSecretsRegistry } from "./secret/registry";
@@ -432,6 +433,7 @@ export function payments(options: PaymentsOptions): PaymentsCapability {
   const migrations: Record<string, Migration> = {
     "0001_purchases": payments_0001_purchases,
     "0002_allowances": payments_0002_allowances,
+    "0003_webhook_targets": payments_0003_webhook_targets,
   };
   // Usage reporting only where something is billed by a reported quantity: a project that sells none binds
   // nothing for it, and its `pithy doctor` has nothing to report about a Workflow it does not have.

@@ -221,6 +221,11 @@ export const PaymentsAuditActions = {
    * A management client read the usage-reporting run log. Counts and filters only, as every management read.
    */
   usageRunsRead: "payments/usage_runs_read",
+  /**
+   * A management client read the webhook-event log (#830). Counts and filters only, as every management read:
+   * the events are already a queryable table, and copying them into the trail would make a second one.
+   */
+  webhookEventsRead: "payments/webhook_events_read",
 } as const;
 
 /** One of the payments audit action codes. */
