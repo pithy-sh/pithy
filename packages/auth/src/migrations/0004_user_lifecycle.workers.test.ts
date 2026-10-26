@@ -57,6 +57,7 @@ describe("auth_0004_user_lifecycle", () => {
       "pithy_auth_rotated_tokens",
       "pithy_auth_sessions",
       "pithy_auth_user_lifecycle",
+      "pithy_auth_verification_outcomes",
       "pithy_auth_users",
       "pithy_auth_verifications",
       "pithy_migrations",
@@ -134,7 +135,8 @@ describe("auth_0004_user_lifecycle", () => {
 
   test("down drops the table and the four columns, leaving everything before it intact", async () => {
     await runMigrations(env.DB, provider());
-    // `0005` sits above it in the chain, so it comes down first.
+    // `0006` and `0005` sit above it in the chain, so they come down first.
+    await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());
     expect(await tableExists("pithy_auth_user_lifecycle")).toBe(false);
@@ -146,6 +148,7 @@ describe("auth_0004_user_lifecycle", () => {
 
   test("down, then up again, is clean — the inverse is exact", async () => {
     await runMigrations(env.DB, provider());
+    await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());
     await runMigrations(env.DB, provider());

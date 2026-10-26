@@ -8,14 +8,15 @@ import { Account, Jwks, RateLimit, Session, User, Verification } from "./betterA
 import { Device } from "./device";
 import { RotatedToken } from "./rotatedToken";
 import { UserLifecycleEvent } from "./userLifecycle";
+import { VerificationOutcome } from "./verificationOutcome";
 
 /**
  * The auth capability's table map: camelCase keys, so `CamelCasePlugin` emits the snake_case
  * `pithy_auth_*` SQL. One source of truth shared by the capability wiring, the Better-Auth instance
  * (whose Kysely adapter wraps this same Kysely), the device registry, and the migration.
  *
- * The first six tables are Better-Auth-managed; `pithyAuthDevices`, `pithyAuthRotatedTokens` and
- * `pithyAuthUserLifecycle` are ours. Setting Better Auth's `modelName` to these exact camelCase keys lets the one `CamelCasePlugin`
+ * The first six tables are Better-Auth-managed; `pithyAuthDevices`, `pithyAuthRotatedTokens`,
+ * `pithyAuthUserLifecycle` and `pithyAuthVerificationOutcomes` are ours. Setting Better Auth's `modelName` to these exact camelCase keys lets the one `CamelCasePlugin`
  * own the camelCase ↔ snake_case boundary uniformly for both Better Auth's queries and our migration DDL.
  */
 export const authTables = {
@@ -28,6 +29,7 @@ export const authTables = {
   pithyAuthDevices: Device,
   pithyAuthRotatedTokens: RotatedToken,
   pithyAuthUserLifecycle: UserLifecycleEvent,
+  pithyAuthVerificationOutcomes: VerificationOutcome,
 };
 export type AuthTables = typeof authTables;
 

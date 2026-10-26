@@ -98,7 +98,7 @@ export function makeSendAuthEmail(
  */
 function deliveryOf(result: EnqueueResult): AuthEmailDelivery {
   if (result.status === "suppressed") {
-    return { delivery: "withheld", reason: result.suppressionReason ?? result.status };
+    return { delivery: "withheld", reason: result.suppressionReason ?? result.status, jobId: result.jobId };
   }
-  return { delivery: "queued" };
+  return { delivery: "queued", jobId: result.jobId };
 }

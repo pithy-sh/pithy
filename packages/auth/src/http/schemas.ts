@@ -5,6 +5,7 @@ import { JsonDate } from "@pithy-sh/core/src/data/codecs";
 import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { z } from "zod";
 import { DevicePlatform } from "../data/device";
+import { VerificationState, VerificationType } from "../data/verificationOutcome";
 import { MAX_REASON } from "../lifecycle/reason";
 
 /**
@@ -99,6 +100,30 @@ export const ListDevicesQuery = z
   })
   .describe("The device-registry query: what to filter by, how many to return, and where to resume.");
 export type ListDevicesQuery = z.output<typeof ListDevicesQuery>;
+
+/** A window bound on the verification read: ISO-8601 with an offset, decoded to a `Date` here so no handler parses it. */
+const WindowBound = z.iso.datetime({ offset: true }).transform((value) => new Date(value));
+
+/**
+ * The verification ledger read's query (#829): a window of issue times, what to narrow it to, and where to resume.
+ * Both bounds are optional — the last 30 days, ending now — and a window that ends before it starts is refused by
+ * the handler, which is where the default is known.
+ */
+export const ListVerificationsQuery = z
+  .object({
+    since: WindowBound.optional().describe(
+      "The window's start, inclusive, on issue time, ISO-8601. Defaults to 30 days before `until`.",
+    ),
+    until: WindowBound.optional().describe("The window's end, exclusive, on issue time, ISO-8601. Defaults to now."),
+    type: VerificationType.optional().describe("Narrow the rows to one type. The counts always cover every type."),
+    state: VerificationState.optional().describe(
+      "Narrow the rows to one state, judged at the moment of the read. The counts always cover every state.",
+    ),
+    cursor: PageCursorParam,
+    limit: PageLimit,
+  })
+  .describe("The verification ledger query: the window, what to narrow the rows to, how many, and where to resume.");
+export type ListVerificationsQuery = z.output<typeof ListVerificationsQuery>;
 
 /**
  * The body of `POST /admin/sessions/revoke`.

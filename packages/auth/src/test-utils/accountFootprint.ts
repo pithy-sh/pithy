@@ -19,9 +19,13 @@ export const FOOTPRINT_TABLES = [
   ["pithy_auth_accounts", "user_id"],
   ["pithy_auth_devices", "user_id"],
   ["pithy_auth_rotated_tokens", "user_id"],
+  ["pithy_auth_verification_outcomes", "user_id"],
 ] as const;
 
-/** Write a full footprint for one account: a user, a session, a provider link, a device, a spent token, two pending codes. */
+/**
+ * Write a full footprint for one account: a user, a session, a provider link, a device, a spent token, two pending
+ * codes, and the ledger row of a sign-in link it used.
+ */
 export async function seedAccountFootprint(
   d1: D1Database,
   userId: string,
@@ -51,6 +55,11 @@ export async function seedAccountFootprint(
     d1
       .prepare("insert into pithy_auth_rotated_tokens (token, family_id, user_id, rotated_at) values (?, ?, ?, ?)")
       .bind(`spent-${userId}`, `f-${userId}`, userId, AT_MS),
+    d1
+      .prepare(
+        "insert into pithy_auth_verification_outcomes (verification_id, type, user_id, email_job_id, issued_at, expires_at, used_at) values (?, 'magic_link', ?, ?, ?, ?, ?)",
+      )
+      .bind(`used-link-${userId}`, userId, `job-${userId}`, AT_MS, AT_MS + 300_000, AT_MS + 60_000),
     d1
       .prepare(
         "insert into pithy_auth_verifications (id, identifier, value, expires_at, created_at, updated_at) values (?, ?, '123456:0', ?, ?, ?)",

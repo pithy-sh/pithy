@@ -17,6 +17,7 @@ import { KIT_SESSION_FIELDS, KIT_USER_FIELDS } from "../data/kitFields";
 import type { AuthDatabase } from "../data/tables";
 import { parseDeviceMeta, registerDevice } from "../device/registry";
 import { PROVIDER_CHANGE_FRESH_AGE_SECONDS } from "../http/providerFreshness";
+import { verificationLedger } from "../ledger/record";
 import { admitsDeletionSignIn, lifecycleRefusalFor } from "../lifecycle/enforce";
 import { refuseUnsafeProfile, sanitizeProfile } from "../profile/profile";
 import { defaultGithubUserInfo, type GithubUserInfoResolver } from "./githubUserInfo";
@@ -378,6 +379,9 @@ export type AuthInstance<Plugins extends readonly BetterAuthPlugin[] = readonly 
  * UUIDs; rate limiting is durable (D1-backed) since memory limiting is per-isolate on Workers.
  */
 export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps: AuthInstanceDeps<Plugins>) {
+  // The verification ledger (#829): written from three database hooks below and from the send callback the kit's
+  // own plugins close over, so one instance of it pairs what each of them saw in a request. See `../ledger/record.ts`.
+  const ledger = verificationLedger(deps.db);
   return betterAuth({
     appName: "Pithy",
     baseURL: deps.baseURL,
@@ -412,6 +416,27 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
     // outcome is by throwing, which is what this is.
     onAPIError: { throw: true },
     databaseHooks: {
+      /**
+       * The verification ledger's two hooks on Better Auth's own verification rows (#829).
+       *
+       * **`create.after` remembers the row** — a sign-in link or code about to be sent, OAuth state, or a wrong
+       * code re-created with one more attempt counted; `../ledger/record.ts` tells them apart by what follows.
+       * **`delete.before` remembers the row about to be consumed**, and changes nothing: it returns nothing, so it
+       * never vetoes, and it is not a `delete.after` because claiming a verification removal the way
+       * `claimedDelete` does would delete the row before the consume could read it.
+       */
+      verification: {
+        create: {
+          after: async (verification, ctx) => {
+            await ledger.created(verification, (ctx as { context?: unknown } | null | undefined)?.context);
+          },
+        },
+        delete: {
+          before: async (verification, ctx) => {
+            ledger.consuming(verification, (ctx as { context?: unknown } | null | undefined)?.context);
+          },
+        },
+      },
       user: {
         create: {
           // Seeding guard: refuse to create a user whose email a provider has not verified. Every
@@ -544,6 +569,15 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
               now: new Date(),
             });
             return { data: { ...session, deviceId: meta.id, authenticatedAt } };
+          },
+          /**
+           * Stamp the sign-in link or code this session was made from as used (#829), and name the account a
+           * sign-up just created. Only a row consumed earlier in this same request is stamped, so a token
+           * refresh, an OAuth callback and every other session stamp nothing — see `../ledger/record.ts`.
+           * After, because the session exists by now: a sign-in the `before` above refused stamps nothing.
+           */
+          after: async (session, ctx) => {
+            await ledger.signedIn((ctx as { context?: unknown } | null | undefined)?.context, session.userId);
           },
         },
         /**
@@ -730,6 +764,6 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
     // endpoints by id and a later registration wins, so composing the adopter's list first would let
     // it quietly redefine the sign-in this product promises. `assertAdditivePlugins` has already
     // refused a list that names one of the four; this order is what makes that refusal the only way in.
-    plugins: [...kitPlugins(deps), ...deps.plugins],
+    plugins: [...kitPlugins({ ...deps, ledger }), ...deps.plugins],
   });
 }

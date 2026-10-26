@@ -4,6 +4,7 @@
 import { Locale } from "@pithy-sh/core/src/i18n/locale";
 import { z } from "zod";
 import { DevicePlatform } from "../data/device";
+import { VerificationState, VerificationType } from "../data/verificationOutcome";
 
 /**
  * What the auth admin routes return, as Zod objects a management client can validate against.
@@ -200,6 +201,70 @@ export const AdminDevicesResponse = z
 export type AdminDevicesResponse = z.output<typeof AdminDevicesResponse>;
 
 /**
+ * One sign-in link or code from the verification ledger (#829), as a management client sees it.
+ *
+ * Never the token and never the address: the ledger holds neither. The mail is named by its job id, which is how
+ * a reader holding `email:jobs:read` joins this to a bounce, a deferral or a suppression.
+ */
+export const AdminVerificationView = z
+  .object({
+    verificationId: z.string().describe("The verification row that carries it. Opaque; not a credential."),
+    type: VerificationType.describe("What was issued."),
+    state: VerificationState.describe("Where it stood at the moment of the read."),
+    userId: z
+      .string()
+      .nullable()
+      .describe(
+        "The account it signs in to — known at issue, or created by its use. Null for a sign-up nobody completed.",
+      ),
+    emailJobId: z
+      .string()
+      .nullable()
+      .describe(
+        "The `pithy_email_jobs` row that carried it, under `email:jobs:read`. Null when the email seam failed and nothing was queued.",
+      ),
+    issuedAt: z.iso.datetime().describe("When it was issued, ISO-8601."),
+    expiresAt: z.iso.datetime().describe("When it stops working, used or not, ISO-8601."),
+    usedAt: z.iso.datetime().nullable().describe("When it signed somebody in, ISO-8601, or null."),
+  })
+  .describe("One sign-in link or code: what it was, whose, the mail that carried it, and where it stands.");
+export type AdminVerificationView = z.output<typeof AdminVerificationView>;
+
+/** How many of one type were issued over the window, and where they stand. */
+export const VerificationTypeCounts = z
+  .object({
+    type: VerificationType.describe("Which type these counts are for."),
+    issued: z.number().int().min(0).describe("How many were issued in the window."),
+    used: z.number().int().min(0).describe("How many of those signed somebody in."),
+    expired: z.number().int().min(0).describe("How many ran out unused."),
+    pending: z.number().int().min(0).describe("How many are unused and still work. The three add up to `issued`."),
+  })
+  .describe("One type's counts over the window, by state.");
+export type VerificationTypeCounts = z.output<typeof VerificationTypeCounts>;
+
+/**
+ * `GET {base}/admin/verifications` (#829): the window it covered, the counts by type and state over all of it,
+ * and a page of its rows, newest issue first.
+ *
+ * The counts cover every row in the window whatever the page or the filters say, and every type, with zeros —
+ * so a pane reading "sign-in links: 0 issued" can tell it from a Worker that did not say.
+ */
+export const AdminVerificationsResponse = z
+  .object({
+    window: z
+      .object({
+        since: z.iso.datetime().describe("The window's start, inclusive, ISO-8601."),
+        until: z.iso.datetime().describe("The window's end, exclusive, ISO-8601."),
+      })
+      .describe("The window of issue times the counts and the rows cover."),
+    counts: z.array(VerificationTypeCounts).describe("Every type's counts over the whole window, by state."),
+    verifications: z.array(AdminVerificationView).describe("The page of rows, newest issue first."),
+    nextCursor: NextCursor,
+  })
+  .describe("The verification ledger over a window: counts by type and state, and the rows, paged.");
+export type AdminVerificationsResponse = z.output<typeof AdminVerificationsResponse>;
+
+/**
  * `POST {base}/admin/sessions/revoke` and `POST {base}/admin/users/:userId/sessions/revoke`.
  *
  * A count and nothing else, deliberately. Both routes are idempotent — revoking a session that has
@@ -379,6 +444,12 @@ export const AuthUserExport = z
       .array(AdminDeviceView)
       .describe("Every registered device, most recently seen first. Without push tokens."),
     history: z.array(AuthExportTransition).describe("Every lifecycle transition, oldest first."),
+    verifications: z
+      .array(AdminVerificationView)
+      .optional()
+      .describe(
+        "Every sign-in link and code the verification ledger records for the account, newest first (#829). Absent from a Worker that predates the ledger.",
+      ),
     plugins: z
       .record(z.string(), z.array(z.record(z.string(), z.unknown())))
       .describe(

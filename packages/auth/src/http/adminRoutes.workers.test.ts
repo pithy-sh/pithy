@@ -28,6 +28,7 @@ import { auth } from "../capability";
 import { Session, User } from "../data/betterAuth";
 import { Device } from "../data/device";
 import { authDatabase } from "../data/tables";
+import { VerificationOutcome } from "../data/verificationOutcome";
 import { authSecretsRegistry } from "../instance/secrets";
 import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
 import { AUTH_MIGRATIONS } from "../migrations/set";
@@ -37,6 +38,7 @@ import {
   AUTH_SESSIONS_REVOKE_SCOPE,
   AUTH_USERS_LOGOUT_SCOPE,
   AUTH_USERS_READ_SCOPE,
+  AUTH_VERIFICATIONS_READ_SCOPE,
 } from "./guards";
 import {
   AdminDeviceRevokeResponse,
@@ -44,6 +46,7 @@ import {
   AdminRevokeResponse,
   AdminUserResponse,
   AdminUsersResponse,
+  AdminVerificationsResponse,
 } from "./responses";
 
 /**
@@ -93,6 +96,7 @@ const AUTH_TABLES = [
   "pithy_auth_rate_limit",
   "pithy_auth_rotated_tokens",
   "pithy_auth_user_lifecycle",
+  "pithy_auth_verification_outcomes",
   "pithy_auth_sessions",
   "pithy_auth_users",
   "pithy_auth_verifications",
@@ -299,6 +303,7 @@ const ALL_SCOPES: readonly ControlPlaneScope[] = [
   AUTH_SESSIONS_REVOKE_SCOPE,
   AUTH_USERS_LOGOUT_SCOPE,
   AUTH_DEVICES_REVOKE_SCOPE,
+  AUTH_VERIFICATIONS_READ_SCOPE,
 ];
 
 async function grant(scopes: readonly ControlPlaneScope[]): Promise<void> {
@@ -560,6 +565,110 @@ describe("GET /auth/admin/devices", () => {
   test("a users-read credential cannot walk the fleet", async () => {
     await grant([AUTH_USERS_READ_SCOPE]);
     expect((await call("GET", "/auth/admin/devices", AUTH_USERS_READ_SCOPE)).status).toBe(403);
+  });
+});
+
+/** One ledger row, issued `agoMinutes` before the real now (the route reads the real clock), living five minutes. */
+async function seedVerification(
+  verificationId: string,
+  type: "magic_link" | "otp",
+  agoMinutes: number,
+  used: boolean,
+): Promise<void> {
+  const issuedAt = new Date(Date.now() - agoMinutes * 60_000);
+  const { id: _id, ...record } = VerificationOutcome.encode({
+    id: 0,
+    verificationId,
+    type,
+    userId: used ? "u-1" : null,
+    emailJobId: `job-${verificationId}`,
+    issuedAt,
+    expiresAt: new Date(issuedAt.getTime() + 5 * 60_000),
+    usedAt: used ? new Date(issuedAt.getTime() + 60_000) : null,
+  });
+  await db().insertInto("pithyAuthVerificationOutcomes").values(record).execute();
+}
+
+describe("GET /auth/admin/verifications (#829)", () => {
+  type Body = {
+    window: { since: string; until: string };
+    counts: { type: string; issued: number; used: number; expired: number; pending: number }[];
+    verifications: { verificationId: string; state: string; emailJobId: string | null }[];
+    nextCursor: string | null;
+  };
+
+  test("answers the counts by type and state over the window, and the rows, paged", async () => {
+    await seedVerification("link-used", "magic_link", 60, true);
+    await seedVerification("link-expired", "magic_link", 30, false);
+    await seedVerification("code-pending", "otp", 1, false);
+    await seedVerification("too-old", "otp", 60 * 24 * 40, false);
+
+    const first = await call("GET", "/auth/admin/verifications?limit=2", AUTH_VERIFICATIONS_READ_SCOPE);
+    expect(first.status).toBe(200);
+    const body = await first.json<Body>();
+    expect(AdminVerificationsResponse.safeParse(body).success).toBe(true);
+    expect(body.counts).toEqual([
+      { type: "magic_link", issued: 2, used: 1, expired: 1, pending: 0 },
+      { type: "otp", issued: 1, used: 0, expired: 0, pending: 1 },
+    ]);
+    expect(body.verifications.map((row) => [row.verificationId, row.state])).toEqual([
+      ["code-pending", "pending"],
+      ["link-expired", "expired"],
+    ]);
+    expect(body.nextCursor).not.toBeNull();
+
+    await grant(ALL_SCOPES);
+    const second = await call(
+      "GET",
+      `/auth/admin/verifications?limit=2&cursor=${encodeURIComponent(body.nextCursor ?? "")}`,
+      AUTH_VERIFICATIONS_READ_SCOPE,
+    );
+    const rest = await second.json<Body>();
+    expect(rest.verifications.map((row) => [row.verificationId, row.state, row.emailJobId])).toEqual([
+      ["link-used", "used", "job-link-used"],
+    ]);
+    expect(rest.nextCursor).toBeNull();
+  });
+
+  test("a named window and a filter narrow the rows, and the counts still cover the window", async () => {
+    await seedVerification("link-used", "magic_link", 60, true);
+    await seedVerification("code-pending", "otp", 1, false);
+    const since = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    const response = await call(
+      "GET",
+      `/auth/admin/verifications?since=${encodeURIComponent(since)}&type=otp&state=pending`,
+      AUTH_VERIFICATIONS_READ_SCOPE,
+    );
+    const body = await response.json<Body>();
+    expect(body.window.since).toBe(since);
+    expect(body.verifications.map((row) => row.verificationId)).toEqual(["code-pending"]);
+    expect(body.counts.map((row) => row.issued)).toEqual([1, 1]);
+  });
+
+  test("a window that ends before it starts is a 400, not an empty answer", async () => {
+    const response = await call(
+      "GET",
+      "/auth/admin/verifications?since=2026-10-02T00:00:00Z&until=2026-10-01T00:00:00Z",
+      AUTH_VERIFICATIONS_READ_SCOPE,
+    );
+    expect(response.status).toBe(400);
+  });
+
+  test("a connection without auth:verifications:read is refused, whatever else it holds", async () => {
+    await grant(ALL_SCOPES.filter((scope) => scope !== AUTH_VERIFICATIONS_READ_SCOPE));
+    const response = await call("GET", "/auth/admin/verifications", AUTH_VERIFICATIONS_READ_SCOPE);
+    expect(response.status).toBe(403);
+    await grant([AUTH_USERS_READ_SCOPE]);
+    expect((await call("GET", "/auth/admin/verifications", AUTH_USERS_READ_SCOPE)).status).toBe(403);
+  });
+
+  test("the read is audited as a control-plane read of the window", async () => {
+    await seedVerification("code-pending", "otp", 1, false);
+    await call("GET", "/auth/admin/verifications", AUTH_VERIFICATIONS_READ_SCOPE);
+    const event = emitted.find((e) => e.action === "auth/admin_verifications_listed");
+    expect(event?.actorType).toBe("control-plane");
+    expect(event?.actorId).toBe(SUBJECT);
+    expect(event?.metadata).toMatchObject({ returned: 1 });
   });
 });
 

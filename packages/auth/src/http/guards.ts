@@ -29,7 +29,7 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
  * every legitimate management call, permanently, and **no credential could fix it** — there is no user
  * to sign in as. `controlPlaneIsolation.workers.test.ts` pins both directions of that separation.
  *
- * ## Eight scopes, because these are eight different blast radii
+ * ## Nine scopes, because these are nine different blast radii
  *
  * The temptation is one `auth:admin` flag, and on this capability it is the most dangerous version of
  * that mistake. **Reading a user is a privacy operation; revoking their sessions is an availability
@@ -115,6 +115,14 @@ export const AUTH_USERS_DELETE_SCOPE: ControlPlaneScope = "auth:users:delete";
 export const AUTH_USERS_EXPORT_SCOPE: ControlPlaneScope = "auth:users:export";
 
 /**
+ * Read the verification ledger (#829): every sign-in link and code issued over a window, whether it was used,
+ * expired or is still waiting, and the mail that carried it. A read (kind `reads`, per #725, which classifies it
+ * when it lands), and apart from `auth:users:read` because the question is the fleet's deliverability rather than
+ * who one person is — the rows name accounts by id and never by address.
+ */
+export const AUTH_VERIFICATIONS_READ_SCOPE: ControlPlaneScope = "auth:verifications:read";
+
+/**
  * Every control-plane scope auth defines — what `pithy dashboard connect` offers for this capability,
  * and the list a manifest or a doc quotes rather than re-typing.
  *
@@ -131,6 +139,7 @@ export const AUTH_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
   AUTH_USERS_SUSPEND_SCOPE,
   AUTH_USERS_DELETE_SCOPE,
   AUTH_USERS_EXPORT_SCOPE,
+  AUTH_VERIFICATIONS_READ_SCOPE,
 ];
 
 /**
@@ -207,6 +216,13 @@ export function authAdminRoutes(basePath: string): AdminRoute[] {
       path: `${basePath}/admin/users/:userId/restore`,
       scope: AUTH_USERS_DELETE_SCOPE,
       summary: "Restore a deleted user inside the purge window, with a reason. They sign in again.",
+    },
+    {
+      method: "GET",
+      path: `${basePath}/admin/verifications`,
+      scope: AUTH_VERIFICATIONS_READ_SCOPE,
+      summary:
+        "Every sign-in link and code sent over a window: used, expired or still waiting, and the mail that carried it.",
     },
     {
       method: "GET",

@@ -5223,6 +5223,280 @@
         ]
       }
     },
+    "/auth/admin/verifications": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "getAuthAdminVerifications",
+        "summary": "Count the sign-in links and codes sent over a window by type and state, and page through them, newest first.",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "The window's start, inclusive, on issue time, ISO-8601. Defaults to 30 days before `until`.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "description": "The window's end, exclusive, on issue time, ISO-8601. Defaults to now.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "description": "Narrow the rows to one type. The counts always cover every type.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "magic_link",
+                "otp"
+              ]
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "description": "Narrow the rows to one state, judged at the moment of the read. The counts always cover every state.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "used",
+                "expired",
+                "pending"
+              ]
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Where to resume, from the previous page's `nextCursor`. Opaque; a malformed one is a first page.",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many rows to return. Bounded, because a verified client can still have a bug.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The verification ledger over a window: counts by type and state, and the rows, paged.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "window": {
+                      "type": "object",
+                      "properties": {
+                        "since": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "The window's start, inclusive, ISO-8601."
+                        },
+                        "until": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "The window's end, exclusive, ISO-8601."
+                        }
+                      },
+                      "required": [
+                        "since",
+                        "until"
+                      ],
+                      "description": "The window of issue times the counts and the rows cover."
+                    },
+                    "counts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "magic_link",
+                              "otp"
+                            ],
+                            "description": "Which type these counts are for."
+                          },
+                          "issued": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "How many were issued in the window."
+                          },
+                          "used": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "How many of those signed somebody in."
+                          },
+                          "expired": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "How many ran out unused."
+                          },
+                          "pending": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "How many are unused and still work. The three add up to `issued`."
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "issued",
+                          "used",
+                          "expired",
+                          "pending"
+                        ],
+                        "description": "One type's counts over the window, by state."
+                      },
+                      "description": "Every type's counts over the whole window, by state."
+                    },
+                    "verifications": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "verificationId": {
+                            "type": "string",
+                            "description": "The verification row that carries it. Opaque; not a credential."
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "magic_link",
+                              "otp"
+                            ],
+                            "description": "What was issued."
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "used",
+                              "expired",
+                              "pending"
+                            ],
+                            "description": "Where it stood at the moment of the read."
+                          },
+                          "userId": {
+                            "description": "The account it signs in to — known at issue, or created by its use. Null for a sign-up nobody completed.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "emailJobId": {
+                            "description": "The `pithy_email_jobs` row that carried it, under `email:jobs:read`. Null when the email seam failed and nothing was queued.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "issuedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When it was issued, ISO-8601."
+                          },
+                          "expiresAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When it stops working, used or not, ISO-8601."
+                          },
+                          "usedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "When it signed somebody in, ISO-8601, or null."
+                          }
+                        },
+                        "required": [
+                          "verificationId",
+                          "type",
+                          "state",
+                          "userId",
+                          "emailJobId",
+                          "issuedAt",
+                          "expiresAt",
+                          "usedAt"
+                        ],
+                        "description": "One sign-in link or code: what it was, whose, the mail that carried it, and where it stands."
+                      },
+                      "description": "The page of rows, newest issue first."
+                    },
+                    "nextCursor": {
+                      "description": "Where the next page resumes. Null at the end of the list. Opaque — pass it back verbatim.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "window",
+                    "counts",
+                    "verifications",
+                    "nextCursor"
+                  ],
+                  "description": "The verification ledger over a window: counts by type and state, and the rows, paged."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "auth:verifications:read"
+        ]
+      }
+    },
     "/auth/admin/sessions/revoke": {
       "post": {
         "tags": [

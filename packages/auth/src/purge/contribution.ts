@@ -9,6 +9,7 @@ import { Account, Session, User } from "../data/betterAuth";
 import { Device } from "../data/device";
 import { type AuthDatabase, authDatabase } from "../data/tables";
 import { UserLifecycleEvent } from "../data/userLifecycle";
+import { VerificationOutcome } from "../data/verificationOutcome";
 import type { AuthUserExport } from "../http/responses";
 import { authUserExportView } from "../http/views";
 
@@ -17,8 +18,8 @@ import { authUserExportView } from "../http/views";
  * exporting them hands back.
  *
  * **Every row keyed to the account goes, except its history.** The user row, its sessions, its linked
- * providers, its devices, its refresh-token ledger, any sign-in code or link still pending for its address,
- * and its rows in every table a composed Better Auth plugin created keyed by `userId` — a two-factor secret
+ * providers, its devices, its refresh-token ledger, any sign-in code or link still pending for its address, its
+ * rows in the verification ledger (#829), and its rows in every table a composed Better Auth plugin created keyed by `userId` — a two-factor secret
  * and its backup codes, a passkey, an API key. Those tables have no foreign key to the user row, so deleting
  * it removes nothing from them; they are named by the plugin plan (`../migrations/pluginTables.ts`). `pithy_auth_user_lifecycle` stays: it is the record that the account existed, was deleted and was
  * erased, and it names the account by id and holds nothing else about the person (`../data/userLifecycle.ts`).
@@ -34,7 +35,7 @@ import { authUserExportView } from "../http/views";
 
 /** The one sentence the purge records with this step. */
 export const AUTH_PURGE_SUMMARY =
-  "Deletes the account, its sessions, linked providers, devices, refresh-token ledger, pending sign-in codes and its rows in the tables its Better Auth plugins created. Its lifecycle history stays.";
+  "Deletes the account, its sessions, linked providers, devices, refresh-token ledger, pending sign-in codes, the record of the sign-in links and codes it was sent, and its rows in the tables its Better Auth plugins created. Its lifecycle history stays.";
 
 /**
  * A plugin table's column that holds a credential — a TOTP secret, backup codes, a key or its hash, a token.
@@ -91,6 +92,9 @@ export async function eraseAuthUser(
     db.deleteFrom("pithyAuthAccounts").where("userId", "=", userId),
     db.deleteFrom("pithyAuthDevices").where("userId", "=", userId),
     db.deleteFrom("pithyAuthRotatedTokens").where("userId", "=", userId),
+    // The sign-in links and codes it was sent (#829). A sign-up nobody completed names no account and holds no
+    // address, so there is nothing of the person's in it to find.
+    db.deleteFrom("pithyAuthVerificationOutcomes").where("userId", "=", userId),
   ].map((query) => prepared(d1, query.compile()));
   // A plugin's rows, in the same batch: `CamelCasePlugin` snake-cases the table and `user_id` as it does for
   // the plugin's own migration, so the names match what `pithy migrate` created.
@@ -127,7 +131,7 @@ export async function exportAuthUser(
 ): Promise<AuthUserExport | null> {
   const row = await db.selectFrom("pithyAuthUsers").selectAll().where("id", "=", userId).executeTakeFirst();
   if (!row) return null;
-  const [sessions, accounts, devices, history, plugins] = await Promise.all([
+  const [sessions, accounts, devices, history, verifications, plugins] = await Promise.all([
     db
       .selectFrom("pithyAuthSessions")
       .selectAll()
@@ -150,6 +154,13 @@ export async function exportAuthUser(
       .orderBy("id", "desc")
       .execute(),
     db.selectFrom("pithyAuthUserLifecycle").selectAll().where("userId", "=", userId).orderBy("id", "asc").execute(),
+    db
+      .selectFrom("pithyAuthVerificationOutcomes")
+      .selectAll()
+      .where("userId", "=", userId)
+      .orderBy("issuedAt", "desc")
+      .orderBy("id", "desc")
+      .execute(),
     Promise.all(pluginTables.map(async (table) => [table, await pluginRows(db, table, userId)] as const)),
   ]);
   return authUserExportView({
@@ -159,6 +170,7 @@ export async function exportAuthUser(
     accounts: accounts.map((account) => Account.pick({ providerId: true, createdAt: true }).parse(account)),
     devices: devices.map((device) => Device.parse(device)),
     history: history.map((event) => UserLifecycleEvent.parse(event)),
+    verifications: verifications.map((row) => VerificationOutcome.parse(row)),
     plugins: Object.fromEntries(plugins),
   });
 }
