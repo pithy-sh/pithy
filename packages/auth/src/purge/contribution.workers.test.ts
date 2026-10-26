@@ -27,6 +27,7 @@ const TABLES = [
   "pithy_auth_rotated_tokens",
   "pithy_auth_sessions",
   "pithy_auth_user_lifecycle",
+  "pithy_auth_verification_outcomes",
   "pithy_auth_users",
   "pithy_auth_verifications",
   "two_factor",
@@ -66,6 +67,7 @@ describe("auth's purge contribution", () => {
       pithy_auth_accounts: 0,
       pithy_auth_devices: 0,
       pithy_auth_rotated_tokens: 0,
+      pithy_auth_verification_outcomes: 0,
       pithy_auth_verifications: 0,
       pithy_auth_user_lifecycle: 1,
     });
@@ -86,6 +88,7 @@ describe("auth's purge contribution", () => {
       expect(counts.pithy_auth_users, id).toBe(1);
       expect(counts.pithy_auth_sessions, id).toBe(1);
       expect(counts.pithy_auth_verifications, id).toBe(2);
+      expect(counts.pithy_auth_verification_outcomes, id).toBe(1);
     }
   });
 
@@ -110,6 +113,10 @@ describe("auth's purge contribution", () => {
     expect(parsed.sessions.map((session) => session.id)).toEqual(["s-u1"]);
     expect(parsed.providers.map((provider) => provider.providerId)).toEqual(["google"]);
     expect(parsed.devices.map((device) => device.id)).toEqual(["d-u1"]);
+    // The sign-in links and codes it used or was sent (#829): the ledger names the account, so it is theirs.
+    expect(parsed.verifications?.map((row) => [row.verificationId, row.state, row.emailJobId])).toEqual([
+      ["used-link-u1", "used", "job-u1"],
+    ]);
     const wire = JSON.stringify(exported);
     for (const credential of ["token-u1", "access-u1", "refresh-u1", "push-u1"]) {
       expect(wire).not.toContain(credential);

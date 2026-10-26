@@ -144,6 +144,8 @@ export const AuthAuditActions = {
   adminUserRead: "auth/admin_user_read",
   /** The device registry was walked from the management surface. */
   adminDevicesListed: "auth/admin_devices_listed",
+  /** The verification ledger was read from the management surface (#829): counts and rows over a window. */
+  adminVerificationsListed: "auth/admin_verifications_listed",
   /** One named session was revoked from the management surface. */
   adminSessionRevoked: "auth/admin_session_revoked",
   /** Every session a user held was revoked from the management surface — signed out everywhere. */

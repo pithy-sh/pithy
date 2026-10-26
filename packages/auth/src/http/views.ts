@@ -5,6 +5,7 @@ import type { PurgeExportEntry } from "@pithy-sh/core/src/capability/purge";
 import type { Account, Session, User } from "../data/betterAuth";
 import type { Device } from "../data/device";
 import type { UserLifecycleEvent } from "../data/userLifecycle";
+import { type VerificationOutcome, verificationStateAt } from "../data/verificationOutcome";
 import { type AccountStanding, accountStanding } from "../lifecycle/state";
 import type {
   DeleteTransition,
@@ -23,6 +24,7 @@ import type {
   AdminUserRestoreResponse,
   AdminUserSuspendResponse,
   AdminUserView,
+  AdminVerificationView,
   AuthUserExport,
 } from "./responses";
 
@@ -134,6 +136,23 @@ export function deviceView(device: Device): AdminDeviceView {
 }
 
 /**
+ * One verification ledger row, as a management client sees it (#829). `state` is judged at `now`, the moment the
+ * read took, so it agrees with the counts beside it.
+ */
+export function verificationView(row: VerificationOutcome, now: Date): AdminVerificationView {
+  return {
+    verificationId: row.verificationId,
+    type: row.type,
+    state: verificationStateAt(row, now),
+    userId: row.userId,
+    emailJobId: row.emailJobId,
+    issuedAt: row.issuedAt.toISOString(),
+    expiresAt: row.expiresAt.toISOString(),
+    usedAt: row.usedAt?.toISOString() ?? null,
+  };
+}
+
+/**
  * The suspension projection (#621): the suspension the transition left in force, and the sessions the route
  * revoked after it. Dates cross as ISO-8601, like every other response here.
  */
@@ -219,6 +238,7 @@ export function authUserExportView(input: {
   accounts: readonly Pick<Account, "providerId" | "createdAt">[];
   devices: readonly Device[];
   history: readonly UserLifecycleEvent[];
+  verifications?: readonly VerificationOutcome[];
   plugins?: Record<string, Record<string, unknown>[]>;
 }): AuthUserExport {
   const { user } = input;
@@ -243,6 +263,7 @@ export function authUserExportView(input: {
       suspendedUntil: iso(event.suspendedUntil),
       createdAt: event.createdAt.toISOString(),
     })),
+    verifications: (input.verifications ?? []).map((row) => verificationView(row, input.now)),
     plugins: input.plugins ?? {},
   };
 }

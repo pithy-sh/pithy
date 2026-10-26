@@ -37,6 +37,7 @@ const TABLES = [
   "pithy_auth_rate_limit",
   "pithy_auth_rotated_tokens",
   "pithy_auth_user_lifecycle",
+  "pithy_auth_verification_outcomes",
   "pithy_auth_sessions",
   "pithy_auth_users",
   "pithy_auth_verifications",
@@ -668,6 +669,31 @@ describe("auth HTTP routes", () => {
       .bind("x@test.com")
       .first<{ template: string }>();
     expect(job?.template).toBe("otp");
+  });
+
+  test("a real send's ledger row carries the id of the email job that carried it (#829)", async () => {
+    const app = buildApp(buildWiring());
+    const sends: [string, Record<string, string>][] = [
+      ["/auth/email-otp/send-verification-otp", { email: "ledger-otp@test.com", type: "sign-in" }],
+      ["/auth/sign-in/magic-link", { email: "ledger-link@test.com" }],
+    ];
+    for (const [path, body] of sends) {
+      const res = await app.request(
+        path,
+        { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+        appEnv(),
+      );
+      expect(res.status).toBe(200);
+    }
+    const joined = await env.DB.prepare(
+      `select o.type as type, j.to_address as toAddress from pithy_auth_verification_outcomes o
+       join pithy_email_jobs j on j.id = o.email_job_id
+       where j.to_address in ('ledger-otp@test.com', 'ledger-link@test.com') order by j.to_address`,
+    ).all<{ type: string; toAddress: string }>();
+    expect(joined.results).toEqual([
+      { type: "magic_link", toAddress: "ledger-link@test.com" },
+      { type: "otp", toAddress: "ledger-otp@test.com" },
+    ]);
   });
 
   test("with facebook and github enabled, the instance builds — resolve gating reads their credentials", async () => {

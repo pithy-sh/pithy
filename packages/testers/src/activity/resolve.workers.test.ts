@@ -67,6 +67,7 @@ beforeEach(async () => {
   for (const table of [
     "pithy_auth_rotated_tokens",
     "pithy_auth_user_lifecycle",
+    "pithy_auth_verification_outcomes",
     "pithy_auth_devices",
     "pithy_auth_rate_limit",
     "pithy_auth_jwks",

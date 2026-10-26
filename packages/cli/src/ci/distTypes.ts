@@ -208,7 +208,7 @@ export const SIDES: readonly Side[] = ["input", "output"];
  * Moved on 2026-10-23 (#623): `@pithy-sh/organization` brings `pithy_organization_lifecycle`, every
  * suspension, deletion, restore and purge an organization went through, with who made it and why.
  */
-export const CENSUS = { tables: 61, packages: 18 };
+export const CENSUS = { tables: 62, packages: 18 };
 
 /**
  * Where the generated programs are written — **outside the checkout, and that is forced**.

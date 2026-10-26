@@ -28,6 +28,7 @@ import { correlation, emitControlPlaneAction } from "../audit/emit";
 import type { AuthWiring } from "../capability";
 import { authDatabase } from "../data/tables";
 import { deleteDevice, deviceSessionTokens } from "../device/registry";
+import { listVerificationOutcomes, resolveVerificationWindow, verificationCounts } from "../ledger/read";
 import { auditedLifecycleCall, recordLifecycleRefusal } from "../lifecycle/audited";
 import { MAX_REASON } from "../lifecycle/reason";
 import { lifecycleDeps } from "../lifecycle/request";
@@ -51,6 +52,7 @@ import {
   AUTH_USERS_LOGOUT_SCOPE,
   AUTH_USERS_READ_SCOPE,
   AUTH_USERS_SUSPEND_SCOPE,
+  AUTH_VERIFICATIONS_READ_SCOPE,
 } from "./guards";
 import { getAuthInstance, resolveDb } from "./resolve";
 import {
@@ -64,12 +66,14 @@ import {
   AdminUserRestoreResponse,
   AdminUserSuspendResponse,
   AdminUsersResponse,
+  AdminVerificationsResponse,
 } from "./responses";
 import {
   DeleteUserBody,
   ExportUserQuery,
   ListDevicesQuery,
   ListUsersQuery,
+  ListVerificationsQuery,
   ReinstateUserBody,
   RestoreUserBody,
   RevokeDeviceBody,
@@ -87,6 +91,7 @@ import {
   sessionView,
   suspensionView,
   userView,
+  verificationView,
 } from "./views";
 
 type Ctx = Context<PithyHonoEnv>;
@@ -98,6 +103,7 @@ type Ctx = Context<PithyHonoEnv>;
  *   GET  {base}/admin/users                          auth:users:read       query: ListUsersQuery
  *   GET  {base}/admin/users/:userId                  auth:users:read       param: UserIdParam
  *   GET  {base}/admin/devices                        auth:devices:read     query: ListDevicesQuery
+ *   GET  {base}/admin/verifications                  auth:verifications:read  query: ListVerificationsQuery
  *   POST {base}/admin/sessions/revoke                auth:sessions:revoke  json:  RevokeSessionBody
  *   POST {base}/admin/users/:userId/sessions/revoke  auth:users:logout     param: UserIdParam
  *   POST {base}/admin/users/:userId/devices/revoke   auth:devices:revoke   param + json
@@ -463,6 +469,56 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
           devices: page.items.map(deviceView),
           nextCursor: page.nextCursor,
         } satisfies AdminDevicesResponse);
+      },
+    );
+
+    app.get(
+      `${base}/admin/verifications`,
+      describeRoute({
+        summary:
+          "Count the sign-in links and codes sent over a window by type and state, and page through them, newest first.",
+        verification: "control-plane",
+        scopes: [AUTH_VERIFICATIONS_READ_SCOPE],
+        responses: { 200: AdminVerificationsResponse },
+      }),
+      requireControlPlane(AUTH_VERIFICATIONS_READ_SCOPE),
+      validate("query", ListVerificationsQuery),
+      async (c) => {
+        const query = c.req.valid("query");
+        const caller = controlPlaneCaller(c);
+        // One `now` for both reads, so a row the counts call pending is listed as pending.
+        const now = new Date();
+        const window = resolveVerificationWindow(query, now);
+        const database = db(c, wiring);
+        const [counts, page] = await Promise.all([
+          verificationCounts(database, window, now),
+          listVerificationOutcomes(database, {
+            window,
+            now,
+            type: query.type,
+            state: query.state,
+            cursor: query.cursor,
+            limit: query.limit,
+          }),
+        ]);
+        await emitControlPlaneAction(c.var.emit, {
+          action: AuthAuditActions.adminVerificationsListed,
+          subject: caller.subject,
+          connectionId: caller.connectionId,
+          resourceType: "verification",
+          ...context(c),
+          metadata: {
+            since: window.since.toISOString(),
+            until: window.until.toISOString(),
+            returned: page.items.length,
+          },
+        });
+        return c.json({
+          window: { since: window.since.toISOString(), until: window.until.toISOString() },
+          counts,
+          verifications: page.items.map((row) => verificationView(row, now)),
+          nextCursor: page.nextCursor,
+        } satisfies AdminVerificationsResponse);
       },
     );
 

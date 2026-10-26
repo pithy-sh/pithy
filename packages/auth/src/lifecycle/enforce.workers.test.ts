@@ -25,6 +25,7 @@ const TABLES = [
   "pithy_auth_rotated_tokens",
   "pithy_auth_sessions",
   "pithy_auth_user_lifecycle",
+  "pithy_auth_verification_outcomes",
   "pithy_auth_users",
   "pithy_auth_verifications",
 ];

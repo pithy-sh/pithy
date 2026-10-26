@@ -73,10 +73,14 @@ export function sessionEndedDuring(requestContext: unknown): EndedSession | null
  * error's text is the one thing in reach that nobody has vetted for what it might carry.
  */
 export type AuthEmailDelivery =
-  /** Handed to the email seam, which wrote a job row for it. A send is what the trail may claim. */
-  | { readonly delivery: "queued" }
-  /** The capability withheld it, correctly, and named why. Not a fault, and not a send. */
-  | { readonly delivery: "withheld"; readonly reason: string }
+  /**
+   * Handed to the email seam, which wrote a job row for it. A send is what the trail may claim. `jobId` is that
+   * row's, for the verification ledger to join on (#829); optional, because a seam a test stands in for may not
+   * say.
+   */
+  | { readonly delivery: "queued"; readonly jobId?: string }
+  /** The capability withheld it, correctly, and named why. Not a fault, and not a send. Its row is `jobId`. */
+  | { readonly delivery: "withheld"; readonly reason: string; readonly jobId?: string }
   /** The seam itself failed. Nothing was queued and something is wrong with this deployment. */
   | { readonly delivery: "failed"; readonly reason: string };
 

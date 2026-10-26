@@ -22,6 +22,7 @@ import {
   AUTH_USERS_LOGOUT_SCOPE,
   AUTH_USERS_READ_SCOPE,
   AUTH_USERS_SUSPEND_SCOPE,
+  AUTH_VERIFICATIONS_READ_SCOPE,
   authAdminRoutes,
 } from "./guards";
 import { createAuthRoutes } from "./routes";
@@ -257,9 +258,19 @@ describe("the control-plane admin surface", () => {
         AUTH_USERS_SUSPEND_SCOPE,
         AUTH_USERS_DELETE_SCOPE,
         AUTH_USERS_EXPORT_SCOPE,
+        AUTH_VERIFICATIONS_READ_SCOPE,
       ]).size,
-    ).toBe(8);
-    expect(AUTH_CONTROL_PLANE_SCOPES).toHaveLength(8);
+    ).toBe(9);
+    expect(AUTH_CONTROL_PLANE_SCOPES).toHaveLength(9);
+  });
+
+  test("the verification ledger is its own read, and reading a user confers none of it (#829)", () => {
+    // The fleet's deliverability, not one person: a pane that looks people up holds none of it by holding
+    // `auth:users:read`, and a deliverability pane holds nothing about who anybody is.
+    expect(AUTH_VERIFICATIONS_READ_SCOPE).toBe("auth:verifications:read");
+    expect(AUTH_CONTROL_PLANE_SCOPES).toContain(AUTH_VERIFICATIONS_READ_SCOPE);
+    const routes = authAdminRoutes("/auth").filter((route) => route.scope === AUTH_VERIFICATIONS_READ_SCOPE);
+    expect(routes.map((route) => `${route.method} ${route.path}`)).toEqual(["GET /auth/admin/verifications"]);
   });
 
   test("reading a user, ending their access and erasing them are three different grants (#620)", () => {
@@ -334,8 +345,8 @@ describe("the advertised admin surface matches what is mounted", () => {
   });
 
   test("the probe reads the whole mounted surface, not a slice of it", () => {
-    // Anti-vacuity for the check above, exact rather than a floor: seventeen routes carry a method — the eleven
-    // admin ones and the six a signed-in person calls. An eighteenth is either a new admin route, which the
+    // Anti-vacuity for the check above, exact rather than a floor: eighteen routes carry a method — the twelve
+    // admin ones and the six a signed-in person calls. A nineteenth is either a new admin route, which the
     // check above then demands a declaration for, or a new user route, which is a deliberate edit here.
     expect(
       mountedRoutes(makeApp())
@@ -349,6 +360,7 @@ describe("the advertised admin surface matches what is mounted", () => {
       "GET /auth/admin/users",
       "GET /auth/admin/users/:userId",
       "GET /auth/admin/users/:userId/export",
+      "GET /auth/admin/verifications",
       "GET /auth/devices",
       // The caller's own stored picture. No id in the path — `routes.ts`'s `serveMyImage` says why.
       "GET /auth/profile/image",

@@ -51,6 +51,7 @@ describe("auth_0005_purge_once", () => {
       "pithy_auth_rotated_tokens",
       "pithy_auth_sessions",
       "pithy_auth_user_lifecycle",
+      "pithy_auth_verification_outcomes",
       "pithy_auth_users",
       "pithy_auth_verifications",
       "pithy_migrations",
@@ -86,6 +87,8 @@ describe("auth_0005_purge_once", () => {
   test("down takes the index and the column away, and the history before it stays", async () => {
     await runMigrations(env.DB, provider());
     await insert("u1", "deleted");
+    // `0006` sits above it in the chain, so it comes down first.
+    await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());
     expect(await lifecycleColumns()).not.toContain("notify");
     expect(await indexNames()).not.toContain("pithy_auth_user_lifecycle_purged_once_idx");

@@ -10,8 +10,9 @@ import { emailOTP } from "better-auth/plugins/email-otp";
 import { jwt } from "better-auth/plugins/jwt";
 import { magicLink } from "better-auth/plugins/magic-link";
 import { z } from "zod";
-import { markMessageDelivery, SEND_FAULT } from "../audit/evidence";
+import { type AuthEmailDelivery, markMessageDelivery, SEND_FAULT } from "../audit/evidence";
 import { authErrorTranslations } from "../i18n/errorCopy";
+import type { VerificationLedger } from "../ledger/record";
 import type { AuthEmailMessage, SendAuthEmail } from "./auth";
 import { PROVIDER_SIGN_IN_GATE_ID, providerSignInGate } from "./providerSignInGate";
 import { refusalTransportVerdict } from "./refusalTransport";
@@ -66,6 +67,11 @@ export interface KitPluginDeps {
    * built the instance — the schema baseline, a seed, a unit test. See `./providerSignInGate`.
    */
   requestHeaders?: Headers;
+  /**
+   * The verification ledger (#829) — told what each send was and which mail carries it, once the email seam
+   * has answered. Absent where no instance will ever send: the schema baseline in `../migrations/pluginTables.ts`.
+   */
+  ledger?: VerificationLedger;
 }
 
 /**
@@ -186,12 +192,24 @@ async function sendAndRecord(
   ctx: { context?: unknown } | undefined,
 ): Promise<void> {
   const requestContext = ctx?.context;
+  const type = message.template === "magicLink" ? "magic_link" : "otp";
+  let delivery: AuthEmailDelivery;
   try {
-    markMessageDelivery(requestContext, await deps.sendEmail(message));
+    delivery = await deps.sendEmail(message);
   } catch (error) {
     markMessageDelivery(requestContext, { delivery: "failed", reason: SEND_FAULT });
+    // The link exists whether or not its mail does, so the ledger counts it, with no job to join.
+    await deps.ledger?.issued(requestContext, { type, email: message.to, emailJobId: null });
     throw error;
   }
+  markMessageDelivery(requestContext, delivery);
+  // A withheld message has a job too — the suppressed row — and that row is what a reader joins a
+  // suppression on, so it is recorded exactly like a queued one.
+  await deps.ledger?.issued(requestContext, {
+    type,
+    email: message.to,
+    emailJobId: delivery.delivery === "failed" ? null : (delivery.jobId ?? null),
+  });
 }
 
 /** Is this value shaped like a Better Auth plugin — an object carrying a non-empty string `id`? */

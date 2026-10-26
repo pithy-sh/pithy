@@ -20,6 +20,8 @@ import {
   AdminUserSuspendResponse,
   AdminUsersResponse,
   AdminUserView,
+  AdminVerificationsResponse,
+  AdminVerificationView,
   AuthUserExport,
 } from "./responses";
 import {
@@ -33,6 +35,7 @@ import {
   sessionView,
   suspensionView,
   userView,
+  verificationView,
 } from "./views";
 
 /**
@@ -390,5 +393,43 @@ describe("AdminUserView's standing", () => {
 
   test("no reason and no actor: the reason is on the trail, and the trail is audit's", () => {
     for (const key of Object.keys(AdminUserView.shape)) expect(key).not.toMatch(/reason|actor/i);
+  });
+});
+
+describe("the verification ledger's response (#829)", () => {
+  const ROW = {
+    id: 7,
+    verificationId: "v-1",
+    type: "magic_link" as const,
+    userId: "u-1",
+    emailJobId: "job-1",
+    issuedAt: new Date("2026-10-23T11:00:00.000Z"),
+    expiresAt: new Date("2026-10-23T11:05:00.000Z"),
+    usedAt: new Date("2026-10-23T11:01:00.000Z"),
+  };
+
+  test("the projection is exactly what its schema declares, in every state", () => {
+    accepts(AdminVerificationView, verificationView(ROW, NOW));
+    accepts(AdminVerificationView, verificationView({ ...ROW, usedAt: null, userId: null, emailJobId: null }, NOW));
+    expect(verificationView(ROW, NOW).state).toBe("used");
+    expect(verificationView({ ...ROW, usedAt: null }, NOW).state).toBe("expired");
+    expect(verificationView({ ...ROW, usedAt: null }, new Date("2026-10-23T11:02:00.000Z")).state).toBe("pending");
+  });
+
+  test("the envelope accepts what the route returns", () => {
+    accepts(AdminVerificationsResponse, {
+      window: { since: "2026-09-23T12:00:00.000Z", until: NOW.toISOString() },
+      counts: [
+        { type: "magic_link", issued: 1, used: 1, expired: 0, pending: 0 },
+        { type: "otp", issued: 0, used: 0, expired: 0, pending: 0 },
+      ],
+      verifications: [verificationView(ROW, NOW)],
+      nextCursor: null,
+    });
+  });
+
+  test("no token and no address is declared, and the row's own id stays inside the Worker", () => {
+    const keys = Object.keys(AdminVerificationView.shape);
+    for (const key of ["token", "identifier", "value", "email", "code", "id"]) expect(keys).not.toContain(key);
   });
 });

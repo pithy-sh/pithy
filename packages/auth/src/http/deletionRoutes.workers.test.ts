@@ -88,6 +88,7 @@ const AUTH_TABLES = [
   "pithy_auth_rate_limit",
   "pithy_auth_rotated_tokens",
   "pithy_auth_user_lifecycle",
+  "pithy_auth_verification_outcomes",
   "pithy_auth_sessions",
   "pithy_auth_users",
   "pithy_auth_verifications",
@@ -779,6 +780,7 @@ describe("the purge", () => {
       pithy_auth_accounts: 0,
       pithy_auth_devices: 0,
       pithy_auth_rotated_tokens: 0,
+      pithy_auth_verification_outcomes: 0,
       pithy_auth_verifications: 0,
       pithy_auth_user_lifecycle: (await history("u-1")).length,
     });
@@ -791,6 +793,7 @@ describe("the purge", () => {
     ]);
     // Somebody else's rows are where they were.
     expect((await footprintCounts(env.DB, "u-2")).pithy_auth_users).toBe(1);
+    expect((await footprintCounts(env.DB, "u-2")).pithy_auth_verification_outcomes).toBe(1);
   });
 
   test("the deletion-complete mail goes to the address, sent before the address is erased", async () => {
