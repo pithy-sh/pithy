@@ -43,6 +43,12 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
  * kind, purpose and principal, a key id. It lifts those named metadata keys and no other, and never an IP or a
  * user-agent, so replaying who could reach the data does not need the grant that discloses where everyone was.
  *
+ * **Reach rides the listing scope (#828).** `GET {base}/control-plane/reach` answers what one credential touched:
+ * per tenant, route and outcome, counts and two instants, and on request one route's called paths and the subject
+ * ids they name. Those ids are segments of paths the credential itself sent, naming the subjects the listing
+ * already names in `resourceId`, and the tenant is what it shows as `tenant`; the answer never carries an IP, a user-agent, or a metadata key beyond the key id, scope, method and
+ * path. So a breach review does not need the detail scope to draw a breach scope.
+ *
  * The names are constants rather than config: a configurable scope name is a way to misconfigure a
  * default-denied gate into a differently-named one, and they are the join key with what
  * `pithy dashboard connect` offers an adopter to grant.
@@ -96,6 +102,13 @@ export function auditAdminRoutes(basePath: string): AdminRoute[] {
       // Kind `reads` under #725's table, declared in code once that lands.
       summary:
         "Replay who could do what: every membership, connection and key change in a window, oldest first, with its before and after. No event is read in full.",
+    },
+    {
+      method: "GET",
+      path: `${basePath}/control-plane/reach`,
+      scope: AUDIT_TRAIL_READ_SCOPE,
+      summary:
+        "Read what one control-plane credential reached, by tenant, route and outcome, and expand a route into the subjects it touched.",
     },
     {
       method: "GET",

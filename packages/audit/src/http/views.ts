@@ -4,7 +4,14 @@
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { AccessHistoryRow } from "../accessHistory";
 import type { AuditEventRow } from "../data/auditEvent";
-import type { AccessChangeView, AuditEventDetailView, AuditEventView } from "./responses";
+import type { ControlPlaneReachRow, ControlPlaneReachSubjectRow } from "../reach";
+import type {
+  AccessChangeView,
+  AuditEventDetailView,
+  AuditEventView,
+  ControlPlaneReachSubjectView,
+  ControlPlaneReachView,
+} from "./responses";
 
 /**
  * What a management client is shown of an audit event — decided here, once, rather than by whichever
@@ -138,4 +145,44 @@ export function accessChangeView(row: AccessHistoryRow): AccessChangeView {
     });
   }
   return { ...base, subject: "key", connectionId: row.connectionId, keyId: row.keyId, change: row.keyChange };
+}
+
+/**
+ * Project one reach row (#828). Field for field, with the instants as ISO-8601: the statement already read nothing
+ * but the scope, the key, the method and the path out of `metadata`, and the tenant out of the handler's events, so
+ * there is nothing here to drop.
+ */
+export function controlPlaneReachView(row: ControlPlaneReachRow): ControlPlaneReachView {
+  return {
+    tenant: row.tenant,
+    action: row.action,
+    method: row.method,
+    route: row.route,
+    matched: row.matched,
+    outcome: row.outcome,
+    scope: row.scope,
+    count: row.count,
+    subjects: row.subjects,
+    firstAt: row.firstAt.toISOString(),
+    lastAt: row.lastAt.toISOString(),
+  };
+}
+
+/** Project one subject row (#828), field for field, the same way — never a spread a new field would ride out on. */
+export function controlPlaneReachSubjectView(row: ControlPlaneReachSubjectRow): ControlPlaneReachSubjectView {
+  return {
+    tenant: row.tenant,
+    action: row.action,
+    method: row.method,
+    route: row.route,
+    matched: row.matched,
+    path: row.path,
+    outcome: row.outcome,
+    scope: row.scope,
+    subjectId: row.subjectId,
+    params: { ...row.params },
+    count: row.count,
+    firstAt: row.firstAt.toISOString(),
+    lastAt: row.lastAt.toISOString(),
+  };
 }

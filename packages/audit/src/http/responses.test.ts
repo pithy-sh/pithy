@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 import type { z } from "zod";
 import type { AccessHistoryRow } from "../accessHistory";
 import type { AuditEventRow } from "../data/auditEvent";
+import type { ControlPlaneReachRow, ControlPlaneReachSubjectRow } from "../reach";
 import {
   AccessChangeView,
   AccessHistoryResponse,
@@ -12,8 +13,17 @@ import {
   AuditEventResponse,
   AuditEventsResponse,
   AuditEventView,
+  ControlPlaneReachResponse,
+  ControlPlaneReachSubjectView,
+  ControlPlaneReachView,
 } from "./responses";
-import { accessChangeView, auditEventDetailView, auditEventView } from "./views";
+import {
+  accessChangeView,
+  auditEventDetailView,
+  auditEventView,
+  controlPlaneReachSubjectView,
+  controlPlaneReachView,
+} from "./views";
 
 /**
  * The response schemas against what the projections actually produce.
@@ -226,5 +236,72 @@ describe("access-history views (#831)", () => {
       changes: [accessChangeView(CHANGE)],
       nextCursor: null,
     });
+  });
+});
+
+describe("the reach response schemas (#828)", () => {
+  const REACH: ControlPlaneReachRow = {
+    tenant: "acme",
+    action: "controlplane/call_allowed",
+    method: "GET",
+    route: "/admin/users/:userId",
+    matched: true,
+    outcome: "success",
+    scope: "auth:users:read",
+    count: 3,
+    subjects: 2,
+    firstAt: new Date("2026-06-10T12:00:00.000Z"),
+    lastAt: new Date("2026-06-10T13:00:00.000Z"),
+  };
+  const UNMATCHED: ControlPlaneReachRow = { ...REACH, tenant: null, route: "/legacy", matched: false, subjects: null };
+  const SUBJECT: ControlPlaneReachSubjectRow = {
+    tenant: "acme",
+    action: "controlplane/call_allowed",
+    method: "GET",
+    route: "/admin/users/:userId",
+    matched: true,
+    path: "/admin/users/u_1",
+    outcome: "success",
+    scope: "auth:users:read",
+    subjectId: "u_1",
+    params: { userId: "u_1" },
+    count: 2,
+    firstAt: new Date("2026-06-10T12:00:00.000Z"),
+    lastAt: new Date("2026-06-10T13:00:00.000Z"),
+  };
+
+  test("the reach view is exactly what its schema declares", () => {
+    accepts(ControlPlaneReachView, controlPlaneReachView(REACH));
+    accepts(ControlPlaneReachView, controlPlaneReachView(UNMATCHED));
+    expect(controlPlaneReachView(REACH).firstAt).toBe("2026-06-10T12:00:00.000Z");
+  });
+
+  test("the subject view is exactly what its schema declares", () => {
+    accepts(ControlPlaneReachSubjectView, controlPlaneReachSubjectView(SUBJECT));
+    accepts(ControlPlaneReachSubjectView, controlPlaneReachSubjectView({ ...SUBJECT, subjectId: null, params: {} }));
+  });
+
+  test("the envelope accepts what the route returns, with subjects and without", () => {
+    const envelope = {
+      connectionId: "c-1",
+      keyId: null,
+      since: "2026-06-10T00:00:00.000Z",
+      until: "2026-06-11T00:00:00.000Z",
+      reach: [controlPlaneReachView(REACH)],
+    };
+    accepts(ControlPlaneReachResponse, envelope);
+    accepts(ControlPlaneReachResponse, {
+      ...envelope,
+      keyId: "key-1",
+      subjects: [controlPlaneReachSubjectView(SUBJECT)],
+    });
+  });
+
+  test("neither view can carry an IP, a user-agent, or a metadata bag", () => {
+    for (const shape of [ControlPlaneReachView.shape, ControlPlaneReachSubjectView.shape]) {
+      for (const field of ["ip", "userAgent", "metadata", "keyId", "requestId", "actorId"]) {
+        expect(Object.keys(shape)).not.toContain(field);
+      }
+    }
   });
 });

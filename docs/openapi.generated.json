@@ -7832,6 +7832,332 @@
         ]
       }
     },
+    "/audit/control-plane/reach": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "operationId": "getAuditControlPlaneReach",
+        "summary": "Read what one control-plane credential reached, by tenant, route and outcome, over a window.",
+        "parameters": [
+          {
+            "name": "connectionId",
+            "in": "query",
+            "required": true,
+            "description": "The control-plane connection whose reach to read — the `resourceId` its call rows carry. Required.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          {
+            "name": "keyId",
+            "in": "query",
+            "required": false,
+            "description": "Narrow to the calls one registered key signed. The leaked-key question: omit it for the whole connection.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": true,
+            "description": "Inclusive lower bound on when a call landed, ISO-8601. Required.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive upper bound on when a call landed, ISO-8601. Defaults to now.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          },
+          {
+            "name": "route",
+            "in": "query",
+            "required": false,
+            "description": "Narrow to one route: a declared pattern such as `/admin/users/:userId`, or the called path of an unmatched row.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "format": "starts_with",
+              "pattern": "^\\/.*"
+            }
+          },
+          {
+            "name": "subjects",
+            "in": "query",
+            "required": false,
+            "description": "`true` expands `route` into the paths it was called with and the subject ids they name. Needs `route`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Everything one control-plane credential reached over a window, by tenant, route and outcome.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "connectionId": {
+                      "type": "string",
+                      "description": "The connection read, as asked for."
+                    },
+                    "keyId": {
+                      "description": "The key the read was narrowed to, or null for every key.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "since": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "The window's inclusive start, ISO-8601."
+                    },
+                    "until": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "The window's inclusive end, ISO-8601 — now, when the query named none."
+                    },
+                    "reach": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "tenant": {
+                            "description": "The tenant the calls reached, as the handler behind them recorded it in the same request. Null when the handler named none.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "action": {
+                            "type": "string",
+                            "description": "`controlplane/call_allowed` for admitted calls, `controlplane/call_denied` for refusals."
+                          },
+                          "method": {
+                            "type": "string",
+                            "description": "The HTTP method called."
+                          },
+                          "route": {
+                            "type": "string",
+                            "description": "The declared admin route the calls matched, or the path as called when no declared route matched."
+                          },
+                          "matched": {
+                            "type": "boolean",
+                            "description": "Whether `route` is a declared pattern. False marks an unmatched path, which is its own row."
+                          },
+                          "outcome": {
+                            "type": "string",
+                            "description": "The calls' outcome: `success`, or `denied` for a call a handler refused past the gate, which is counted once, as denied."
+                          },
+                          "scope": {
+                            "description": "The scope the calls' credential carried. On a refusal it is the scope the refused credential held, not one it lacked, which the trail does not record.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "count": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "How many calls."
+                          },
+                          "subjects": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "How many distinct subjects the calls touched: distinct values of the route's subject parameter and the parameters before it, so one user read in two currencies is one subject. 0 for a route with no parameters, null for an unmatched path."
+                          },
+                          "firstAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the first call landed, ISO-8601."
+                          },
+                          "lastAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the last call landed, ISO-8601."
+                          }
+                        },
+                        "required": [
+                          "tenant",
+                          "action",
+                          "method",
+                          "route",
+                          "matched",
+                          "outcome",
+                          "scope",
+                          "count",
+                          "subjects",
+                          "firstAt",
+                          "lastAt"
+                        ],
+                        "description": "One tenant, action, method, route and outcome one control-plane credential reached in a window."
+                      },
+                      "description": "One row per tenant, route, action, method and outcome reached, ordered in that order."
+                    },
+                    "subjects": {
+                      "description": "The route's subjects, one row per tenant and path called. Present only when the query asked with `subjects=true`.",
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "tenant": {
+                            "description": "The tenant the calls reached, or null when their handler named none.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "action": {
+                            "type": "string",
+                            "description": "`controlplane/call_allowed` or `controlplane/call_denied`."
+                          },
+                          "method": {
+                            "type": "string",
+                            "description": "The HTTP method called."
+                          },
+                          "route": {
+                            "type": "string",
+                            "description": "The route expanded, as asked for."
+                          },
+                          "matched": {
+                            "type": "boolean",
+                            "description": "Whether the route is a declared pattern."
+                          },
+                          "path": {
+                            "type": "string",
+                            "description": "The path as called."
+                          },
+                          "outcome": {
+                            "type": "string",
+                            "description": "The calls' outcome: `success` or `denied`."
+                          },
+                          "scope": {
+                            "description": "The scope the calls' credential carried, refused or not. Never the scope a refusal lacked.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "subjectId": {
+                            "description": "Whose data the call acted on: the value of the route's last id parameter (`id`, or a name ending in `Id`), or of its last parameter when none names an id. On `/accounts/:userId/:currency/transactions` it is the user, not the currency. `params` has the rest. Null when the route declares none.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "params": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "string"
+                            },
+                            "description": "Every parameter the route declares, with the value it took in `path`, decoded."
+                          },
+                          "count": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "How many calls to this path."
+                          },
+                          "firstAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the first call to this path landed, ISO-8601."
+                          },
+                          "lastAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the last call to this path landed, ISO-8601."
+                          }
+                        },
+                        "required": [
+                          "tenant",
+                          "action",
+                          "method",
+                          "route",
+                          "matched",
+                          "path",
+                          "outcome",
+                          "scope",
+                          "subjectId",
+                          "params",
+                          "count",
+                          "firstAt",
+                          "lastAt"
+                        ],
+                        "description": "One path a route was called with by one control-plane credential, and the subject ids it names."
+                      }
+                    }
+                  },
+                  "required": [
+                    "connectionId",
+                    "keyId",
+                    "since",
+                    "until",
+                    "reach"
+                  ],
+                  "description": "Everything one control-plane credential reached over a window, by tenant, route and outcome."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "audit:events:read"
+        ]
+      }
+    },
     "/storage": {
       "post": {
         "tags": [

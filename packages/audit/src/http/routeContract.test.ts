@@ -58,6 +58,7 @@ function makeApp(basePath = BASE) {
     basePath,
     // Never called: every request in this file is refused before a handler runs.
     database: () => ({}) as unknown as AuditDatabase,
+    adminRoutes: () => auditAdminRoutes(basePath),
   })(app);
   return app;
 }
@@ -92,6 +93,7 @@ describe("audit route contract", () => {
   test("the gate is inspecting the real audit routes, not an empty app", () => {
     expect(mountedPaths(makeApp()).sort()).toEqual([
       "/audit/control-plane/access-history",
+      "/audit/control-plane/reach",
       "/audit/events",
       "/audit/events/:eventId",
     ]);
@@ -159,7 +161,11 @@ describe("audit route contract", () => {
     // requests were well-formed — here that is a live oracle for which projects, Workers and action
     // codes this deployment records. So the ordering is asserted rather than trusted to the order
     // somebody typed the arguments in.
-    const malformed = [`${BASE}/events?limit=nonsense&from=not-a-date`, `${BASE}/events/not-a-uuid`];
+    const malformed = [
+      `${BASE}/events?limit=nonsense&from=not-a-date`,
+      `${BASE}/events/not-a-uuid`,
+      `${BASE}/control-plane/reach?since=never&subjects=maybe`,
+    ];
     for (const path of malformed) {
       const response = await makeApp().request(path);
       expect(response.status, path).toBe(403);
