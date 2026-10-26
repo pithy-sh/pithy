@@ -12,6 +12,7 @@ import { ORGANIZATION_MIGRATION_ORDER } from "../migrations/0001_init";
 import { ORGANIZATION_MIGRATIONS } from "../migrations/set";
 import type { OrganizationLifecycleHookEvent } from "./hooks";
 import {
+  checkSuspension,
   completeOrganizationPurge,
   dueOrganizationPurges,
   type OrganizationLifecycleDeps,
@@ -170,6 +171,44 @@ describe("suspendOrganization", () => {
     );
     expect(result.changed).toBe(true);
     expect((await columns()).suspendedAt).toBe(NOW.getTime());
+  });
+});
+
+describe("checkSuspension", () => {
+  // What a suspension refuses, asked without suspending (#813): the preview calls this, and so does the write.
+  test("answers the terms a suspension would take, and writes nothing", async () => {
+    const until = new Date(NOW.getTime() + DAY);
+    const terms = await checkSuspension(deps(), { organizationId: ACME, until, restoreRoute: RESTORE });
+    expect(terms).toMatchObject({ at: NOW, until, standing: { state: "active" } });
+    expect(await columns()).toMatchObject({ suspendedAt: null, suspendedUntil: null });
+    expect(await history()).toEqual([]);
+    expect(fired).toEqual([]);
+  });
+
+  test("an end in the past is refused, with the error the suspension gives", async () => {
+    const until = new Date(NOW.getTime() - DAY);
+    const asked = checkSuspension(deps(), { organizationId: ACME, until, restoreRoute: RESTORE });
+    await expect(asked).rejects.toMatchObject({ payload: { code: "validation/invalid_input" } });
+    await expect(
+      suspendOrganization(deps(), { organizationId: ACME, actor: OPERATOR, reason: "r", until, restoreRoute: RESTORE }),
+    ).rejects.toMatchObject({ payload: { code: "validation/invalid_input" } });
+  });
+
+  test("a deleted organization is the conflict naming the restore route", async () => {
+    await removeOrganization(deps(), { organizationId: ACME, actor: OPERATOR, reason: "gone", purgeAfterDays: 30 });
+    await expect(
+      checkSuspension(deps(), { organizationId: ACME, until: null, restoreRoute: RESTORE }),
+    ).rejects.toMatchObject({ payload: { code: "core/conflict", message: expect.stringContaining(RESTORE) } });
+  });
+
+  test("an unknown organization is the organization 404", async () => {
+    await expect(
+      checkSuspension(deps(), {
+        organizationId: "99999999-9999-4999-8999-999999999999",
+        until: null,
+        restoreRoute: RESTORE,
+      }),
+    ).rejects.toMatchObject({ payload: { code: "organization/not_found" } });
   });
 });
 

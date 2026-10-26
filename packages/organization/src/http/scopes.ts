@@ -44,6 +44,9 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
  * - `organization:accounts:suspend` — suspend an account and reinstate it. Nobody can act in it meanwhile.
  * - `organization:accounts:delete` — delete an account, softly or hard, and restore one inside its window.
  *
+ * Each also gates its write's preview (#813), which names who the member cascade would reach. Who belongs to no
+ * other organization is a disclosure, so only a caller who could act on it gets it.
+ *
  * None implies another, and none implies a read. A client holding only the read scopes is refused every
  * write.
  */
@@ -131,6 +134,13 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
     },
     {
       method: "POST",
+      path: `${one}/suspend/preview`,
+      scope: ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
+      summary:
+        "Preview who suspending a tenant would reach, member by member, before it runs. The suspension's own body and refusals. Writes nothing.",
+    },
+    {
+      method: "POST",
       path: `${one}/reinstate`,
       scope: ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
       summary:
@@ -142,6 +152,13 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
       scope: ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
       summary:
         "Delete a tenant: soft by default, restorable for the retention window; hard purges now. Its sole members' accounts too, when asked. Takes a reason.",
+    },
+    {
+      method: "POST",
+      path: `${one}/delete/preview`,
+      scope: ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
+      summary:
+        "Preview who deleting a tenant would reach, member by member, before it runs. The deletion's own body and refusals. Writes nothing.",
     },
     {
       method: "POST",

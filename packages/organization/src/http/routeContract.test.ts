@@ -264,12 +264,14 @@ describe("the declared surface and the mounted one are the same surface", () => 
       `PATCH ${BASE}/current/members/:membershipId`,
       `POST ${BASE}`,
       `POST ${BASE}/acting`,
+      `POST ${BASE}/admin/organizations/:organizationId/delete/preview`,
       `POST ${BASE}/admin/organizations/:organizationId/invitations/:invitationId/resend`,
       `POST ${BASE}/admin/organizations/:organizationId/members`,
       `POST ${BASE}/admin/organizations/:organizationId/ownership`,
       `POST ${BASE}/admin/organizations/:organizationId/reinstate`,
       `POST ${BASE}/admin/organizations/:organizationId/restore`,
       `POST ${BASE}/admin/organizations/:organizationId/suspend`,
+      `POST ${BASE}/admin/organizations/:organizationId/suspend/preview`,
       `POST ${BASE}/current/invitations`,
       `POST ${BASE}/current/invitations/:invitationId/resend`,
       `POST ${BASE}/current/members/leave`,
@@ -315,6 +317,7 @@ describe("the request contract: every path param is validated", () => {
     ].sort();
     expect(paramPaths).toEqual([
       `${BASE}/admin/organizations/:organizationId`,
+      `${BASE}/admin/organizations/:organizationId/delete/preview`,
       `${BASE}/admin/organizations/:organizationId/invitations`,
       `${BASE}/admin/organizations/:organizationId/invitations/:invitationId`,
       `${BASE}/admin/organizations/:organizationId/invitations/:invitationId/resend`,
@@ -324,6 +327,7 @@ describe("the request contract: every path param is validated", () => {
       `${BASE}/admin/organizations/:organizationId/reinstate`,
       `${BASE}/admin/organizations/:organizationId/restore`,
       `${BASE}/admin/organizations/:organizationId/suspend`,
+      `${BASE}/admin/organizations/:organizationId/suspend/preview`,
       `${BASE}/current/invitations/:invitationId`,
       `${BASE}/current/invitations/:invitationId/resend`,
       `${BASE}/current/members/:membershipId`,
@@ -403,7 +407,10 @@ describe("the gates, as the router behaves rather than as anything declares", ()
   test("and before its body validator, so a malformed write is not reported to an unverified caller", async () => {
     // A body with no reason, a junk role and an unknown field is three 400s to a verified caller and one
     // 403 to everybody else. The order is what keeps the shape of an operator's write from being probed.
-    for (const route of ORGANIZATION_ROUTES.filter((entry) => entry.strategy === "control-plane" && entry.mutating)) {
+    // Every control-plane route with a body, the previews' included (#813).
+    for (const route of ORGANIZATION_ROUTES.filter(
+      (entry) => entry.strategy === "control-plane" && entry.method !== "GET",
+    )) {
       const response = await callWithNothing(
         makeApp(),
         { method: route.method, path: fullPath(route.path) },
@@ -498,6 +505,12 @@ describe("the surface a client is told about", () => {
     expect([...ORGANIZATION_CONTROL_PLANE_SCOPES].sort()).toEqual([...reads, ...writes].sort());
     for (const route of ORGANIZATION_ROUTES.filter((entry) => entry.strategy === "control-plane")) {
       if (route.mutating) expect(writes, `${route.method} ${route.path}`).toContain(route.scope);
+      // A preview writes nothing and is gated by its write's own scope (#813): it is a disclosure only a caller
+      // who could act on it gets. It is a POST because it carries the write's body.
+      else if (route.path.endsWith("/preview")) {
+        expect(route.method, route.path).toBe("POST");
+        expect(writes, route.path).toContain(route.scope);
+      }
       // Reads are the two listings and the one read under a write scope: the invitations an operator is
       // about to fix.
       else expect(route.method, route.path).toBe("GET");

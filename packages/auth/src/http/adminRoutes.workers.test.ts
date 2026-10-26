@@ -490,6 +490,53 @@ describe("GET /auth/admin/users/:userId", () => {
   });
 });
 
+describe("where each user stands, on both reads (#813)", () => {
+  // Judged against the Worker's own clock, so every column is set relative to the real now.
+  const HOUR = 60 * 60 * 1000;
+  async function lifecycle(id: string, columns: Record<string, number | null>): Promise<void> {
+    const keys = Object.keys(columns);
+    await env.DB.prepare(`update pithy_auth_users set ${keys.map((key) => `${key} = ?`).join(", ")} where id = ?`)
+      .bind(...keys.map((key) => columns[key]), id)
+      .run();
+  }
+
+  test("active, suspended, suspended until a date, past its end, and deleted — on the listing and the single read", async () => {
+    const now = Date.now();
+    for (const [index, id] of ["u-active", "u-open", "u-timed", "u-lapsed", "u-deleted"].entries()) {
+      await seedUser(id, `${id}@example.test`, index + 1);
+    }
+    await lifecycle("u-open", { suspended_at: now - HOUR });
+    await lifecycle("u-timed", { suspended_at: now - HOUR, suspended_until: now + HOUR });
+    await lifecycle("u-lapsed", { suspended_at: now - 2 * HOUR, suspended_until: now - HOUR });
+    await lifecycle("u-deleted", { suspended_at: now - HOUR, deleted_at: now - HOUR, purge_after: now + HOUR });
+    const expected = {
+      "u-active": { state: "active", suspendedUntil: null, purgeAfter: null },
+      "u-open": { state: "suspended", suspendedUntil: null, purgeAfter: null },
+      "u-timed": { state: "suspended", suspendedUntil: new Date(now + HOUR).toISOString(), purgeAfter: null },
+      "u-lapsed": { state: "active", suspendedUntil: null, purgeAfter: null },
+      "u-deleted": { state: "deleted", suspendedUntil: null, purgeAfter: new Date(now + HOUR).toISOString() },
+    } as const;
+
+    const listing = AdminUsersResponse.parse(
+      await (await call("GET", "/auth/admin/users", AUTH_USERS_READ_SCOPE)).json(),
+    );
+    const listed = Object.fromEntries(
+      listing.users.map((user) => [
+        user.id,
+        { state: user.state, suspendedUntil: user.suspendedUntil, purgeAfter: user.purgeAfter },
+      ]),
+    );
+    expect(listed).toEqual(expected);
+
+    for (const [id, standing] of Object.entries(expected)) {
+      const one = AdminUserResponse.parse(
+        await (await call("GET", `/auth/admin/users/${id}`, AUTH_USERS_READ_SCOPE)).json(),
+      );
+      expect(one.user, id).toMatchObject(standing);
+    }
+  });
+});
+
 describe("GET /auth/admin/devices", () => {
   test("walks the registry and never carries a push token", async () => {
     await seedDevice("d-1", "u-1");

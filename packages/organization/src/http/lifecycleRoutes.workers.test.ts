@@ -40,6 +40,7 @@ import type { OwnershipRoles } from "../ownership/ownership";
 import { ORGANIZATION_PURGE_BINDING } from "../purge/specs";
 import { defineRoles } from "../roles/roles";
 import {
+  AdminMemberCascadePreviewResponse,
   AdminOrganizationDeleteResponse,
   AdminOrganizationReinstateResponse,
   AdminOrganizationRestoreResponse,
@@ -948,5 +949,215 @@ describe("the member cascade's wiring from the composed auth", () => {
     expect(events.filter((event) => !event.action.startsWith("controlplane/"))).toEqual([]);
     expect(mailed).toEqual([]);
     expect(hooked).toEqual([]);
+  });
+});
+
+describe("previewing a member cascade (#813)", () => {
+  const SUSPEND_PREVIEW = `${ADMIN}/${ACME}/suspend/preview`;
+  const DELETE_PREVIEW = `${ADMIN}/${ACME}/delete/preview`;
+
+  /** Each preview, beside the write it previews and the scope both demand. */
+  const PAIRS = [
+    {
+      preview: { method: "POST", path: SUSPEND_PREVIEW },
+      write: { method: "POST", path: `${ADMIN}/${ACME}/suspend` },
+      scope: ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
+    },
+    {
+      preview: { method: "POST", path: DELETE_PREVIEW },
+      write: { method: "DELETE", path: `${ADMIN}/${ACME}` },
+      scope: ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
+    },
+  ] as const;
+
+  /** Everything a write would leave behind: auth's columns and history, the tenant's, the selections, the memberships. */
+  async function state(): Promise<unknown> {
+    const tables = [
+      "select id, suspended_at, suspended_until, deleted_at, purge_after from pithy_auth_users order by id",
+      "select * from pithy_auth_user_lifecycle order by id",
+      "select * from pithy_organization_organizations order by id",
+      "select * from pithy_organization_lifecycle order by id",
+      "select * from pithy_organization_acting order by session_id",
+      "select id, organization_id, user_id, role from pithy_organization_memberships order by id",
+    ];
+    return Promise.all(tables.map(async (query) => (await env.DB.prepare(query).all()).results));
+  }
+
+  /** Status, code and message of a refusal, which is what a client acts on. */
+  async function refusal(response: Response): Promise<{ status: number; code: string; message: string }> {
+    const error = (await response.json()) as { error: { code: string; message: string } };
+    return { status: response.status, code: error.error.code, message: error.error.message };
+  }
+
+  test("each preview demands the write's own scope; every other is 403", async () => {
+    for (const pair of PAIRS) {
+      const others = buildApp({
+        scopes: [
+          ORGANIZATION_ACCOUNTS_READ_SCOPE,
+          ORGANIZATION_ACCOUNTS_WRITE_SCOPE,
+          ORGANIZATION_MEMBERS_WRITE_SCOPE,
+          ...LIFECYCLE_SCOPES.filter((scope) => scope !== pair.scope),
+        ],
+      });
+      const refused = await call(pair.preview.method, pair.preview.path, {
+        app: others,
+        body: { reason: REASON, members: "sole" },
+      });
+      expect(refused.status, pair.preview.path).toBe(403);
+      const allowed = await call(pair.preview.method, pair.preview.path, {
+        app: buildApp({ scopes: [pair.scope] }),
+        body: { reason: REASON, members: "sole" },
+      });
+      expect(allowed.status, pair.preview.path).toBe(200);
+    }
+  });
+
+  test("each refuses whatever its write refuses, with the same error", async () => {
+    const past = new Date(NOW.getTime() - HOUR).toISOString();
+    const cases: { name: string; body: unknown; pairs: readonly (typeof PAIRS)[number][]; app?: Hono<PithyHonoEnv> }[] =
+      [
+        { name: "no reason", body: {}, pairs: PAIRS },
+        { name: "an empty reason", body: { reason: "" }, pairs: PAIRS },
+        { name: "a reason carrying an address", body: { reason: "asked by ada@example.com" }, pairs: PAIRS },
+        { name: "an unknown field", body: { reason: REASON, nonsense: true }, pairs: PAIRS },
+        { name: "a cascade that is not one", body: { reason: REASON, members: "all" }, pairs: PAIRS },
+        { name: "an end that is not a date", body: { reason: REASON, until: "tomorrow" }, pairs: [PAIRS[0]] },
+        { name: "an end in the past", body: { reason: REASON, until: past }, pairs: [PAIRS[0]] },
+        { name: "an end on a deletion", body: { reason: REASON, until: past }, pairs: [PAIRS[1]] },
+        { name: "a deletion mode that is not one", body: { reason: REASON, mode: "purge" }, pairs: [PAIRS[1]] },
+        {
+          name: "a cascade on a Worker with no auth",
+          body: { reason: REASON, members: "sole" },
+          pairs: PAIRS,
+          app: buildApp({ userLifecycle: null }),
+        },
+      ];
+    for (const { name, body, pairs, app: using } of cases) {
+      for (const pair of pairs) {
+        const before = await state();
+        const write = await refusal(await call(pair.write.method, pair.write.path, { body, app: using }));
+        const preview = await refusal(await call(pair.preview.method, pair.preview.path, { body, app: using }));
+        expect(write.status, `${name}: ${pair.write.path}`).toBeGreaterThanOrEqual(400);
+        expect(preview, `${name}: ${pair.preview.path}`).toEqual(write);
+        expect(await state(), name).toEqual(before);
+      }
+    }
+  });
+
+  test("an unknown organization is the write's 404", async () => {
+    for (const pair of PAIRS) {
+      const write = await refusal(
+        await call(pair.write.method, pair.write.path.replace(ACME, ABSENT), { body: { reason: REASON } }),
+      );
+      const preview = await refusal(
+        await call(pair.preview.method, pair.preview.path.replace(ACME, ABSENT), { body: { reason: REASON } }),
+      );
+      expect(write).toMatchObject({ status: 404, code: "organization/not_found" });
+      expect(preview).toEqual(write);
+    }
+  });
+
+  test("a deleted organization's suspension preview is the write's conflict, naming the restore route", async () => {
+    await call("DELETE", `${ADMIN}/${ACME}`, { body: { reason: REASON } });
+    const write = await refusal(await call("POST", `${ADMIN}/${ACME}/suspend`, { body: { reason: REASON } }));
+    const preview = await refusal(await call("POST", SUSPEND_PREVIEW, { body: { reason: REASON, members: "sole" } }));
+    expect(write).toMatchObject({ status: 409, message: expect.stringContaining(`POST ${ADMIN}/${ACME}/restore`) });
+    expect(preview).toEqual(write);
+  });
+
+  test("with members absent or none, a preview answers an empty cascade", async () => {
+    for (const pair of PAIRS) {
+      for (const body of [{ reason: REASON }, { reason: REASON, members: "none" }]) {
+        const response = await call(pair.preview.method, pair.preview.path, { body });
+        expect(response.status).toBe(200);
+        expect(await bound(response, AdminMemberCascadePreviewResponse)).toEqual({
+          organizationId: ACME,
+          members: { mode: "none", reached: [], skipped: [] },
+        });
+      }
+    }
+  });
+
+  test("a suspension's preview is the cascade the suspension then produces", async () => {
+    // Cai is already suspended on his own, so the preview must say he is skipped, and why.
+    await env.DB.prepare("update pithy_auth_users set suspended_at = ? where id = ?")
+      .bind(NOW.getTime() - DAY, CAI)
+      .run();
+    const body = { reason: REASON, members: "sole" };
+    const preview = await bound(await call("POST", SUSPEND_PREVIEW, { body }), AdminMemberCascadePreviewResponse);
+    expect(preview.members).toEqual({
+      mode: "sole",
+      reached: [{ userId: BOB, outcome: "suspended" }],
+      skipped: [
+        { userId: ADA, reason: "member_elsewhere" },
+        { userId: CAI, reason: "already_suspended" },
+      ],
+    });
+    const written = await bound(
+      await call("POST", `${ADMIN}/${ACME}/suspend`, { body }),
+      AdminOrganizationSuspendResponse,
+    );
+    expect(written.members).toEqual(preview.members);
+  });
+
+  test("a deletion's preview is the cascade the deletion then produces, soft and hard", async () => {
+    await env.DB.prepare("update pithy_auth_users set deleted_at = ?, purge_after = ? where id = ?")
+      .bind(NOW.getTime() - DAY, NOW.getTime() + DAY, CAI)
+      .run();
+    for (const mode of ["soft", "hard"] as const) {
+      const body = { reason: REASON, members: "sole", mode };
+      const preview = await bound(await call("POST", DELETE_PREVIEW, { body }), AdminMemberCascadePreviewResponse);
+      expect(
+        preview.members.reached.map((member) => member.userId),
+        mode,
+      ).toEqual(mode === "soft" ? [BOB] : [BOB, CAI]);
+      if (mode === "hard") {
+        const written = await bound(
+          await call("DELETE", `${ADMIN}/${ACME}`, { body }),
+          AdminOrganizationDeleteResponse,
+        );
+        expect(written.members).toEqual(preview.members);
+      }
+    }
+  });
+
+  test("a soft deletion's preview is the soft deletion's cascade", async () => {
+    const body = { reason: REASON, members: "sole" };
+    const preview = await bound(await call("POST", DELETE_PREVIEW, { body }), AdminMemberCascadePreviewResponse);
+    const written = await bound(await call("DELETE", `${ADMIN}/${ACME}`, { body }), AdminOrganizationDeleteResponse);
+    expect(written.members).toEqual(preview.members);
+    expect(preview.members.reached).toEqual([
+      { userId: BOB, outcome: "deleted" },
+      { userId: CAI, outcome: "deleted" },
+    ]);
+  });
+
+  test("a preview writes nothing: no column, no history row, no mail, no hook, no audit event", async () => {
+    const before = await state();
+    expect((await choose(CAI, ACME)).status).toBe(200);
+    const selected = await state();
+    events = [];
+    for (const body of [
+      { reason: REASON, members: "sole" },
+      { reason: REASON, members: "sole", until: new Date(NOW.getTime() + DAY).toISOString() },
+    ]) {
+      expect((await call("POST", SUSPEND_PREVIEW, { body })).status).toBe(200);
+    }
+    const created: unknown[] = [];
+    const binding = { create: async (instance?: unknown) => void created.push(instance), get: async () => ({}) };
+    for (const mode of ["soft", "hard"] as const) {
+      const response = await call("POST", DELETE_PREVIEW, {
+        body: { reason: REASON, members: "sole", mode },
+        env: { [ORGANIZATION_PURGE_BINDING]: binding },
+      });
+      expect(response.status).toBe(200);
+    }
+    expect(await state()).toEqual(selected);
+    expect(created).toEqual([]);
+    expect(before).not.toEqual(selected);
+    expect(mailed).toEqual([]);
+    expect(hooked).toEqual([]);
+    // The gate records the call it let through, as it does for every control-plane call; nothing past it wrote.
+    expect(events.filter((event) => !event.action.startsWith("controlplane/"))).toEqual([]);
   });
 });

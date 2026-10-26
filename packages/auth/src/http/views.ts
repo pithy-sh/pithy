@@ -5,6 +5,7 @@ import type { PurgeExportEntry } from "@pithy-sh/core/src/capability/purge";
 import type { Account, Session, User } from "../data/betterAuth";
 import type { Device } from "../data/device";
 import type { UserLifecycleEvent } from "../data/userLifecycle";
+import { type AccountStanding, accountStanding } from "../lifecycle/state";
 import type {
   DeleteTransition,
   DeletionMode,
@@ -50,8 +51,12 @@ import type {
  * `locale` is projected for the same reason: a support pane answering "why is this person getting
  * English emails" needs to see whether they ever chose, and null — never chosen — is the answer half
  * the time. It is a preference, not a credential.
+ *
+ * Where the account stands is projected too (#813), judged at `now`: the listing does not filter a suspended or
+ * deleted account out, so without it a pane sees the person and cannot tell whether to offer suspend or reinstate.
+ * Not the reason and not who acted — those are the trail's.
  */
-export function userView(user: User): AdminUserView {
+export function userView(user: User, now: Date): AdminUserView {
   return {
     id: user.id,
     email: user.email,
@@ -61,6 +66,22 @@ export function userView(user: User): AdminUserView {
     locale: user.locale,
     createdAt: user.createdAt.toISOString(),
     updatedAt: user.updatedAt.toISOString(),
+    ...standingView(accountStanding(user, now)),
+  };
+}
+
+/**
+ * Where an account stands, as the wire carries it (#813) — the organization view's shape: the state, the end of a
+ * suspension in force, and the last day a deletion can be undone. Read through `accountStanding`, the function
+ * every enforcement point reads, so a suspension past its end reads `active` here exactly as it does at the door.
+ */
+export function standingView(
+  standing: AccountStanding,
+): Required<Pick<AdminUserView, "state" | "suspendedUntil" | "purgeAfter">> {
+  return {
+    state: standing.state,
+    suspendedUntil: standing.state === "suspended" ? iso(standing.until) : null,
+    purgeAfter: standing.state === "deleted" ? iso(standing.purgeAfter) : null,
   };
 }
 
@@ -191,6 +212,8 @@ function iso(date: Date | null | undefined): string | null {
  * theirs to disclose, not the person's, so the history carries the kind of actor and not its id.
  */
 export function authUserExportView(input: {
+  /** The instant the export was taken, which its `state` is judged at. */
+  now: Date;
   user: User;
   sessions: readonly Session[];
   accounts: readonly Pick<Account, "providerId" | "createdAt">[];
@@ -201,7 +224,7 @@ export function authUserExportView(input: {
   const { user } = input;
   return {
     user: {
-      ...userView(user),
+      ...userView(user, input.now),
       suspendedAt: iso(user.suspendedAt),
       suspendedUntil: iso(user.suspendedUntil),
       deletedAt: iso(user.deletedAt),

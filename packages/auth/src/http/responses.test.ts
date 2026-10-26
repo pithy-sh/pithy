@@ -57,6 +57,9 @@ const USER: User = {
   updatedAt: new Date("2026-06-01T00:00:00.000Z"),
 };
 
+/** The instant every standing below is judged at. */
+const NOW = new Date("2026-10-23T12:00:00.000Z");
+
 const SESSION: Session = {
   id: "s-1",
   userId: "u-1",
@@ -152,6 +155,7 @@ describe("the deletion lifecycle's responses (#622)", () => {
 
   test("auth's export is exactly what its schema declares, and carries no credential", () => {
     const exported = authUserExportView({
+      now: NOW,
       user: { ...USER, deletedAt: at, purgeAfter: later, suspendedAt: null, suspendedUntil: null },
       sessions: [SESSION],
       accounts: [{ providerId: "google", createdAt: at }],
@@ -172,7 +176,11 @@ describe("the deletion lifecycle's responses (#622)", () => {
       ],
     });
     accepts(AuthUserExport, exported);
-    expect(exported.user).toMatchObject({ deletedAt: at.toISOString(), purgeAfter: later.toISOString() });
+    expect(exported.user).toMatchObject({
+      state: "deleted",
+      deletedAt: at.toISOString(),
+      purgeAfter: later.toISOString(),
+    });
     expect(exported.history).toEqual([
       {
         action: "deleted",
@@ -250,8 +258,8 @@ describe("auth admin response schemas", () => {
   });
 
   test("each projection is exactly what its schema declares", () => {
-    accepts(AdminUserView, userView(USER));
-    accepts(AdminUserView, userView({ ...USER, image: null }));
+    accepts(AdminUserView, userView(USER, NOW));
+    accepts(AdminUserView, userView({ ...USER, image: null }, NOW));
     accepts(AdminSessionView, sessionView(SESSION));
     accepts(AdminSessionView, sessionView({ ...SESSION, deviceId: null, ipAddress: null, userAgent: null }));
     accepts(AdminDeviceView, deviceView(DEVICE));
@@ -271,10 +279,10 @@ describe("auth admin response schemas", () => {
   });
 
   test("the envelopes accept what the routes return", () => {
-    accepts(AdminUsersResponse, { users: [userView(USER)], nextCursor: null });
+    accepts(AdminUsersResponse, { users: [userView(USER, NOW)], nextCursor: null });
     accepts(AdminUsersResponse, { users: [], nextCursor: "eyJpZCI6MX0" });
     accepts(AdminUserResponse, {
-      user: userView(USER),
+      user: userView(USER, NOW),
       providers: { state: "read", items: ["apple", "google"] },
       sessions: { state: "read", items: [sessionView(SESSION)], truncated: false },
       devices: { state: "read", items: [deviceView(DEVICE)], truncated: true },
@@ -282,7 +290,7 @@ describe("auth admin response schemas", () => {
     // And the state each list takes when its read failed (#380): no rows, no truncation flag, no
     // reason. A client that reached for `items` here would not compile.
     accepts(AdminUserResponse, {
-      user: userView(USER),
+      user: userView(USER, NOW),
       providers: { state: "unavailable" },
       sessions: { state: "unavailable" },
       devices: { state: "unavailable" },
@@ -312,7 +320,7 @@ describe("auth admin response schemas", () => {
  */
 describe("a response from a Worker that predates a field", () => {
   test("parses, and the field reads as absent rather than failing the envelope", () => {
-    const { locale: _dropped, ...before } = userView(USER);
+    const { locale: _dropped, ...before } = userView(USER, NOW);
     const parsed = AdminUserView.safeParse(before);
     expect(parsed.success, parsed.error?.message).toBe(true);
     expect(parsed.success && "locale" in parsed.data).toBe(false);
@@ -321,12 +329,66 @@ describe("a response from a Worker that predates a field", () => {
   test("and absent is distinguishable from null, which is a different fact", () => {
     // `null` is "this reader has never chosen." Absent is "this Worker cannot say." Collapsing them
     // would report every reader on an older Worker as having declined to pick a language.
-    const withNull = AdminUserView.safeParse({ ...userView(USER), locale: null });
+    const withNull = AdminUserView.safeParse({ ...userView(USER, NOW), locale: null });
     expect(withNull.success && withNull.data.locale).toBeNull();
   });
 
   test("a current Worker still sends it", () => {
     // `.optional()` relaxes the reader, never the producer.
-    expect(userView(USER)).toHaveProperty("locale");
+    expect(userView(USER, NOW)).toHaveProperty("locale");
+  });
+});
+
+/**
+ * Where the user stands, on both reads that return them (#813) — the organization view's shape, from
+ * `accountStanding`, so a pane can offer suspend or reinstate without sending a write to find out.
+ */
+describe("AdminUserView's standing", () => {
+  const HOUR = 60 * 60 * 1000;
+  const later = new Date(NOW.getTime() + HOUR);
+  const earlier = new Date(NOW.getTime() - HOUR);
+
+  test("an active account", () => {
+    const view = userView(USER, NOW);
+    accepts(AdminUserView, view);
+    expect(view).toMatchObject({ state: "active", suspendedUntil: null, purgeAfter: null });
+  });
+
+  test("an open-ended suspension has no end", () => {
+    const view = userView({ ...USER, suspendedAt: earlier, suspendedUntil: null }, NOW);
+    accepts(AdminUserView, view);
+    expect(view).toMatchObject({ state: "suspended", suspendedUntil: null, purgeAfter: null });
+  });
+
+  test("a timed suspension names its end", () => {
+    const view = userView({ ...USER, suspendedAt: earlier, suspendedUntil: later }, NOW);
+    accepts(AdminUserView, view);
+    expect(view).toMatchObject({ state: "suspended", suspendedUntil: later.toISOString(), purgeAfter: null });
+  });
+
+  test("a suspension past its end reads active, as enforcement reads it", () => {
+    const view = userView({ ...USER, suspendedAt: new Date(earlier.getTime() - HOUR), suspendedUntil: earlier }, NOW);
+    expect(view).toMatchObject({ state: "active", suspendedUntil: null, purgeAfter: null });
+  });
+
+  test("a deleted account names the last day it can be restored, and outranks a suspension", () => {
+    const view = userView(
+      { ...USER, suspendedAt: earlier, suspendedUntil: later, deletedAt: earlier, purgeAfter: later },
+      NOW,
+    );
+    accepts(AdminUserView, view);
+    expect(view).toMatchObject({ state: "deleted", suspendedUntil: null, purgeAfter: later.toISOString() });
+  });
+
+  test("a Worker from before the fields sends none, and the user still parses", () => {
+    const { state: _s, suspendedUntil: _u, purgeAfter: _p, ...before } = userView(USER, NOW);
+    const parsed = AdminUserView.safeParse(before);
+    expect(parsed.success, parsed.error?.message).toBe(true);
+    const schema = AdminUserView.toJSONSchema() as { required?: string[] };
+    for (const key of ["state", "suspendedUntil", "purgeAfter"]) expect(schema.required).not.toContain(key);
+  });
+
+  test("no reason and no actor: the reason is on the trail, and the trail is audit's", () => {
+    for (const key of Object.keys(AdminUserView.shape)) expect(key).not.toMatch(/reason|actor/i);
   });
 });

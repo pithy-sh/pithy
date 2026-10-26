@@ -63,6 +63,8 @@ import {
   deleteSoleMembers,
   membersStillShut,
   NO_CASCADE,
+  planDeletion,
+  planSuspension,
   suspendSoleMembers,
   type UserLifecycleWiring,
 } from "../lifecycle/cascade";
@@ -70,6 +72,7 @@ import type { OrganizationLifecycleHooks } from "../lifecycle/hooks";
 import { organizationStanding } from "../lifecycle/state";
 import {
   absent,
+  checkSuspension,
   type OrganizationLifecycleDeps,
   reinstateOrganization,
   removeOrganization,
@@ -116,6 +119,7 @@ import {
   AcceptInvitationResponse,
   ActingResponse,
   AdminInvitationsResponse,
+  AdminMemberCascadePreviewResponse,
   AdminMemberResponse,
   AdminMembersResponse,
   AdminOrganizationDeleteResponse,
@@ -183,6 +187,7 @@ import {
   invitationOfferView,
   invitationView,
   MARKS_SEGMENT,
+  memberCascadeView,
   membershipView,
   memberView,
   nominationView,
@@ -226,8 +231,10 @@ import {
  * | `DELETE {base}/admin/…/invitations/:id`        | control-plane  | `members:write`       | param + json `AdminReason`     |
  * | `POST   {base}/admin/…/ownership`              | control-plane  | `ownership:transfer`  | param + json `AdminForceOwnership` |
  * | `POST   {base}/admin/organizations/:id/suspend`  | control-plane  | `accounts:suspend`  | param + json `AdminSuspendOrganization` |
+ * | `POST   {base}/admin/…/suspend/preview`          | control-plane  | `accounts:suspend`  | param + json `AdminSuspendOrganization` ² |
  * | `POST   {base}/admin/organizations/:id/reinstate`| control-plane  | `accounts:suspend`  | param + json `AdminReason`     |
  * | `DELETE {base}/admin/organizations/:id`          | control-plane  | `accounts:delete`   | param + json `AdminDeleteOrganization` |
+ * | `POST   {base}/admin/…/delete/preview`           | control-plane  | `accounts:delete`   | param + json `AdminDeleteOrganization` ² |
  * | `POST   {base}/admin/organizations/:id/restore`  | control-plane  | `accounts:delete`   | param + json `AdminReason`     |
  *
  * ¹ Never an add at the owning role, a role change to or from it, or the removal of an owner, whatever
@@ -235,6 +242,10 @@ import {
  * one scope, and these are minted for `members:write`, so the connection's `ownership:transfer` grant is
  * not this call's authority. Otherwise a roster token could add a second owner and remove the first — a
  * transfer by another door, with no ownership-scoped call, no forced-ownership event and no notice.
+ *
+ * ² A preview (#813): the write's own body, scope and refusals, answering who its member cascade would reach
+ * with nothing applied. Writes nothing — no column, history row, mail, hook or audit act — so it is declared
+ * not mutating, though it is a `POST`: it carries the write's body, and a body is not a query string.
  *
  * ## The operator's writes take no CSRF gate, and every one takes a reason
  *
@@ -463,6 +474,15 @@ export const ORGANIZATION_ROUTES: readonly OrganizationRouteDeclaration[] = [
     scope: ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
     mutating: true,
   },
+  // Who the suspension's cascade would reach, before it runs (#813). Behind the write's scope: who belongs to no
+  // other organization is a disclosure only a caller who could act on it gets. Writes nothing.
+  {
+    method: "POST",
+    path: "/admin/organizations/:organizationId/suspend/preview",
+    strategy: "control-plane",
+    scope: ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
+    mutating: false,
+  },
   {
     method: "POST",
     path: "/admin/organizations/:organizationId/reinstate",
@@ -476,6 +496,14 @@ export const ORGANIZATION_ROUTES: readonly OrganizationRouteDeclaration[] = [
     strategy: "control-plane",
     scope: ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
     mutating: true,
+  },
+  // The deletion's preview, on the same terms as the suspension's (#813).
+  {
+    method: "POST",
+    path: "/admin/organizations/:organizationId/delete/preview",
+    strategy: "control-plane",
+    scope: ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
+    mutating: false,
   },
   {
     method: "POST",
@@ -893,10 +921,10 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
   const restoreRoute = (organizationId: string) => `POST ${base}/admin/organizations/${organizationId}/restore`;
 
   /**
-   * What a member cascade runs through: `@pithy-sh/auth`'s own transitions, configured as the composed auth is,
-   * with the operator as the actor and the tenant and connection on every audit event they write.
+   * The composed auth's lifecycle wiring, or the refusal for a Worker that has none. A cascade's write and its
+   * preview both ask, so a preview is refused exactly where the write would be (#813).
    */
-  function cascadeDeps(c: Ctx, organizationId: string) {
+  function userLifecycle(): UserLifecycleWiring {
     const wiring = options.userLifecycle?.();
     if (!wiring) {
       throw new InternalError({
@@ -905,6 +933,15 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
         detail: "a member cascade ran with no user lifecycle wired from the composed auth capability",
       });
     }
+    return wiring;
+  }
+
+  /**
+   * What a member cascade runs through: `@pithy-sh/auth`'s own transitions, configured as the composed auth is,
+   * with the operator as the actor and the tenant and connection on every audit event they write.
+   */
+  function cascadeDeps(c: Ctx, organizationId: string) {
+    const wiring = userLifecycle();
     const caller = operator(c);
     const enqueue = mailer(c);
     const users: LifecycleDeps = {
@@ -2196,6 +2233,45 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
     );
 
     /**
+     * Who suspending a tenant would reach, before it is suspended (#813). The write's body, validated the same
+     * way and refused wherever the write would be refused, with the same error; the cascade's own selection,
+     * with nothing applied. **It writes nothing** — no column, history row, mail, hook or audit act: a preview is
+     * not an act, and the write that follows is the one on the trail. A snapshot, not a promise.
+     */
+    app.post(
+      `${base}/admin/organizations/:organizationId/suspend/preview`,
+      describeRoute({
+        summary: "Preview who suspending a tenant would reach, member by member, before it runs. Writes nothing.",
+        description:
+          "Takes the suspension's own body and refuses whatever it would refuse. `members` absent or `none` answers an empty cascade. A snapshot: a membership that changes before the suspension changes what it does.",
+        verification: "control-plane",
+        scopes: [ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE],
+        responses: { 200: AdminMemberCascadePreviewResponse },
+      }),
+      gate(ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE),
+      validate("param", AdminOrganizationParam),
+      validate("json", AdminSuspendOrganization),
+      async (c) => {
+        const { organizationId } = c.req.valid("param");
+        const body = c.req.valid("json");
+        // The write's refusals, in the write's order: the 404, the unwired cascade, then the suspension's own.
+        await lifecycleOrganization(c, organizationId);
+        const mode = body.members ?? "none";
+        if (mode === "sole") userLifecycle();
+        await checkSuspension(lifecycle(c), {
+          organizationId,
+          until: body.until ? new Date(body.until) : null,
+          restoreRoute: restoreRoute(organizationId),
+        });
+        const members = await planSuspension({ db: db(c), auth: auth(c), now: clock() }, { organizationId, mode });
+        return c.json({
+          organizationId,
+          members: memberCascadeView(members),
+        } satisfies AdminMemberCascadePreviewResponse);
+      },
+    );
+
+    /**
      * Lift a tenant's suspension. Its members see it again in their lists. **A member whose own account the
      * cascade suspended stays suspended**, and the response names every member whose account is still refused.
      */
@@ -2324,6 +2400,42 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
         return c.json(
           deletionView(organizationId, mode, result, purge, mailed, members) satisfies AdminOrganizationDeleteResponse,
         );
+      },
+    );
+
+    /**
+     * Who deleting a tenant would reach, softly or hard, before it is deleted (#813) — on the suspension preview's
+     * terms: the write's body and refusals, the cascade's own selection, nothing applied and nothing written.
+     */
+    app.post(
+      `${base}/admin/organizations/:organizationId/delete/preview`,
+      describeRoute({
+        summary: "Preview who deleting a tenant would reach, member by member, before it runs. Writes nothing.",
+        description:
+          "Takes the deletion's own body and refuses whatever it would refuse. `members` absent or `none` answers an empty cascade. A snapshot: a membership that changes before the deletion changes what it does.",
+        verification: "control-plane",
+        scopes: [ORGANIZATION_ACCOUNTS_DELETE_SCOPE],
+        responses: { 200: AdminMemberCascadePreviewResponse },
+      }),
+      gate(ORGANIZATION_ACCOUNTS_DELETE_SCOPE),
+      validate("param", AdminOrganizationParam),
+      validate("json", AdminDeleteOrganization),
+      async (c) => {
+        const { organizationId } = c.req.valid("param");
+        const body = c.req.valid("json");
+        // The write's refusals, in the write's order: the 404, then the unwired cascade. A deletion refuses
+        // nothing else before it moves.
+        await lifecycleOrganization(c, organizationId);
+        const mode = body.members ?? "none";
+        if (mode === "sole") userLifecycle();
+        const members = await planDeletion(
+          { db: db(c), auth: auth(c), now: clock() },
+          { organizationId, mode, deletion: body.mode ?? "soft" },
+        );
+        return c.json({
+          organizationId,
+          members: memberCascadeView(members),
+        } satisfies AdminMemberCascadePreviewResponse);
       },
     );
 

@@ -551,6 +551,24 @@ export const AdminMemberCascade = z
   .describe("What a tenant's suspension or deletion did to the people in it.");
 export type AdminMemberCascade = z.output<typeof AdminMemberCascade>;
 
+/**
+ * `POST {base}/admin/organizations/:organizationId/suspend/preview` and `…/delete/preview` (#813).
+ *
+ * What the write's cascade would do, as things stand now, with nothing applied: `reached` names the outcome the
+ * write would give each member, `skipped` why it would leave each other alone. Never `failed`, which only a write
+ * that ran can report. A snapshot: a membership that changes before the write changes what the write does, and
+ * the write's own response is the record.
+ */
+export const AdminMemberCascadePreviewResponse = z
+  .object({
+    organizationId: z.uuid().describe("The tenant."),
+    members: AdminMemberCascade.describe(
+      "What the cascade would do to the members if the write ran now. Computed by the function the write calls, with nothing applied.",
+    ),
+  })
+  .describe("Who a tenant's suspension or deletion would reach, member by member, before it runs. Writes nothing.");
+export type AdminMemberCascadePreviewResponse = z.output<typeof AdminMemberCascadePreviewResponse>;
+
 /** One member whose own account is still refused after the tenant came back. */
 const ShutMember = z
   .object({

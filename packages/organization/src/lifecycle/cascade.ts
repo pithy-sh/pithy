@@ -33,6 +33,13 @@ import { MEMBERSHIPS_TABLE, type OrganizationDatabase } from "../data/tables";
  * suspension, reason and end: restating it with this organization's reason would overwrite why somebody else
  * suspended them. An account already deleted is left as it is.
  *
+ * ## Selected once, so it can be previewed
+ *
+ * Who a cascade reaches is decided by one function, `selectCascade`, before anything is applied. The write runs
+ * what it selects; the preview routes answer with it and stop (#813). A preview therefore cannot name a member the
+ * write would then treat differently — on the same data. Between the two, a membership can change, and the write's
+ * own response stays the record of what happened.
+ *
  * ## And nothing undoes it silently
  *
  * A reinstatement or a restore of the organization lifts nobody's own suspension. `membersStillShut` is how the
@@ -130,38 +137,84 @@ export interface UserLifecycleWiring {
   readonly hooks: LifecycleDeps["hooks"];
 }
 
+/** What deciding a cascade reads: who belongs where, and where each account stands, at one instant. */
+export interface CascadeReads {
+  /** The tenancy tables, to find who belongs where. */
+  readonly db: OrganizationDatabase;
+  /** `@pithy-sh/auth`'s tables, to read each account's standing. */
+  readonly auth: AuthDatabase;
+  /** The instant standings are judged at. */
+  readonly now: Date;
+}
+
+/** Why one sole member with an account would be left alone, or null when the cascade would reach them. */
+type CascadeJudge = (standing: ReturnType<typeof accountStanding>) => CascadeSkip | null;
+
+/** A suspension's judgment: an account already suspended keeps its own suspension; one deleted is left alone. */
+const suspensionJudge: CascadeJudge = (standing) =>
+  standing.state === "deleted" ? "account_deleted" : standing.state === "suspended" ? "already_suspended" : null;
+
+/** A deletion's: a suspended account is deleted too; one already deleted is left alone, unless this one is hard. */
+const deletionJudge =
+  (deletion: "soft" | "hard"): CascadeJudge =>
+  (standing) =>
+    standing.state === "deleted" && deletion === "soft" ? "account_deleted" : null;
+
 /**
- * Run one cascade over an organization's members — a suspension or a deletion — and say what it did.
- *
- * Each member is its own transition, and one that fails is reported as `failed` rather than ending the rest: the
- * organization's own transition has already happened, and the members after a failure are owed the same rule.
+ * **The cascade's selection, and the one place it is made** (#813): who a cascade would reach, and why each other
+ * member would be left alone. The preview answers with it and the cascade runs it, so a preview cannot name a
+ * member the write then treats differently. It writes nothing; `reached` is the outcome the transition would give.
  */
-async function cascade(
-  deps: CascadeDeps,
+async function selectCascade(
+  reads: CascadeReads,
   organizationId: string,
   mode: MemberCascade,
-  act: (userId: string, standing: ReturnType<typeof accountStanding>) => CascadeSkip | null,
-  run: (userId: string) => Promise<"suspended" | "deleted">,
+  judge: CascadeJudge,
+  outcome: "suspended" | "deleted",
 ): Promise<CascadeOutcome> {
   if (mode === "none") return NO_CASCADE;
-  const { sole, elsewhere } = await classifyMembers(deps.db, organizationId);
+  const { sole, elsewhere } = await classifyMembers(reads.db, organizationId);
   const reached: { userId: string; outcome: "suspended" | "deleted" }[] = [];
   const skipped: { userId: string; reason: CascadeSkip }[] = elsewhere.map((userId) => ({
     userId,
     reason: "member_elsewhere",
   }));
-  const standings = await accountStandings(deps.users.db, sole, deps.now);
+  const standings = await accountStandings(reads.auth, sole, reads.now);
   for (const userId of sole) {
     const standing = standings.get(userId);
-    if (!standing) {
-      skipped.push({ userId, reason: "no_account" });
-      continue;
-    }
-    const skip = act(userId, standing);
-    if (skip) {
-      skipped.push({ userId, reason: skip });
-      continue;
-    }
+    const skip = standing ? judge(standing) : "no_account";
+    if (skip) skipped.push({ userId, reason: skip });
+    else reached.push({ userId, outcome });
+  }
+  return { mode, reached, skipped: sorted(skipped) };
+}
+
+/** Skipped members by id, so a response is stable whichever way each was left alone. */
+function sorted<T extends { readonly userId: string }>(members: T[]): T[] {
+  return members.sort((a, b) => (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0));
+}
+
+/** What deciding a cascade reads, off what running one needs. */
+function readsOf(deps: CascadeDeps): CascadeReads {
+  return { db: deps.db, auth: deps.users.db, now: deps.now };
+}
+
+/**
+ * Run a selected cascade, member by member, and say what it did.
+ *
+ * Each member is its own transition, and one that fails is reported as `failed` rather than ending the rest: the
+ * organization's own transition has already happened, and the members after a failure are owed the same rule.
+ */
+async function applyCascade(
+  deps: CascadeDeps,
+  organizationId: string,
+  plan: CascadeOutcome,
+  run: (userId: string) => Promise<"suspended" | "deleted">,
+): Promise<CascadeOutcome> {
+  if (plan.mode === "none") return plan;
+  const reached: { userId: string; outcome: "suspended" | "deleted" }[] = [];
+  const skipped = [...plan.skipped];
+  for (const { userId } of plan.reached) {
     try {
       reached.push({ userId, outcome: await run(userId) });
     } catch (error) {
@@ -173,29 +226,44 @@ async function cascade(
       skipped.push({ userId, reason: "failed" });
     }
   }
-  skipped.sort((a, b) => (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0));
-  return { mode, reached, skipped };
+  return { mode: plan.mode, reached, skipped: sorted(skipped) };
+}
+
+/**
+ * Who suspending an organization with this cascade would reach, as things stand now, with nothing applied. What
+ * the suspension's preview answers (#813).
+ */
+export function planSuspension(
+  reads: CascadeReads,
+  input: { organizationId: string; mode: MemberCascade },
+): Promise<CascadeOutcome> {
+  return selectCascade(reads, input.organizationId, input.mode, suspensionJudge, "suspended");
+}
+
+/**
+ * Who deleting an organization with this cascade would reach, softly or hard, as things stand now, with nothing
+ * applied. What the deletion's preview answers (#813).
+ */
+export function planDeletion(
+  reads: CascadeReads,
+  input: { organizationId: string; mode: MemberCascade; deletion: "soft" | "hard" },
+): Promise<CascadeOutcome> {
+  return selectCascade(reads, input.organizationId, input.mode, deletionJudge(input.deletion), "deleted");
 }
 
 /**
  * Suspend the accounts of the members whose only organization this is, with the organization's reason and end.
  * An account already suspended keeps its own suspension; one already deleted is left alone.
  */
-export function suspendSoleMembers(
+export async function suspendSoleMembers(
   deps: CascadeDeps,
   input: { organizationId: string; mode: MemberCascade; reason: string; until: Date | null },
 ): Promise<CascadeOutcome> {
-  return cascade(
-    deps,
-    input.organizationId,
-    input.mode,
-    (_userId, standing) =>
-      standing.state === "deleted" ? "account_deleted" : standing.state === "suspended" ? "already_suspended" : null,
-    async (userId) => {
-      await suspendUser(deps.users, { userId, actor: deps.actor, reason: input.reason, until: input.until });
-      return "suspended";
-    },
-  );
+  const plan = await planSuspension(readsOf(deps), input);
+  return applyCascade(deps, input.organizationId, plan, async (userId) => {
+    await suspendUser(deps.users, { userId, actor: deps.actor, reason: input.reason, until: input.until });
+    return "suspended";
+  });
 }
 
 /**
@@ -204,7 +272,7 @@ export function suspendSoleMembers(
  * already deleted is left alone by a soft deletion; a hard one brings its purge forward to now. `onHard` is told
  * each account a hard deletion reached, so the caller can start that account's purge.
  */
-export function deleteSoleMembers(
+export async function deleteSoleMembers(
   deps: CascadeDeps,
   input: {
     organizationId: string;
@@ -214,22 +282,17 @@ export function deleteSoleMembers(
     onHard?: (userId: string, deletedAt: Date) => Promise<void>;
   },
 ): Promise<CascadeOutcome> {
-  return cascade(
-    deps,
-    input.organizationId,
-    input.mode,
-    (_userId, standing) => (standing.state === "deleted" && input.deletion === "soft" ? "account_deleted" : null),
-    async (userId) => {
-      const result = await deleteUser(deps.users, {
-        userId,
-        actor: deps.actor,
-        reason: input.reason,
-        mode: input.deletion,
-      });
-      if (input.deletion === "hard") await input.onHard?.(userId, result.deletedAt);
-      return "deleted";
-    },
-  );
+  const plan = await planDeletion(readsOf(deps), input);
+  return applyCascade(deps, input.organizationId, plan, async (userId) => {
+    const result = await deleteUser(deps.users, {
+      userId,
+      actor: deps.actor,
+      reason: input.reason,
+      mode: input.deletion,
+    });
+    if (input.deletion === "hard") await input.onHard?.(userId, result.deletedAt);
+    return "deleted";
+  });
 }
 
 /**
