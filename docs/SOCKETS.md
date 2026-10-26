@@ -9,7 +9,7 @@ This is the rule, stated once. Every other doc links here rather than restating 
 | Socket | Path | Subprotocol | The Worker sends | The client sends |
 |---|---|---|---|---|
 | `multiplayerSession` | `/multiplayer/sessions/:id/socket` | `pithy.multiplayer.v1` | `state`, `error` | `action`, `state` |
-| `matchmakingPresence` | `/matchmaking/presence` | `pithy.presence.v1` | `init`, `match_found`, `invite`, `friend_request`, `error`, and `pong` as plain text | `ping` as plain text |
+| `matchmakingPresence` | `/matchmaking/presence` | `pithy.presence.v1` | `init`, `match_found`, `invite`, `friend_request`, `invite_canceled`, `queue_dropped`, `error`, and `pong` as plain text | `ping` as plain text |
 
 Each path sits under its capability's `basePath`, so a project that moves the routes moves the socket with them. Both upgrades take a bearer token or a session cookie, and only a member of the session may open a session socket.
 

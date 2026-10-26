@@ -3,11 +3,15 @@
 
 import type { D1Database, DurableObjectNamespace, KVNamespace } from "@cloudflare/workers-types";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
+import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
+import { pageLimit } from "@pithy-sh/core/src/data/cursor";
 import { InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { validate } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
-import { createRoom, joinRoom, normalizeCode } from "../code/room";
+import { type MatchmakingAuditAction, MatchmakingAuditActions } from "../audit/actions";
+import { createRoom, joinRoom, normalizeCode, openRooms } from "../code/room";
 import { type MatchmakingConfig, type MatchmakingGame, resolveGame } from "../config/config";
 import type { Invite } from "../data/invite";
 import { matchmakingDatabase } from "../data/tables";
@@ -25,9 +29,32 @@ import { readSkill } from "../queue/skill";
 import { callRpc } from "../rpc";
 import { type SessionNamespace, sessionMinter } from "../session/minter";
 import { requireAuth } from "./guard";
-import { FriendList, InviteList, InviteView, QueueStanding, RoomCreated, RoomJoined } from "./responses";
-import { FriendParams, GameParams, InviteBody, InviteParams, RoomCodeParams } from "./schemas";
-import { inviteView } from "./views";
+import {
+  AdminInviteCanceled,
+  AdminInviteList,
+  AdminQueue,
+  AdminQueuePlayerDropped,
+  AdminRoomList,
+  FriendList,
+  InviteList,
+  InviteView,
+  QueueStanding,
+  RoomCreated,
+  RoomJoined,
+} from "./responses";
+import {
+  AdminInvitesQuery,
+  AdminModeration,
+  AdminQueuePlayerParams,
+  AdminRoomsQuery,
+  FriendParams,
+  GameParams,
+  InviteBody,
+  InviteParams,
+  RoomCodeParams,
+} from "./schemas";
+import { MATCHMAKING_QUEUES_MODERATE_SCOPE, MATCHMAKING_QUEUES_READ_SCOPE } from "./scopes";
+import { adminInviteView, adminQueueTicket, adminRoomView, inviteView } from "./views";
 
 /**
  * The matchmaking HTTP surface. Every route is `requireAuth()`-gated (no public surface) and binds to
@@ -45,6 +72,21 @@ import { inviteView } from "./views";
  *           POST /friends/:userId/decline · DELETE /friends/:userId — each param FriendParams
  * Queue · POST /games/:game/queue · GET /games/:game/queue · DELETE /games/:game/queue — each param GameParams
  * Presence · GET /presence (WebSocket; the raw request is forwarded to the Durable Object, body untouched)
+ *
+ * ## The management surface, under `admin/`
+ *
+ * Control-plane routes, gated by `requireControlPlane(scope)` and never by `requireAuth()`: the seam leaves
+ * `c.var.auth` null by design, so a player gate on one would refuse every management call forever.
+ *
+ *   GET  /admin/games/:game/queue               → who is waiting           (matchmaking:queues:read)      param GameParams
+ *   GET  /admin/games/:game/rooms               → open rooms               (matchmaking:queues:read)      param GameParams, query AdminRoomsQuery
+ *   GET  /admin/invites                         → pending invites, paged   (matchmaking:queues:read)      query AdminInvitesQuery
+ *   POST /admin/invites/:id/cancel              → cancel a pending invite  (matchmaking:queues:moderate)  param InviteParams, json AdminModeration
+ *   POST /admin/games/:game/queue/:userId/drop  → drop a waiting player    (matchmaking:queues:moderate)  param AdminQueuePlayerParams, json AdminModeration
+ *
+ * Each act takes an idempotency key and a reason. A retry of the same key changes nothing, tells nobody and
+ * emits nothing; a first act tells the players through presence and emits one audit event. **No admin route
+ * touches the friend graph**: friend edges are the players' own.
  */
 export interface MatchmakingRoutesOptions {
   config: MatchmakingConfig;
@@ -56,11 +98,169 @@ export interface MatchmakingRoutesOptions {
   peers?: () => MatchmakingPeers;
 }
 
+/**
+ * Where matchmaking mounts when an adopter names nothing. Exported because the router and the manifest's
+ * `matchmakingAdminRoutes` must agree on it, or a management client composing calls from the manifest 404s.
+ */
+export const MATCHMAKING_DEFAULT_BASE_PATH = "/matchmaking";
+
 export function registerMatchmakingRoutes(options: MatchmakingRoutesOptions): (app: Hono<PithyHonoEnv>) => void {
-  const base = options.basePath ?? "/matchmaking";
+  const base = options.basePath ?? MATCHMAKING_DEFAULT_BASE_PATH;
   const { config } = options;
 
   return (app) => {
+    // --- Management (control plane) ---
+    app.get(
+      `${base}/admin/games/:game/queue`,
+      describeRoute({
+        summary: "Read who is waiting in one game's queue.",
+        description: "Read from the game's queue Durable Object: each player's region, skill, current band, and wait.",
+        verification: "control-plane",
+        scopes: [MATCHMAKING_QUEUES_READ_SCOPE],
+        responses: { 200: AdminQueue },
+      }),
+      requireControlPlane(MATCHMAKING_QUEUES_READ_SCOPE),
+      validate("param", GameParams),
+      async (c) => {
+        const game = resolveMatchmakingGame(config, c.req.valid("param").game);
+        const waiting = await callRpc(() => queueStub(c, game.key).waiting());
+        const now = new Date();
+        return c.json(
+          { gameKey: game.key, waiting: waiting.map((entry) => adminQueueTicket(entry, now)) } satisfies AdminQueue,
+          200,
+        );
+      },
+    );
+
+    app.get(
+      `${base}/admin/games/:game/rooms`,
+      describeRoute({
+        summary: "Read one game's open rooms, a page at a time.",
+        description:
+          "Every game's codes share one list, so a page can hold fewer rooms than asked for. Read on while `nextCursor` is set.",
+        verification: "control-plane",
+        scopes: [MATCHMAKING_QUEUES_READ_SCOPE],
+        responses: { 200: AdminRoomList },
+      }),
+      requireControlPlane(MATCHMAKING_QUEUES_READ_SCOPE),
+      validate("param", GameParams),
+      validate("query", AdminRoomsQuery),
+      async (c) => {
+        const game = resolveMatchmakingGame(config, c.req.valid("param").game);
+        const query = c.req.valid("query");
+        const page = await openRooms(kvOf(c), game, { cursor: query.cursor, limit: pageLimit(query.limit) });
+        return c.json(
+          {
+            gameKey: game.key,
+            rooms: page.rooms.map((room) => adminRoomView(room, game.players)),
+            nextCursor: page.nextCursor,
+          } satisfies AdminRoomList,
+          200,
+        );
+      },
+    );
+
+    app.get(
+      `${base}/admin/invites`,
+      describeRoute({
+        summary: "List every pending invite, a page at a time.",
+        verification: "control-plane",
+        scopes: [MATCHMAKING_QUEUES_READ_SCOPE],
+        responses: { 200: AdminInviteList },
+      }),
+      requireControlPlane(MATCHMAKING_QUEUES_READ_SCOPE),
+      validate("query", AdminInvitesQuery),
+      async (c) => {
+        const query = c.req.valid("query");
+        // A game filter is still config-backed: a mistyped key is the capability's own 404, not an empty pane.
+        const gameKey = query.game === undefined ? undefined : resolveMatchmakingGame(config, query.game).key;
+        const page = await inviteStore(matchmakingDatabase(dbBinding(c))).listPending({
+          gameKey,
+          cursor: query.cursor,
+          limit: query.limit,
+        });
+        const now = new Date();
+        return c.json(
+          {
+            invites: page.items.map((invite) => adminInviteView(invite, now)),
+            nextCursor: page.nextCursor,
+          } satisfies AdminInviteList,
+          200,
+        );
+      },
+    );
+
+    app.post(
+      `${base}/admin/invites/:id/cancel`,
+      describeRoute({
+        summary: "Cancel a pending invite.",
+        description:
+          "Both players are told through presence. A retry with the same `idempotencyKey` changes nothing and answers `replayed: true`.",
+        verification: "control-plane",
+        scopes: [MATCHMAKING_QUEUES_MODERATE_SCOPE],
+        responses: { 200: AdminInviteCanceled },
+      }),
+      requireControlPlane(MATCHMAKING_QUEUES_MODERATE_SCOPE),
+      validate("param", InviteParams),
+      validate("json", AdminModeration),
+      async (c) => {
+        const { id } = c.req.valid("param");
+        const { idempotencyKey, reason } = c.req.valid("json");
+        const outcome = await inviteStore(matchmakingDatabase(dbBinding(c))).cancel(id, idempotencyKey, new Date());
+        const { invite } = outcome;
+        if (!outcome.replayed) {
+          const frame: PresenceEvent = { type: "invite_canceled", inviteId: invite.id, gameKey: invite.gameKey };
+          await notify(c, invite.inviterId, frame);
+          await notify(c, invite.inviteeId, frame);
+          await record(c, MatchmakingAuditActions.inviteCanceled, {
+            resourceType: "matchmaking_invite",
+            resourceId: invite.id,
+            gameKey: invite.gameKey,
+            target: { inviteId: invite.id, inviterId: invite.inviterId, inviteeId: invite.inviteeId },
+            reason,
+            idempotencyKey,
+          });
+        }
+        return c.json({ invite: inviteView(invite), replayed: outcome.replayed } satisfies AdminInviteCanceled, 200);
+      },
+    );
+
+    app.post(
+      `${base}/admin/games/:game/queue/:userId/drop`,
+      describeRoute({
+        summary: "Drop a player from one game's queue.",
+        description:
+          "The player's presence socket is told why, in the `reason` sent. A retry with the same `idempotencyKey` changes nothing and answers `replayed: true`.",
+        verification: "control-plane",
+        scopes: [MATCHMAKING_QUEUES_MODERATE_SCOPE],
+        responses: { 200: AdminQueuePlayerDropped },
+      }),
+      requireControlPlane(MATCHMAKING_QUEUES_MODERATE_SCOPE),
+      validate("param", AdminQueuePlayerParams),
+      validate("json", AdminModeration),
+      async (c) => {
+        const params = c.req.valid("param");
+        const game = resolveMatchmakingGame(config, params.game);
+        const { idempotencyKey, reason } = c.req.valid("json");
+        const outcome = await callRpc(() => queueStub(c, game.key).drop(params.userId, idempotencyKey));
+        if (!outcome.replayed) {
+          await notify(c, params.userId, { type: "queue_dropped", gameKey: game.key, reason });
+          await record(c, MatchmakingAuditActions.queuePlayerDropped, {
+            resourceType: "matchmaking_queue_ticket",
+            resourceId: `${game.key}:${params.userId}`,
+            gameKey: game.key,
+            target: { userId: params.userId },
+            reason,
+            idempotencyKey,
+          });
+        }
+        return c.json(
+          { gameKey: game.key, userId: params.userId, replayed: outcome.replayed } satisfies AdminQueuePlayerDropped,
+          200,
+        );
+      },
+    );
+
     // --- Rooms ---
     app.post(
       `${base}/games/:game/rooms`,
@@ -371,6 +571,10 @@ async function requireInvitee(c: Context<PithyHonoEnv>, store: InviteStore, id: 
   if (invite.inviteeId !== userId(c)) {
     throw new MatchmakingInviteForbiddenError({ detail: "Only the invitee may respond." });
   }
+  // Checked before anything is minted: an answered or canceled invite cannot start a session.
+  if (invite.status !== "pending") {
+    throw new MatchmakingInviteNotFoundError({ detail: `Invite "${id}" is ${invite.status}, not pending.` });
+  }
   return invite;
 }
 
@@ -380,6 +584,58 @@ async function notify(c: Context<PithyHonoEnv>, target: string, event: PresenceE
   } catch {
     // Best-effort: a notification never fails the action that triggered it.
   }
+}
+
+/**
+ * The verified management client behind a control-plane call. `requireControlPlane()` has run on every route that
+ * calls this, so a null is a route mounted without its gate — a wiring mistake, hence `InternalError`.
+ */
+function caller(c: Context<PithyHonoEnv>): ControlPlaneContext {
+  const context = c.var.controlPlane;
+  if (!context) {
+    throw new InternalError({
+      message: "Matchmaking could not identify the management caller.",
+      detail: "requireControlPlane() must run before a matchmaking management handler reads the caller.",
+    });
+  }
+  return context;
+}
+
+/** What one management act records beyond who did it. */
+interface ActRecord {
+  resourceType: string;
+  resourceId: string;
+  gameKey: string;
+  target: Record<string, string>;
+  reason: string;
+  idempotencyKey: string;
+}
+
+/**
+ * Record one management act, once, through the core `emit` seam: the connection, the game, the target and the
+ * reason. Called only when the act changed something — a replay and a refusal record nothing.
+ */
+async function record(c: Context<PithyHonoEnv>, action: MatchmakingAuditAction, act: ActRecord): Promise<void> {
+  const who = caller(c);
+  await c.var.emit({
+    action,
+    outcome: "success",
+    severity: "warning",
+    actorType: "control-plane",
+    actorId: who.subject,
+    resourceType: act.resourceType,
+    resourceId: act.resourceId,
+    requestId: c.req.header("cf-ray"),
+    ip: c.req.header("cf-connecting-ip"),
+    userAgent: c.req.header("user-agent"),
+    metadata: {
+      connectionId: who.connectionId,
+      gameKey: act.gameKey,
+      ...act.target,
+      reason: act.reason,
+      idempotencyKey: act.idempotencyKey,
+    },
+  });
 }
 
 function userId(c: Context<PithyHonoEnv>): string {

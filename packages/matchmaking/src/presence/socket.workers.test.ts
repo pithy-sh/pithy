@@ -16,7 +16,7 @@ import { MATCHMAKING_MIGRATION_ORDER } from "../capability";
 import { MatchmakingConfig } from "../config/config";
 import { InviteView } from "../http/responses";
 import { registerMatchmakingRoutes } from "../http/routes";
-import { matchmaking_0001_matchmaking } from "../migrations/0001_matchmaking";
+import { MATCHMAKING_MIGRATIONS } from "../migrations/chain";
 import { presenceSocket } from "./channel";
 import { PRESENCE_VERSIONS, PresenceServerFrame } from "./frames";
 
@@ -34,7 +34,7 @@ function provider(): MigrationProvider {
       database: "app",
       namespace: "matchmaking",
       order: MATCHMAKING_MIGRATION_ORDER,
-      migrations: { "0001_matchmaking": matchmaking_0001_matchmaking },
+      migrations: MATCHMAKING_MIGRATIONS,
     },
   ]);
   const found = registry.app;

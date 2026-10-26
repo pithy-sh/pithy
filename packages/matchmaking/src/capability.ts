@@ -6,9 +6,10 @@ import { type Capability, defineCapability } from "@pithy-sh/core/src/capability
 import type { Migration } from "kysely/migration";
 import { MatchmakingConfig, type MatchmakingConfigInput } from "./config/config";
 import { matchmakingTables } from "./data/tables";
-import { registerMatchmakingRoutes } from "./http/routes";
+import { MATCHMAKING_DEFAULT_BASE_PATH, registerMatchmakingRoutes } from "./http/routes";
+import { matchmakingAdminRoutes } from "./http/scopes";
 import { ROOM_PREFIX, Room, RoomKey } from "./kv/rooms";
-import { matchmaking_0001_matchmaking } from "./migrations/0001_matchmaking";
+import { MATCHMAKING_MIGRATIONS } from "./migrations/chain";
 import { type MatchmakingPeers, matchmakingPeers } from "./peers";
 import { presenceSocket } from "./presence/channel";
 import { matchmakingExampleSeed } from "./seeds/example";
@@ -43,8 +44,10 @@ export interface MatchmakingCapability extends Capability {
 export function matchmaking(options: MatchmakingOptions = { games: [] }): MatchmakingCapability {
   const { basePath, ...configInput } = options;
   const resolved = MatchmakingConfig.parse(configInput);
+  // Resolved once, and handed to both the router and the manifest, so the advertised admin paths are the mounted ones.
+  const mountPath = basePath ?? MATCHMAKING_DEFAULT_BASE_PATH;
 
-  const migrations: Record<string, Migration> = { "0001_matchmaking": matchmaking_0001_matchmaking };
+  const migrations: Record<string, Migration> = MATCHMAKING_MIGRATIONS;
 
   const requiredBindings: BindingSpecInput[] = [
     { type: "d1", name: "DB" },
@@ -98,9 +101,13 @@ export function matchmaking(options: MatchmakingOptions = { games: [] }): Matchm
     compose: ({ capabilities }) => {
       peers = matchmakingPeers(capabilities, resolved);
     },
-    routes: registerMatchmakingRoutes({ config: resolved, basePath, peers: () => peers }),
+    routes: registerMatchmakingRoutes({ config: resolved, basePath: mountPath, peers: () => peers }),
+    // The control-plane surface, built from the mounted path: what the manifest advertises and what
+    // `pithy dashboard connect` offers to grant. Always declared; with `controlplane()` uncomposed each route
+    // refuses with `controlplane/not_connected`.
+    adminRoutes: matchmakingAdminRoutes(mountPath),
     // The presence socket, for the AsyncAPI contract: mounted where the routes put its upgrade.
-    sockets: [presenceSocket(basePath)],
+    sockets: [presenceSocket(mountPath)],
     seeds: [matchmakingExampleSeed],
   });
 

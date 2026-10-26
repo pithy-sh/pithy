@@ -14,7 +14,7 @@ import { MATCHMAKING_MIGRATION_ORDER } from "../capability";
 import { MatchmakingConfig, type MatchmakingConfigInput } from "../config/config";
 import { FriendView, InviteView, QueueStanding, RoomCreated, RoomJoined } from "../http/responses";
 import { registerMatchmakingRoutes } from "../http/routes";
-import { matchmaking_0001_matchmaking } from "../migrations/0001_matchmaking";
+import { MATCHMAKING_MIGRATIONS } from "../migrations/chain";
 import {
   acceptFriend,
   acceptInvite,
@@ -46,7 +46,7 @@ function provider(): MigrationProvider {
       database: "app",
       namespace: "matchmaking",
       order: MATCHMAKING_MIGRATION_ORDER,
-      migrations: { "0001_matchmaking": matchmaking_0001_matchmaking },
+      migrations: MATCHMAKING_MIGRATIONS,
     },
   ]);
   const found = registry.app;

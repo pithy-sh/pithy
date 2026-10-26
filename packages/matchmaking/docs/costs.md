@@ -46,4 +46,4 @@ Invites and the friend graph, billed as rows read and written like every other D
 
 - **`sweepSeconds`, per game.** The only setting on this page that bills while nothing is happening. Raise it for a thin queue that pairs on arrival anyway; lower it only where band-widening is genuinely what pairs people.
 - **A presence connection that never closes.** Hibernation makes an idle socket free, not a leaked one — a client that reconnects without closing leaves sockets in the set for the object to iterate on every push.
-- **Chatty presence traffic.** Three event types ship, all server-pushed and small. Adding a client-driven heartbeat over this socket would put its messages through the 20:1 ratio and the object's request ceiling both; use the platform's own ping instead.
+- **Chatty presence traffic.** Every event type is server-pushed and small. Adding a client-driven heartbeat over this socket would put its messages through the 20:1 ratio and the object's request ceiling both; use the platform's own ping instead.
