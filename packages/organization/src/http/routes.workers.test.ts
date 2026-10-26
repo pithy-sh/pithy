@@ -599,6 +599,8 @@ describe("the roster", () => {
     expect(changed.status).toBe(200);
     expect(await json(changed)).toEqual({ member: { membershipId: target, userId: BOB, role: "member" } });
     expect(actionsRecorded()).toEqual(["organization/refused", "organization/member_role_changed"]);
+    // The role before as well as after (#831), so the access history can replay the change without guessing.
+    expect(factsRecorded()).toMatchObject({ role: "member", previousRole: "admin", subjectUserId: BOB });
   });
 
   test("the role a transfer confers cannot be handed over by a role change, by anybody", async () => {
@@ -635,6 +637,7 @@ describe("the roster", () => {
     const removed = await call("DELETE", `${BASE}/current/members/${cai}`, { as: ADA });
     expect(await json(removed)).toEqual({ membershipId: cai, left: false });
     expect(actionsRecorded()).toEqual(["organization/member_removed"]);
+    expect(factsRecorded()).toMatchObject({ role: "member", subjectUserId: CAI });
 
     events = [];
     await chooseActing(db(), { userId: BOB, sessionId: "session_bob", organizationId: ACME, now: NOW });
@@ -642,6 +645,8 @@ describe("the roster", () => {
     const left = await call("POST", `${BASE}/current/members/leave`, { as: BOB, session: "session_bob" });
     expect(await json(left)).toEqual({ membershipId: bob, left: true });
     expect(actionsRecorded()).toEqual(["organization/member_left"]);
+    // The member is named on every member event (#831), even where they are also the actor.
+    expect(factsRecorded()).toMatchObject({ role: "admin", subjectUserId: BOB });
   });
 
   test("the last holder of the administrative power cannot leave, and cannot be removed", async () => {
@@ -928,6 +933,7 @@ describe("redeeming an offer", () => {
     const body = await json<{ organizationId: string; role: string; joined: boolean }>(response);
     expect(body).toMatchObject({ organizationId: ACME, role: "member", joined: true });
     expect(actionsRecorded()).toEqual(["organization/member_joined"]);
+    expect(factsRecorded()).toMatchObject({ role: "member", subjectUserId: "user_new" });
 
     // Joining and looking are two acts: the offer does not move what this session is acting in.
     const acting = await db()
@@ -1016,6 +1022,21 @@ describe("ownership moves only by offer and acceptance", () => {
     // Handing the account on is not leaving the company: the previous holder falls back rather than out.
     expect(roles.find((row) => row.userId === ADA)?.role).toBe("admin");
     expect(roles.find((row) => row.userId === BOB)?.role).toBe("owner");
+
+    // Both sides of the handover are in the trail with their before and after (#831): the new holder on the
+    // acceptance, and each demoted holder on a role change of their own, as the forced path records them.
+    const ada = await membershipIdOf(ACME, ADA);
+    const acceptance = events.find((event) => event.action === "organization/ownership_accepted");
+    expect(acceptance?.metadata).toMatchObject({ role: "owner", previousRole: "admin", subjectUserId: BOB });
+    const demoted = events.filter((event) => event.action === "organization/member_role_changed");
+    expect(demoted).toHaveLength(1);
+    expect([demoted[0]?.resourceType, demoted[0]?.resourceId, demoted[0]?.actorId]).toEqual(["membership", ada, BOB]);
+    expect(demoted[0]?.metadata).toMatchObject({
+      role: "admin",
+      previousRole: "owner",
+      subjectUserId: ADA,
+      ownershipTo: bob,
+    });
   });
 
   test("withdrawing an offer takes `billing:manage` and leaves nothing standing", async () => {
@@ -1381,6 +1402,13 @@ describe("founding an account", () => {
     expect(body.organization.role).toBe("admin");
     expect(body.organization.slug).toBe("new-studio");
     expect(actionsRecorded()).toEqual(["organization/created"]);
+    // The founding is the first membership (#831): who holds it, which row, and at what role.
+    const founder = await db()
+      .selectFrom(MEMBERSHIPS_TABLE)
+      .select("id")
+      .where("organizationId", "=", body.organization.id)
+      .executeTakeFirstOrThrow();
+    expect(factsRecorded()).toMatchObject({ role: "admin", subjectUserId: "user_founder", membershipId: founder.id });
 
     // And it does not move what this session was acting in. Creating a second account from a settings
     // pane must not silently move somebody out of the one they were working in.
@@ -2028,6 +2056,9 @@ describe("membership administration through the control plane (#624)", () => {
       expect(event.metadata).toMatchObject({
         reason: "Ada left the company.",
         subjectUserId: BOB,
+        // The new holder's before and after (#831).
+        role: "owner",
+        previousRole: "admin",
         previousOwner: "keep",
         previousHolders: 1,
         mailed: "queued",

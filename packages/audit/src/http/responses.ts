@@ -106,3 +106,103 @@ export const AuditEventResponse = z
   .object({ event: AuditEventDetailView.describe("The event, with the fields the detail scope gates.") })
   .describe("One audit event in full.");
 export type AuditEventResponse = z.output<typeof AuditEventResponse>;
+
+/**
+ * Whether a change's event carried its before and after (#831).
+ *
+ * `not_recorded` is an event written before its emitter recorded the detail — a role change from before
+ * `previousRole`, an update that moved no scope from before every update carried the grant. Its unknown values are
+ * null, and this says they are unknown rather than none: the reader is told, never handed a guess.
+ */
+const ChangeDetail = z
+  .enum(["recorded", "not_recorded"])
+  .describe(
+    "Whether the event recorded this change's before and after. `not_recorded` means a null before or after is unknown, not none: the event predates the emitter recording it.",
+  );
+
+/** What every access change carries: when, who, and from which code. */
+const AccessChangeBase = z.object({
+  eventId: z.string().describe("The event the change was read from — the listing's `eventId`."),
+  occurredAt: z.iso.datetime().describe("When it changed, ISO-8601."),
+  action: z.string().describe("The `domain/reason` code it was recorded under."),
+  actorType: AuditActorType.describe("The kind of principal that made the change."),
+  actorId: z.string().nullable().describe("The principal that made the change, or null."),
+  actorKind: ControlPlaneActorKind.nullable().describe(
+    "For a `control-plane` actor, which kind of management client made the change, or null.",
+  ),
+  detail: ChangeDetail,
+});
+
+/** A membership joined, changed role, or ended. */
+export const MemberAccessChange = AccessChangeBase.extend({
+  subject: z.literal("member").describe("A membership changed."),
+  organizationId: z.string().nullable().describe("The organization the membership is in."),
+  membershipId: z.string().nullable().describe("The membership that changed."),
+  userId: z.string().nullable().describe("Whose membership it is, or null when the event did not say."),
+  roleBefore: z
+    .string()
+    .nullable()
+    .describe("The role it held before. Null for a join, or when `detail` is `not_recorded`."),
+  roleAfter: z
+    .string()
+    .nullable()
+    .describe("The role it holds after. Null for a leave or a removal, or when `detail` is `not_recorded`."),
+}).describe("A membership joined, changed role, or ended.");
+export type MemberAccessChange = z.output<typeof MemberAccessChange>;
+
+/** A control-plane connection was registered, updated, or removed. */
+export const ConnectionAccessChange = AccessChangeBase.extend({
+  subject: z.literal("connection").describe("A control-plane connection changed."),
+  connectionId: z.string().nullable().describe("The connection that changed."),
+  connectionKind: ControlPlaneActorKind.nullable().describe(
+    "What kind of client the connection is for, or null when it was not recorded.",
+  ),
+  purpose: z.string().nullable().describe("What the connection is for, in its registrant's words, or null."),
+  principal: z
+    .string()
+    .nullable()
+    .describe("Who sanctioned the connection — the registering session's email address — or null."),
+  scopesBefore: z
+    .array(z.string().describe("A granted scope."))
+    .nullable()
+    .describe("The scopes it held before. Null for a registration, or when `detail` is `not_recorded`."),
+  scopesAfter: z
+    .array(z.string().describe("A granted scope."))
+    .nullable()
+    .describe("The scopes it holds after. Null for a removal, or when `detail` is `not_recorded`."),
+  replacedConnectionId: z
+    .string()
+    .nullable()
+    .describe(
+      "For a registration that started over, the connection it replaced: that connection's grant ended here. Null otherwise. A start-over recorded by a current CLI also has the old connection's own removal, just before.",
+    ),
+}).describe("A control-plane connection was registered, updated, or removed.");
+export type ConnectionAccessChange = z.output<typeof ConnectionAccessChange>;
+
+/** A key on a connection was registered, expired, or revoked. */
+export const KeyAccessChange = AccessChangeBase.extend({
+  subject: z.literal("key").describe("A key on a control-plane connection changed."),
+  connectionId: z.string().nullable().describe("The connection the key belongs to."),
+  keyId: z.string().nullable().describe("The key's id. Never key material."),
+  change: z
+    .enum(["registered", "expired", "revoked"])
+    .describe("What happened to it: registered, expired at the end of a rotation, or revoked."),
+}).describe("A key on a control-plane connection was registered, expired, or revoked.");
+export type KeyAccessChange = z.output<typeof KeyAccessChange>;
+
+/** One access change, discriminated on what changed. */
+export const AccessChangeView = z
+  .discriminatedUnion("subject", [MemberAccessChange, ConnectionAccessChange, KeyAccessChange])
+  .describe("One change to who can reach this environment's data, with its before and after.");
+export type AccessChangeView = z.output<typeof AccessChangeView>;
+
+/** `GET {base}/control-plane/access-history`. */
+export const AccessHistoryResponse = z
+  .object({
+    since: z.iso.datetime().describe("The window's inclusive start, ISO-8601."),
+    until: z.iso.datetime().describe("The window's inclusive end, ISO-8601 — now, when the query named none."),
+    changes: z.array(AccessChangeView).describe("The page, oldest first."),
+    nextCursor: NextCursor,
+  })
+  .describe("Every membership, connection and key change in a window, oldest first, with its before and after.");
+export type AccessHistoryResponse = z.output<typeof AccessHistoryResponse>;

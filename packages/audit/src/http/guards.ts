@@ -38,6 +38,11 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
  * list scope cannot resolve one. `scopeCovers` matches exactly — no prefix, no wildcard — so holding
  * one confers nothing about the other.
  *
+ * **The access history rides the listing scope (#831).** `GET {base}/control-plane/access-history` answers every
+ * membership, connection and key change in a window with its before and after — roles, scopes, the connection's
+ * kind, purpose and principal, a key id. It lifts those named metadata keys and no other, and never an IP or a
+ * user-agent, so replaying who could reach the data does not need the grant that discloses where everyone was.
+ *
  * The names are constants rather than config: a configurable scope name is a way to misconfigure a
  * default-denied gate into a differently-named one, and they are the join key with what
  * `pithy dashboard connect` offers an adopter to grant.
@@ -83,6 +88,14 @@ export function auditAdminRoutes(basePath: string): AdminRoute[] {
       scope: AUDIT_TRAIL_READ_SCOPE,
       summary:
         "Page the trail, newest first, filtered by actor, action, resource, outcome, severity, origin, and time.",
+    },
+    {
+      method: "GET",
+      path: `${basePath}/control-plane/access-history`,
+      scope: AUDIT_TRAIL_READ_SCOPE,
+      // Kind `reads` under #725's table, declared in code once that lands.
+      summary:
+        "Replay who could do what: every membership, connection and key change in a window, oldest first, with its before and after. No event is read in full.",
     },
     {
       method: "GET",

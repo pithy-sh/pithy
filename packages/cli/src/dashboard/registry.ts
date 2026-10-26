@@ -130,6 +130,26 @@ function lifecycleEvent(
   };
 }
 
+/**
+ * A connection's removal, recorded from the connection as it was — by a disconnect, or by a start-over replacing it.
+ * After the delete there is nothing left to describe it, which is exactly why an adopter needs the row.
+ */
+function removalEvent(existing: ControlPlaneConnection, extra: Record<string, unknown> = {}): CliAuditEvent {
+  return lifecycleEvent(ControlPlaneAuditActions.connectionRemoved, existing, {
+    issuer: existing.issuer,
+    workerUrl: existing.workerUrl,
+    basePath: existing.basePath,
+    scopes: [...existing.scopes],
+    removedKeyIds: keyIds(existing),
+    // The kind, purpose and principal it had, as a registration records them (#831): the access history names who
+    // the removed connection was for, from this row alone.
+    authorizedBy: existing.authorizedBy,
+    actorKind: existing.actorKind,
+    purpose: existing.purpose,
+    ...extra,
+  });
+}
+
 /** Key **ids**, never key material — the trail is queryable and long-lived. */
 function keyIds(connection: ControlPlaneConnection): string[] {
   return connection.keys.map((registered) => registered.keyId);
@@ -164,6 +184,28 @@ function addressAndGrantChanges(
     ...(stored.actorKind === connection.actorKind
       ? {}
       : { actorKind: { from: stored.actorKind, to: connection.actorKind } }),
+  };
+}
+
+/**
+ * What an update leaves the connection holding, beside what it moved (#831).
+ *
+ * `addressAndGrantChanges` says what moved, and only that, so an update that changed no scope says nothing
+ * about the scopes — and an access history replaying the connection from its events could not tell what it
+ * held. So every update also carries the grant before and after, sorted as the change comparison sorts it,
+ * and the kind, purpose and principal it holds now. A field the update moved stays the `{ from, to }` the
+ * change set wrote; the current value is filled in only where nothing moved, so no key means two things.
+ */
+function standingAfterUpdate(
+  stored: ControlPlaneConnection,
+  connection: ControlPlaneConnection,
+): Record<string, unknown> {
+  return {
+    scopesBefore: [...stored.scopes].sort(),
+    scopesAfter: [...connection.scopes].sort(),
+    authorizedBy: connection.authorizedBy,
+    actorKind: connection.actorKind,
+    purpose: connection.purpose,
   };
 }
 
@@ -287,10 +329,17 @@ export function connectionRegistry(
         await record(
           lifecycleEvent(ControlPlaneAuditActions.connectionUpdated, connection, {
             changed: Object.keys(changes),
+            ...standingAfterUpdate(stored, connection),
             ...changes,
           }),
         );
         return;
+      }
+      if (stored !== null) {
+        // Starting over ended the stored connection's grant as surely as a disconnect would, so it is recorded as one,
+        // from the connection as it was (#831). Without it the trail shows the old connection registered and never
+        // ended, and anyone replaying who held what keeps its scopes live for ever.
+        await record(removalEvent(stored, { replacedByConnectionId: connection.id }));
       }
       await record(
         lifecycleEvent(ControlPlaneAuditActions.connectionRegistered, connection, {
@@ -385,15 +434,7 @@ export function connectionRegistry(
       // The widest-blast-radius write there is: every credential for this environment stopped working at
       // once. Recorded from the connection as it was, because after the delete there is nothing left to
       // describe it — which is exactly why an adopter needs the row.
-      await record(
-        lifecycleEvent(ControlPlaneAuditActions.connectionRemoved, existing, {
-          issuer: existing.issuer,
-          workerUrl: existing.workerUrl,
-          basePath: existing.basePath,
-          scopes: [...existing.scopes],
-          removedKeyIds: keyIds(existing),
-        }),
-      );
+      await record(removalEvent(existing));
       return true;
     },
 

@@ -4,6 +4,7 @@
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { describe, expect, test } from "vitest";
 import { AUDIT_MIGRATION_ORDER, AuditConfig, audit, isAuditCapability } from "./capability";
+import { AUDIT_EVENT_DETAIL_READ_SCOPE, AUDIT_TRAIL_READ_SCOPE } from "./http/guards";
 
 describe("audit capability", () => {
   test("contributes the audit table to the app database on the DB binding by default", () => {
@@ -50,19 +51,28 @@ describe("audit capability", () => {
     // composing calls from a manifest that names the wrong one 404s against exactly the adopters who
     // changed something.
     expect(AuditConfig.parse({}).basePath).toBe("/audit");
-    expect(audit().adminRoutes?.map((route) => route.path)).toEqual(["/audit/events", "/audit/events/:eventId"]);
+    expect(audit().adminRoutes?.map((route) => route.path)).toEqual([
+      "/audit/events",
+      "/audit/control-plane/access-history",
+      "/audit/events/:eventId",
+    ]);
     expect(audit({ basePath: "/trail" }).adminRoutes?.map((route) => route.path)).toEqual([
       "/trail/events",
+      "/trail/control-plane/access-history",
       "/trail/events/:eventId",
     ]);
   });
 
-  test("every advertised route is a read, behind its own scope", () => {
+  test("every advertised route is a read, and only the full event needs the detail scope", () => {
     // The trail is append-only, and the two scopes are what stops a credential issued to render a
-    // recent-activity pane from also resolving every client IP in the project.
+    // recent-activity pane from also resolving every client IP in the project. The access history rides
+    // the listing scope (#831): it reads named metadata keys and never an IP or a user-agent.
     const routes = audit().adminRoutes ?? [];
-    expect(routes.map((route) => route.method)).toEqual(["GET", "GET"]);
-    expect(new Set(routes.map((route) => route.scope)).size).toBe(routes.length);
+    expect(routes.map((route) => [route.method, route.path, route.scope])).toEqual([
+      ["GET", "/audit/events", AUDIT_TRAIL_READ_SCOPE],
+      ["GET", "/audit/control-plane/access-history", AUDIT_TRAIL_READ_SCOPE],
+      ["GET", "/audit/events/:eventId", AUDIT_EVENT_DETAIL_READ_SCOPE],
+    ]);
   });
 
   test("is discoverable via isAuditCapability and rejects other capabilities", () => {

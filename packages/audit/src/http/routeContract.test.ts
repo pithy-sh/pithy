@@ -90,7 +90,11 @@ describe("audit route contract", () => {
   });
 
   test("the gate is inspecting the real audit routes, not an empty app", () => {
-    expect(mountedPaths(makeApp()).sort()).toEqual(["/audit/events", "/audit/events/:eventId"]);
+    expect(mountedPaths(makeApp()).sort()).toEqual([
+      "/audit/control-plane/access-history",
+      "/audit/events",
+      "/audit/events/:eventId",
+    ]);
     const paramPaths = mountedPaths(makeApp()).filter((path) => pathParams(path).length > 0);
     expect(paramPaths).toEqual(["/audit/events/:eventId"]);
   });

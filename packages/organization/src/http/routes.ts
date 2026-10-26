@@ -1182,7 +1182,15 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
           // `derived` and not merely the slug: a chosen short name is a string a caller put into an
           // account's facts, and a derived one is ours. A row that read the same either way could not
           // answer which.
-          facts: { slug: created.organization.slug, role: created.membership.role, derived: body.slug === undefined },
+          // The membership and its holder too (#831): the founding is the account's first membership, and the access
+          // history reads it as a join.
+          facts: {
+            slug: created.organization.slug,
+            role: created.membership.role,
+            derived: body.slug === undefined,
+            membershipId: created.membership.id,
+            subjectUserId: who.userId,
+          },
         });
         return c.json(
           {
@@ -1391,7 +1399,8 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
           action: OrganizationAuditActions.memberRoleChanged,
           actor: { organizationId: acting.organizationId, userId: who.userId },
           resource: { type: "membership", id: changed.id },
-          facts: { role: changed.role, subjectUserId: changed.userId },
+          // The before beside the after (#831), so the change can be replayed without a guess.
+          facts: { role: changed.role, previousRole: changed.previousRole, subjectUserId: changed.userId },
         });
         return c.json({ member: membershipView(changed) } satisfies MemberRoleResponse);
       },
@@ -1461,7 +1470,8 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
           action: OrganizationAuditActions.memberLeft,
           actor: { organizationId: acting.organizationId, userId: who.userId },
           resource: { type: "membership", id: removed.membership.id },
-          facts: { role: removed.membership.role },
+          // The member is named on every member event (#831), even where they are also the actor.
+          facts: { role: removed.membership.role, subjectUserId: who.userId },
         });
         return c.json({ membershipId: removed.membership.id, left: true } satisfies RemovedMemberResponse);
       },
@@ -1803,7 +1813,12 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
           action: OrganizationAuditActions.memberJoined,
           actor: { organizationId: accepted.invitation.organizationId, userId: who.userId },
           resource: { type: "membership", id: accepted.membershipId },
-          facts: { role: accepted.role, invitationId: accepted.invitation.id, joined: accepted.joined },
+          facts: {
+            role: accepted.role,
+            invitationId: accepted.invitation.id,
+            joined: accepted.joined,
+            subjectUserId: who.userId,
+          },
         });
         return c.json({
           organizationId: accepted.invitation.organizationId,
@@ -1972,8 +1987,33 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
             // It succeeded, and a reader scanning for what went quiet before an incident should find the
             // account changing hands above the routine.
             severity: "warning",
-            facts: { confers: ownership.confers, demoted: transfer.previousHolderMembershipIds.length },
+            facts: {
+              confers: ownership.confers,
+              demoted: transfer.previousHolderMembershipIds.length,
+              // The new holder's before and after (#831).
+              role: ownership.confers,
+              previousRole: transfer.previousRole,
+              subjectUserId: who.userId,
+            },
           });
+          /*
+            **Each demoted holder gets an event of their own**, as the forced path records them (#831). A fact
+            cannot be a list, so without these the trail would hold a count and never say whose role the
+            acceptance took away.
+          */
+          for (const holder of transfer.previousHolders) {
+            await record(c, {
+              action: OrganizationAuditActions.memberRoleChanged,
+              actor: { organizationId: acting.organizationId, userId: who.userId },
+              resource: { type: "membership", id: holder.id },
+              facts: {
+                role: ownership.demotesTo,
+                previousRole: ownership.confers,
+                subjectUserId: holder.userId,
+                ownershipTo: transfer.newHolderMembershipId,
+              },
+            });
+          }
           return c.json({
             newHolderMembershipId: transfer.newHolderMembershipId,
             previousHolderMembershipIds: [...transfer.previousHolderMembershipIds],
@@ -2860,6 +2900,9 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
             facts: {
               confers: transfer.confers,
               subjectUserId: forced.newHolder.userId,
+              // The new holder's before and after (#831).
+              role: transfer.confers,
+              previousRole: forced.newHolder.previousRole,
               previousOwner: body.previousOwner,
               previousHolders: forced.previousHolders.length,
               mailed,

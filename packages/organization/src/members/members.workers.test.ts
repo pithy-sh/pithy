@@ -227,13 +227,15 @@ describe("changing a role", () => {
   test("an admin demotes an admin", async () => {
     await join(ADA, "admin");
     const bob = await join(BOB, "admin");
-    await changeRole(organizationDatabase(env.DB), OWNED, {
+    const changed = await changeRole(organizationDatabase(env.DB), OWNED, {
       organizationId: acme,
       membershipId: bob,
       role: "member",
       actor: { userId: ADA, role: "admin" },
     });
     expect(await roleOf(bob)).toBe("member");
+    // What it was, beside what it became (#831): the role change's audit event carries both.
+    expect([changed.previousRole, changed.role]).toEqual(["admin", "member"]);
   });
 
   test("a member may not, and is told which power is short", async () => {
@@ -348,6 +350,7 @@ describe("changing a role", () => {
       actor: { userId: ADA, role: "admin" },
     });
     expect(changed.role).toBe("member");
+    expect(changed.previousRole).toBe("member");
   });
 
   test("a membership of another organization is a 404, not a write", async () => {

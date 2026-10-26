@@ -398,6 +398,17 @@ function refuseSelfDemotion<Role extends string>(
   });
 }
 
+/**
+ * A membership after a role change, and the role it held before.
+ *
+ * The before is returned rather than re-read because the role every rule above was decided from *is* the
+ * before: a second read could see a later change and record a before this write never replaced (#831).
+ */
+export interface ChangedMembership<Role extends string> extends TargetMembership<Role> {
+  /** The role it held when the change was decided. */
+  readonly previousRole: Role;
+}
+
 /** What a role change names: where, whose, to what, and by whom. */
 export interface ChangeRoleOptions<Role extends string> {
   /** The organization in force, from the gate. Never from the request body. */
@@ -427,7 +438,7 @@ export async function changeRole<Power extends string, Role extends string>(
   db: OrganizationDatabase,
   catalog: RoleCatalog<Power, Role>,
   options: ChangeRoleOptions<Role>,
-): Promise<TargetMembership<Role>> {
+): Promise<ChangedMembership<Role>> {
   assertPower(catalog, options.actor.role, "organization:manage");
 
   const assigned = catalog.AssignableRole.safeParse(options.role);
@@ -473,7 +484,7 @@ export async function changeRole<Power extends string, Role extends string>(
     refuseUnwritten(await stillThere(db, options.organizationId, target.id), options.organizationId, target, "demote");
   }
 
-  return { ...target, role };
+  return { ...target, role, previousRole: target.role };
 }
 
 /** Whether the membership is still there, asked after a write that matched nothing. */

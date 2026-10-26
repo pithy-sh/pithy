@@ -10,31 +10,34 @@ import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { validate } from "@pithy-sh/core/src/http/validation";
 import type { VerificationStrategy } from "@pithy-sh/core/src/http/verification";
 import type { Context, Hono } from "hono";
+import { accessHistory } from "../accessHistory";
 import { AuditTrailActions } from "../actions";
 import type { AuditDatabase } from "../data/tables";
 import { pageAuditEvents, readAuditEvent } from "../query";
 import { AUDIT_EVENT_DETAIL_READ_SCOPE, AUDIT_TRAIL_READ_SCOPE } from "./guards";
-import { AuditEventResponse, AuditEventsResponse } from "./responses";
-import { AuditEventIdParam, ListAuditEventsQuery } from "./schemas";
-import { auditEventDetailView, auditEventView } from "./views";
+import { AccessHistoryResponse, AuditEventResponse, AuditEventsResponse } from "./responses";
+import { AccessHistoryQuery, AuditEventIdParam, ListAuditEventsQuery } from "./schemas";
+import { accessChangeView, auditEventDetailView, auditEventView } from "./views";
 
 /**
  * The audit routes, their verification strategies, and what each accepts:
  *
  *   GET /audit/events           → a page of the trail   (control-plane: audit:events:read)        query: ListAuditEventsQuery
  *   GET /audit/events/:eventId  → one event in full     (control-plane: audit:events:read_detail) param: AuditEventIdParam
+ *   GET /audit/control-plane/access-history → every access change in a window, before and after
+ *                                                       (control-plane: audit:events:read)        query: AccessHistoryQuery
  *
- * **Both are reads, and there is nothing else.** The trail is append-only: no route here deletes,
+ * **All are reads, and there is nothing else.** The trail is append-only: no route here deletes,
  * edits, or prunes, because a management credential that could erase an audit row could erase the
  * evidence of its own use. Retention is a lifecycle concern for a Workflow, not a button on a
  * dashboard.
  *
- * **Neither has an end-user surface.** A user does not call the record of themselves being audited,
+ * **None has an end-user surface.** A user does not call the record of themselves being audited,
  * so `requireAuth()` appears nowhere in this file — and must not: the seam leaves `c.var.auth` null
  * for a control-plane caller by design, so an auth gate would deny every legitimate management call
  * permanently, with no credential able to fix it.
  *
- * **Validators sit after the gate on both lines.** A validator ahead of it turns a 403 into a 400 and
+ * **Validators sit after the gate on every line.** A validator ahead of it turns a 403 into a 400 and
  * tells an unverified caller which requests were well-formed — here that is a live oracle for which
  * projects, Workers, and action codes this deployment records.
  */
@@ -61,6 +64,7 @@ export interface AuditRouteDeclaration {
 export const AUDIT_ROUTES: readonly AuditRouteDeclaration[] = [
   { method: "GET", path: "/events", strategy: "control-plane", scope: AUDIT_TRAIL_READ_SCOPE },
   { method: "GET", path: "/events/:eventId", strategy: "control-plane", scope: AUDIT_EVENT_DETAIL_READ_SCOPE },
+  { method: "GET", path: "/control-plane/access-history", strategy: "control-plane", scope: AUDIT_TRAIL_READ_SCOPE },
 ];
 
 /** How the audit sub-router is built. */
@@ -212,6 +216,61 @@ export function registerAuditRoutes(options: AuditRoutesOptions): (app: Hono<Pit
           });
         }
         return c.json({ event: auditEventDetailView(row) } satisfies AuditEventResponse, 200);
+      },
+    );
+
+    /**
+     * CONTROL-PLANE READ (#831). Who could do what, over time: every membership, connection and key change in a
+     * window, oldest first, with its before and after — one SQL statement per page, never a walk of events here.
+     * Behind the listing scope, not the detail one: it lifts named metadata keys and never an IP or a user-agent.
+     */
+    app.get(
+      `${base}/control-plane/access-history`,
+      describeRoute({
+        summary:
+          "Replay every membership, connection and key change in a window, oldest first, with its before and after.",
+        verification: "control-plane",
+        scopes: [AUDIT_TRAIL_READ_SCOPE],
+        responses: { 200: AccessHistoryResponse },
+      }),
+      requireControlPlane(AUDIT_TRAIL_READ_SCOPE),
+      validate("query", AccessHistoryQuery),
+      async (c) => {
+        const operator = caller(c);
+        const query = c.req.valid("query");
+        const window = { since: query.since, until: query.until ?? new Date() };
+        const page = await accessHistory(database(c), { ...window, cursor: query.cursor, limit: query.limit });
+        // Audited like the listing: replaying who held what across every account is a read of everyone's access,
+        // and the trail should answer who asked, for which window, and how much came back.
+        await c.var.emit({
+          action: AuditTrailActions.accessHistoryRead,
+          outcome: "success",
+          actorType: "control-plane",
+          actorId: operator.subject,
+          resourceType: "audit_trail",
+          requestId: c.req.header("cf-ray"),
+          ip: c.req.header("cf-connecting-ip"),
+          userAgent: c.req.header("user-agent"),
+          metadata: {
+            connectionId: operator.connectionId,
+            query: {
+              since: window.since.toISOString(),
+              until: window.until.toISOString(),
+              resumed: query.cursor !== undefined,
+            },
+            returned: page.changes.length,
+            more: page.nextCursor !== null,
+          },
+        });
+        return c.json(
+          {
+            since: window.since.toISOString(),
+            until: window.until.toISOString(),
+            changes: page.changes.map(accessChangeView),
+            nextCursor: page.nextCursor,
+          } satisfies AccessHistoryResponse,
+          200,
+        );
       },
     );
   };

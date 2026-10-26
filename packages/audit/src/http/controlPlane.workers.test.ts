@@ -22,7 +22,7 @@ import { audit_0002_actor_kind } from "../migrations/0002_actor_kind";
 import { queryAuditEvents } from "../query";
 import { recordAuditEvent } from "../recorder";
 import { AUDIT_EVENT_DETAIL_READ_SCOPE, AUDIT_TRAIL_READ_SCOPE } from "./guards";
-import { AuditEventResponse, AuditEventsResponse } from "./responses";
+import { AccessHistoryResponse, AuditEventResponse, AuditEventsResponse } from "./responses";
 import { registerAuditRoutes } from "./routes";
 
 /**
@@ -540,5 +540,194 @@ describe("the exported response schemas against the live routes", () => {
       )
     ).json();
     expect(AuditEventResponse.parse(body)).toEqual(body);
+  });
+});
+
+describe("GET /audit/control-plane/access-history (#831)", () => {
+  const PATH = `${BASE}/control-plane/access-history`;
+  const WINDOW = `since=${new Date(0).toISOString()}&until=${NOW.toISOString()}`;
+
+  /** A member's role change, a connection's registration and a key's, each as its emitter writes it. */
+  async function seedChanges(): Promise<void> {
+    await seed(
+      {
+        action: "organization/member_role_changed",
+        outcome: "success",
+        actorType: "user",
+        actorId: "user_ada",
+        tenant: "org-42",
+        resourceType: "membership",
+        resourceId: "mem_bob",
+        sessionId: "session_1",
+        ip: "203.0.113.9",
+        userAgent: "Dashboard/1.0",
+        metadata: { role: "member", previousRole: "admin", subjectUserId: "user_bob" },
+      },
+      new Date(1_000),
+    );
+    await seed(
+      {
+        action: "controlplane/connection_registered",
+        outcome: "success",
+        severity: "warning",
+        actorType: "user",
+        actorId: "cf:ada@example.com",
+        resourceType: "controlplane_connection",
+        resourceId: CONNECTION_ID,
+        metadata: {
+          connectionId: CONNECTION_ID,
+          workerUrl: "https://hidden-worker.example",
+          scopes: ["audit:events:read"],
+          authorizedBy: "ada@example.com",
+          actorKind: "agent",
+          purpose: "Incident review.",
+        },
+      },
+      new Date(2_000),
+    );
+    await seed(
+      {
+        action: "controlplane/key_registered",
+        outcome: "success",
+        severity: "warning",
+        actorType: "control-plane",
+        actorId: "operator-1",
+        actorKind: "agent",
+        resourceType: "controlplane_connection",
+        resourceId: CONNECTION_ID,
+        metadata: { connectionId: CONNECTION_ID, registeredKeyId: "key-2", signedWithKeyId: "key-1" },
+      },
+      new Date(3_000),
+    );
+  }
+
+  test("answers every member, connection and key change in the window, oldest first, exactly as declared", async () => {
+    await seedChanges();
+    const response = await call(makeApp([AUDIT_TRAIL_READ_SCOPE]), `${PATH}?${WINDOW}`, AUDIT_TRAIL_READ_SCOPE);
+    expect(response.status).toBe(200);
+    const body = await response.json<AccessHistoryResponse>();
+    expect(AccessHistoryResponse.parse(body)).toEqual(body);
+
+    expect(body.since).toBe(new Date(0).toISOString());
+    expect(body.until).toBe(NOW.toISOString());
+    expect(body.nextCursor).toBeNull();
+    expect(body.changes.map((change) => change.subject)).toEqual(["member", "connection", "key"]);
+    const [member, registered, key] = body.changes;
+    expect(member).toMatchObject({
+      action: "organization/member_role_changed",
+      occurredAt: new Date(1_000).toISOString(),
+      actorType: "user",
+      actorId: "user_ada",
+      organizationId: "org-42",
+      membershipId: "mem_bob",
+      userId: "user_bob",
+      roleBefore: "admin",
+      roleAfter: "member",
+      detail: "recorded",
+    });
+    expect(registered).toMatchObject({
+      connectionId: CONNECTION_ID,
+      connectionKind: "agent",
+      purpose: "Incident review.",
+      principal: "ada@example.com",
+      scopesBefore: null,
+      scopesAfter: ["audit:events:read"],
+      detail: "recorded",
+    });
+    expect(key).toMatchObject({
+      connectionId: CONNECTION_ID,
+      keyId: "key-2",
+      change: "registered",
+      actorKind: "agent",
+    });
+  });
+
+  test("never discloses an IP, a user-agent, or another metadata key", async () => {
+    await seedChanges();
+    const text = await (
+      await call(makeApp([AUDIT_TRAIL_READ_SCOPE]), `${PATH}?${WINDOW}`, AUDIT_TRAIL_READ_SCOPE)
+    ).text();
+    for (const leaked of ["203.0.113.9", "Dashboard/1.0", "session_1", "hidden-worker", "key-1"]) {
+      expect(text, leaked).not.toContain(leaked);
+    }
+  });
+
+  test("an older change without its before and after says so", async () => {
+    await seed(
+      {
+        action: "organization/member_role_changed",
+        outcome: "success",
+        actorType: "user",
+        actorId: "user_ada",
+        tenant: "org-42",
+        resourceType: "membership",
+        resourceId: "mem_bob",
+        metadata: { role: "member", subjectUserId: "user_bob" },
+      },
+      new Date(1_000),
+    );
+    const body = await (
+      await call(makeApp([AUDIT_TRAIL_READ_SCOPE]), `${PATH}?${WINDOW}`, AUDIT_TRAIL_READ_SCOPE)
+    ).json<AccessHistoryResponse>();
+    expect(body.changes[0]).toMatchObject({ roleBefore: null, roleAfter: "member", detail: "not_recorded" });
+  });
+
+  test("pages with a cursor, and the window ends now when it names no end", async () => {
+    await seedChanges();
+    const app = makeApp([AUDIT_TRAIL_READ_SCOPE]);
+    const since = `since=${new Date(0).toISOString()}`;
+    const first = await (
+      await call(app, `${PATH}?${since}&limit=2`, AUDIT_TRAIL_READ_SCOPE)
+    ).json<AccessHistoryResponse>();
+    // The handler's own clock: a window with no end is everything up to the moment it was read.
+    expect(Math.abs(Date.parse(first.until) - Date.now())).toBeLessThan(60_000);
+    expect(first.changes).toHaveLength(2);
+    expect(first.nextCursor).not.toBeNull();
+    const second = await (
+      await call(app, `${PATH}?${since}&limit=2&cursor=${first.nextCursor}`, AUDIT_TRAIL_READ_SCOPE)
+    ).json<AccessHistoryResponse>();
+    expect(second.changes.map((change) => change.subject)).toEqual(["key"]);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  test("refuses a connection without audit:events:read, even one holding the detail scope", async () => {
+    const response = await call(
+      makeApp([AUDIT_EVENT_DETAIL_READ_SCOPE]),
+      `${PATH}?${WINDOW}`,
+      AUDIT_EVENT_DETAIL_READ_SCOPE,
+    );
+    expect(response.status).toBe(403);
+    expect(emitted.some((event) => event.action === "audit/access_history_read")).toBe(false);
+  });
+
+  test("refuses a missing start, and a window that ends before it begins, before any query runs", async () => {
+    const app = makeApp([AUDIT_TRAIL_READ_SCOPE]);
+    const missing = await call(app, PATH, AUDIT_TRAIL_READ_SCOPE);
+    expect(missing.status).toBe(400);
+    expect(await errorCode(missing)).toBe("validation/invalid_input");
+    const backwards = await call(
+      app,
+      `${PATH}?since=${NOW.toISOString()}&until=${new Date(0).toISOString()}`,
+      AUDIT_TRAIL_READ_SCOPE,
+    );
+    expect(backwards.status).toBe(400);
+  });
+
+  test("audits the read, with the window asked for and how much came back", async () => {
+    await seedChanges();
+    await call(makeApp([AUDIT_TRAIL_READ_SCOPE]), `${PATH}?${WINDOW}`, AUDIT_TRAIL_READ_SCOPE);
+    const read = emitted.find((event) => event.action === "audit/access_history_read");
+    expect(read).toMatchObject({
+      outcome: "success",
+      actorType: "control-plane",
+      actorId: "operator-1",
+      resourceType: "audit_trail",
+    });
+    expect(read?.metadata).toEqual({
+      connectionId: CONNECTION_ID,
+      query: { since: new Date(0).toISOString(), until: NOW.toISOString(), resumed: false },
+      returned: 3,
+      more: false,
+    });
   });
 });

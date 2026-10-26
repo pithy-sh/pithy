@@ -3,9 +3,17 @@
 
 import { describe, expect, test } from "vitest";
 import type { z } from "zod";
+import type { AccessHistoryRow } from "../accessHistory";
 import type { AuditEventRow } from "../data/auditEvent";
-import { AuditEventDetailView, AuditEventResponse, AuditEventsResponse, AuditEventView } from "./responses";
-import { auditEventDetailView, auditEventView } from "./views";
+import {
+  AccessChangeView,
+  AccessHistoryResponse,
+  AuditEventDetailView,
+  AuditEventResponse,
+  AuditEventsResponse,
+  AuditEventView,
+} from "./responses";
+import { accessChangeView, auditEventDetailView, auditEventView } from "./views";
 
 /**
  * The response schemas against what the projections actually produce.
@@ -104,6 +112,118 @@ describe("audit response schemas", () => {
     // schema is the second lock on the door the projection already closed.
     expect(AuditEventsResponse.parse({ events: [{ ...auditEventView(ROW), id: 41 }], nextCursor: null })).toEqual({
       events: [auditEventView(ROW)],
+      nextCursor: null,
+    });
+  });
+});
+
+/** One access change as the statement answers it, every column set, so a view proves what it keeps and drops. */
+const CHANGE: AccessHistoryRow = {
+  id: 7,
+  eventId: "e0e0f6a2-8b0c-4a1e-9f3d-2c1b0a998877",
+  occurredAt: new Date("2026-06-10T12:00:00.000Z"),
+  action: "organization/member_role_changed",
+  actorType: "user",
+  actorId: "user_ada",
+  actorKind: null,
+  subject: "member",
+  recorded: true,
+  organizationId: "org-42",
+  membershipId: "mem_bob",
+  userId: "user_bob",
+  roleBefore: "admin",
+  roleAfter: "member",
+  connectionId: null,
+  connectionKind: null,
+  purpose: null,
+  principal: null,
+  scopesBefore: null,
+  scopesAfter: null,
+  replacedConnectionId: null,
+  keyId: null,
+  keyChange: null,
+};
+
+describe("access-history views (#831)", () => {
+  test("a member change carries the member's fields and no other subject's", () => {
+    const view = accessChangeView(CHANGE);
+    accepts(AccessChangeView, view);
+    expect(view).toEqual({
+      eventId: CHANGE.eventId,
+      occurredAt: "2026-06-10T12:00:00.000Z",
+      action: "organization/member_role_changed",
+      actorType: "user",
+      actorId: "user_ada",
+      actorKind: null,
+      detail: "recorded",
+      subject: "member",
+      organizationId: "org-42",
+      membershipId: "mem_bob",
+      userId: "user_bob",
+      roleBefore: "admin",
+      roleAfter: "member",
+    });
+  });
+
+  test("a connection change carries its kind, purpose, principal and scopes", () => {
+    const view = accessChangeView({
+      ...CHANGE,
+      action: "controlplane/connection_updated",
+      actorType: "user",
+      subject: "connection",
+      connectionId: "conn-1",
+      connectionKind: "agent",
+      purpose: "Triage.",
+      principal: "ada@example.com",
+      scopesBefore: ["a:b:read", "c:d:read"],
+      scopesAfter: ["a:b:read"],
+    });
+    accepts(AccessChangeView, view);
+    expect(view).toMatchObject({
+      subject: "connection",
+      scopesBefore: ["a:b:read", "c:d:read"],
+      principal: "ada@example.com",
+    });
+    expect(Object.keys(view)).not.toContain("roleBefore");
+  });
+
+  test("a registration that started a connection over names the connection it ended", () => {
+    const view = accessChangeView({
+      ...CHANGE,
+      action: "controlplane/connection_registered",
+      subject: "connection",
+      connectionId: "conn-2",
+      scopesAfter: ["a:b:read"],
+      replacedConnectionId: "conn-1",
+    });
+    accepts(AccessChangeView, view);
+    expect(view).toMatchObject({ subject: "connection", connectionId: "conn-2", replacedConnectionId: "conn-1" });
+  });
+
+  test("a key change carries its key and what happened to it, and an unrecorded one says so", () => {
+    const view = accessChangeView({
+      ...CHANGE,
+      action: "controlplane/connection_updated",
+      subject: "key",
+      recorded: false,
+      connectionId: "conn-1",
+      keyId: null,
+      keyChange: "revoked",
+    });
+    accepts(AccessChangeView, view);
+    expect(view).toMatchObject({ subject: "key", change: "revoked", keyId: null, detail: "not_recorded" });
+    expect(Object.keys(view)).not.toContain("scopesBefore");
+  });
+
+  test("a key change with no change is refused, never guessed", () => {
+    expect(() => accessChangeView({ ...CHANGE, subject: "key", keyChange: null })).toThrow();
+  });
+
+  test("the envelope accepts what the route returns", () => {
+    accepts(AccessHistoryResponse, {
+      since: "2026-06-01T00:00:00.000Z",
+      until: "2026-06-10T12:00:00.000Z",
+      changes: [accessChangeView(CHANGE)],
       nextCursor: null,
     });
   });

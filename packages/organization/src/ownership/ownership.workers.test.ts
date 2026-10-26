@@ -419,6 +419,9 @@ describe("accepting", () => {
     expect(await roles()).toEqual({ [OLIVE]: "admin", [BOB]: "owner" });
     expect(transferred.newHolderMembershipId).toBe(bob);
     expect(transferred.previousHolderMembershipIds).toEqual([olive]);
+    // Whose they were, and what the new holder held before (#831): the trail records both sides of it.
+    expect(transferred.previousHolders).toEqual([{ id: olive, userId: OLIVE }]);
+    expect(transferred.previousRole).toBe("member");
   });
 
   test("the account never holds two owners, even through a transfer", async () => {
@@ -840,7 +843,7 @@ describe("forceOwnership", () => {
 
     // No offer was made and nobody accepted one: one call, and the account changed hands.
     expect(await roles()).toEqual({ [OLIVE]: "admin", [BOB]: "owner" });
-    expect(forced.newHolder).toEqual({ id: bob, userId: BOB });
+    expect(forced.newHolder).toEqual({ id: bob, userId: BOB, previousRole: "member" });
     expect(forced.previousHolders.map((holder) => holder.userId)).toEqual([OLIVE]);
     expect(forced.removed).toBe(false);
   });
