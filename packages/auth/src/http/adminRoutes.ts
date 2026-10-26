@@ -371,7 +371,12 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
           // makes an exfiltration pattern visible; the string itself adds nothing to that.
           metadata: { searched: query.search !== undefined, returned: page.items.length },
         });
-        return c.json({ users: page.items.map(userView), nextCursor: page.nextCursor } satisfies AdminUsersResponse);
+        // One instant for the page, so every user on it is judged at the same moment.
+        const now = new Date();
+        return c.json({
+          users: page.items.map((user) => userView(user, now)),
+          nextCursor: page.nextCursor,
+        } satisfies AdminUsersResponse);
       },
     );
 
@@ -423,7 +428,7 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
         });
 
         return c.json({
-          user: userView(user),
+          user: userView(user, new Date()),
           providers,
           sessions,
           devices,

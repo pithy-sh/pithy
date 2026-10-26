@@ -13,6 +13,8 @@ Both live on `pithy_auth_users`, so a session read already carries them. An acco
 
 No client can write its own state. The four columns are `input: false`, and only the kit's transitions set them.
 
+**The admin reads say where each account stands.** `GET /auth/admin/users` and `GET /auth/admin/users/:userId` return each user with `state` — `active`, `suspended` or `deleted` — `suspendedUntil`, the end of a suspension in force or null for one with none and in every other state, and `purgeAfter`, the last day a deleted account can be restored or null otherwise. They are read the way enforcement reads them, so a suspension past its end is `active`. The listing does not leave a suspended or deleted account out, and these are what let a pane offer suspend or reinstate without sending a write to find out. Neither the reason nor who acted is there: the reason is on the trail, and the trail is audit's. Each field is optional in `AdminUserView`, so a client reading a Worker older than them still parses its answer.
+
 ## Enforcement
 
 A refused request gets one of two errors, both 403:

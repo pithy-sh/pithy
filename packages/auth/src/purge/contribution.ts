@@ -153,6 +153,7 @@ export async function exportAuthUser(
     Promise.all(pluginTables.map(async (table) => [table, await pluginRows(db, table, userId)] as const)),
   ]);
   return authUserExportView({
+    now: new Date(),
     user: User.parse(row),
     sessions: sessions.map((session) => Session.parse(session)),
     accounts: accounts.map((account) => Account.pick({ providerId: true, createdAt: true }).parse(account)),

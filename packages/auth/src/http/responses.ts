@@ -59,6 +59,28 @@ export const AdminUserView = z
       ),
     createdAt: z.iso.datetime().describe("When the user was created, ISO-8601."),
     updatedAt: z.iso.datetime().describe("When the row was last written, ISO-8601."),
+    // Where the account stands (#813), on the organization view's shape. Each optional: absent from a Worker
+    // older than the field. No reason and no actor — the reason is on the trail, and the trail is audit's.
+    state: z
+      .enum(["active", "suspended", "deleted"])
+      .optional()
+      .describe(
+        "Where the account stands now: `active`; `suspended`, refused until it is reinstated or its end passes; or `deleted`, refused and restorable until `purgeAfter`. A suspension whose end has passed reads `active`, as enforcement reads it. Absent when the Worker that answered predates the field.",
+      ),
+    suspendedUntil: z.iso
+      .datetime()
+      .nullable()
+      .optional()
+      .describe(
+        "When a suspension in force ends by itself, ISO-8601. Null for one that lasts until a reinstatement, and in every other state. Absent when the Worker predates the field.",
+      ),
+    purgeAfter: z.iso
+      .datetime()
+      .nullable()
+      .optional()
+      .describe(
+        "For a deleted account, when the purge may erase it, ISO-8601 — restorable until then. Null in every other state. Absent when the Worker predates the field.",
+      ),
   })
   .describe("One user as a management client sees them. The table holds no credential, so nothing is withheld.");
 export type AdminUserView = z.output<typeof AdminUserView>;

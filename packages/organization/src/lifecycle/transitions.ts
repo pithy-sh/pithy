@@ -207,6 +207,41 @@ export interface OrganizationSuspendTransition {
   readonly suspendedUntil: Date | null;
 }
 
+/** What a suspension would act on: the instant, the end it would take, and where the organization stands. */
+export interface SuspensionTerms {
+  /** The instant the suspension is judged at. */
+  readonly at: Date;
+  /** When it would end by itself, or null for one that lasts until a reinstatement. */
+  readonly until: Date | null;
+  /** The organization's columns, as read. */
+  readonly columns: OrganizationLifecycleColumns;
+  /** Where it stands at `at`. */
+  readonly standing: ReturnType<typeof organizationStanding>;
+}
+
+/**
+ * Everything a suspension refuses, asked without suspending — an end that is not in the future, an organization
+ * that is not there, one that is deleted. {@link suspendOrganization} begins here, and so does the preview of a
+ * suspension's cascade (#813), so a preview is refused exactly where the write would be, with the same error.
+ * Writes nothing.
+ */
+export async function checkSuspension(
+  deps: OrganizationLifecycleDeps,
+  input: { organizationId: string; until?: Date | null; restoreRoute: string },
+): Promise<SuspensionTerms> {
+  const at = nowOf(deps);
+  const until = input.until ?? null;
+  if (until && until.getTime() <= at.getTime()) {
+    throw new ValidationError({ message: "A suspension must end in the future, or not at all." });
+  }
+  const columns = await columnsOf(deps, input.organizationId);
+  const standing = organizationStanding(columns, at);
+  if (standing.state === "deleted") {
+    throw deletedConflict(input.restoreRoute, "Then suspend it, if it should be suspended instead.");
+  }
+  return { at, until, columns, standing };
+}
+
 /**
  * Suspend an organization, until `until` or until it is reinstated.
  *
@@ -225,16 +260,7 @@ export async function suspendOrganization(
     restoreRoute: string;
   },
 ): Promise<OrganizationSuspendTransition> {
-  const at = nowOf(deps);
-  const until = input.until ?? null;
-  if (until && until.getTime() <= at.getTime()) {
-    throw new ValidationError({ message: "A suspension must end in the future, or not at all." });
-  }
-  const columns = await columnsOf(deps, input.organizationId);
-  const standing = organizationStanding(columns, at);
-  if (standing.state === "deleted") {
-    throw deletedConflict(input.restoreRoute, "Then suspend it, if it should be suspended instead.");
-  }
+  const { at, until, columns, standing } = await checkSuspension(deps, input);
   const encodedUntil = until ? SQLiteDate.encode(until) : null;
   const row: HistoryRow = {
     organizationId: input.organizationId,

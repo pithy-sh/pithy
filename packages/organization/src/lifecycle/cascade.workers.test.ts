@@ -16,7 +16,14 @@ import { Organization } from "../data/organization";
 import { MEMBERSHIPS_TABLE, ORGANIZATIONS_TABLE, organizationDatabase } from "../data/tables";
 import { ORGANIZATION_MIGRATION_ORDER } from "../migrations/0001_init";
 import { ORGANIZATION_MIGRATIONS } from "../migrations/set";
-import { classifyMembers, deleteSoleMembers, membersStillShut, suspendSoleMembers } from "./cascade";
+import {
+  classifyMembers,
+  deleteSoleMembers,
+  membersStillShut,
+  planDeletion,
+  planSuspension,
+  suspendSoleMembers,
+} from "./cascade";
 
 /**
  * The member cascade (#623) over real D1 and `@pithy-sh/auth`'s own transitions: who it reaches, who it never
@@ -215,6 +222,85 @@ describe("deleteSoleMembers", () => {
     );
     expect(outcome.reached).toEqual([{ userId: "cai", outcome: "deleted" }]);
     expect(outcome.skipped).toContainEqual({ userId: "bob", reason: "failed" });
+  });
+});
+
+describe("planSuspension and planDeletion", () => {
+  // The preview's half (#813): the same selection the cascade runs, with nothing applied.
+  const reads = () => ({ db: db(), auth: authDatabase(env.DB), now: NOW });
+
+  /** Every auth lifecycle column and history row, to show a plan moved none of them. */
+  async function untouched(): Promise<void> {
+    const { results } = await env.DB.prepare(
+      "select id from pithy_auth_users where suspended_at is not null or deleted_at is not null",
+    ).all();
+    expect(results).toEqual([]);
+    const history = await env.DB.prepare("select count(*) as n from pithy_auth_user_lifecycle").first<{ n: number }>();
+    expect(history?.n).toBe(0);
+  }
+
+  test("none plans nobody", async () => {
+    expect(await planSuspension(reads(), { organizationId: ACME, mode: "none" })).toEqual({
+      mode: "none",
+      reached: [],
+      skipped: [],
+    });
+    expect(await planDeletion(reads(), { organizationId: ACME, mode: "none", deletion: "hard" })).toEqual({
+      mode: "none",
+      reached: [],
+      skipped: [],
+    });
+  });
+
+  test("a suspension's plan names who it would reach and why each other is left alone, and moves nobody", async () => {
+    await env.DB.prepare("update pithy_auth_users set suspended_at = ? where id = 'cai'")
+      .bind(NOW.getTime() - 1)
+      .run();
+    const plan = await planSuspension(reads(), { organizationId: ACME, mode: "sole" });
+    expect(plan).toEqual({
+      mode: "sole",
+      reached: [{ userId: "bob", outcome: "suspended" }],
+      skipped: [
+        { userId: "ada", reason: "member_elsewhere" },
+        { userId: "cai", reason: "already_suspended" },
+        { userId: "ghost", reason: "no_account" },
+      ],
+    });
+    await env.DB.prepare("update pithy_auth_users set suspended_at = null where id = 'cai'").run();
+    await untouched();
+  });
+
+  test("a suspension past its end is no suspension, and the plan reaches that account", async () => {
+    await env.DB.prepare("update pithy_auth_users set suspended_at = ?, suspended_until = ? where id = 'cai'")
+      .bind(NOW.getTime() - 2, NOW.getTime() - 1)
+      .run();
+    const plan = await planSuspension(reads(), { organizationId: ACME, mode: "sole" });
+    expect(plan.reached).toContainEqual({ userId: "cai", outcome: "suspended" });
+  });
+
+  test("a deletion's plan reaches a suspended account, and an already deleted one only when hard", async () => {
+    await env.DB.prepare("update pithy_auth_users set deleted_at = ? where id = 'bob'").bind(NOW.getTime()).run();
+    await env.DB.prepare("update pithy_auth_users set suspended_at = ? where id = 'cai'").bind(NOW.getTime()).run();
+    const soft = await planDeletion(reads(), { organizationId: ACME, mode: "sole", deletion: "soft" });
+    expect(soft.reached).toEqual([{ userId: "cai", outcome: "deleted" }]);
+    expect(soft.skipped).toContainEqual({ userId: "bob", reason: "account_deleted" });
+    const hard = await planDeletion(reads(), { organizationId: ACME, mode: "sole", deletion: "hard" });
+    expect(hard.reached).toEqual([
+      { userId: "bob", outcome: "deleted" },
+      { userId: "cai", outcome: "deleted" },
+    ]);
+  });
+
+  test("the plan is what the cascade then does, on the same data", async () => {
+    await env.DB.prepare("update pithy_auth_users set suspended_at = ? where id = 'cai'")
+      .bind(NOW.getTime() - 1)
+      .run();
+    const plan = await planSuspension(reads(), { organizationId: ACME, mode: "sole" });
+    const done = await suspendSoleMembers(
+      { db: db(), users: users(), actor: ACTOR, now: NOW },
+      { organizationId: ACME, mode: "sole", reason: "r", until: null },
+    );
+    expect(done).toEqual(plan);
   });
 });
 
