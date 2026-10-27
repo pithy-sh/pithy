@@ -26,11 +26,13 @@ import { supportAdminRoutes } from "./http/scopes";
 import { createSupportEmailHandler } from "./inbound/handler";
 import { senderPeers } from "./link/peers";
 import type { SenderPeers } from "./link/sender";
-import { support_0001_threads } from "./migrations/0001_threads";
+import { SUPPORT_MIGRATIONS } from "./migrations/set";
+import { supportPresence } from "./presence/room";
 import { supportUserPurge } from "./purge/contribution";
 import { resolveReplies, type SupportReplySnippets } from "./reply/snippets";
 import { inapplicableAttachmentSecrets, SUPPORT_BUCKET_BINDING, supportSecretsRegistry } from "./secret/registry";
 import { supportExampleSeed } from "./seeds/example";
+import { assertStaffComposition } from "./staff/staff";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 import { supportWorkflows } from "./workflows/specs";
 
@@ -214,13 +216,13 @@ export function support(options: SupportOptions = {}): SupportCapability {
     emit: noopEmit,
   };
 
-  // One migration, unconditionally. The full-text index is **not** here: it is derived from the
+  // The whole chain, unconditionally. The full-text index is **not** in it: it is derived from the
   // messages table and rebuildable at any time, so it is a provisioned resource that
   // `pithy support provision` creates and drops (see `store/searchIndex.ts`), not schema whose loss
   // loses data. Keeping it out of the ledger is what makes `search.fts` safe to toggle in either
   // direction — a config flag must never be able to corrupt a migration set shared with every other
   // capability in the database.
-  const migrations: Record<string, Migration> = { "0001_threads": support_0001_threads };
+  const migrations: Record<string, Migration> = SUPPORT_MIGRATIONS;
 
   const requiredBindings: BindingSpecInput[] = [
     // The app database every support table lives in.
@@ -277,7 +279,12 @@ export function support(options: SupportOptions = {}): SupportCapability {
      * able to answer is a coherent and useful thing, so a missing email capability degrades one
      * route instead of refusing to boot.
      */
+    // Support's staff powers, when the adopter names them, so tenancy refuses a catalog that places them on
+    // no role. Absent until named: a capability never reserves a power in a catalog that is the adopter's.
+    ...(resolved.staff ? { powers: [resolved.staff.readPower, resolved.staff.assignPower] } : {}),
     compose: ({ capabilities }) => {
+      // A staff block no request could be served by safely is refused here, at boot. See `staff/staff.ts`.
+      assertStaffComposition(resolved.staff, capabilities);
       const email = capabilities.find(isEmailCapability);
       wiring.enqueueEmail = email?.enqueue;
       // Auth and payments, found rather than imported (#645), and refused here when this Worker's config needs
@@ -289,10 +296,14 @@ export function support(options: SupportOptions = {}): SupportCapability {
     // for why the list is as short as it is.
     client: (): SupportClientProjection => clientProjection(resolved, mountPath),
     adminRoutes: supportAdminRoutes(mountPath),
+    // Who else has a thread open (#816): one `support.thread` room per thread, on core's presence seam.
+    // Declaring it is the whole of the wiring — core adds the room's binding, socket and ticket routes.
+    presence: supportPresence(mountPath, wiring),
     routes: registerSupportRoutes({
       basePath: mountPath,
       submission: resolved.submission.enabled,
       resolveDeps: makeResolveDeps(wiring),
+      staff: resolved.staff,
     }),
     email: createSupportEmailHandler(wiring),
     seeds: [supportExampleSeed],

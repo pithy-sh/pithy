@@ -217,8 +217,10 @@ export const SIDES: readonly Side[] = ["input", "output"];
  * Moved on 2026-10-26 (#818): `@pithy-sh/rating` brings `pithy_rating_outcomes`, `pithy_rating_outcome_players`
  * and `pithy_rating_adjustments` — every outcome rating applied, each participant's standing going in, and every
  * recalculation and reset the control plane made.
+ * Moved on 2026-10-27 (#816): `@pithy-sh/support` brings `pithy_support_assignments`, every change of a
+ * thread's assignee, with who had it before and who made the change.
  */
-export const CENSUS = { tables: 68, packages: 18 };
+export const CENSUS = { tables: 69, packages: 18 };
 
 /**
  * Where the generated programs are written — **outside the checkout, and that is forced**.

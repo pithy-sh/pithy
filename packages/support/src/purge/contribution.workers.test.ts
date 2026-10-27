@@ -8,16 +8,17 @@ import { createDatabase } from "@pithy-sh/core/src/data/db";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { support } from "../capability";
-import { support_0001_threads } from "../migrations/0001_threads";
-import { SUPPORT_PURGE_SUMMARY, supportUserPurge } from "./contribution";
+import { SUPPORT_MIGRATIONS } from "../migrations/set";
+import { ERASED_ASSIGNER, SUPPORT_PURGE_SUMMARY, supportUserPurge } from "./contribution";
 
 /**
  * Support's part of a person's purge and export (#814), over real D1 and a real Miniflare R2 bucket: a thread linked
  * to the account and one sent from its address before there was an account are both theirs, with every message,
- * attachment and raw mail in them, and nobody else's thread is touched.
+ * attachment and raw mail in them, and the history of who had each (#816), and nobody else's thread is touched.
  */
 
 const TABLES = [
+  "pithy_support_assignments",
   "pithy_support_attachments",
   "pithy_support_classifications",
   "pithy_support_thread_flags",
@@ -110,13 +111,27 @@ async function thread(id: string, userId: string | null, fromAddress: string): P
   )
     .bind(`c-${id}`, id, `m-${id}`, T)
     .run();
+  // Handed to a staff member and then to another: two rows of history, and the second is who has it now.
+  await env.DB.batch([
+    env.DB.prepare(
+      "INSERT INTO pithy_support_assignments (id, thread_id, assignee_ref, assignee_name, previous_ref, previous_name, actor_type, assigned_by, note, created_at) VALUES (?, ?, 'grace', 'Grace', NULL, NULL, 'user', 'staff-1', 'Billing question.', ?)",
+    ).bind(`h1-${id}`, id, T),
+    env.DB.prepare(
+      "INSERT INTO pithy_support_assignments (id, thread_id, assignee_ref, assignee_name, previous_ref, previous_name, actor_type, assigned_by, note, created_at) VALUES (?, ?, 'linus', 'Linus', 'grace', 'Grace', 'control-plane', 'cp-subject', NULL, ?)",
+    ).bind(`h2-${id}`, id, T + 1),
+    env.DB.prepare(
+      "UPDATE pithy_support_threads SET assignee_ref = 'linus', assignee_name = 'Linus', assigned_at = ?, assigned_by = 'cp-subject' WHERE id = ?",
+    ).bind(T + 1, id),
+  ]);
   await env.SUPPORT_BUCKET.put(`raw/${id}`, "mime");
   await env.SUPPORT_BUCKET.put(`att/${id}`, "png");
 }
 
 beforeEach(async () => {
   for (const table of TABLES) await env.DB.exec(`DROP TABLE IF EXISTS ${table}`);
-  await support_0001_threads.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
+  for (const migration of Object.values(SUPPORT_MIGRATIONS)) {
+    await migration.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
+  }
   await thread("linked", "ada", "ada@example.test");
   await thread("before-signup", null, "ada@example.test");
   await thread("bobs", "bob", "bob@example.test");
@@ -142,6 +157,25 @@ describe("the support user purge", () => {
     expect(JSON.stringify(data)).not.toContain("bob");
   });
 
+  test("exports who had each of their threads, oldest first, and never who made the change (#816)", async () => {
+    const data = await exportOf(context("ada", "ada@example.test"));
+    const history = data.assignments as Record<string, unknown>[];
+    expect(history.map((row) => row.id)).toEqual(["h1-before-signup", "h1-linked", "h2-before-signup", "h2-linked"]);
+    expect(history[0]).toMatchObject({
+      threadId: "before-signup",
+      assigneeRef: "grace",
+      assigneeName: "Grace",
+      note: "Billing question.",
+    });
+    expect(history[2]).toMatchObject({ assigneeRef: "linus", previousRef: "grace", previousName: "Grace" });
+    const threads = data.threads as Record<string, unknown>[];
+    expect(threads[0]).toMatchObject({ assigneeRef: "linus", assigneeName: "Linus" });
+    // Who acted is the operator's, not the person's: the audit trail keeps the act with its actor.
+    for (const row of [...history, ...threads]) expect(row).not.toHaveProperty("assignedBy");
+    expect(JSON.stringify(data)).not.toContain("staff-1");
+    expect(JSON.stringify(data)).not.toContain("cp-subject");
+  });
+
   test("with no address to read, exports what is linked to the account", async () => {
     const data = await exportOf(context("ada", null));
     expect((data.threads as { id: string }[]).map((row) => row.id)).toEqual(["linked"]);
@@ -149,15 +183,26 @@ describe("the support user purge", () => {
 
   test("erases the threads, their rows and their bytes, and leaves everyone else's", async () => {
     await purge.erase(context("ada", "ada@example.test"));
-    expect(await exportOf(context("ada", "ada@example.test"))).toEqual({ threads: [], messages: [], attachments: [] });
+    expect(await exportOf(context("ada", "ada@example.test"))).toEqual({
+      threads: [],
+      messages: [],
+      attachments: [],
+      assignments: [],
+      handovers: [],
+    });
     for (const key of ["raw/linked", "att/linked", "raw/before-signup", "att/before-signup"]) {
       expect(await env.SUPPORT_BUCKET.head(key)).toBeNull();
     }
     expect(await env.SUPPORT_BUCKET.head("att/bobs")).not.toBeNull();
     for (const table of TABLES) {
       const left = await env.DB.prepare(`SELECT count(*) AS n FROM ${table}`).first<{ n: number }>();
-      expect(left?.n, table).toBe(1);
+      // Bob's one thread is left, with its one row in each table — and its two handovers.
+      expect(left?.n, table).toBe(table === "pithy_support_assignments" ? 2 : 1);
     }
+    const history = await env.DB.prepare("SELECT thread_id FROM pithy_support_assignments").all<{
+      thread_id: string;
+    }>();
+    expect(new Set(history.results.map((row) => row.thread_id))).toEqual(new Set(["bobs"]));
     const kept = await env.DB.prepare("SELECT id FROM pithy_support_classifications").all<{ id: string }>();
     expect(kept.results.map((row) => row.id)).toEqual(["c-bobs"]);
   });
@@ -175,6 +220,10 @@ describe("the support user purge", () => {
       "SELECT id FROM pithy_support_messages WHERE thread_id = 'someone-elses'",
     ).all();
     expect(messages.results).toHaveLength(1);
+    const handovers = await env.DB.prepare(
+      "SELECT id FROM pithy_support_assignments WHERE thread_id = 'someone-elses'",
+    ).all();
+    expect(handovers.results).toHaveLength(2);
     expect(await env.SUPPORT_BUCKET.head("raw/someone-elses")).not.toBeNull();
     expect(await env.SUPPORT_BUCKET.head("att/someone-elses")).not.toBeNull();
   });
@@ -204,9 +253,84 @@ describe("the support user purge", () => {
     await env.DB.batch(statements.flat());
     await env.SUPPORT_BUCKET.put("raw/more-500", "mime");
     await purge.erase(context("ada", "ada@example.test"));
-    expect(await exportOf(context("ada", "ada@example.test"))).toEqual({ threads: [], messages: [], attachments: [] });
+    expect(await exportOf(context("ada", "ada@example.test"))).toEqual({
+      threads: [],
+      messages: [],
+      attachments: [],
+      assignments: [],
+      handovers: [],
+    });
     expect(await env.SUPPORT_BUCKET.head("raw/more-500")).toBeNull();
     expect(await env.SUPPORT_BUCKET.head("att/bobs")).not.toBeNull();
+  });
+
+  test("exports the handovers a staff member made on other people's threads, without the customer's words", async () => {
+    const data = await exportOf(context("staff-1", "staff@example.test"));
+    expect(data.threads).toEqual([]);
+    expect(data.handovers).toEqual([
+      {
+        id: "h1-before-signup",
+        threadId: "before-signup",
+        actorType: "user",
+        assignedBy: "staff-1",
+        createdAt: new Date(T).toISOString(),
+      },
+      {
+        id: "h1-bobs",
+        threadId: "bobs",
+        actorType: "user",
+        assignedBy: "staff-1",
+        createdAt: new Date(T).toISOString(),
+      },
+      {
+        id: "h1-linked",
+        threadId: "linked",
+        actorType: "user",
+        assignedBy: "staff-1",
+        createdAt: new Date(T).toISOString(),
+      },
+    ]);
+    expect(JSON.stringify(data.handovers)).not.toContain("Billing question.");
+  });
+
+  test("a purged staff member's id leaves every handover they made and every thread they assigned, and nothing else", async () => {
+    // Staff-1 made the current assignment on Bob's thread, as a signed-in user, and a client with the same id did on
+    // Ada's: only the user's own act is theirs.
+    await env.DB.prepare("UPDATE pithy_support_threads SET assigned_by = 'staff-1', assigned_at = ? WHERE id = 'bobs'")
+      .bind(T)
+      .run();
+    await env.DB.prepare(
+      "UPDATE pithy_support_threads SET assigned_by = 'staff-1', assigned_at = ? WHERE id = 'linked'",
+    )
+      .bind(T + 2)
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO pithy_support_assignments (id, thread_id, assignee_ref, assignee_name, previous_ref, previous_name, actor_type, assigned_by, note, created_at) VALUES ('cp-same', 'linked', 'grace', 'Grace', 'linus', 'Linus', 'control-plane', 'staff-1', NULL, ?)",
+    )
+      .bind(T + 2)
+      .run();
+    await purge.erase(context("staff-1", "staff@example.test"));
+    const rows = await env.DB.prepare(
+      "SELECT id, actor_type, assigned_by FROM pithy_support_assignments ORDER BY id",
+    ).all<{ id: string; actor_type: string; assigned_by: string }>();
+    for (const row of rows.results) {
+      if (row.actor_type === "user") expect(row.assigned_by, row.id).toBe(ERASED_ASSIGNER);
+    }
+    expect(rows.results.find((row) => row.id === "cp-same")?.assigned_by).toBe("staff-1");
+    expect(rows.results.find((row) => row.id === "h2-bobs")?.assigned_by).toBe("cp-subject");
+    const threads = await env.DB.prepare("SELECT id, assigned_by FROM pithy_support_threads ORDER BY id").all<{
+      id: string;
+      assigned_by: string;
+    }>();
+    expect(threads.results).toEqual([
+      { id: "before-signup", assigned_by: "cp-subject" },
+      { id: "bobs", assigned_by: ERASED_ASSIGNER },
+      { id: "linked", assigned_by: "staff-1" },
+    ]);
+    // Nobody's thread went with them, and the history stays whole.
+    expect(rows.results).toHaveLength(7);
+    expect((await exportOf(context("staff-1", "staff@example.test"))).handovers).toEqual([]);
+    await expect(purge.erase(context("staff-1", "staff@example.test"))).resolves.toBeUndefined();
   });
 
   test("is idempotent: a second erase finds nothing and succeeds", async () => {

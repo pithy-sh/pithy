@@ -151,6 +151,8 @@ const DECLARED_ONLY: Record<string, string> = {
  * `DB.batch`, and `peer.ts`, which hands a void cascade the consumer over its D1.
  * Its purge (#814, over that log) moved it by one more: `purge/contribution.ts`, which rewrites the person's place
  * in the log a page at a time and deletes their rating, each as one `d1.batch()`.
+ * Assignment (#816) moved `support` by one: `store/assignment.ts`, which batches a thread's change of assignee with
+ * its history row on D1, so a handover never lands without its record.
  */
 const IMPORTERS: Record<string, number> = {
   "packages/artifacts": 3,
@@ -170,7 +172,7 @@ const IMPORTERS: Record<string, number> = {
   "packages/rating": 5,
   "packages/secrets": 7,
   "packages/storage": 7,
-  "packages/support": 9,
+  "packages/support": 10,
   "packages/testers": 8,
   "packages/vector": 4,
 };

@@ -17,6 +17,7 @@ import { managerRegistry } from "@pithy-sh/secrets/src/manager/managerRegistry";
 import { isMintableSecret, type SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { runtimeTokenRegistry } from "@pithy-sh/secrets/src/tokens/runtimeTokenRegistry";
 import { storageSecretsRegistry } from "@pithy-sh/storage/src/secret/registry";
+import { supportSecretsRegistry } from "@pithy-sh/support/src/secret/registry";
 import { turnstileCapabilitySecretsRegistry } from "@pithy-sh/turnstile/src/secret/registry";
 import { describe, expect, test } from "vitest";
 import { managerMintedSecrets, mintDeclaredSecrets } from "../capabilities/mintSecrets";
@@ -75,6 +76,7 @@ const REGISTRY_SITES = [
   "secrets/src/manager/managerRegistry.ts",
   "secrets/src/tokens/runtimeTokenRegistry.ts",
   "storage/src/secret/registry.ts",
+  "support/src/secret/registry.ts",
   "turnstile/src/secret/registry.ts",
 ];
 
@@ -120,6 +122,9 @@ const SHIPPED_REGISTRIES: Record<string, { site: string; registry: SecretRegistr
     registry: runtimeTokenRegistry(["secrets:read", "secrets:write"]),
   },
   storage: { site: "storage/src/secret/registry.ts", registry: storageSecretsRegistry },
+  // Support's R2 bundle from storage's factory, and the presence ticket key its `support.thread` room signs
+  // with (#816), which is arbitrary and so must be something the CLI creates.
+  support: { site: "support/src/secret/registry.ts", registry: supportSecretsRegistry },
   turnstile: { site: "turnstile/src/secret/registry.ts", registry: turnstileCapabilitySecretsRegistry },
 };
 
@@ -221,6 +226,8 @@ describe("the registries this file claims to read are the ones the kit ships", (
       // A Cloudflare token is minted by `pithy token mint` against the account, never from random bytes.
       "runtime token": [],
       storage: [],
+      // The presence ticket key: arbitrary, since this Worker both signs and verifies every ticket (#816).
+      support: ["presence-ticket-key"],
       turnstile: [],
     });
   });

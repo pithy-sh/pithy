@@ -1,11 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { PRESENCE_TICKET_KEY_ENTRY, PRESENCE_TICKET_KEY_SECRET } from "@pithy-sh/core/src/presence/declaration";
+import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { r2CredentialsRegistry } from "@pithy-sh/storage/src/secret/registry";
 import { type SupportConfig, supportNeedsBucket } from "../config/config";
 
 /**
- * The secrets support reads — exactly one, and it is not support's own shape.
+ * The secrets support reads — two, and neither is support's own shape: the R2 credential bundle
+ * attachments are signed with, and the presence ticket key its `support.thread` room is joined with.
  *
  * Attachment bytes are written through the R2 binding and served as short-lived signed URLs, and
  * signing needs an S3 key pair. Rather than declare another credential shape, support declares the
@@ -32,8 +35,20 @@ export const SUPPORT_R2_SECRET = "support-r2-credentials";
  */
 export const SUPPORT_BUCKET_BINDING = "SUPPORT_BUCKET";
 
+/**
+ * The presence ticket key (#816), declared exactly as core states it. The name is the join key, so every
+ * capability in a Worker that declares rooms signs and verifies with the one key, and nobody chooses its
+ * value: `pithy add` mints the local one and `pithy secrets provision` the deployed ones.
+ */
+export const supportPresenceRegistry = defineSecretRegistry({
+  [PRESENCE_TICKET_KEY_SECRET]: PRESENCE_TICKET_KEY_ENTRY,
+});
+
 /** The support capability's secret-registry slice — aggregated into the shared accessor at startup. */
-export const supportSecretsRegistry = r2CredentialsRegistry(SUPPORT_R2_SECRET, SUPPORT_BUCKET_BINDING);
+export const supportSecretsRegistry = defineSecretRegistry({
+  ...r2CredentialsRegistry(SUPPORT_R2_SECRET, SUPPORT_BUCKET_BINDING),
+  ...supportPresenceRegistry,
+});
 
 /**
  * **The credential this composition cannot reach**, as the `inapplicableSecrets` contribution (#541).

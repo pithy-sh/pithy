@@ -102,6 +102,62 @@
         "current": "pithy.presence.v1",
         "previous": null
       }
+    },
+    "supportPresenceRooms": {
+      "address": "/support/presence/rooms/{kind}/{recordId}",
+      "summary": "Who else has a support record open, and what they are doing, live.",
+      "description": "Mint a ticket first — `POST /control-plane/presence/tickets` for a management client, `POST /support/presence/tickets` for a signed-in user — then offer `pithy.presence.v1` and `pithy.ticket.<ticket>` in `Sec-WebSocket-Protocol`. The ticket is the credential: single use, 60 seconds, this room only. The room sends `init` first, then `joined`, `left` and `activity` as they happen. Send `set_activity` to announce one of the kind's declared activities, and `ping` as plain text to get `pong`. Room kinds: `support.thread`.",
+      "parameters": {
+        "kind": {
+          "description": "The room kind, as the manifest lists it — `support.thread`."
+        },
+        "recordId": {
+          "description": "The record the room is about."
+        }
+      },
+      "messages": {
+        "supportPresenceRooms.send.init": {
+          "$ref": "#/components/messages/supportPresenceRooms.send.init"
+        },
+        "supportPresenceRooms.send.joined": {
+          "$ref": "#/components/messages/supportPresenceRooms.send.joined"
+        },
+        "supportPresenceRooms.send.left": {
+          "$ref": "#/components/messages/supportPresenceRooms.send.left"
+        },
+        "supportPresenceRooms.send.activity": {
+          "$ref": "#/components/messages/supportPresenceRooms.send.activity"
+        },
+        "supportPresenceRooms.send.error": {
+          "$ref": "#/components/messages/supportPresenceRooms.send.error"
+        },
+        "supportPresenceRooms.send.pong": {
+          "$ref": "#/components/messages/supportPresenceRooms.send.pong"
+        },
+        "supportPresenceRooms.receive.set_activity": {
+          "$ref": "#/components/messages/supportPresenceRooms.receive.set_activity"
+        },
+        "supportPresenceRooms.receive.ping": {
+          "$ref": "#/components/messages/supportPresenceRooms.receive.ping"
+        }
+      },
+      "tags": [
+        {
+          "name": "support"
+        }
+      ],
+      "bindings": {
+        "ws": {
+          "method": "GET"
+        }
+      },
+      "x-pithy-verification": [
+        "public"
+      ],
+      "x-pithy-subprotocols": {
+        "current": "pithy.presence.v1",
+        "previous": null
+      }
     }
   },
   "operations": {
@@ -180,6 +236,48 @@
       "messages": [
         {
           "$ref": "#/channels/matchmakingPresence/messages/matchmakingPresence.receive.ping"
+        }
+      ]
+    },
+    "supportPresenceRooms.send": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/supportPresenceRooms"
+      },
+      "summary": "Frames the Worker sends.",
+      "messages": [
+        {
+          "$ref": "#/channels/supportPresenceRooms/messages/supportPresenceRooms.send.init"
+        },
+        {
+          "$ref": "#/channels/supportPresenceRooms/messages/supportPresenceRooms.send.joined"
+        },
+        {
+          "$ref": "#/channels/supportPresenceRooms/messages/supportPresenceRooms.send.left"
+        },
+        {
+          "$ref": "#/channels/supportPresenceRooms/messages/supportPresenceRooms.send.activity"
+        },
+        {
+          "$ref": "#/channels/supportPresenceRooms/messages/supportPresenceRooms.send.error"
+        },
+        {
+          "$ref": "#/channels/supportPresenceRooms/messages/supportPresenceRooms.send.pong"
+        }
+      ]
+    },
+    "supportPresenceRooms.receive": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/supportPresenceRooms"
+      },
+      "summary": "Frames the Worker accepts.",
+      "messages": [
+        {
+          "$ref": "#/channels/supportPresenceRooms/messages/supportPresenceRooms.receive.set_activity"
+        },
+        {
+          "$ref": "#/channels/supportPresenceRooms/messages/supportPresenceRooms.receive.ping"
         }
       ]
     }
@@ -879,6 +977,324 @@
         }
       },
       "matchmakingPresence.receive.ping": {
+        "name": "ping",
+        "summary": "The keepalive, as plain text.",
+        "contentType": "text/plain",
+        "payload": {
+          "type": "string",
+          "const": "ping",
+          "description": "The keepalive, as plain text."
+        }
+      },
+      "supportPresenceRooms.send.init": {
+        "name": "init",
+        "summary": "Everyone in the room, sent once on connect.",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "init",
+              "description": "Always `init`."
+            },
+            "self": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+              "description": "This socket's own participant id, so a client can find itself in the list."
+            },
+            "participants": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                    "description": "This participant's id in the room — one per socket, so one person in two tabs is two participants."
+                  },
+                  "ref": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "Who the participant is. A management client's own opaque reference, which it chose; or the signed-in user's id, which the Worker chose."
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80,
+                    "description": "How the other participants see this one. A label, never an identity — `ref` and `origin` are that."
+                  },
+                  "origin": {
+                    "type": "string",
+                    "enum": [
+                      "control-plane",
+                      "session"
+                    ],
+                    "description": "Which door the participant came in by: `control-plane`, a management client such as the dashboard, or `session`, a signed-in user of the app."
+                  },
+                  "activity": {
+                    "type": "string",
+                    "maxLength": 32,
+                    "pattern": "^[a-z][a-z0-9_]*$",
+                    "description": "What they are doing now, one of the room kind's declared activities."
+                  },
+                  "joinedAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                    "description": "When this socket joined, ISO-8601."
+                  }
+                },
+                "required": [
+                  "id",
+                  "ref",
+                  "name",
+                  "origin",
+                  "activity",
+                  "joinedAt"
+                ],
+                "description": "One participant in a presence room: one open socket."
+              },
+              "description": "Everyone in the room now, this socket included, in the order they joined."
+            }
+          },
+          "required": [
+            "type",
+            "self",
+            "participants"
+          ],
+          "description": "Who is in the room, sent once as soon as the socket opens."
+        }
+      },
+      "supportPresenceRooms.send.joined": {
+        "name": "joined",
+        "summary": "Another participant joined.",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "joined",
+              "description": "Always `joined`."
+            },
+            "participant": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                  "description": "This participant's id in the room — one per socket, so one person in two tabs is two participants."
+                },
+                "ref": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "description": "Who the participant is. A management client's own opaque reference, which it chose; or the signed-in user's id, which the Worker chose."
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80,
+                  "description": "How the other participants see this one. A label, never an identity — `ref` and `origin` are that."
+                },
+                "origin": {
+                  "type": "string",
+                  "enum": [
+                    "control-plane",
+                    "session"
+                  ],
+                  "description": "Which door the participant came in by: `control-plane`, a management client such as the dashboard, or `session`, a signed-in user of the app."
+                },
+                "activity": {
+                  "type": "string",
+                  "maxLength": 32,
+                  "pattern": "^[a-z][a-z0-9_]*$",
+                  "description": "What they are doing now, one of the room kind's declared activities."
+                },
+                "joinedAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                  "description": "When this socket joined, ISO-8601."
+                }
+              },
+              "required": [
+                "id",
+                "ref",
+                "name",
+                "origin",
+                "activity",
+                "joinedAt"
+              ],
+              "description": "Who joined."
+            }
+          },
+          "required": [
+            "type",
+            "participant"
+          ],
+          "description": "Another participant joined the room."
+        }
+      },
+      "supportPresenceRooms.send.left": {
+        "name": "left",
+        "summary": "Another participant left, or their socket dropped.",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "left",
+              "description": "Always `left`."
+            },
+            "participantId": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+              "description": "The participant who left."
+            }
+          },
+          "required": [
+            "type",
+            "participantId"
+          ],
+          "description": "Another participant left the room, or their socket dropped."
+        }
+      },
+      "supportPresenceRooms.send.activity": {
+        "name": "activity",
+        "summary": "Another participant changed what they are doing.",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "activity",
+              "description": "Always `activity`."
+            },
+            "participantId": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+              "description": "The participant whose activity changed."
+            },
+            "activity": {
+              "type": "string",
+              "maxLength": 32,
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "description": "What they are doing now."
+            }
+          },
+          "required": [
+            "type",
+            "participantId",
+            "activity"
+          ],
+          "description": "Another participant announced a different activity."
+        }
+      },
+      "supportPresenceRooms.send.error": {
+        "name": "error",
+        "summary": "A frame the room could not accept.",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "error",
+              "description": "Always `error`."
+            },
+            "error": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "description": "Namespaced `domain/reason`, e.g. `auth/invalid_token`. Stable: a client switches on it. The full list is `pithy schema --json`'s `errorCodes`."
+                },
+                "status": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991,
+                  "description": "The HTTP status, repeated in the body."
+                },
+                "message": {
+                  "type": "string",
+                  "description": "English, for a person. A client that translates renders its own wording for `code` instead."
+                },
+                "params": {
+                  "description": "Values a translating client interpolates into its own wording for `code`.",
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {}
+                },
+                "issues": {
+                  "description": "For `validation/invalid_input`: one entry per field that failed, with its path.",
+                  "type": "array",
+                  "items": {}
+                }
+              },
+              "required": [
+                "code",
+                "status",
+                "message"
+              ],
+              "description": "The public error payload. Never carries the operator's remedy or internal detail."
+            }
+          },
+          "required": [
+            "type",
+            "error"
+          ],
+          "description": "The room could not accept a frame — not one it reads, an activity the room kind does not declare, or past the size limit. The error is the one an HTTP response would carry."
+        }
+      },
+      "supportPresenceRooms.send.pong": {
+        "name": "pong",
+        "summary": "The answer to `ping`, as plain text.",
+        "contentType": "text/plain",
+        "payload": {
+          "type": "string",
+          "const": "pong",
+          "description": "The answer to `ping`, as plain text."
+        }
+      },
+      "supportPresenceRooms.receive.set_activity": {
+        "name": "set_activity",
+        "summary": "Announce a declared activity.",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "set_activity",
+              "description": "Always `set_activity`."
+            },
+            "activity": {
+              "type": "string",
+              "maxLength": 32,
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "description": "What this participant is doing now. One of the room kind's declared values."
+            }
+          },
+          "required": [
+            "type",
+            "activity"
+          ],
+          "description": "Announce what this participant is doing now."
+        }
+      },
+      "supportPresenceRooms.receive.ping": {
         "name": "ping",
         "summary": "The keepalive, as plain text.",
         "contentType": "text/plain",

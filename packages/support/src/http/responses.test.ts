@@ -11,6 +11,8 @@ import type { ListedThread } from "../store/threads";
 import * as responses from "./responses";
 import {
   SenderContextView,
+  SupportAssignmentView,
+  SupportAssignResponse,
   SupportAttachmentView,
   SupportFlagsResponse,
   SupportListedThreadView,
@@ -28,7 +30,15 @@ import {
   SupportThreadsResponseAsRead,
   SupportThreadView,
 } from "./responses";
-import { listedThreadView, messageView, myMessageView, myThreadView, senderView, threadView } from "./views";
+import {
+  assignmentView,
+  listedThreadView,
+  messageView,
+  myMessageView,
+  myThreadView,
+  senderView,
+  threadView,
+} from "./views";
 
 /**
  * The response schemas against what the projections actually produce.
@@ -336,6 +346,7 @@ describe("support response schemas", () => {
 /** The six reader's contracts this capability publishes. Frozen: a seventh has to be written down. */
 const READERS_CONTRACTS: readonly string[] = [
   "SupportArchiveResponseAsRead",
+  "SupportAssignResponseAsRead",
   "SupportListedThreadViewAsRead",
   "SupportMessageViewAsRead",
   "SupportThreadResponseAsRead",
@@ -371,6 +382,71 @@ const published: Record<string, unknown> = { ...responses };
 function stranger(): Record<string, unknown> {
   return { ...listedThreadView(LISTED), channel: "sms", accountLinkSource: "oauth", priority: "blocker" };
 }
+
+describe("assignment on the wire (#816)", () => {
+  const ASSIGNED: SupportThread = {
+    ...THREAD,
+    assigneeRef: "member-7",
+    assigneeName: "Grace Hopper",
+    assignedAt: AT,
+    assignedBy: "operator-1",
+  };
+
+  test("an assigned thread carries all four fields, on the listing and on the read", () => {
+    const view = threadView(ASSIGNED);
+    expect(view).toMatchObject({
+      assigneeRef: "member-7",
+      assigneeName: "Grace Hopper",
+      assignedAt: AT.toISOString(),
+      assignedBy: "operator-1",
+    });
+    accepts(SupportThreadView, view);
+    accepts(SupportListedThreadView, listedThreadView({ ...ASSIGNED, read: false, snoozedUntil: null }));
+  });
+
+  test("a current Worker states nobody as null, never by leaving the keys out", () => {
+    // The producer half of the version boundary: a Worker on this release always projects the keys.
+    const view = threadView(UNTOUCHED);
+    expect(view).toMatchObject({ assigneeRef: null, assigneeName: null, assignedAt: null, assignedBy: null });
+  });
+
+  test("a Worker that predates assignment still parses, with the keys absent", () => {
+    // The reader half: an older Worker sends none of the four, and the whole pane must not refuse for it.
+    const old: Record<string, unknown> = { ...threadView(THREAD) };
+    for (const key of ["assigneeRef", "assigneeName", "assignedAt", "assignedBy"]) delete old[key];
+    expect(SupportThreadView.safeParse(old).success).toBe(true);
+    const response = { ...JSON.parse(JSON.stringify({ thread: old, messages: [], attachments: [] })) };
+    expect(SupportThreadResponse.safeParse({ ...response, sender: senderView(SENDER), replies: [] }).success).toBe(
+      true,
+    );
+  });
+
+  test("a history row and the assign envelope are exactly what their schemas declare", () => {
+    const row = assignmentView({
+      id: "as-1",
+      threadId: "t-1",
+      assigneeRef: "member-7",
+      assigneeName: "Grace Hopper",
+      previousRef: null,
+      previousName: null,
+      actorType: "control-plane",
+      assignedBy: "operator-1",
+      note: "Billing is yours.",
+      createdAt: AT,
+    });
+    accepts(SupportAssignmentView, row);
+    expect(row).not.toHaveProperty("threadId");
+    accepts(SupportAssignResponse, { thread: threadView(ASSIGNED), changed: true });
+    accepts(SupportThreadResponse, {
+      thread: threadView(ASSIGNED),
+      messages: [],
+      attachments: [],
+      sender: senderView(SENDER),
+      replies: [],
+      assignments: [row],
+    });
+  });
+});
 
 describe("the reader's contract beside the producer's", () => {
   test("the producer's schemas still refuse a member they do not declare", () => {

@@ -8,9 +8,11 @@ import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { requireSameOrigin } from "@pithy-sh/core/src/http/sameOrigin";
 import { validate } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
-import { requireAuth } from "./guards";
+import type { SupportStaffConfig } from "../config/config";
+import { requireAuth, requireStaff } from "./guards";
 import {
   archiveConversation,
+  assignConversation,
   type HandlerDeps,
   listInbox,
   listMyThreads,
@@ -24,6 +26,7 @@ import {
 } from "./handlers";
 import {
   SupportArchiveResponse,
+  SupportAssignResponse,
   SupportFlagsResponse,
   SupportMyThreadResponse,
   SupportMyThreadsResponse,
@@ -36,6 +39,7 @@ import {
 } from "./responses";
 import {
   ArchiveThreadInput,
+  AssignThreadInput,
   FlagsInput,
   ListThreadsQuery,
   MyThreadsQuery,
@@ -46,6 +50,7 @@ import {
 } from "./schemas";
 import {
   SUPPORT_THREADS_ARCHIVE_SCOPE,
+  SUPPORT_THREADS_ASSIGN_SCOPE,
   SUPPORT_THREADS_FLAG_SCOPE,
   SUPPORT_THREADS_READ_SCOPE,
   SUPPORT_THREADS_RECLASSIFY_SCOPE,
@@ -58,6 +63,7 @@ import {
  *   GET  /support/threads               → the inbox     (control-plane: support:threads:read)       query: ListThreadsQuery
  *   GET  /support/threads/:id           → one thread    (control-plane: support:threads:read)       param: ThreadIdParam
  *   POST /support/threads/:id/archive   → done/reopen   (control-plane: support:threads:archive)    param + json
+ *   POST /support/threads/:id/assign    → who has it    (control-plane: support:threads:assign)     param + json
  *   POST /support/threads/:id/reply     → answer        (control-plane: support:threads:reply)      param + json
  *   POST /support/threads/:id/reclassify→ re-run model  (control-plane: support:threads:reclassify) param
  *   POST /support/threads/:id/flags     → read/snooze   (control-plane: support:threads:flag)       param + json
@@ -67,20 +73,26 @@ import {
  *   GET  /support/feedback              → my requests   (bearer/session)                            query: MyThreadsQuery
  *   GET  /support/feedback/:id          → one of mine   (bearer/session)                            param: ThreadIdParam
  *
- * **Two surfaces, two gates, and they never stack.** The management routes answer to a control-plane
- * credential the adopter issued, and with the seam uncomposed every one denies with
- * `controlplane/not_connected` — the correct failure for an inbox holding other people's private
+ *   POST /support/staff/threads/:id/assign → who has it (bearer/session + same-origin + staff assignPower) param + json
+ *
+ * **Three doors, three gates, and the control plane never stacks with a session.** The management routes
+ * answer to a control-plane credential the adopter issued, and with the seam uncomposed every one denies
+ * with `controlplane/not_connected` — the correct failure for an inbox holding other people's private
  * correspondence. The `feedback` routes answer to the adopter's own signed-in user, and with no auth
- * capability composed `c.var.auth` is null and every one denies. A control-plane caller holds no
- * session by design and can never satisfy `requireAuth()`; a user's session confers no scope. See
+ * capability composed `c.var.auth` is null and every one denies. The `staff` route answers to a signed-in
+ * user too, and then to `requireStaff()`: a staff power from `support({ staff })`, held in the organization
+ * the request acts for, and with no `staff` configured every caller is refused. A control-plane caller
+ * holds no session by design and can never satisfy `requireAuth()`; a user's session confers no scope —
+ * which is why staff assignment is its own route rather than a second gate on the control-plane one. See
  * `guards.ts`.
  *
- * **`requireSameOrigin()` is on the submission route and on neither read.** Cookie-mode sessions make a
- * mutating route CSRF-reachable, and this one writes into a support inbox under a real customer's name
- * — a forged submission is somebody else's words attributed to them, in the one place an operator
- * treats attribution as proven. The reads are GETs and carry no such risk. A bearer caller is
- * CSRF-exempt, and that exemption belongs to the gate `@pithy-sh/auth` publishes rather than to
- * anything decided here.
+ * **`requireSameOrigin()` is on the two session routes that write, and on no read.** Cookie-mode sessions
+ * make a mutating route CSRF-reachable. The submission route writes into a support inbox under a real
+ * customer's name — a forged submission is somebody else's words attributed to them, in the one place an
+ * operator treats attribution as proven — and the staff assign route hands a customer's conversation to
+ * somebody on a staff member's say-so. The reads are GETs and carry no such risk. A bearer caller is
+ * CSRF-exempt, and that exemption belongs to the gate `@pithy-sh/auth` publishes rather than to anything
+ * decided here.
  *
  * **Every response has an exported schema**, in `responses.ts`. Each handler's return type is
  * `z.output` of its envelope, so `c.json(await handler(...))` carries the contract without a cast — and
@@ -158,6 +170,11 @@ export interface SupportRoutesOptions {
   submission?: boolean;
   /** Resolve handler deps from the request context. */
   resolveDeps: (c: Context<PithyHonoEnv>) => Promise<HandlerDeps>;
+  /**
+   * Who of the app's signed-in users works the inbox. Absent, the staff route is still mounted and refuses
+   * every caller with 403 — it is not a feature this deployment lacks, it is a door nobody holds a key to.
+   */
+  staff?: SupportStaffConfig;
 }
 
 /**
@@ -257,6 +274,51 @@ export function registerSupportRoutes(options: SupportRoutesOptions): (app: Hono
       validate("json", ArchiveThreadInput),
       async (c) =>
         c.json(await archiveConversation(await resolve(c), c.req.valid("param").id, c.req.valid("json"), viewer(c))),
+    );
+
+    app.post(
+      `${base}/threads/:id/assign`,
+      describeRoute({
+        summary: "Assign a conversation to somebody, or to nobody.",
+        verification: "control-plane",
+        scopes: [SUPPORT_THREADS_ASSIGN_SCOPE],
+        responses: { 200: SupportAssignResponse },
+      }),
+      requireControlPlane(SUPPORT_THREADS_ASSIGN_SCOPE),
+      validate("param", ThreadIdParam),
+      validate("json", AssignThreadInput),
+      async (c) =>
+        c.json(
+          await assignConversation(await resolve(c), c.req.valid("param").id, c.req.valid("json"), {
+            type: "control-plane",
+            id: viewer(c),
+          }),
+        ),
+    );
+
+    // The same act for a signed-in user of the app who works the inbox: their session, the CSRF gate a
+    // cookie-mode session needs on any write, and support's staff power in the organization they act for
+    // (`staff.ts`). A control-plane caller holds no session and can never pass `requireAuth()`, so the two
+    // doors never stack.
+    app.post(
+      `${base}/staff/threads/:id/assign`,
+      describeRoute({
+        summary: "Assign a conversation as a signed-in member of the support staff.",
+        verification: ["bearer", "session"],
+        responses: { 200: SupportAssignResponse },
+      }),
+      requireAuth(),
+      requireSameOrigin(),
+      requireStaff(options.staff, "assignPower"),
+      validate("param", ThreadIdParam),
+      validate("json", AssignThreadInput),
+      async (c) =>
+        c.json(
+          await assignConversation(await resolve(c), c.req.valid("param").id, c.req.valid("json"), {
+            type: "user",
+            id: submitter(c),
+          }),
+        ),
     );
 
     app.post(

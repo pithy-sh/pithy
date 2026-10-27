@@ -8,6 +8,7 @@ import { type ControlPlaneScope, SEAM_SCOPES } from "@pithy-sh/core/src/controlP
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { ledger } from "@pithy-sh/ledger/src/capability";
 import { matchmaking } from "@pithy-sh/matchmaking/src/capability";
+import { support as supportCapability } from "@pithy-sh/support/src/capability";
 import { turnstile } from "@pithy-sh/turnstile/src/capability";
 import { vector } from "@pithy-sh/vector/src/capability";
 import { describe, expect, test } from "vitest";
@@ -121,6 +122,19 @@ describe("defaultGrant", () => {
     expect(defaultGrant([capability])).toEqual([...SEAM_SCOPES, "ledger:accounts:read", "ledger:transactions:read"]);
     expect(resolveScopeRequest(readScopeRequest(["all"]), grantableScopes([capability]))).toContain(
       "ledger:accounts:adjust",
+    );
+  });
+
+  test("offers support:threads:assign as a write, off the real capability, and never grants it unasked (#816)", () => {
+    // Deciding who answers a customer is a write on shared state, like archive, so it is offered at the prompt
+    // and granted only when an adopter picks it. The read it joins a presence room with is granted already.
+    const capability = supportCapability();
+    const assign = grantableScopes([capability]).find((entry) => entry.scope === "support:threads:assign");
+    expect(assign).toMatchObject({ read: false, capability: "support", routes: 1 });
+    expect(defaultGrant([capability])).not.toContain("support:threads:assign");
+    expect(defaultGrant([capability])).toContain("support:threads:read");
+    expect(resolveScopeRequest(readScopeRequest(["all"]), grantableScopes([capability]))).toContain(
+      "support:threads:assign",
     );
   });
 

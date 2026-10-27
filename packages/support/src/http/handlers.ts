@@ -10,6 +10,7 @@ import type { ObjectStore } from "@pithy-sh/storage/src/object/store";
 import { attachmentUrl } from "../attachment/store";
 import { SupportAuditActions } from "../audit/actions";
 import type { SupportConfig } from "../config/config";
+import type { SupportAssignmentActorType } from "../data/assignment";
 import type { SupportAttachment } from "../data/attachment";
 import type { SupportCategories } from "../data/categories";
 import type { SupportDatabase } from "../data/tables";
@@ -23,11 +24,13 @@ import {
 import { sendReply } from "../reply/send";
 import type { SupportReplySnippets } from "../reply/snippets";
 import { repliesForCategory } from "../reply/snippets";
+import { assignThread, listAssignments } from "../store/assignment";
 import { listOwnThreads, listThreads, readOwnThread, readThread, setArchived, setFlags } from "../store/threads";
 import { decodeBase64 } from "../submission/encoding";
 import { submitFeedback } from "../submission/submit";
 import { latestInboundMessageId } from "../workflows/classify";
 import type {
+  SupportAssignResponse,
   SupportAttachmentView,
   SupportFlagsResponse,
   SupportMyThreadResponse,
@@ -42,6 +45,7 @@ import type {
 } from "./responses";
 import type {
   ArchiveThreadInput,
+  AssignThreadInput,
   FlagsInput,
   ListThreadsQuery,
   MyThreadsQuery,
@@ -49,7 +53,15 @@ import type {
   ReplyInput,
   SubmitFeedbackInput,
 } from "./schemas";
-import { listedThreadView, messageView, myMessageView, myThreadView, senderView, threadView } from "./views";
+import {
+  assignmentView,
+  listedThreadView,
+  messageView,
+  myMessageView,
+  myThreadView,
+  senderView,
+  threadView,
+} from "./views";
 
 /**
  * The support handlers — every one of them behind the `control-plane` gate, and every one of them
@@ -109,6 +121,7 @@ export async function listInbox(
       sentiment: query.sentiment,
       channel: query.channel,
       inbox: query.inbox,
+      assignee: query.assignee,
       q: query.q,
       cursor: query.cursor,
       limit: query.limit,
@@ -156,7 +169,7 @@ async function presentAttachments(
 /** Read one conversation in full. */
 export async function readConversation(deps: HandlerDeps, threadId: string): Promise<SupportThreadResponse> {
   const detail = await readThread(deps.db, threadId);
-  const [attachments, sender] = await Promise.all([
+  const [attachments, sender, assignments] = await Promise.all([
     presentAttachments(deps, detail.attachments),
     // A session-proven thread already holds the id its session established, so the context is resolved
     // from that rather than re-derived from an address. Not a shortcut: `resolveSenderUserId` matches
@@ -171,6 +184,7 @@ export async function readConversation(deps: HandlerDeps, threadId: string): Pro
           { authenticated: detail.thread.senderAuthenticated },
           deps.peers,
         ),
+    listAssignments(deps.db, threadId),
   ]);
 
   return {
@@ -179,6 +193,7 @@ export async function readConversation(deps: HandlerDeps, threadId: string): Pro
     attachments,
     sender: senderView(sender),
     replies: repliesForCategory(deps.snippets, detail.thread.category),
+    assignments: assignments.map(assignmentView),
   };
 }
 
@@ -204,6 +219,56 @@ export async function archiveConversation(
   });
 
   return threadView(thread);
+}
+
+/** Who is assigning: how they were verified, and their id under it. */
+export interface Assigner {
+  /** `control-plane` for a management client, `user` for a signed-in user holding support's staff power. */
+  type: SupportAssignmentActorType;
+  /** The control-plane subject, or the user's id. */
+  id: string;
+}
+
+/**
+ * Assign a conversation to somebody, or to nobody — the one handler behind both doors.
+ *
+ * The audit event is emitted **only when something changed**. The current assignee again, or unassigning
+ * a thread nobody has, wrote nothing to the thread or its history, so an event would record a handover
+ * that did not happen.
+ */
+export async function assignConversation(
+  deps: HandlerDeps,
+  threadId: string,
+  input: AssignThreadInput,
+  assigner: Assigner,
+): Promise<SupportAssignResponse> {
+  const result = await assignThread(deps.d1, {
+    threadId,
+    assignee: input.assignee,
+    actorType: assigner.type,
+    assignedBy: assigner.id,
+    note: input.note,
+    newId: deps.newId,
+    now: deps.now(),
+  });
+
+  if (result.changed) {
+    await deps.emit({
+      action: input.assignee ? SupportAuditActions.threadAssigned : SupportAuditActions.threadUnassigned,
+      outcome: "success",
+      actorType: assigner.type,
+      actorId: assigner.id,
+      resourceType: "support_thread",
+      resourceId: threadId,
+      metadata: {
+        previousAssignee: result.previous,
+        assignee: input.assignee,
+        note: input.note ?? null,
+      },
+    });
+  }
+
+  return { thread: threadView(result.thread), changed: result.changed };
 }
 
 /** Answer the customer. */

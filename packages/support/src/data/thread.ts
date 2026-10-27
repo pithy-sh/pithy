@@ -10,10 +10,11 @@ import { SupportAccountLinkSource, SupportChannel, SupportPriority, SupportSenti
  *
  * **Everything on it is derived from immutable inbound mail.** The classification is recomputed, never
  * repaired; the user link is a lookup, not a decision; the counters are facts about the messages
- * below. There is no assignee and no status, because a status field is a state machine and a state
- * machine attracts SLAs, escalation, and reporting — which is a ticketing product and explicitly not
- * this. The two exceptions are deliberate and named: `archived` (one shared boolean meaning done) and
- * the per-viewer flags, which live in their own table because nobody coordinates around them.
+ * below. There is no status, because a status field is a state machine and a state machine attracts
+ * SLAs, escalation, and reporting — which is a ticketing product and explicitly not this. The
+ * exceptions are deliberate and named: `archived` (one shared boolean meaning done), the assignee (one
+ * fact, who has this, with its history in `pithy_support_assignments` — #816), and the per-viewer
+ * flags, which live in their own table because nobody coordinates around them.
  *
  * The classification axes are **denormalized onto the thread** rather than joined from
  * `pithy_support_classifications`. The whole dashboard interaction is "newest first, filtered by
@@ -104,6 +105,27 @@ export const SupportThread = z
       .nullish()
       .describe(
         "The control-plane subject that archived it. Recorded for the dashboard's convenience only — the answer to 'who marked this done' comes from the audit trail, which is why this is not an ownership column.",
+      ),
+    assigneeRef: z
+      .string()
+      .nullish()
+      .describe(
+        "**Who has this thread** — an opaque reference to the person or agent it is assigned to, or null when nobody has it. Opaque on purpose: a dashboard member, a user of the app and an agent are all assignable, and support never needs to know which. Not a status: there are no transitions to get wrong, and unassigning is one write. Every change is kept in `pithy_support_assignments`. Added by `0002_assignment`, so a row written before it reads null.",
+      ),
+    assigneeName: z
+      .string()
+      .nullish()
+      .describe(
+        "How the assignee is shown, as the assigner named them. Null exactly when `assigneeRef` is. Display text, never an identity: two refs may share a name, and the ref is what a filter matches.",
+      ),
+    assignedAt: SQLiteDate.nullish().describe(
+      "When the current assignment was made; null while the thread has no assignee.",
+    ),
+    assignedBy: z
+      .string()
+      .nullish()
+      .describe(
+        "Who made the current assignment — the control-plane subject, or the signed-in user's id. Null while the thread has no assignee. The full answer, with every earlier change, is the history table and the audit trail.",
       ),
     messageCount: z.number().int().describe("How many messages the thread holds, inbound and outbound together."),
     firstMessageAt: SQLiteDate.describe("When the thread opened — the receive time of its first message."),

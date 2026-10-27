@@ -108,8 +108,10 @@ describe("support route contract", () => {
     const paramPaths = [...new Set(app.routes.filter((r) => pathParams(r.path).length > 0).map((r) => r.path))].sort();
     expect(paramPaths).toEqual([
       "/support/feedback/:id",
+      "/support/staff/threads/:id/assign",
       "/support/threads/:id",
       "/support/threads/:id/archive",
+      "/support/threads/:id/assign",
       "/support/threads/:id/flags",
       "/support/threads/:id/reclassify",
       "/support/threads/:id/reply",
@@ -167,10 +169,10 @@ describe("support route contract", () => {
   });
 
   test("the probe reads the whole mounted surface, not a slice of it", () => {
-    // Anti-vacuity for the check above, exact rather than a floor: ten routes carry a method — the seven
-    // the management surface serves and the three a signed-in customer calls. An eleventh is either a
-    // new management route, which the check above then demands a declaration for, or a new customer
-    // route, which is a deliberate edit here.
+    // Anti-vacuity for the check above, exact rather than a floor: twelve routes carry a method — the
+    // eight the management surface serves, the three a signed-in customer calls, and the one a signed-in
+    // member of the support staff calls. A thirteenth is either a new management route, which the check
+    // above then demands a declaration for, or a new session route, which is a deliberate edit here.
     expect(
       mountedRoutes()
         .map((route) => `${route.method} ${route.path}`)
@@ -182,7 +184,9 @@ describe("support route contract", () => {
       "GET /support/threads",
       "GET /support/threads/:id",
       "POST /support/feedback",
+      "POST /support/staff/threads/:id/assign",
       "POST /support/threads/:id/archive",
+      "POST /support/threads/:id/assign",
       "POST /support/threads/:id/flags",
       "POST /support/threads/:id/reclassify",
       "POST /support/threads/:id/reply",

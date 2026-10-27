@@ -192,3 +192,30 @@ describe("the in-app surface fails closed", () => {
     expect(reached()).toBe(false);
   });
 });
+
+describe("the staff assign route's gates (#816)", () => {
+  const PATH = "http://t/support/staff/threads/0195c1f0-0000-7000-8000-000000000000/assign";
+  const ASSIGN = JSON.stringify({ assignee: { ref: "u-2", name: "Grace" } });
+
+  test("answers 401 to nobody, before the validator, whatever the body", async () => {
+    const { app, reached } = makeApp();
+    for (const body of [ASSIGN, "{}"]) {
+      const response = await app.fetch(new Request(PATH, { method: "POST", body, headers: HEADERS }));
+      expect(response.status).toBe(401);
+    }
+    expect(reached()).toBe(false);
+  });
+
+  test("a signed-in user with no same-origin policy is refused before the staff check", async () => {
+    const { app, reached } = makeApp({ auth: { userId: "u-1" } });
+    const response = await app.fetch(new Request(PATH, { method: "POST", body: ASSIGN, headers: HEADERS }));
+    expect(response.status).toBe(403);
+    expect(reached()).toBe(false);
+  });
+
+  test("is mounted whether or not the submission channel is on — a different door", async () => {
+    const { app } = makeApp({ submission: false });
+    const response = await app.fetch(new Request(PATH, { method: "POST", body: ASSIGN, headers: HEADERS }));
+    expect(response.status).toBe(401);
+  });
+});

@@ -15,7 +15,8 @@ import { SUPPORT_FLAGS_TABLE, SUPPORT_MESSAGES_TABLE, SUPPORT_THREADS_TABLE, sup
 import { SupportThread } from "../data/thread";
 import { SupportListedThreadView, SupportMessageView, SupportThreadView } from "../http/responses";
 import { listedThreadView, messageView, threadView } from "../http/views";
-import { support_0001_threads } from "../migrations/0001_threads";
+import { SUPPORT_MIGRATIONS } from "../migrations/set";
+import { assignThread } from "./assignment";
 import { MAX_PAGE_SIZE } from "./paging";
 import { indexMessage } from "./search";
 import { createSearchIndex } from "./searchIndex";
@@ -45,7 +46,7 @@ function provider(migrations: Record<string, Migration>): MigrationProvider {
   return found;
 }
 
-const BASE = { "0001_threads": support_0001_threads };
+const BASE = SUPPORT_MIGRATIONS;
 
 /** One thread row, with everything the inbox does not filter on left at a sensible default. */
 function threadRow(seed: {
@@ -136,6 +137,7 @@ const ids = (page: { threads: SupportThread[] }): string[] => page.threads.map((
 beforeEach(async () => {
   for (const table of [
     "pithy_support_search",
+    "pithy_support_assignments",
     "pithy_support_thread_flags",
     "pithy_support_classifications",
     "pithy_support_attachments",
@@ -358,6 +360,54 @@ describe("listThreads", () => {
     const page = await listThreads(db, { limit: 5000 }, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) });
     expect(page.threads).toHaveLength(MAX_PAGE_SIZE);
     expect(page.nextCursor).not.toBeNull();
+  });
+});
+
+describe("listThreads — by assignee", () => {
+  const NOW = new Date(T0 + 10_000_000);
+  const assign = (threadId: string, ref: string | null) =>
+    assignThread(env.DB, {
+      threadId,
+      assignee: ref === null ? null : { ref, name: `Name ${ref}` },
+      actorType: "control-plane",
+      assignedBy: "operator-1",
+      newId: () => crypto.randomUUID(),
+      now: new Date(T0 + 1_000),
+    });
+
+  beforeEach(async () => {
+    await seedThread({ id: "t1", lastMessageAt: T0 + 100 });
+    await seedThread({ id: "t2", lastMessageAt: T0 + 200 });
+    await seedThread({ id: "t3", lastMessageAt: T0 + 300 });
+    await assign("t1", "ada");
+    await assign("t3", "grace");
+  });
+
+  test("assignee=<ref> lists only the threads that ref has", async () => {
+    expect(ids(await listThreads(db, { assignee: "ada" }, { fts: false, viewer: VIEWER, now: NOW }))).toEqual(["t1"]);
+    expect(ids(await listThreads(db, { assignee: "grace" }, { fts: false, viewer: VIEWER, now: NOW }))).toEqual(["t3"]);
+  });
+
+  test("assignee=none lists only the threads nobody has, an unassigned one included", async () => {
+    await assign("t3", null);
+    expect(ids(await listThreads(db, { assignee: "none" }, { fts: false, viewer: VIEWER, now: NOW }))).toEqual([
+      "t3",
+      "t2",
+    ]);
+  });
+
+  test("no assignee filter lists every thread, and each carries its assignee", async () => {
+    const page = await listThreads(db, {}, { fts: false, viewer: VIEWER, now: NOW });
+    expect(ids(page)).toEqual(["t3", "t2", "t1"]);
+    expect(page.threads.map((thread) => thread.assigneeRef ?? null)).toEqual(["grace", null, "ada"]);
+    expect(page.threads[2]?.assigneeName).toBe("Name ada");
+  });
+
+  test("a ref nobody holds matches nothing, and composes with the other filters", async () => {
+    expect(ids(await listThreads(db, { assignee: "nobody" }, { fts: false, viewer: VIEWER, now: NOW }))).toEqual([]);
+    expect(
+      ids(await listThreads(db, { assignee: "ada", archived: true }, { fts: false, viewer: VIEWER, now: NOW })),
+    ).toEqual([]);
   });
 });
 

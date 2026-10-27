@@ -28481,6 +28481,26 @@
             }
           },
           {
+            "name": "assignee",
+            "in": "query",
+            "required": false,
+            "description": "Filter to the threads one assignee has, by their `assigneeRef`, or `none` for the threads nobody has. Absent shows every thread, assigned or not.",
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "none"
+                },
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "description": "Who the thread is assigned to: an opaque reference, the participant shape presence rooms use. A management client's own reference, which it chose; or a user of the app's id. Never `none`, which is the listing's filter for threads nobody has."
+                }
+              ]
+            }
+          },
+          {
             "name": "q",
             "in": "query",
             "required": false,
@@ -28669,6 +28689,40 @@
                           },
                           "archivedBy": {
                             "description": "The control-plane subject that archived it, for convenience only — the answer to 'who marked this done' comes from the audit trail.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "assigneeRef": {
+                            "description": "Who has this conversation, as the opaque reference it was assigned to, or null when nobody has it. Absent from a Worker that predates assignment. The listing's `assignee` filter matches it.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "assigneeName": {
+                            "description": "How the assignee is shown, as the assigner named them; null when nobody has it. A label, never an identity — `assigneeRef` is that. Untrusted text; render it escaped.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "assignedAt": {
+                            "description": "When the current assignment was made, ISO-8601; null when nobody has it.",
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "assignedBy": {
+                            "description": "Who made the current assignment — a control-plane subject, or a user of the app's id; null when nobody has it. Every earlier change is in the thread's `assignments`.",
                             "type": [
                               "string",
                               "null"
@@ -29048,6 +29102,40 @@
                         },
                         "archivedBy": {
                           "description": "The control-plane subject that archived it, for convenience only — the answer to 'who marked this done' comes from the audit trail.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "assigneeRef": {
+                          "description": "Who has this conversation, as the opaque reference it was assigned to, or null when nobody has it. Absent from a Worker that predates assignment. The listing's `assignee` filter matches it.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "assigneeName": {
+                          "description": "How the assignee is shown, as the assigner named them; null when nobody has it. A label, never an identity — `assigneeRef` is that. Untrusted text; render it escaped.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "assignedAt": {
+                          "description": "When the current assignment was made, ISO-8601; null when nobody has it.",
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "assignedBy": {
+                          "description": "Who made the current assignment — a control-plane subject, or a user of the app's id; null when nobody has it. Every earlier change is in the thread's `assignments`.",
                           "type": [
                             "string",
                             "null"
@@ -29485,6 +29573,84 @@
                         "description": "One canned reply from the effective catalog."
                       },
                       "description": "The canned replies, ordered for this thread's category."
+                    },
+                    "assignments": {
+                      "description": "Every change of the assignee, oldest first. Empty when nobody was ever assigned; absent from a Worker that predates assignment.",
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The history row's id."
+                          },
+                          "assigneeRef": {
+                            "description": "Who had the thread after this change, or null when it was unassigned.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "assigneeName": {
+                            "description": "How that assignee was shown at the time, or null.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "previousRef": {
+                            "description": "Who had it before, or null when nobody did.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "previousName": {
+                            "description": "How the previous assignee was shown, or null.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "actorType": {
+                            "type": "string",
+                            "enum": [
+                              "control-plane",
+                              "user"
+                            ],
+                            "description": "How whoever made the change was verified: `control-plane` for a management client, `user` for a signed-in user of the app."
+                          },
+                          "assignedBy": {
+                            "type": "string",
+                            "description": "Who made the change — a control-plane subject, or a user of the app's id."
+                          },
+                          "note": {
+                            "description": "Why, in the assigner's words, or null. Untrusted text; render it escaped.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the change was made, ISO-8601."
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "assigneeRef",
+                          "assigneeName",
+                          "previousRef",
+                          "previousName",
+                          "actorType",
+                          "assignedBy",
+                          "note",
+                          "createdAt"
+                        ],
+                        "description": "One append-only change of a conversation's assignee."
+                      }
                     }
                   },
                   "required": [
@@ -29713,6 +29879,40 @@
                         "null"
                       ]
                     },
+                    "assigneeRef": {
+                      "description": "Who has this conversation, as the opaque reference it was assigned to, or null when nobody has it. Absent from a Worker that predates assignment. The listing's `assignee` filter matches it.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "assigneeName": {
+                      "description": "How the assignee is shown, as the assigner named them; null when nobody has it. A label, never an identity — `assigneeRef` is that. Untrusted text; render it escaped.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "assignedAt": {
+                      "description": "When the current assignment was made, ISO-8601; null when nobody has it.",
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "assignedBy": {
+                      "description": "Who made the current assignment — a control-plane subject, or a user of the app's id; null when nobody has it. Every earlier change is in the thread's `assignments`.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "messageCount": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -29789,6 +29989,719 @@
         ],
         "x-pithy-scopes": [
           "support:threads:archive"
+        ]
+      }
+    },
+    "/support/threads/{id}/assign": {
+      "post": {
+        "tags": [
+          "support"
+        ],
+        "operationId": "postSupportThreadsByIdAssign",
+        "summary": "Assign a conversation to somebody, or to nobody.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The thread's UUID. A param schema constrains the string; the handler still does the lookup.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Assign a conversation to somebody, or to nobody.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "assignee": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "ref": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                            "description": "Who the thread is assigned to: an opaque reference, the participant shape presence rooms use. A management client's own reference, which it chose; or a user of the app's id. Never `none`, which is the listing's filter for threads nobody has."
+                          },
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80,
+                            "description": "How the assignee is shown in the inbox and in the history. A label, never an identity — `ref` is that."
+                          }
+                        },
+                        "required": [
+                          "ref",
+                          "name"
+                        ],
+                        "description": "Somebody a thread may be assigned to: an opaque reference and the name to show."
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Who should have this conversation, or `null` to unassign it. Assigning the current assignee again changes nothing and records nothing."
+                  },
+                  "note": {
+                    "description": "Why, in your own words. Kept in the thread's assignment history and on the audit event, and shown to anybody who can read the thread — so it is a note to colleagues, never a place for the customer's details.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "assignee"
+                ],
+                "description": "Assign a conversation to somebody, or to nobody."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The conversation after an assignment, and whether it changed anything.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "thread": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "The thread's UUID — what every other route on this surface takes."
+                        },
+                        "channel": {
+                          "type": "string",
+                          "enum": [
+                            "email",
+                            "app"
+                          ],
+                          "description": "How this conversation started — `email` at an inbound address, or `app` from a signed-in user of the adopter's own app."
+                        },
+                        "inboxAddress": {
+                          "description": "The support address this thread arrived on, lowercased, and the address a reply comes back to. Null only on an `app` thread in a project with no inbound address configured.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "subject": {
+                          "type": "string",
+                          "description": "The subject of the message that opened the thread. Later replies never rewrite it."
+                        },
+                        "fromAddress": {
+                          "type": "string",
+                          "description": "The sender's address, lowercased."
+                        },
+                        "fromName": {
+                          "description": "The sender's display name, or null. Untrusted text; render it escaped.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "senderAuthenticated": {
+                          "type": "boolean",
+                          "description": "Whether the sender was proved to be who they claim. On `email` that means the `From:` header was proved, and false means unproven rather than forged — it is what withholds the customer link. Always true on `app`, where a session proved it before the request arrived."
+                        },
+                        "userId": {
+                          "description": "The user this sender resolves to, or null when nobody or unproven.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "accountLinkSource": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "session",
+                                "email_address"
+                              ],
+                              "description": "How this thread's `userId` was established: `session` means an authenticated request proved it, `email_address` means it was matched from the address in a `From:` header. Never equivalent — one is the identity, the other is a lookup on a claim."
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "How `userId` was established, or null when there is no link. **Render these differently.** `session` means an authenticated request proved it and the account *is* the caller; `email_address` means it was matched against an address in a header nobody proved. The same operator action — a refund, a reset — follows from very different evidence."
+                        },
+                        "declaredCategory": {
+                          "description": "**What the submitter said this is about**, or null when nobody said — every mail thread, and every app thread filed without a chooser. **Render this and `category` differently, and never fold one into the other.** They are two facts with two authors: this is a claim by the person writing, `category` is a machine's judgment about them, and an operator deciding what to do needs to know which is on screen. Where they disagree, that disagreement is the most useful thing on the row. Where `classifiedAt` is null this is the only category anybody stated.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "category": {
+                          "type": "string",
+                          "description": "**What the classifier made of it** — the current category key, from this project's own federated taxonomy. `uncategorized` until a classification lands, and forever on a project with `ai.enabled: false`."
+                        },
+                        "priority": {
+                          "type": "string",
+                          "enum": [
+                            "urgent",
+                            "normal",
+                            "low"
+                          ],
+                          "description": "How fast this thread needs a human."
+                        },
+                        "sentiment": {
+                          "type": "string",
+                          "enum": [
+                            "angry",
+                            "frustrated",
+                            "neutral",
+                            "positive"
+                          ],
+                          "description": "How the sender sounds — the churn signal."
+                        },
+                        "confidence": {
+                          "anyOf": [
+                            {
+                              "type": "number",
+                              "minimum": 0,
+                              "maximum": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "The model's confidence in the current classification, or null until one lands."
+                        },
+                        "model": {
+                          "description": "The Workers AI model that produced the classification, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "classifiedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the classification was written, ISO-8601; null until it is."
+                        },
+                        "archived": {
+                          "type": "boolean",
+                          "description": "Done. One shared boolean, not per viewer."
+                        },
+                        "archivedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When it was last archived, ISO-8601; null while open."
+                        },
+                        "archivedBy": {
+                          "description": "The control-plane subject that archived it, for convenience only — the answer to 'who marked this done' comes from the audit trail.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "assigneeRef": {
+                          "description": "Who has this conversation, as the opaque reference it was assigned to, or null when nobody has it. Absent from a Worker that predates assignment. The listing's `assignee` filter matches it.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "assigneeName": {
+                          "description": "How the assignee is shown, as the assigner named them; null when nobody has it. A label, never an identity — `assigneeRef` is that. Untrusted text; render it escaped.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "assignedAt": {
+                          "description": "When the current assignment was made, ISO-8601; null when nobody has it.",
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "assignedBy": {
+                          "description": "Who made the current assignment — a control-plane subject, or a user of the app's id; null when nobody has it. Every earlier change is in the thread's `assignments`.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "messageCount": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "How many messages the thread holds, inbound and outbound together."
+                        },
+                        "firstMessageAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When the thread opened, ISO-8601."
+                        },
+                        "lastMessageAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When the thread last moved, ISO-8601. The inbox sorts on this."
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When the thread row was created, ISO-8601."
+                        },
+                        "updatedAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When the thread row was last written, ISO-8601."
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "channel",
+                        "inboxAddress",
+                        "subject",
+                        "fromAddress",
+                        "fromName",
+                        "senderAuthenticated",
+                        "userId",
+                        "accountLinkSource",
+                        "declaredCategory",
+                        "category",
+                        "priority",
+                        "sentiment",
+                        "confidence",
+                        "model",
+                        "classifiedAt",
+                        "archived",
+                        "archivedAt",
+                        "archivedBy",
+                        "messageCount",
+                        "firstMessageAt",
+                        "lastMessageAt",
+                        "createdAt",
+                        "updatedAt"
+                      ],
+                      "description": "The conversation, as the assignment left it."
+                    },
+                    "changed": {
+                      "type": "boolean",
+                      "description": "Whether the assignee changed. False when the thread already had that assignee, or had none and was unassigned — nothing was recorded and nothing was audited."
+                    }
+                  },
+                  "required": [
+                    "thread",
+                    "changed"
+                  ],
+                  "description": "The conversation after an assignment, and whether it changed anything."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "support:threads:assign"
+        ]
+      }
+    },
+    "/support/staff/threads/{id}/assign": {
+      "post": {
+        "tags": [
+          "support"
+        ],
+        "operationId": "postSupportStaffThreadsByIdAssign",
+        "summary": "Assign a conversation as a signed-in member of the support staff.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The thread's UUID. A param schema constrains the string; the handler still does the lookup.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Assign a conversation to somebody, or to nobody.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "assignee": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "ref": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                            "description": "Who the thread is assigned to: an opaque reference, the participant shape presence rooms use. A management client's own reference, which it chose; or a user of the app's id. Never `none`, which is the listing's filter for threads nobody has."
+                          },
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80,
+                            "description": "How the assignee is shown in the inbox and in the history. A label, never an identity — `ref` is that."
+                          }
+                        },
+                        "required": [
+                          "ref",
+                          "name"
+                        ],
+                        "description": "Somebody a thread may be assigned to: an opaque reference and the name to show."
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Who should have this conversation, or `null` to unassign it. Assigning the current assignee again changes nothing and records nothing."
+                  },
+                  "note": {
+                    "description": "Why, in your own words. Kept in the thread's assignment history and on the audit event, and shown to anybody who can read the thread — so it is a note to colleagues, never a place for the customer's details.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "assignee"
+                ],
+                "description": "Assign a conversation to somebody, or to nobody."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The conversation after an assignment, and whether it changed anything.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "thread": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "The thread's UUID — what every other route on this surface takes."
+                        },
+                        "channel": {
+                          "type": "string",
+                          "enum": [
+                            "email",
+                            "app"
+                          ],
+                          "description": "How this conversation started — `email` at an inbound address, or `app` from a signed-in user of the adopter's own app."
+                        },
+                        "inboxAddress": {
+                          "description": "The support address this thread arrived on, lowercased, and the address a reply comes back to. Null only on an `app` thread in a project with no inbound address configured.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "subject": {
+                          "type": "string",
+                          "description": "The subject of the message that opened the thread. Later replies never rewrite it."
+                        },
+                        "fromAddress": {
+                          "type": "string",
+                          "description": "The sender's address, lowercased."
+                        },
+                        "fromName": {
+                          "description": "The sender's display name, or null. Untrusted text; render it escaped.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "senderAuthenticated": {
+                          "type": "boolean",
+                          "description": "Whether the sender was proved to be who they claim. On `email` that means the `From:` header was proved, and false means unproven rather than forged — it is what withholds the customer link. Always true on `app`, where a session proved it before the request arrived."
+                        },
+                        "userId": {
+                          "description": "The user this sender resolves to, or null when nobody or unproven.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "accountLinkSource": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "session",
+                                "email_address"
+                              ],
+                              "description": "How this thread's `userId` was established: `session` means an authenticated request proved it, `email_address` means it was matched from the address in a `From:` header. Never equivalent — one is the identity, the other is a lookup on a claim."
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "How `userId` was established, or null when there is no link. **Render these differently.** `session` means an authenticated request proved it and the account *is* the caller; `email_address` means it was matched against an address in a header nobody proved. The same operator action — a refund, a reset — follows from very different evidence."
+                        },
+                        "declaredCategory": {
+                          "description": "**What the submitter said this is about**, or null when nobody said — every mail thread, and every app thread filed without a chooser. **Render this and `category` differently, and never fold one into the other.** They are two facts with two authors: this is a claim by the person writing, `category` is a machine's judgment about them, and an operator deciding what to do needs to know which is on screen. Where they disagree, that disagreement is the most useful thing on the row. Where `classifiedAt` is null this is the only category anybody stated.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "category": {
+                          "type": "string",
+                          "description": "**What the classifier made of it** — the current category key, from this project's own federated taxonomy. `uncategorized` until a classification lands, and forever on a project with `ai.enabled: false`."
+                        },
+                        "priority": {
+                          "type": "string",
+                          "enum": [
+                            "urgent",
+                            "normal",
+                            "low"
+                          ],
+                          "description": "How fast this thread needs a human."
+                        },
+                        "sentiment": {
+                          "type": "string",
+                          "enum": [
+                            "angry",
+                            "frustrated",
+                            "neutral",
+                            "positive"
+                          ],
+                          "description": "How the sender sounds — the churn signal."
+                        },
+                        "confidence": {
+                          "anyOf": [
+                            {
+                              "type": "number",
+                              "minimum": 0,
+                              "maximum": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "The model's confidence in the current classification, or null until one lands."
+                        },
+                        "model": {
+                          "description": "The Workers AI model that produced the classification, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "classifiedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the classification was written, ISO-8601; null until it is."
+                        },
+                        "archived": {
+                          "type": "boolean",
+                          "description": "Done. One shared boolean, not per viewer."
+                        },
+                        "archivedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When it was last archived, ISO-8601; null while open."
+                        },
+                        "archivedBy": {
+                          "description": "The control-plane subject that archived it, for convenience only — the answer to 'who marked this done' comes from the audit trail.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "assigneeRef": {
+                          "description": "Who has this conversation, as the opaque reference it was assigned to, or null when nobody has it. Absent from a Worker that predates assignment. The listing's `assignee` filter matches it.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "assigneeName": {
+                          "description": "How the assignee is shown, as the assigner named them; null when nobody has it. A label, never an identity — `assigneeRef` is that. Untrusted text; render it escaped.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "assignedAt": {
+                          "description": "When the current assignment was made, ISO-8601; null when nobody has it.",
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "assignedBy": {
+                          "description": "Who made the current assignment — a control-plane subject, or a user of the app's id; null when nobody has it. Every earlier change is in the thread's `assignments`.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "messageCount": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "How many messages the thread holds, inbound and outbound together."
+                        },
+                        "firstMessageAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When the thread opened, ISO-8601."
+                        },
+                        "lastMessageAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When the thread last moved, ISO-8601. The inbox sorts on this."
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When the thread row was created, ISO-8601."
+                        },
+                        "updatedAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When the thread row was last written, ISO-8601."
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "channel",
+                        "inboxAddress",
+                        "subject",
+                        "fromAddress",
+                        "fromName",
+                        "senderAuthenticated",
+                        "userId",
+                        "accountLinkSource",
+                        "declaredCategory",
+                        "category",
+                        "priority",
+                        "sentiment",
+                        "confidence",
+                        "model",
+                        "classifiedAt",
+                        "archived",
+                        "archivedAt",
+                        "archivedBy",
+                        "messageCount",
+                        "firstMessageAt",
+                        "lastMessageAt",
+                        "createdAt",
+                        "updatedAt"
+                      ],
+                      "description": "The conversation, as the assignment left it."
+                    },
+                    "changed": {
+                      "type": "boolean",
+                      "description": "Whether the assignee changed. False when the thread already had that assignee, or had none and was unassigned — nothing was recorded and nothing was audited."
+                    }
+                  },
+                  "required": [
+                    "thread",
+                    "changed"
+                  ],
+                  "description": "The conversation after an assignment, and whether it changed anything."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
         ]
       }
     },
@@ -30605,6 +31518,168 @@
         "x-pithy-verification": [
           "bearer",
           "session"
+        ]
+      }
+    },
+    "/support/presence/tickets": {
+      "post": {
+        "tags": [
+          "support"
+        ],
+        "operationId": "postSupportPresenceTickets",
+        "summary": "Mint a presence ticket for the signed-in user.",
+        "description": "Admits the caller to one room of a kind this capability declares, when the capability's own read permission admits them to the record. Single use, for 60 seconds. Open the socket at `socketPath`, offering `protocol` and `pithy.ticket.<ticket>` in `Sec-WebSocket-Protocol`.",
+        "requestBody": {
+          "required": true,
+          "description": "The room a signed-in user asks a presence ticket for. The participant is the caller.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "maxLength": 64,
+                    "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9_]*)+$",
+                    "description": "The room kind, as the manifest lists it — `support.thread`."
+                  },
+                  "recordId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]+$",
+                    "description": "The record the room is about."
+                  }
+                },
+                "required": [
+                  "kind",
+                  "recordId"
+                ],
+                "description": "The room a signed-in user asks a presence ticket for. The participant is the caller."
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "A single-use, 60-second ticket into one presence room, and where to open the socket with it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ticket": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "The ticket. Offer it in `Sec-WebSocket-Protocol` as `pithy.ticket.<ticket>`, beside `protocol`. Single use."
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the ticket stops being honored, ISO-8601 — 60 seconds after minting."
+                    },
+                    "kind": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9_]*)+$",
+                      "description": "The room kind the ticket admits to."
+                    },
+                    "recordId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128,
+                      "pattern": "^[A-Za-z0-9._:-]+$",
+                      "description": "The record the room is about."
+                    },
+                    "socketPath": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "The path to open the socket at, on this Worker — this room's, already filled in."
+                    },
+                    "protocol": {
+                      "type": "string",
+                      "const": "pithy.presence.v1",
+                      "description": "The subprotocol to offer beside the ticket. The Worker answers with it."
+                    }
+                  },
+                  "required": [
+                    "ticket",
+                    "expiresAt",
+                    "kind",
+                    "recordId",
+                    "socketPath",
+                    "protocol"
+                  ],
+                  "description": "A single-use, 60-second ticket into one presence room, and where to open the socket with it."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      }
+    },
+    "/support/presence/rooms/{kind}/{recordId}": {
+      "get": {
+        "tags": [
+          "support"
+        ],
+        "operationId": "getSupportPresenceRoomsByKindByRecordId",
+        "summary": "Open a presence room's socket.",
+        "description": "Send `Upgrade: websocket` and offer `pithy.presence.v1` and `pithy.ticket.<ticket>` in `Sec-WebSocket-Protocol`; the ticket is the credential, minted by either ticket route for this room. The socket receives who is in the room, then joins, leaves and activity changes as they happen. The frames are in the AsyncAPI contract.",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "description": "The room kind, as the manifest lists it — `support.thread`.",
+            "schema": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9_]*)+$"
+            }
+          },
+          {
+            "name": "recordId",
+            "in": "path",
+            "required": true,
+            "description": "The record the room is about.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9._:-]+$"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switches to a WebSocket. The room pushes presence frames as JSON text."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
         ]
       }
     },
