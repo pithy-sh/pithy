@@ -187,3 +187,26 @@ export const ControlPlaneReachQuery = z
   })
   .describe("The control-plane reach query: one connection, over a window, optionally one key and one route.");
 export type ControlPlaneReachQuery = z.infer<typeof ControlPlaneReachQuery>;
+
+/**
+ * The usage query (#812): whose calls to count, and over what window.
+ *
+ * `connectionId` and `since` are required, so a missing one is a 400 before any query runs — an unbounded window over
+ * every connection is not a question this route answers. `until` defaults to now in the handler, which is the one
+ * value a schema cannot compute for a request. A window that ends before it starts is refused rather than answered
+ * with nothing, because nothing would read as an idle connection.
+ */
+export const ControlPlaneUsageQuery = z
+  .object({
+    connectionId: FilterValue.describe(
+      "The control-plane connection whose calls to count — the `resourceId` its call rows carry. Required.",
+    ),
+    since: TimeBound.describe("Inclusive lower bound on when a call landed, ISO-8601. Required."),
+    until: TimeBound.optional().describe("Inclusive upper bound on when a call landed, ISO-8601. Defaults to now."),
+  })
+  .refine((query) => query.until === undefined || query.until.getTime() >= query.since.getTime(), {
+    message: "`until` must not be before `since`.",
+    path: ["until"],
+  })
+  .describe("The control-plane usage query: one connection, over a window.");
+export type ControlPlaneUsageQuery = z.infer<typeof ControlPlaneUsageQuery>;

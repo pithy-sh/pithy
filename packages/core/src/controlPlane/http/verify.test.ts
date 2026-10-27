@@ -6,6 +6,7 @@ import { HttpError } from "../../error/http";
 import { PithyError } from "../../error/pithyError";
 import { ControlPlaneConfig } from "../config/config";
 import type { ControlPlaneConnection, Ed25519PublicJwk, RegisteredKey } from "../data/connection";
+import { ControlPlaneInsufficientScopeError } from "../error/errors";
 import type { ReplayGuard } from "../replay/guard";
 import { ANY_VERIFIED_CALLER, KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE } from "../scope/scope";
 import { base64UrlDecode, base64UrlEncode } from "../token/base64url";
@@ -497,6 +498,33 @@ describe("verifyControlPlaneCall — scope", () => {
     expect(error.payload.code).toBe("controlplane/insufficient_scope");
   });
 
+  test("the scope refusal carries the caller it proved, for the trail and never for the wire (#812)", async () => {
+    // By step 11 the signature, the key, the lifetime and the body have all verified, so the
+    // connection, the subject and the key are facts. The gate writes them into the denial row; a
+    // credential probing for scopes it lacks must leave rows that trace back to it.
+    const token = await mint({ scope: KEYS_ROTATE_SCOPE });
+
+    const error = await denial(
+      verifyControlPlaneCall(
+        { token, body: NO_BODY, requirement: KEYS_ROTATE_SCOPE },
+        makeDeps({ connection: connection({ scopes: [MANIFEST_READ_SCOPE] }) }),
+      ),
+    );
+
+    expect(error).toBeInstanceOf(ControlPlaneInsufficientScopeError);
+    expect((error as ControlPlaneInsufficientScopeError).caller).toEqual({
+      connectionId: CONNECTION_ID,
+      subject: SUBJECT,
+      keyId: KEY_ID,
+      actorKind: "dashboard",
+    });
+    // The payload is the only thing the codec encodes, and none of it names the caller.
+    const wire = JSON.stringify(HttpError.encode(error.payload));
+    expect(wire).not.toContain(CONNECTION_ID);
+    expect(wire).not.toContain(SUBJECT);
+    expect(wire).not.toContain(KEY_ID);
+  });
+
   test("ANY_VERIFIED_CALLER admits a connection granted nothing at all", async () => {
     // Ping is how a newly registered key is proven before the key it replaces is expired, and that
     // ordering is the whole safety property of rotation. A ping that could be withheld would let a
@@ -553,20 +581,64 @@ describe("verifyControlPlaneCall — ordering", () => {
     expect(replay.calls).toEqual([]);
   });
 
-  test("a scope failure never claims the jti either", async () => {
-    // Same property, from the other side: a legitimate client asking for something it was not granted
-    // gets a 403 and keeps its token id. Otherwise one mis-scoped retry loop would poison the set.
+  test("a scope failure spends the jti, so its refusal is attributed once (#812)", async () => {
+    // The token binds a body and a scope, not a path, so one captured token can be presented at any route it does
+    // not cover. Left unspent, every presentation would write a denial naming the real connection, and a replayer
+    // could inflate a connection's scope probing without limit. Spending it costs the caller nothing — the call is
+    // refused anyway — and it is still spent only after authenticity is proven, so a forgery burns nothing.
     const token = await mint({ scope: KEYS_ROTATE_SCOPE, tokenId: "jti_unscoped" });
     const replay = recordingReplayGuard();
+    const deps = makeDeps({ connection: connection({ scopes: [MANIFEST_READ_SCOPE] }), replay: replay.guard });
+    const call = { token, body: NO_BODY, requirement: KEYS_ROTATE_SCOPE };
 
-    await denial(
+    const first = await denial(verifyControlPlaneCall(call, deps));
+    const second = await denial(verifyControlPlaneCall(call, deps));
+
+    expect(replay.calls).toEqual([
+      { jti: "jti_unscoped", connectionId: CONNECTION_ID },
+      { jti: "jti_unscoped", connectionId: CONNECTION_ID },
+    ]);
+    expect((first as ControlPlaneInsufficientScopeError).caller).not.toBeNull();
+    // The same refusal on the wire, but nobody named: the second presentation is not proven to be the caller's.
+    expect(second.payload.code).toBe("controlplane/insufficient_scope");
+    expect((second as ControlPlaneInsufficientScopeError).caller).toBeNull();
+  });
+
+  test("a token refused for scope is spent, so presenting it again at a route it covers is refused (#812)", async () => {
+    // The one change a caller can see. The refusal body is the same, but the token is gone: a client that retries a
+    // 403'd token at a route it does cover gets the already-spent refusal, not admission. Tokens are single-use, so a
+    // client that mints one per call never meets this.
+    const token = await mint({ scope: MANIFEST_READ_SCOPE, tokenId: "jti_refused_then_covered" });
+    const replay = recordingReplayGuard();
+    const deps = makeDeps({
+      connection: connection({ scopes: [MANIFEST_READ_SCOPE, KEYS_ROTATE_SCOPE] }),
+      replay: replay.guard,
+    });
+
+    const refused = await denial(
+      verifyControlPlaneCall({ token, body: NO_BODY, requirement: KEYS_ROTATE_SCOPE }, deps),
+    );
+    const covered = await denial(
+      verifyControlPlaneCall({ token, body: NO_BODY, requirement: MANIFEST_READ_SCOPE }, deps),
+    );
+
+    expect(refused.payload.code).toBe("controlplane/insufficient_scope");
+    expect(covered.payload.code).toBe("controlplane/invalid_credential");
+  });
+
+  test("a token already spent at its own route, presented at an ungranted one, names nobody (#812)", async () => {
+    const token = await mint({ scope: KEYS_ROTATE_SCOPE, tokenId: "jti_spent" });
+    const replay = recordingReplayGuard(["jti_spent"]);
+
+    const error = await denial(
       verifyControlPlaneCall(
         { token, body: NO_BODY, requirement: KEYS_ROTATE_SCOPE },
         makeDeps({ connection: connection({ scopes: [MANIFEST_READ_SCOPE] }), replay: replay.guard }),
       ),
     );
 
-    expect(replay.calls).toEqual([]);
+    expect(error.payload.code).toBe("controlplane/insufficient_scope");
+    expect((error as ControlPlaneInsufficientScopeError).caller).toBeNull();
   });
 });
 

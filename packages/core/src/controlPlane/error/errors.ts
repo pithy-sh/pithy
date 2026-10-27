@@ -5,6 +5,7 @@ import { commandName } from "../../cli/command";
 import { PithyError } from "../../error/pithyError";
 import type { MessageParams } from "../../i18n/catalog";
 import type { UnmarkedString } from "../../privacy/types";
+import type { ControlPlaneActorKind } from "../data/connection";
 
 /**
  * The `control-plane` strategy's throw sugar. The `controlplane/*` codes live in core's closed
@@ -75,9 +76,41 @@ export class ControlPlaneInvalidCredentialError extends PithyError {
   }
 }
 
+/**
+ * Who a scope refusal refused, as verification proved it (#812).
+ *
+ * By the scope step the signature, the key, the lifetime and the body digest have all verified, so these are facts
+ * rather than claims. The gate writes them onto the denial row, which is what lets a known credential probing
+ * for scopes it lacks be traced back to it.
+ */
+export interface ControlPlaneRefusedCaller {
+  /** The connection the verified token addressed. */
+  readonly connectionId: string;
+  /** The token's `sub`, proven by the signature. */
+  readonly subject: string;
+  /** The registered key that verified the signature. */
+  readonly keyId: string;
+  /**
+   * The kind of client the connection was registered as, from the adopter's row and never the token — the same value
+   * the allowed row is stamped with, so a trail filtered on kind holds a client's refusals beside its calls. Null for a
+   * connection registered before kinds were recorded.
+   */
+  readonly actorKind: ControlPlaneActorKind | null;
+}
+
 /** The credential verified, but nothing granted it this operation. */
 export class ControlPlaneInsufficientScopeError extends PithyError {
-  constructor(args: ControlPlaneErrorArgs = {}, options?: { cause?: unknown }) {
+  /**
+   * The verified caller, for the audit row and nobody else. A property of the vehicle, never of `payload`: the HTTP
+   * codec encodes the payload alone, so the refusal a caller receives is unchanged. Null when a throw site has no
+   * verified caller to name.
+   */
+  readonly caller: ControlPlaneRefusedCaller | null;
+
+  constructor(
+    args: ControlPlaneErrorArgs & { caller?: ControlPlaneRefusedCaller } = {},
+    options?: { cause?: unknown },
+  ) {
     super(
       {
         code: "controlplane/insufficient_scope",
@@ -91,6 +124,7 @@ export class ControlPlaneInsufficientScopeError extends PithyError {
       },
       options,
     );
+    this.caller = args.caller ?? null;
   }
 }
 

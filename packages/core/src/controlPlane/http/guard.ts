@@ -11,7 +11,7 @@ import { workerVersionMetadata } from "../../worker/identity";
 import { ControlPlaneAuditActions, safeEmit } from "../audit/actions";
 import type { ControlPlaneContext } from "../context";
 import type { ControlPlaneActorKind } from "../data/connection";
-import { ControlPlaneNotConnectedError } from "../error/errors";
+import { ControlPlaneInsufficientScopeError, ControlPlaneNotConnectedError } from "../error/errors";
 import type { ControlPlaneRequirement } from "../scope/scope";
 import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_CREATED_HEADER, CONTROL_PLANE_VERSION_HEADER } from "../wire";
 import { type ControlPlaneVerifyDeps, verifyControlPlaneCall } from "./verify";
@@ -250,6 +250,14 @@ export function stampActorKind(emit: AuditEmit, actorKind: ControlPlaneActorKind
  * the exact verification step, and the audit trail is queryable and long-lived. The step belongs in the
  * log, which is bounded and already carries the whole payload.
  *
+ * **Attributed exactly as far as it is proven (#812).** A call that failed verification — no connection, a bad
+ * signature, an unknown or expired key — names nobody, because nothing about it is proven. A call whose credential
+ * verified and whose scope was not granted is a known connection asking for an operation it lacks, which is what
+ * scope probing looks like, so its row carries the subject as `actorId`, the connection as its resource, the key
+ * in `metadata.keyId`, and the connection's `actorKind` — the same four the allowed row carries. Only the first presentation of a token is: the verifier
+ * spends the jti of a scope refusal and names no caller on a token already spent, because a signature proves who minted
+ * a token, not who presented it. Only the row changes; the error thrown is the same.
+ *
  * Nothing here can turn a correct denial into a 500 — `safeEmit` swallows, and the caller rethrows the
  * original error regardless.
  */
@@ -259,6 +267,8 @@ async function auditDenial(
   cause: unknown,
 ): Promise<void> {
   const code = cause instanceof PithyError ? cause.payload.code : "core/internal";
+  const proven = cause instanceof ControlPlaneInsufficientScopeError ? cause.caller : null;
+  const metadata = { reason: code, required: String(requirement), method: c.req.method, path: c.req.path };
   await safeEmit(
     c.var.emit,
     {
@@ -266,13 +276,18 @@ async function auditDenial(
       outcome: "denied",
       severity: "warning",
       actorType: "control-plane",
-      // Null, deliberately. The `sub` claim of a call that failed verification is unproven, and writing
-      // an unverified identity into the trail as the actor is how a forged token gets to name someone.
-      actorId: null,
+      // The connection's own kind, as `stampActorKind` adds it to the allowed row, so a trail filtered on kind holds a
+      // client's refusals beside its calls. Absent when unproven, and absent for a connection with no recorded kind.
+      ...(proven?.actorKind ? { actorKind: proven.actorKind } : {}),
+      // Null unless proven. The `sub` claim of a call that failed verification is unproven, and writing an
+      // unverified identity into the trail as the actor is how a forged token gets to name someone. A scope refusal
+      // came after the signature verified, so its subject is the token's real one.
+      actorId: proven?.subject ?? null,
+      ...(proven ? { resourceType: "controlplane_connection", resourceId: proven.connectionId } : {}),
       requestId: c.req.header("cf-ray"),
       ip: c.req.header("cf-connecting-ip"),
       userAgent: c.req.header("user-agent"),
-      metadata: { reason: code, required: String(requirement), method: c.req.method, path: c.req.path },
+      metadata: proven ? { ...metadata, keyId: proven.keyId } : metadata,
     },
     c.var.log,
   );

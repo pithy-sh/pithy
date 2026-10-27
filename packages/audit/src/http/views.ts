@@ -5,12 +5,14 @@ import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { AccessHistoryRow } from "../accessHistory";
 import type { AuditEventRow } from "../data/auditEvent";
 import type { ControlPlaneReachRow, ControlPlaneReachSubjectRow } from "../reach";
+import type { ControlPlaneUsageRow } from "../usage";
 import type {
   AccessChangeView,
   AuditEventDetailView,
   AuditEventView,
   ControlPlaneReachSubjectView,
   ControlPlaneReachView,
+  ControlPlaneUsageView,
 } from "./responses";
 
 /**
@@ -184,5 +186,22 @@ export function controlPlaneReachSubjectView(row: ControlPlaneReachSubjectRow): 
     count: row.count,
     firstAt: row.firstAt.toISOString(),
     lastAt: row.lastAt.toISOString(),
+  };
+}
+
+/**
+ * Project one usage row (#812). Field for field, with the instants as ISO-8601: the aggregate already read nothing but
+ * the scope, the key, and the last allowed call's method and path out of `metadata`, so there is nothing here to drop.
+ */
+export function controlPlaneUsageView(row: ControlPlaneUsageRow): ControlPlaneUsageView {
+  return {
+    scope: row.scope,
+    keyId: row.keyId,
+    allowed: row.allowed,
+    denied: row.denied,
+    lastAllowedAt: row.lastAllowedAt?.toISOString() ?? null,
+    lastAllowedMethod: row.lastAllowedMethod,
+    lastAllowedPath: row.lastAllowedPath,
+    lastDeniedAt: row.lastDeniedAt?.toISOString() ?? null,
   };
 }

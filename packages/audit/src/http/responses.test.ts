@@ -6,6 +6,7 @@ import type { z } from "zod";
 import type { AccessHistoryRow } from "../accessHistory";
 import type { AuditEventRow } from "../data/auditEvent";
 import type { ControlPlaneReachRow, ControlPlaneReachSubjectRow } from "../reach";
+import type { ControlPlaneUsageRow } from "../usage";
 import {
   AccessChangeView,
   AccessHistoryResponse,
@@ -16,6 +17,8 @@ import {
   ControlPlaneReachResponse,
   ControlPlaneReachSubjectView,
   ControlPlaneReachView,
+  ControlPlaneUsageResponse,
+  ControlPlaneUsageView,
 } from "./responses";
 import {
   accessChangeView,
@@ -23,6 +26,7 @@ import {
   auditEventView,
   controlPlaneReachSubjectView,
   controlPlaneReachView,
+  controlPlaneUsageView,
 } from "./views";
 
 /**
@@ -303,5 +307,63 @@ describe("the reach response schemas (#828)", () => {
         expect(Object.keys(shape)).not.toContain(field);
       }
     }
+  });
+});
+
+describe("the control-plane usage view (#812)", () => {
+  const USED: ControlPlaneUsageRow = {
+    scope: "audit:events:read",
+    keyId: "key-1",
+    allowed: 3,
+    denied: 1,
+    lastAllowedAt: new Date("2026-06-10T12:00:00.000Z"),
+    lastAllowedMethod: "GET",
+    lastAllowedPath: "/audit/events",
+    lastDeniedAt: new Date("2026-06-10T13:00:00.000Z"),
+  };
+  const ONLY_DENIED: ControlPlaneUsageRow = {
+    ...USED,
+    keyId: null,
+    allowed: 0,
+    lastAllowedAt: null,
+    lastAllowedMethod: null,
+    lastAllowedPath: null,
+  };
+
+  test("projects instants as ISO-8601 and leaves an absent one null", () => {
+    expect(controlPlaneUsageView(USED)).toEqual({
+      scope: "audit:events:read",
+      keyId: "key-1",
+      allowed: 3,
+      denied: 1,
+      lastAllowedAt: "2026-06-10T12:00:00.000Z",
+      lastAllowedMethod: "GET",
+      lastAllowedPath: "/audit/events",
+      lastDeniedAt: "2026-06-10T13:00:00.000Z",
+    });
+    expect(controlPlaneUsageView(ONLY_DENIED)).toMatchObject({ allowed: 0, lastAllowedAt: null, keyId: null });
+  });
+
+  test("the envelope accepts what the route returns", () => {
+    accepts(ControlPlaneUsageResponse, {
+      connectionId: "6f1d2e40-7b3a-4c9e-8d51-2a4b6c8e0f13",
+      since: "2026-06-01T00:00:00.000Z",
+      until: "2026-06-11T00:00:00.000Z",
+      usage: [controlPlaneUsageView(USED), controlPlaneUsageView(ONLY_DENIED)],
+      oldestEventAt: null,
+    });
+  });
+
+  test("the row carries no network identifier and no metadata bag", () => {
+    expect(Object.keys(ControlPlaneUsageView.shape).sort()).toEqual([
+      "allowed",
+      "denied",
+      "keyId",
+      "lastAllowedAt",
+      "lastAllowedMethod",
+      "lastAllowedPath",
+      "lastDeniedAt",
+      "scope",
+    ]);
   });
 });

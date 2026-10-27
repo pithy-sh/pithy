@@ -25,7 +25,13 @@ import { audit_0004_request_index } from "../migrations/0004_request_index";
 import { queryAuditEvents } from "../query";
 import { recordAuditEvent } from "../recorder";
 import { AUDIT_EVENT_DETAIL_READ_SCOPE, AUDIT_TRAIL_READ_SCOPE, auditAdminRoutes } from "./guards";
-import { AccessHistoryResponse, AuditEventResponse, AuditEventsResponse, ControlPlaneReachResponse } from "./responses";
+import {
+  AccessHistoryResponse,
+  AuditEventResponse,
+  AuditEventsResponse,
+  ControlPlaneReachResponse,
+  ControlPlaneUsageResponse,
+} from "./responses";
 import { registerAuditRoutes } from "./routes";
 
 /**
@@ -128,11 +134,15 @@ const USER_ROUTES: AdminRoute[] = [
   { method: "GET", path: "/admin/users/:userId", scope: "auth:users:read", summary: "Read one user." },
 ];
 
-function makeApp(scopes: readonly ControlPlaneScope[], basePath = BASE) {
+function makeApp(
+  scopes: readonly ControlPlaneScope[],
+  basePath = BASE,
+  database: () => AuditDatabase = () => auditDatabase(env.DB),
+) {
   const app = harness(scopes);
   registerAuditRoutes({
     basePath,
-    database: () => auditDatabase(env.DB),
+    database,
     adminRoutes: () => [...auditAdminRoutes(basePath), ...USER_ROUTES],
   })(app);
   return app;
@@ -972,5 +982,213 @@ describe("GET /audit/control-plane/access-history (#831)", () => {
       returned: 3,
       more: false,
     });
+  });
+});
+
+describe("GET /audit/control-plane/usage (#812)", () => {
+  const USAGE = `${BASE}/control-plane/usage`;
+  const TARGET = "0b9a8c7d-6e5f-4a3b-9c2d-1e0f9a8b7c6d";
+
+  /** An admitted call by the target connection, carrying everything the gate records — IP and user-agent included. */
+  function callAllowed(scope: string, path: string): AuditEventInput {
+    return {
+      action: "controlplane/call_allowed",
+      outcome: "success",
+      actorType: "control-plane",
+      actorId: "usr_ops",
+      resourceType: "controlplane_connection",
+      resourceId: TARGET,
+      ip: "203.0.113.9",
+      userAgent: "Dashboard/1.0",
+      metadata: {
+        connectionId: TARGET,
+        connectionEnvironment: "prod-secret-env",
+        scope,
+        keyId: "key-target",
+        method: "GET",
+        path,
+        email: "ada@example.test",
+      },
+    };
+  }
+
+  function callDenied(required: string): AuditEventInput {
+    return {
+      action: "controlplane/call_denied",
+      outcome: "denied",
+      severity: "warning",
+      actorType: "control-plane",
+      actorId: "usr_ops",
+      resourceType: "controlplane_connection",
+      resourceId: TARGET,
+      ip: "203.0.113.9",
+      userAgent: "Dashboard/1.0",
+      metadata: {
+        reason: "controlplane/insufficient_scope",
+        required,
+        method: "POST",
+        path: "/x",
+        keyId: "key-target",
+      },
+    };
+  }
+
+  const query = (params: Record<string, string>) => `${USAGE}?${new URLSearchParams(params).toString()}`;
+
+  test("answers one row per scope and key, with the trail's reach beside them", async () => {
+    await seed({ action: "auth/login", outcome: "success", actorType: "user", actorId: "u-1" }, new Date(500));
+    await seed(callAllowed("audit:events:read", "/audit/events"), new Date(1_000));
+    await seed(callAllowed("audit:events:read", "/audit/events?limit=5"), new Date(2_000));
+    await seed(callDenied("payments:overrides:set"), new Date(3_000));
+
+    const response = await call(
+      makeApp([AUDIT_TRAIL_READ_SCOPE]),
+      query({ connectionId: TARGET, since: "1970-01-01T00:00:00.000Z", until: "1970-01-01T01:00:00.000Z" }),
+      AUDIT_TRAIL_READ_SCOPE,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      connectionId: TARGET,
+      since: "1970-01-01T00:00:00.000Z",
+      until: "1970-01-01T01:00:00.000Z",
+      oldestEventAt: "1970-01-01T00:00:00.500Z",
+      usage: [
+        {
+          scope: "audit:events:read",
+          keyId: "key-target",
+          allowed: 2,
+          denied: 0,
+          lastAllowedAt: "1970-01-01T00:00:02.000Z",
+          lastAllowedMethod: "GET",
+          lastAllowedPath: "/audit/events?limit=5",
+          lastDeniedAt: null,
+        },
+        {
+          scope: "payments:overrides:set",
+          keyId: "key-target",
+          allowed: 0,
+          denied: 1,
+          lastAllowedAt: null,
+          lastAllowedMethod: null,
+          lastAllowedPath: null,
+          lastDeniedAt: "1970-01-01T00:00:03.000Z",
+        },
+      ],
+    });
+  });
+
+  test("carries no IP, no user-agent, and no metadata key beyond scope, key, method and path", async () => {
+    await seed(callAllowed("audit:events:read", "/audit/events"), new Date(1_000));
+
+    const body = await (
+      await call(
+        makeApp([AUDIT_TRAIL_READ_SCOPE]),
+        query({ connectionId: TARGET, since: "1970-01-01T00:00:00.000Z" }),
+        AUDIT_TRAIL_READ_SCOPE,
+      )
+    ).text();
+
+    expect(body).not.toContain("203.0.113.9");
+    expect(body).not.toContain("Dashboard/1.0");
+    expect(body).not.toContain("ada@example.test");
+    expect(body).not.toContain("prod-secret-env");
+    expect(body).not.toContain("usr_ops");
+    const [row] = (JSON.parse(body) as { usage: Record<string, unknown>[] }).usage;
+    expect(Object.keys(row ?? {}).sort()).toEqual([
+      "allowed",
+      "denied",
+      "keyId",
+      "lastAllowedAt",
+      "lastAllowedMethod",
+      "lastAllowedPath",
+      "lastDeniedAt",
+      "scope",
+    ]);
+  });
+
+  test("until defaults to now", async () => {
+    await seed(callAllowed("audit:events:read", "/audit/events"), new Date(Date.now() - 1_000));
+    const response = await call(
+      makeApp([AUDIT_TRAIL_READ_SCOPE]),
+      query({ connectionId: TARGET, since: "1970-01-01T00:00:00.000Z" }),
+      AUDIT_TRAIL_READ_SCOPE,
+    );
+    const body = await response.json<{ until: string; usage: { allowed: number }[] }>();
+    expect(body.usage[0]?.allowed).toBe(1);
+    expect(Math.abs(Date.parse(body.until) - Date.now())).toBeLessThan(60_000);
+  });
+
+  test("oldestEventAt is null on an empty trail", async () => {
+    const response = await call(
+      makeApp([AUDIT_TRAIL_READ_SCOPE]),
+      query({ connectionId: TARGET, since: "1970-01-01T00:00:00.000Z" }),
+      AUDIT_TRAIL_READ_SCOPE,
+    );
+    expect(await response.json()).toMatchObject({ usage: [], oldestEventAt: null });
+  });
+
+  test("a missing connectionId or since, or a window that ends before it starts, is refused before any query", async () => {
+    let queried = 0;
+    const app = makeApp([AUDIT_TRAIL_READ_SCOPE], BASE, () => {
+      queried += 1;
+      return auditDatabase(env.DB);
+    });
+    const refused: Record<string, string>[] = [
+      { since: "1970-01-01T00:00:00.000Z" },
+      { connectionId: TARGET },
+      { connectionId: TARGET, since: "yesterday" },
+      { connectionId: TARGET, since: "1970-01-02T00:00:00.000Z", until: "1970-01-01T00:00:00.000Z" },
+    ];
+    for (const params of refused) {
+      const response = await call(app, query(params), AUDIT_TRAIL_READ_SCOPE);
+      expect(response.status, JSON.stringify(params)).toBe(400);
+      expect(await errorCode(response)).toBe("validation/invalid_input");
+    }
+    expect(queried).toBe(0);
+  });
+
+  test("needs audit:events:read, and the detail scope does not stand in for it", async () => {
+    const params = query({ connectionId: TARGET, since: "1970-01-01T00:00:00.000Z" });
+    const ungranted = await call(makeApp([]), params, AUDIT_TRAIL_READ_SCOPE);
+    expect(ungranted.status).toBe(403);
+    expect(await errorCode(ungranted)).toBe("controlplane/insufficient_scope");
+    const detailOnly = await call(makeApp([AUDIT_EVENT_DETAIL_READ_SCOPE]), params, AUDIT_EVENT_DETAIL_READ_SCOPE);
+    expect(detailOnly.status).toBe(403);
+  });
+
+  test("audits the read: whose usage was asked for, over what window, and how many rows came back", async () => {
+    await seed(callAllowed("audit:events:read", "/audit/events"), new Date(1_000));
+    await call(
+      makeApp([AUDIT_TRAIL_READ_SCOPE]),
+      query({ connectionId: TARGET, since: "1970-01-01T00:00:00.000Z", until: "1970-01-01T01:00:00.000Z" }),
+      AUDIT_TRAIL_READ_SCOPE,
+    );
+    const read = emitted.find((event) => event.action === "audit/usage_read");
+    expect(read).toMatchObject({
+      outcome: "success",
+      actorType: "control-plane",
+      actorId: "operator-1",
+      resourceType: "controlplane_connection",
+      resourceId: TARGET,
+      metadata: {
+        connectionId: CONNECTION_ID,
+        query: { connectionId: TARGET, since: "1970-01-01T00:00:00.000Z", until: "1970-01-01T01:00:00.000Z" },
+        returned: 1,
+      },
+    });
+  });
+
+  test("returns exactly ControlPlaneUsageResponse", async () => {
+    await seed(callAllowed("audit:events:read", "/audit/events"), new Date(1_000));
+    await seed(callDenied("payments:overrides:set"), new Date(2_000));
+    const body = await (
+      await call(
+        makeApp([AUDIT_TRAIL_READ_SCOPE]),
+        query({ connectionId: TARGET, since: "1970-01-01T00:00:00.000Z" }),
+        AUDIT_TRAIL_READ_SCOPE,
+      )
+    ).json();
+    expect(ControlPlaneUsageResponse.parse(body)).toEqual(body);
   });
 });

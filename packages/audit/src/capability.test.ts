@@ -61,12 +61,14 @@ describe("audit capability", () => {
       "/audit/events",
       "/audit/control-plane/access-history",
       "/audit/control-plane/reach",
+      "/audit/control-plane/usage",
       "/audit/events/:eventId",
     ]);
     expect(audit({ basePath: "/trail" }).adminRoutes?.map((route) => route.path)).toEqual([
       "/trail/events",
       "/trail/control-plane/access-history",
       "/trail/control-plane/reach",
+      "/trail/control-plane/usage",
       "/trail/events/:eventId",
     ]);
   });
@@ -75,12 +77,14 @@ describe("audit capability", () => {
     // The trail is append-only, and the two scopes are what stops a credential issued to render a
     // recent-activity pane from also resolving every client IP in the project. The access history rides
     // the listing scope (#831): it reads named metadata keys and never an IP or a user-agent. Reach rides
-    // it too (#828): it discloses no IP, user-agent or capability metadata.
+    // it too (#828): it discloses no IP, user-agent or capability metadata. So does usage (#812): it counts
+    // calls and discloses no IP, user-agent or capability metadata.
     const routes = audit().adminRoutes ?? [];
     expect(routes.map((route) => [route.method, route.path, route.scope])).toEqual([
       ["GET", "/audit/events", AUDIT_TRAIL_READ_SCOPE],
       ["GET", "/audit/control-plane/access-history", AUDIT_TRAIL_READ_SCOPE],
       ["GET", "/audit/control-plane/reach", AUDIT_TRAIL_READ_SCOPE],
+      ["GET", "/audit/control-plane/usage", AUDIT_TRAIL_READ_SCOPE],
       ["GET", "/audit/events/:eventId", AUDIT_EVENT_DETAIL_READ_SCOPE],
     ]);
   });

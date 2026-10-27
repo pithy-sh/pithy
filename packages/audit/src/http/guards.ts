@@ -33,10 +33,16 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
  * `metadata` bag — which routinely holds the email address, the resource name, or the reason a
  * capability recorded alongside its event. Bulk-harvesting those over a whole trail is a privacy
  * incident, and requiring a second scope is what makes it a decision the adopter makes rather than
- * one a listing credential comes with. Since the two are separate routes, a credential holding only
- * the detail scope cannot enumerate the trail to find ids to read, and a credential holding only the
- * list scope cannot resolve one. `scopeCovers` matches exactly — no prefix, no wildcard — so holding
- * one confers nothing about the other.
+ * one a listing credential comes with. Since the listing and detail routes are separate, a credential holding
+ * only the detail scope cannot enumerate the trail to find ids to read, and a credential holding only the list scope
+ * cannot resolve one. `scopeCovers` matches exactly — no prefix, no wildcard — so holding one confers nothing about
+ * the other.
+ *
+ * **Usage rides the listing scope (#812).** `GET {base}/control-plane/usage` counts one connection's calls by scope
+ * and key. Its answer is the scope, the key id, and the method and path of the last allowed call — the management
+ * client's own footprint, which the listing already discloses in shape through `action`, `actorId` and `resourceId`
+ * — and never an IP, a user-agent, or any other metadata key. So it needs no detail scope, and an access review does
+ * not have to hold the most dangerous grant audit defines to ask which grants are used.
  *
  * **The access history rides the listing scope (#831).** `GET {base}/control-plane/access-history` answers every
  * membership, connection and key change in a window with its before and after — roles, scopes, the connection's
@@ -109,6 +115,14 @@ export function auditAdminRoutes(basePath: string): AdminRoute[] {
       scope: AUDIT_TRAIL_READ_SCOPE,
       summary:
         "Read what one control-plane credential reached, by tenant, route and outcome, and expand a route into the subjects it touched.",
+    },
+    {
+      method: "GET",
+      path: `${basePath}/control-plane/usage`,
+      scope: AUDIT_TRAIL_READ_SCOPE,
+      // Kind `reads` under #725's table, declared in code once that lands.
+      summary:
+        "Count which scopes one control-plane connection exercised and was refused, by key, over a window. Counts only — no event is read in full.",
     },
     {
       method: "GET",

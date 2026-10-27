@@ -94,6 +94,7 @@ describe("audit route contract", () => {
     expect(mountedPaths(makeApp()).sort()).toEqual([
       "/audit/control-plane/access-history",
       "/audit/control-plane/reach",
+      "/audit/control-plane/usage",
       "/audit/events",
       "/audit/events/:eventId",
     ]);
