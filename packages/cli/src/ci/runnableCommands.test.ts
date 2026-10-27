@@ -98,6 +98,7 @@ const REACH: Readonly<Record<string, readonly string[]>> = {
   add: ["vector"],
   "dashboard connect": ["--env", "staging"],
   "email provision": [],
+  "mcp connect": ["--env", "staging"],
   "media provision": ["--r2-access-key-id", "id", "--r2-secret-access-key", "secret"],
   "payments provision": [],
   "storage provision": ["--r2-access-key-id", "id", "--r2-secret-access-key", "secret"],

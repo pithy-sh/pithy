@@ -3,12 +3,11 @@
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneConnection, RegisteredKey } from "@pithy-sh/core/src/controlPlane/data/connection";
-import { activeKeys } from "@pithy-sh/core/src/controlPlane/data/keyLifecycle";
 import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
-import { ControlPlaneKeyConflictError } from "@pithy-sh/core/src/controlPlane/error/errors";
 import { SEAM_SCOPES } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { PithyError, PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test, vi } from "vitest";
+import { fakeConnectionRegistry } from "../test-utils/connectionRegistry";
 import {
   authorizeDashboard,
   connectDashboard,
@@ -19,82 +18,10 @@ import {
   rotateDashboardKey,
 } from "./connect";
 import type { ConnectionHealth, DashboardClient } from "./contract";
-import type { ConnectionRegistry } from "./registry";
 
 const JWK = { kty: "OKP", crv: "Ed25519", x: "kHo4iZ3rG3Jm2m7L9pQwXyZ0aBcDeFgHiJkLmNoPqRs" } as const;
 const NOW = new Date("2026-07-30T00:00:00.000Z");
 const CONNECTION_ID = "5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31";
-
-/**
- * An in-memory registry — the D1 half is proven in registry.test.ts against a real database.
- *
- * It mirrors the real gate (#287): a key may be added only while nothing live could have signed for one
- * at the seam. A permissive fake would let this file prove behavior the actual registry refuses.
- *
- * `seamRegister` is the *worker's* write, not the CLI's — what `POST {basePath}/keys` does to this row
- * when a management client calls it. Nothing in `connect.ts` may reach it; a test plays the worker.
- */
-function fakeRegistry(initial: ControlPlaneConnection | null = null): ConnectionRegistry & {
-  current: () => ControlPlaneConnection | null;
-  seamRegister: (key: RegisteredKey) => void;
-} {
-  let row = initial;
-  return {
-    read: async () => row,
-    save: async (connection) => {
-      if (row && row.id === connection.id && JSON.stringify(row.keys) !== JSON.stringify(connection.keys)) {
-        if (activeKeys(row.keys, connection.updatedAt).length > 0) {
-          throw new ControlPlaneKeyConflictError({ detail: "save rewrote the keys of a connection with a live key" });
-        }
-      }
-      row = connection;
-    },
-    appendKey: async (key, now) => {
-      if (!row) throw new Error("appendKey called with nothing registered");
-      if (activeKeys(row.keys, now).length > 0) {
-        throw new ControlPlaneKeyConflictError({ detail: "appendKey while a key is live" });
-      }
-      row = { ...row, keys: [...row.keys, key], updatedAt: now };
-      return row;
-    },
-    seamRegister: (key) => {
-      if (!row) throw new Error("the worker cannot register a key on a connection that does not exist");
-      row = { ...row, keys: [...row.keys, key] };
-    },
-    revokeKey: async (keyId, now) => {
-      if (!row) throw new Error("revokeKey called with nothing registered");
-      if (!row.keys.some((key) => key.keyId === keyId)) return null;
-      row = {
-        ...row,
-        keys: row.keys.map((key) => (key.keyId === keyId ? { ...key, revokedAt: now } : key)),
-        updatedAt: now,
-      };
-      return row;
-    },
-    appendTrust: async (trust, now) => {
-      if (!row) throw new Error("appendTrust called with nothing registered");
-      row = { ...row, trusts: [...(row.trusts ?? []), trust], updatedAt: now };
-      return row;
-    },
-    revokeTrust: async (trustId, now) => {
-      if (!row) throw new Error("revokeTrust called with nothing registered");
-      if (!(row.trusts ?? []).some((trust) => trust.trustId === trustId)) return null;
-      row = {
-        ...row,
-        trusts: (row.trusts ?? []).map((trust) => (trust.trustId === trustId ? { ...trust, revokedAt: now } : trust)),
-        updatedAt: now,
-      };
-      return row;
-    },
-    remove: async () => {
-      const had = row !== null;
-      row = null;
-      return had;
-    },
-    dispose: async () => {},
-    current: () => row,
-  };
-}
 
 /** A dashboard that answers everything successfully, unless a case overrides one call. */
 function fakeClient(overrides: Partial<DashboardClient> = {}): DashboardClient {
@@ -272,7 +199,7 @@ describe("authorizeDashboard", () => {
 
 describe("connectDashboard — the dashboard path", () => {
   test("creates the connection, writes the row, and only then reports connected", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     const client = fakeClient();
 
     const report = await connectDashboard({ ...base, registry, client });
@@ -285,7 +212,7 @@ describe("connectDashboard — the dashboard path", () => {
   });
 
   test("a failed ping reports needs_reconnect — never a silent success", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     const client = fakeClient({
       verifyConnection: async () => ({ status: "needs_reconnect", keyId: null, detail: "404 from the worker" }),
     });
@@ -299,7 +226,7 @@ describe("connectDashboard — the dashboard path", () => {
   });
 
   test("a ping that throws is also needs_reconnect, not a crash", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     const client = fakeClient({
       verifyConnection: async () => {
         throw new PithyError({ code: "core/internal", status: 500, message: "Couldn't reach the management client." });
@@ -323,7 +250,7 @@ describe("connectDashboard — the dashboard path", () => {
 
     await connectDashboard({
       ...base,
-      registry: fakeRegistry(),
+      registry: fakeConnectionRegistry(),
       client: fakeClient({ createConnection }),
       isProduction: true,
     });
@@ -342,13 +269,13 @@ describe("connectDashboard — the dashboard path", () => {
       scopes: ["manifest:read", "keys:rotate"],
     });
 
-    await connectDashboard({ ...base, registry: fakeRegistry(), client: fakeClient({ createConnection }) });
+    await connectDashboard({ ...base, registry: fakeConnectionRegistry(), client: fakeClient({ createConnection }) });
 
     expect(createConnection).toHaveBeenCalledWith("ct_1", expect.objectContaining({ isProduction: false }));
   });
 
   test("--update re-points the worker URL and scopes instead of creating a connection", async () => {
-    const registry = fakeRegistry(existing());
+    const registry = fakeConnectionRegistry(existing());
     const createConnection = vi.fn<DashboardClient["createConnection"]>();
     const client = fakeClient({ createConnection });
 
@@ -374,7 +301,7 @@ describe("connectDashboard — the dashboard path", () => {
   test("--update with nothing registered says so rather than inventing a connection", async () => {
     const error = await connectDashboard({
       ...base,
-      registry: fakeRegistry(),
+      registry: fakeConnectionRegistry(),
       client: fakeClient(),
       update: true,
     }).catch((caught: unknown) => caught);
@@ -382,7 +309,9 @@ describe("connectDashboard — the dashboard path", () => {
   });
 
   test("no client and no --public-key is an actionable error, not a hang", async () => {
-    const error = await connectDashboard({ ...base, registry: fakeRegistry() }).catch((caught: unknown) => caught);
+    const error = await connectDashboard({ ...base, registry: fakeConnectionRegistry() }).catch(
+      (caught: unknown) => caught,
+    );
     expect(error).toBeInstanceOf(PithyError);
     expect((error as PithyError).payload.action).toBeTruthy();
   });
@@ -394,7 +323,9 @@ describe("connectDashboard — an update re-points the client, not only the row"
     // call. Writing only the first leaves the CLI reporting success while every management call goes to
     // a dead address — which reads as an outage, not as a stale registration.
     const told: { connectionId: string; workerUrl: string; basePath: string }[] = [];
-    const registry = fakeRegistry(existing({ workerUrl: "https://old.example.com", basePath: "/control-plane" }));
+    const registry = fakeConnectionRegistry(
+      existing({ workerUrl: "https://old.example.com", basePath: "/control-plane" }),
+    );
 
     await connectDashboard({
       registry,
@@ -422,7 +353,9 @@ describe("connectDashboard — an update re-points the client, not only the row"
   test("changes nothing locally when the client cannot be re-pointed", async () => {
     // Remote first, then local. A failure has to leave both sides agreeing on the old address rather
     // than leaving the row ahead of the client — the same "one write, or none" rule a rotation follows.
-    const registry = fakeRegistry(existing({ workerUrl: "https://old.example.com", basePath: "/control-plane" }));
+    const registry = fakeConnectionRegistry(
+      existing({ workerUrl: "https://old.example.com", basePath: "/control-plane" }),
+    );
 
     await expect(
       connectDashboard({
@@ -450,7 +383,9 @@ describe("connectDashboard — an update re-points the client, not only the row"
     // A scope change is entirely the adopter's side — their row is the authority, and telling the client
     // what it may do would be asking it to enforce its own limits.
     let calls = 0;
-    const registry = fakeRegistry(existing({ workerUrl: "https://api.example.com", basePath: "/control-plane" }));
+    const registry = fakeConnectionRegistry(
+      existing({ workerUrl: "https://api.example.com", basePath: "/control-plane" }),
+    );
 
     await connectDashboard({
       registry,
@@ -481,7 +416,7 @@ describe("connectDashboard — the grant is the operator's, not the client's", (
   // reason `assertNoScopeEscalation` exists.
 
   test("stores what the operator asked for, not what the client echoed back", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
 
     await connectDashboard({
       ...base,
@@ -504,7 +439,7 @@ describe("connectDashboard — the grant is the operator's, not the client's", (
   });
 
   test("refuses the whole connection when the client returns a scope nobody requested", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
 
     const error = await connectDashboard({
       ...base,
@@ -531,7 +466,7 @@ describe("connectDashboard — the grant is the operator's, not the client's", (
   });
 
   test("accepts a client that declines a scope — returning fewer is its business", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
 
     await connectDashboard({
       ...base,
@@ -577,7 +512,7 @@ describe("connectDashboard — connecting produces a working read surface", () =
   ];
 
   test("grants every read the composed worker declares, so no second command is needed", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
 
     const report = await connectDashboard({ ...base, registry, capabilities: reading, client: fakeClient() });
 
@@ -586,7 +521,7 @@ describe("connectDashboard — connecting produces a working read surface", () =
   });
 
   test("grants no write it was not already granting — email:jobs:retry stays unheld", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
 
     await connectDashboard({ ...base, registry, capabilities: reading, client: fakeClient() });
 
@@ -594,7 +529,7 @@ describe("connectDashboard — connecting produces a working read surface", () =
   });
 
   test("--scope still narrows, and the composed surface does not widen it back", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
 
     await connectDashboard({
       ...base,
@@ -616,7 +551,7 @@ describe("connectDashboard — connecting produces a working read surface", () =
   });
 
   test("an explicitly empty grant stays empty — deselecting everything means everything", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
 
     await connectDashboard({
       ...base,
@@ -638,7 +573,7 @@ describe("connectDashboard — connecting produces a working read surface", () =
   });
 
   test("with no composed set to read, the grant is the seam's own and nothing is invented", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
 
     await connectDashboard({ ...base, registry, client: fakeClient() });
 
@@ -648,7 +583,7 @@ describe("connectDashboard — connecting produces a working read surface", () =
 
 describe("connectDashboard — the offline path", () => {
   test("registers a key the operator generated, with no dashboard involved at all", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
 
     const report = await connectDashboard({
       ...base,
@@ -669,7 +604,7 @@ describe("connectDashboard — the offline path", () => {
   });
 
   test("refuses to add a key while one is live, and names the call to make instead", async () => {
-    const registry = fakeRegistry(existing());
+    const registry = fakeConnectionRegistry(existing());
 
     const error = await connectDashboard({
       ...base,
@@ -689,7 +624,7 @@ describe("connectDashboard — the offline path", () => {
   });
 
   test("re-offering the registered key re-points the address without touching what is trusted", async () => {
-    const registry = fakeRegistry(existing());
+    const registry = fakeConnectionRegistry(existing());
 
     const report = await connectDashboard({
       ...base,
@@ -707,7 +642,7 @@ describe("connectDashboard — the offline path", () => {
   });
 
   test("the same key id with different material is a conflict, never a swap under a trusted name", async () => {
-    const registry = fakeRegistry(existing());
+    const registry = fakeConnectionRegistry(existing());
 
     const error = await connectDashboard({
       ...base,
@@ -732,7 +667,7 @@ describe("connectDashboard — the offline path", () => {
 
   test("appends when nothing is live, because then nothing could have signed a registration", async () => {
     const revoked = existing();
-    const registry = fakeRegistry({
+    const registry = fakeConnectionRegistry({
       ...revoked,
       keys: [{ ...(revoked.keys[0] as RegisteredKey), revokedAt: new Date("2026-02-01T00:00:00.000Z") }],
     });
@@ -750,7 +685,7 @@ describe("connectDashboard — the offline path", () => {
   });
 
   test("a different issuer on an existing connection is a conflict, not a silent overwrite", async () => {
-    const registry = fakeRegistry(existing());
+    const registry = fakeConnectionRegistry(existing());
     const error = await connectDashboard({
       ...base,
       registry,
@@ -770,7 +705,7 @@ describe("rotateDashboardKey", () => {
    * route writes their row. The CLI writes nothing here, so `seamRegister` is how the key arrives.
    */
   function rotatingClient(
-    registry: ReturnType<typeof fakeRegistry>,
+    registry: ReturnType<typeof fakeConnectionRegistry>,
     overrides: Partial<DashboardClient> = {},
   ): DashboardClient {
     return fakeClient({
@@ -788,7 +723,7 @@ describe("rotateDashboardKey", () => {
   const seen: { workerUrl: string; basePath: string }[] = [];
 
   test("registers through the seam, sends the row's own address, and never expires the old key", async () => {
-    const registry = fakeRegistry(existing({ basePath: "/admin" }));
+    const registry = fakeConnectionRegistry(existing({ basePath: "/admin" }));
 
     const report = await rotateDashboardKey({
       registry,
@@ -812,7 +747,7 @@ describe("rotateDashboardKey", () => {
   });
 
   test("a rotation whose new key does not verify reports needs_reconnect and still leaves the old key live", async () => {
-    const registry = fakeRegistry(existing());
+    const registry = fakeConnectionRegistry(existing());
     const client = rotatingClient(registry, {
       verifyConnection: async () => ({ status: "needs_reconnect", keyId: null, detail: "401" }),
     });
@@ -831,7 +766,7 @@ describe("rotateDashboardKey", () => {
   });
 
   test("an unreachable worker fails the rotation and changes nothing", async () => {
-    const registry = fakeRegistry(existing());
+    const registry = fakeConnectionRegistry(existing());
     // What a client must do when the registration call does not complete: fail, having written nothing.
     const client = fakeClient({
       rotateKey: async () => {
@@ -854,7 +789,7 @@ describe("rotateDashboardKey", () => {
   });
 
   test("a ping answered by the old key is not proof of the new one", async () => {
-    const registry = fakeRegistry(existing());
+    const registry = fakeConnectionRegistry(existing());
     // The client's own account says connected, and it is telling the truth about the connection —
     // just not about the key. Reporting that as a rotation is how the expiry that follows it locks
     // an adopter out.
@@ -877,7 +812,7 @@ describe("rotateDashboardKey", () => {
 
   test("a connection with nothing live is a reconnect, not a rotation", async () => {
     const stale = existing();
-    const registry = fakeRegistry({
+    const registry = fakeConnectionRegistry({
       ...stale,
       keys: [{ ...(stale.keys[0] as RegisteredKey), revokedAt: new Date("2026-02-01T00:00:00.000Z") }],
     });
@@ -900,7 +835,7 @@ describe("rotateDashboardKey", () => {
 
   test("rotating an unconnected environment says so", async () => {
     const error = await rotateDashboardKey({
-      registry: fakeRegistry(),
+      registry: fakeConnectionRegistry(),
       client: fakeClient(),
       environment: "prod",
       connect: async () => CONNECT,
@@ -912,7 +847,7 @@ describe("rotateDashboardKey", () => {
 
 describe("disconnectDashboard", () => {
   test("revokes locally even when the dashboard call fails — revocation needs nobody's agreement", async () => {
-    const registry = fakeRegistry(existing());
+    const registry = fakeConnectionRegistry(existing());
     const client = fakeClient({
       deleteConnection: async () => {
         throw new PithyError({ code: "core/internal", status: 500, message: "Couldn't reach the management client." });
@@ -933,7 +868,7 @@ describe("disconnectDashboard", () => {
   });
 
   test("the row is gone before the dashboard is even asked", async () => {
-    const registry = fakeRegistry(existing());
+    const registry = fakeConnectionRegistry(existing());
     let rowAtCallTime: ControlPlaneConnection | null = existing();
     const client = fakeClient({
       deleteConnection: async () => {
@@ -947,7 +882,7 @@ describe("disconnectDashboard", () => {
   });
 
   test("nothing registered is not an error — teardown is safe to re-run", async () => {
-    const report = await disconnectDashboard({ registry: fakeRegistry(), environment: "prod" });
+    const report = await disconnectDashboard({ registry: fakeConnectionRegistry(), environment: "prod" });
     expect(report.removed).toBe(false);
     expect(report.connectionId).toBeNull();
   });
@@ -955,7 +890,7 @@ describe("disconnectDashboard", () => {
 
 describe("dashboardStatus", () => {
   test("reports the connection, its keys, and their ages", async () => {
-    const registry = fakeRegistry(
+    const registry = fakeConnectionRegistry(
       existing({
         keys: [
           key("key_1", new Date("2026-01-01T00:00:00.000Z")),
@@ -991,7 +926,7 @@ describe("dashboardStatus", () => {
   });
 
   test("a probe turns the report into a proven one", async () => {
-    const registry = fakeRegistry(existing());
+    const registry = fakeConnectionRegistry(existing());
     const report = await dashboardStatus({
       registry,
       environment: "prod",
@@ -1003,7 +938,7 @@ describe("dashboardStatus", () => {
   });
 
   test("nothing registered reports disconnected rather than throwing", async () => {
-    const report = await dashboardStatus({ registry: fakeRegistry(), environment: "prod", now: () => NOW });
+    const report = await dashboardStatus({ registry: fakeConnectionRegistry(), environment: "prod", now: () => NOW });
     expect(report).toMatchObject({ connected: false, connectionId: null, keys: [], status: "unverified" });
   });
 });
@@ -1021,7 +956,7 @@ describe("connectDashboard — the principal, the kind and the purpose", () => {
   };
 
   test("the device-code path records the session's email, the dashboard kind, and the purpose", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     const report = await connectDashboard({ ...base, registry, client: fakeClient() });
 
     expect(registry.current()).toMatchObject({
@@ -1037,7 +972,7 @@ describe("connectDashboard — the principal, the kind and the purpose", () => {
   });
 
   test("no session refuses before the browser approval, and nothing is created anywhere", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     const authorize = vi.fn(async () => "ct_1");
     const createConnection = vi.fn(fakeClient().createConnection);
 
@@ -1056,7 +991,7 @@ describe("connectDashboard — the principal, the kind and the purpose", () => {
   });
 
   test("no purpose, and nobody to ask, refuses naming --purpose before anything is created", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     const authorize = vi.fn(async () => "ct_1");
     const { purpose: _omitted, ...withoutPurpose } = base;
 
@@ -1071,7 +1006,7 @@ describe("connectDashboard — the principal, the kind and the purpose", () => {
   });
 
   test("at a terminal the purpose is asked for instead", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     const { purpose: _omitted, ...withoutPurpose } = base;
     const askPurpose = vi.fn(async () => "  Weekly refund report.  ");
 
@@ -1086,7 +1021,7 @@ describe("connectDashboard — the principal, the kind and the purpose", () => {
     await expect(
       connectDashboard({
         ...withoutPurpose,
-        registry: fakeRegistry(),
+        registry: fakeConnectionRegistry(),
         client: fakeClient(),
         askPurpose: async () => "triage\u001b[2J",
       }),
@@ -1094,7 +1029,7 @@ describe("connectDashboard — the principal, the kind and the purpose", () => {
   });
 
   test("--public-key records the session's email and the kind the operator said", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     await connectDashboard({
       ...base,
       registry,
@@ -1111,7 +1046,7 @@ describe("connectDashboard — the principal, the kind and the purpose", () => {
   });
 
   test("--public-key without a kind is refused, naming --kind", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     const error = (await connectDashboard({
       ...base,
       registry,
@@ -1126,7 +1061,7 @@ describe("connectDashboard — the principal, the kind and the purpose", () => {
   });
 
   test("--public-key with no session is refused, and no row is written", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     await expect(
       connectDashboard({
         ...base,
@@ -1141,7 +1076,7 @@ describe("connectDashboard — the principal, the kind and the purpose", () => {
   });
 
   test("a key joining a connection that already exists registers no connection, so asks no principal", async () => {
-    const registry = fakeRegistry(existing());
+    const registry = fakeConnectionRegistry(existing());
     const principal = vi.fn(noSession);
     await connectDashboard({
       ...base,
@@ -1161,7 +1096,7 @@ describe("connectDashboard — the principal, the kind and the purpose", () => {
   }
 
   test("a new key on a connection with nothing live is a registration, so no session refuses it", async () => {
-    const registry = fakeRegistry(dead());
+    const registry = fakeConnectionRegistry(dead());
     const before = registry.current();
     await expect(
       connectDashboard({
@@ -1178,7 +1113,7 @@ describe("connectDashboard — the principal, the kind and the purpose", () => {
   });
 
   test("a new key on a connection with nothing live records who sanctioned it, its kind and its purpose", async () => {
-    const registry = fakeRegistry(dead());
+    const registry = fakeConnectionRegistry(dead());
     const report = await connectDashboard({
       ...base,
       registry,
@@ -1197,7 +1132,7 @@ describe("connectDashboard — the principal, the kind and the purpose", () => {
   });
 
   test("a new key on a connection with nothing live needs --kind, and nothing is written without it", async () => {
-    const registry = fakeRegistry(dead());
+    const registry = fakeConnectionRegistry(dead());
     const before = registry.current();
     const error = (await connectDashboard({
       ...base,
@@ -1213,7 +1148,7 @@ describe("connectDashboard — the principal, the kind and the purpose", () => {
   });
 
   test("--update --purpose edits the purpose and leaves the principal and the kind as registered", async () => {
-    const registry = fakeRegistry(existing());
+    const registry = fakeConnectionRegistry(existing());
     const principal = vi.fn(noSession);
     const report = await connectDashboard({
       ...base,
@@ -1235,7 +1170,7 @@ describe("connectDashboard — the principal, the kind and the purpose", () => {
   });
 
   test("a connection registered before principals still works, and may have its purpose set", async () => {
-    const registry = fakeRegistry(existing({ authorizedBy: null, actorKind: null, purpose: null }));
+    const registry = fakeConnectionRegistry(existing({ authorizedBy: null, actorKind: null, purpose: null }));
     await connectDashboard({
       ...base,
       registry,
@@ -1249,7 +1184,7 @@ describe("connectDashboard — the principal, the kind and the purpose", () => {
   });
 
   test("an update with no --purpose keeps the one registered", async () => {
-    const registry = fakeRegistry(existing());
+    const registry = fakeConnectionRegistry(existing());
     const { purpose: _omitted, ...withoutPurpose } = base;
     await connectDashboard({
       ...withoutPurpose,
@@ -1286,7 +1221,11 @@ describe("parsePurpose", () => {
 
 describe("dashboardStatus — attribution", () => {
   test("reports who authorized the connection, its kind, and its purpose", async () => {
-    const report = await dashboardStatus({ registry: fakeRegistry(existing()), environment: "prod", now: () => NOW });
+    const report = await dashboardStatus({
+      registry: fakeConnectionRegistry(existing()),
+      environment: "prod",
+      now: () => NOW,
+    });
     expect(report).toMatchObject({
       authorizedBy: "grace@example.com",
       actorKind: "dashboard",
@@ -1296,7 +1235,7 @@ describe("dashboardStatus — attribution", () => {
 
   test("a connection registered before principals reports null on all three", async () => {
     const report = await dashboardStatus({
-      registry: fakeRegistry(existing({ authorizedBy: null, actorKind: null, purpose: null })),
+      registry: fakeConnectionRegistry(existing({ authorizedBy: null, actorKind: null, purpose: null })),
       environment: "prod",
       now: () => NOW,
     });
@@ -1304,7 +1243,7 @@ describe("dashboardStatus — attribution", () => {
   });
 
   test("nothing registered reports null on all three", async () => {
-    const report = await dashboardStatus({ registry: fakeRegistry(), environment: "prod", now: () => NOW });
+    const report = await dashboardStatus({ registry: fakeConnectionRegistry(), environment: "prod", now: () => NOW });
     expect(report).toMatchObject({ authorizedBy: null, actorKind: null, purpose: null });
   });
 });
@@ -1335,7 +1274,7 @@ describe("connectDashboard — an OIDC trust (#722)", () => {
   }
 
   test("registers a connection holding only a trust, with no keypair, awaiting a first call", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     const { options, resolveIssuer } = trustRun();
     const report = await connectDashboard({ registry, ...options });
 
@@ -1361,7 +1300,7 @@ describe("connectDashboard — an OIDC trust (#722)", () => {
     const spies = Object.fromEntries(Object.keys(client).map((name) => [name, vi.fn()]));
     const { options } = trustRun();
     await connectDashboard({
-      registry: fakeRegistry(),
+      registry: fakeConnectionRegistry(),
       ...options,
       client: spies as unknown as DashboardClient,
       authorize: vi.fn(),
@@ -1370,14 +1309,14 @@ describe("connectDashboard — an OIDC trust (#722)", () => {
   });
 
   test("the audience defaults to the environment's own worker origin", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     const { options } = trustRun({ workerUrl: "https://api.example.com/some/path" });
     await connectDashboard({ registry, ...options });
     expect(registry.current()?.trusts?.[0]?.audience).toBe("https://api.example.com");
   });
 
   test("--oidc-audience overrides the default", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     const { options } = trustRun();
     await connectDashboard({
       registry,
@@ -1388,7 +1327,7 @@ describe("connectDashboard — an OIDC trust (#722)", () => {
   });
 
   test("records the signed-in session's email on the connection and the trust, with its kind and purpose", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     const { options } = trustRun();
     await connectDashboard({ registry, ...options });
     expect(registry.current()).toMatchObject({
@@ -1399,7 +1338,7 @@ describe("connectDashboard — an OIDC trust (#722)", () => {
   });
 
   test("is refused without a session, naming pithy cloudflare connect, before anything is resolved or written", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     const { options, resolveIssuer } = trustRun({
       principal: async () => {
         throw new PreconditionFailedError({
@@ -1416,17 +1355,23 @@ describe("connectDashboard — an OIDC trust (#722)", () => {
   test("is refused without --kind on a new connection", async () => {
     const { options } = trustRun();
     await expect(
-      connectDashboard({ registry: fakeRegistry(), ...options, trust: { ...options.trust, kind: undefined } }),
+      connectDashboard({
+        registry: fakeConnectionRegistry(),
+        ...options,
+        trust: { ...options.trust, kind: undefined },
+      }),
     ).rejects.toThrow(/--oidc-issuer needs --kind/);
   });
 
   test("is refused without a purpose on a new connection", async () => {
     const { options } = trustRun({ purpose: undefined });
-    await expect(connectDashboard({ registry: fakeRegistry(), ...options })).rejects.toThrow(/what this client is for/);
+    await expect(connectDashboard({ registry: fakeConnectionRegistry(), ...options })).rejects.toThrow(
+      /what this client is for/,
+    );
   });
 
   test("an unconstrained subject is refused at registration, naming why, and nothing is written", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     const { options, resolveIssuer } = trustRun();
     await expect(connectDashboard({ registry, ...options, trust: { ...options.trust, claims: {} } })).rejects.toThrow(
       /every workload it serves/,
@@ -1436,7 +1381,7 @@ describe("connectDashboard — an OIDC trust (#722)", () => {
   });
 
   test("an issuer that does not resolve refuses the registration and writes nothing", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     const { options } = trustRun({
       resolveIssuer: async () => {
         throw new PithyError({ code: "core/upstream_failed", status: 502, message: "does not resolve" });
@@ -1447,7 +1392,7 @@ describe("connectDashboard — an OIDC trust (#722)", () => {
   });
 
   test("joins a connection that holds a key — one object, two credential kinds — leaving the key and attribution", async () => {
-    const registry = fakeRegistry(existing());
+    const registry = fakeConnectionRegistry(existing());
     const { options } = trustRun({ purpose: undefined });
     const report = await connectDashboard({ registry, ...options, trust: { ...options.trust, kind: undefined } });
 
@@ -1462,14 +1407,14 @@ describe("connectDashboard — an OIDC trust (#722)", () => {
   });
 
   test("joining a connection leaves its grant alone", async () => {
-    const registry = fakeRegistry(existing());
+    const registry = fakeConnectionRegistry(existing());
     const { options } = trustRun({ purpose: undefined });
     await connectDashboard({ registry, ...options, trust: { ...options.trust, kind: undefined } });
     expect(registry.current()?.scopes).toEqual(["manifest:read"]);
   });
 
   test("--scope on a trust joining a connection is refused, naming --update --scope, and nothing is written", async () => {
-    const registry = fakeRegistry(existing({ scopes: ["manifest:read", "audit:events:read"] }));
+    const registry = fakeConnectionRegistry(existing({ scopes: ["manifest:read", "audit:events:read"] }));
     const { options, resolveIssuer } = trustRun({ purpose: undefined, scopes: ["manifest:read"] });
     const run = connectDashboard({ registry, ...options, trust: { ...options.trust, kind: undefined } });
     await expect(run).rejects.toThrow(/already has a connection.*--scope would be ignored/);
@@ -1482,14 +1427,14 @@ describe("connectDashboard — an OIDC trust (#722)", () => {
   });
 
   test("--kind and --purpose on a trust joining a connection are refused rather than dropped", async () => {
-    const registry = fakeRegistry(existing());
+    const registry = fakeConnectionRegistry(existing());
     const { options } = trustRun();
     await expect(connectDashboard({ registry, ...options })).rejects.toThrow(/--kind, --purpose would be ignored/);
     expect(registry.current()?.trusts ?? []).toEqual([]);
   });
 
   test("a GitHub trust matching only on the job is refused at registration, and nothing is written", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     const { options, resolveIssuer } = trustRun();
     await expect(
       connectDashboard({ registry, ...options, trust: { ...options.trust, claims: { environment: "production" } } }),
@@ -1499,7 +1444,7 @@ describe("connectDashboard — an OIDC trust (#722)", () => {
   });
 
   test("states the immutable-identifier trade for a name-based match, and registers it", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     const { options } = trustRun();
     const report = await connectDashboard({
       registry,
@@ -1511,7 +1456,7 @@ describe("connectDashboard — an OIDC trust (#722)", () => {
   });
 
   test("a customized template's claim registers cleanly", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     const { options } = trustRun();
     await connectDashboard({
       registry,
@@ -1525,7 +1470,7 @@ describe("connectDashboard — an OIDC trust (#722)", () => {
   });
 
   test("the grant is decided as for a key: the derived default, or the operator's own", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     const { options } = trustRun({ scopes: [] });
     await connectDashboard({ registry, ...options });
     // An explicitly empty selection is stored as empty, never collapsed into the default.
@@ -1533,7 +1478,7 @@ describe("connectDashboard — an OIDC trust (#722)", () => {
   });
 
   test("a key registered later on a trust-only connection takes the key's issuer", async () => {
-    const registry = fakeRegistry();
+    const registry = fakeConnectionRegistry();
     const { options } = trustRun();
     await connectDashboard({ registry, ...options });
     await connectDashboard({
@@ -1563,7 +1508,7 @@ describe("revokeDashboardTrust", () => {
   };
 
   test("revokes the trust and states the latency a caller should expect", async () => {
-    const registry = fakeRegistry(existing({ trusts: [trust] }));
+    const registry = fakeConnectionRegistry(existing({ trusts: [trust] }));
     const report = await revokeDashboardTrust({ registry, environment: "prod", trustId: "t-1", now: () => NOW });
     expect(report.revoked).toBe(true);
     expect(report.latency).toMatch(/already minted stays in its holder's hands until it expires/);
@@ -1571,7 +1516,7 @@ describe("revokeDashboardTrust", () => {
   });
 
   test("answers false for a trust it does not hold", async () => {
-    const registry = fakeRegistry(existing({ trusts: [trust] }));
+    const registry = fakeConnectionRegistry(existing({ trusts: [trust] }));
     expect((await revokeDashboardTrust({ registry, environment: "prod", trustId: "nope" })).revoked).toBe(false);
   });
 });
@@ -1590,14 +1535,14 @@ describe("disconnectDashboard — a connection holding a trust", () => {
       firstCallAt: null,
     };
     const report = await disconnectDashboard({
-      registry: fakeRegistry(existing({ trusts: [trust] })),
+      registry: fakeConnectionRegistry(existing({ trusts: [trust] })),
       environment: "prod",
     });
     expect(report.trustLatency).toMatch(/until it expires/);
   });
 
   test("says nothing about trusts for a connection that held none", async () => {
-    const report = await disconnectDashboard({ registry: fakeRegistry(existing()), environment: "prod" });
+    const report = await disconnectDashboard({ registry: fakeConnectionRegistry(existing()), environment: "prod" });
     expect(report.trustLatency).toBeUndefined();
   });
 });
@@ -1613,7 +1558,7 @@ describe("dashboardStatus — trusts", () => {
       validFrom: new Date("2026-01-01T00:00:00.000Z"),
     };
     const report = await dashboardStatus({
-      registry: fakeRegistry(
+      registry: fakeConnectionRegistry(
         existing({
           trusts: [
             { ...base, trustId: "a", revokedAt: null, firstCallAt: null },

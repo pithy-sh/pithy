@@ -1316,6 +1316,80 @@
         "$.claude.reason": "null | string"
       }
     },
+    "mcp connect": {
+      "schemaVersion": 1,
+      "payload": {
+        "$": "object",
+        "$<#0>.command": "\"mcp.connect\"",
+        "$<#0>.alias": "string",
+        "$<#0>.environment": "string",
+        "$<#0>.connectionId": "string",
+        "$<#0>.workerUrl": "string",
+        "$<#0>.credential": "\"key\" | \"oidc\"",
+        "$<#0>.keyFile": "null | string",
+        "$<#0>.trustId": "null | string",
+        "$<#0>.scopes": "array",
+        "$<#0>.scopes[]": "string",
+        "$<#0>.status": "\"awaiting_first_call\" | \"registered\"",
+        "$<#0>.store": "\"project\" | \"user\"",
+        "$<#0>.clients": "array",
+        "$<#0>.clients[]": "object",
+        "$<#0>.clients[].client": "string",
+        "$<#0>.clients[].scope": "\"project\" | \"user\"",
+        "$<#0>.clients[].path": "string",
+        "$<#0>.clients[].state": "string",
+        "$<#0>.clients[].reason": "null | string",
+        "$<#1>.command": "\"mcp.connect\"",
+        "$<#1>.alias": "string",
+        "$<#1>.environment": "string",
+        "$<#1>.connectionId": "string",
+        "$<#1>.scopesBefore": "array",
+        "$<#1>.scopesBefore[]": "string",
+        "$<#1>.scopes": "array",
+        "$<#1>.scopes[]": "string"
+      }
+    },
+    "mcp disconnect": {
+      "schemaVersion": 1,
+      "payload": {
+        "$": "object",
+        "$.command": "\"mcp.disconnect\"",
+        "$.alias": "string",
+        "$.connected": "boolean",
+        "$.environment": "string?",
+        "$.credential": "\"key\" | \"oidc\"?",
+        "$.revoked": "boolean?",
+        "$.keyFileRemoved": "boolean?",
+        "$.clients": "array?",
+        "$.clients[]": "object",
+        "$.clients[].client": "string",
+        "$.clients[].scope": "\"project\" | \"user\"",
+        "$.clients[].path": "string",
+        "$.clients[].state": "string",
+        "$.clients[].reason": "null | string",
+        "$.latency": "string?"
+      }
+    },
+    "mcp status": {
+      "schemaVersion": 1,
+      "payload": {
+        "$": "object",
+        "$.command": "\"mcp.status\"",
+        "$.connections": "array",
+        "$.connections[]": "object",
+        "$.connections[].alias": "string",
+        "$.connections[].environment": "string",
+        "$.connections[].workerUrl": "string",
+        "$.connections[].store": "\"project\" | \"user\"",
+        "$.connections[].credential": "\"key\" | \"oidc\"",
+        "$.connections[].keyFile": "null | string",
+        "$.connections[].keyMode": "null | string",
+        "$.connections[].keyProblem": "null | string",
+        "$.connections[].tokenSource": "null | string",
+        "$.connections[].clients": "array",
+        "$.connections[].clients[]": "string"
+      }
+    },
     "media deprovision": {
       "schemaVersion": 1,
       "payload": {

@@ -44,30 +44,35 @@ export function matchmakingAdminRoutes(basePath: string): AdminRoute[] {
   return [
     {
       method: "GET",
+      operation: "queue.read",
       path: `${basePath}/admin/games/:game/queue`,
       scope: MATCHMAKING_QUEUES_READ_SCOPE,
       summary: "Who is waiting in one game's queue: region, skill, band, and since when.",
     },
     {
       method: "GET",
+      operation: "rooms.list",
       path: `${basePath}/admin/games/:game/rooms`,
       scope: MATCHMAKING_QUEUES_READ_SCOPE,
       summary: "One game's open rooms: code, host, occupancy, and since when.",
     },
     {
       method: "GET",
+      operation: "invites.list",
       path: `${basePath}/admin/invites`,
       scope: MATCHMAKING_QUEUES_READ_SCOPE,
       summary: "Every pending invite, newest first: game, inviter, invitee, and age.",
     },
     {
       method: "POST",
+      operation: "invites.cancel",
       path: `${basePath}/admin/invites/:id/cancel`,
       scope: MATCHMAKING_QUEUES_MODERATE_SCOPE,
       summary: "Cancel a pending invite, with a reason. Both players are told.",
     },
     {
       method: "POST",
+      operation: "queue.drop",
       path: `${basePath}/admin/games/:game/queue/:userId/drop`,
       scope: MATCHMAKING_QUEUES_MODERATE_SCOPE,
       summary: "Drop a player from one game's queue, with a reason the player is told.",

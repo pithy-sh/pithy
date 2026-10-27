@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { DOCS_MCP_NAME, type McpClient } from "./clients";
+import { entryNameOf, type McpClient } from "./clients";
 import type { DocumentWriter, MergeResult, ReadResult, RemoveResult } from "./document";
 import { urlKeyOf } from "./document";
 
@@ -179,7 +179,10 @@ function renderEntry(client: McpClient, indent: string): string[] {
   const fields = Object.entries(client.entry);
   if (client.container === "map") {
     const step = indent.length > 0 ? indent : DEFAULT_INDENT;
-    return [`${indent}${DOCS_MCP_NAME}:`, ...fields.flatMap(([key, value]) => renderField(key, value, indent + step))];
+    return [
+      `${indent}${entryNameOf(client)}:`,
+      ...fields.flatMap(([key, value]) => renderField(key, value, indent + step)),
+    ];
   }
   const content = indent + " ".repeat(ITEM_MARKER.length);
   const lines = fields.flatMap(([key, value]) => renderField(key, value, content));
@@ -376,12 +379,12 @@ function locate(lines: readonly string[], block: Block, client: McpClient): Loca
     for (let index = block.start; index < block.end; index += 1) {
       const line = lines[index] as string;
       if (blank(line) || indentOf(line).length !== block.indent.length) continue;
-      if (parseEntry(line.slice(block.indent.length))?.key !== DOCS_MCP_NAME) continue;
+      if (parseEntry(line.slice(block.indent.length))?.key !== entryNameOf(client)) continue;
       spans.push({ start: index, end: spanEnd(lines, index, block, block.indent.length) });
     }
   } else {
     for (const item of items(lines, block)) {
-      if (fieldsOf(lines, item, block, client).get(NAME_FIELD) === DOCS_MCP_NAME) spans.push(item);
+      if (fieldsOf(lines, item, block, client).get(NAME_FIELD) === entryNameOf(client)) spans.push(item);
     }
   }
   if (spans.length > 1) {

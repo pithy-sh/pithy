@@ -158,54 +158,63 @@ export function authAdminRoutes(basePath: string): AdminRoute[] {
   return [
     {
       method: "GET",
+      operation: "users.list",
       path: `${basePath}/admin/users`,
       scope: AUTH_USERS_READ_SCOPE,
       summary: "Find a user. Lists everyone newest first, or searches email and display name.",
     },
     {
       method: "GET",
+      operation: "users.read",
       path: `${basePath}/admin/users/:userId`,
       scope: AUTH_USERS_READ_SCOPE,
       summary: "One user, with where they are signed in and what they sign in with.",
     },
     {
       method: "GET",
+      operation: "devices.list",
       path: `${basePath}/admin/devices`,
       scope: AUTH_DEVICES_READ_SCOPE,
       summary: "The device registry across users, most-recently-seen first.",
     },
     {
       method: "POST",
+      operation: "sessions.revoke",
       path: `${basePath}/admin/sessions/revoke`,
       scope: AUTH_SESSIONS_REVOKE_SCOPE,
       summary: "Kill one session. The rest of that person's sign-ins keep working.",
     },
     {
       method: "POST",
+      operation: "users.sessions.revoke",
       path: `${basePath}/admin/users/:userId/sessions/revoke`,
       scope: AUTH_USERS_LOGOUT_SCOPE,
       summary: "Sign a user out everywhere, on every device, immediately.",
     },
     {
       method: "POST",
+      operation: "users.devices.revoke",
       path: `${basePath}/admin/users/:userId/devices/revoke`,
       scope: AUTH_DEVICES_REVOKE_SCOPE,
       summary: "Sign one device out and forget it — for a phone reported lost.",
     },
     {
       method: "POST",
+      operation: "users.suspend",
       path: `${basePath}/admin/users/:userId/suspend`,
       scope: AUTH_USERS_SUSPEND_SCOPE,
       summary: "Suspend a user, with a reason. Their sessions end and every sign-in is refused.",
     },
     {
       method: "POST",
+      operation: "users.reinstate",
       path: `${basePath}/admin/users/:userId/reinstate`,
       scope: AUTH_USERS_SUSPEND_SCOPE,
       summary: "Lift a suspension, with a reason. They sign in again; no session comes back.",
     },
     {
       method: "DELETE",
+      operation: "users.delete",
       path: `${basePath}/admin/users/:userId`,
       scope: AUTH_USERS_DELETE_SCOPE,
       summary:
@@ -213,12 +222,14 @@ export function authAdminRoutes(basePath: string): AdminRoute[] {
     },
     {
       method: "POST",
+      operation: "users.restore",
       path: `${basePath}/admin/users/:userId/restore`,
       scope: AUTH_USERS_DELETE_SCOPE,
       summary: "Restore a deleted user inside the purge window, with a reason. They sign in again.",
     },
     {
       method: "GET",
+      operation: "verifications.list",
       path: `${basePath}/admin/verifications`,
       scope: AUTH_VERIFICATIONS_READ_SCOPE,
       summary:
@@ -226,6 +237,7 @@ export function authAdminRoutes(basePath: string): AdminRoute[] {
     },
     {
       method: "GET",
+      operation: "users.export",
       path: `${basePath}/admin/users/:userId/export`,
       scope: AUTH_USERS_EXPORT_SCOPE,
       summary: "Everything the kit holds about one user, from every capability — the answer to an access request.",

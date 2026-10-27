@@ -58,7 +58,17 @@ And it is not hosted, by us or by anyone, because a hosted server would hold the
 
 **It is a second transport over the client the CLI already is.** `pithy dashboard connect | rotate | revoke-key | revoke-trust | disconnect | status` is a control-plane client today. The JWS primitives are in core. MCP is a different front end on the same client.
 
-**The tool list derives from the manifest.** `GET /control-plane/manifest` already reports every admin route with its method, its mounted path and the scope it requires — a tool definition in all but name. So the server asks the three questions a dashboard pane asks: does this Worker compose the capability, does it declare this route, and were we granted the scope. A tool that fails any of them is **not offered**, rather than offered and refused.
+**The tool list derives from the manifest.** `GET /control-plane/manifest` reports every admin route with its method, its mounted path, the scope it requires, its `operation` and its `input` — a tool definition in full. So the server asks the three questions a dashboard pane asks: does this Worker compose the capability, does it declare this route, and were we granted the scope. A tool that fails any of them is **not offered**, rather than offered and refused, and learning that costs one manifest read: no call to the route, and no credential minted for its scope. A route without `operation` and `input` — from a Worker that predates them — is not offered either. A route with no scope is offered only when it takes no input (`ping`), because one that takes input is one whose body decides its scope.
+
+### 3.1 What shipped (#723)
+
+**`pithy mcp serve --connection <alias>`** is the server, in `packages/cli/src/mcpServer/`, on the official TypeScript SDK (`@modelcontextprotocol/sdk`, pinned). It lists tools from the live manifest every time a client asks, and each call names the route's one scope and presents the connection's own credential, so the Worker verifies, refuses or allows, and audits it as any call, with actor kind `agent`. The grant must include `manifest:read`, because every tool list reads the manifest under it and `ping` is called under it: without it the list does not shrink, it fails, and the agent is offered no tools.
+
+**Two credentials, one server.** `pithy mcp connect --env <env> --purpose <text>` generates the agent's own Ed25519 keypair and registers the public half through the `--public-key` path (§6.1): kind `agent`, the session's principal through `requireRegisteringPrincipal`, refused without a session. The private half is written to `<config>/keys/<connectionId>.jwk`, mode `0600`, in a `0700` directory, and the server refuses a key file another user owns or others can read, naming the fix. No keychain. With `--oidc-issuer` and `--oidc-claim` it registers a trust through #722's path instead (§6.2) and writes no key; at spawn the server fetches a workload token for the environment's origin — from GitHub Actions' token request URL, a GitLab `id_tokens:` variable, or a custom issuer's named variable — presents it per call naming the scope, and fetches again before it expires. The token is held in memory and never written.
+
+**The client configuration names the connection, never the credential.** An entry runs `pithy mcp serve --connection pithy-<project>-<env>` (`-ci` appended for a trust, so a developer's key and CI's trust on one environment never share a name across the two stores), written through `packages/cli/src/mcp/`'s client table in each vendor's own spelling. A key's record and entry are the operator's (user scope), because the key is one machine's; a trust's are the repository's (`.pithy/mcp.jsonc`, project scope), because CI starts from a checkout. **One server entry per connection**: environments run different versions, so one tool can take a different input on staging than on production, and each environment is its own server.
+
+`pithy mcp status` lists each connection with its credential, and for a key its file and mode. `pithy mcp disconnect` revokes the key or the trust, then removes the key file, the entries and the record. `pithy mcp connect --update --scope …` replaces the connection's grant with exactly the scopes given, refused without a session like a registration. [`commands/mcp.md`](commands/mcp.md) is the reference.
 
 ---
 
@@ -162,6 +172,8 @@ Four things that follow, and the first is the reason it was chosen:
 **Derived, never hand-written.** MCP tool names are flat and global within one server, so two capabilities both exposing `list` collide, and a hand-written name drifts from the route it stands for. Compose from the declarations that already produce the route and its power.
 
 Neither existing separator survives: MCP names conventionally allow `[a-z0-9_-]`, so a scope's `:` and an audit action's `/` both become `_`. Normalize in one place.
+
+**On the administering path the name is `<capability>_<operation>`** (#723). `operation` is a field on each admin route in the manifest, declared by the capability beside the route — `threads.reply`, `users.suspend` — and unique within it. Not the path, which moves with a `basePath`, and not the scope, which several routes share. `.`, `:` and `/` become `_` in `controlPlaneToolName` (`packages/core/src/controlPlane/discovery/toolName.ts`), the one place it happens, and `packages/cli/src/ci/adminOperations.test.ts` holds every kit operation to a published table. The tool's input is the route's own `input`: its path, query and body validators as JSON Schema, generated from the router rather than written twice ([`CONTROL-PLANE.md` §14](CONTROL-PLANE.md)).
 
 **Once published, a tool name is permanent.** An agent references it by name — in prompts, in saved workflows, in its own record of what worked — so renaming breaks callers silently. The same class of rule as a role name, which is stable forever once a membership holds one, and the project name, which does not rename what it has provisioned but orphans it.
 
@@ -319,7 +331,5 @@ Three fields, on the **connection** rather than the credential, so they hold for
 
 Stated so a reader can tell a decision from a gap.
 
-- The agent fields of §7, and the actor kind, are not implemented. A connection records none of them.
-- No Cloudflare browser sign-in exists, so §7's principal is given rather than derived. `pithy-sh/pithy#759` is the fix; `#721` ships before it.
-- Neither MCP server exists. The CLI's `mcp/` directory writes client configuration for an external server and contains no server.
+- The using path's MCP server (§4) does not exist; `pithy-sh/pithy#724` is it. The administering path's (§3) ships in the CLI as `pithy mcp`.
 - The data-defined tools of §4.2 presuppose an analytical capability that is not built.

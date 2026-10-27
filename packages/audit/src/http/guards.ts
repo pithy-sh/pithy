@@ -114,6 +114,7 @@ export function auditAdminRoutes(basePath: string): AdminRoute[] {
   return [
     {
       method: "GET",
+      operation: "events.list",
       path: `${basePath}/events`,
       scope: AUDIT_TRAIL_READ_SCOPE,
       summary:
@@ -121,6 +122,7 @@ export function auditAdminRoutes(basePath: string): AdminRoute[] {
     },
     {
       method: "GET",
+      operation: "access_history.read",
       path: `${basePath}/control-plane/access-history`,
       scope: AUDIT_TRAIL_READ_SCOPE,
       // Kind `reads` under #725's table, declared in code once that lands.
@@ -129,6 +131,7 @@ export function auditAdminRoutes(basePath: string): AdminRoute[] {
     },
     {
       method: "GET",
+      operation: "reach.read",
       path: `${basePath}/control-plane/reach`,
       scope: AUDIT_TRAIL_READ_SCOPE,
       summary:
@@ -136,6 +139,7 @@ export function auditAdminRoutes(basePath: string): AdminRoute[] {
     },
     {
       method: "GET",
+      operation: "usage.read",
       path: `${basePath}/control-plane/usage`,
       scope: AUDIT_TRAIL_READ_SCOPE,
       // Kind `reads` under #725's table, declared in code once that lands.
@@ -144,6 +148,7 @@ export function auditAdminRoutes(basePath: string): AdminRoute[] {
     },
     {
       method: "GET",
+      operation: "chain.verify",
       path: `${basePath}/control-plane/verify`,
       scope: AUDIT_CHAIN_EXPORT_SCOPE,
       // Kind `reads` under #725's table, declared in code once that lands.
@@ -152,6 +157,7 @@ export function auditAdminRoutes(basePath: string): AdminRoute[] {
     },
     {
       method: "GET",
+      operation: "chain.export",
       path: `${basePath}/control-plane/export`,
       scope: AUDIT_CHAIN_EXPORT_SCOPE,
       // Kind `reads` under #725's table, declared in code once that lands.
@@ -160,6 +166,7 @@ export function auditAdminRoutes(basePath: string): AdminRoute[] {
     },
     {
       method: "GET",
+      operation: "events.read",
       path: `${basePath}/events/:eventId`,
       scope: AUDIT_EVENT_DETAIL_READ_SCOPE,
       summary: "Read one event in full, including the client IP, user-agent, and capability metadata.",

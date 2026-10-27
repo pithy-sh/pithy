@@ -86,18 +86,21 @@ export function secretsAdminRoutes(basePath: string): AdminRoute[] {
   return [
     {
       method: "GET",
+      operation: "status.read",
       path: `${basePath}/admin/status`,
       scope: SECRETS_STATUS_READ_SCOPE,
       summary: "Every declared secret's status: when it was last rotated, how often, and whether it is overdue.",
     },
     {
       method: "GET",
+      operation: "rotations.list",
       path: `${basePath}/admin/status/:name/rotations`,
       scope: SECRETS_STATUS_READ_SCOPE,
       summary: "One secret's rotation history, newest first — when, how it ended, what caused it, and who.",
     },
     {
       method: "POST",
+      operation: "secrets.rotate",
       path: `${basePath}/admin/status/:name/rotate`,
       scope: SECRETS_ROTATE_SCOPE,
       summary:

@@ -80,6 +80,7 @@ export function supportAdminRoutes(basePath: string): AdminRoute[] {
   return [
     {
       method: "GET",
+      operation: "threads.list",
       path: `${basePath}/threads`,
       scope: SUPPORT_THREADS_READ_SCOPE,
       summary:
@@ -87,42 +88,49 @@ export function supportAdminRoutes(basePath: string): AdminRoute[] {
     },
     {
       method: "GET",
+      operation: "threads.read",
       path: `${basePath}/threads/:id`,
       scope: SUPPORT_THREADS_READ_SCOPE,
       summary: "Read one conversation, with the sender's linked account and what they bought.",
     },
     {
       method: "POST",
+      operation: "threads.archive",
       path: `${basePath}/threads/:id/archive`,
       scope: SUPPORT_THREADS_ARCHIVE_SCOPE,
       summary: "Mark a conversation done, or reopen one.",
     },
     {
       method: "POST",
+      operation: "threads.assign",
       path: `${basePath}/threads/:id/assign`,
       scope: SUPPORT_THREADS_ASSIGN_SCOPE,
       summary: "Give a conversation to somebody, hand it on, or give it up.",
     },
     {
       method: "POST",
+      operation: "threads.reply",
       path: `${basePath}/threads/:id/reply`,
       scope: SUPPORT_THREADS_REPLY_SCOPE,
       summary: "Answer the customer, threaded so their mail client keeps one conversation.",
     },
     {
       method: "POST",
+      operation: "threads.reclassify",
       path: `${basePath}/threads/:id/reclassify`,
       scope: SUPPORT_THREADS_RECLASSIFY_SCOPE,
       summary: "Re-run the classifier over this conversation's latest inbound message.",
     },
     {
       method: "POST",
+      operation: "threads.flags",
       path: `${basePath}/threads/:id/flags`,
       scope: SUPPORT_THREADS_FLAG_SCOPE,
       summary: "Set your own read and snooze state for a conversation. Private to you.",
     },
     {
       method: "GET",
+      operation: "replies.list",
       path: `${basePath}/replies`,
       scope: SUPPORT_THREADS_READ_SCOPE,
       summary: "The canned reply catalog — starting points to pick from, ordered for a thread's category.",

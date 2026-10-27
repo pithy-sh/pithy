@@ -526,7 +526,7 @@ async function openAudit(projectDir: string, env: string, account: CloudflareAcc
 const NO_CAPABILITIES = (): Capability[] => [];
 
 /** Open the registry, run the work, and always release the driver. */
-async function withRegistry<T>(
+export async function withRegistry<T>(
   options: { env: string; worker?: string },
   work: (registry: ConnectionRegistry) => Promise<T>,
 ): Promise<T> {

@@ -87,7 +87,45 @@ export interface McpClient {
   readonly preamble: string | null;
   /** One sentence on anything about this row a reader would otherwise have to take on trust. */
   readonly note: string;
+  /**
+   * The entry for a **stdio** server in this client's own vocabulary (#723) — what `pithy mcp connect` writes for
+   * `pithy mcp serve`. Every vendor spells a command differently (`cmd` for Goose, a `type` some require and some
+   * reject), so it is a column like `entry`, and the control-plane server is a row rewrite rather than a branch.
+   */
+  readonly stdio: (server: StdioServer) => Readonly<Record<string, unknown>>;
+  /**
+   * The key the entry is written under. Absent is the documentation server's `pithy`; the control-plane server
+   * writes one entry per connection, under the connection's alias, so two environments are two entries.
+   */
+  readonly name?: string;
 }
+
+/** A stdio server an entry launches: its name, the command, and the arguments. Never a credential. */
+export interface StdioServer {
+  /** The entry's key, and its `name` field where a client's entry carries one. */
+  readonly name: string;
+  /** The executable. */
+  readonly command: string;
+  /** Its arguments. */
+  readonly args: readonly string[];
+}
+
+/** The key a client's entry is written under. */
+export function entryNameOf(client: McpClient): string {
+  return client.name ?? DOCS_MCP_NAME;
+}
+
+/**
+ * A client row rewritten to write a stdio server's entry instead of the documentation server's: the same file, the
+ * same root key, the same writer — a different key and a different entry. Continue's project preamble is kept, so
+ * a block file Pithy creates for a connection is still one Continue reads.
+ */
+export function stdioClient(client: McpClient, server: StdioServer): McpClient {
+  return { ...client, name: server.name, entry: client.stdio(server) };
+}
+
+/** `{ command, args }`, the shape most clients take. */
+const commandArgs = (server: StdioServer) => ({ command: server.command, args: [...server.args] });
 
 /** The documentation server. One URL, stated once. */
 export const DOCS_MCP_URL = "https://pithy.sh/mcp";
@@ -151,6 +189,7 @@ export const MCP_CLIENTS: readonly McpClient[] = [
     detect: homePaths([".claude.json"]),
     preamble: null,
     note: "User scope shares `~/.claude.json` with Claude Code's own session state, so only the `mcpServers` key is touched.",
+    stdio: (server) => ({ type: "stdio", ...commandArgs(server) }),
   },
   {
     id: "cursor",
@@ -165,6 +204,7 @@ export const MCP_CLIENTS: readonly McpClient[] = [
     detect: homePaths([".cursor"]),
     preamble: null,
     note: "A remote entry is the URL alone; `type` is documented for stdio servers only.",
+    stdio: (server) => commandArgs(server),
   },
   {
     id: "vscode",
@@ -184,6 +224,7 @@ export const MCP_CLIENTS: readonly McpClient[] = [
     detect: homePaths([".vscode", "extensions"]),
     preamble: null,
     note: "VS Code tries HTTP first and falls back to SSE on its own; the entry names neither.",
+    stdio: (server) => ({ type: "stdio", ...commandArgs(server) }),
   },
   {
     id: "gemini",
@@ -199,6 +240,7 @@ export const MCP_CLIENTS: readonly McpClient[] = [
     detect: homePaths([".gemini"]),
     preamble: null,
     note: "`httpUrl` selects streamable HTTP; a bare `url` would select SSE.",
+    stdio: (server) => commandArgs(server),
   },
   {
     id: "claude-desktop",
@@ -222,6 +264,7 @@ export const MCP_CLIENTS: readonly McpClient[] = [
     },
     preamble: null,
     note: "The config file takes stdio servers only, so this row goes through `mcp-remote`. Quit and reopen the app for it to load.",
+    stdio: (server) => commandArgs(server),
   },
   {
     id: "cline",
@@ -236,6 +279,7 @@ export const MCP_CLIENTS: readonly McpClient[] = [
     detect: homePaths([".cline"]),
     preamble: null,
     note: "One `$HOME`-relative path on every platform, and `disabled`/`autoApprove` are part of the shape Cline validates.",
+    stdio: (server) => ({ type: "stdio", ...commandArgs(server), disabled: false, autoApprove: [] }),
   },
   {
     id: "zed",
@@ -250,6 +294,7 @@ export const MCP_CLIENTS: readonly McpClient[] = [
     detect: xdgPaths(["zed"], ["Zed"]),
     preamble: null,
     note: "Zed prompts for the standard MCP OAuth flow when a remote server carries no Authorization header.",
+    stdio: (server) => commandArgs(server),
   },
   {
     id: "codex",
@@ -265,6 +310,7 @@ export const MCP_CLIENTS: readonly McpClient[] = [
     detect: homePaths([".codex"]),
     preamble: null,
     note: "A project-scope `.codex/config.toml` is read for trusted projects only.",
+    stdio: (server) => commandArgs(server),
   },
   {
     id: "goose",
@@ -287,6 +333,14 @@ export const MCP_CLIENTS: readonly McpClient[] = [
     detect: xdgPaths(["goose"], ["Block", "goose"]),
     preamble: null,
     note: "XDG on macOS as well as Linux, and Windows adds a `Block` vendor segment.",
+    stdio: (server) => ({
+      type: "stdio",
+      name: server.name,
+      cmd: server.command,
+      args: [...server.args],
+      enabled: true,
+      timeout: 300,
+    }),
   },
   {
     id: "continue",
@@ -303,6 +357,7 @@ export const MCP_CLIENTS: readonly McpClient[] = [
     // A standalone block file is a document, and its schema requires these three keys beside the servers.
     preamble: "name: pithy\nversion: 0.0.1\nschema: v1\n",
     note: "Project scope is a standalone block file Pithy creates; user scope merges into the existing `config.yaml`.",
+    stdio: (server) => ({ name: server.name, type: "stdio", ...commandArgs(server) }),
   },
 ];
 

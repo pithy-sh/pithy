@@ -82,36 +82,42 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
   return [
     {
       method: "GET",
+      operation: "ping",
       path: `${basePath}/ping`,
       scope: null,
       summary: "Prove connectivity and which key answered. Always available to a verified caller.",
     },
     {
       method: "GET",
+      operation: "manifest.read",
       path: `${basePath}/manifest`,
       scope: MANIFEST_READ_SCOPE,
       summary: "What this Worker composes, and how to call each capability's admin surface.",
     },
     {
       method: "GET",
+      operation: "keys.list",
       path: `${basePath}/keys`,
       scope: KEYS_ROTATE_SCOPE,
       summary: "The registered keys, their validity windows, and their ages.",
     },
     {
       method: "POST",
+      operation: "keys.register",
       path: `${basePath}/keys`,
       scope: KEYS_ROTATE_SCOPE,
       summary: "Register a successor public key. Signed with the key it replaces; appends only.",
     },
     {
       method: "POST",
+      operation: "keys.expire",
       path: `${basePath}/keys/:keyId/expire`,
       scope: KEYS_ROTATE_SCOPE,
       summary: "Retire a superseded key. Must be signed with the successor it names as proven.",
     },
     {
       method: "GET",
+      operation: "migrations.read",
       path: `${basePath}/migrations`,
       scope: MIGRATIONS_READ_SCOPE,
       summary:
@@ -119,6 +125,7 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
     },
     {
       method: "GET",
+      operation: "privacy.read",
       path: `${basePath}/privacy`,
       scope: PRIVACY_READ_SCOPE,
       summary:
@@ -126,6 +133,7 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
     },
     {
       method: "GET",
+      operation: "evidence.read",
       path: `${basePath}/evidence`,
       scope: EVIDENCE_READ_SCOPE,
       summary:
@@ -133,6 +141,7 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
     },
     {
       method: "POST",
+      operation: "presence.tickets.mint",
       path: `${basePath}/presence/tickets`,
       // Null because no one scope covers it: the call needs the scope of the room kind its body names, which
       // each kind states in the manifest. Its gate resolves that scope from the body and verifies against it.

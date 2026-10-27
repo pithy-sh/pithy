@@ -116,36 +116,42 @@ export function emailAdminRoutes(basePath: string): AdminRoute[] {
   return [
     {
       method: "GET",
+      operation: "jobs.list",
       path: `${basePath}/jobs`,
       scope: EMAIL_JOBS_READ_SCOPE,
       summary: "The send log, newest first, filtered by status. Recipients are masked in the list.",
     },
     {
       method: "GET",
+      operation: "jobs.read",
       path: `${basePath}/jobs/:id`,
       scope: EMAIL_JOBS_READ_SCOPE,
       summary: "One job in full — the recipient, the subject, and why it failed. Never the template variables.",
     },
     {
       method: "POST",
+      operation: "jobs.retry",
       path: `${basePath}/jobs/:id/retry`,
       scope: EMAIL_JOBS_RETRY_SCOPE,
       summary: "Queue a failed job again with a fresh attempt budget. Sends real mail.",
     },
     {
       method: "GET",
+      operation: "suppressions.list",
       path: `${basePath}/suppressions`,
       scope: EMAIL_SUPPRESSIONS_READ_SCOPE,
       summary: "Addresses this project will not send to, and why. Global — every environment shares it.",
     },
     {
       method: "POST",
+      operation: "suppressions.add",
       path: `${basePath}/suppressions`,
       scope: EMAIL_SUPPRESSIONS_WRITE_SCOPE,
       summary: "Block an address by hand, permanently or until a date. Recorded as a manual block.",
     },
     {
       method: "POST",
+      operation: "suppressions.remove",
       path: `${basePath}/suppressions/remove`,
       scope: EMAIL_SUPPRESSIONS_DELETE_SCOPE,
       summary: "Unblock an address. Re-opens sending to somebody who bounced, complained, or opted out.",

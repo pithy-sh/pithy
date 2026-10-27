@@ -51,30 +51,35 @@ export function ratingAdminRoutes(basePath: string): AdminRoute[] {
   return [
     {
       method: "GET",
+      operation: "pools.list",
       path: `${basePath}/admin/pools`,
       scope: RATING_PLAYERS_READ_SCOPE,
       summary: "Every rating pool, its algorithm, and the games that rate it.",
     },
     {
       method: "GET",
+      operation: "players.list",
       path: `${basePath}/admin/pools/:pool/players`,
       scope: RATING_PLAYERS_READ_SCOPE,
       summary: "The ratings in one pool, highest skill first.",
     },
     {
       method: "GET",
+      operation: "players.read",
       path: `${basePath}/admin/pools/:pool/players/:userId`,
       scope: RATING_PLAYERS_READ_SCOPE,
       summary: "One player's rating in a pool, and the outcomes behind it, newest first.",
     },
     {
       method: "POST",
+      operation: "players.recalculate",
       path: `${basePath}/admin/pools/:pool/players/:userId/recalculate`,
       scope: RATING_PLAYERS_ADJUST_SCOPE,
       summary: "Rebuild one player's rating by replaying their logged outcomes.",
     },
     {
       method: "POST",
+      operation: "players.reset",
       path: `${basePath}/admin/pools/:pool/players/:userId/reset`,
       scope: RATING_PLAYERS_ADJUST_SCOPE,
       summary: "Return one player's rating to the algorithm's starting state.",

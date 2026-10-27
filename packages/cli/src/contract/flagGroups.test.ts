@@ -133,6 +133,12 @@ const CASES: Record<string, () => Promise<{ exit: number | undefined; message: s
   "deploy: requires --events --json": async () => eventsRefusal(["deploy", "--env", "staging", "--events"]),
   "docs connect: atMostOne --client --all": () => refusal("docs connect", ["--client", "cursor", "--all"]),
   "docs disconnect: atMostOne --client --all": () => refusal("docs disconnect", ["--client", "cursor", "--all"]),
+  "mcp connect: atMostOne --client --all": () => refusal("mcp connect", ["--client", "cursor", "--all"]),
+  "mcp connect: atMostOne --oidc-issuer --update": () =>
+    refusal("mcp connect", ["--oidc-issuer", "https://token.actions.githubusercontent.com", "--update"]),
+  "mcp connect: requires --oidc-claim --oidc-issuer": () => refusal("mcp connect", ["--oidc-claim", "a=b"]),
+  "mcp connect: requires --oidc-audience --oidc-issuer": () => refusal("mcp connect", ["--oidc-audience", "x"]),
+  "mcp connect: requires --oidc-token --oidc-issuer": () => refusal("mcp connect", ["--oidc-token", "github"]),
   "email provision: allOrNone --routing-zone --inbound-address --app-worker": () =>
     refusal("email provision", ["--routing-zone", "zone"]),
   "support provision: allOrNone --routing-zone --inbound-address --app-worker": () =>
