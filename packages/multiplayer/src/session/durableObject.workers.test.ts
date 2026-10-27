@@ -12,9 +12,8 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { MULTIPLAYER_MIGRATION_ORDER, multiplayer } from "../capability";
 import { resultStore } from "../data/store";
-import { multiplayerDatabase } from "../data/tables";
 import { type GameModel, registerGameModel } from "../game/model";
-import { multiplayer_0001_results } from "../migrations/0001_results";
+import { MULTIPLAYER_MIGRATIONS } from "../migrations/chain";
 import type { MultiplayerSession } from "./durableObject";
 import type { GameSnapshot } from "./state";
 
@@ -34,7 +33,7 @@ function provider(): MigrationProvider {
       database: "app",
       namespace: "multiplayer",
       order: MULTIPLAYER_MIGRATION_ORDER,
-      migrations: { "0001_results": multiplayer_0001_results },
+      migrations: MULTIPLAYER_MIGRATIONS,
     },
   ]);
   const found = registry.app;
@@ -43,7 +42,13 @@ function provider(): MigrationProvider {
 }
 
 beforeEach(async () => {
-  for (const t of ["pithy_multiplayer_results", "pithy_migrations", "pithy_migrations_lock"]) {
+  for (const t of [
+    "pithy_multiplayer_results",
+    "pithy_multiplayer_sessions",
+    "pithy_multiplayer_void_keys",
+    "pithy_migrations",
+    "pithy_migrations_lock",
+  ]) {
     await env.DB.exec(`DROP TABLE IF EXISTS ${t}`);
   }
   await runMigrations(env.DB, provider());
@@ -158,7 +163,7 @@ describe("commit-reveal, end to end (the flagship example)", () => {
     const aliceAfter = await runInDurableObject(stub, (s: MultiplayerSession) => s.view("alice"));
     expect((aliceAfter.state as SimultaneousView).opponents[0]?.submission).toEqual(bobCommit);
 
-    const stored = await resultStore(multiplayerDatabase(env.DB)).get(id.toString());
+    const stored = await resultStore(env.DB).get(id.toString());
     expect(stored?.status).toBe("resolved");
     expect(stored?.players).toEqual(["alice", "bob"]);
     expect(stored?.draw).toBe(true);
@@ -205,7 +210,7 @@ describe("sequential (tic-tac-toe), end to end", () => {
     expect(win.outcome?.winnerUserId).toBe("x");
     expect(win.outcome?.draw).toBe(false);
 
-    const stored = await resultStore(multiplayerDatabase(env.DB)).get(id.toString());
+    const stored = await resultStore(env.DB).get(id.toString());
     expect(stored?.winnerUserId).toBe("x");
   });
 
@@ -292,7 +297,7 @@ describe("the action deadline alarm (game-agnostic)", () => {
     expect(await runDurableObjectAlarm(stub)).toBe(true);
     const view = await runInDurableObject(stub, (s: MultiplayerSession) => s.view("alice"));
     expect(view.phase).toBe("abandoned");
-    const stored = await resultStore(multiplayerDatabase(env.DB)).get(id.toString());
+    const stored = await resultStore(env.DB).get(id.toString());
     expect(stored?.status).toBe("abandoned");
   });
 
@@ -354,7 +359,7 @@ describe("leaderboard publish is best-effort", () => {
       s.action("bob", { offense: ["ice", "wind", "stone"], defense: ["guard-ice", "guard-wind", "guard-stone"] }),
     );
     expect(done.phase).toBe("resolved");
-    const stored = await resultStore(multiplayerDatabase(env.DB)).get(id.toString());
+    const stored = await resultStore(env.DB).get(id.toString());
     expect(stored?.status).toBe("resolved");
   });
 

@@ -89,7 +89,9 @@ export async function submitResult(d1: D1Database, submission: ResultSubmission)
  * A corrected entry has no contribution left to find: the correction took the entry over (`moderate.ts`),
  * so a void never subtracts from, or removes, a score an operator set.
  *
- * Idempotent: a second void finds no contributions and reports nothing.
+ * Idempotent: a second void finds no contributions and reports nothing. **And safe run twice at once**: every
+ * write in an entry's batch holds only while the contribution it read is still there, and the batch deletes it, so
+ * of two runs that read one contribution, the second to write changes nothing and reports nothing.
  */
 export async function voidResult(d1: D1Database, resultId: string, now = new Date()): Promise<LeaderboardVoidReport> {
   const db = leaderboardDatabase(d1);
@@ -118,6 +120,11 @@ export async function voidResult(d1: D1Database, resultId: string, now = new Dat
       .executeTakeFirst();
     const entry = found ? LeaderboardEntry.parse(found) : undefined;
     const forget = db.deleteFrom(LEADERBOARD_CONTRIBUTIONS_TABLE).where("id", "=", contribution.id).compile();
+    // Every write below holds only while this contribution is still there: a run that lost it changes nothing.
+    const held = sql<boolean>`exists ${db
+      .selectFrom(LEADERBOARD_CONTRIBUTIONS_TABLE)
+      .select(sql.lit(1).as("one"))
+      .where("id", "=", contribution.id)}`;
     // Last in each batch, so it never sits between a statement and the `changes()` that reads it.
     const stale = entry?.rank != null ? [prepared(d1, markStale(db, boardId, windowKey, now))] : [];
 
@@ -142,6 +149,7 @@ export async function voidResult(d1: D1Database, resultId: string, now = new Dat
         .where("userId", "=", userId)
         .where(sql<boolean>`${sql.ref("score")} - ${score} = 0`)
         .where(sql<boolean>`not exists ${others}`)
+        .where(held)
         .compile();
       // Runs only when the delete above removed nothing: `changes()` answers for the statement before it.
       const subtract = db
@@ -157,8 +165,16 @@ export async function voidResult(d1: D1Database, resultId: string, now = new Dat
         .where("windowKey", "=", windowKey)
         .where("userId", "=", userId)
         .where(sql<boolean>`changes() = 0`)
+        .where(held)
         .compile();
-      const [deleted] = await d1.batch([prepared(d1, remove), prepared(d1, subtract), prepared(d1, forget), ...stale]);
+      const [deleted, , forgot] = await d1.batch([
+        prepared(d1, remove),
+        prepared(d1, subtract),
+        prepared(d1, forget),
+        ...stale,
+      ]);
+      // Another run took this contribution back first; it reports what it did, and this one did nothing.
+      if ((forgot?.meta.changes ?? 0) === 0) continue;
       if ((deleted?.meta.changes ?? 0) > 0) removed.push({ ...key, score: entry.score });
       else adjusted.push({ ...key, before: entry.score, after: entry.score - score });
       continue;
@@ -170,6 +186,7 @@ export async function voidResult(d1: D1Database, resultId: string, now = new Dat
       .where("windowKey", "=", windowKey)
       .where("userId", "=", userId)
       .where("resultId", "=", resultId)
+      .where(held)
       .compile();
     const [deleted] = await d1.batch([prepared(d1, remove), prepared(d1, forget), ...stale]);
     if ((deleted?.meta.changes ?? 0) > 0) removed.push({ ...key, score: entry.score });

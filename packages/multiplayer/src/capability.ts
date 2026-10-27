@@ -7,8 +7,9 @@ import type { Migration } from "kysely/migration";
 import "./game/builtins";
 import { MultiplayerConfig, type MultiplayerConfigInput, validateGames } from "./config/config";
 import { multiplayerTables } from "./data/tables";
-import { registerMultiplayerRoutes } from "./http/routes";
-import { multiplayer_0001_results } from "./migrations/0001_results";
+import { MULTIPLAYER_DEFAULT_BASE_PATH, registerMultiplayerRoutes } from "./http/routes";
+import { multiplayerAdminRoutes } from "./http/scopes";
+import { MULTIPLAYER_MIGRATIONS } from "./migrations/chain";
 import { multiplayerUserPurge } from "./purge/contribution";
 import { multiplayerExampleSeed } from "./seeds/example";
 import { multiplayerSocketChannel } from "./session/channel";
@@ -66,8 +67,10 @@ export function multiplayer(options: MultiplayerOptions = { games: [] }): Multip
   // outside the model's bounds, or an invalid `rules` block fails on deploy, not on the first session.
   const resolved = MultiplayerConfig.parse(configInput);
   const games = validateGames(resolved);
+  // Resolved once, and handed to the router, the socket and the manifest, so the advertised paths are the mounted ones.
+  const mountPath = basePath ?? MULTIPLAYER_DEFAULT_BASE_PATH;
 
-  const migrations: Record<string, Migration> = { "0001_results": multiplayer_0001_results };
+  const migrations: Record<string, Migration> = MULTIPLAYER_MIGRATIONS;
 
   const requiredBindings: BindingSpecInput[] = [
     {
@@ -97,9 +100,13 @@ export function multiplayer(options: MultiplayerOptions = { games: [] }): Multip
         migrations,
       },
     },
-    routes: registerMultiplayerRoutes({ games, basePath }),
+    routes: registerMultiplayerRoutes({ games, basePath: mountPath }),
+    // The control-plane surface, built from the mounted path: what the manifest advertises and what
+    // `pithy dashboard connect` offers to grant. Always declared; with `controlplane()` uncomposed each route
+    // refuses with `controlplane/not_connected` (#820).
+    adminRoutes: multiplayerAdminRoutes(mountPath),
     // The session socket, for the AsyncAPI contract: its frames, and each configured game's action and view.
-    sockets: [multiplayerSocketChannel(games, basePath)],
+    sockets: [multiplayerSocketChannel(games, mountPath)],
     // The optional peers — the ledger a wager settles through, the leaderboard a result publishes to — found
     // among the composed capabilities rather than imported, and refused here when a configured game needs one
     // this Worker cannot reach. See `session/peers.ts`.

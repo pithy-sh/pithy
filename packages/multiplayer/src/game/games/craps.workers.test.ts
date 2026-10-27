@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { env, runInDurableObject } from "cloudflare:test";
+import { isRetained, purgeSteps } from "@pithy-sh/core/src/capability/purge";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
@@ -13,7 +14,9 @@ import type { Kysely } from "kysely";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { MULTIPLAYER_MIGRATION_ORDER, multiplayer } from "../../capability";
-import { multiplayer_0001_results } from "../../migrations/0001_results";
+import { sessionIndex } from "../../data/sessionStore";
+import { multiplayerDatabase } from "../../data/tables";
+import { MULTIPLAYER_MIGRATIONS } from "../../migrations/chain";
 import type { MultiplayerSession } from "../../session/durableObject";
 import type { GameSnapshot } from "../../session/state";
 
@@ -33,7 +36,7 @@ function provider(): MigrationProvider {
       database: "app",
       namespace: "multiplayer",
       order: MULTIPLAYER_MIGRATION_ORDER,
-      migrations: { "0001_results": multiplayer_0001_results },
+      migrations: MULTIPLAYER_MIGRATIONS,
     },
   ]);
   const found = registry.app;
@@ -44,6 +47,8 @@ function provider(): MigrationProvider {
 beforeEach(async () => {
   for (const t of [
     "pithy_multiplayer_results",
+    "pithy_multiplayer_sessions",
+    "pithy_multiplayer_void_keys",
     "pithy_ledger_accounts",
     "pithy_ledger_transactions",
     "pithy_ledger_holds",
@@ -101,5 +106,65 @@ describe("craps — real table through the DO, RNG, and ledger", () => {
     expect(created.fairness.seed).toBeNull();
     const closed = await runInDurableObject(stub, (s: MultiplayerSession) => s.close("alice"));
     expect(closed.fairness.seed).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  test("closing the table releases every open bet, whoever closes it (#820)", async () => {
+    const ledger = openLedger(env.DB);
+    for (const closer of ["player", "operator"] as const) {
+      await ledger.credit(`ada-${closer}`, "chips", 100, `seed-ada-${closer}`);
+      await ledger.credit(`bo-${closer}`, "chips", 100, `seed-bo-${closer}`);
+      const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
+      await runInDurableObject(stub, (s: MultiplayerSession) => s.create(craps, `ada-${closer}`));
+      await runInDurableObject(stub, (s: MultiplayerSession) => s.join(`bo-${closer}`));
+      // A pass-line bet stays open across rolls until the point resolves: nothing but a close would settle it.
+      for (const player of [`ada-${closer}`, `bo-${closer}`]) {
+        await runInDurableObject(stub, (s: MultiplayerSession) =>
+          s.action(player, { kind: "bet", bet: { type: "pass", amount: 20 } }),
+        );
+        expect((await ledger.balance(player, "chips")).held).toBe(20);
+      }
+      if (closer === "player") await runInDurableObject(stub, (s: MultiplayerSession) => s.close(`ada-${closer}`));
+      else await runInDurableObject(stub, (s: MultiplayerSession) => s.closeByOperator("k1", "Closing the room."));
+      for (const player of [`ada-${closer}`, `bo-${closer}`]) {
+        expect(await ledger.balance(player, "chips"), `${closer} close, ${player}`).toEqual({
+          balance: 100,
+          held: 0,
+          available: 100,
+        });
+      }
+    }
+  });
+
+  test("erasing a player with a bet open: the ledger's step goes first, and the table still closes (#820)", async () => {
+    const ledger = openLedger(env.DB);
+    await ledger.credit("ada", "chips", 100, "seed-ada");
+    await ledger.credit("bo", "chips", 100, "seed-bo");
+    const id = env.SESSIONS.newUniqueId();
+    const stub = env.SESSIONS.get(id);
+    await runInDurableObject(stub, (s: MultiplayerSession) => s.create(craps, "ada"));
+    await runInDurableObject(stub, (s: MultiplayerSession) => s.join("bo"));
+    for (const player of ["ada", "bo"]) {
+      await runInDurableObject(stub, (s: MultiplayerSession) =>
+        s.action(player, { kind: "bet", bet: { type: "pass", amount: 20 } }),
+      );
+    }
+
+    // The steps in composition order, as a purge runs them: ledger() is composed before multiplayer(), so ada's
+    // hold is gone by the time multiplayer closes the table and settles her seat out.
+    const steps = purgeSteps(composed, "user").filter(({ step }) => step === "ledger" || step === "multiplayer");
+    expect(steps.map(({ step }) => step)).toEqual(["ledger", "multiplayer"]);
+    const context = { subject: { type: "user" as const, id: "ada" }, env: { DB: env.DB, SESSIONS: env.SESSIONS } };
+    for (const { contribution } of steps) {
+      if (isRetained(contribution)) throw new Error(`${contribution.summary} retains`);
+      await contribution.erase(context);
+    }
+
+    const inspected = await runInDurableObject(stub, (s: MultiplayerSession) => s.inspect());
+    expect(inspected.phase).toBe("abandoned");
+    expect(await sessionIndex(multiplayerDatabase(env.DB)).get(id.toString())).toBeUndefined();
+    // The other seat's bet is released, not left held behind the erased one.
+    expect(await ledger.balance("bo", "chips")).toEqual({ balance: 100, held: 0, available: 100 });
+    // And a second run, as a retried purge makes, finds nothing to do.
+    for (const { contribution } of steps) if (!isRetained(contribution)) await contribution.erase(context);
   });
 });

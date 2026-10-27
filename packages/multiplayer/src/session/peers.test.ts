@@ -5,6 +5,7 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { leaderboard } from "@pithy-sh/leaderboard/src/capability";
 import { ledger } from "@pithy-sh/ledger/src/capability";
+import { rating } from "@pithy-sh/rating/src/capability";
 import { describe, expect, test } from "vitest";
 import { type MultiplayerOptions, multiplayer } from "../capability";
 import { multiplayerPeers } from "./peers";
@@ -101,6 +102,39 @@ describe("the leaderboard a game publishes to", () => {
 describe("a game set that uses neither peer", () => {
   test("composes with neither, and the session is handed nothing", () => {
     expect(assemble({ games: [TIC_TAC_TOE] }, [])).toBeUndefined();
-    expect(multiplayerPeers()).toEqual({});
+    expect(multiplayerPeers()).toEqual({ voidConsumers: [] });
+  });
+});
+
+describe("the consumers a voided result cascades to (#820)", () => {
+  /** The consumers one assembly found, by name and whether each can void. */
+  function consumersOf(siblings: Capability[]): { name: string; voids: boolean }[] {
+    expect(assemble({ games: [TIC_TAC_TOE] }, siblings)).toBeUndefined();
+    return (multiplayerPeers().voidConsumers ?? []).map((consumer) => ({
+      name: consumer.name,
+      voids: typeof consumer.voidResult === "function",
+    }));
+  }
+
+  test("each composed consumer is found, leaderboard first, and one not composed is absent", () => {
+    const RATING = rating({ games: [{ key: "tic-tac-toe", algorithm: "elo" }] });
+    expect(consumersOf([BOARD, RATING])).toEqual([
+      { name: "leaderboard", voids: true },
+      { name: "rating", voids: true },
+    ]);
+    expect(consumersOf([RATING])).toEqual([{ name: "rating", voids: true }]);
+    expect(consumersOf([])).toEqual([]);
+  });
+
+  test("a consumer released before it could void is kept, with nothing to call, so the cascade names it", () => {
+    const OLD_RATING = { name: "rating", ratingConfig: { games: [] } } as unknown as Capability;
+    const NO_VOID_BOARD = {
+      ...BOARD,
+      leaderboardPeer: { ...BOARD.leaderboardPeer, voidResult: undefined },
+    } as unknown as Capability;
+    expect(consumersOf([NO_VOID_BOARD, OLD_RATING])).toEqual([
+      { name: "leaderboard", voids: false },
+      { name: "rating", voids: false },
+    ]);
   });
 });

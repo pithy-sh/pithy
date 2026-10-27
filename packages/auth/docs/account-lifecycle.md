@@ -205,7 +205,7 @@ Every kit capability that holds rows about a person declares a `user` contributi
 | `rating` | erase | The rating in every pool, and the control-plane acts on it. The person's place in every logged outcome is anonymized instead, so each opponent's rating still replays exactly. |
 | `leaderboard` | erase | Entries on every board, in every window, what each session result put on them, and their moderation history. |
 | `matchmaking` | erase | Invites sent or received, friendships and requests on either side, and the person's place, undelivered match and drop records in every game's queue. A room code expires on its own TTL. |
-| `multiplayer` | anonymize | Session results: the person's id in the players, scores and winner is replaced, so the other players' results stay. |
+| `multiplayer` | anonymize | Session results: the person's id in the players, scores and winner is replaced, so the other players' results stay. A session in flight they play in is closed with no result, and leaves the session index. |
 | `support` | erase | Threads linked to the account, or sent from its address and linked to no other account, with messages, attachments, raw mail, classifications, read state and assignment history. On other people's threads, the handovers they made lose their id; who held a thread is an opaque reference and stays with it. |
 | `testers` | erase | Cohort memberships under the account's address, and their events. Cohort counts stay. |
 | `artifacts` | erase | Repositories the person owns, with their contents and grants, and the grants they hold. The record of every token minted for them is anonymized instead, so a token still listed reads as the kit's. |

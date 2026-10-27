@@ -366,6 +366,10 @@
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991,
                       "description": "When the session reached its terminal state, ms-epoch."
+                    },
+                    "closedReason": {
+                      "description": "Present when a management client closed the session while it was in flight: the reason it gave, written for the players. Such a session is `abandoned` and records no result.",
+                      "type": "string"
                     }
                   },
                   "required": [
@@ -567,6 +571,10 @@
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991,
                       "description": "When the session reached its terminal state, ms-epoch."
+                    },
+                    "closedReason": {
+                      "description": "Present when a management client closed the session while it was in flight: the reason it gave, written for the players. Such a session is `abandoned` and records no result.",
+                      "type": "string"
                     }
                   },
                   "required": [

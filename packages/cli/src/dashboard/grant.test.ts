@@ -9,6 +9,7 @@ import { type ControlPlaneScope, SEAM_SCOPES } from "@pithy-sh/core/src/controlP
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { ledger } from "@pithy-sh/ledger/src/capability";
 import { matchmaking } from "@pithy-sh/matchmaking/src/capability";
+import { multiplayer } from "@pithy-sh/multiplayer/src/capability";
 import { support as supportCapability } from "@pithy-sh/support/src/capability";
 import { turnstile } from "@pithy-sh/turnstile/src/capability";
 import { vector } from "@pithy-sh/vector/src/capability";
@@ -95,6 +96,16 @@ describe("defaultGrant", () => {
     expect(offered.find((entry) => entry.scope === "matchmaking:queues:read")?.read).toBe(true);
     expect(offered.find((entry) => entry.scope === "matchmaking:queues:moderate")?.read).toBe(false);
     expect(defaultGrant([capability])).toEqual([...SEAM_SCOPES, "matchmaking:queues:read"]);
+  });
+
+  test("offers multiplayer's read by default and its moderate act only when asked (#820)", () => {
+    const capability = multiplayer({
+      games: [{ key: "duel", kind: "connect-n", rules: { rows: 3, cols: 3, connect: 3 } }],
+    });
+    const offered = grantableScopes([capability]);
+    expect(offered.find((entry) => entry.scope === "multiplayer:sessions:read")?.read).toBe(true);
+    expect(offered.find((entry) => entry.scope === "multiplayer:sessions:moderate")?.read).toBe(false);
+    expect(defaultGrant([capability])).toEqual([...SEAM_SCOPES, "multiplayer:sessions:read"]);
   });
 
   test("offers vector:indexes:read as a read, off the real capability, with no change to the grant (#730)", () => {

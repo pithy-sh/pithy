@@ -14783,6 +14783,1136 @@
         ]
       }
     },
+    "/multiplayer/admin/sessions": {
+      "get": {
+        "tags": [
+          "multiplayer"
+        ],
+        "operationId": "getMultiplayerAdminSessions",
+        "summary": "List the sessions in flight, newest first, a page at a time.",
+        "description": "Read from the session index each session writes when it opens and removes when it ends. A session in flight before the index existed appears at its next join, leave or phase change.",
+        "parameters": [
+          {
+            "name": "game",
+            "in": "query",
+            "required": false,
+            "description": "Restrict the listing to one game. An unconfigured key is `multiplayer/game_not_found`, so an operator who mistypes is told rather than shown an empty pane.",
+            "schema": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Where to resume, from the previous page's `nextCursor`. Opaque; hand it back verbatim.",
+            "schema": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many rows to return, from 1 to 100. Defaults to a page a dashboard can render.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of sessions in flight, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sessions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "sessionId": {
+                            "type": "string",
+                            "description": "The session id. Read one with `GET …/admin/sessions/:id`."
+                          },
+                          "gameKey": {
+                            "type": "string",
+                            "description": "The game the session plays."
+                          },
+                          "phase": {
+                            "type": "string",
+                            "enum": [
+                              "open",
+                              "active"
+                            ],
+                            "description": "`open` while the roster fills, `active` once play is underway."
+                          },
+                          "players": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "The members' user ids, in join order, as of the session's last change."
+                          },
+                          "openedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the session opened, ISO-8601."
+                          },
+                          "ageSeconds": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "How long the session has been open, in whole seconds."
+                          }
+                        },
+                        "required": [
+                          "sessionId",
+                          "gameKey",
+                          "phase",
+                          "players",
+                          "openedAt",
+                          "ageSeconds"
+                        ],
+                        "description": "One session in flight, as the index lists it."
+                      },
+                      "description": "Sessions in flight, newest first."
+                    },
+                    "nextCursor": {
+                      "description": "Where the next page starts — hand it back as `cursor`. Null on the last page.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "sessions",
+                    "nextCursor"
+                  ],
+                  "description": "A page of sessions in flight, newest first."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "multiplayer:sessions:read"
+        ]
+      }
+    },
+    "/multiplayer/admin/sessions/{id}": {
+      "get": {
+        "tags": [
+          "multiplayer"
+        ],
+        "operationId": "getMultiplayerAdminSessionsById",
+        "summary": "Read one session from its Durable Object.",
+        "description": "Its players, phase, deadline, who is connected, and how it ended. Never the game's state, which holds what a player must not see.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The session's Durable Object id. Bounded, not parsed: a real id is 64 hex characters, but the id a client sent is judged by `idFromString`, which answers an unparseable one with a 404. A hex regex here would make that a 400 and leave the handler's catch unreachable.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One session as a management client reads it from its Durable Object. Never the game's hidden state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sessionId": {
+                      "type": "string",
+                      "description": "The session id."
+                    },
+                    "gameKey": {
+                      "type": "string",
+                      "description": "The game being played."
+                    },
+                    "kind": {
+                      "type": "string",
+                      "description": "The game model this session uses."
+                    },
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "match",
+                        "table"
+                      ],
+                      "description": "`match` plays one game; `table` is long-lived, many rounds."
+                    },
+                    "phase": {
+                      "type": "string",
+                      "enum": [
+                        "open",
+                        "active",
+                        "resolved",
+                        "abandoned"
+                      ],
+                      "description": "The session's current phase."
+                    },
+                    "players": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Every current member's user id, in join order."
+                    },
+                    "joined": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Every user id that ever joined, in first-join order, leavers included."
+                    },
+                    "connected": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The members with a live socket on the session right now."
+                    },
+                    "openedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the session opened, ISO-8601."
+                    },
+                    "deadline": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "When the current action deadline falls, ISO-8601, or null when the session waits indefinitely."
+                    },
+                    "outcome": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "resolved",
+                                "abandoned"
+                              ],
+                              "description": "The terminal state."
+                            },
+                            "scores": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {
+                                    "type": "number"
+                                  }
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "Each player's score, or null when abandoned."
+                            },
+                            "winnerUserId": {
+                              "description": "The winner's user id, or null on a draw or abandonment.",
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "draw": {
+                              "type": "boolean",
+                              "description": "Whether the session ended level."
+                            },
+                            "resolvedAt": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "When the session reached its terminal state, ms-epoch."
+                            },
+                            "closedReason": {
+                              "description": "Present when a management client closed the session while it was in flight: the reason it gave, written for the players. Such a session is `abandoned` and records no result.",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "status",
+                            "scores",
+                            "winnerUserId",
+                            "draw",
+                            "resolvedAt"
+                          ],
+                          "description": "The resolved outcome of a terminal session."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "How the session ended, or null while it is in flight."
+                    }
+                  },
+                  "required": [
+                    "sessionId",
+                    "gameKey",
+                    "kind",
+                    "mode",
+                    "phase",
+                    "players",
+                    "joined",
+                    "connected",
+                    "openedAt",
+                    "deadline",
+                    "outcome"
+                  ],
+                  "description": "One session as a management client reads it from its Durable Object. Never the game's hidden state."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "multiplayer:sessions:read"
+        ]
+      }
+    },
+    "/multiplayer/admin/sessions/{id}/close": {
+      "post": {
+        "tags": [
+          "multiplayer"
+        ],
+        "operationId": "postMultiplayerAdminSessionsByIdClose",
+        "summary": "Close a session in flight.",
+        "description": "It records no result. A table settles each seated player out first, releasing what they hold. Every member gets a last state frame carrying the `reason`, and their sockets close. A retry with the same `idempotencyKey` changes nothing and answers `replayed: true`. A session that already ended is `multiplayer/invalid_transition`.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The session's Durable Object id. Bounded, not parsed: a real id is 64 hex characters, but the id a client sent is judged by `idFromString`, which answers an unparseable one with a 404. A hex regex here would make that a 400 and leave the handler's catch unreachable.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A management act's idempotency key and reason.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idempotencyKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "description": "A key the client mints once per act. A retry with the same key changes nothing, emits nothing, and answers `replayed: true`. A close's key is remembered by the session it closed. A void's key is unique across results: one spent voiding another result is refused with `core/conflict`."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why. Required, and recorded verbatim on the audit event. A close also sends it to the session's players in its last state frame, so write it for them."
+                  }
+                },
+                "required": [
+                  "idempotencyKey",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "A management act's idempotency key and reason."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "What closing a session in flight did.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "session": {
+                      "type": "object",
+                      "properties": {
+                        "sessionId": {
+                          "type": "string",
+                          "description": "The session id."
+                        },
+                        "gameKey": {
+                          "type": "string",
+                          "description": "The game being played."
+                        },
+                        "kind": {
+                          "type": "string",
+                          "description": "The game model this session uses."
+                        },
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "match",
+                            "table"
+                          ],
+                          "description": "`match` plays one game; `table` is long-lived, many rounds."
+                        },
+                        "phase": {
+                          "type": "string",
+                          "enum": [
+                            "open",
+                            "active",
+                            "resolved",
+                            "abandoned"
+                          ],
+                          "description": "The session's current phase."
+                        },
+                        "players": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Every current member's user id, in join order."
+                        },
+                        "joined": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Every user id that ever joined, in first-join order, leavers included."
+                        },
+                        "connected": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "The members with a live socket on the session right now."
+                        },
+                        "openedAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When the session opened, ISO-8601."
+                        },
+                        "deadline": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the current action deadline falls, ISO-8601, or null when the session waits indefinitely."
+                        },
+                        "outcome": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "resolved",
+                                    "abandoned"
+                                  ],
+                                  "description": "The terminal state."
+                                },
+                                "scores": {
+                                  "anyOf": [
+                                    {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {
+                                        "type": "number"
+                                      }
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "Each player's score, or null when abandoned."
+                                },
+                                "winnerUserId": {
+                                  "description": "The winner's user id, or null on a draw or abandonment.",
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "draw": {
+                                  "type": "boolean",
+                                  "description": "Whether the session ended level."
+                                },
+                                "resolvedAt": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991,
+                                  "description": "When the session reached its terminal state, ms-epoch."
+                                },
+                                "closedReason": {
+                                  "description": "Present when a management client closed the session while it was in flight: the reason it gave, written for the players. Such a session is `abandoned` and records no result.",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "scores",
+                                "winnerUserId",
+                                "draw",
+                                "resolvedAt"
+                              ],
+                              "description": "The resolved outcome of a terminal session."
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "How the session ended, or null while it is in flight."
+                        }
+                      },
+                      "required": [
+                        "sessionId",
+                        "gameKey",
+                        "kind",
+                        "mode",
+                        "phase",
+                        "players",
+                        "joined",
+                        "connected",
+                        "openedAt",
+                        "deadline",
+                        "outcome"
+                      ],
+                      "description": "The session as it now stands: `abandoned`, with the reason in its outcome."
+                    },
+                    "replayed": {
+                      "type": "boolean",
+                      "description": "True when the idempotency key already closed this session: nothing changed this time."
+                    }
+                  },
+                  "required": [
+                    "session",
+                    "replayed"
+                  ],
+                  "description": "What closing a session in flight did."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "multiplayer:sessions:moderate"
+        ]
+      }
+    },
+    "/multiplayer/admin/results": {
+      "get": {
+        "tags": [
+          "multiplayer"
+        ],
+        "operationId": "getMultiplayerAdminResults",
+        "summary": "List results, most recently ended first, a page at a time.",
+        "parameters": [
+          {
+            "name": "game",
+            "in": "query",
+            "required": false,
+            "description": "Restrict the listing to one game. An unconfigured key is `multiplayer/game_not_found`, so an operator who mistypes is told rather than shown an empty pane.",
+            "schema": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          },
+          {
+            "name": "voided",
+            "in": "query",
+            "required": false,
+            "description": "`true` for voided results only, `false` for the results that count. Both when absent.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Where to resume, from the previous page's `nextCursor`. Opaque; hand it back verbatim.",
+            "schema": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many rows to return, from 1 to 100. Defaults to a page a dashboard can render.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of results, most recently ended first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "sessionId": {
+                            "type": "string",
+                            "description": "The id of the session this result belongs to."
+                          },
+                          "gameKey": {
+                            "type": "string",
+                            "description": "The game the session played."
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "resolved",
+                              "abandoned"
+                            ],
+                            "description": "The terminal state: `resolved` or `abandoned`."
+                          },
+                          "players": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "The members' user ids, in join order."
+                          },
+                          "scores": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {
+                                  "type": "number"
+                                }
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Each player's final score, keyed by user id. Null when the session was abandoned."
+                          },
+                          "winnerUserId": {
+                            "description": "The winner's user id. Null on a draw and on an abandoned session.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "draw": {
+                            "type": "boolean",
+                            "description": "Whether the session ended level. False on an abandoned session."
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the session was created, ISO-8601."
+                          },
+                          "resolvedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the session reached its terminal state, ISO-8601."
+                          },
+                          "voidedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "When the result was voided, ISO-8601, or null while it counts."
+                          },
+                          "consumers": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "consumer": {
+                                  "type": "string",
+                                  "description": "The composed capability the void called: `leaderboard` or `rating`."
+                                },
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "pending",
+                                    "done",
+                                    "failed"
+                                  ],
+                                  "description": "`done` when the consumer took the result back; `failed` when it threw, is too old to void, or is no longer composed. `pending` only on a replay of a void or a retry still running, or one that stopped before the consumer answered — void again with a new key to run it, once 15 minutes have passed since the key holding the void was spent; before that, a new key is `core/conflict`."
+                                },
+                                "error": {
+                                  "anyOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "code": {
+                                          "type": "string",
+                                          "description": "The failure's error code."
+                                        },
+                                        "message": {
+                                          "type": "string",
+                                          "description": "The failure's public message."
+                                        }
+                                      },
+                                      "required": [
+                                        "code",
+                                        "message"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "Why the consumer failed, or null when it did not."
+                                }
+                              },
+                              "required": [
+                                "consumer",
+                                "status",
+                                "error"
+                              ],
+                              "description": "One consumer's part in the void, as the result records it."
+                            },
+                            "description": "What each consumer did with the void, as recorded. Empty while the result counts."
+                          }
+                        },
+                        "required": [
+                          "sessionId",
+                          "gameKey",
+                          "status",
+                          "players",
+                          "scores",
+                          "winnerUserId",
+                          "draw",
+                          "createdAt",
+                          "resolvedAt",
+                          "voidedAt",
+                          "consumers"
+                        ],
+                        "description": "One session's result, with whether it was voided and what each consumer did."
+                      },
+                      "description": "Results, most recently ended first."
+                    },
+                    "nextCursor": {
+                      "description": "Where the next page starts — hand it back as `cursor`. Null on the last page.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "results",
+                    "nextCursor"
+                  ],
+                  "description": "A page of results, most recently ended first."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "multiplayer:sessions:read"
+        ]
+      }
+    },
+    "/multiplayer/admin/results/{id}/void": {
+      "post": {
+        "tags": [
+          "multiplayer"
+        ],
+        "operationId": "postMultiplayerAdminResultsByIdVoid",
+        "summary": "Void a result, and take it back out of every composed consumer.",
+        "description": "The result is marked void, then each composed consumer is called with its id: the leaderboard removes the entries it put on a board, and rating recalculates every player it touched. The response lists each consumer's outcome, and a consumer that failed is named. A retry with the same `idempotencyKey` changes nothing, and so does voiding a result already void with every consumer done. A new key on a void with a consumer still `failed` or `pending` runs those consumers again; while a consumer is `pending` and the key holding the void was spent less than 15 minutes ago, the void may still be running, and a new key is a 409 `core/conflict` that changes nothing.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The session's Durable Object id. Bounded, not parsed: a real id is 64 hex characters, but the id a client sent is judged by `idFromString`, which answers an unparseable one with a 404. A hex regex here would make that a 400 and leave the handler's catch unreachable.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A management act's idempotency key and reason.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idempotencyKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "description": "A key the client mints once per act. A retry with the same key changes nothing, emits nothing, and answers `replayed: true`. A close's key is remembered by the session it closed. A void's key is unique across results: one spent voiding another result is refused with `core/conflict`."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why. Required, and recorded verbatim on the audit event. A close also sends it to the session's players in its last state frame, so write it for them."
+                  }
+                },
+                "required": [
+                  "idempotencyKey",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "A management act's idempotency key and reason."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "What voiding a result did, consumer by consumer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "result": {
+                      "type": "object",
+                      "properties": {
+                        "sessionId": {
+                          "type": "string",
+                          "description": "The id of the session this result belongs to."
+                        },
+                        "gameKey": {
+                          "type": "string",
+                          "description": "The game the session played."
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "resolved",
+                            "abandoned"
+                          ],
+                          "description": "The terminal state: `resolved` or `abandoned`."
+                        },
+                        "players": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "The members' user ids, in join order."
+                        },
+                        "scores": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {
+                                "type": "number"
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Each player's final score, keyed by user id. Null when the session was abandoned."
+                        },
+                        "winnerUserId": {
+                          "description": "The winner's user id. Null on a draw and on an abandoned session.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "draw": {
+                          "type": "boolean",
+                          "description": "Whether the session ended level. False on an abandoned session."
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When the session was created, ISO-8601."
+                        },
+                        "resolvedAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When the session reached its terminal state, ISO-8601."
+                        },
+                        "voidedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the result was voided, ISO-8601, or null while it counts."
+                        },
+                        "consumers": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "consumer": {
+                                "type": "string",
+                                "description": "The composed capability the void called: `leaderboard` or `rating`."
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "pending",
+                                  "done",
+                                  "failed"
+                                ],
+                                "description": "`done` when the consumer took the result back; `failed` when it threw, is too old to void, or is no longer composed. `pending` only on a replay of a void or a retry still running, or one that stopped before the consumer answered — void again with a new key to run it, once 15 minutes have passed since the key holding the void was spent; before that, a new key is `core/conflict`."
+                              },
+                              "error": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "code": {
+                                        "type": "string",
+                                        "description": "The failure's error code."
+                                      },
+                                      "message": {
+                                        "type": "string",
+                                        "description": "The failure's public message."
+                                      }
+                                    },
+                                    "required": [
+                                      "code",
+                                      "message"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "Why the consumer failed, or null when it did not."
+                              }
+                            },
+                            "required": [
+                              "consumer",
+                              "status",
+                              "error"
+                            ],
+                            "description": "One consumer's part in the void, as the result records it."
+                          },
+                          "description": "What each consumer did with the void, as recorded. Empty while the result counts."
+                        }
+                      },
+                      "required": [
+                        "sessionId",
+                        "gameKey",
+                        "status",
+                        "players",
+                        "scores",
+                        "winnerUserId",
+                        "draw",
+                        "createdAt",
+                        "resolvedAt",
+                        "voidedAt",
+                        "consumers"
+                      ],
+                      "description": "The result as it now stands."
+                    },
+                    "replayed": {
+                      "type": "boolean",
+                      "description": "True when nothing changed this time: the key was already spent on this void, or the result was void already with every consumer done."
+                    },
+                    "consumers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "consumer": {
+                            "type": "string",
+                            "description": "The composed capability the void called: `leaderboard` or `rating`."
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "pending",
+                              "done",
+                              "failed"
+                            ],
+                            "description": "`done` when the consumer took the result back; `failed` when it threw, is too old to void, or is no longer composed. `pending` only on a replay of a void or a retry still running, or one that stopped before the consumer answered — void again with a new key to run it, once 15 minutes have passed since the key holding the void was spent; before that, a new key is `core/conflict`."
+                          },
+                          "error": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "code": {
+                                    "type": "string",
+                                    "description": "The failure's error code."
+                                  },
+                                  "message": {
+                                    "type": "string",
+                                    "description": "The failure's public message."
+                                  }
+                                },
+                                "required": [
+                                  "code",
+                                  "message"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Why the consumer failed, or null when it did not."
+                          },
+                          "report": {
+                            "description": "What the consumer did, in its own shape, on the request that ran it: `LeaderboardVoidReport` from `@pithy-sh/leaderboard/src/entry/voidReport` (the entries removed and adjusted), or `RatingVoidReport` from `@pithy-sh/rating/src/http/responses` (each player before and after). Absent on a replay and on a failure."
+                          }
+                        },
+                        "required": [
+                          "consumer",
+                          "status",
+                          "error"
+                        ],
+                        "description": "One composed consumer's part in a void. A consumer that failed is named, never folded into success."
+                      },
+                      "description": "Each consumer this request called, with its report, or on a replay each consumer as recorded. A consumer not composed in this Worker is absent."
+                    }
+                  },
+                  "required": [
+                    "result",
+                    "replayed",
+                    "consumers"
+                  ],
+                  "description": "What voiding a result did, consumer by consumer."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "multiplayer:sessions:moderate"
+        ]
+      }
+    },
     "/multiplayer/games/{game}": {
       "post": {
         "tags": [
@@ -14887,6 +16017,10 @@
                               "minimum": -9007199254740991,
                               "maximum": 9007199254740991,
                               "description": "When the session reached its terminal state, ms-epoch."
+                            },
+                            "closedReason": {
+                              "description": "Present when a management client closed the session while it was in flight: the reason it gave, written for the players. Such a session is `abandoned` and records no result.",
+                              "type": "string"
                             }
                           },
                           "required": [
@@ -15065,6 +16199,10 @@
                               "minimum": -9007199254740991,
                               "maximum": 9007199254740991,
                               "description": "When the session reached its terminal state, ms-epoch."
+                            },
+                            "closedReason": {
+                              "description": "Present when a management client closed the session while it was in flight: the reason it gave, written for the players. Such a session is `abandoned` and records no result.",
+                              "type": "string"
                             }
                           },
                           "required": [
@@ -15244,6 +16382,10 @@
                               "minimum": -9007199254740991,
                               "maximum": 9007199254740991,
                               "description": "When the session reached its terminal state, ms-epoch."
+                            },
+                            "closedReason": {
+                              "description": "Present when a management client closed the session while it was in flight: the reason it gave, written for the players. Such a session is `abandoned` and records no result.",
+                              "type": "string"
                             }
                           },
                           "required": [
@@ -15423,6 +16565,10 @@
                               "minimum": -9007199254740991,
                               "maximum": 9007199254740991,
                               "description": "When the session reached its terminal state, ms-epoch."
+                            },
+                            "closedReason": {
+                              "description": "Present when a management client closed the session while it was in flight: the reason it gave, written for the players. Such a session is `abandoned` and records no result.",
+                              "type": "string"
                             }
                           },
                           "required": [
@@ -15601,6 +16747,10 @@
                               "minimum": -9007199254740991,
                               "maximum": 9007199254740991,
                               "description": "When the session reached its terminal state, ms-epoch."
+                            },
+                            "closedReason": {
+                              "description": "Present when a management client closed the session while it was in flight: the reason it gave, written for the players. Such a session is `abandoned` and records no result.",
+                              "type": "string"
                             }
                           },
                           "required": [
@@ -15773,6 +16923,19 @@
                       "format": "date-time",
                       "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
                       "description": "When the session reached its terminal state, ISO-8601."
+                    },
+                    "voidedAt": {
+                      "description": "When a management client voided the result, ISO-8601, or null while it counts. A voided result no longer counts toward a leaderboard or a rating. Absent from a Worker that predates voiding.",
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -15957,6 +17120,10 @@
                               "minimum": -9007199254740991,
                               "maximum": 9007199254740991,
                               "description": "When the session reached its terminal state, ms-epoch."
+                            },
+                            "closedReason": {
+                              "description": "Present when a management client closed the session while it was in flight: the reason it gave, written for the players. Such a session is `abandoned` and records no result.",
+                              "type": "string"
                             }
                           },
                           "required": [

@@ -222,8 +222,10 @@ export const SIDES: readonly Side[] = ["input", "output"];
  * Moved on 2026-10-27 (#832): `@pithy-sh/artifacts` brings `pithy_artifacts_tokens` and
  * `pithy_artifacts_revocations` — who each minted token was minted for, and the spent idempotency keys of
  * control-plane revocations.
+ * Moved on 2026-10-27 (#820): `@pithy-sh/multiplayer` brings `pithy_multiplayer_sessions` and
+ * `pithy_multiplayer_void_keys` — the index of sessions in flight, and every idempotency key spent voiding a result.
  */
-export const CENSUS = { tables: 71, packages: 18 };
+export const CENSUS = { tables: 73, packages: 18 };
 
 /**
  * Where the generated programs are written — **outside the checkout, and that is forced**.

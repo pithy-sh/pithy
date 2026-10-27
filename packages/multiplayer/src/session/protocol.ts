@@ -25,3 +25,9 @@ export const USER_HEADER = "x-pithy-user-id";
  * sentinel, and `callSession` in the routes decodes it back into a real `PithyError`.
  */
 export const RPC_ERROR_PREFIX = "pithy-error:";
+
+/**
+ * The text a session's sockets close with when a management client closes it (#820). The operator's own reason
+ * travels in the last state frame, where it has room; a close reason is capped at 123 bytes.
+ */
+export const OPERATOR_CLOSE_SOCKET_REASON = "The session was closed.";

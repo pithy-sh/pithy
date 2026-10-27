@@ -40,4 +40,43 @@ describe("applyLedgerEffects", () => {
     await applyLedgerEffects(d1, [HOLD], { openLedger: () => ledger as never });
     expect(calls).toEqual(["hold:alice"]);
   });
+
+  describe("a release whose hold is gone (#820)", () => {
+    const RELEASE: LedgerEffect = { op: "release", ref: "s1:ada:bet" };
+    /** A ledger whose `release` throws `failure`, and records every other call. */
+    function failingRelease(failure: unknown, calls: string[] = []) {
+      return {
+        openLedger: () =>
+          ({
+            release: async () => {
+              throw failure;
+            },
+            hold: async (userId: string) => void calls.push(`hold:${userId}`),
+          }) as never,
+      };
+    }
+    const missing = () =>
+      new PithyError({ code: "ledger/hold_not_found", status: 404, message: "That hold does not exist." });
+
+    test("fails by default: a move that releases a hold it never took is a bug, not a settlement", async () => {
+      await expect(applyLedgerEffects(d1, [RELEASE], failingRelease(missing()))).rejects.toThrow(/does not exist/);
+    });
+
+    test("is settled when settling a seat out, and the effects after it still run", async () => {
+      const calls: string[] = [];
+      await applyLedgerEffects(d1, [RELEASE, HOLD], failingRelease(missing(), calls), { settlingOut: true });
+      expect(calls).toEqual(["hold:alice"]);
+    });
+
+    test("anything else a release throws still fails, settling out or not", async () => {
+      const notOpen = new PithyError({ code: "ledger/hold_not_open", status: 409, message: "That hold is not open." });
+      await expect(applyLedgerEffects(d1, [RELEASE], failingRelease(notOpen), { settlingOut: true })).rejects.toBe(
+        notOpen,
+      );
+      const outage = new Error("D1 is down");
+      await expect(applyLedgerEffects(d1, [RELEASE], failingRelease(outage), { settlingOut: true })).rejects.toBe(
+        outage,
+      );
+    });
+  });
 });

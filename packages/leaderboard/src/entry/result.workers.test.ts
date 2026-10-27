@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import type { MigrationProvider } from "kysely/migration";
@@ -72,6 +73,39 @@ const correct = (board: LeaderboardBoard, userId: string, score: number) =>
 
 async function staleWindows(): Promise<{ boardId: string; windowKey: string }[]> {
   return db().selectFrom(LEADERBOARD_STALE_WINDOWS_TABLE).select(["boardId", "windowKey"]).execute();
+}
+
+/**
+ * A D1 whose first `batch` waits to be released: a void run through it reads everything it will write from, then
+ * stops at its write, so another void can run to completion in between.
+ */
+function holdAtBatch(d1: D1Database): { d1: D1Database; reached: Promise<void>; release: () => void } {
+  let arrive = () => {};
+  let release = () => {};
+  const reached = new Promise<void>((resolve) => {
+    arrive = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let held = false;
+  const wrapped = new Proxy(d1, {
+    get(target, property, receiver) {
+      if (property === "batch") {
+        return async (statements: D1PreparedStatement[]) => {
+          if (!held) {
+            held = true;
+            arrive();
+            await gate;
+          }
+          return target.batch(statements);
+        };
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { d1: wrapped, reached, release };
 }
 
 beforeEach(async () => {
@@ -206,6 +240,40 @@ describe("voidResult", () => {
 
     expect(again).toEqual({ resultId: "s1", removed: [], adjusted: [] });
     expect((await store().get("points", "all", "u1"))?.score).toBe(3);
+  });
+
+  test("two voids of one result in flight at once take a sum entry's points back once", async () => {
+    // The multiplayer cascade can hand one result to this consumer twice at once. The run that read the
+    // contribution before the other took it back must find it gone at its write, and change nothing.
+    await publish(sumBoard, "s1", "u1", 3);
+    await publish(sumBoard, "s2", "u1", 3, at(1000));
+    const held = holdAtBatch(env.DB);
+
+    const late = voidResult(held.d1, "s1");
+    await held.reached;
+    const first = await voidResult(env.DB, "s1");
+    held.release();
+    const second = await late;
+
+    expect(first.adjusted).toEqual([{ board: "points", window: "all", userId: "u1", before: 6, after: 3 }]);
+    expect(second).toEqual({ resultId: "s1", removed: [], adjusted: [] });
+    expect((await store().get("points", "all", "u1"))?.score).toBe(3);
+    expect(await contributions()).toEqual([{ resultId: "s2", userId: "u1", score: 3 }]);
+  });
+
+  test("two voids of one result in flight at once remove a best entry once, and report it once", async () => {
+    await publish(bestBoard, "s1", "u1", 9);
+    const held = holdAtBatch(env.DB);
+
+    const late = voidResult(held.d1, "s1");
+    await held.reached;
+    const first = await voidResult(env.DB, "s1");
+    held.release();
+    const second = await late;
+
+    expect(first.removed).toEqual([{ board: "best", window: "all", userId: "u1", score: 9 }]);
+    expect(second).toEqual({ resultId: "s1", removed: [], adjusted: [] });
+    expect(await store().get("best", "all", "u1")).toBeUndefined();
   });
 
   test("an entry a moderator removed takes its contributions with it, so a later void never reaches the player's next entry", async () => {

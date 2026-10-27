@@ -16,7 +16,7 @@ import "../game/builtins";
 import { type GameModel, registerGameModel } from "../game/model";
 import { SessionResult, SessionView } from "../http/responses";
 import { registerMultiplayerRoutes } from "../http/routes";
-import { multiplayer_0001_results } from "../migrations/0001_results";
+import { MULTIPLAYER_MIGRATIONS } from "../migrations/chain";
 import {
   act,
   closeSession,
@@ -43,7 +43,7 @@ function provider(): MigrationProvider {
       database: "app",
       namespace: "multiplayer",
       order: MULTIPLAYER_MIGRATION_ORDER,
-      migrations: { "0001_results": multiplayer_0001_results },
+      migrations: MULTIPLAYER_MIGRATIONS,
     },
   ]);
   const found = registry.app;
@@ -52,7 +52,13 @@ function provider(): MigrationProvider {
 }
 
 beforeEach(async () => {
-  for (const t of ["pithy_multiplayer_results", "pithy_migrations", "pithy_migrations_lock"]) {
+  for (const t of [
+    "pithy_multiplayer_results",
+    "pithy_multiplayer_sessions",
+    "pithy_multiplayer_void_keys",
+    "pithy_migrations",
+    "pithy_migrations_lock",
+  ]) {
     await env.DB.exec(`DROP TABLE IF EXISTS ${t}`);
   }
   await runMigrations(env.DB, provider());

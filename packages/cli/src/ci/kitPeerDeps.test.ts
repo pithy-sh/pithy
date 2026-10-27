@@ -129,6 +129,7 @@ const OPTIONAL_PEERS: Record<string, string> = {
   "packages/matchmaking:@pithy-sh/rating": "Skill-based queueing reads ratings when rating is composed.",
   "packages/multiplayer:@pithy-sh/leaderboard": "Results publish to a leaderboard when one is composed.",
   "packages/multiplayer:@pithy-sh/ledger": "Game effects post to the ledger when it is composed.",
+  "packages/multiplayer:@pithy-sh/rating": "A voided result is taken back out of every rating when rating is composed.",
   "packages/organization:@pithy-sh/email":
     "An invitation is mailed through email when email is composed; a project that delivers the link its own way sets sendInvitationEmail: false and everything else still runs.",
   "packages/payments:@pithy-sh/ledger":

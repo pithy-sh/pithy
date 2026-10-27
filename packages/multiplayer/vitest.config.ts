@@ -28,6 +28,7 @@ export default defineConfig({
         "src/**/*.workers.test.ts",
         "src/**/*.integration.test.ts",
         "src/session/testWorker.ts",
+        "src/test-utils/**",
       ],
     },
   },

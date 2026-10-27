@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { D1Database } from "@cloudflare/workers-types";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { LeaderboardPeer } from "@pithy-sh/leaderboard/src/peer";
 import type { LedgerPeer } from "@pithy-sh/ledger/src/peer";
+import type { RatingPeer } from "@pithy-sh/rating/src/peer";
 import type { ResolvedGame } from "../config/config";
 import { resolveModel } from "../game/model";
 
@@ -35,6 +37,24 @@ export interface MultiplayerPeers {
   readonly ledger?: LedgerPeer;
   /** `leaderboard()`'s surface, when it is composed. */
   readonly leaderboard?: LeaderboardPeer;
+  /** Every composed capability a voided result cascades to (#820), in the order the cascade calls them. */
+  readonly voidConsumers?: readonly VoidConsumer[];
+}
+
+/**
+ * One composed capability a voided result cascades to (#820): the leaderboard takes back the entries the result
+ * put on its boards (#817), and rating recalculates every player the result's outcomes touched (#818). Each is
+ * handed over by the composition and never imported, like every other peer.
+ *
+ * **A consumer composed but released before it could void has no `voidResult`.** It is not refused at assembly —
+ * a project can play every game without voiding one — but it is not absent either: the cascade names it as failed,
+ * so a void never reports success over a board or a rating it could not reach.
+ */
+export interface VoidConsumer {
+  /** The composed capability, by name. */
+  readonly name: "leaderboard" | "rating";
+  /** Take everything `resultId` put on this consumer back, and report what it did. Idempotent. */
+  readonly voidResult?: (d1: D1Database, resultId: string, now: Date) => Promise<unknown>;
 }
 
 let composed: MultiplayerPeers = {};
@@ -117,7 +137,28 @@ export function composeMultiplayerPeers(capabilities: readonly Capability[], gam
   composed = {
     ...(ledger.state === "present" ? { ledger: ledger.peer } : {}),
     ...(leaderboard.state === "present" ? { leaderboard: leaderboard.peer } : {}),
+    voidConsumers: voidConsumersOf(capabilities, leaderboard),
   };
+}
+
+/**
+ * The consumers a void cascades to, among the composed capabilities. Rating is found by its config field, as every
+ * peer is, so a rating released before its void consumer is told apart from no rating at all.
+ */
+function voidConsumersOf(capabilities: readonly Capability[], leaderboard: Found<LeaderboardPeer>): VoidConsumer[] {
+  const consumers: VoidConsumer[] = [];
+  if (leaderboard.state === "present") {
+    const { voidResult } = leaderboard.peer;
+    consumers.push(typeof voidResult === "function" ? { name: "leaderboard", voidResult } : { name: "leaderboard" });
+  }
+  const rating = find<RatingPeer>(capabilities, "rating", "ratingConfig", "ratingPeer", "voidResult");
+  if (rating.state === "present") {
+    const peer = rating.peer;
+    consumers.push({ name: "rating", voidResult: (d1, resultId, now) => peer.voidResult(d1, resultId, now) });
+  } else if (rating.state === "old") {
+    consumers.push({ name: "rating" });
+  }
+  return consumers;
 }
 
 /** The peers the composition handed over — empty before `compose` has run, or when none is composed. */
