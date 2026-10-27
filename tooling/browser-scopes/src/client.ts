@@ -66,6 +66,7 @@ import {
   PAYMENTS_USAGE_READ_SCOPE,
   PAYMENTS_WEBHOOKS_READ_SCOPE,
 } from "@pithy-sh/payments/src/http/scopes";
+import { RATING_PLAYERS_ADJUST_SCOPE, RATING_PLAYERS_READ_SCOPE } from "@pithy-sh/rating/src/http/scopes";
 import { SECRETS_ROTATE_SCOPE, SECRETS_STATUS_READ_SCOPE } from "@pithy-sh/secrets/src/http/guards";
 import { STORAGE_USAGE_READ_SCOPE } from "@pithy-sh/storage/src/http/scopes";
 import {
@@ -159,6 +160,8 @@ export const EVERY_CONTROL_PLANE_SCOPE: readonly string[] = [
   PAYMENTS_OVERRIDE_SET_SCOPE,
   PAYMENTS_OVERRIDE_CLEAR_SCOPE,
   PAYMENTS_OVERRIDE_UNRESTRICTED_SCOPE,
+  RATING_PLAYERS_READ_SCOPE,
+  RATING_PLAYERS_ADJUST_SCOPE,
   SECRETS_STATUS_READ_SCOPE,
   SECRETS_ROTATE_SCOPE,
   STORAGE_USAGE_READ_SCOPE,

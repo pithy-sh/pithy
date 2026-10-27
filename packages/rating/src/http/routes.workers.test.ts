@@ -14,6 +14,7 @@ import "../algorithm/builtins";
 import { RATING_MIGRATION_ORDER } from "../capability";
 import { RatingConfig, type RatingConfigInput, validateRatingGames } from "../config/config";
 import { rating_0001_rating } from "../migrations/0001_rating";
+import { rating_0002_outcome_log } from "../migrations/0002_outcome_log";
 import { RatingView, RecordedOutcome } from "./responses";
 import { registerRatingRoutes } from "./routes";
 
@@ -23,7 +24,7 @@ function provider(): MigrationProvider {
       database: "app",
       namespace: "rating",
       order: RATING_MIGRATION_ORDER,
-      migrations: { "0001_rating": rating_0001_rating },
+      migrations: { "0001_rating": rating_0001_rating, "0002_outcome_log": rating_0002_outcome_log },
     },
   ]);
   const found = registry.app;
@@ -32,7 +33,14 @@ function provider(): MigrationProvider {
 }
 
 beforeEach(async () => {
-  for (const t of ["pithy_rating_ratings", "pithy_migrations", "pithy_migrations_lock"]) {
+  for (const t of [
+    "pithy_rating_ratings",
+    "pithy_rating_outcomes",
+    "pithy_rating_outcome_players",
+    "pithy_rating_adjustments",
+    "pithy_migrations",
+    "pithy_migrations_lock",
+  ]) {
     await env.DB.exec(`DROP TABLE IF EXISTS ${t}`);
   }
   await runMigrations(env.DB, provider());

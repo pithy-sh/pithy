@@ -6,7 +6,7 @@ import { z } from "zod";
 import type { RatingAlgorithm } from "../algorithm/algorithm";
 import type { ResolvedRatingGame } from "../config/config";
 import type { RatingRecord } from "../data/rating";
-import type { RatingStore } from "../data/store";
+import type { AppliedOutcome, RatingStore } from "../data/store";
 import { recordOutcome } from "./record";
 
 function need<T>(v: T | undefined): T {
@@ -16,11 +16,13 @@ function need<T>(v: T | undefined): T {
 
 // An in-memory store so the orchestration is tested without D1 — the store round-trip is covered by the
 // workers tests.
-function memoryStore(): RatingStore & { rows: Map<string, RatingRecord> } {
+function memoryStore(): RatingStore & { rows: Map<string, RatingRecord>; applied: AppliedOutcome[] } {
   const rows = new Map<string, RatingRecord>();
+  const applied: AppliedOutcome[] = [];
   const keyOf = (pool: string, userId: string) => `${pool}:${userId}`;
   return {
     rows,
+    applied,
     async get(pool, userId) {
       return rows.get(keyOf(pool, userId));
     },
@@ -29,6 +31,10 @@ function memoryStore(): RatingStore & { rows: Map<string, RatingRecord> } {
     },
     async upsert(record) {
       rows.set(keyOf(record.pool, record.userId), record);
+    },
+    async apply(outcome, records) {
+      applied.push(outcome);
+      for (const record of records) rows.set(keyOf(record.pool, record.userId), record);
     },
   };
 }
@@ -139,5 +145,45 @@ describe("recordOutcome", () => {
     await expect(recordOutcome(store, game(), { ranks: { alice: 1, bob: 2, carol: 3 }, at })).rejects.toThrow(
       /expects 2 players/,
     );
+  });
+
+  test("logs the outcome it applied, with each player's standing going in and the XP it awarded", async () => {
+    const store = memoryStore();
+    await recordOutcome(store, game(), { ranks: { alice: 1, bob: 2 }, at });
+    await recordOutcome(store, game(), { ranks: { alice: 2, bob: 1 }, resultId: "match-7", at });
+
+    expect(store.applied).toHaveLength(2);
+    const [first, second] = store.applied;
+    expect(first).toEqual({
+      pool: "duel",
+      game: "duel",
+      resultId: null,
+      ranks: { alice: 1, bob: 2 },
+      teams: null,
+      sharedRoom: false,
+      at,
+      players: [
+        { userId: "alice", stateBefore: { skill: 0 }, xpBefore: 0, gamesBefore: 0, xpGained: 20 },
+        { userId: "bob", stateBefore: { skill: 0 }, xpBefore: 0, gamesBefore: 0, xpGained: 5 },
+      ],
+    });
+    expect(second?.resultId).toBe("match-7");
+    expect(second?.players).toEqual([
+      { userId: "alice", stateBefore: { skill: 99 }, xpBefore: 20, gamesBefore: 1, xpGained: 5 },
+      { userId: "bob", stateBefore: { skill: 98 }, xpBefore: 5, gamesBefore: 1, xpGained: 20 },
+    ]);
+  });
+
+  test("logs a gated shared-room game as awarding nothing", async () => {
+    const store = memoryStore();
+    await recordOutcome(store, game(), { ranks: { alice: 1, bob: 2 }, sharedRoom: true, at });
+    expect(store.applied[0]?.sharedRoom).toBe(true);
+    expect(store.applied[0]?.players.map((player) => player.xpGained)).toEqual([0, 0]);
+  });
+
+  test("an outcome that is refused logs nothing", async () => {
+    const store = memoryStore();
+    await expect(recordOutcome(store, game(), { ranks: { alice: 1 }, at })).rejects.toThrow();
+    expect(store.applied).toEqual([]);
   });
 });

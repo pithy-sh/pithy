@@ -147,6 +147,10 @@ const DECLARED_ONLY: Record<string, string> = {
  * each: their `purge/contribution.ts`, which opens the env's own D1 for the person's rows — and, for matchmaking,
  * reaches each game's queue Durable Object. It moved `leaderboard` by one too: its `purge/contribution.ts`, which
  * batches the deletes with a stale mark on every closed window a ranked entry left.
+ * Rating's outcome log (#818) moved `rating` by two: `data/batch.ts`, which runs the log and the rating as one
+ * `DB.batch`, and `peer.ts`, which hands a void cascade the consumer over its D1.
+ * Its purge (#814, over that log) moved it by one more: `purge/contribution.ts`, which rewrites the person's place
+ * in the log a page at a time and deletes their rating, each as one `d1.batch()`.
  */
 const IMPORTERS: Record<string, number> = {
   "packages/artifacts": 3,
@@ -163,7 +167,7 @@ const IMPORTERS: Record<string, number> = {
   "packages/multiplayer": 6,
   "packages/organization": 11,
   "packages/payments": 18,
-  "packages/rating": 2,
+  "packages/rating": 5,
   "packages/secrets": 7,
   "packages/storage": 7,
   "packages/support": 9,

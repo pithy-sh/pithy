@@ -16032,6 +16032,904 @@
         ]
       }
     },
+    "/rating/admin/pools": {
+      "get": {
+        "tags": [
+          "rating"
+        ],
+        "operationId": "getRatingAdminPools",
+        "summary": "List every rating pool, its algorithm, and the games that rate it.",
+        "responses": {
+          "200": {
+            "description": "Every rating pool this Worker configures.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "pools": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "pool": {
+                            "type": "string",
+                            "description": "The pool's name."
+                          },
+                          "algorithm": {
+                            "type": "string",
+                            "description": "The algorithm every game in the pool rates with."
+                          },
+                          "games": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "The configured games that rate this pool, by key."
+                          }
+                        },
+                        "required": [
+                          "pool",
+                          "algorithm",
+                          "games"
+                        ],
+                        "description": "One rating pool: its algorithm and the games that rate it."
+                      },
+                      "description": "Every pool a configured game rates."
+                    }
+                  },
+                  "required": [
+                    "pools"
+                  ],
+                  "description": "Every rating pool this Worker configures."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "rating:players:read"
+        ]
+      }
+    },
+    "/rating/admin/pools/{pool}/players": {
+      "get": {
+        "tags": [
+          "rating"
+        ],
+        "operationId": "getRatingAdminPoolsByPoolPlayers",
+        "summary": "List the ratings in one pool, highest skill first, a page at a time.",
+        "parameters": [
+          {
+            "name": "pool",
+            "in": "path",
+            "required": true,
+            "description": "The rating pool — the `:pool` path segment. A shape check only; a pool no game rates is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Where to resume, from the previous page's `nextCursor`. Opaque; a malformed one is a first page.",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many rows to return, from 1 to 100. Defaults to a page a dashboard can render.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of the ratings in one pool.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "pool": {
+                      "type": "string",
+                      "description": "The pool listed."
+                    },
+                    "players": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "pool": {
+                            "type": "string",
+                            "description": "The pool."
+                          },
+                          "userId": {
+                            "type": "string",
+                            "description": "The player."
+                          },
+                          "algorithm": {
+                            "type": "string",
+                            "description": "The algorithm that produced `state`."
+                          },
+                          "state": {
+                            "description": "The algorithm's per-player state, in the shape that algorithm keeps."
+                          },
+                          "skill": {
+                            "type": "number",
+                            "description": "The conservative skill number. Shown here even when a game sets `hideSkill`."
+                          },
+                          "xp": {
+                            "type": "number",
+                            "description": "The experience total in the pool."
+                          },
+                          "games": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "How many rated games count toward the rating."
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "description": "When the rating last changed, ISO-8601."
+                          }
+                        },
+                        "required": [
+                          "pool",
+                          "userId",
+                          "algorithm",
+                          "state",
+                          "skill",
+                          "xp",
+                          "games",
+                          "updatedAt"
+                        ],
+                        "description": "One player's stored rating in one pool."
+                      },
+                      "description": "This page of ratings, highest skill first."
+                    },
+                    "nextCursor": {
+                      "description": "Where the next page resumes, or null at the end. Opaque.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "pool",
+                    "players",
+                    "nextCursor"
+                  ],
+                  "description": "A page of the ratings in one pool."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "rating:players:read"
+        ]
+      }
+    },
+    "/rating/admin/pools/{pool}/players/{userId}": {
+      "get": {
+        "tags": [
+          "rating"
+        ],
+        "operationId": "getRatingAdminPoolsByPoolPlayersByUserId",
+        "summary": "Read one player's rating in a pool and the outcomes behind it, newest first.",
+        "parameters": [
+          {
+            "name": "pool",
+            "in": "path",
+            "required": true,
+            "description": "The rating pool — the `:pool` path segment. A shape check only; a pool no game rates is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          },
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The player — the `:userId` path segment. Opaque to rating: bounded, not parsed.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Where to resume, from the previous page's `nextCursor`. Opaque; a malformed one is a first page.",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many rows to return, from 1 to 100. Defaults to a page a dashboard can render.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One player's rating in a pool, and a page of the outcomes behind it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "pool": {
+                      "type": "string",
+                      "description": "The pool."
+                    },
+                    "userId": {
+                      "type": "string",
+                      "description": "The player."
+                    },
+                    "rating": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "pool": {
+                              "type": "string",
+                              "description": "The pool."
+                            },
+                            "userId": {
+                              "type": "string",
+                              "description": "The player."
+                            },
+                            "algorithm": {
+                              "type": "string",
+                              "description": "The algorithm that produced `state`."
+                            },
+                            "state": {
+                              "description": "The algorithm's per-player state, in the shape that algorithm keeps."
+                            },
+                            "skill": {
+                              "type": "number",
+                              "description": "The conservative skill number. Shown here even when a game sets `hideSkill`."
+                            },
+                            "xp": {
+                              "type": "number",
+                              "description": "The experience total in the pool."
+                            },
+                            "games": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "How many rated games count toward the rating."
+                            },
+                            "updatedAt": {
+                              "type": "string",
+                              "description": "When the rating last changed, ISO-8601."
+                            }
+                          },
+                          "required": [
+                            "pool",
+                            "userId",
+                            "algorithm",
+                            "state",
+                            "skill",
+                            "xp",
+                            "games",
+                            "updatedAt"
+                          ],
+                          "description": "One player's stored rating in one pool."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The player's stored rating, or null when they have none here."
+                    },
+                    "outcomes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "game": {
+                            "type": "string",
+                            "description": "The game the outcome was recorded against."
+                          },
+                          "resultId": {
+                            "description": "The result the outcome came from, or null when none was named.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "rank": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "This player's finishing place. 1 is the winner; ties share a place."
+                          },
+                          "ranks": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "description": "Every player's finishing place, keyed by user id."
+                          },
+                          "teams": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {
+                                  "type": "string"
+                                }
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The team grouping for a team format, or null."
+                          },
+                          "sharedRoom": {
+                            "type": "boolean",
+                            "description": "Whether it was a shared-room game, which gates experience."
+                          },
+                          "voided": {
+                            "type": "boolean",
+                            "description": "Whether the outcome was voided. A voided outcome counts toward nothing."
+                          },
+                          "voidedAt": {
+                            "description": "When it was voided, ISO-8601, or null while it counts.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "skillBefore": {
+                            "type": "number",
+                            "description": "This player's skill going into the game."
+                          },
+                          "xpBefore": {
+                            "type": "number",
+                            "description": "This player's experience total going into the game."
+                          },
+                          "gamesBefore": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "How many rated games this player had completed before it."
+                          },
+                          "xpGained": {
+                            "type": "number",
+                            "description": "The experience the game awarded this player."
+                          },
+                          "at": {
+                            "type": "string",
+                            "description": "When the outcome was applied, ISO-8601."
+                          }
+                        },
+                        "required": [
+                          "game",
+                          "resultId",
+                          "rank",
+                          "ranks",
+                          "teams",
+                          "sharedRoom",
+                          "voided",
+                          "voidedAt",
+                          "skillBefore",
+                          "xpBefore",
+                          "gamesBefore",
+                          "xpGained",
+                          "at"
+                        ],
+                        "description": "One logged outcome, from where one player stood."
+                      },
+                      "description": "This page of the player's logged outcomes, newest first."
+                    },
+                    "nextCursor": {
+                      "description": "Where the next page of outcomes resumes, or null at the end.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "pool",
+                    "userId",
+                    "rating",
+                    "outcomes",
+                    "nextCursor"
+                  ],
+                  "description": "One player's rating in a pool, and a page of the outcomes behind it."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "rating:players:read"
+        ]
+      }
+    },
+    "/rating/admin/pools/{pool}/players/{userId}/recalculate": {
+      "post": {
+        "tags": [
+          "rating"
+        ],
+        "operationId": "postRatingAdminPoolsByPoolPlayersByUserIdRecalculate",
+        "summary": "Rebuild one player's rating by replaying their logged outcomes.",
+        "description": "Refused when no outcome behind the rating was logged: a rating older than its history has nothing to replay.",
+        "parameters": [
+          {
+            "name": "pool",
+            "in": "path",
+            "required": true,
+            "description": "The rating pool — the `:pool` path segment. A shape check only; a pool no game rates is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          },
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The player — the `:userId` path segment. Opaque to rating: bounded, not parsed.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "The body of a recalculate or reset: the act's idempotency key and the reason for it.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idempotencyKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "The client's key for this act. A retry with the same key changes nothing and answers with what the first request did; a key spent on a different act is refused."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why — a dispute, a support ticket, a bug. Required, and recorded verbatim on the audit event."
+                  }
+                },
+                "required": [
+                  "idempotencyKey",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "The body of a recalculate or reset: the act's idempotency key and the reason for it."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "What one act on a rating did.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "pool": {
+                      "type": "string",
+                      "description": "The pool."
+                    },
+                    "userId": {
+                      "type": "string",
+                      "description": "The player."
+                    },
+                    "act": {
+                      "type": "string",
+                      "enum": [
+                        "recalculate",
+                        "reset"
+                      ],
+                      "description": "The act."
+                    },
+                    "reason": {
+                      "type": "string",
+                      "description": "The reason, verbatim."
+                    },
+                    "before": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "algorithm": {
+                              "type": "string",
+                              "description": "The algorithm that produced `state`."
+                            },
+                            "state": {
+                              "description": "The algorithm's per-player state."
+                            },
+                            "skill": {
+                              "type": "number",
+                              "description": "The conservative skill number the state yields."
+                            },
+                            "xp": {
+                              "type": "number",
+                              "description": "The experience total in the pool."
+                            },
+                            "games": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "How many rated games count toward the rating."
+                            }
+                          },
+                          "required": [
+                            "algorithm",
+                            "state",
+                            "skill",
+                            "xp",
+                            "games"
+                          ],
+                          "description": "One player's rating at a moment."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The rating the act found."
+                    },
+                    "after": {
+                      "type": "object",
+                      "properties": {
+                        "algorithm": {
+                          "type": "string",
+                          "description": "The algorithm that produced `state`."
+                        },
+                        "state": {
+                          "description": "The algorithm's per-player state."
+                        },
+                        "skill": {
+                          "type": "number",
+                          "description": "The conservative skill number the state yields."
+                        },
+                        "xp": {
+                          "type": "number",
+                          "description": "The experience total in the pool."
+                        },
+                        "games": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "How many rated games count toward the rating."
+                        }
+                      },
+                      "required": [
+                        "algorithm",
+                        "state",
+                        "skill",
+                        "xp",
+                        "games"
+                      ],
+                      "description": "The rating the act left."
+                    },
+                    "at": {
+                      "type": "string",
+                      "description": "When the act ran, ISO-8601."
+                    },
+                    "replayed": {
+                      "type": "boolean",
+                      "description": "True when the idempotency key was already spent: nothing changed this time, and this is what the first request did."
+                    }
+                  },
+                  "required": [
+                    "pool",
+                    "userId",
+                    "act",
+                    "reason",
+                    "before",
+                    "after",
+                    "at",
+                    "replayed"
+                  ],
+                  "description": "What one act on a rating did."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "rating:players:adjust"
+        ]
+      }
+    },
+    "/rating/admin/pools/{pool}/players/{userId}/reset": {
+      "post": {
+        "tags": [
+          "rating"
+        ],
+        "operationId": "postRatingAdminPoolsByPoolPlayersByUserIdReset",
+        "summary": "Return one player's rating to the algorithm's starting state.",
+        "description": "Experience and the game count are kept. A later recalculation replays from the reset, not through it.",
+        "parameters": [
+          {
+            "name": "pool",
+            "in": "path",
+            "required": true,
+            "description": "The rating pool — the `:pool` path segment. A shape check only; a pool no game rates is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          },
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The player — the `:userId` path segment. Opaque to rating: bounded, not parsed.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "The body of a recalculate or reset: the act's idempotency key and the reason for it.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idempotencyKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "The client's key for this act. A retry with the same key changes nothing and answers with what the first request did; a key spent on a different act is refused."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why — a dispute, a support ticket, a bug. Required, and recorded verbatim on the audit event."
+                  }
+                },
+                "required": [
+                  "idempotencyKey",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "The body of a recalculate or reset: the act's idempotency key and the reason for it."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "What one act on a rating did.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "pool": {
+                      "type": "string",
+                      "description": "The pool."
+                    },
+                    "userId": {
+                      "type": "string",
+                      "description": "The player."
+                    },
+                    "act": {
+                      "type": "string",
+                      "enum": [
+                        "recalculate",
+                        "reset"
+                      ],
+                      "description": "The act."
+                    },
+                    "reason": {
+                      "type": "string",
+                      "description": "The reason, verbatim."
+                    },
+                    "before": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "algorithm": {
+                              "type": "string",
+                              "description": "The algorithm that produced `state`."
+                            },
+                            "state": {
+                              "description": "The algorithm's per-player state."
+                            },
+                            "skill": {
+                              "type": "number",
+                              "description": "The conservative skill number the state yields."
+                            },
+                            "xp": {
+                              "type": "number",
+                              "description": "The experience total in the pool."
+                            },
+                            "games": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "How many rated games count toward the rating."
+                            }
+                          },
+                          "required": [
+                            "algorithm",
+                            "state",
+                            "skill",
+                            "xp",
+                            "games"
+                          ],
+                          "description": "One player's rating at a moment."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The rating the act found."
+                    },
+                    "after": {
+                      "type": "object",
+                      "properties": {
+                        "algorithm": {
+                          "type": "string",
+                          "description": "The algorithm that produced `state`."
+                        },
+                        "state": {
+                          "description": "The algorithm's per-player state."
+                        },
+                        "skill": {
+                          "type": "number",
+                          "description": "The conservative skill number the state yields."
+                        },
+                        "xp": {
+                          "type": "number",
+                          "description": "The experience total in the pool."
+                        },
+                        "games": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "How many rated games count toward the rating."
+                        }
+                      },
+                      "required": [
+                        "algorithm",
+                        "state",
+                        "skill",
+                        "xp",
+                        "games"
+                      ],
+                      "description": "The rating the act left."
+                    },
+                    "at": {
+                      "type": "string",
+                      "description": "When the act ran, ISO-8601."
+                    },
+                    "replayed": {
+                      "type": "boolean",
+                      "description": "True when the idempotency key was already spent: nothing changed this time, and this is what the first request did."
+                    }
+                  },
+                  "required": [
+                    "pool",
+                    "userId",
+                    "act",
+                    "reason",
+                    "before",
+                    "after",
+                    "at",
+                    "replayed"
+                  ],
+                  "description": "What one act on a rating did."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "rating:players:adjust"
+        ]
+      }
+    },
     "/rating/games/{game}/outcomes": {
       "post": {
         "tags": [
@@ -16086,6 +16984,12 @@
                   "sharedRoom": {
                     "description": "Whether the game was played in a shared room with a friend. Gates XP/rank, never the skill rating.",
                     "type": "boolean"
+                  },
+                  "resultId": {
+                    "description": "The id of the result this outcome comes from — a multiplayer session result, or your own. Kept on the outcome log, so voiding the result takes this outcome back out of every rating it moved.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
                   }
                 },
                 "required": [

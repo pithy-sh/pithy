@@ -94,16 +94,20 @@ import { readSource, sourcePaths } from "./sourceFiles";
  *   contract itself, every function signature in the kit: none of it is read here. The tables are where
  *   #523 was observed and they are one enumerable population; the same degradation in a route handler's
  *   declaration is invisible to this gate.
- * - **One field's type, on both of its sides — `@pithy-sh/rating · pithyRatingRatings.state (input)` and
- *   `@pithy-sh/rating · pithyRatingRatings.state (output)`.** It is `sqliteJson(z.unknown())`, so both
- *   sides are `unknown` and there is no value TypeScript would refuse — degraded to `any` it reads
- *   exactly as it reads now, and the shape's key set is everything this gate can say about it. That is
- *   the whole list, and it is a list rather than a category on purpose: a reader has to be able to check
- *   the field they came here about, which "a field whose side admits everything" does not let them do. It
- *   measured 22 fields before `null` was added to {@link REJECTIONS} — every boolean column in the kit,
- *   because `SQLiteBoolean` decodes from `0 | 1 | boolean | string` and so admits all three scalars at
- *   once. {@link UNASSERTED} is the machine-readable copy and the tree is held to it exactly, so a
- *   twenty-third cannot arrive quietly and a closed one cannot linger.
+ * - **Two fields' types, each on both of its sides:**
+ *   `@pithy-sh/rating · pithyRatingRatings.state (input)`,
+ *   `@pithy-sh/rating · pithyRatingRatings.state (output)`,
+ *   `@pithy-sh/rating · pithyRatingOutcomePlayers.stateBefore (input)` and
+ *   `@pithy-sh/rating · pithyRatingOutcomePlayers.stateBefore (output)` — a rating's algorithm state, and
+ *   the copy the outcome log (#818) keeps of it going into each game. Each is
+ *   `sqliteJson(z.unknown())`, so both sides are `unknown` and there is no value TypeScript would refuse —
+ *   degraded to `any` it reads exactly as it reads now, and the shape's key set is everything this gate
+ *   can say about it. That is the whole list, and it is a list rather than a category on purpose: a reader
+ *   has to be able to check the field they came here about, which "a field whose side admits everything"
+ *   does not let them do. It measured 22 fields before `null` was added to {@link REJECTIONS} — every
+ *   boolean column in the kit, because `SQLiteBoolean` decodes from `0 | 1 | boolean | string` and so admits
+ *   all three scalars at once. {@link UNASSERTED} is the machine-readable copy and the tree is held to it
+ *   exactly, so an unnamed field cannot arrive quietly and a closed one cannot linger.
  * - **Narrowing, wherever no literal can be derived.** {@link SchemaKey.admits} is what assertion 4 writes
  *   its undirected line from, and the walk yields one only for a nullable, an enum, or a literal union.
  *   633 of the 1054 field-sides have none, so for those a declaration that *narrows* — `string` to a
@@ -210,8 +214,11 @@ export const SIDES: readonly Side[] = ["input", "output"];
  * Moved on 2026-10-26 (#817): `@pithy-sh/leaderboard` brings `pithy_leaderboard_contributions`,
  * `pithy_leaderboard_moderations` and `pithy_leaderboard_stale_windows` — what each result put on each entry,
  * every operator act on an entry with its reason, and the windows waiting for a rank renumber.
+ * Moved on 2026-10-26 (#818): `@pithy-sh/rating` brings `pithy_rating_outcomes`, `pithy_rating_outcome_players`
+ * and `pithy_rating_adjustments` — every outcome rating applied, each participant's standing going in, and every
+ * recalculation and reset the control plane made.
  */
-export const CENSUS = { tables: 65, packages: 18 };
+export const CENSUS = { tables: 68, packages: 18 };
 
 /**
  * Where the generated programs are written — **outside the checkout, and that is forced**.
@@ -556,14 +563,17 @@ export function schemaKeys(schema: ZodSchema, side: Side): SchemaKey[] {
  * an allowlist nobody has reread. Either way the build says which field and why, and this docstring and
  * the module's own are the two places the answer is written down.
  *
- * The two entries are one field, `sqliteJson(z.unknown())`: both its sides are `unknown`, so there is no
- * value in any language TypeScript would refuse, degraded or not. It is not a gap that can be closed by
- * choosing a better value — it is a column that genuinely accepts anything, and the shape's key set is
+ * The four entries are two fields of one shape, `sqliteJson(z.unknown())` — a rating's algorithm state, and
+ * the outcome log's copy of it going into a game: both sides of each are `unknown`, so there is no value in
+ * any language TypeScript would refuse, degraded or not. It is not a gap that can be closed by choosing a
+ * better value — it is a column that genuinely accepts anything, and the shape's key set is
  * all this gate can say about it.
  */
 export const UNASSERTED: readonly string[] = [
   "@pithy-sh/rating · pithyRatingRatings.state (input)",
   "@pithy-sh/rating · pithyRatingRatings.state (output)",
+  "@pithy-sh/rating · pithyRatingOutcomePlayers.stateBefore (input)",
+  "@pithy-sh/rating · pithyRatingOutcomePlayers.stateBefore (output)",
 ];
 
 /** How a field is spelled everywhere a reader has to match one: the exemption list and the report. */

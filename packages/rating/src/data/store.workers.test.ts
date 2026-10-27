@@ -10,14 +10,24 @@ import { z } from "zod";
 import type { RatingAlgorithm } from "../algorithm/algorithm";
 import type { ResolvedRatingGame } from "../config/config";
 import { rating_0001_rating } from "../migrations/0001_rating";
+import { rating_0002_outcome_log } from "../migrations/0002_outcome_log";
 import { recordOutcome } from "../record/record";
 import type { RatingRecord } from "./rating";
 import { ratingStore } from "./store";
 import { ratingDatabase } from "./tables";
 
 beforeEach(async () => {
-  await env.DB.exec("DROP TABLE IF EXISTS pithy_rating_ratings");
-  await rating_0001_rating.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
+  for (const table of [
+    "pithy_rating_ratings",
+    "pithy_rating_outcomes",
+    "pithy_rating_outcome_players",
+    "pithy_rating_adjustments",
+  ]) {
+    await env.DB.exec(`DROP TABLE IF EXISTS ${table}`);
+  }
+  const db = createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
+  await rating_0001_rating.up(db);
+  await rating_0002_outcome_log.up(db);
 });
 
 function record(userId: string, skill: number, xp: number): RatingRecord {
@@ -110,6 +120,37 @@ function bigGame(players: number): ResolvedRatingGame {
 const roster = (players: number) =>
   Object.fromEntries(Array.from({ length: players }, (_, index) => [`p${index}`, index + 1]));
 
+describe("ratingStore.apply", () => {
+  test("logs the outcome and moves the ratings in one transaction: when the log cannot be written, nothing moves", async () => {
+    const store = ratingStore(ratingDatabase(env.DB));
+    await recordOutcome(store, bigGame(2), { ranks: { p0: 1, p1: 2 }, at: new Date() });
+    const before = await store.getMany("demo", ["p0", "p1"]);
+
+    await env.DB.exec("DROP TABLE pithy_rating_outcome_players");
+    await expect(recordOutcome(store, bigGame(2), { ranks: { p0: 1, p1: 2 }, at: new Date() })).rejects.toThrow();
+
+    expect(await store.getMany("demo", ["p0", "p1"])).toEqual(before);
+    const outcomes = await env.DB.prepare("SELECT COUNT(*) AS n FROM pithy_rating_outcomes").first<{ n: number }>();
+    expect(outcomes?.n).toBe(1);
+  });
+
+  test("each participant row names the outcome the same batch inserted", async () => {
+    const store = ratingStore(ratingDatabase(env.DB));
+    await recordOutcome(store, bigGame(2), { ranks: { p0: 1, p1: 2 }, at: new Date() });
+    await recordOutcome(store, bigGame(2), { ranks: { p0: 2, p1: 1 }, at: new Date() });
+    const rows = await env.DB.prepare("SELECT outcome_id, user_id FROM pithy_rating_outcome_players ORDER BY id").all<{
+      outcome_id: number;
+      user_id: string;
+    }>();
+    expect(rows.results).toEqual([
+      { outcome_id: 1, user_id: "p0" },
+      { outcome_id: 1, user_id: "p1" },
+      { outcome_id: 2, user_id: "p0" },
+      { outcome_id: 2, user_id: "p1" },
+    ]);
+  });
+});
+
 describe("ratingStore and D1's bound-parameter ceiling", () => {
   test("a 120-player game records its result", { timeout: 30_000 }, async () => {
     const store = ratingStore(ratingDatabase(env.DB));
@@ -119,6 +160,10 @@ describe("ratingStore and D1's bound-parameter ceiling", () => {
 
     expect(recorded).toHaveLength(players);
     expect((await store.getMany("demo", Object.keys(roster(players)))).length).toBe(players);
+    const logged = await env.DB.prepare("SELECT COUNT(*) AS n FROM pithy_rating_outcome_players").first<{
+      n: number;
+    }>();
+    expect(logged?.n).toBe(players);
   });
 
   test("no statement binds more than D1 accepts, at any roster size", async () => {
