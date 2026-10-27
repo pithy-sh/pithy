@@ -259,4 +259,61 @@ describe("MatchmakingQueue (the open-queue coordinator DO)", () => {
     expect(keys.sort()).toEqual(["drop:fresh", "drop:recent"]);
     expect(await inQueue(stub, (q) => q.drop("a", "fresh"))).toEqual({ replayed: true });
   });
+
+  test("heldFor() answers what the queue holds about one player: their ticket, their undelivered match, their drops", async () => {
+    const stub = queue("held");
+    await inQueue(stub, (q) => q.enqueue(ticket("a", { region: "eu" })));
+    await inQueue(stub, (q) => q.enqueue(ticket("c", { region: "na" })));
+    await inQueue(stub, (q) => q.drop("c", "operator-key"));
+    await inQueue(stub, (q) => q.enqueue(ticket("b", { region: "eu" })));
+    await inQueue(stub, (q) => q.enqueue(ticket("c", { region: "na" })));
+
+    const a = await inQueue(stub, (q) => q.heldFor("a"));
+    expect(a.waiting).toBeNull();
+    expect(a.match).toEqual({ sessionId: null, gameKey: "g", at: expect.any(Number) });
+    expect(a.drops).toEqual([]);
+
+    const c = await inQueue(stub, (q) => q.heldFor("c"));
+    expect(c.waiting).toEqual({ region: "na", skill: 1000, enqueuedAt: expect.any(Number) });
+    expect(c.match).toBeNull();
+    expect(c.drops).toEqual([{ at: expect.any(Number) }]);
+    // The operator's key and the other players in a roster are not this player's.
+    expect(JSON.stringify(c)).not.toContain("operator-key");
+    expect(JSON.stringify(a)).not.toContain('"b"');
+  });
+
+  test("heldFor() a player the queue never saw holds nothing", async () => {
+    expect(await inQueue(queue("held-none"), (q) => q.heldFor("nobody"))).toEqual({
+      waiting: null,
+      match: null,
+      drops: [],
+    });
+  });
+
+  test("forget() erases one player's ticket, match and drop records, and leaves everyone else's", async () => {
+    const stub = queue("forget");
+    await inQueue(stub, (q) => q.enqueue(ticket("a", { region: "eu" })));
+    await inQueue(stub, (q) => q.enqueue(ticket("b", { region: "eu" })));
+    await inQueue(stub, (q) => q.enqueue(ticket("c", { region: "na" })));
+    await inQueue(stub, (q) => q.drop("c", "drop-c"));
+    await inQueue(stub, (q) => q.enqueue(ticket("c", { region: "na" })));
+    await inQueue(stub, (q) => q.enqueue(ticket("d", { region: "ap" })));
+
+    await inQueue(stub, (q) => q.forget("a"));
+    await inQueue(stub, (q) => q.forget("c"));
+    expect(await inQueue(stub, (q) => q.heldFor("a"))).toEqual({ waiting: null, match: null, drops: [] });
+    expect(await inQueue(stub, (q) => q.heldFor("c"))).toEqual({ waiting: null, match: null, drops: [] });
+    expect((await inQueue(stub, (q) => q.waiting())).map((t) => t.userId)).toEqual(["d"]);
+    expect((await inQueue(stub, (q) => q.status("b"))).state).toBe("matched");
+
+    // Idempotent: a second forget finds nothing and succeeds.
+    await expect(inQueue(stub, (q) => q.forget("a"))).resolves.toBeUndefined();
+  });
+
+  test("forgetting the last waiting player clears the sweep alarm", async () => {
+    const stub = queue("forget-alarm");
+    await inQueue(stub, (q) => q.enqueue(ticket("a")));
+    await inQueue(stub, (q) => q.forget("a"));
+    expect(await inQueue(stub, (_q, state) => state.storage.getAlarm())).toBeNull();
+  });
 });

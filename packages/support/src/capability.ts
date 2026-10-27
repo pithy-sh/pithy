@@ -27,6 +27,7 @@ import { createSupportEmailHandler } from "./inbound/handler";
 import { senderPeers } from "./link/peers";
 import type { SenderPeers } from "./link/sender";
 import { support_0001_threads } from "./migrations/0001_threads";
+import { supportUserPurge } from "./purge/contribution";
 import { resolveReplies, type SupportReplySnippets } from "./reply/snippets";
 import { inapplicableAttachmentSecrets, SUPPORT_BUCKET_BINDING, supportSecretsRegistry } from "./secret/registry";
 import { supportExampleSeed } from "./seeds/example";
@@ -295,6 +296,10 @@ export function support(options: SupportOptions = {}): SupportCapability {
     }),
     email: createSupportEmailHandler(wiring),
     seeds: [supportExampleSeed],
+    // A person's threads — linked to their account, or sent from their address and linked to no other — with every
+    // message, attachment and raw mail in them: exported on an access request and erased by their purge, as its own
+    // step (#814).
+    purge: [supportUserPurge()],
   });
 
   return Object.assign(capability, {

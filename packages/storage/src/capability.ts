@@ -17,7 +17,7 @@ import { registerStorageRoutes } from "./http/routes";
 import { storageAdminRoutes } from "./http/scopes";
 import { storage_0001_objects } from "./migrations/0001_objects";
 import { storage_0002_ownership } from "./migrations/0002_ownership";
-import { storageOrganizationPurge } from "./purge/contribution";
+import { storageOrganizationPurge, storageUserPurge } from "./purge/contribution";
 import { bundleTokenCheck } from "./secret/bundleToken";
 import { STORAGE_BUCKET_BINDING, STORAGE_R2_SECRET, storageSecretsRegistry } from "./secret/registry";
 import { storageExampleSeed } from "./seeds/example";
@@ -109,7 +109,8 @@ export function storage(options: StorageOptions = {}): StorageCapability {
     workflows: storageWorkflows,
     // What erasing one organization means here (#623): its files, their bytes and their share links. The
     // organization purge runs it as its own step, in the adopter's Worker, which binds what it reads.
-    purge: [storageOrganizationPurge()],
+    // A person's own files too (#814): exported on an access request and erased by their purge.
+    purge: [storageOrganizationPurge(), storageUserPurge()],
     requiredBindings,
     config: StorageConfig,
     // The power a role holds to edit, delete and re-scope any file in its own organization. Declared so

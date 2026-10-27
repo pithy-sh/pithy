@@ -12,6 +12,10 @@ pithy add rating
 
 _Everything else is on the site. `pithy.sh/docs` is canonical — new prose goes there, not here._
 
+## A person's data
+
+**Erased.** When an account is purged, rating deletes the person's rating in every pool, and an export hands it back first. Every opponent's own rating is kept in their own row. See [`@pithy-sh/auth`'s account lifecycle](../auth/docs/account-lifecycle.md#what-each-capability-does-with-a-persons-rows).
+
 ## License
 
 MIT — adopter-side app value. The root `LICENSE` covers it.

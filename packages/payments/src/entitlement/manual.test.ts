@@ -266,6 +266,13 @@ const FORMS: readonly { name: string; writes: boolean; pattern: RegExp }[] = [
   },
   { name: "a select", writes: false, pattern: new RegExp(`\\.selectFrom\\(${CONSTANT}\\)`, "g") },
   {
+    // A table `personRowsExport` reads for an access request (#814). Anchored on the export call itself, so the
+    // same entry handed to `personRowsPurge`, which deletes, is in no form and fails the gate.
+    name: "a table an export reads",
+    writes: false,
+    pattern: new RegExp(`\\bpersonRowsExport\\(\\{[^]*?\\btable:${CONSTANT},`, "g"),
+  },
+  {
     // A quoted string handed to `.describe`, never a template: prose about the table, which executes nothing.
     // A SQL string is not this — it is a mention in no form at all, which is the failure.
     name: "documentation text",
@@ -388,6 +395,9 @@ const CENSUS: { address: string; writes: false | Account }[] = [
   { address: "projection/writer.ts :: keysToDerive", writes: false },
   { address: "projection/writer.ts :: readEntitlements", writes: false },
   { address: "entitlement/manual.ts :: (module)", writes: false },
+  // A person's export (#814): the entitlements a user subject holds, read and kept, never written.
+  { address: "purge/contribution.ts :: (module)", writes: false },
+  { address: "purge/contribution.ts :: paymentsUserPurge", writes: false },
   // The four that change rows, and what makes each one's rows legitimate.
   { address: "projection/writer.ts :: ensureEntitlement", writes: "holds-nothing" },
   { address: "projection/writer.ts :: deriveEntitlement", writes: "refuses-held-rows" },
@@ -405,7 +415,7 @@ describe("every place this package names the entitlements table", () => {
     expect(sources().length).toBeGreaterThanOrEqual(85);
     // A literal, never `CENSUS.length`: a count derived from the list being checked cannot notice the list
     // and the tree emptying together, which is a set under test computed by the thing under test.
-    expect(sites().length).toBe(20);
+    expect(sites().length).toBe(22);
   });
 
   test("every site is one the census names, and every census entry is a site that exists", () => {

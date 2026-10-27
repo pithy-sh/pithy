@@ -12,6 +12,7 @@ import { ROOM_PREFIX, Room, RoomKey } from "./kv/rooms";
 import { MATCHMAKING_MIGRATIONS } from "./migrations/chain";
 import { type MatchmakingPeers, matchmakingPeers } from "./peers";
 import { presenceSocket } from "./presence/channel";
+import { matchmakingUserPurge } from "./purge/contribution";
 import { matchmakingExampleSeed } from "./seeds/example";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
@@ -109,6 +110,14 @@ export function matchmaking(options: MatchmakingOptions = { games: [] }): Matchm
     // The presence socket, for the AsyncAPI contract: mounted where the routes put its upgrade.
     sockets: [presenceSocket(mountPath)],
     seeds: [matchmakingExampleSeed],
+    // A person's invites, friendships and place in every game's queue: exported on an access request and erased by
+    // their purge, as its own step in the adopter's Worker (#814).
+    purge: [
+      matchmakingUserPurge(
+        "DB",
+        resolved.games.map((game) => game.key),
+      ),
+    ],
   });
 
   return Object.assign(capability, { matchmakingConfig: resolved });

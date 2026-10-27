@@ -850,6 +850,14 @@ describe("the purge's records", () => {
     });
   });
 
+  test("recordPurgeStep with retained writes purge_retained, its reason the basis, so a kept step never reads as erased", async () => {
+    const h = harness();
+    await recordPurgeStep(h.deps, { userId: "u1", step: "payments", summary: "Kept for tax records.", retained: true });
+    expect(await history()).toEqual([
+      expect.objectContaining({ action: "purge_retained", step: "payments", reason: "Kept for tax records." }),
+    ]);
+  });
+
   test("mailPurgeComplete mails the address it is handed, in the account's language", async () => {
     // The purge Workflow (#622) captures the address before its steps erase it and hands it here, before
     // auth's own step erases the row the address lives on.
@@ -939,6 +947,13 @@ describe("which purges are due (#622)", () => {
 });
 
 describe("the purge's operations over the transitions (#622)", () => {
+  test("address reads the account's own address off its row, and null for an account that is not there (#814)", async () => {
+    await seedUser();
+    const ops = purgeOps(harness().deps);
+    expect(await ops.address("u1")).toBe("u1@test.com");
+    expect(await ops.address("nobody")).toBeNull();
+  });
+
   test("due, mail, record and complete, each read off the account's own rows", async () => {
     await seedUser();
     const h = harness();
@@ -952,6 +967,11 @@ describe("the purge's operations over the transitions (#622)", () => {
     expect(await ops.mailComplete("u1", undefined)).toBe(true);
     expect((await jobs()).map((job) => [job.template, job.to])).toEqual([["deletionComplete", "u1@test.com"]]);
     await ops.recordStep("u1", "media", "Deletes uploads.");
+    await ops.recordRetained("u1", "payments", "Kept for tax records.");
+    expect((await history()).slice(-2)).toEqual([
+      expect.objectContaining({ action: "purge_step", step: "media", reason: "Deletes uploads." }),
+      expect.objectContaining({ action: "purge_retained", step: "payments", reason: "Kept for tax records." }),
+    ]);
     expect(await ops.complete("u1")).toBe(true);
     expect(await ops.complete("u1")).toBe(false);
     expect(await ops.due("nobody")).toBe("gone");

@@ -71,6 +71,8 @@ function ops(log: string[], due: "due" | "not_due" | "gone" = "due"): Organizati
   return {
     due: async () => due,
     recordStep: async (organizationId, step, summary) => void log.push(`record ${step} ${organizationId}: ${summary}`),
+    recordRetained: async (organizationId, step, basis) =>
+      void log.push(`retained ${step} ${organizationId}: ${basis}`),
     complete: async (organizationId) => {
       log.push(`complete ${organizationId}`);
       const first = !completed;
@@ -81,6 +83,27 @@ function ops(log: string[], due: "due" | "not_due" | "gone" = "due"): Organizati
 }
 
 describe("purgeOrganization", () => {
+  test("a retained step is recorded as retained, in its own step, and nothing of it is erased (#814)", async () => {
+    const log: string[] = [];
+    const own = contribution("organization", log);
+    const ledgerKept: PurgeStep = {
+      step: "books",
+      contribution: {
+        subject: "organization",
+        summary: "Keeps the organization's invoices.",
+        retain: { basis: "Kept for tax records." },
+        export: async () => ({}),
+      },
+    };
+    const { step, ran } = workflow();
+    const outcome = await purgeOrganization({ steps: [own, ledgerKept], env: {}, ops: ops(log) }, step, Terminal, {
+      organizationId: ACME,
+    });
+    expect(outcome).toEqual({ organizationId: ACME, state: "purged", erased: ["organization"], retained: ["books"] });
+    expect(ran).toEqual(["due", "retain books", "erase organization", "complete"]);
+    expect(log).toContain(`retained books ${ACME}: Kept for tax records.`);
+  });
+
   test("one step per contribution, in composition order, this capability's last, each recorded", async () => {
     const log: string[] = [];
     const own = contribution("organization", log);
@@ -90,7 +113,12 @@ describe("purgeOrganization", () => {
     const outcome = await purgeOrganization({ steps: [own, media, app], env: {}, ops: ops(log) }, step, Terminal, {
       organizationId: ACME,
     });
-    expect(outcome).toEqual({ organizationId: ACME, state: "purged", erased: ["media", "app", "organization"] });
+    expect(outcome).toEqual({
+      organizationId: ACME,
+      state: "purged",
+      erased: ["media", "app", "organization"],
+      retained: [],
+    });
     expect(ran).toEqual(["due", "erase media", "erase app", "erase organization", "complete"]);
     expect(log).toEqual([
       `erase media organization:${ACME}`,
@@ -146,7 +174,7 @@ describe("purgeOrganization", () => {
         Terminal,
         { organizationId: ACME },
       );
-      expect(outcome).toEqual({ organizationId: ACME, state: due, erased: [] });
+      expect(outcome).toEqual({ organizationId: ACME, state: due, erased: [], retained: [] });
       expect(ran).toEqual(["due"]);
       expect(log).toEqual([]);
     }

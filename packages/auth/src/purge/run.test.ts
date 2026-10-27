@@ -66,6 +66,11 @@ function ops(log: string[], due: "due" | "not_due" | "gone" = "due"): PurgeOps {
   return {
     due: async () => due,
     recordStep: async (userId, step, summary) => void log.push(`record ${step} ${userId}: ${summary}`),
+    recordRetained: async (userId, step, basis) => void log.push(`retained ${step} ${userId}: ${basis}`),
+    address: async (userId) => {
+      log.push(`address ${userId}`);
+      return due === "gone" ? null : "ada@example.test";
+    },
     mailComplete: async (userId) => {
       log.push(`mail ${userId}`);
       return true;
@@ -79,7 +84,66 @@ function ops(log: string[], due: "due" | "not_due" | "gone" = "due"): PurgeOps {
   };
 }
 
+/** A contribution that keeps the account's rows, and counts every export and erase anybody asks of it. */
+function retaining(name: string, log: string[]): PurgeStep {
+  return {
+    step: name,
+    contribution: {
+      subject: "user",
+      summary: `Keeps ${name}'s rows.`,
+      retain: { basis: `Kept by ${name}.` },
+      export: async () => {
+        log.push(`export ${name}`);
+        return {};
+      },
+    },
+  };
+}
+
 describe("purgeUser", () => {
+  test("a retained step is recorded as retained, in its own step, and nothing of it is erased (#814)", async () => {
+    const log: string[] = [];
+    const auth = contribution("auth", log);
+    const payments = retaining("payments", log);
+    const media = contribution("media", log);
+    const { step, ran } = workflow();
+    const outcome = await purgeUser({ steps: [auth, payments, media], env: {}, ops: ops(log) }, step, Terminal, {
+      userId: "u1",
+    });
+    expect(outcome).toEqual({
+      userId: "u1",
+      state: "purged",
+      erased: ["media", "auth"],
+      retained: ["payments"],
+      mailed: true,
+    });
+    expect(ran).toEqual(["due", "retain payments", "erase media", "mail", "erase auth", "complete"]);
+    expect(log).toContain("retained payments u1: Kept by payments.");
+    expect(log).not.toContain("record payments u1: Keeps payments's rows.");
+    expect(log.filter((line) => line.startsWith("export"))).toEqual([]);
+  });
+
+  test("a step reads the account's address only when it asks, inside the step (#814)", async () => {
+    const log: string[] = [];
+    const seen: (string | null)[] = [];
+    const testers: PurgeStep = {
+      step: "testers",
+      contribution: {
+        subject: "user",
+        summary: "Erases the membership.",
+        erase: async (context) => {
+          seen.push((await context.address?.()) ?? "no accessor");
+        },
+      },
+    };
+    const { step } = workflow();
+    await purgeUser({ steps: [testers, contribution("auth", log)], env: {}, ops: ops(log) }, step, Terminal, {
+      userId: "u1",
+    });
+    expect(seen).toEqual(["ada@example.test"]);
+    expect(log.filter((line) => line.startsWith("address"))).toEqual(["address u1"]);
+  });
+
   test("one step per contribution, in composition order, auth's last and the mail just before it", async () => {
     const log: string[] = [];
     const auth = contribution("auth", log);
@@ -89,7 +153,13 @@ describe("purgeUser", () => {
     const outcome = await purgeUser({ steps: [auth, media, app], env: {}, ops: ops(log) }, step, Terminal, {
       userId: "u1",
     });
-    expect(outcome).toEqual({ userId: "u1", state: "purged", erased: ["media", "app", "auth"], mailed: true });
+    expect(outcome).toEqual({
+      userId: "u1",
+      state: "purged",
+      erased: ["media", "app", "auth"],
+      retained: [],
+      mailed: true,
+    });
     expect(ran).toEqual(["due", "erase media", "erase app", "mail", "erase auth", "complete"]);
     expect(log).toEqual([
       "erase media u1",
@@ -143,7 +213,7 @@ describe("purgeUser", () => {
       const outcome = await purgeUser({ steps: [media], env: {}, ops: ops(log, due) }, step, Terminal, {
         userId: "u1",
       });
-      expect(outcome).toEqual({ userId: "u1", state: due, erased: [], mailed: false });
+      expect(outcome).toEqual({ userId: "u1", state: due, erased: [], retained: [], mailed: false });
       expect(ran).toEqual(["due"]);
       expect(media.erases()).toBe(0);
     }
@@ -168,7 +238,7 @@ describe("purgeUser", () => {
       Terminal,
       { userId: "u9" },
     );
-    expect(seen).toEqual([{ subject: { type: "user", id: "u9" }, env }]);
+    expect(seen).toEqual([{ subject: { type: "user", id: "u9" }, env, address: expect.any(Function) }]);
   });
 
   test("notify is handed to the mail", async () => {

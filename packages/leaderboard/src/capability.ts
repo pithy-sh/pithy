@@ -10,6 +10,7 @@ import { registerLeaderboardRoutes } from "./http/routes";
 import { leaderboardAdminRoutes } from "./http/scopes";
 import { LEADERBOARD_MIGRATIONS } from "./migrations/all";
 import { type LeaderboardPeer, leaderboardPeer } from "./peer";
+import { leaderboardUserPurge } from "./purge/contribution";
 import { leaderboardExampleSeed } from "./seeds/example";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
@@ -88,6 +89,9 @@ export function leaderboard(options: LeaderboardOptions = { boards: [] }): Leade
     // this config mounted — a gate the config switched off is not here (#560).
     scopeGates: scopeGatesOf(routes),
     seeds: [leaderboardExampleSeed],
+    // A person's entries: exported on an access request and erased by their purge, as its own step in the adopter's
+    // Worker (#814).
+    purge: [leaderboardUserPurge()],
   });
 
   return Object.assign(capability, { leaderboardConfig: resolved, leaderboardPeer });

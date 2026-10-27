@@ -45,6 +45,10 @@ The presence socket's frames are Zod schemas in `src/presence/frames.ts`. Offer 
 
 With `controlplane()` composed, a management client reads who is waiting and acts on it. `matchmaking:queues:read` reads a game's queue (from its Durable Object), its open rooms, and every pending invite. `matchmaking:queues:moderate` cancels a pending invite or drops a player from a queue, each with an idempotency key and a required reason. A cancel tells both players through presence, a drop tells the player why, and each act writes one audit event. Nothing here touches the friend graph. The routes, the scopes and the rules are in [`docs/CONTROL-PLANE.md`](../../docs/CONTROL-PLANE.md) §13.
 
+## A person's data
+
+**Erased.** When an account is purged, matchmaking deletes every invite the person sent or received, every friendship or request they are either side of, and their place, undelivered match and drop records in every game's queue, and an export hands them back first. An invite's cancel key is the operator's and is not exported. A room code is not erased: it names its host and expires on its own TTL, fifteen minutes by default. See [`@pithy-sh/auth`'s account lifecycle](../auth/docs/account-lifecycle.md#what-each-capability-does-with-a-persons-rows).
+
 ## License
 
 MIT — adopter-side app value. The root `LICENSE` covers it.

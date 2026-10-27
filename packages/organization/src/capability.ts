@@ -23,7 +23,7 @@ import { ORGANIZATION_MIGRATION_ORDER } from "./migrations/0001_init";
 import { ORGANIZATION_MIGRATIONS } from "./migrations/set";
 import { type OwnershipRoles, requireTransferableRoles } from "./ownership/ownership";
 import { founderRole, type OrganizationDeleteSweep } from "./provision/provision";
-import { organizationPurgeContribution } from "./purge/contribution";
+import { organizationPurgeContribution, organizationUserPurge } from "./purge/contribution";
 import { organizationWorkflows } from "./purge/specs";
 import { type RoleCatalog, requireComposedPowers } from "./roles/roles";
 import { organizationExampleSeed } from "./seeds/example";
@@ -356,7 +356,9 @@ export function organization<const Power extends string = never, const Role exte
       },
     }),
     // What erasing an organization means for the tenancy tables — and, in the same batch, the adopter's (#623).
-    purge: [organizationPurgeContribution("DB", onDelete)],
+    // And a person's memberships, selections, offers and invitations (#814): exported on an access request and erased
+    // by their purge, as its own step in the adopter's Worker.
+    purge: [organizationPurgeContribution("DB", onDelete), organizationUserPurge("DB")],
     // The purge of one organization, and the daily pass that starts every due one. Both hosted by the adopter's
     // own Worker, because a purge runs every composed capability's contribution — see `purge/specs.ts`.
     workflows: organizationWorkflows,

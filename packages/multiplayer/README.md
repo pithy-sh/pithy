@@ -33,6 +33,10 @@ No state frame reaches a socket whose player is no longer a member.
 This gates reading, not joining. Whoever holds an open session's id may still join it, by design.
 
 
+## A person's data
+
+**Anonymized.** When an account is purged, multiplayer replaces the person's id in every session result they played in — the players, the scores and the winner — with `erased-` and a random UUID, so the other players' results stay. An export hands the results back first. See [`@pithy-sh/auth`'s account lifecycle](../auth/docs/account-lifecycle.md#what-each-capability-does-with-a-persons-rows).
+
 ## License
 
 MIT — adopter-side app value, the same as `@pithy-sh/auth` and `@pithy-sh/leaderboard`. The root `LICENSE` covers it.

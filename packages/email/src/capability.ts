@@ -26,6 +26,7 @@ import { email_0001_suppressions } from "./migrations/0001_suppressions";
 import { DevMailDelivery } from "./provision/devDelivery";
 import { emailHostCatalogs } from "./provision/hostCatalogs";
 import { emailSettings } from "./provision/settingsCheck";
+import { emailUserPurge } from "./purge/contribution";
 import { type EnqueueInput, type EnqueueResult, enqueueEmail } from "./send/enqueue";
 import { type EmailSenderEnv, emailSenderBinding } from "./send/senderBinding";
 import { EMAIL_MESSAGES, type EmailMessageLayers, kitEmailLayers } from "./templates/messages";
@@ -281,6 +282,9 @@ export function email(config: EmailConfigInput): EmailCapability {
         retained: emailSuppressionsRetainedTables,
       },
     },
+    // A person's suppression and the log of mail sent to them are kept through their purge, so an unsubscribe holds,
+    // and exported on an access request with the basis that keeps them (#814).
+    purge: [emailUserPurge()],
     /**
      * The two durable jobs email owns. Both classes live in the prebuilt email worker
      * (`workflows/worker.ts`), never in the app worker — the app only ever dispatches into `send`.

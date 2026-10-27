@@ -4,7 +4,16 @@
 import { describe, expect, test } from "vitest";
 import { PithyError } from "../error/pithyError";
 import { type Capability, defineCapability } from "./capability";
-import { type PurgeContribution, PurgeSubject, purgeExports, purgeSteps } from "./purge";
+import {
+  credentialFields,
+  exportRows,
+  isRetained,
+  type PurgeContribution,
+  PurgeSubject,
+  purgeBinding,
+  purgeExports,
+  purgeSteps,
+} from "./purge";
 
 /** A contribution that records the subject it was asked to erase, so a test can see it ran. */
 function recording(seen: string[], summary = "Erases this capability's rows for one user."): PurgeContribution {
@@ -83,7 +92,7 @@ describe("purgeSteps", () => {
     ];
     const steps = purgeSteps(capabilities, "user");
     expect(steps.map((step) => step.step)).toEqual(["auth", "media", "app"]);
-    for (const step of steps) await step.contribution.erase({ subject: { type: "user", id: "u1" }, env: {} });
+    for (const step of steps) await step.contribution.erase?.({ subject: { type: "user", id: "u1" }, env: {} });
     expect(seen).toEqual(["u1", "u1", "u1"]);
   });
 
@@ -121,11 +130,12 @@ describe("purgeExports (#622)", () => {
       {
         capability: "auth",
         summary: "Erases this capability's rows for one user.",
+        disposition: "erase",
         state: "exported",
         data: { user: { id: "u1" } },
       },
-      { capability: "media", summary: "Deletes the uploads.", state: "not_exported" },
-      { capability: "app", summary: "Erases the drafts.", state: "unavailable" },
+      { capability: "media", summary: "Deletes the uploads.", disposition: "erase", state: "not_exported" },
+      { capability: "app", summary: "Erases the drafts.", disposition: "erase", state: "unavailable" },
     ]);
   });
 
@@ -159,5 +169,126 @@ describe("purgeExports (#622)", () => {
     const entries = await purgeExports(purgeSteps(capabilities, "user"), { subject: SUBJECT, env: {} });
     expect(order).toEqual(["fast", "slow"]);
     expect(entries.map((entry) => entry.capability)).toEqual(["slow", "fast"]);
+  });
+});
+
+/** A contribution that keeps the subject's rows, with the basis it gives the person (#814). */
+function retaining(basis = "Kept for tax records."): PurgeContribution {
+  return {
+    subject: "user",
+    summary: "Keeps the user's purchases.",
+    retain: { basis },
+    export: async ({ subject }) => ({ purchases: [{ subjectId: subject.id }] }),
+  };
+}
+
+describe("retain, the third disposition (#814)", () => {
+  test("defineCapability accepts a contribution that keeps the rows and says why", () => {
+    const contribution = retaining();
+    const capability = defineCapability({ name: "payments", requiredBindings: [], purge: [contribution] });
+    expect(capability.purge).toEqual([contribution]);
+    expect(isRetained(contribution)).toBe(true);
+    expect(isRetained(recording([]))).toBe(false);
+  });
+
+  test("a retained contribution with no basis is refused — the basis is what the person is told", () => {
+    expect(() => defineCapability({ name: "payments", requiredBindings: [], purge: [retaining("  ")] })).toThrow(
+      /payments.*basis/,
+    );
+  });
+
+  test("a retained contribution without an export is refused: rows that are kept are rows that are answered for", () => {
+    const { export: _dropped, ...silent } = retaining() as PurgeContribution & { export?: unknown };
+    expect(() =>
+      defineCapability({ name: "payments", requiredBindings: [], purge: [silent as unknown as PurgeContribution] }),
+    ).toThrow(/payments.*export/);
+  });
+
+  test("a contribution that both retains and erases is refused — it is one disposition or the other", () => {
+    const both = { ...retaining(), erase: async () => {} } as unknown as PurgeContribution;
+    expect(() => defineCapability({ name: "payments", requiredBindings: [], purge: [both] })).toThrow(/payments.*both/);
+  });
+
+  test("its export entry is exported, with its data and the basis", async () => {
+    const capabilities: Capability[] = [
+      defineCapability({ name: "payments", requiredBindings: [], purge: [retaining()] }),
+    ];
+    const entries = await purgeExports(purgeSteps(capabilities, "user"), {
+      subject: { type: "user", id: "u1" },
+      env: {},
+    });
+    expect(entries).toEqual([
+      {
+        capability: "payments",
+        summary: "Keeps the user's purchases.",
+        disposition: "retain",
+        basis: "Kept for tax records.",
+        state: "exported",
+        data: { purchases: [{ subjectId: "u1" }] },
+      },
+    ]);
+  });
+
+  test("a retained export that cannot be read still says the rows are kept, and why", async () => {
+    const broken: PurgeContribution = {
+      ...retaining(),
+      export: async () => {
+        throw new Error("no table");
+      },
+    };
+    const capabilities: Capability[] = [defineCapability({ name: "audit", requiredBindings: [], purge: [broken] })];
+    const [entry] = await purgeExports(purgeSteps(capabilities, "user"), {
+      subject: { type: "user", id: "u1" },
+      env: {},
+    });
+    expect(entry).toEqual({
+      capability: "audit",
+      summary: "Keeps the user's purchases.",
+      disposition: "retain",
+      basis: "Kept for tax records.",
+      state: "unavailable",
+    });
+  });
+});
+
+describe("the helpers a contribution is written with (#814)", () => {
+  test("purgeBinding hands back the binding, or refuses naming the capability and the binding", () => {
+    const db = { prepare: () => null };
+    expect(purgeBinding({ DB: db }, "DB", "ledger")).toBe(db);
+    expect(() => purgeBinding({}, "DB", "ledger")).toThrow(PithyError);
+    expect(() => purgeBinding({ DB: "not a binding" }, "DB", "ledger")).toThrow(/ledger/);
+  });
+
+  test("exportRows answers plain JSON, a Date as its ISO string", () => {
+    const at = new Date("2026-10-26T12:00:00.000Z");
+    expect(exportRows([{ id: 1, at, tags: ["a"], none: null }])).toEqual([
+      { id: 1, at: "2026-10-26T12:00:00.000Z", tags: ["a"], none: null },
+    ]);
+  });
+});
+
+describe("credentialFields (#814)", () => {
+  test("names every field, at any depth, that holds a credential", () => {
+    expect(
+      credentialFields({
+        member: { email: "ada@example.test", optInToken: "t" },
+        shares: [{ token: "s", objectId: "o" }],
+        invitations: [{ tokenDigest: "d" }],
+        vault: { encryptedValue: "x", clientSecret: "y", password: "z" },
+      }),
+    ).toEqual([
+      "member.optInToken",
+      "shares[0].token",
+      "invitations[0].tokenDigest",
+      "vault.encryptedValue",
+      "vault.clientSecret",
+      "vault.password",
+    ]);
+  });
+
+  test("is empty for an export of plain data — a key or a code that is not a credential is not one", () => {
+    expect(credentialFields({ accounts: [{ currency: "chips", storageKey: "obj/1", boardKey: "weekly" }] })).toEqual(
+      [],
+    );
   });
 });

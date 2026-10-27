@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import { credentialFields } from "@pithy-sh/core/src/capability/purge";
 import { beforeEach, describe, expect, test } from "vitest";
 import { media } from "../capability";
 import { MediaConfig } from "../config/config";
@@ -10,7 +11,12 @@ import { MEDIA_HASHES_TABLE, mediaHashDatabase } from "../data/tables";
 import { createMedia } from "../http/handlers";
 import type { CreateMediaInput } from "../http/schemas";
 import { caller, fakeStorage, makeDeps, resetMediaTables } from "../test-utils/harness";
-import { MEDIA_ORGANIZATION_PURGE_SUMMARY, mediaOrganizationPurge } from "./contribution";
+import {
+  MEDIA_ORGANIZATION_PURGE_SUMMARY,
+  MEDIA_USER_PURGE_SUMMARY,
+  mediaOrganizationPurge,
+  mediaUserPurge,
+} from "./contribution";
 
 /**
  * Media's part of an organization's purge (#623), over real D1: every record the organization holds goes, with
@@ -52,7 +58,7 @@ async function remaining(): Promise<{ id: string; organization_id: string | null
 describe("the media organization purge", () => {
   test("media() declares it for the organization subject, with a summary", () => {
     const declared = media().purge ?? [];
-    expect(declared.map((contribution) => contribution.subject)).toEqual(["organization"]);
+    expect(declared.map((contribution) => contribution.subject)).toEqual(["organization", "user"]);
     expect(declared[0]?.summary).toBe(MEDIA_ORGANIZATION_PURGE_SUMMARY);
   });
 
@@ -126,5 +132,37 @@ describe("the media organization purge", () => {
       return fakeStorage();
     }).erase({ subject: { type: "organization", id: ACME }, env: { DB: env.DB } });
     expect(resolved).toBe(false);
+  });
+});
+
+describe("the media user purge (#814)", () => {
+  const ada = { type: "user" as const, id: "ada" };
+
+  test("media() declares it for the user subject, with a summary and an export", () => {
+    const declared = (media().purge ?? []).find((contribution) => contribution.subject === "user");
+    expect(declared?.summary).toBe(MEDIA_USER_PURGE_SUMMARY);
+    expect(typeof declared?.export).toBe("function");
+  });
+
+  test("exports the records the person holds as themselves, and no credential", async () => {
+    const personal = await upload("ada", null);
+    await upload("ada", ACME);
+    await upload("bob", null);
+    const data = await mediaUserPurge(CONFIG).export?.({ subject: ada, env: { DB: env.DB } });
+    expect(data?.records).toEqual([expect.objectContaining({ id: personal.id, ownerId: "ada", organizationId: null })]);
+    expect(credentialFields(data)).toEqual([]);
+  });
+
+  test("erases them, bytes first, and leaves an organization's record and anybody else's", async () => {
+    const personal = [await upload("ada", null), await upload("ada", null)];
+    const forAcme = await upload("ada", ACME);
+    const bobs = await upload("bob", null);
+    const storage = fakeStorage();
+    const purge = mediaUserPurge(CONFIG, undefined, async () => storage);
+    await purge.erase({ subject: ada, env: { DB: env.DB } });
+    expect(storage.calls.deleted.sort()).toEqual(personal.map((record) => record.storageKey).sort());
+    expect((await remaining()).map((row) => row.id).sort()).toEqual([forAcme.id, bobs.id].sort());
+    expect(await purge.export?.({ subject: ada, env: { DB: env.DB } })).toEqual({ records: [] });
+    await expect(purge.erase({ subject: ada, env: { DB: env.DB } })).resolves.toBeUndefined();
   });
 });

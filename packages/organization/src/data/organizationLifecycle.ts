@@ -19,9 +19,9 @@ import { z } from "zod";
 
 /** What happened to the organization. */
 export const OrganizationLifecycleAction = z
-  .enum(["suspended", "reinstated", "deleted", "restored", "purge_step", "purged"])
+  .enum(["suspended", "reinstated", "deleted", "restored", "purge_step", "purge_retained", "purged"])
   .describe(
-    "The transition: `suspended` and `reinstated`; `deleted` and `restored` inside the purge window; `purge_step`, one capability's rows erased during a purge, named in `step`; and `purged`, the erasure finished.",
+    "The transition: `suspended` and `reinstated`; `deleted` and `restored` inside the purge window; `purge_step`, one capability's rows erased during a purge, named in `step`; `purge_retained`, one capability's rows kept through a purge under the basis in `reason` (#814); and `purged`, the erasure finished.",
   );
 export type OrganizationLifecycleAction = z.output<typeof OrganizationLifecycleAction>;
 
@@ -64,7 +64,7 @@ export const OrganizationLifecycleEvent = z
       .string()
       .nullable()
       .describe(
-        "For a `purge_step` row, the capability whose rows that step erased — the purge's step name. Null for every other action.",
+        "For a `purge_step` row, the capability whose rows that step erased; for a `purge_retained` row, the capability whose rows it kept — the purge's step name. Null for every other action.",
       ),
     createdAt: SQLiteDate.describe("When the transition happened. Ms-epoch in SQLite; a `Date` in app code."),
   })

@@ -78,6 +78,38 @@ export const DropRecord = z
   .describe("A recorded management drop from a game's open queue.");
 export type DropRecord = z.output<typeof DropRecord>;
 
+/**
+ * What one game's queue holds about one player (#814): their waiting ticket, the match recorded for them and not yet
+ * delivered, and every management drop of them still remembered. An access request reads it; a purge erases it.
+ *
+ * **Only what is theirs.** A ticket's matchmaking settings and snapshot are the game's, a match's roster names the
+ * other players, and a drop's idempotency key is the operator's request, so none of them is here.
+ */
+export const QueueHolding = z
+  .object({
+    waiting: z
+      .object({
+        region: z.string().describe("The region the player queued in."),
+        skill: z.number().nullable().describe("The skill the player queued with, or null when unrated."),
+        enqueuedAt: z.number().int().describe("When the player joined the queue, ms epoch."),
+      })
+      .nullable()
+      .describe("The player's ticket while they wait, or null when they are not waiting."),
+    match: z
+      .object({
+        sessionId: z.string().nullable().describe("The session the match minted, or null without multiplayer."),
+        gameKey: z.string().describe("The game the match is for."),
+        at: z.number().int().describe("When the match formed, ms epoch."),
+      })
+      .nullable()
+      .describe("A match formed for the player and not yet delivered to them, or null."),
+    drops: z
+      .array(z.object({ at: z.number().int().describe("When the drop happened, ms epoch.") }).describe("One drop."))
+      .describe("Every management drop of the player the queue still remembers. Forgotten after a day."),
+  })
+  .describe("What one game's queue holds about one player.");
+export type QueueHolding = z.output<typeof QueueHolding>;
+
 /** A single formed roster — the user ids that pair into one match. */
 export interface MatchGroup {
   roster: string[];

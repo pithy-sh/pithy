@@ -10,6 +10,7 @@ import { Organization } from "../data/organization";
 import { ACTING_TABLE, LIFECYCLE_TABLE, ORGANIZATIONS_TABLE, organizationDatabase } from "../data/tables";
 import { ORGANIZATION_MIGRATION_ORDER } from "../migrations/0001_init";
 import { ORGANIZATION_MIGRATIONS } from "../migrations/set";
+import { organizationPurgeOps } from "../purge/run";
 import type { OrganizationLifecycleHookEvent } from "./hooks";
 import {
   checkSuspension,
@@ -360,5 +361,25 @@ describe("the purge's own records", () => {
       { action: "purged", reason: null },
     ]);
     expect(fired.map((hook) => hook.name)).toEqual(["purged"]);
+  });
+
+  test("a retained step is recorded as purge_retained, its reason the basis, so the trail never reads it as erased", async () => {
+    await recordOrganizationPurgeStep(deps(), {
+      organizationId: ACME,
+      step: "books",
+      summary: "Kept for tax records.",
+      retained: true,
+    });
+    expect(await history()).toEqual([{ action: "purge_retained", reason: "Kept for tax records." }]);
+  });
+
+  test("the purge ops record an erased step and a retained one each as itself", async () => {
+    const ops = organizationPurgeOps(deps());
+    await ops.recordStep(ACME, "media", "Deletes media.");
+    await ops.recordRetained(ACME, "books", "Kept for tax records.");
+    expect(await history()).toEqual([
+      { action: "purge_step", reason: "Deletes media." },
+      { action: "purge_retained", reason: "Kept for tax records." },
+    ]);
   });
 });

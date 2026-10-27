@@ -12,6 +12,10 @@ pithy add artifacts
 
 _Everything else is on the site. `pithy.sh/docs` is canonical — new prose goes there, not here._
 
+## A person's data
+
+**Erased.** When an account is purged, artifacts deletes every repository the person owns, with its contents in the Artifacts namespace and every grant on it, and every grant they hold on somebody else's, and an export hands them back first. A repository an organization owns is the organization's. See [`@pithy-sh/auth`'s account lifecycle](../auth/docs/account-lifecycle.md#what-each-capability-does-with-a-persons-rows).
+
 ## License
 
 MIT — adopter-side app value. The root `LICENSE` covers it.

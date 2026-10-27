@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
-import type { PurgeContext, PurgeContribution } from "@pithy-sh/core/src/capability/purge";
+import type { ErasingPurgeContribution, PurgeContext } from "@pithy-sh/core/src/capability/purge";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { type CompiledQuery, type Kysely, type SqlBool, sql } from "kysely";
 import { Account, Session, User } from "../data/betterAuth";
@@ -187,7 +187,10 @@ async function pluginRows(db: AuthDatabase, table: string, userId: string): Prom
  * The contribution `auth()` declares, over the D1 binding its config names. The export of an account that is
  * not there is an empty object, which the route never reaches: it answers 404 before it reads any capability.
  */
-export function authPurgeContribution(database: string, pluginTables: readonly string[] = []): PurgeContribution {
+export function authPurgeContribution(
+  database: string,
+  pluginTables: readonly string[] = [],
+): ErasingPurgeContribution {
   const open = (context: PurgeContext) => {
     const d1 = bindingOf(context.env, database);
     return { d1, db: authDatabase(d1) };

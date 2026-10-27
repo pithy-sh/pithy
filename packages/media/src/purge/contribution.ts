@@ -3,11 +3,19 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import { isNotFoundError } from "@pithy-sh/cloudflare/src/client/errors";
-import type { PurgeContribution } from "@pithy-sh/core/src/capability/purge";
+import { type ErasingPurgeContribution, exportRows } from "@pithy-sh/core/src/capability/purge";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import type { z } from "zod";
 import type { MediaConfig } from "../config/config";
 import type { StorageBackend } from "../data/enums";
-import { MEDIA_ASSETS_TABLE, MEDIA_HASHES_TABLE, mediaDatabase, mediaHashDatabase } from "../data/tables";
+import { MediaAsset } from "../data/mediaAsset";
+import {
+  MEDIA_ASSETS_TABLE,
+  MEDIA_HASHES_TABLE,
+  type MediaDatabase,
+  mediaDatabase,
+  mediaHashDatabase,
+} from "../data/tables";
 import { resolveStorage, type StorageEnv } from "../storage/resolve";
 import type { MediaStorage } from "../storage/storage";
 
@@ -35,6 +43,10 @@ import type { MediaStorage } from "../storage/storage";
 export const MEDIA_ORGANIZATION_PURGE_SUMMARY =
   "Deletes every media record the organization holds, with its stored bytes in R2, Cloudflare Images or Stream, and its dedup hashes.";
 
+/** The one sentence a person's purge records with this step (#814). */
+export const MEDIA_USER_PURGE_SUMMARY =
+  "Deletes every media record the user holds as themselves, with its stored bytes in R2, Cloudflare Images or Stream, and its dedup hashes. A record they made for an organization is the organization's.";
+
 /** How many records one read takes, so an organization with a large library is erased in bounded statements. */
 const PAGE = 100;
 
@@ -54,10 +66,56 @@ function bindingOf(env: Record<string, unknown>): D1Database {
     throw new InternalError({
       message: "The media database is not bound, so this purge step could not run.",
       action: "Bind the DB D1 database to the Worker that runs the purge.",
-      detail: "media organization purge contribution found no DB binding on the env",
+      detail: "media purge contribution found no DB binding on the env",
     });
   }
   return binding as D1Database;
+}
+
+/** Which records one erase reaches: an organization's, or a person's own. */
+type Holder = { readonly organizationId: string } | { readonly ownerId: string };
+
+/** The records `holder` holds, as a filter on the asset table. */
+function held(db: MediaDatabase, holder: Holder) {
+  const records = db.selectFrom(MEDIA_ASSETS_TABLE);
+  return "organizationId" in holder
+    ? records.where("organizationId", "=", holder.organizationId)
+    : records.where("ownerId", "=", holder.ownerId).where("organizationId", "is", null);
+}
+
+/** Erase every record `holder` holds — bytes, then hashes, then the row — a page at a time. See the header. */
+async function eraseHeld(
+  env: Record<string, unknown>,
+  holder: Holder,
+  storage: (env: Record<string, unknown>) => Promise<MediaStorage>,
+): Promise<void> {
+  const d1 = bindingOf(env);
+  const records = mediaDatabase(d1);
+  const hashes = mediaHashDatabase(d1);
+  let seam: MediaStorage | undefined;
+  for (;;) {
+    const page = await held(records, holder).select(["id", "storageBackend", "storageKey"]).limit(PAGE).execute();
+    if (page.length === 0) return;
+    // Resolved only once there is something to delete, so a holder with no media reads no secret.
+    seam ??= await storage(env);
+    for (const record of page) {
+      try {
+        await seam.deleteObject({
+          storageBackend: record.storageBackend as StorageBackend,
+          storageKey: record.storageKey,
+        });
+      } catch (error) {
+        if (!alreadyGone(error)) throw error;
+      }
+      await hashes.deleteFrom(MEDIA_HASHES_TABLE).where("mediaId", "=", record.id).execute();
+      await records.deleteFrom(MEDIA_ASSETS_TABLE).where("id", "=", record.id).execute();
+    }
+  }
+}
+
+/** The Worker's own storage seam, from its env, for a resolved config. */
+function workerStorage(config: MediaConfig): (env: Record<string, unknown>) => Promise<MediaStorage> {
+  return (env) => resolveStorage(env as unknown as StorageEnv, config);
 }
 
 /**
@@ -66,40 +124,35 @@ function bindingOf(env: Record<string, unknown>): D1Database {
  */
 export function mediaOrganizationPurge(
   config: MediaConfig,
-  storage: (env: Record<string, unknown>) => Promise<MediaStorage> = (env) =>
-    resolveStorage(env as unknown as StorageEnv, config),
-): PurgeContribution {
+  storage: (env: Record<string, unknown>) => Promise<MediaStorage> = workerStorage(config),
+): ErasingPurgeContribution {
   return {
     subject: "organization",
     summary: MEDIA_ORGANIZATION_PURGE_SUMMARY,
-    erase: async ({ subject, env }) => {
-      const d1 = bindingOf(env);
-      const records = mediaDatabase(d1);
-      const hashes = mediaHashDatabase(d1);
-      let seam: MediaStorage | undefined;
-      for (;;) {
-        const page = await records
-          .selectFrom(MEDIA_ASSETS_TABLE)
-          .select(["id", "storageBackend", "storageKey"])
-          .where("organizationId", "=", subject.id)
-          .limit(PAGE)
-          .execute();
-        if (page.length === 0) return;
-        // Resolved only once there is something to delete, so an organization with no media reads no secret.
-        seam ??= await storage(env);
-        for (const record of page) {
-          try {
-            await seam.deleteObject({
-              storageBackend: record.storageBackend as StorageBackend,
-              storageKey: record.storageKey,
-            });
-          } catch (error) {
-            if (!alreadyGone(error)) throw error;
-          }
-          await hashes.deleteFrom(MEDIA_HASHES_TABLE).where("mediaId", "=", record.id).execute();
-          await records.deleteFrom(MEDIA_ASSETS_TABLE).where("id", "=", record.id).execute();
-        }
-      }
+    erase: ({ subject, env }) => eraseHeld(env, { organizationId: subject.id }, storage),
+  };
+}
+
+/**
+ * The user contribution `media()` declares (#814): a person's own records, erased as above and exported first.
+ * `schema` is the effective record schema — the adopter's extension columns included — so the export decodes them.
+ */
+export function mediaUserPurge(
+  config: MediaConfig,
+  schema: z.ZodObject = MediaAsset,
+  storage: (env: Record<string, unknown>) => Promise<MediaStorage> = workerStorage(config),
+): ErasingPurgeContribution {
+  return {
+    subject: "user",
+    summary: MEDIA_USER_PURGE_SUMMARY,
+    erase: ({ subject, env }) => eraseHeld(env, { ownerId: subject.id }, storage),
+    export: async ({ subject, env }) => {
+      const rows = await held(mediaDatabase(bindingOf(env)), { ownerId: subject.id })
+        .selectAll()
+        .orderBy("createdAt")
+        .orderBy("id")
+        .execute();
+      return { records: exportRows(rows.map((row) => schema.parse(row))) };
     },
   };
 }

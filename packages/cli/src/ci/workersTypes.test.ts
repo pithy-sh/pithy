@@ -142,27 +142,32 @@ const DECLARED_ONLY: Record<string, string> = {
  * `entry/result.ts` and `admin/moderate.ts`, which batch an entry's change with its record on D1;
  * `http/adminRoutes.ts`, which reads the binding off `env`; and `entry/store.ts`, `http/handlers.ts` and
  * `retention/prune.ts`, which delete an entry or a window together with its contributions in one batch.
+ * A person's purge and export (#814) moved `core` by one, `capability/personRows.ts`, the contribution most
+ * capabilities write through, and `artifacts`, `email`, `multiplayer`, `support`, `testers` and `matchmaking` by one
+ * each: their `purge/contribution.ts`, which opens the env's own D1 for the person's rows — and, for matchmaking,
+ * reaches each game's queue Durable Object. It moved `leaderboard` by one too: its `purge/contribution.ts`, which
+ * batches the deletes with a stale mark on every closed window a ranked entry left.
  */
 const IMPORTERS: Record<string, number> = {
-  "packages/artifacts": 2,
+  "packages/artifacts": 3,
   "packages/audit": 3,
   "packages/auth": 10,
   "packages/cli": 15,
   "packages/cloudflare": 2,
-  "packages/core": 18,
-  "packages/email": 9,
-  "packages/leaderboard": 11,
+  "packages/core": 19,
+  "packages/email": 10,
+  "packages/leaderboard": 12,
   "packages/ledger": 4,
-  "packages/matchmaking": 8,
+  "packages/matchmaking": 9,
   "packages/media": 8,
-  "packages/multiplayer": 5,
+  "packages/multiplayer": 6,
   "packages/organization": 11,
   "packages/payments": 18,
   "packages/rating": 2,
   "packages/secrets": 7,
   "packages/storage": 7,
-  "packages/support": 8,
-  "packages/testers": 7,
+  "packages/support": 9,
+  "packages/testers": 8,
   "packages/vector": 4,
 };
 

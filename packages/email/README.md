@@ -12,6 +12,10 @@ pithy add email
 
 _Everything else is on the site. `pithy.sh/docs` is canonical — new prose goes there, not here._
 
+## A person's data
+
+**Retained.** When an account is purged, email erases nothing: *Kept so your unsubscribe holds: the address stays on the list of addresses not to mail, with the record of what was sent to it.* The purge records the step as retained with that basis, and an export hands back the address's suppression and its mail log — never a message's variables or a tracked link. See [`@pithy-sh/auth`'s account lifecycle](../auth/docs/account-lifecycle.md#what-each-capability-does-with-a-persons-rows).
+
 ## License
 
 MIT — adopter-side app value. The root `LICENSE` covers it.

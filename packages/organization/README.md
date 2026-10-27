@@ -274,6 +274,10 @@ Because tenancy is not identity, a role is decoded rather than asserted, and a 4
 
 The plugin stays supported. Deprecating it is a separate issue, and composing both in one Worker is refused at boot — two membership models is two answers to "may this person act".
 
+## A person's data
+
+**Erased.** When an account is purged, organization deletes the person's memberships, the organization each of their sessions acted for, every ownership offer made to or by them, and every invitation addressed to them, and an export hands them back first — never an invitation's token digest. An invitation they sent and an organization's lifecycle history keep their id. An organization they were the last owner of is left without one, and an operator gives it an owner again. See [`@pithy-sh/auth`'s account lifecycle](../auth/docs/account-lifecycle.md#what-each-capability-does-with-a-persons-rows).
+
 ## License
 
 MIT — adopter-side app value. The root `LICENSE` covers it.

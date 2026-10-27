@@ -9,6 +9,7 @@ import { MultiplayerConfig, type MultiplayerConfigInput, validateGames } from ".
 import { multiplayerTables } from "./data/tables";
 import { registerMultiplayerRoutes } from "./http/routes";
 import { multiplayer_0001_results } from "./migrations/0001_results";
+import { multiplayerUserPurge } from "./purge/contribution";
 import { multiplayerExampleSeed } from "./seeds/example";
 import { multiplayerSocketChannel } from "./session/channel";
 import { composeMultiplayerPeers } from "./session/peers";
@@ -104,6 +105,9 @@ export function multiplayer(options: MultiplayerOptions = { games: [] }): Multip
     // this Worker cannot reach. See `session/peers.ts`.
     compose: ({ capabilities }) => composeMultiplayerPeers(capabilities, games),
     seeds: [multiplayerExampleSeed],
+    // A person's session results: exported on an access request and anonymized by their purge, so the other
+    // players' results stay (#814).
+    purge: [multiplayerUserPurge()],
   });
 
   return Object.assign(capability, { multiplayerConfig: resolved });

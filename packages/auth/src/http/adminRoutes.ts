@@ -36,6 +36,7 @@ import {
   type DeleteTransition,
   deleteUser,
   type LifecycleActor,
+  purgeAddress,
   reinstateUser,
   requirePresent,
   restoreUser,
@@ -830,10 +831,13 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
           c.var.emit,
           { action: AuthAuditActions.adminUserExported, ...call.audit },
           async () => {
-            await requirePresent(db(c, wiring), userId);
+            const database = db(c, wiring);
+            await requirePresent(database, userId);
             return purgeExports(wiring.purgeSteps ?? [], {
               subject: { type: "user", id: userId },
               env: c.env as Record<string, unknown>,
+              // A capability holding rows by address — a suppression, a tester's membership — reads it here (#814).
+              address: () => purgeAddress(database, userId),
             });
           },
           () => false,
