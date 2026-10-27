@@ -3,9 +3,10 @@
 
 import { env } from "cloudflare:test";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
-import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import type { Capability, PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { ControlPlaneConfig } from "@pithy-sh/core/src/controlPlane/config/config";
 import type { ControlPlaneConnection } from "@pithy-sh/core/src/controlPlane/data/connection";
+import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import { type ControlPlaneVerifier, createControlPlaneVerifier } from "@pithy-sh/core/src/controlPlane/http/guard";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "@pithy-sh/core/src/controlPlane/token/mint";
@@ -15,14 +16,16 @@ import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { Hono } from "hono";
 import type { Kysely } from "kysely";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { AuditConfig } from "../capability";
+import { AuditConfig, audit } from "../capability";
 import { type AuditDatabase, auditDatabase } from "../data/tables";
 import { audit_0001_init } from "../migrations/0001_init";
 import { audit_0002_actor_kind } from "../migrations/0002_actor_kind";
+import { audit_0003_call_index } from "../migrations/0003_call_index";
+import { audit_0004_request_index } from "../migrations/0004_request_index";
 import { queryAuditEvents } from "../query";
 import { recordAuditEvent } from "../recorder";
-import { AUDIT_EVENT_DETAIL_READ_SCOPE, AUDIT_TRAIL_READ_SCOPE } from "./guards";
-import { AccessHistoryResponse, AuditEventResponse, AuditEventsResponse } from "./responses";
+import { AUDIT_EVENT_DETAIL_READ_SCOPE, AUDIT_TRAIL_READ_SCOPE, auditAdminRoutes } from "./guards";
+import { AccessHistoryResponse, AuditEventResponse, AuditEventsResponse, ControlPlaneReachResponse } from "./responses";
 import { registerAuditRoutes } from "./routes";
 
 /**
@@ -104,7 +107,7 @@ function verifier(scopes: readonly ControlPlaneScope[]): ControlPlaneVerifier {
  * the rows the read itself appends. That the seam reaches D1 at all is proven in
  * `capability.workers.test.ts`, through the real composition.
  */
-function makeApp(scopes: readonly ControlPlaneScope[], basePath = BASE) {
+function harness(scopes: readonly ControlPlaneScope[]) {
   const app = new Hono<PithyHonoEnv>();
   app.onError(pithyErrorHandler);
   const cpVerifier = verifier(scopes);
@@ -114,9 +117,24 @@ function makeApp(scopes: readonly ControlPlaneScope[], basePath = BASE) {
     c.set("controlPlaneVerifier", cpVerifier);
     c.set("emit", async (event: AuditEventInput) => void emitted.push(event));
     c.set("log", noopLogger);
+    c.set("db", { app: auditDatabase(env.DB) } as never);
     await next();
   });
-  registerAuditRoutes({ basePath, database: () => auditDatabase(env.DB) })(app);
+  return app;
+}
+
+/** The admin routes a reach read groups by, beyond audit's own: one capability's user routes. */
+const USER_ROUTES: AdminRoute[] = [
+  { method: "GET", path: "/admin/users/:userId", scope: "auth:users:read", summary: "Read one user." },
+];
+
+function makeApp(scopes: readonly ControlPlaneScope[], basePath = BASE) {
+  const app = harness(scopes);
+  registerAuditRoutes({
+    basePath,
+    database: () => auditDatabase(env.DB),
+    adminRoutes: () => [...auditAdminRoutes(basePath), ...USER_ROUTES],
+  })(app);
   return app;
 }
 
@@ -163,6 +181,8 @@ beforeEach(async () => {
   await env.DB.prepare("drop table if exists pithy_audit_events").run();
   await audit_0001_init.up(auditDatabase(env.DB) as unknown as Kysely<unknown>);
   await audit_0002_actor_kind.up(auditDatabase(env.DB) as unknown as Kysely<unknown>);
+  await audit_0003_call_index.up(auditDatabase(env.DB) as unknown as Kysely<unknown>);
+  await audit_0004_request_index.up(auditDatabase(env.DB) as unknown as Kysely<unknown>);
   emitted = [];
 });
 
@@ -450,6 +470,207 @@ describe("GET /audit/events/:eventId", () => {
   });
 });
 
+describe("GET /audit/control-plane/reach", () => {
+  const REACH = `${BASE}/control-plane/reach?connectionId=${CONNECTION_ID}&since=1970-01-01T00:00:00.000Z`;
+
+  /** An admitted call to a user route, as the gate records it, and the event its handler recorded beside it. */
+  async function userRead(userId: string, tenant: string, at: number, keyId = CONTROL_PLANE_KEY_ID): Promise<void> {
+    const requestId = `ray-${userId}-${at}`;
+    await seed(
+      {
+        action: "controlplane/call_allowed",
+        outcome: "success",
+        actorType: "control-plane",
+        actorId: "operator-1",
+        resourceType: "controlplane_connection",
+        resourceId: CONNECTION_ID,
+        requestId,
+        ip: "203.0.113.9",
+        userAgent: "Dashboard/1.0",
+        metadata: {
+          connectionId: CONNECTION_ID,
+          connectionEnvironment: ENVIRONMENT,
+          scope: "auth:users:read",
+          keyId,
+          method: "GET",
+          path: `/admin/users/${userId}`,
+        },
+      },
+      new Date(at),
+    );
+    await seed(
+      {
+        action: "auth/user_read",
+        outcome: "success",
+        actorType: "control-plane",
+        actorId: "operator-1",
+        resourceType: "user",
+        resourceId: userId,
+        requestId,
+        tenant,
+        ip: "203.0.113.9",
+        userAgent: "Dashboard/1.0",
+        metadata: { email: "ada@example.test" },
+      },
+      new Date(at),
+    );
+  }
+
+  test("answers what the credential reached, by tenant and declared route", async () => {
+    await userRead("u_1", "acme", 1_000);
+    await userRead("u_2", "acme", 2_000);
+    await userRead("u_9", "globex", 3_000);
+
+    const response = await call(makeApp([AUDIT_TRAIL_READ_SCOPE]), REACH, AUDIT_TRAIL_READ_SCOPE);
+
+    expect(response.status).toBe(200);
+    const body = await response.json<ControlPlaneReachResponse>();
+    expect(body.connectionId).toBe(CONNECTION_ID);
+    expect(body.keyId).toBeNull();
+    // `until` defaults to the wall clock at the read, not to any fixture's instant.
+    expect(Math.abs(Date.parse(body.until) - Date.now())).toBeLessThan(60_000);
+    expect(body.subjects).toBeUndefined();
+    expect(body.reach.map((row) => [row.tenant, row.route, row.matched, row.count, row.subjects])).toEqual([
+      ["acme", "/admin/users/:userId", true, 2, 2],
+      ["globex", "/admin/users/:userId", true, 1, 1],
+    ]);
+  });
+
+  test("subjects=true expands a route into the subject ids its called paths name", async () => {
+    await userRead("u_1", "acme", 1_000);
+    await userRead("u_2", "acme", 2_000);
+
+    const response = await call(
+      makeApp([AUDIT_TRAIL_READ_SCOPE]),
+      `${REACH}&route=${encodeURIComponent("/admin/users/:userId")}&subjects=true`,
+      AUDIT_TRAIL_READ_SCOPE,
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json<ControlPlaneReachResponse>();
+    expect(body.subjects?.map((row) => [row.tenant, row.subjectId, row.params, row.count])).toEqual([
+      ["acme", "u_1", { userId: "u_1" }, 1],
+      ["acme", "u_2", { userId: "u_2" }, 1],
+    ]);
+    expect(body.reach.map((row) => [row.route, row.subjects])).toEqual([["/admin/users/:userId", 2]]);
+  });
+
+  test("keyId and until narrow the read", async () => {
+    await userRead("u_1", "acme", 1_000);
+    await userRead("u_2", "acme", 2_000, "key-2");
+    await userRead("u_3", "acme", 5_000);
+
+    const app = makeApp([AUDIT_TRAIL_READ_SCOPE]);
+    const byKey = await (
+      await call(app, `${REACH}&keyId=key-2`, AUDIT_TRAIL_READ_SCOPE)
+    ).json<ControlPlaneReachResponse>();
+    const byTime = await (
+      await call(app, `${REACH}&until=1970-01-01T00:00:03.000Z`, AUDIT_TRAIL_READ_SCOPE)
+    ).json<ControlPlaneReachResponse>();
+
+    expect(byKey.keyId).toBe("key-2");
+    expect(byKey.reach.map((row) => row.count)).toEqual([1]);
+    expect(byTime.reach.map((row) => row.count)).toEqual([2]);
+  });
+
+  test("connectionId and since are required, a window cannot end before it starts, and subjects needs a route", async () => {
+    const app = makeApp([AUDIT_TRAIL_READ_SCOPE]);
+    const bad = [
+      `${BASE}/control-plane/reach?since=1970-01-01T00:00:00.000Z`,
+      `${BASE}/control-plane/reach?connectionId=${CONNECTION_ID}`,
+      `${REACH}&until=1969-12-31T00:00:00.000Z`,
+      `${REACH}&subjects=true`,
+      `${REACH}&route=admin/users`,
+    ];
+    for (const path of bad) {
+      const response = await call(app, path, AUDIT_TRAIL_READ_SCOPE);
+      expect(response.status, path).toBe(400);
+      expect(await errorCode(response), path).toBe("validation/invalid_input");
+    }
+  });
+
+  test("refuses a connection without the listing scope, the detail scope included", async () => {
+    for (const scopes of [[], [AUDIT_EVENT_DETAIL_READ_SCOPE]]) {
+      const response = await call(makeApp(scopes), REACH, AUDIT_TRAIL_READ_SCOPE);
+      expect(response.status).toBe(403);
+    }
+    const detail = await call(makeApp([AUDIT_EVENT_DETAIL_READ_SCOPE]), REACH, AUDIT_EVENT_DETAIL_READ_SCOPE);
+    expect(detail.status).toBe(403);
+  });
+
+  test("never discloses the IP, the user-agent, or any metadata key beyond the route and scope", async () => {
+    await userRead("u_1", "acme", 1_000);
+    const app = makeApp([AUDIT_TRAIL_READ_SCOPE]);
+    const bodies = [
+      await (await call(app, REACH, AUDIT_TRAIL_READ_SCOPE)).text(),
+      await (
+        await call(
+          app,
+          `${REACH}&route=${encodeURIComponent("/admin/users/:userId")}&subjects=true`,
+          AUDIT_TRAIL_READ_SCOPE,
+        )
+      ).text(),
+    ];
+    for (const body of bodies) {
+      for (const leaked of ["203.0.113.9", "Dashboard/1.0", "ada@example.test", ENVIRONMENT, "operator-1"]) {
+        expect(body, leaked).not.toContain(leaked);
+      }
+    }
+  });
+
+  test("audits the read against the connection whose reach was read", async () => {
+    await userRead("u_1", "acme", 1_000);
+    await call(
+      makeApp([AUDIT_TRAIL_READ_SCOPE]),
+      `${REACH}&route=${encodeURIComponent("/admin/users/:userId")}&subjects=true`,
+      AUDIT_TRAIL_READ_SCOPE,
+    );
+
+    const read = emitted.find((event) => event.action === "audit/reach_read");
+    expect(read).toMatchObject({
+      outcome: "success",
+      actorType: "control-plane",
+      actorId: "operator-1",
+      actorKind: "agent",
+      resourceType: "controlplane_connection",
+      resourceId: CONNECTION_ID,
+    });
+    expect(read?.metadata).toEqual({
+      connectionId: CONNECTION_ID,
+      query: {
+        connectionId: CONNECTION_ID,
+        keyId: null,
+        since: "1970-01-01T00:00:00.000Z",
+        until: expect.any(String),
+        route: "/admin/users/:userId",
+        subjects: true,
+      },
+      returned: 1,
+      subjects: 1,
+    });
+  });
+
+  test("groups by every composed capability's routes, which the capability gathers at compose", async () => {
+    // Through the capability itself rather than `registerAuditRoutes`: the routes it groups by are the ones
+    // `compose` handed it, so a capability declaring a route audit has never heard of still gets its paths matched.
+    await userRead("u_1", "acme", 1_000);
+    const reachOf = async (capability: ReturnType<typeof audit>) => {
+      const app = harness([AUDIT_TRAIL_READ_SCOPE]);
+      capability.routes?.(app);
+      const body = await (await call(app, REACH, AUDIT_TRAIL_READ_SCOPE)).json<ControlPlaneReachResponse>();
+      return body.reach.map((row) => [row.route, row.matched]);
+    };
+
+    const alone = audit();
+    expect(await reachOf(alone)).toEqual([["/admin/users/u_1", false]]);
+
+    const composed = audit();
+    const users = { name: "auth", requiredBindings: [], adminRoutes: USER_ROUTES } as unknown as Capability;
+    composed.compose?.({ capabilities: [composed, users] });
+    expect(await reachOf(composed)).toEqual([["/admin/users/:userId", true]]);
+  });
+});
+
 describe("the two read scopes are not interchangeable", () => {
   test("a listing credential cannot read one event in full", async () => {
     // The split is the whole control: a credential issued to render a recent-activity pane must not
@@ -540,6 +761,28 @@ describe("the exported response schemas against the live routes", () => {
       )
     ).json();
     expect(AuditEventResponse.parse(body)).toEqual(body);
+  });
+
+  test("GET /control-plane/reach returns exactly ControlPlaneReachResponse, with and without subjects", async () => {
+    await seed(
+      {
+        action: "controlplane/call_allowed",
+        outcome: "success",
+        actorType: "control-plane",
+        actorId: "operator-1",
+        resourceType: "controlplane_connection",
+        resourceId: CONNECTION_ID,
+        requestId: "ray-1",
+        metadata: { scope: "auth:users:read", keyId: CONTROL_PLANE_KEY_ID, method: "GET", path: "/admin/users/u_1" },
+      },
+      new Date(1_000),
+    );
+    const base = `${BASE}/control-plane/reach?connectionId=${CONNECTION_ID}&since=1970-01-01T00:00:00.000Z`;
+    for (const path of [base, `${base}&route=${encodeURIComponent("/admin/users/:userId")}&subjects=true`]) {
+      const body = await (await call(makeApp([AUDIT_TRAIL_READ_SCOPE]), path, AUDIT_TRAIL_READ_SCOPE)).json();
+      expect(ControlPlaneReachResponse.parse(body), path).toEqual(body);
+      expect((body as ControlPlaneReachResponse).reach, path).toHaveLength(1);
+    }
   });
 });
 

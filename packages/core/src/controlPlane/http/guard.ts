@@ -267,6 +267,8 @@ async function auditDenial(
  * {@link auditDenial}, with two differences that follow from the call having been verified: the actor is
  * the proven subject and its connection, and `refusedBy` says the gate passed it — `required` is the
  * gate's requirement, which this call met; what it lacked is in the log, with the rest of `detail`.
+ * `scope` and `keyId` name the refused credential exactly as the gate's `call_allowed` row does, so a
+ * read of one key's reach (#828) finds its refusals too, even on a request with no `cf-ray` to join by.
  */
 async function auditHandlerDenial(
   c: Parameters<MiddlewareHandler<PithyHonoEnv>>[0],
@@ -296,6 +298,8 @@ async function auditHandlerDenial(
         required: String(requirement),
         refusedBy: "handler",
         connectionId: context.connectionId,
+        scope: context.scope,
+        keyId: context.keyId,
         method: c.req.method,
         path: c.req.path,
       },

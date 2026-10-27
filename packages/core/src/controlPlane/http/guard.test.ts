@@ -356,6 +356,9 @@ describe("requireControlPlane", () => {
           reason: "controlplane/insufficient_scope",
           required: MANIFEST_READ_SCOPE,
           refusedBy: "handler",
+          // The credential that was refused, as the gate's own row names it, so a read by key finds the refusal.
+          scope: MANIFEST_READ_SCOPE,
+          keyId: KEY_ID,
           method: "GET",
           path: "/control-plane/act",
         },
