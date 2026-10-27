@@ -32,10 +32,15 @@ async function helperScript(): Promise<string> {
 
 /** What the stand-in mint route answers next, and what it was asked. */
 let answer: { status: number; body: unknown } = { status: 200, body: {} };
-const asked: { path: string; authorization: string | undefined }[] = [];
+const asked: { path: string; authorization: string | undefined; apiKey?: string }[] = [];
 
 function mint(req: IncomingMessage, res: ServerResponse): void {
-  asked.push({ path: req.url ?? "", authorization: req.headers.authorization });
+  const apiKey = req.headers["x-api-key"];
+  asked.push({
+    path: req.url ?? "",
+    authorization: req.headers.authorization,
+    ...(typeof apiKey === "string" ? { apiKey } : {}),
+  });
   res.writeHead(answer.status, { "content-type": "application/json" });
   res.end(JSON.stringify(answer.body));
 }
@@ -73,7 +78,11 @@ afterAll(async () => {
  * `git credential fill` for one Artifacts remote, with only this helper configured: no system or global config, no
  * terminal prompt and no askpass, so a git that would have asked for a username fails saying so instead of hanging.
  */
-function fill(appUrl: string, useHttpPath = true): Promise<{ code: number | null; stdout: string; stderr: string }> {
+function fill(
+  appUrl: string,
+  useHttpPath = true,
+  credential: Record<string, string> = { PITHY_APP_TOKEN: "app-credential" },
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(
       "git",
@@ -88,7 +97,7 @@ function fill(appUrl: string, useHttpPath = true): Promise<{ code: number | null
           GIT_ASKPASS: "",
           SSH_ASKPASS: "",
           PITHY_APP_URL: appUrl,
-          PITHY_APP_TOKEN: "app-credential",
+          ...credential,
         },
       },
     );
@@ -136,9 +145,37 @@ describe("the credential helper in docs/credential-helper.md", () => {
     expect(argv).not.toContain("app-credential");
   });
 
+  test("sends an API key as x-api-key, where Better Auth's apiKey() plugin reads it, and never in curl's argv", async () => {
+    answer = {
+      status: 200,
+      body: { token: TOKEN, scope: "write", expiresAt: "2027-01-15T08:00:00.000Z", remote: "x" },
+    };
+    asked.length = 0;
+    await writeFile(argvLog, "");
+    const run = await fill(origin, true, { PITHY_APP_KEY: "app-api-key" });
+    expect(run.code, run.stderr).toBe(0);
+    expect(asked).toEqual([
+      { path: "/artifacts/repos/docs-1/credentials", authorization: undefined, apiKey: "app-api-key" },
+    ]);
+    expect(run.stdout).toContain(`password=${TOKEN}\n`);
+    expect(await readFile(argvLog, "utf8")).not.toContain("app-api-key");
+  });
+
+  test("refuses both a token and a key, or neither, and mints nothing", async () => {
+    asked.length = 0;
+    for (const credential of [{ PITHY_APP_TOKEN: "t", PITHY_APP_KEY: "k" }, {}]) {
+      const run = await fill(origin, true, credential);
+      expect(run.code).not.toBe(0);
+      expect(run.stderr).toContain("PITHY_APP_TOKEN or PITHY_APP_KEY");
+      expect(run.stderr).not.toMatch(/username/i);
+    }
+    expect(asked).toEqual([]);
+  });
+
   test("no snippet on the page passes PITHY_APP_TOKEN as a command-line argument", async () => {
     const page = await readFile(PAGE, "utf8");
     expect(page).not.toMatch(/-H\s+"Authorization: Bearer \$\{?PITHY_APP_TOKEN/);
+    expect(page).not.toMatch(/-H\s+"x-api-key: \$\{?PITHY_APP_KEY/i);
   });
 
   test("a refused mint shows the code and message from its error body, and git asks nobody for a username", async () => {

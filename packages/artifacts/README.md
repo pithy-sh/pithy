@@ -10,7 +10,7 @@ pithy add artifacts
 
 **Documentation: [pithy.sh/docs/capabilities/artifacts](https://pithy.sh/docs/capabilities/artifacts).** Overview, adding it, using it, and the reference. The git side is [`docs/credential-helper.md`](docs/credential-helper.md).
 
-**A management client** reads every repository, its grants, history and tokens behind `artifacts:repos:read`, and revokes one token or every live one behind `artifacts:tokens:revoke`, with an idempotency key, a required reason and an audit event. The routes sit under `/artifacts/admin/`. Cloudflare names no token's holder, so the kit records every token it mints in `pithy_artifacts_tokens` — its id, repository, user, scope and expiry, never its value — and a listed token it did not mint is reported as minted outside Pithy. [`docs/CONTROL-PLANE.md`](../../docs/CONTROL-PLANE.md) §13 has the rest.
+**A management client** reads every repository, its grants, history and tokens behind `artifacts:repos:read`, and revokes one token or every live one behind `artifacts:tokens:revoke`, with an idempotency key, a required reason and an audit event. The routes sit under `/artifacts/admin/`. Cloudflare names no token's holder, so the kit records every token it mints in `pithy_artifacts_tokens` — its id, repository, user, scope and expiry, never its value — and a listed token it did not mint is reported as minted outside Pithy. Revoking every token revokes each recorded one by its id, so it never depends on what Cloudflare's one-page listing shows. [`docs/CONTROL-PLANE.md`](../../docs/CONTROL-PLANE.md) §13 has the rest.
 
 _Everything else is on the site. `pithy.sh/docs` is canonical — new prose goes there, not here._
 
