@@ -49,6 +49,7 @@ export function defineAuditActions<const T extends Record<string, string>>(actio
  * `audit/access_history_read` is the access changes in a window: who held what, and when it changed.
  * `audit/reach_read` is one credential's reach: counts by tenant and route, and on request one route's subjects.
  * `audit/usage_read` is counts: which scopes one connection exercised and was refused, by key, over a window.
+ * `audit/chain_verified` is a walk of one tenant's chain, and `audit/chain_exported` a page of it in canonical form (#822).
  *
  * Yes, this appends to the table it just read. That is a loop by design, not by accident: the row it
  * writes is one row, it is the only durable evidence the read happened, and the alternative is a
@@ -65,4 +66,8 @@ export const AuditTrailActions = defineAuditActions({
   reachRead: "audit/reach_read",
   /** One control-plane connection's usage was counted — scopes and keys, never an event in full (#812). */
   usageRead: "audit/usage_read",
+  /** One tenant's chain was walked and checked against its checkpoints (#822). */
+  chainVerified: "audit/chain_verified",
+  /** A page of one tenant's chain was exported in canonical form, its personal values only with the detail scope (#822). */
+  chainExported: "audit/chain_exported",
 });

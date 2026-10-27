@@ -55,6 +55,12 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
  * already names in `resourceId`, and the tenant is what it shows as `tenant`; the answer never carries an IP, a user-agent, or a metadata key beyond the key id, scope, method and
  * path. So a breach review does not need the detail scope to draw a breach scope.
  *
+ * **The chain has a scope of its own (#822).** `GET {base}/control-plane/verify` walks one tenant's chain, and
+ * `GET {base}/control-plane/export` takes it out in canonical form with its checkpoints. An export is the trail in
+ * bulk, meant to leave the building, so neither read rides the listing scope: both need `audit:events:export`. The
+ * export carries IP, user-agent and metadata values only when the connection also holds the detail scope, and their
+ * salted hashes otherwise, which verify and disclose nothing.
+ *
  * The names are constants rather than config: a configurable scope name is a way to misconfigure a
  * default-denied gate into a differently-named one, and they are the join key with what
  * `pithy dashboard connect` offers an adopter to grant.
@@ -73,12 +79,24 @@ export const AUDIT_TRAIL_READ_SCOPE: ControlPlaneScope = "audit:events:read";
 export const AUDIT_EVENT_DETAIL_READ_SCOPE: ControlPlaneScope = "audit:events:read_detail";
 
 /**
+ * Verify and export the hash chain (#822): walk one tenant's chain against its checkpoints, and take it out in
+ * canonical form for an auditor to check offline. Kind `reads` under #725's table, declared in code once that lands.
+ *
+ * Its own scope, because an export is the trail in bulk — every event of a tenant, in a form meant to leave the
+ * building. The IP, user-agent and metadata ride along only when the connection also holds
+ * {@link AUDIT_EVENT_DETAIL_READ_SCOPE}; without it the export carries their salted hashes, which verify and
+ * disclose nothing.
+ */
+export const AUDIT_CHAIN_EXPORT_SCOPE: ControlPlaneScope = "audit:events:export";
+
+/**
  * Every control-plane scope audit defines — what `pithy dashboard connect` offers for this capability,
  * and the list a manifest or a doc quotes rather than re-typing.
  */
 export const AUDIT_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
   AUDIT_TRAIL_READ_SCOPE,
   AUDIT_EVENT_DETAIL_READ_SCOPE,
+  AUDIT_CHAIN_EXPORT_SCOPE,
 ];
 
 /**
@@ -123,6 +141,22 @@ export function auditAdminRoutes(basePath: string): AdminRoute[] {
       // Kind `reads` under #725's table, declared in code once that lands.
       summary:
         "Count which scopes one control-plane connection exercised and was refused, by key, over a window. Counts only — no event is read in full.",
+    },
+    {
+      method: "GET",
+      path: `${basePath}/control-plane/verify`,
+      scope: AUDIT_CHAIN_EXPORT_SCOPE,
+      // Kind `reads` under #725's table, declared in code once that lands.
+      summary:
+        "Walk one tenant's hash chain against its checkpoints, and say whether it is whole or where it first breaks.",
+    },
+    {
+      method: "GET",
+      path: `${basePath}/control-plane/export`,
+      scope: AUDIT_CHAIN_EXPORT_SCOPE,
+      // Kind `reads` under #725's table, declared in code once that lands.
+      summary:
+        "Export one tenant's hash chain in canonical form with its checkpoints, to verify offline. Personal values only with the detail scope.",
     },
     {
       method: "GET",

@@ -3,7 +3,13 @@
 
 import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { describe, expect, test } from "vitest";
-import { AccessHistoryQuery, ControlPlaneReachQuery } from "./schemas";
+import {
+  AccessHistoryQuery,
+  ChainExportQuery,
+  ChainVerifyQuery,
+  ControlPlaneReachQuery,
+  MAX_EXPORT_PAGE,
+} from "./schemas";
 
 const SINCE = "2026-06-10T12:00:00.000Z";
 
@@ -89,5 +95,46 @@ describe("ControlPlaneReachQuery", () => {
     expect(accepts({ ...BASE, route: "" })).toBe(false);
     expect(accepts({ ...BASE, route: `/${"a".repeat(511)}` })).toBe(true);
     expect(accepts({ ...BASE, route: `/${"a".repeat(512)}` })).toBe(false);
+  });
+});
+
+/**
+ * The chain queries' own rules (#822). A reversed window reaching the walk would resolve to no positions and answer
+ * an empty "intact", so the refusal is the schema's, and is held here for both reads.
+ */
+describe.each([
+  ["ChainVerifyQuery", ChainVerifyQuery],
+  ["ChainExportQuery", ChainExportQuery],
+] as const)("%s (#822)", (_name, schema) => {
+  function chainRefusedAt(query: Record<string, string>): (string | number)[][] {
+    const parsed = schema.safeParse(query);
+    expect(parsed.success).toBe(false);
+    return parsed.success ? [] : parsed.error.issues.map((issue) => issue.path.map((key) => key as string | number));
+  }
+
+  test("a window that ends before it starts is refused, on `until`", () => {
+    expect(chainRefusedAt({ tenant: "acme", since: SINCE, until: "2026-06-10T11:59:59.999Z" })).toEqual([["until"]]);
+  });
+
+  test("a window of one instant is a window", () => {
+    const parsed = schema.parse({ tenant: "acme", since: SINCE, until: SINCE });
+    expect(parsed.until?.getTime()).toBe(parsed.since?.getTime());
+  });
+
+  test("the tenant is required, and empty names the untenanted chain", () => {
+    expect(chainRefusedAt({ since: SINCE })).toEqual([["tenant"]]);
+    expect(schema.parse({ tenant: "" }).tenant).toBeNull();
+    expect(schema.parse({ tenant: "acme" }).tenant).toBe("acme");
+  });
+});
+
+describe("ChainExportQuery's page size (#822)", () => {
+  test("is bounded at both ends, and a query string's number is read as one", () => {
+    for (const limit of ["0", String(MAX_EXPORT_PAGE + 1)]) {
+      const parsed = ChainExportQuery.safeParse({ tenant: "acme", limit });
+      expect(parsed.success ? [] : parsed.error.issues.map((issue) => issue.path)).toEqual([["limit"]]);
+    }
+    expect(ChainExportQuery.parse({ tenant: "acme", limit: "1" }).limit).toBe(1);
+    expect(ChainExportQuery.parse({ tenant: "acme", limit: String(MAX_EXPORT_PAGE) }).limit).toBe(MAX_EXPORT_PAGE);
   });
 });

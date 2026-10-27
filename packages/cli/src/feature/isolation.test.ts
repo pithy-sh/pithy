@@ -3,6 +3,7 @@
 
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { audit } from "@pithy-sh/audit/src/capability";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { type FeatureIdentity, featureWorkerName } from "@pithy-sh/core/src/naming/feature";
@@ -76,6 +77,7 @@ const FEATURE_LIMITERS: ReadonlyMap<string, string> = new Map([
 
 /** Every host-owning capability the registry knows, configured. The gate below checks this covers the registry. */
 const COMPOSED: Record<string, Capability> = {
+  audit: audit({}),
   email: email({ fromAddress: "hello@replay.example", fromName: "Replay", baseUrl: "https://replay.example" }),
   media: media({}),
   storage: storage({}),

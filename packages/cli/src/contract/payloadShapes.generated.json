@@ -137,6 +137,34 @@
         "$<manual=true>.alias": "string"
       }
     },
+    "audit lock": {
+      "schemaVersion": 1,
+      "payload": {
+        "$": "object",
+        "$.command": "\"audit lock\"",
+        "$.env": "string",
+        "$.bucketName": "string",
+        "$.lock": "\"added\" | \"already\""
+      }
+    },
+    "audit verify": {
+      "schemaVersion": 1,
+      "payload": {
+        "$": "object",
+        "$.command": "\"audit verify\"",
+        "$.file": "string",
+        "$.tenant": "null | string",
+        "$.intact": "boolean",
+        "$.checked": "integer",
+        "$.checkpoints": "integer",
+        "$.values": "boolean",
+        "$.break": "null | object",
+        "$.break.eventId": "null | string",
+        "$.break.position": "integer",
+        "$.break.reason": "\"checkpoint\" | \"commitment\" | \"edited\" | \"inserted\" | \"missing\" | \"truncated\" | \"unlinked\"",
+        "$.break.detail": "string"
+      }
+    },
     "backup": {
       "schemaVersion": 1,
       "payload": {

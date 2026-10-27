@@ -89,6 +89,8 @@ export function auditEventView(row: AuditEventRow): AuditEventView {
     // not personal data — and a client that can filter by tenant but cannot see which tenant a row
     // carries has to take the filter on trust, which is how a row ends up drawn under the wrong heading.
     tenant: row.tenant,
+    // Its position in its tenant's chain, or null: written before the chain began (#822). The mark, on the listing.
+    chainSeq: row.chainSeq,
   };
 }
 

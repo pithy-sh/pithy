@@ -116,6 +116,25 @@
       ]
     },
     {
+      "path": "audit",
+      "flags": []
+    },
+    {
+      "path": "audit lock",
+      "flags": [
+        "--env",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
+      "path": "audit verify",
+      "flags": [
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
       "path": "backup",
       "flags": [
         "--env",

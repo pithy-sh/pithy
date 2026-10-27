@@ -13,6 +13,36 @@ export const R2BucketInfo = z
   .describe("A Cloudflare R2 bucket's identity, as returned by the create/list endpoints.");
 export type R2BucketInfo = z.output<typeof R2BucketInfo>;
 
+/** One R2 bucket lock rule: objects under `prefix` cannot be overwritten or deleted while its condition holds. */
+export const R2LockRule = z
+  .object({
+    id: z.string().describe("The rule's id, unique within the bucket."),
+    enabled: z.boolean().describe("Whether the rule is in force."),
+    prefix: z.string().optional().describe("The key prefix it covers. Absent or empty covers every object."),
+    condition: z
+      .discriminatedUnion("type", [
+        z
+          .object({
+            type: z.literal("Age").describe("Locked for a time after each object is written."),
+            maxAgeSeconds: z.number().describe("How long, in seconds."),
+          })
+          .describe("Locked for an age."),
+        z
+          .object({
+            type: z.literal("Date").describe("Locked until a date."),
+            date: z.string().describe("The date, ISO-8601."),
+          })
+          .describe("Locked until a date."),
+        z.object({ type: z.literal("Indefinite").describe("Locked for ever.") }).describe("Locked for ever."),
+      ])
+      .describe("How long the objects stay locked."),
+  })
+  .describe("An R2 bucket lock rule.");
+export type R2LockRule = z.output<typeof R2LockRule>;
+
+/** What asking for an indefinite lock did. */
+export type R2LockOutcome = "locked" | "already";
+
 /**
  * Account-level R2 control plane: **create and delete buckets**. Customers use this to stand up and
  * tear down per-environment buckets (e.g. ephemeral staging), and worktree teardown uses it to
@@ -77,6 +107,50 @@ export class CloudflareR2Provisioner extends CloudflareManager {
       this.getClient().r2.buckets.create({ account_id: this.accountId, name }),
     );
     return decodeResponse(R2BucketInfo, response, "R2 bucket create");
+  }
+
+  /** The bucket's lock rules. A bucket with none answers an empty list. */
+  async bucketLockRules(name: string): Promise<R2LockRule[]> {
+    const response = await cloudflareRequest(`read lock rules of R2 bucket ${name}`, () =>
+      this.getClient().r2.buckets.locks.get(name, { account_id: this.accountId }),
+    );
+    return (
+      decodeResponse(
+        z.object({ rules: z.array(R2LockRule).optional() }).describe("A bucket's lock rules."),
+        response,
+        "R2 bucket lock rules",
+      ).rules ?? []
+    );
+  }
+
+  /** Whether some enabled rule locks every object under `prefix` indefinitely. */
+  static locksPrefixIndefinitely(rules: readonly R2LockRule[], prefix: string): boolean {
+    return rules.some(
+      (rule) => rule.enabled && rule.condition.type === "Indefinite" && prefix.startsWith(rule.prefix ?? ""),
+    );
+  }
+
+  /** Whether the bucket's rules lock every object under `prefix` indefinitely, read from the account. */
+  async prefixLockedIndefinitely(name: string, prefix: string): Promise<boolean> {
+    return CloudflareR2Provisioner.locksPrefixIndefinitely(await this.bucketLockRules(name), prefix);
+  }
+
+  /**
+   * Lock every object under `prefix` indefinitely, beside whatever rules the bucket already has. Idempotent: a
+   * rule already in force is left alone and answered `already`. The update replaces the bucket's whole rule set,
+   * so the existing rules are read and written back with the new one — never dropped.
+   */
+  async lockPrefixIndefinitely(name: string, prefix: string, id: string): Promise<R2LockOutcome> {
+    const rules = await this.bucketLockRules(name);
+    if (CloudflareR2Provisioner.locksPrefixIndefinitely(rules, prefix)) return "already";
+    const next = [
+      ...rules.filter((rule) => rule.id !== id),
+      { id, enabled: true, prefix, condition: { type: "Indefinite" as const } },
+    ];
+    await cloudflareRequest(`lock R2 bucket ${name}`, () =>
+      this.getClient().r2.buckets.locks.update(name, { account_id: this.accountId, rules: next }),
+    );
+    return "locked";
   }
 
   /**

@@ -87,6 +87,39 @@ export const COMMANDS = {
       }
     ]
   },
+  "audit lock": {
+    "positionals": [],
+    "flags": {
+      "--env": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
+  "audit verify": {
+    "positionals": [
+      {
+        "name": "file",
+        "required": true,
+        "variadic": false
+      }
+    ],
+    "flags": {
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
   "backup": {
     "positionals": [],
     "flags": {
@@ -2931,6 +2964,7 @@ export const GLOBAL_FLAGS = [
 
 /** The groups, which only list their subcommands: a sentence may name one, and nobody runs one. */
 export const GROUPS = [
+  "audit",
   "cloudflare",
   "dashboard",
   "docs",

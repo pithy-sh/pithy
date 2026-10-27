@@ -3,6 +3,8 @@
 
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { audit } from "@pithy-sh/audit/src/capability";
+import { auditCheckpointBucketName, resolveAuditConfig } from "@pithy-sh/audit/src/provision/resolveAuditConfig";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { email } from "@pithy-sh/email/src/capability";
@@ -85,6 +87,7 @@ const DATABASE_IDS: Record<string, string> = {
   DB: "db-app-1",
   SECRETS: "db-secrets-1",
   EMAIL_SUPPRESSIONS: "db-suppression-1",
+  AUDIT_DB: "db-audit-1",
 };
 
 /**
@@ -95,6 +98,8 @@ const DATABASE_IDS: Record<string, string> = {
  * least one field the schema would not have chosen.
  */
 const COMPOSED = {
+  // The trail in a database of its own, so a host that read `DB` by assumption would bind the wrong one (#822).
+  audit: audit({ database: "AUDIT_DB" }),
   email: email({
     fromAddress: "hello@acme.example",
     fromName: "Acme Support",
@@ -180,6 +185,15 @@ const SECRET_HOST = {
  * composed config — each call mirroring its provisioner's `deployWorker` argument for argument.
  */
 const VIA_PROVISION: Record<keyof typeof COMPOSED, () => Promise<WorkflowHostTemplate>> = {
+  // No provision of its own: the checkpoint host is created by `pithy deploy`, so this is the resolver it must
+  // agree with, reading the adopter's `audit({ database })` and the bucket `pithy provision` creates (#822).
+  audit: async () =>
+    resolveAuditConfig(await template("@pithy-sh/audit/src/workflows/worker"), {
+      project: PROJECT,
+      env: ENV,
+      auditDatabaseId: DATABASE_IDS.AUDIT_DB as string,
+      bucketName: auditCheckpointBucketName(PROJECT, ENV),
+    }),
   // `emailProvisioner.ts:202`.
   email: async () =>
     resolveEmailConfig(await template<EmailWorkerWranglerTemplate>("@pithy-sh/email/src/workflows/worker"), {

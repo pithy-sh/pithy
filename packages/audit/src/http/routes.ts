@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: FSL-1.1-MIT
 
+import type { R2Bucket } from "@cloudflare/workers-types";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
 import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
@@ -13,22 +14,27 @@ import type { VerificationStrategy } from "@pithy-sh/core/src/http/verification"
 import type { Context, Hono } from "hono";
 import { accessHistory } from "../accessHistory";
 import { AuditTrailActions } from "../actions";
+import { exportChainRange, verifyChainRange } from "../chain/verify";
 import type { AuditDatabase } from "../data/tables";
 import { pageAuditEvents, readAuditEvent } from "../query";
 import { controlPlaneReach, controlPlaneReachSubjects } from "../reach";
 import { reachPatterns } from "../routePattern";
 import { controlPlaneUsage } from "../usage";
-import { AUDIT_EVENT_DETAIL_READ_SCOPE, AUDIT_TRAIL_READ_SCOPE } from "./guards";
+import { AUDIT_CHAIN_EXPORT_SCOPE, AUDIT_EVENT_DETAIL_READ_SCOPE, AUDIT_TRAIL_READ_SCOPE } from "./guards";
 import {
   AccessHistoryResponse,
   AuditEventResponse,
   AuditEventsResponse,
+  ChainExportResponse,
+  ChainVerifyResponse,
   ControlPlaneReachResponse,
   ControlPlaneUsageResponse,
 } from "./responses";
 import {
   AccessHistoryQuery,
   AuditEventIdParam,
+  ChainExportQuery,
+  ChainVerifyQuery,
   ControlPlaneReachQuery,
   ControlPlaneUsageQuery,
   ListAuditEventsQuery,
@@ -53,6 +59,10 @@ import {
  *                                                       (control-plane: audit:events:read)        query: ControlPlaneReachQuery
  *   GET /audit/control-plane/usage → one connection's calls, counted by scope and key
  *                                                       (control-plane: audit:events:read)        query: ControlPlaneUsageQuery
+ *   GET /audit/control-plane/verify → whether one tenant's hash chain is whole, or where it breaks
+ *                                                       (control-plane: audit:events:export)      query: ChainVerifyQuery
+ *   GET /audit/control-plane/export → one tenant's chain in canonical form, with its checkpoints
+ *                                                       (control-plane: audit:events:export)      query: ChainExportQuery
  *
  * **All are reads, and there is nothing else.** The trail is append-only: no route here deletes,
  * edits, or prunes, because a management credential that could erase an audit row could erase the
@@ -94,6 +104,8 @@ export const AUDIT_ROUTES: readonly AuditRouteDeclaration[] = [
   { method: "GET", path: "/control-plane/access-history", strategy: "control-plane", scope: AUDIT_TRAIL_READ_SCOPE },
   { method: "GET", path: "/control-plane/reach", strategy: "control-plane", scope: AUDIT_TRAIL_READ_SCOPE },
   { method: "GET", path: "/control-plane/usage", strategy: "control-plane", scope: AUDIT_TRAIL_READ_SCOPE },
+  { method: "GET", path: "/control-plane/verify", strategy: "control-plane", scope: AUDIT_CHAIN_EXPORT_SCOPE },
+  { method: "GET", path: "/control-plane/export", strategy: "control-plane", scope: AUDIT_CHAIN_EXPORT_SCOPE },
 ];
 
 /** How the audit sub-router is built. */
@@ -112,6 +124,11 @@ export interface AuditRoutesOptions {
    * its called paths by. A function, because the capability learns them at `compose`, after these routes are built.
    */
   adminRoutes: () => readonly AdminRoute[];
+  /**
+   * The checkpoint bucket for this request, or null when the Worker binds none (#822). Absent, verify checks links
+   * alone and says so, and an export carries no checkpoints.
+   */
+  checkpoints?: (c: Context<PithyHonoEnv>) => R2Bucket | null;
 }
 
 /**
@@ -160,6 +177,7 @@ export function registerAuditRoutes(options: AuditRoutesOptions): (app: Hono<Pit
   const base = options.basePath;
   const database = options.database;
   const adminRoutes = options.adminRoutes;
+  const checkpoints = options.checkpoints ?? (() => null);
 
   return (app) => {
     /**
@@ -435,6 +453,136 @@ export function registerAuditRoutes(options: AuditRoutesOptions): (app: Hono<Pit
           } satisfies ControlPlaneUsageResponse,
           200,
         );
+      },
+    );
+
+    /**
+     * CONTROL-PLANE READ (#822). Walk one tenant's hash chain over a window — every link, every hash, the
+     * checkpoints covering it — and answer intact or the first break. Reads only: it proves the trail whole and
+     * changes nothing.
+     */
+    app.get(
+      `${base}/control-plane/verify`,
+      describeRoute({
+        summary: "Walk one tenant's audit chain against its checkpoints, and say whether it is whole.",
+        verification: "control-plane",
+        scopes: [AUDIT_CHAIN_EXPORT_SCOPE],
+        responses: { 200: ChainVerifyResponse },
+      }),
+      requireControlPlane(AUDIT_CHAIN_EXPORT_SCOPE),
+      validate("query", ChainVerifyQuery),
+      async (c) => {
+        const operator = caller(c);
+        const query = c.req.valid("query");
+        const bucket = checkpoints(c);
+        const range = {
+          tenant: query.tenant,
+          ...(query.since ? { since: query.since } : {}),
+          ...(query.until ? { until: query.until } : {}),
+        };
+        const found = await verifyChainRange(database(c), bucket, range);
+        // Audited like every read here. A failed verify is recorded as one: a break is exactly what the trail
+        // should say somebody saw, and when.
+        await c.var.emit({
+          action: AuditTrailActions.chainVerified,
+          outcome: found.intact ? "success" : "failure",
+          severity: found.intact ? "info" : "critical",
+          actorType: "control-plane",
+          actorId: operator.subject,
+          resourceType: "audit_chain",
+          requestId: c.req.header("cf-ray"),
+          ip: c.req.header("cf-connecting-ip"),
+          userAgent: c.req.header("user-agent"),
+          metadata: {
+            connectionId: operator.connectionId,
+            query: {
+              tenant: query.tenant,
+              since: query.since?.toISOString() ?? null,
+              until: query.until?.toISOString() ?? null,
+            },
+            checked: found.checked,
+            checkpoints: found.checkpoints,
+            ...(found.break ? { break: found.break } : {}),
+          },
+        });
+        return c.json(
+          {
+            tenant: query.tenant,
+            since: query.since?.toISOString() ?? null,
+            until: query.until?.toISOString() ?? null,
+            intact: found.intact,
+            checked: found.checked,
+            checkpoints: found.checkpoints,
+            checkpointStore: bucket ? "bound" : "absent",
+            beforeChain: found.beforeChain,
+            outsideChain: found.outsideChain,
+            break: found.break,
+            head: found.head,
+          } satisfies ChainVerifyResponse,
+          200,
+        );
+      },
+    );
+
+    /**
+     * CONTROL-PLANE READ (#822). One page of one tenant's chain in canonical form, each event with its hash, the
+     * link before the page and the checkpoints covering it — what `pithy audit verify` checks offline. The IP,
+     * user-agent and metadata values ride along only when the connection also holds the detail scope.
+     */
+    app.get(
+      `${base}/control-plane/export`,
+      describeRoute({
+        summary: "Export one tenant's audit chain in canonical form, with its checkpoints, to verify offline.",
+        verification: "control-plane",
+        scopes: [AUDIT_CHAIN_EXPORT_SCOPE],
+        responses: { 200: ChainExportResponse },
+      }),
+      requireControlPlane(AUDIT_CHAIN_EXPORT_SCOPE),
+      validate("query", ChainExportQuery),
+      async (c) => {
+        const operator = caller(c);
+        const query = c.req.valid("query");
+        // Read from the adopter's own grant, never from the token: a token is minted for one scope, and the
+        // question is whether the connection may also see what the detail scope discloses.
+        const detail = operator.grantedScopes.includes(AUDIT_EVENT_DETAIL_READ_SCOPE);
+        const page = await exportChainRange(
+          database(c),
+          checkpoints(c),
+          {
+            tenant: query.tenant,
+            ...(query.since ? { since: query.since } : {}),
+            ...(query.until ? { until: query.until } : {}),
+          },
+          {
+            detail,
+            limit: query.limit ?? 500,
+            now: new Date(),
+            ...(query.cursor !== undefined ? { cursor: query.cursor } : {}),
+          },
+        );
+        await c.var.emit({
+          action: AuditTrailActions.chainExported,
+          outcome: "success",
+          actorType: "control-plane",
+          actorId: operator.subject,
+          resourceType: "audit_chain",
+          requestId: c.req.header("cf-ray"),
+          ip: c.req.header("cf-connecting-ip"),
+          userAgent: c.req.header("user-agent"),
+          metadata: {
+            connectionId: operator.connectionId,
+            query: {
+              tenant: query.tenant,
+              since: query.since?.toISOString() ?? null,
+              until: query.until?.toISOString() ?? null,
+              resumed: query.cursor !== undefined,
+            },
+            detail,
+            returned: page.events.length,
+            more: page.nextCursor !== null,
+          },
+        });
+        return c.json(page satisfies ChainExportResponse, 200);
       },
     );
   };

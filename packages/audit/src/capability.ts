@@ -1,13 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: FSL-1.1-MIT
 
-import type { D1Database } from "@cloudflare/workers-types";
+import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import { createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
 import { workerIdentity } from "@pithy-sh/core/src/worker/identity";
+import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
 import { z } from "zod";
+import { AUDIT_CHECKPOINT_BINDING } from "./chain/checkpoint";
+import { checkpointLockCheck } from "./chain/lockCheck";
 import type { AuditDatabase } from "./data/tables";
 import { auditDatabase, auditTables } from "./data/tables";
 import { auditAdminRoutes } from "./http/guards";
@@ -16,10 +19,12 @@ import { audit_0001_init } from "./migrations/0001_init";
 import { audit_0002_actor_kind } from "./migrations/0002_actor_kind";
 import { audit_0003_call_index } from "./migrations/0003_call_index";
 import { audit_0004_request_index } from "./migrations/0004_request_index";
+import { audit_0005_chain } from "./migrations/0005_chain";
 import { auditUserPurge } from "./purge/contribution";
 import { recordAuditEvent } from "./recorder";
 import { auditExampleSeed } from "./seeds/example";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
+import { auditWorkflows } from "./workflows/specs";
 
 /**
  * Sort order of the audit migration within the audit database, relative to other capabilities
@@ -92,7 +97,20 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
     version: PACKAGE_VERSION,
     package: PACKAGE_NAME,
     config: AuditConfig,
-    requiredBindings: [{ type: "d1", name: resolved.database }],
+    requiredBindings: [
+      { type: "d1", name: resolved.database },
+      // The checkpoint bucket (#822): each tenant chain's head and count, written on a schedule by the checkpoint
+      // host and read back by the verify and export routes. Optional, so a Worker not yet provisioned still records
+      // every event and still verifies links — it says so, as `checkpointStore: "absent"`.
+      { type: "r2", name: AUDIT_CHECKPOINT_BINDING, optional: true },
+      // The checkpoint Workflow's binding, derived from the spec rather than written again. Optional: it exists only
+      // once the checkpoint host is deployed, and nothing in the app dispatches it — the host's cron does.
+      ...workflowBindings(auditWorkflows),
+    ],
+    // The checkpoint job (#822), hosted by the prebuilt audit worker and fired hourly from its cron.
+    workflows: auditWorkflows,
+    // `pithy doctor` says whether object lock is in force on each deployed environment's checkpoint bucket (#822).
+    settings: checkpointLockCheck(),
     databases: {
       [AUDIT_DATABASE_NAME]: {
         binding: resolved.database,
@@ -103,6 +121,7 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
           "0002_actor_kind": audit_0002_actor_kind,
           "0003_call_index": audit_0003_call_index,
           "0004_request_index": audit_0004_request_index,
+          "0005_chain": audit_0005_chain,
         },
       },
     },
@@ -142,6 +161,11 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
       basePath: resolved.basePath,
       database: (c) => (c.var.db as Record<typeof AUDIT_DATABASE_NAME, AuditDatabase>)[AUDIT_DATABASE_NAME],
       adminRoutes: () => adminRoutes,
+      // Read off the env per request: a binding exists only on a request, and an unprovisioned Worker has none.
+      checkpoints: (c) => {
+        const bucket = (c.env as Record<string, unknown> | undefined)?.[AUDIT_CHECKPOINT_BINDING];
+        return typeof bucket === "object" && bucket !== null ? (bucket as R2Bucket) : null;
+      },
     }),
     // Replace the no-op `emit` seam with a recorder over this request's audit database. The database
     // is resolved lazily inside the closure — only when a route actually emits — so a request that

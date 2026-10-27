@@ -1,0 +1,40 @@
+{
+  // The prebuilt audit checkpoint worker (#822). Like every kit host, this is a TEMPLATE, not a wrangler
+  // env-stanza file: staging and prod are separate workers. `pithy deploy` resolves it into one complete config
+  // per environment — filling the `<...>` placeholders — and deploys each with `wrangler deploy --config <resolved>`.
+  // The adopter authors none of it.
+  //
+  // It hosts the one checkpoint Workflow. The app worker records the events; this one writes each tenant chain's
+  // head and count to the checkpoint bucket on a schedule.
+  // Resolved per project and env → <project>-staging-audit / <project>-prod-audit.
+  "name": "pithy-audit",
+  "main": "./worker.ts",
+  // The compatibility date every Worker in this repository runs on. Stated once in the repository
+  // root's `compatibility.ts` and copied here because JSONC cannot import it —
+  // `cli/src/ci/compatibilityDates.test.ts` fails on any Worker older than it.
+  "compatibility_date": "2026-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // No public URL. Every audit route lives in the app worker; this one is reached only by its cron.
+  "workers_dev": false,
+
+  // The audit database — the app's, or whichever `audit({ database })` names. Read only: the host writes nothing
+  // here, and holds no credential at all.
+  "d1_databases": [{ "binding": "DB", "database_name": "pithy-app", "database_id": "<filled-at-provision>" }],
+
+  // The checkpoint bucket, the same one the app worker reads checkpoints back from. Put an object-lock rule on it;
+  // `pithy doctor` says whether one is in force.
+  "r2_buckets": [{ "binding": "AUDIT_CHECKPOINTS", "bucket_name": "<filled-at-provision>" }],
+
+  // The checkpoint Workflow. `class_name` matches the exported WorkflowEntrypoint subclass.
+  "workflows": [
+    { "binding": "AUDIT_CHECKPOINT", "name": "pithy-audit-checkpoint", "class_name": "AuditCheckpointWorkflow" }
+  ],
+
+  // Hourly. Also rewritten at deploy from the spec's `schedule`.
+  "triggers": { "crons": ["20 * * * *"] },
+
+  "vars": {
+    "ENVIRONMENT": "<filled-at-provision>"
+  }
+}

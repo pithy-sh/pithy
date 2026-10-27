@@ -5,7 +5,7 @@ import { lstatSync } from "node:fs";
 import { cp, mkdir, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { commandNameOf } from "@pithy-sh/core/src/cli/command";
+import { commandNameOf, isCommandPath } from "@pithy-sh/core/src/cli/command";
 import { ConflictError, InternalError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { NAMESPACE_PATTERN } from "@pithy-sh/core/src/migrations/registry";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
@@ -843,10 +843,13 @@ export function assertWorkerName(worker: string): void {
     });
   }
   if (hostWorkerFor(worker) === undefined) return;
+  // A host with a provision of its own is created by it; one without (audit's checkpoint host) by `pithy deploy`.
+  const provision = `${worker} provision`;
+  const creator = commandNameOf(isCommandPath(provision) ? provision : "deploy");
   throw new ValidationError({
     message: `"${worker}" is reserved — the ${worker} capability's own host Worker deploys under that name.`,
     action: `Pick another name, e.g. ${worker}-api.`,
-    detail: `A worker deploys as <project>-<env>-${worker}, which is byte-identical to the host Worker \`${commandNameOf(`${worker} provision`)}\` creates. Cloudflare's script namespace is account-flat, so a deploy would replace it.`,
+    detail: `A worker deploys as <project>-<env>-${worker}, which is byte-identical to the host Worker \`${creator}\` creates. Cloudflare's script namespace is account-flat, so a deploy would replace it.`,
   });
 }
 

@@ -52,6 +52,7 @@ const COMMANDS = {
   cloudflare: { group: "Operate", load: () => import("./commands/cloudflare").then((m) => m.default) },
   token: { group: "Operate", load: () => import("./commands/token").then((m) => m.default) },
   dashboard: { group: "Operate", load: () => import("./commands/dashboard").then((m) => m.default) },
+  audit: { group: "Operate", load: () => import("./commands/audit").then((m) => m.default) },
 
   // Capabilities — one command per capability that provisions infrastructure of its own.
   secrets: { group: "Capabilities", load: () => import("./commands/secrets").then((m) => m.default) },

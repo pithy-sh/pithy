@@ -13,6 +13,8 @@ export default defineConfig({
         compatibilityDate: COMPATIBILITY_DATE,
         compatibilityFlags: ["nodejs_compat"],
         d1Databases: ["DB"],
+        // The checkpoint bucket the chain's heads are written to (#822).
+        r2Buckets: ["AUDIT_CHECKPOINTS"],
       },
     }),
   ],

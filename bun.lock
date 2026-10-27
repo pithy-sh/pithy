@@ -59,6 +59,7 @@
         "@pithy-sh/tsconfig": "workspace:*",
         "@types/node": "^22.15.0",
         "@vitest/coverage-v8": "^4.1.0",
+        "comment-json": "^5.0.0",
         "hono": "^4.13.2",
         "kysely": "^0.29.0",
         "kysely-d1": "^0.4.0",

@@ -62,6 +62,7 @@ const analysis = analyzeDrivers(packageSources(), parseModule);
  * directory would have covered eight of eleven and reported itself green.
  */
 const SHIPPED_WORKFLOWS = [
+  "packages/audit/src/workflows/worker.ts#AuditCheckpointWorkflow",
   "packages/email/src/workflows/worker.ts#EmailSchedulerWorkflow",
   "packages/email/src/workflows/worker.ts#EmailSendWorkflow",
   "packages/leaderboard/src/rank/worker.entry.ts#RankRefreshWorkflow",

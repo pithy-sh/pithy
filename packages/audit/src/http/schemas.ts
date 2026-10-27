@@ -210,3 +210,62 @@ export const ControlPlaneUsageQuery = z
   })
   .describe("The control-plane usage query: one connection, over a window.");
 export type ControlPlaneUsageQuery = z.infer<typeof ControlPlaneUsageQuery>;
+
+/**
+ * The tenant whose chain to read (#822). **Required**, because there is no "every chain": a chain is one tenant's.
+ * Send it empty (`?tenant=`) for the untenanted chain — the same encoding the listing's filter uses.
+ */
+const ChainTenant = TenantFilter.describe(
+  "The tenant whose chain to read. Send it empty (`?tenant=`) for the chain of events that belong to no tenant. Required: a chain is one tenant's.",
+);
+
+/** The chain verify query (#822): whose chain, and over what window. */
+export const ChainVerifyQuery = z
+  .object({
+    tenant: ChainTenant,
+    since: TimeBound.optional().describe(
+      "Inclusive start of the window, ISO-8601. Omitted, the walk starts at the chain's first event.",
+    ),
+    until: TimeBound.optional().describe(
+      "Inclusive end of the window, ISO-8601. Omitted, the walk runs to the chain's head, and a checkpoint past it is a truncation.",
+    ),
+  })
+  .refine((query) => query.until === undefined || query.since === undefined || query.until >= query.since, {
+    message: "`until` must not be before `since`.",
+    path: ["until"],
+  })
+  .describe("The chain verify query: one tenant's chain, over a window.");
+export type ChainVerifyQuery = z.infer<typeof ChainVerifyQuery>;
+
+/** The most events one export page carries. */
+export const MAX_EXPORT_PAGE = 1000;
+
+/** The chain export query (#822): whose chain, over what window, and where to resume. */
+export const ChainExportQuery = z
+  .object({
+    tenant: ChainTenant,
+    since: TimeBound.optional().describe(
+      "Inclusive start of the window, ISO-8601. Omitted, the export starts at the chain's first event.",
+    ),
+    until: TimeBound.optional().describe(
+      "Inclusive end of the window, ISO-8601. Omitted, the export runs to the chain's head.",
+    ),
+    cursor: z
+      .string()
+      .max(32)
+      .optional()
+      .describe("Where to resume, from the previous page's `nextCursor`. A malformed one is a first page."),
+    limit: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_EXPORT_PAGE)
+      .optional()
+      .describe(`How many events one page carries. At most ${MAX_EXPORT_PAGE}; defaults to 500.`),
+  })
+  .refine((query) => query.until === undefined || query.since === undefined || query.until >= query.since, {
+    message: "`until` must not be before `since`.",
+    path: ["until"],
+  })
+  .describe("The chain export query: one tenant's chain, over a window, a page at a time.");
+export type ChainExportQuery = z.infer<typeof ChainExportQuery>;

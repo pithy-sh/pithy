@@ -4,6 +4,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { auditCheckpointBucketName } from "@pithy-sh/audit/src/provision/resolveAuditConfig";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { FEATURE_RESOURCE_KINDS, type FeatureResourceKind } from "@pithy-sh/core/src/naming/feature";
 import { type BindingNaming, environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
@@ -115,6 +116,13 @@ interface Declared {
  */
 const DECLARED: readonly Declared[] = [
   { capability: "audit", binding: "DB", kind: "d1", namer: null, why: "the app database — id read, never renamed" },
+  {
+    capability: "audit",
+    binding: "AUDIT_CHECKPOINTS",
+    kind: "r2",
+    namer: auditCheckpointBucketName,
+    why: "`audit/src/provision/resolveAuditConfig.ts` — the checkpoint bucket (#822), named by the generic rule through `environmentScope`, which the checkpoint host and `pithy audit lock` both read",
+  },
   { capability: "auth", binding: "DB", kind: "d1", namer: null, why: "the app database" },
   { capability: "controlplane", binding: "DB", kind: "d1", namer: null, why: "the app database" },
   {

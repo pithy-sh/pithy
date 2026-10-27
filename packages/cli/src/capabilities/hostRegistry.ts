@@ -727,6 +727,43 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
       });
     },
   },
+  {
+    // The checkpoint host (#822): each tenant chain's head and count, written hourly to the checkpoint bucket.
+    capability: "audit",
+    entry: "@pithy-sh/audit/src/workflows/worker",
+    package: "@pithy-sh/audit",
+    async resolve(template, context) {
+      const [{ resolveAuditConfig, auditCheckpointBucketName }, { isAuditCapability }] = await load(
+        "audit",
+        "@pithy-sh/audit",
+        context.projectDir,
+        () =>
+          Promise.all([
+            kitImport<typeof import("@pithy-sh/audit/src/provision/resolveAuditConfig")>(
+              context.projectDir,
+              "@pithy-sh/audit/src/provision/resolveAuditConfig",
+            ),
+            kitImport<typeof import("@pithy-sh/audit/src/capability")>(
+              context.projectDir,
+              "@pithy-sh/audit/src/capability",
+            ),
+          ]),
+      );
+      // The database the adopter's `audit({ database })` names, not `DB` by assumption: the host reads the trail
+      // wherever the app writes it.
+      const { auditDatabase } = ownCapability(context, "audit", "@pithy-sh/audit", isAuditCapability);
+      return resolveAuditConfig(template, {
+        project: context.project,
+        env: context.env,
+        ...featureOf(context),
+        auditDatabaseId: context.databaseId(auditDatabase),
+        // The bucket `pithy provision` creates for the app's `AUDIT_CHECKPOINTS` binding, through the same namer.
+        bucketName: bucketName(context, "AUDIT_CHECKPOINTS", () =>
+          auditCheckpointBucketName(context.project, context.env),
+        ),
+      });
+    },
+  },
 ];
 
 /**
@@ -760,7 +797,7 @@ async function secretsSchedule(context: HostResolveContext) {
   };
 }
 
-/** The host Worker a capability owns, or `undefined` when it owns none (`auth`, `audit`, `turnstile`, …). */
+/** The host Worker a capability owns, or `undefined` when it owns none (`auth`, `turnstile`, …). */
 export function hostWorkerFor(capability: string): HostWorkerSpec | undefined {
   return HOST_WORKERS.find((spec) => spec.capability === capability);
 }

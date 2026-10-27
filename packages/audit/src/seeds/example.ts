@@ -33,6 +33,13 @@ const minutesAgo = (minutes: number): Date => new Date(Date.now() - minutes * 60
 const EXAMPLE_ORIGIN = { project: "example-app", environment: null, worker: "api", version: null } as const;
 
 /**
+ * Example rows are seeded straight into the table, outside the recorder, so they carry no chain (#822): they are
+ * marked as before the chain, exactly as a row written before the upgrade is. A seed is a dev fixture, never
+ * evidence, and inventing links for it would teach the verify read to trust rows nobody recorded.
+ */
+const BEFORE_THE_CHAIN = { chainSeq: null, chainPrev: null, chainHash: null, chainSalt: null } as const;
+
+/**
  * Two fictional tenants, so a dev database can show what the tenant filter is for.
  *
  * **Ada's events are split across both**, deliberately: one person administering two accounts is the
@@ -83,6 +90,7 @@ export const auditExampleSeed: SeedSet = defineSeed({
         metadata: { method: "magic_link" },
         tenant: EXAMPLE_TENANT_ACME,
         ...EXAMPLE_ORIGIN,
+        ...BEFORE_THE_CHAIN,
       },
       {
         id: 2,
@@ -103,6 +111,7 @@ export const auditExampleSeed: SeedSet = defineSeed({
         metadata: { reason: "expired_link" },
         tenant: EXAMPLE_TENANT_GLOBEX,
         ...EXAMPLE_ORIGIN,
+        ...BEFORE_THE_CHAIN,
       },
       {
         id: 3,
@@ -127,6 +136,7 @@ export const auditExampleSeed: SeedSet = defineSeed({
         metadata: { plan: "pro", grantedBy: "system" },
         tenant: EXAMPLE_TENANT_ACME,
         ...EXAMPLE_ORIGIN,
+        ...BEFORE_THE_CHAIN,
       },
       {
         id: 4,
@@ -148,6 +158,7 @@ export const auditExampleSeed: SeedSet = defineSeed({
         // The same actor as event 1, in the other tenant — what `actorId` alone cannot tell apart.
         tenant: EXAMPLE_TENANT_GLOBEX,
         ...EXAMPLE_ORIGIN,
+        ...BEFORE_THE_CHAIN,
       },
       {
         id: 5,
@@ -168,6 +179,7 @@ export const auditExampleSeed: SeedSet = defineSeed({
         metadata: { familyId: "example-family-grace", action: "family_revoked" },
         tenant: EXAMPLE_TENANT_GLOBEX,
         ...EXAMPLE_ORIGIN,
+        ...BEFORE_THE_CHAIN,
       },
       {
         id: 6,
@@ -189,6 +201,7 @@ export const auditExampleSeed: SeedSet = defineSeed({
         // No tenant, on purpose: the shape every row in a single-tenant app has.
         tenant: null,
         ...EXAMPLE_ORIGIN,
+        ...BEFORE_THE_CHAIN,
       },
     ]),
   ],

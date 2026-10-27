@@ -3,6 +3,7 @@
 
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
+import { resolveAuditConfig } from "@pithy-sh/audit/src/provision/resolveAuditConfig";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { environmentScope, type SecretNameScope } from "@pithy-sh/core/src/naming/provisionScope";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
@@ -192,6 +193,21 @@ const COVERAGE: readonly HostCoverage[] = [
           ...base,
           resources: { bucketName: `${PROJECT}-${env}-media` },
           mediaConfig: MediaConfig.parse({}),
+        }),
+      };
+    },
+  },
+  {
+    capability: "audit",
+    entry: "@pithy-sh/audit/src/workflows/worker",
+    async resolve(env, entry) {
+      const template = await readTemplate(entry);
+      return {
+        default: resolveAuditConfig(template, {
+          project: PROJECT,
+          env,
+          auditDatabaseId: DATABASE.app,
+          bucketName: `${PROJECT}-${env}-audit-checkpoints`,
         }),
       };
     },
