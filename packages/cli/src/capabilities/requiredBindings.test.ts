@@ -373,6 +373,11 @@ describe("what pithy add claims to write, it writes", () => {
         return list("workflows").some((entry) => entry.binding === binding.name);
       case "artifacts":
         return list("artifacts").some((entry) => entry.binding === binding.name && typeof entry.namespace === "string");
+      case "queue":
+        // `queues.producers`, one level down, naming the queue `pithy provision` creates (#662, #824).
+        return ((stanza.queues as { producers?: Record<string, unknown>[] } | undefined)?.producers ?? []).some(
+          (entry) => entry.binding === binding.name && typeof entry.queue === "string",
+        );
       default:
         return false;
     }

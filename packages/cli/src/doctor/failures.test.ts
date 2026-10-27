@@ -984,6 +984,21 @@ describe("every finding in every block carries fix", () => {
           { env: "prod", worker: "api", directory: dirOf("api"), state: "listed", subjects: ["organization:acme"] },
         ],
       }),
+      checkAuditSinks: async () => ({
+        state: "findings",
+        sinks: [
+          {
+            worker: "api",
+            sink: "siem",
+            profile: "splunk-hec",
+            host: "splunk.example.com",
+            actions: [],
+            detail: false,
+            secret: "splunk-hec-token",
+          },
+        ],
+        secrets: [{ env: "staging", secret: "splunk-hec-token", state: "unset" }],
+      }),
       checkEnvironmentInheritance: async () => ({
         state: "unrepeated",
         unrepeated: [{ worker: dirOf("api"), env: "staging", key: "vars", carries: ["APP_NAME"] }],
@@ -1146,6 +1161,7 @@ describe("every finding in every block carries fix", () => {
       "pithy secrets create STRIPE_KEY --env staging",
     ]);
     expect(fixesAt("docsMcp.clients")).toEqual(["pithy docs connect --client cursor"]);
+    expect(fixesAt("auditSinks.secrets")).toEqual(["pithy secrets create splunk-hec-token --env staging"]);
     expect(fixesAt("devVars.empty")).toEqual(["pithy seed --env dev"]);
     expect(fixesAt("turnstileSitekeys.unrendered")).toEqual(["pithy turnstile provision --worker web", null]);
     expect(fixesAt("turnstileSitekeys.stranded")).toEqual(["pithy turnstile provision --worker web"]);

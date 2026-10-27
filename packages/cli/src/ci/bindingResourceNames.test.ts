@@ -123,6 +123,20 @@ const DECLARED: readonly Declared[] = [
     namer: auditCheckpointBucketName,
     why: "`audit/src/provision/resolveAuditConfig.ts` — the checkpoint bucket (#822), named by the generic rule through `environmentScope`, which the checkpoint host and `pithy audit lock` both read",
   },
+  {
+    capability: "audit",
+    binding: "AUDIT_SHIP",
+    kind: "queue",
+    namer: null,
+    why: "the shipping queue (#824): produced to and consumed by the app Worker, named by the generic rule alone",
+  },
+  {
+    capability: "audit",
+    binding: "AUDIT_SHIP_DLQ",
+    kind: "queue",
+    namer: null,
+    why: "the shipping dead-letter queue (#824): named by the generic rule, which the consumer entry's `dead_letter_queue` is composed with too",
+  },
   { capability: "auth", binding: "DB", kind: "d1", namer: null, why: "the app database" },
   { capability: "controlplane", binding: "DB", kind: "d1", namer: null, why: "the app database" },
   {

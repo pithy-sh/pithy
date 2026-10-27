@@ -36,6 +36,11 @@ export type CliAuditEvent = Omit<AuditEventInput, "actorType" | "actorId"> & {
  *
  * Like the in-Worker recorder, this is **non-fatal**: a write failure is logged, never thrown, so an
  * audit write never breaks the command it records.
+ *
+ * **It is never shipped (#824).** The event takes its position in the tenant's chain like any other, and nothing
+ * enqueues it: the CLI binds no queue, and pushing over the Queues REST API would need a credential and a queue
+ * name per environment that a command recording one event should not resolve. So a sink sees a `seq` skip at
+ * every CLI action, and the audit README says so, and says how a receiver reconciles one against an export.
  */
 export async function emitFromCLI(
   d1: D1Database,

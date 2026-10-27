@@ -5,6 +5,7 @@ import type { D1Database } from "@cloudflare/workers-types";
 import { createDatabase, type DatabaseSchema } from "@pithy-sh/core/src/data/db";
 import type { Insertable, Kysely } from "kysely";
 import { AuditEventRow } from "./auditEvent";
+import { AuditSinkStateRow } from "./sinkState";
 
 /**
  * The audit capability's table map: camelCase keys (CamelCasePlugin emits the snake_case
@@ -13,6 +14,8 @@ import { AuditEventRow } from "./auditEvent";
  */
 export const auditTables = {
   pithyAuditEvents: AuditEventRow,
+  // Shipping's delivery state, one row per declared sink (#824).
+  pithyAuditSinks: AuditSinkStateRow,
 };
 export type AuditTables = typeof auditTables;
 

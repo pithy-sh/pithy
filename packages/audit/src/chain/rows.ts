@@ -182,3 +182,17 @@ export async function chainedEventOf(row: ChainRow, options: { detail: boolean }
     ...(options.detail ? { salt, ip: row.ip, userAgent: row.userAgent, metadata: row.metadata } : {}),
   };
 }
+
+/**
+ * The stored rows for a set of event ids, raw, in no particular order (#824). What the shipping consumer builds each
+ * delivery from: the row as stored now, read at delivery rather than carried on the queue, so no personal value
+ * ever sits in a queue message. An id with no row is simply absent from the answer.
+ */
+export async function readRowsByEventId(db: AuditDatabase, eventIds: readonly string[]): Promise<ChainRow[]> {
+  if (eventIds.length === 0) return [];
+  return (await db
+    .selectFrom("pithyAuditEvents")
+    .select([...CHAIN_COLUMNS])
+    .where("eventId", "in", [...eventIds])
+    .execute()) as ChainRow[];
+}

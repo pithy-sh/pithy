@@ -32,6 +32,12 @@ import {
 import { projectSecretApplicability, type SecretApplicability } from "../capabilities/secretApplicability";
 import { pithyOffline } from "../cloudflare/config";
 import { withContract } from "../contract/commandContract";
+import {
+  type AuditSinksCheck,
+  type AuditSinksOptions,
+  checkAuditSinks,
+  describeAuditSinks,
+} from "../doctor/auditSinks";
 import { type BindingScopeHealth, repointableIds, type SplitGlobalBinding } from "../doctor/bindingScope";
 import type { CapabilityReachHealth } from "../doctor/capabilityReach";
 import { type CloudflareAccess, checkCloudflareAccess, describeCloudflareAccess } from "../doctor/cloudflare";
@@ -425,6 +431,13 @@ export interface DoctorReport {
    * contract, the operator's own account — and the point is that it is never invisible, not that it is wrong.
    */
   paymentsAllowances: PaymentsAllowancesCheck | null;
+  /**
+   * Where the audit trail is shipped (#824): every sink each Worker declares — its profile, its host, its filter,
+   * whether it ships personal values — and whether each deployed environment holds its token. `null` outside a
+   * project, `not-applicable` when nothing ships. **It reports and never fails the exit**: an unset token is an
+   * unbound secret, which reports on this report's standard and gates nothing.
+   */
+  auditSinks: AuditSinksCheck | null;
   /**
    * Whether every declared environment's `pithy.config.ts` **loads** (#548) — the question the block above
    * does not ask, because comparing a stanza to a declaration never evaluates either config. `null`
@@ -881,6 +894,11 @@ export interface DoctorReportOptions {
    * environment whose composition includes payments, and none at all otherwise.
    */
   checkPaymentsAllowances?: (options: PaymentsAllowancesOptions) => Promise<PaymentsAllowancesCheck>;
+  /**
+   * Audit sinks seam; defaults to {@link checkAuditSinks}. One secrets-manager question per deployed environment
+   * per distinct sink token, and none at all for a project that ships nothing.
+   */
+  checkAuditSinks?: (options: AuditSinksOptions) => Promise<AuditSinksCheck>;
   /** Origin-declaration seam; defaults to {@link checkOrigins}. Reads files only — no account call. */
   checkOrigins?: (projectDir: string) => Promise<OriginsCheck>;
   /** App-Workflow binding seam; defaults to {@link checkWorkflows}. Reads files only — no account call. */
@@ -1060,6 +1078,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeSecretTables = options.checkSecretTables ?? checkSecretTables;
   const probeSecretRotations = options.checkSecretRotations ?? checkSecretRotations;
   const probePaymentsAllowances = options.checkPaymentsAllowances ?? checkPaymentsAllowances;
+  const probeAuditSinks = options.checkAuditSinks ?? checkAuditSinks;
   const probeOrigins = options.checkOrigins ?? checkOrigins;
   const probeWorkflows = options.checkWorkflows ?? checkWorkflows;
   const probeDevPreferences =
@@ -1198,6 +1217,8 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // Empty is a declaration that would not parse, and an empty sweep is the honest answer to it: `Environments:`
   // reports the declaration, and no probe below may invent a name the project did not write (#586).
   let declaredEnvironments: readonly string[] = [];
+  // The root config's `name`, for the one probe that asks a secrets manager by it (#824). Null until it loads.
+  let rootProjectName: string | null = null;
   // Whether that list is the project's composition or merely the value it was initialized to. An empty
   // list is a legitimate answer and an unresolved one is not, and the settings probe is the one reader
   // that cannot tell them apart on its own: over `[]` it answers `null`, which the JSON contract defines
@@ -1225,6 +1246,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
       declared = [];
     }
     declaredEnvironments = declared;
+    rootProjectName = typeof rootConfig.name === "string" ? rootConfig.name : null;
     const installedCaps = await listCapabilities(options.projectDir);
     const packageSpecs = await (options.declaredSpecs ?? declaredSpecs)(options.projectDir);
     const packageManager = await detectPackageManager(options.projectDir);
@@ -1543,6 +1565,30 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
           { state: "could-not-check", meters: [], environments: [] },
         )
       : null;
+  // Where the trail is shipped, and whether each sink's token is set (#824). Nothing for a project that ships nothing.
+  const auditSinks =
+    inProject && workersResolved && rootProjectName !== null
+      ? await probed<AuditSinksCheck>(
+          () =>
+            probeAuditSinks({
+              project: rootProjectName as string,
+              environments: declaredEnvironments,
+              workers: resolvedWorkers.map((worker) => ({ name: worker.name, dir: worker.dir })),
+              account,
+              remoteSkip,
+              composeWorker:
+                composeWorkerFor ??
+                (async (worker, environment) => {
+                  const found = await resolve(environment, { projectDir: options.projectDir, worker: worker.name });
+                  const match = found.find((candidate) => candidate.dir === worker.dir);
+                  if (match === undefined)
+                    throw new ValidationError({ message: `${worker.name} did not resolve for ${environment}.` });
+                  return { capabilities: match.capabilities };
+                }),
+            }),
+          { state: "could-not-check", sinks: [], secrets: [] },
+        )
+      : null;
   // The same declaration, asked the question the block above cannot: comparing a stanza to a declaration
   // never evaluates a config, and a `pithy.config.ts` is code that may load under one environment and
   // throw under another (#548). Files only once more — the composition is taken in this process, and
@@ -1665,6 +1711,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     secretTables,
     secretRotations,
     paymentsAllowances,
+    auditSinks,
     environmentConfigs,
     origins,
     workflows,
@@ -2769,6 +2816,11 @@ function secretRotationsBlock(check: SecretRotationsCheck): string {
   return ["Secret rotations:", ...describeSecretRotations(check).map((line) => `  ${line}`)].join("\n");
 }
 
+/** The `Audit sinks:` block — every declared sink, then each deployed environment's answer for each token (#824). */
+function auditSinksBlock(check: AuditSinksCheck): string {
+  return ["Audit sinks:", ...describeAuditSinks(check).map((line) => `  ${line}`)].join("\n");
+}
+
 /**
  * The `Payments allowances:` lines — each meter, then each environment's unrestricted subjects (#561).
  *
@@ -3146,6 +3198,9 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     report.paymentsAllowances === null ||
     report.paymentsAllowances.state === "not-applicable" ||
     (report.paymentsAllowances.state === "ok" && !namesUnrestricted(report.paymentsAllowances));
+  // Quiet when nothing ships or every token is set — never a failing exit (#824).
+  const auditSinksQuiet =
+    report.auditSinks === null || report.auditSinks.state === "not-applicable" || report.auditSinks.state === "ok";
   // Its own answer, because it is its own question — see {@link DoctorReport.environmentConfigs}. A config
   // that does not load for a declared environment is never terse: it is the loudest finding this report has
   // about a file the adopter owns.
@@ -3209,6 +3264,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     secretTablesQuiet &&
     secretRotationsQuiet &&
     paymentsAllowancesQuiet &&
+    auditSinksQuiet &&
     environmentConfigsOk &&
     originsOk &&
     workflowsOk &&
@@ -3445,6 +3501,11 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // Every meter and every unrestricted subject, whenever payments is composed and the report is verbose.
   if (report.paymentsAllowances && report.paymentsAllowances.state !== "not-applicable") {
     blocks.push(paymentsAllowancesBlock(report.paymentsAllowances));
+  }
+
+  // Every sink, whenever one is declared and the report is verbose, and whenever a token is missing (#824).
+  if (report.auditSinks && report.auditSinks.state !== "not-applicable") {
+    blocks.push(auditSinksBlock(report.auditSinks));
   }
 
   // Straight after it, because it is the same declaration asked whether it *works*: one of these
@@ -3733,6 +3794,21 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
           meters: report.paymentsAllowances.meters.map((line) => ({ ...line, fix: null })),
           environments: report.paymentsAllowances.environments.map((answer) => ({ ...answer, fix: null })),
           detail: describePaymentsAllowances(report.paymentsAllowances),
+        }
+      : null,
+    // A sink is a config decision, so it carries no `fix`. An unset token's `fix` is the create that sets it.
+    auditSinks: report.auditSinks
+      ? {
+          state: report.auditSinks.state,
+          sinks: report.auditSinks.sinks.map((line) => ({ ...line, fix: null })),
+          secrets: report.auditSinks.secrets.map((answer) => ({
+            ...answer,
+            fix:
+              answer.state === "unset"
+                ? String(pithyCommand("secrets create", { args: [answer.secret], flags: { "--env": answer.env } }))
+                : null,
+          })),
+          detail: describeAuditSinks(report.auditSinks),
         }
       : null,
     environmentInheritance: report.environmentInheritance
@@ -4192,6 +4268,12 @@ const DoctorPayload = z
     secretRotations: Check("Each deployed environment's failed secret rotations, as codes, or `null`.", {
       state: State("`ok`, `not-applicable`, `findings`, `could-not-check`"),
       environments: Fixed("environment's answer"),
+      detail: Lines,
+    }),
+    auditSinks: Check("Audit sinks and whether each deployed environment holds each sink's token, or `null`.", {
+      state: State("`ok`, `not-applicable`, `findings`, `could-not-check`"),
+      sinks: Fixed("sink a Worker declares"),
+      secrets: Fixed("deployed environment's answer for one token"),
       detail: Lines,
     }),
     paymentsAllowances: Check("Payments meters and unrestricted subjects per environment, or `null`.", {

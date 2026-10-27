@@ -37,7 +37,7 @@ describe("audit capability", () => {
   test("contributes the audit table to the app database on the DB binding by default", () => {
     const db = audit().databases?.app;
     expect(db?.binding).toBe("DB");
-    expect(Object.keys(db?.tables ?? {})).toEqual(["pithyAuditEvents"]);
+    expect(Object.keys(db?.tables ?? {})).toEqual(["pithyAuditEvents", "pithyAuditSinks"]);
   });
 
   // Table keys are camelCase (CamelCasePlugin emits the snake_case `pithy_audit_` SQL); every
@@ -78,6 +78,7 @@ describe("audit capability", () => {
       "0003_call_index",
       "0004_request_index",
       "0005_chain",
+      "0006_sinks",
     ]);
     expect(db?.migrationOrder).toBe(AUDIT_MIGRATION_ORDER);
   });

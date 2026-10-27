@@ -3,6 +3,7 @@
 
 import { readdirSync } from "node:fs";
 import { join, relative } from "node:path";
+import { sinkSecretsRegistry } from "@pithy-sh/audit/src/ship/secrets";
 import { callerTokenRegistry } from "@pithy-sh/auth/src/caller/request";
 import { authSecretsRegistry } from "@pithy-sh/auth/src/instance/secrets";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
@@ -67,6 +68,7 @@ const PACKAGES = join(import.meta.dirname, "..", "..", "..", "..", "packages");
  * rather than calling it, and `packages/secrets/src/index.ts` only re-exports the name.
  */
 const REGISTRY_SITES = [
+  "audit/src/ship/secrets.ts",
   "auth/src/caller/request.ts",
   "auth/src/instance/secrets.ts",
   "email/src/crypto/signingKey.ts",
@@ -109,6 +111,18 @@ function registrySites(): string[] {
  * both halves.
  */
 const SHIPPED_REGISTRIES: Record<string, { site: string; registry: SecretRegistry }> = {
+  // Built from the adopter's sinks (#824): each a token obtained from the receiver's console, so nothing to mint.
+  audit: {
+    site: "audit/src/ship/secrets.ts",
+    registry: sinkSecretsRegistry({
+      siem: {
+        profile: "splunk-hec",
+        url: "https://splunk.example.com/services/collector",
+        secret: "hec-token",
+        detail: false,
+      },
+    }),
+  },
   auth: { site: "auth/src/instance/secrets.ts", registry: authSecretsRegistry },
   // Opt-in: an adopter spreads it into `secrets({ registry })` when a resolver verifies caller tokens (#560).
   "auth caller token": { site: "auth/src/caller/request.ts", registry: callerTokenRegistry },
@@ -214,6 +228,8 @@ describe("the registries this file claims to read are the ones the kit ships", (
     // whose arbitrary secret silently disappeared would turn its case from a real check into an empty
     // one, and nothing else here would notice.
     expect(Object.fromEntries(REGISTRIES.map(([name, registry]) => [name, declaredMintable(registry)]))).toEqual({
+      // A sink's token is issued by the receiver — Splunk, Datadog, the webhook's owner — never minted (#824).
+      audit: [],
       auth: ["auth-session-secret"],
       // Obtained, not minted: the backend that signs with it lives outside the project and must hold the
       // same value, and nothing in the kit hands a minted value back out (#560).

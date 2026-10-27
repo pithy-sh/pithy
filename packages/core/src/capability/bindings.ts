@@ -230,6 +230,45 @@ const TARGET = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const NAMED_RESOURCE_KINDS = new Set<string>(FEATURE_RESOURCE_KINDS);
 
 /**
+ * **How a Worker consumes a queue it also produces to (#824).**
+ *
+ * A consumer is half of the queue's own configuration — Cloudflare reads it off the `queues.consumers` entry, not
+ * off the code — so it is declared beside the producer binding and written with it, by the same writer. The
+ * dead-letter queue is named by **binding**, never by queue name: the name is `<project>-<env>-<thing>`, composed
+ * per environment by the same namer that names the producer's, so a spec that stated it would be one environment's.
+ *
+ * `maxRetries` is bounded by what Cloudflare Queues accepts (0 to 100), and the capability's handler reads the same
+ * number to know a message's last attempt, which is the moment it can count one as dead-lettered.
+ */
+export const QueueConsumerSpec = z
+  .object({
+    deadLetter: z
+      .string()
+      .min(1)
+      // A binding name, and narrowed to one: a manifest is third-party data, and this string is composed into the
+      // dead-letter queue's name in the adopter's `wrangler.jsonc`.
+      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "A dead-letter queue is named by its binding: letters, digits and `_`.")
+      .describe(
+        "The binding of the queue a message goes to once its retries are spent. Declared as a `queue` binding of its own, so `pithy provision` creates it; its queue name is composed the same way as this one's.",
+      ),
+    maxRetries: z
+      .number()
+      .int()
+      .min(0)
+      .max(100)
+      .describe("How many times a failed message is retried before it is dead-lettered. Cloudflare allows 0 to 100."),
+    maxBatchSize: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .optional()
+      .describe("The most messages one invocation of the handler receives. Absent leaves Cloudflare's default."),
+  })
+  .describe("How a Worker consumes a queue it produces to: where exhausted messages go, and how often one is retried.");
+export type QueueConsumerSpec = z.infer<typeof QueueConsumerSpec>;
+
+/**
  * Declares a Cloudflare binding a capability requires in the Worker env. The authoring
  * shape lets `optional` be omitted (defaults false); `createBackend` normalizes via parse.
  */
@@ -308,6 +347,9 @@ export const BindingSpec = z
       .describe(
         "The `<thing>` segment of this resource's name, when it is not the kebabbed binding name. Absent is the ordinary case and means the binding name is the segment (`EMAIL_SUPPRESSIONS` → `email-suppressions`). Declare it where the two must differ: `SUPPORT_BUCKET` backs `<project>-global-support`, because the binding keeps `_BUCKET` for whoever reads `env.SUPPORT_BUCKET` in a Worker while the resource drops it — `r2` is already the composed name's kind, so the suffix repeats it. Meaningful only for a `d1`, `kv`, `r2` or `queue` binding.",
       ),
+    consumer: QueueConsumerSpec.optional().describe(
+      "That this Worker also **consumes** the queue it produces to, and how: the queue its exhausted messages go to and how many times one is retried first. Written as the `queues.consumers` entry beside the producer, so the queue's handler is the Worker's own `queue` export (`Capability.queue`). Absent, the Worker only sends. Meaningful only for a `queue` binding.",
+    ),
   })
   .describe("Declares a Cloudflare binding a capability requires in the Worker env.")
   .check((ctx) => {
@@ -374,6 +416,25 @@ export const BindingSpec = z
         input: ctx.value,
         path: ["target"],
         message: `Binding "${ctx.value.name}" needs a target — the ${ctx.value.type} resource it addresses, written as \`${target.field}\`.`,
+      });
+    }
+    // A consumer is the queue's configuration, so on any other kind it describes nothing a writer emits.
+    const consumer = ctx.value.consumer;
+    if (consumer !== undefined && ctx.value.type !== "queue") {
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value,
+        path: ["consumer"],
+        message: `Binding "${ctx.value.name}" declares a consumer, which only a queue binding has — this one is a ${ctx.value.type}.`,
+      });
+    }
+    // Dead-lettering into the queue a message just failed out of is a retry loop with no end, so it is refused.
+    if (consumer !== undefined && consumer.deadLetter === ctx.value.name) {
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value,
+        path: ["consumer", "deadLetter"],
+        message: `Queue "${ctx.value.name}" names itself as its dead-letter queue. Declare a second queue binding for it.`,
       });
     }
     if (target === undefined && ctx.value.target !== undefined) {

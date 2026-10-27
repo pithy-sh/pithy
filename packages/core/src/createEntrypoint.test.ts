@@ -361,3 +361,36 @@ describe("createEntrypoint boot hooks", () => {
     expect(order).toEqual(["compose", "boot"]);
   });
 });
+
+describe("createEntrypoint queue", () => {
+  test("no queue handler is exposed when no capability consumes one", () => {
+    const cap = defineCapability({ name: "quiet", requiredBindings: [] });
+    expect(createEntrypoint({ capabilities: [cap] }).queue).toBeUndefined();
+  });
+
+  test("a capability's consumer receives the messages that name it (#824)", async () => {
+    const seen: string[] = [];
+    const cap = defineCapability({
+      name: "audit",
+      requiredBindings: [],
+      queue: async (messages) => {
+        for (const message of messages) {
+          seen.push(message.id);
+          message.ack();
+        }
+      },
+    });
+    const ack = vi.fn();
+    const entry = createEntrypoint({ capabilities: [cap] });
+    await entry.queue?.(
+      {
+        queue: "acme-prod-audit-ship",
+        messages: [{ id: "m1", body: { capability: "audit" }, attempts: 1, ack, retry: vi.fn() }],
+      },
+      {},
+      ctx,
+    );
+    expect(seen).toEqual(["m1"]);
+    expect(ack).toHaveBeenCalled();
+  });
+});
