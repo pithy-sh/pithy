@@ -87,6 +87,38 @@ export const COMMANDS = {
       }
     ]
   },
+  "backup": {
+    "positionals": [],
+    "flags": {
+      "--env": {
+        "type": "string",
+        "required": false,
+        "repeatable": false,
+        "default": "dev"
+      },
+      "--worker": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--binding": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--output": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
   "cloudflare connect": {
     "positionals": [],
     "flags": {
@@ -1443,6 +1475,49 @@ export const COMMANDS = {
         "default": "dev"
       },
       "--destroy-retained": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
+  "restore": {
+    "positionals": [
+      {
+        "name": "dir",
+        "required": true,
+        "variadic": false
+      }
+    ],
+    "flags": {
+      "--env": {
+        "type": "string",
+        "required": false,
+        "repeatable": false,
+        "default": "dev"
+      },
+      "--worker": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--binding": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--database": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--group": {
         "type": "string",
         "required": false,
         "repeatable": false

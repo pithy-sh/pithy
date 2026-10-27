@@ -88,23 +88,23 @@ export async function loadSupport(projectDir: string): Promise<SupportModule> {
  * modules are only needed by `ensureSearchIndex` — and `loadSupport` is already on the hot path of
  * every other step, where paying for two more dynamic imports buys nothing.
  */
-async function loadSupportSearch(
+export async function loadSupportSearch(
   projectDir: string,
 ): Promise<
-  typeof import("@pithy-sh/support/src/store/searchIndex") &
-    typeof import("@pithy-sh/support/src/data/tables") &
-    typeof import("@pithy-sh/support/src/store/search")
+  typeof import("@pithy-sh/support/src/store/searchIndex") & typeof import("@pithy-sh/support/src/store/provisionIndex")
 > {
   try {
-    const [searchIndex, tables, search] = await Promise.all([
+    const [searchIndex, provision] = await Promise.all([
       kitImport<typeof import("@pithy-sh/support/src/store/searchIndex")>(
         projectDir,
         "@pithy-sh/support/src/store/searchIndex",
       ),
-      kitImport<typeof import("@pithy-sh/support/src/data/tables")>(projectDir, "@pithy-sh/support/src/data/tables"),
-      kitImport<typeof import("@pithy-sh/support/src/store/search")>(projectDir, "@pithy-sh/support/src/store/search"),
+      kitImport<typeof import("@pithy-sh/support/src/store/provisionIndex")>(
+        projectDir,
+        "@pithy-sh/support/src/store/provisionIndex",
+      ),
     ]);
-    return { ...searchIndex, ...tables, ...search };
+    return { ...searchIndex, ...provision };
   } catch (error) {
     throw await capabilityLoadError("support", "@pithy-sh/support", error, projectDir);
   }
@@ -365,45 +365,14 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
    * than assumed, so the result reports what actually changed instead of what was attempted.
    */
   async ensureSearchIndex(env: ManagedEnvironment): Promise<{ created: boolean; dropped: boolean; repaired: boolean }> {
-    const {
-      supportDatabase,
-      createSearchIndex,
-      dropSearchIndex,
-      reindexAll,
-      searchIndexAction,
-      searchIndexState,
-      SEARCH_OBJECTS,
-      SEARCH_TABLE,
-    } = await loadSupportSearch(this.#projectDir);
+    const { provisionSearchIndex, SEARCH_TABLE } = await loadSupportSearch(this.#projectDir);
     const { appDatabaseId } = await this.#resolveEnv(env);
-    const database = this.#cf.d1(appDatabaseId);
-
-    // One read for the table and the three triggers. `sqlite_master` holds both kinds, so the `type`
-    // filter is what the names carry rather than a column — and the names come from the capability, so
-    // a doctor and a provisioner cannot disagree about what provisioned means.
-    const listed = await database
-      .prepare(`SELECT name FROM sqlite_master WHERE name IN (${SEARCH_OBJECTS.map(() => "?").join(", ")})`)
-      .bind(...SEARCH_OBJECTS)
-      .all<{ name: string }>();
-    const action = searchIndexAction(
-      searchIndexState((listed.results ?? []).map((row) => row.name)),
-      this.#supportConfig.search.fts,
-    );
+    // The capability's own step, which `pithy restore` runs too (#848): one read of the table and its three
+    // triggers, the decision, and the change — a create or a repair backfills straight away, because an index
+    // that exists and is empty answers "no matches" while the `LIKE` fallback no longer fires.
+    const action = await provisionSearchIndex(this.#cf.d1(appDatabaseId), this.#supportConfig.search.fts);
     if (action === "none") return { created: false, dropped: false, repaired: false };
 
-    const db = supportDatabase(database);
-    if (action === "drop") {
-      await dropSearchIndex(db);
-    } else {
-      await createSearchIndex(db);
-      // **Backfilled immediately, on a create and on a repair alike.** An index created over messages
-      // that already exist is empty, and because the table now exists the runtime's `LIKE` fallback
-      // stops firing — so the inbox would answer "no matches" for a term plainly in the body. Creating
-      // without populating turns the feature on and the results off, which is the one direction a
-      // filter must never fail in. A repair has the same hole for the same reason: the messages written
-      // between the deploy and this run had no trigger to fire for them.
-      await reindexAll(db);
-    }
     await this.#audit({
       environment: env,
       action:

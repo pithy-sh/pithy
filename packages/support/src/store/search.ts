@@ -7,12 +7,12 @@ import { SUPPORT_MESSAGES_TABLE, type SupportDatabase } from "../data/tables";
 /**
  * Text search over the inbox — two backends behind one predicate.
  *
- * **`LIKE` is the default and FTS5 is the opt-in**, which is the opposite of what it looks like it
- * should be. The reason is in `store/searchIndex.ts`: an FTS5 virtual table anywhere in a D1
- * database makes `wrangler d1 export` refuse to dump *the whole database*, so turning it on by
- * default would quietly cost every adopter their backup story for tables that have nothing to do
- * with support. `LIKE` is an unindexed scan and is completely adequate for an inbox measured in
- * thousands of messages, which is what this capability is for.
+ * **FTS5 is the default and `LIKE` is the fallback** (#848). The index lives in a virtual table that
+ * `pithy support provision` creates beside its triggers, so a project that has not provisioned it — or
+ * that set `search.fts: false` — searches with an unindexed `LIKE` scan, which is adequate for an inbox
+ * measured in thousands of messages. It was the other way round while an FTS5 table made
+ * `wrangler d1 export` refuse the whole database; `pithy backup` leaves the index out and `pithy restore`
+ * rebuilds it, so that cost is gone.
  *
  * Both paths return a **predicate over `pithy_support_threads`**, not a list of ids, so search
  * composes with the category/archived filters and — crucially — with cursor pagination. Returning

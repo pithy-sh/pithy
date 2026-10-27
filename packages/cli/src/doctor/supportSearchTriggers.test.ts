@@ -114,6 +114,22 @@ describe("checkSupportSearchTriggers", () => {
     expect(lines[0]).toContain("pithy support provision");
   });
 
+  test("search.fts on with no index at all is a finding: search is the LIKE scan until re-provisioned (#848)", async () => {
+    // `search.fts` is on by default now, so an upgraded project that has not run `pithy support provision`
+    // has no index and searches with the `LIKE` fallback. That is not an outage, and it is not what the
+    // project asked for either — so it is named, per environment, with the command that builds it.
+    const check = await checkSupportSearchTriggers(options({ readSearchObjects: async () => [] }));
+
+    expect(check.state).toBe("findings");
+    expect(check.environments.every((entry) => entry.state === "unprovisioned")).toBe(true);
+    const lines = describeSupportSearchTriggers(check);
+    expect(lines).toHaveLength(2);
+    expect(lines.every((line) => line.includes("LIKE") && line.includes("pithy support provision"))).toBe(true);
+    expect(
+      supportSearchFix({ env: "prod", worker: "api", directory: dirOf("api"), state: "unprovisioned" }),
+    ).not.toBeNull();
+  });
+
   test("half a trigger set is drift too, and the line says which half is missing is not the point", async () => {
     const check = await checkSupportSearchTriggers(
       options({ readSearchObjects: async () => ["pithy_support_search", SEARCH_TRIGGERS[0]] }),
@@ -130,7 +146,7 @@ describe("checkSupportSearchTriggers", () => {
     // under this issue's contract that abort takes the message write down with it. So every reply and
     // every inbound message fails, and the pair that must never separate has separated. A hand-dropped
     // table, a half-finished provision or a restored D1 backup all land here. Reporting it `ok` is the
-    // one answer that cannot be right. Distinct from no index at all, which stays `ok` by design.
+    // one answer that cannot be right. Distinct from no index at all, which is `unprovisioned`.
     const check = await checkSupportSearchTriggers(options({ readSearchObjects: async () => [...SEARCH_TRIGGERS] }));
 
     expect(check.state).toBe("findings");

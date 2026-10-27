@@ -37,10 +37,12 @@ import type { RemoteSkip } from "./environmentMigrations";
  * (#595) and read against its own `database_id`, so a project whose staging was re-provisioned and whose
  * production was not says exactly that rather than borrowing either answer for the other.
  *
- * ## Six states, and no silent pass among them
+ * ## Seven states, and no silent pass among them
  *
  * - **`ok`** — the table and all three triggers are there.
  * - **`drift`** — the table is there and the triggers are not, in whole or in part. The finding.
+ * - **`unprovisioned`** — neither the table nor a trigger is there, so search is the `LIKE` fallback. A
+ *   finding too since `search.fts` defaults on (#848): it is every upgraded project until it re-provisions.
  * - **`not-provisioned`** — that environment's stanza has no app `DB` `database_id`, so there is no
  *   database to ask. Read from files, so it is true offline too.
  * - **`skipped`** — the read was not attempted, because the run is offline or holds no Cloudflare
@@ -103,6 +105,17 @@ export type EnvironmentSearchIndex =
       env: string;
       worker: string;
       directory: WorkerDir;
+      /**
+       * `search.fts` is on and neither the table nor a trigger is there (#848). Search answers with the
+       * `LIKE` fallback, so nothing fails — but it is not the search the project asked for, and since
+       * `search.fts` defaults on, it is where every upgraded project lands until it re-provisions.
+       */
+      state: "unprovisioned";
+    }
+  | {
+      env: string;
+      worker: string;
+      directory: WorkerDir;
       /** That environment's stanza names no app database, so there is nothing to ask. */
       state: "not-provisioned";
     }
@@ -137,7 +150,7 @@ export type EnvironmentSearchIndex =
  * with several is refused without. Every other state is not a fault and names nothing.
  */
 export function supportSearchFix(answer: EnvironmentSearchIndex): Command | null {
-  if (answer.state !== "drift" && answer.state !== "orphaned-triggers") return null;
+  if (answer.state !== "drift" && answer.state !== "orphaned-triggers" && answer.state !== "unprovisioned") return null;
   return pithyCommand("support provision", { flags: { "--worker": answer.directory } });
 }
 
@@ -303,17 +316,17 @@ export async function checkSupportSearchTriggers(
         continue;
       }
       const state = names.searchIndexState(present);
-      // **A table that is not there is not drift — unless its triggers outlived it.** `search.fts` on
-      // with no index at all is the state the runtime already answers for: `listThreads` falls back to a
-      // `LIKE` scan and logs the same remedy, so reporting it here would double a finding that is not
-      // this check's. Triggers standing over a missing table is the opposite case and the worst one the
+      // **A table that is not there is `unprovisioned` — unless its triggers outlived it.** `search.fts` on
+      // with no index at all searches with the `LIKE` fallback, which works; but `search.fts` defaults on
+      // since #848, so this is where every upgraded project lands until it runs `pithy support provision`,
+      // and the line is how it learns. Triggers standing over a missing table is the opposite case and the worst one the
       // check can meet — the trigger body inserts into `pithy_support_search`, and under this issue's
       // contract that `no such table` aborts the message write rather than being swallowed. So every
       // reply and every inbound message fails. Collapsing it into `ok` on the strength of `!state.table`
       // called a total write outage healthy.
       if (!state.table) {
         if (state.triggers === "none") {
-          answers.push({ ...here, state: "ok" });
+          answers.push({ ...here, state: "unprovisioned" });
           continue;
         }
         answers.push({ ...here, state: "orphaned-triggers", triggers: state.triggers });
@@ -328,7 +341,11 @@ export async function checkSupportSearchTriggers(
   }
 
   if (answers.length === 0) return { state: "not-applicable", environments: [] };
-  if (answers.some((answer) => answer.state === "drift" || answer.state === "orphaned-triggers")) {
+  if (
+    answers.some(
+      (answer) => answer.state === "drift" || answer.state === "orphaned-triggers" || answer.state === "unprovisioned",
+    )
+  ) {
     return { state: "findings", environments: answers };
   }
   if (answers.every((answer) => answer.state === "ok")) return { state: "ok", environments: answers };
@@ -359,6 +376,11 @@ export function describeSupportSearchTriggers(check: SupportSearchTriggersCheck)
       case "orphaned-triggers":
         lines.push(
           `${answer.env}: pithy_support_search is gone and its triggers are not, so every message write fails. Run ${supportSearchFix(answer)}.`,
+        );
+        break;
+      case "unprovisioned":
+        lines.push(
+          `${answer.env}: search.fts is on and pithy_support_search is not provisioned, so search is a LIKE scan. Run ${supportSearchFix(answer)}.`,
         );
         break;
       case "not-provisioned":

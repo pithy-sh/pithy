@@ -1802,3 +1802,99 @@ export async function dropCapabilityTables(options: DropCapabilityOptions): Prom
   });
   return run?.databases ?? [];
 }
+
+/**
+ * One physical D1 in scope, as a data command sees it: where it is bound, what migrates into it, and the
+ * capabilities of every Worker bound to it. What {@link withProjectDatabases} hands its body.
+ */
+export interface ProjectDatabase {
+  /** The first entry's D1 binding — the name an operator recognizes. */
+  binding: string;
+  /** The first entry's database name — a capability's `databases` key. */
+  database: string;
+  /** The remote `database_id` it resolves to. Absent for `dev`, whose stores are local. */
+  databaseId?: string;
+  /** The local store or remote id this run reads and writes. Differs from the stanza's only when retargeted. */
+  target: string;
+  /** Every Worker bound to it, in report order. */
+  workers: string[];
+  /** The capabilities of those Workers, deduplicated by name, libraries first. */
+  capabilities: Capability[];
+  /** The merged, ordered provider — every migration this project would apply to it. */
+  provider: MigrationProvider;
+}
+
+/** Options for {@link withProjectDatabases}: the fan-out, plus where to point each database instead. */
+export interface ProjectDatabasesOptions extends MigrationFanOutOptions {
+  /**
+   * Check the databases in scope before any is opened, or any retarget resolved: what each is bound as and
+   * what migrates into it, with no D1 behind it yet. A throw stops the run there, so a refusal it makes
+   * opens, creates and writes nothing — `pithy restore` compares its migrations here, before it creates a
+   * recovery database (#848).
+   */
+  beforeOpen?: (databases: ReadonlyArray<Omit<ProjectDatabase, "target">>) => Promise<void>;
+  /**
+   * Point a database somewhere other than its stanza names — `pithy restore --database` (#848). Answers the
+   * store or remote id to open instead, or `undefined` to leave it where it is.
+   */
+  retarget?: (database: Omit<ProjectDatabase, "target" | "capabilities" | "provider">) => string | undefined;
+}
+
+/**
+ * **Open every database in scope at once, through the driver `pithy migrate` uses, and hand them to `body`.**
+ *
+ * The seam behind `pithy backup` and `pithy restore` (#848): the same fan-out, grouping and driver as
+ * {@link migrateProject}, so it reaches exactly the D1s a migrate would — the local Miniflare store for `dev`,
+ * the remote database over REST otherwise — and a database two Workers share is opened once. All of them at
+ * once, rather than one at a time, because a restore checks every database before it writes to any. It
+ * claims, applies and reads nothing itself: what `body` does is the caller's.
+ */
+export async function withProjectDatabases<T>(
+  options: ProjectDatabasesOptions,
+  body: (databases: Array<{ database: ProjectDatabase; d1: D1Database }>) => Promise<T>,
+): Promise<T> {
+  const context = await contextFor(options);
+  const scoped = await scopedGroups(context);
+  const described = scoped.map((group) => {
+    const workers = [...new Set(group.entries.map((entry) => entry.worker))];
+    const capabilities = new Map<string, Capability>();
+    for (const worker of context.groupWorkers.filter((one) => workers.includes(one.name))) {
+      for (const capability of worker.capabilities) {
+        if (!capabilities.has(capability.name)) capabilities.set(capability.name, capability);
+      }
+    }
+    const identity = {
+      binding: group.binding,
+      database: group.database,
+      ...(group.databaseId !== undefined ? { databaseId: group.databaseId } : {}),
+      workers,
+    };
+    return { group, identity, capabilities: [...capabilities.values()] };
+  });
+  await options.beforeOpen?.(
+    described.map(({ group, identity, capabilities }) => ({ ...identity, capabilities, provider: group.provider })),
+  );
+  const groups = described.map((entry) => {
+    const moved = options.retarget?.(entry.identity);
+    return moved === undefined ? entry : { ...entry, group: { ...entry.group, id: moved, databaseId: moved } };
+  });
+  const driver = await driverFor(
+    context,
+    groups.map((entry) => entry.group),
+  );
+  try {
+    return await body(
+      groups.map(({ group, identity, capabilities }) => ({
+        database: {
+          ...identity,
+          target: group.databaseId ?? group.id,
+          capabilities,
+          provider: group.provider,
+        },
+        d1: driver.database(group),
+      })),
+    );
+  } finally {
+    await driver.dispose();
+  }
+}

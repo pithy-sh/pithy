@@ -47,6 +47,8 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | `pithy provision <--env <name> \| --feature>` | Create an environment's own Cloudflare resources — one per binding name across every Worker — write their ids into each Worker's config, and migrate. **One job, two spellings, exactly one of them required:** `--env` for an environment the project declares, `--feature` for the one this branch gets. Idempotent and adopting: a resource of the right name is taken up rather than duplicated. Every run states the file it wrote and whether that file is committed — `--env`'s ids are source in the tracked `wrangler.jsonc`, `--feature`'s are a build artifact under the already-ignored `.wrangler/`. `deploy` refuses and names this command when a binding has no id; production takes a type-to-confirm phrase that `--yes` never replaces (see [`commands/provision.md`](commands/provision.md)) |
 | `pithy feature` | Feature environment lifecycle: `create` (local worktree, ports, migrate + seed), `sync` (make an existing worktree ready: its ports, then what `pithy setup` does), `destroy` (tear it all down). All three derive the feature from the checked-out branch. Its live Cloudflare environment is `pithy provision --feature`'s |
 | `pithy env [--worker <name>]` | Report each Worker's deployment environments (`dev`/`staging`/`prod`), their bindings, resolved ids, and dashboard links — read-only, switches nothing |
+| `pithy backup [--worker <name>] [--binding <binding>] [--output <dir>]` | Back up every D1 an `--env`'s Workers bind, one folder per database: `migrations.json` (the kit version and every applied migration), `data.sql` (rows only), `schema.sql` (what no migration makes) and `manifest.json`. FTS5 indexes, their shadow tables and the triggers that feed them are left out, found from the schema, so a database holding one backs up. A row over D1's 100,000-byte statement limit is kept, named by file and line, and the run exits 1 (see [`commands/backup.md`](commands/backup.md)) |
+| `pithy restore <dir> [--worker <name>] [--binding <binding>] [--database <name>]` | Restore a backup into an empty D1: migrate, make the tables no migration owns, load the rows with every trigger out of the way, then rebuild what the backup left out — support's index through `pithy support provision`'s own code. Refuses a backup whose migrations differ from this CLI's, a database holding any table, and a backup D1 cannot take back. `--database` restores into a fresh recovery database (see [`commands/restore.md`](commands/restore.md)) |
 | `pithy dashboard <connect\|rotate\|revoke-key\|revoke-trust\|disconnect\|status>` | Register, rotate, revoke, and inspect a management client's access to this project — project-wide and **per environment**, never per Worker. `connect` resolves the Worker's address and the seam's base path from the project (it prints both and where they came from; `--worker-url` overrides, and `--worker <name>` is required when a project has several Workers), runs a browser device-code flow, writes the trusted public key into your own D1, and reports connected only once a signed ping round-trips; `--public-key` registers a key you generated yourself, with no dashboard involved; `--oidc-issuer` registers a workload trust — no keypair, no dashboard, and awaiting a first call rather than connected. `revoke-key` pulls one leaked key and `revoke-trust` one trust, each leaving the connection standing; `disconnect` removes the lot. All three are local, immediate, and need nothing from the client. See `docs/CONTROL-PLANE.md` |
 | `pithy deploy` | Deploy to Cloudflare Workers. A Worker carrying a UI builds it first — its manifest's `ui.build`, then `wrangler deploy` (see [`commands/ui.md`](commands/ui.md)) |
 | `pithy contract [--worker <name>] [--out <dir>] [--env <name>]` | Write each Worker's OpenAPI document, read off the app it composes: every route's parameters, body, responses and verification, with every field's description. A Worker that serves a socket gets an AsyncAPI document beside it, with every frame. A client in any language generates its calls from them (see [`commands/contract.md`](commands/contract.md)) |
@@ -188,6 +190,7 @@ One page per command, under [`docs/commands/`](commands/). Every page carries th
 |---|---|
 | `pithy add` | [`commands/add.md`](commands/add.md) — Install a capability into a Worker |
 | `pithy alias` | [`commands/alias.md`](commands/alias.md) — Install or remove the `p.` shortcut |
+| `pithy backup` | [`commands/backup.md`](commands/backup.md) — Back up every D1 an environment's Workers bind |
 | `pithy cloudflare` | [`commands/cloudflare.md`](commands/cloudflare.md) — Sign in to Cloudflare, and choose which session each directory uses |
 | `pithy completion` | [`commands/completion.md`](commands/completion.md) — Install tab completion, or print a shell's script |
 | `pithy contract` | [`commands/contract.md`](commands/contract.md) — Write each Worker's OpenAPI and AsyncAPI documents |
@@ -206,6 +209,7 @@ One page per command, under [`docs/commands/`](commands/). Every page carries th
 | `pithy privacy` | [`commands/privacy.md`](commands/privacy.md) — Declare privacy classes and find unmarked fields |
 | `pithy provision` | [`commands/provision.md`](commands/provision.md) — Create an environment's own Cloudflare resources, wire them into each Worker, then migrate |
 | `pithy remove` | [`commands/remove.md`](commands/remove.md) — Unwire a capability. Manual only |
+| `pithy restore` | [`commands/restore.md`](commands/restore.md) — Restore a backup into an empty D1 |
 | `pithy schema` | [`commands/schema.md`](commands/schema.md) — Describe every command, flag, payload and error code as JSON |
 | `pithy secrets` | [`commands/secrets.md`](commands/secrets.md) — Create, rotate, edit, and provision the secret registry |
 | `pithy seed` | [`commands/seed.md`](commands/seed.md) — Seed an environment from your Zod-typed fixtures |
@@ -918,6 +922,8 @@ COMMANDS
    provision    Create an environment's own Cloudflare resources, wire them into each Worker, then migrate
       deploy    Deploy to Cloudflare Workers
          env    Inventory every worker's environments: bindings, ids, provisioned state, dashboard links
+      backup    Back up every D1 an environment's Workers bind
+     restore    Restore a backup into an empty D1
   cloudflare    Sign in to Cloudflare, and choose which session each directory uses
        token    Mint and manage scoped Cloudflare API tokens
    dashboard    Connect, rotate, revoke, and inspect a management client (control-plane seam)

@@ -327,19 +327,19 @@ export type SupportReplyConfig = z.output<typeof SupportReplyConfig>;
 /**
  * How text search is answered.
  *
- * The one setting here has a cost an adopter must opt into knowingly, which is why it is a setting
- * at all rather than a decision this package made for them.
+ * FTS5 by default since `pithy backup` and `pithy restore` handle the index (#848). It stays a setting
+ * because the `LIKE` scan is still the right answer for a project that wants no virtual table at all.
  */
 export const SupportSearchConfig = z
   .object({
     fts: z
       .boolean()
-      .default(false)
+      .default(true)
       .describe(
-        "Build a SQLite FTS5 index over message subjects and bodies. **Off by default, and the reason is not performance.** `wrangler d1 export` refuses to dump any database containing an FTS5 virtual table — it fails outright rather than skipping the table — and the check runs server-side across the whole database before `--table` filtering, so turning this on takes your **entire app database's** export with it. A failed attempt has also been reported to leave the database inaccessible until it clears. If you do not use `wrangler d1 export`, none of that reaches you and FTS5 is the better search. Safe to toggle either way: the index is derived rather than migrated, so `pithy support provision` creates or drops it to match — and until you re-provision, search falls back to the `LIKE` scan rather than failing.",
+        "Build a SQLite FTS5 index over message subjects and bodies — a ranked word search instead of an unindexed `LIKE` scan. **On by default.** A plain `wrangler d1 export` of a database holding an FTS5 table fails outright, so `pithy backup` leaves the index and its triggers out and `pithy restore` rebuilds them from `pithy_support_messages`; the bare `wrangler` route has to skip it by hand. The index is derived rather than migrated, so `pithy support provision` creates or drops it to match this flag, and until a project re-provisions, search falls back to the `LIKE` scan and `pithy doctor` names the environment.",
       ),
   })
-  .describe("Text search settings — the `LIKE` scan by default, FTS5 as a deliberate opt-in.");
+  .describe("Text search settings — FTS5 by default, the `LIKE` scan when it is off or not yet provisioned.");
 export type SupportSearchConfig = z.output<typeof SupportSearchConfig>;
 
 /** The full support configuration. */
