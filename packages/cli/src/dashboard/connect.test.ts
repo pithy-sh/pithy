@@ -15,6 +15,7 @@ import {
   dashboardStatus,
   disconnectDashboard,
   parsePurpose,
+  revokeDashboardTrust,
   rotateDashboardKey,
 } from "./connect";
 import type { ConnectionHealth, DashboardClient } from "./contract";
@@ -66,6 +67,21 @@ function fakeRegistry(initial: ControlPlaneConnection | null = null): Connection
       row = {
         ...row,
         keys: row.keys.map((key) => (key.keyId === keyId ? { ...key, revokedAt: now } : key)),
+        updatedAt: now,
+      };
+      return row;
+    },
+    appendTrust: async (trust, now) => {
+      if (!row) throw new Error("appendTrust called with nothing registered");
+      row = { ...row, trusts: [...(row.trusts ?? []), trust], updatedAt: now };
+      return row;
+    },
+    revokeTrust: async (trustId, now) => {
+      if (!row) throw new Error("revokeTrust called with nothing registered");
+      if (!(row.trusts ?? []).some((trust) => trust.trustId === trustId)) return null;
+      row = {
+        ...row,
+        trusts: (row.trusts ?? []).map((trust) => (trust.trustId === trustId ? { ...trust, revokedAt: now } : trust)),
         updatedAt: now,
       };
       return row;
@@ -1290,5 +1306,330 @@ describe("dashboardStatus — attribution", () => {
   test("nothing registered reports null on all three", async () => {
     const report = await dashboardStatus({ registry: fakeRegistry(), environment: "prod", now: () => NOW });
     expect(report).toMatchObject({ authorizedBy: null, actorKind: null, purpose: null });
+  });
+});
+
+describe("connectDashboard — an OIDC trust (#722)", () => {
+  const GITHUB = "https://token.actions.githubusercontent.com";
+  const JWKS = `${GITHUB}/.well-known/jwks`;
+
+  /** A trust-path connect: no client, no authorize, a principal and a purpose, and an issuer that resolves. */
+  function trustRun(overrides: Record<string, unknown> = {}) {
+    const resolveIssuer = vi.fn(async () => JWKS);
+    return {
+      resolveIssuer,
+      options: {
+        project: "acme",
+        environment: "prod",
+        connect: async () => CONNECT,
+        workerUrl: "https://api.example.com",
+        basePath: "/control-plane",
+        now: () => NOW,
+        principal: async () => "ada@example.com",
+        purpose: "Nightly audit summarizer.",
+        resolveIssuer,
+        trust: { issuer: GITHUB, claims: { repository_id: "1262274726", environment: "prod" }, kind: "agent" as const },
+        ...overrides,
+      },
+    };
+  }
+
+  test("registers a connection holding only a trust, with no keypair, awaiting a first call", async () => {
+    const registry = fakeRegistry();
+    const { options, resolveIssuer } = trustRun();
+    const report = await connectDashboard({ registry, ...options });
+
+    expect(report.status).toBe("awaiting_first_call");
+    expect(report.keyId).toBeNull();
+    expect(resolveIssuer).toHaveBeenCalledWith(GITHUB);
+    const row = registry.current();
+    expect(row?.keys).toEqual([]);
+    expect(row?.trusts).toHaveLength(1);
+    expect(row?.trusts?.[0]).toMatchObject({
+      issuer: GITHUB,
+      jwksUrl: JWKS,
+      claims: { repository_id: "1262274726", environment: "prod" },
+      authorizedBy: "ada@example.com",
+      revokedAt: null,
+      firstCallAt: null,
+    });
+    expect(report.trust?.trustId).toBe(row?.trusts?.[0]?.trustId);
+  });
+
+  test("contacts no management client — none is needed, and one passed is never called", async () => {
+    const client = fakeClient();
+    const spies = Object.fromEntries(Object.keys(client).map((name) => [name, vi.fn()]));
+    const { options } = trustRun();
+    await connectDashboard({
+      registry: fakeRegistry(),
+      ...options,
+      client: spies as unknown as DashboardClient,
+      authorize: vi.fn(),
+    });
+    for (const spy of Object.values(spies)) expect(spy).not.toHaveBeenCalled();
+  });
+
+  test("the audience defaults to the environment's own worker origin", async () => {
+    const registry = fakeRegistry();
+    const { options } = trustRun({ workerUrl: "https://api.example.com/some/path" });
+    await connectDashboard({ registry, ...options });
+    expect(registry.current()?.trusts?.[0]?.audience).toBe("https://api.example.com");
+  });
+
+  test("--oidc-audience overrides the default", async () => {
+    const registry = fakeRegistry();
+    const { options } = trustRun();
+    await connectDashboard({
+      registry,
+      ...options,
+      trust: { ...options.trust, audience: "https://custom.example.com" },
+    });
+    expect(registry.current()?.trusts?.[0]?.audience).toBe("https://custom.example.com");
+  });
+
+  test("records the signed-in session's email on the connection and the trust, with its kind and purpose", async () => {
+    const registry = fakeRegistry();
+    const { options } = trustRun();
+    await connectDashboard({ registry, ...options });
+    expect(registry.current()).toMatchObject({
+      authorizedBy: "ada@example.com",
+      actorKind: "agent",
+      purpose: "Nightly audit summarizer.",
+    });
+  });
+
+  test("is refused without a session, naming pithy cloudflare connect, before anything is resolved or written", async () => {
+    const registry = fakeRegistry();
+    const { options, resolveIssuer } = trustRun({
+      principal: async () => {
+        throw new PreconditionFailedError({
+          message: "Registering a connection needs a signed-in session.",
+          action: "Run `pithy cloudflare connect`.",
+        });
+      },
+    });
+    await expect(connectDashboard({ registry, ...options })).rejects.toThrow(/signed-in session/);
+    expect(resolveIssuer).not.toHaveBeenCalled();
+    expect(registry.current()).toBeNull();
+  });
+
+  test("is refused without --kind on a new connection", async () => {
+    const { options } = trustRun();
+    await expect(
+      connectDashboard({ registry: fakeRegistry(), ...options, trust: { ...options.trust, kind: undefined } }),
+    ).rejects.toThrow(/--oidc-issuer needs --kind/);
+  });
+
+  test("is refused without a purpose on a new connection", async () => {
+    const { options } = trustRun({ purpose: undefined });
+    await expect(connectDashboard({ registry: fakeRegistry(), ...options })).rejects.toThrow(/what this client is for/);
+  });
+
+  test("an unconstrained subject is refused at registration, naming why, and nothing is written", async () => {
+    const registry = fakeRegistry();
+    const { options, resolveIssuer } = trustRun();
+    await expect(connectDashboard({ registry, ...options, trust: { ...options.trust, claims: {} } })).rejects.toThrow(
+      /every workload it serves/,
+    );
+    expect(resolveIssuer).not.toHaveBeenCalled();
+    expect(registry.current()).toBeNull();
+  });
+
+  test("an issuer that does not resolve refuses the registration and writes nothing", async () => {
+    const registry = fakeRegistry();
+    const { options } = trustRun({
+      resolveIssuer: async () => {
+        throw new PithyError({ code: "core/upstream_failed", status: 502, message: "does not resolve" });
+      },
+    });
+    await expect(connectDashboard({ registry, ...options })).rejects.toThrow(/does not resolve/);
+    expect(registry.current()).toBeNull();
+  });
+
+  test("joins a connection that holds a key — one object, two credential kinds — leaving the key and attribution", async () => {
+    const registry = fakeRegistry(existing());
+    const { options } = trustRun({ purpose: undefined });
+    const report = await connectDashboard({ registry, ...options, trust: { ...options.trust, kind: undefined } });
+
+    const row = registry.current();
+    expect(row?.keys.map((k) => k.keyId)).toEqual(["key_1"]);
+    expect(row?.trusts).toHaveLength(1);
+    // The connection's attribution is a fact of its registration; the trust records its own sanctioner.
+    expect(row).toMatchObject({ authorizedBy: "grace@example.com", actorKind: "dashboard" });
+    expect(row?.trusts?.[0]?.authorizedBy).toBe("ada@example.com");
+    expect(report.updated).toBe(true);
+    expect(report.status).toBe("awaiting_first_call");
+  });
+
+  test("joining a connection leaves its grant alone", async () => {
+    const registry = fakeRegistry(existing());
+    const { options } = trustRun({ purpose: undefined });
+    await connectDashboard({ registry, ...options, trust: { ...options.trust, kind: undefined } });
+    expect(registry.current()?.scopes).toEqual(["manifest:read"]);
+  });
+
+  test("--scope on a trust joining a connection is refused, naming --update --scope, and nothing is written", async () => {
+    const registry = fakeRegistry(existing({ scopes: ["manifest:read", "audit:events:read"] }));
+    const { options, resolveIssuer } = trustRun({ purpose: undefined, scopes: ["manifest:read"] });
+    const run = connectDashboard({ registry, ...options, trust: { ...options.trust, kind: undefined } });
+    await expect(run).rejects.toThrow(/already has a connection.*--scope would be ignored/);
+    await expect(run).rejects.toMatchObject({
+      payload: { action: expect.stringMatching(/--update and every --scope/) },
+    });
+    expect(resolveIssuer).not.toHaveBeenCalled();
+    expect(registry.current()?.trusts ?? []).toEqual([]);
+    expect(registry.current()?.scopes).toEqual(["manifest:read", "audit:events:read"]);
+  });
+
+  test("--kind and --purpose on a trust joining a connection are refused rather than dropped", async () => {
+    const registry = fakeRegistry(existing());
+    const { options } = trustRun();
+    await expect(connectDashboard({ registry, ...options })).rejects.toThrow(/--kind, --purpose would be ignored/);
+    expect(registry.current()?.trusts ?? []).toEqual([]);
+  });
+
+  test("a GitHub trust matching only on the job is refused at registration, and nothing is written", async () => {
+    const registry = fakeRegistry();
+    const { options, resolveIssuer } = trustRun();
+    await expect(
+      connectDashboard({ registry, ...options, trust: { ...options.trust, claims: { environment: "production" } } }),
+    ).rejects.toThrow(/describe a job, not whose it is/);
+    expect(resolveIssuer).not.toHaveBeenCalled();
+    expect(registry.current()).toBeNull();
+  });
+
+  test("states the immutable-identifier trade for a name-based match, and registers it", async () => {
+    const registry = fakeRegistry();
+    const { options } = trustRun();
+    const report = await connectDashboard({
+      registry,
+      ...options,
+      trust: { ...options.trust, claims: { repository: "acme/api" } },
+    });
+    expect(registry.current()?.trusts?.[0]?.claims).toEqual({ repository: "acme/api" });
+    expect(report.trust?.notes).toEqual([expect.stringMatching(/repository_id survives a rename/)]);
+  });
+
+  test("a customized template's claim registers cleanly", async () => {
+    const registry = fakeRegistry();
+    const { options } = trustRun();
+    await connectDashboard({
+      registry,
+      ...options,
+      trust: { ...options.trust, claims: { repository_id: "1262274726", "repo_custom:ctx": "acme/api:prod" } },
+    });
+    expect(registry.current()?.trusts?.[0]?.claims).toEqual({
+      repository_id: "1262274726",
+      "repo_custom:ctx": "acme/api:prod",
+    });
+  });
+
+  test("the grant is decided as for a key: the derived default, or the operator's own", async () => {
+    const registry = fakeRegistry();
+    const { options } = trustRun({ scopes: [] });
+    await connectDashboard({ registry, ...options });
+    // An explicitly empty selection is stored as empty, never collapsed into the default.
+    expect(registry.current()?.scopes).toEqual([]);
+  });
+
+  test("a key registered later on a trust-only connection takes the key's issuer", async () => {
+    const registry = fakeRegistry();
+    const { options } = trustRun();
+    await connectDashboard({ registry, ...options });
+    await connectDashboard({
+      registry,
+      ...options,
+      trust: undefined,
+      publicKey: { keyId: "key_9", publicKey: JWK, issuer: "https://agent.example.com", kind: "agent" },
+    });
+    const row = registry.current();
+    expect(row?.issuer).toBe("https://agent.example.com");
+    expect(row?.keys.map((k) => k.keyId)).toEqual(["key_9"]);
+    expect(row?.trusts).toHaveLength(1);
+  });
+});
+
+describe("revokeDashboardTrust", () => {
+  const trust = {
+    trustId: "t-1",
+    issuer: "https://token.actions.githubusercontent.com",
+    jwksUrl: "https://token.actions.githubusercontent.com/.well-known/jwks",
+    audience: "https://api.example.com",
+    claims: { repository_id: "1" },
+    authorizedBy: "ada@example.com",
+    validFrom: NOW,
+    revokedAt: null,
+    firstCallAt: null,
+  };
+
+  test("revokes the trust and states the latency a caller should expect", async () => {
+    const registry = fakeRegistry(existing({ trusts: [trust] }));
+    const report = await revokeDashboardTrust({ registry, environment: "prod", trustId: "t-1", now: () => NOW });
+    expect(report.revoked).toBe(true);
+    expect(report.latency).toMatch(/already minted stays in its holder's hands until it expires/);
+    expect(registry.current()?.trusts?.[0]?.revokedAt).toEqual(NOW);
+  });
+
+  test("answers false for a trust it does not hold", async () => {
+    const registry = fakeRegistry(existing({ trusts: [trust] }));
+    expect((await revokeDashboardTrust({ registry, environment: "prod", trustId: "nope" })).revoked).toBe(false);
+  });
+});
+
+describe("disconnectDashboard — a connection holding a trust", () => {
+  test("says the latency, since tokens already minted outlive the row", async () => {
+    const trust = {
+      trustId: "t-1",
+      issuer: "https://token.actions.githubusercontent.com",
+      jwksUrl: "https://token.actions.githubusercontent.com/.well-known/jwks",
+      audience: "https://api.example.com",
+      claims: { repository_id: "1" },
+      authorizedBy: "ada@example.com",
+      validFrom: new Date("2026-01-01T00:00:00.000Z"),
+      revokedAt: null,
+      firstCallAt: null,
+    };
+    const report = await disconnectDashboard({
+      registry: fakeRegistry(existing({ trusts: [trust] })),
+      environment: "prod",
+    });
+    expect(report.trustLatency).toMatch(/until it expires/);
+  });
+
+  test("says nothing about trusts for a connection that held none", async () => {
+    const report = await disconnectDashboard({ registry: fakeRegistry(existing()), environment: "prod" });
+    expect(report.trustLatency).toBeUndefined();
+  });
+});
+
+describe("dashboardStatus — trusts", () => {
+  test("lists each trust with its claims, and awaiting a first call until one arrives", async () => {
+    const base = {
+      issuer: "https://token.actions.githubusercontent.com",
+      jwksUrl: "https://token.actions.githubusercontent.com/.well-known/jwks",
+      audience: "https://api.example.com",
+      claims: { repository_id: "1" },
+      authorizedBy: "ada@example.com",
+      validFrom: new Date("2026-01-01T00:00:00.000Z"),
+    };
+    const report = await dashboardStatus({
+      registry: fakeRegistry(
+        existing({
+          trusts: [
+            { ...base, trustId: "a", revokedAt: null, firstCallAt: null },
+            { ...base, trustId: "b", revokedAt: null, firstCallAt: NOW },
+            { ...base, trustId: "c", revokedAt: NOW, firstCallAt: NOW },
+          ],
+        }),
+      ),
+      environment: "prod",
+      now: () => NOW,
+    });
+    expect(report.trusts.map((trust) => [trust.trustId, trust.state])).toEqual([
+      ["a", "awaiting_first_call"],
+      ["b", "called"],
+      ["c", "revoked"],
+    ]);
+    expect(report.trusts[0]?.claims).toEqual({ repository_id: "1" });
   });
 });

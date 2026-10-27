@@ -10,10 +10,12 @@ import { audit_0001_init } from "@pithy-sh/audit/src/migrations/0001_init";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneConnection, RegisteredKey } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { activeKeys, findVerifyingKey } from "@pithy-sh/core/src/controlPlane/data/keyLifecycle";
+import type { OidcTrust } from "@pithy-sh/core/src/controlPlane/data/oidcTrust";
 import { controlPlaneDatabase } from "@pithy-sh/core/src/controlPlane/data/tables";
 import { controlplane_0001_init } from "@pithy-sh/core/src/controlPlane/migrations/0001_init";
 import { controlplane_0002_management_origin } from "@pithy-sh/core/src/controlPlane/migrations/0002_management_origin";
 import { controlplane_0003_connection_principal } from "@pithy-sh/core/src/controlPlane/migrations/0003_connection_principal";
+import { controlplane_0004_connection_trusts } from "@pithy-sh/core/src/controlPlane/migrations/0004_connection_trusts";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { Kysely } from "kysely";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
@@ -38,6 +40,7 @@ beforeEach(async () => {
   await controlplane_0001_init.up(controlPlaneDatabase(d1) as unknown as Kysely<unknown>);
   await controlplane_0002_management_origin.up(controlPlaneDatabase(d1) as unknown as Kysely<unknown>);
   await controlplane_0003_connection_principal.up(controlPlaneDatabase(d1) as unknown as Kysely<unknown>);
+  await controlplane_0004_connection_trusts.up(controlPlaneDatabase(d1) as unknown as Kysely<unknown>);
 });
 
 afterEach(async () => {
@@ -64,8 +67,25 @@ function connection(overrides: Partial<ControlPlaneConnection> = {}): ControlPla
     purpose: "Support triage, reading threads and replying.",
     scopes: ["manifest:read", "keys:rotate"],
     keys: [key("key_1", at)],
+    trusts: [],
     createdAt: at,
     updatedAt: at,
+    ...overrides,
+  };
+}
+
+/** One OIDC trust (#722), live and uncalled. */
+function trust(trustId: string, overrides: Partial<OidcTrust> = {}): OidcTrust {
+  return {
+    trustId,
+    issuer: "https://token.actions.githubusercontent.com",
+    jwksUrl: "https://token.actions.githubusercontent.com/.well-known/jwks",
+    audience: "https://api.example.com",
+    claims: { repository_id: "1262274726" },
+    authorizedBy: "ada@example.com",
+    validFrom: new Date("2026-07-01T00:00:00.000Z"),
+    revokedAt: null,
+    firstCallAt: null,
     ...overrides,
   };
 }
@@ -508,6 +528,79 @@ describe("a write records itself", () => {
       actorKind: "agent",
       purpose: "Support triage, reading threads and replying.",
     });
+  });
+
+  test("a trust added is an update naming the trust and the population it admits (#722)", async () => {
+    const { events, record } = recorder();
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
+    await registry.save(connection());
+    const updated = await registry.appendTrust(trust("t-1"), new Date("2026-07-02T00:00:00.000Z"));
+
+    // Beside the key, never instead of it.
+    expect(updated.keys.map((k) => k.keyId)).toEqual(["key_1"]);
+    expect((await registry.read())?.trusts).toEqual([trust("t-1")]);
+    expect(events[1]?.action).toBe("controlplane/connection_updated");
+    expect(metadata(events, 1)).toMatchObject({
+      changed: ["trusts"],
+      registeredTrust: {
+        trustId: "t-1",
+        issuer: "https://token.actions.githubusercontent.com",
+        audience: "https://api.example.com",
+        claims: { repository_id: "1262274726" },
+        trustAuthorizedBy: "ada@example.com",
+      },
+      trustIds: ["t-1"],
+    });
+  });
+
+  test("a trust may join a connection with a live key — no seam route registers a trust", async () => {
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
+    await registry.save(connection());
+    await expect(registry.appendTrust(trust("t-1"), new Date())).resolves.toBeDefined();
+  });
+
+  test("a duplicate trust id is refused, and nothing changes", async () => {
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
+    await registry.save(connection({ trusts: [trust("t-1")] }));
+    await expect(registry.appendTrust(trust("t-1"), new Date())).rejects.toThrow(/already registered/);
+    expect((await registry.read())?.trusts).toEqual([trust("t-1")]);
+  });
+
+  test("a trust revocation is recorded, and says which trusts are still live", async () => {
+    const { events, record } = recorder();
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
+    const at = new Date("2026-07-02T00:00:00.000Z");
+    await registry.save(connection({ trusts: [trust("t-1"), trust("t-2")] }));
+    const updated = await registry.revokeTrust("t-1", at);
+
+    expect(updated?.trusts?.[0]?.revokedAt).toEqual(at);
+    expect((await registry.read())?.trusts?.[0]?.revokedAt).toEqual(at);
+    expect(metadata(events, 1)).toMatchObject({
+      changed: ["trusts"],
+      revokedTrustId: "t-1",
+      liveTrustIdsAfter: ["t-2"],
+    });
+  });
+
+  test("a trust revocation that matched nothing records nothing", async () => {
+    const { events, record } = recorder();
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
+    await registry.save(connection());
+    expect(await registry.revokeTrust("absent", new Date())).toBeNull();
+    expect(events).toHaveLength(1);
+  });
+
+  test("a registration and a disconnect name the trusts the connection held", async () => {
+    const { events, record } = recorder();
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
+    await registry.save(connection({ keys: [], trusts: [trust("t-1")] }));
+    await registry.remove();
+
+    expect(metadata(events, 0)).toMatchObject({
+      registeredKeyIds: [],
+      registeredTrusts: [expect.objectContaining({ trustId: "t-1", claims: { repository_id: "1262274726" } })],
+    });
+    expect(metadata(events, 1)).toMatchObject({ removedTrustIds: ["t-1"] });
   });
 
   test("a re-run of disconnect deletes nothing and records nothing", async () => {

@@ -86,6 +86,12 @@ function undeclaredKeys(schema: unknown, at = "$"): string[] {
  * below, and so does typing one without taking it off.
  */
 const OPEN_SUBTREES = [
+  // An OIDC trust's claims (#722): typed, every value a string, and keyed by claim names that are the identity
+  // provider's vocabulary rather than ours — a customized subject template carries claims no schema here can name,
+  // and refusing one is exactly what a trust must never do. The keys are data, not an undeclared shape.
+  "dashboard connect: $.trust.claims",
+  "dashboard revoke-key: $.connection|0.trusts[].claims",
+  "dashboard status: $.trusts[].claims",
   "dev: $|0.workers",
   "dev: $|4.autostart",
   "doctor: $.cloudflare.accountMismatch|0",

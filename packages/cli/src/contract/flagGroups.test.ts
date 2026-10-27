@@ -104,7 +104,29 @@ const CASES: Record<string, () => Promise<{ exit: number | undefined; message: s
   "dashboard connect: requires --issuer --public-key": () =>
     refusal("dashboard connect", ["--issuer", "https://client.example.com"]),
   "dashboard connect: requires --key-id --public-key": () => refusal("dashboard connect", ["--key-id", "key_1"]),
-  "dashboard connect: requires --kind --public-key": () => refusal("dashboard connect", ["--kind", "agent"]),
+  "dashboard connect: requires --kind --public-key --oidc-issuer": () =>
+    refusal("dashboard connect", ["--kind", "agent"]),
+  "dashboard connect: requires --oidc-claim --oidc-issuer": () =>
+    refusal("dashboard connect", ["--oidc-claim", "repository_id=1"]),
+  "dashboard connect: requires --oidc-audience --oidc-issuer": () =>
+    refusal("dashboard connect", ["--oidc-audience", "https://api.example.com"]),
+  "dashboard connect: atMostOne --oidc-issuer --public-key": () =>
+    refusal("dashboard connect", [
+      "--oidc-issuer",
+      "https://token.actions.githubusercontent.com",
+      "--public-key",
+      "key.jwk",
+      "--issuer",
+      "https://agent.example.com",
+    ]),
+  "dashboard connect: atMostOne --oidc-issuer --update": () =>
+    refusal("dashboard connect", [
+      "--oidc-issuer",
+      "https://token.actions.githubusercontent.com",
+      "--update",
+      "--purpose",
+      "x",
+    ]),
   "dashboard connect: requires --update --worker-url --scope --public-key --purpose": () =>
     refusal("dashboard connect", ["--update"]),
   "deploy: requires --force --env": () => refusal("deploy", ["--force"]),

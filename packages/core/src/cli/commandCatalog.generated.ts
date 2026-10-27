@@ -296,9 +296,54 @@ export const COMMANDS = {
         "type": "string",
         "required": false,
         "repeatable": false
+      },
+      "--oidc-issuer": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--oidc-claim": {
+        "type": "string",
+        "required": false,
+        "repeatable": true
+      },
+      "--oidc-audience": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
       }
     },
     "groups": [
+      {
+        "kind": "requires",
+        "flag": "--oidc-claim",
+        "needs": [
+          "--oidc-issuer"
+        ],
+        "any": false
+      },
+      {
+        "kind": "requires",
+        "flag": "--oidc-audience",
+        "needs": [
+          "--oidc-issuer"
+        ],
+        "any": false
+      },
+      {
+        "kind": "atMostOne",
+        "flags": [
+          "--oidc-issuer",
+          "--public-key"
+        ]
+      },
+      {
+        "kind": "atMostOne",
+        "flags": [
+          "--oidc-issuer",
+          "--update"
+        ]
+      },
       {
         "kind": "requires",
         "flag": "--public-key",
@@ -327,9 +372,10 @@ export const COMMANDS = {
         "kind": "requires",
         "flag": "--kind",
         "needs": [
-          "--public-key"
+          "--public-key",
+          "--oidc-issuer"
         ],
-        "any": false
+        "any": true
       },
       {
         "kind": "requires",
@@ -416,6 +462,48 @@ export const COMMANDS = {
         "repeatable": false
       },
       "--key-id": {
+        "type": "string",
+        "required": true,
+        "repeatable": false
+      },
+      "--yes": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
+  "dashboard revoke-trust": {
+    "positionals": [],
+    "flags": {
+      "--env": {
+        "type": "string",
+        "required": false,
+        "repeatable": false,
+        "default": "dev"
+      },
+      "--worker": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--origin": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      },
+      "--open": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      },
+      "--trust-id": {
         "type": "string",
         "required": true,
         "repeatable": false

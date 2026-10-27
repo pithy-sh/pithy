@@ -2,14 +2,16 @@
 
 _The site renders this for readers: [pithy.sh/docs/cli/commands/dashboard](https://pithy.sh/docs/cli/commands/dashboard). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
 
-Register a management client's access to one of your environments, rotate its key, revoke it, and inspect what is registered.
+Register a management client's access to one of your environments — by a key it holds, or by a trust in a workload's own identity — rotate its key, revoke it, and inspect what is registered.
 
 ## Synopsis
 
 ```
 pithy dashboard connect [--env <environment>] [--worker <name>] [--worker-url <url>] [--scope <scope>]… [--purpose <text>] [--update] [--public-key <file> --issuer <url> --kind <agent|script> [--key-id <id>]] [--project <name>] [--origin <url>] [--no-open] [--json]
+pithy dashboard connect --oidc-issuer <url> --oidc-claim <name=value>… --kind <agent|script> [--oidc-audience <aud>] [--env <environment>] [--worker <name>] [--worker-url <url>] [--scope <scope>]… [--purpose <text>] [--json]
 pithy dashboard rotate [--env <environment>] [--worker <name>] [--origin <url>] [--no-open] [--json]
 pithy dashboard revoke-key --key-id <id> [--env <environment>] [--worker <name>] [--yes] [--origin <url>] [--json]
+pithy dashboard revoke-trust --trust-id <id> [--env <environment>] [--worker <name>] [--yes] [--origin <url>] [--json]
 pithy dashboard disconnect [--env <environment>] [--worker <name>] [--yes] [--local] [--origin <url>] [--no-open] [--json]
 pithy dashboard status [--env <environment>] [--worker <name>] [--verify] [--origin <url>] [--no-open] [--json]
 ```
@@ -20,30 +22,34 @@ pithy dashboard status [--env <environment>] [--worker <name>] [--verify] [--ori
 
 **Registering takes a signed-in session, in every environment.** A `connect` that creates a connection, or puts a new key on one whose every key you revoked, records who authorized it, and reads that from your `pithy cloudflare connect` session — the email `GET /user` names under it. An account token, a session with no email, or no credential at all is refused before anything is written, `--env dev` included. No flag supplies the principal. CI's account token keeps migrating and deploying; it registers nothing.
 
-**What needs what.** `--env dev` resolves the database from a local Miniflare store and needs no Cloudflare account; `--env staging` or `--env prod` reads and writes the environment's real D1 over the REST API, which needs `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. Separately, `connect`, `rotate`, `disconnect`, and `status --verify` call the management client and run a browser device-code flow, which needs a human at a browser. Two paths avoid that: `connect --public-key`, which contacts no dashboard at all, and `disconnect --local`, which skips the courtesy call. `revoke-key` never contacts anyone.
+**What needs what.** `--env dev` resolves the database from a local Miniflare store and needs no Cloudflare account; `--env staging` or `--env prod` reads and writes the environment's real D1 over the REST API, which needs `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. Separately, `connect`, `rotate`, `disconnect`, and `status --verify` call the management client and run a browser device-code flow, which needs a human at a browser. Three paths avoid that: `connect --public-key` and `connect --oidc-issuer`, which contact no dashboard at all, and `disconnect --local`, which skips the courtesy call. `revoke-key` and `revoke-trust` never contact anyone. `--oidc-issuer` does read the issuer's own discovery document, once, to check it.
 
 ## Flags
 
 | Flag | Applies to | Default | Purpose |
 |---|---|---|---|
-| `--env <environment>` | all five | `dev` | The environment whose registration is being read or written |
-| `--worker <name>` | all five | resolved | Which Worker resolves the app database (`apps/<name>`). On `connect` it also names the Worker that composes the admin surface, and is required when the project has several |
-| `--origin <url>` | all five | the connection's own, else `https://app.pithy.sh` | The management client's origin. Re-points every call at a self-hosted one, and records the move |
+| `--env <environment>` | all six | `dev` | The environment whose registration is being read or written |
+| `--worker <name>` | all six | resolved | Which Worker resolves the app database (`apps/<name>`). On `connect` it also names the Worker that composes the admin surface, and is required when the project has several |
+| `--origin <url>` | all six | the connection's own, else `https://app.pithy.sh` | The management client's origin. Re-points every call at a self-hosted one, and records the move |
 | `--worker-url <url>` | `connect` | resolved | Override the resolved Worker URL for this environment. The only way to say so when a proxy fronts your Worker |
 | `--scope <scope>` | `connect` | the seam's own, plus every declared read | Grant one scope, narrowing the default. Repeatable — the raw argv is read, so several survive. `--scope all` grants every scope the Worker composes |
 | `--purpose <text>` | `connect` | asked at a terminal | What this client is for, in one line of plain text, 200 characters at most. Required to register a connection, and refused when absent without a terminal. With `--update`, replaces the stored one |
 | `--update` | `connect` | `false` | Re-point an existing connection's URL, scopes or purpose instead of creating one |
 | `--public-key <file>` | `connect` | — | Register a JWK you generated yourself. No dashboard is contacted |
 | `--issuer <url>` | `connect` | — | With `--public-key`: the `iss` your own client presents. Required on that path, and rejected off it |
-| `--kind <agent\|script>` | `connect` | — | With `--public-key`: what kind of client holds the key. Required to register on that path, and rejected off it — the device-code flow is the dashboard, always |
+| `--kind <agent\|script>` | `connect` | — | With `--public-key` or `--oidc-issuer`: what kind of client it is. Required to register a connection on those paths, and rejected off them — the device-code flow is the dashboard, always |
+| `--oidc-issuer <url>` | `connect` | — | Register a workload trust: the exact `iss` its OIDC tokens carry, an `https` URL. No key and no dashboard. Not with `--public-key` or `--update` |
+| `--oidc-claim <name=value>` | `connect` | asked at a terminal for a known issuer | With `--oidc-issuer`: a claim the workload's token must carry. Repeatable, and at least one is required — an issuer alone accepts every workload it serves. Rejected off that path |
+| `--oidc-audience <aud>` | `connect` | this environment's Worker origin | With `--oidc-issuer`: the `aud` its tokens must name. Rejected off that path |
 | `--key-id <id>` | `connect` | the JWK's `kid` | With `--public-key`: the key id, if the JWK carries none. Rejected off that path |
 | `--key-id <id>` | `revoke-key` | required | The key to revoke, as `status` reports it |
+| `--trust-id <id>` | `revoke-trust` | required | The trust to revoke, as `status` reports it |
 | `--project <name>` | `connect` | `pithy.config.ts`'s `name` | Override the project name sent to the management client |
-| `--yes` | `revoke-key`, `disconnect` | `false` | Answer the confirmation. How CI runs the same command, and required wherever nothing can be asked: without it, `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1` or a run with no terminal fails `input/required` rather than going ahead |
+| `--yes` | `revoke-key`, `revoke-trust`, `disconnect` | `false` | Answer the confirmation. How CI runs the same command, and required wherever nothing can be asked: without it, `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1` or a run with no terminal fails `input/required` rather than going ahead |
 | `--local` | `disconnect` | `false` | Delete the row without telling the management client |
 | `--verify` | `status` | `false` | Prove the connection with a signed ping |
-| `--no-open` | all five, acting on the four that sign in | offers | Never offer to open the approval page. `PITHY_NO_OPEN`, at any value, does the same |
-| `--json` | all five | `false` | One line of machine-readable output. Implies non-interactive: no prompt is ever shown. `--no-input` and `PITHY_NONINTERACTIVE=1` do the same without `--json`, and the `o` key is not offered |
+| `--no-open` | all six, acting on the four that sign in | offers | Never offer to open the approval page. `PITHY_NO_OPEN`, at any value, does the same |
+| `--json` | all six | `false` | One line of machine-readable output. Implies non-interactive: no prompt is ever shown. `--no-input` and `PITHY_NONINTERACTIVE=1` do the same without `--json`, and the `o` key is not offered |
 
 Every subcommand writes its machine output to stdout and its diagnostics — the device code, the waiting line — to stderr, so a `--json` consumer parses one clean line.
 
@@ -67,7 +73,7 @@ It works on `--update` too, which is the case it exists for: widening an existin
 
 ```
 $ pithy dashboard connect --env prod --scope all --json
-{"command":"dashboard.connect","schemaVersion":1,…,"scopes":["manifest:read","keys:rotate","migrations:read","privacy:read","evidence:read","audit:events:read","audit:events:read_detail","support:threads:read","support:threads:archive","support:threads:reply"],…}
+{"command":"dashboard.connect","schemaVersion":2,…,"scopes":["manifest:read","keys:rotate","migrations:read","privacy:read","evidence:read","audit:events:read","audit:events:read_detail","support:threads:read","support:threads:archive","support:threads:reply"],…}
 ```
 
 `--scope all` beside another `--scope` is refused, because they are two answers to one question and keeping either silently would decide an authorization for you.
@@ -90,6 +96,28 @@ Then the device-code flow: a short user code, your browser, your approval. The m
 The client's response is checked, not trusted. A scope it returns that you did not request is a management client trying to widen its own grant, and the connection is refused outright rather than quietly stored narrower.
 
 `--public-key` is the offline path: register a key you generated, with no dashboard involved, and write your own management client against the contract in `@pithy-sh/cli/src/dashboard/contract`. Nothing proves that key — the CLI holds no private half to sign with — so the status is `registered` and the command says so.
+
+### A workload trust instead of a key
+
+`--oidc-issuer` registers an OIDC trust (`docs/AGENT-ACCESS.md` §6.2): a trusted issuer, the audience its tokens must name, and the claims that say which workload a token was minted for. It is for an agent that runs unattended — in CI, a container, a job — where a private key would have to be placed and kept with nobody at a terminal. With a trust there is nothing to place: the workload asks its own identity provider for a short-lived token and presents it on every call.
+
+```
+pithy dashboard connect --env prod --oidc-issuer https://token.actions.githubusercontent.com --oidc-claim repository_id=1262274726 --oidc-claim environment=prod --kind agent --purpose "Nightly audit summarizer."
+```
+
+**At least one claim, and it is the boundary.** An identity provider signs for everybody with the same keys, so a trust with no claim constraint would accept every workload that provider serves. It is refused at registration, naming why. **For a known issuer, one claim must name the workload.** GitHub signs for every repository and GitLab for every project, so a trust matching only on what the job is — `environment=prod`, `ref=refs/heads/main`, `ref_type`, `event_name` — admits anybody who creates a repository with that environment or branch. It is refused, naming the claim to add. The claims that count: for GitHub `repository_id`, `repository`, `repository_owner_id`, `repository_owner`, `sub`, `workflow_ref` and `job_workflow_ref`; for GitLab `project_id`, `project_path`, `namespace_id`, `namespace_path` and `sub`. A custom issuer is held to shape only, because nothing here knows which of its claims name a workload. Match named claims rather than the `sub` string, and prefer an immutable id: `repository_id` over `repository`, `project_id` over `project_path`. A numeric id survives a rename and cannot be claimed by a same-named project elsewhere. A name is accepted, and the command says the trade once.
+
+**Known issuers are asked at a terminal.** For GitHub Actions and GitLab CI, `--oidc-issuer` with no `--oidc-claim` at a terminal asks for the recommended claims one at a time, each with an example. The first, the immutable id, must be answered; the rest may be skipped. Any other issuer is custom: name the claims yourself. A claim no profile knows is never refused, so a claim from a customized subject template registers beside one that names the workload.
+
+**The audience defaults to this environment's Worker origin**, the address `connect` resolves and prints, which is what stops a staging token being replayed against production. `--oidc-audience` overrides it.
+
+**What is checked, and what is reported.** The issuer's discovery document must resolve, name that issuer, and point at a key set that parses; anything less refuses the registration and writes nothing. That is all a registration can prove — there is no private key here and no workload present — so the status is `awaiting_first_call`, never `connected`, and `status` keeps saying so until a call verifies under the trust.
+
+**How a workload calls.** Every call presents its token on `pithy-control-plane-oidc`, names the trust on `pithy-control-plane-trust`, and names the one scope it exercises on `pithy-control-plane-scope`. Your Worker verifies the token per call against the trust's issuer, audience and claims, and checks the scope against the connection's grant exactly as it does for a key. Nothing is exchanged for the token. A captured token replays against this one audience until it expires — the provider's lifetime, minutes.
+
+**A refused call records what it carried.** When a token's signature, issuer and audience verify and its claims do not match, the `controlplane/call_denied` row in your audit trail names the claims the token carried. Register the trust, let the workload run once, and read the claims it actually sent. Before those three verify, nothing is recorded.
+
+**One connection, two credential kinds.** A trust joins the environment's connection if there is one, beside its keys, and leaves the connection's grant, kind and purpose alone; the trust records who sanctioned it. Those three belong to the connection and every credential on it shares them, so `--scope`, `--kind` and `--purpose` on a join are refused rather than dropped, and no scope prompt is shown. To change the grant, run `connect --update --scope`, which changes it for the whole connection. With no connection, it registers one holding only the trust, with `--kind` and `--purpose` required as for `--public-key`. A signed-in session is required either way. A workload calling under a trust cannot register or expire a key, whatever the grant.
 
 ### Who authorized it, what kind of client, and what for
 
@@ -127,6 +155,8 @@ The offer appears only where a key can be pressed. `--json`, a pipe on stdin or 
 
 **`revoke-key`** stamps one key revoked, immediately. It is the narrow instrument beside `disconnect`'s blunt one: a client that leaked a single key does not need the whole connection rebuilt. Purely local — it writes to your own D1 and tells nobody, which is what "immediate and unilateral" has to mean. It will take the last live key if you ask it to, because an adopter holding a leaked key must never be told they have to keep trusting it; the connection is then denying every call, and the command says so plainly.
 
+**`revoke-trust`** stops honoring one trust, immediately: every call naming it is refused from the next one on. Purely local, like `revoke-key`. **A token cannot be revoked, only the trust**, so a token already minted stays in its holder's hands until it expires, and the command says so when it revokes. `disconnect` says the same when the connection it removes held a live trust.
+
 **`disconnect`** deletes the registration. **The row goes first**, and the management client is told afterwards as a courtesy that cannot fail the command — a dashboard that is down must not be able to keep a credential alive. Re-running it is not an error.
 
 ### Which dashboard a command talks to
@@ -137,7 +167,7 @@ A connection registered before that column existed records nothing, and falls ba
 
 Nothing registered at all means the hosted dashboard, which is where a first `connect` goes.
 
-**`status`** reports what is registered: the connection, its scopes, who authorized it, its kind and its purpose, and every key with its age and whether it is live. Looking is free; proving costs a browser sign-in, so the probe is opt-in behind `--verify` and its absence is reported as `unverified` rather than guessed at.
+**`status`** reports what is registered: the connection, its scopes, who authorized it, its kind and its purpose, every key with its age and whether it is live, and every trust with its issuer, the claims it admits and whether it is awaiting a first call. Looking is free; proving costs a browser sign-in, so the probe is opt-in behind `--verify` and its absence is reported as `unverified` rather than guessed at.
 
 ## `--json`
 
@@ -145,7 +175,7 @@ One line, one object, one shape per subcommand. The `command` field is the subco
 
 ```
 $ pithy dashboard connect --env prod --json
-{"command":"dashboard.connect","schemaVersion":1,"environment":"prod","connectionId":"b6a1f0c2-…","issuer":"https://app.pithy.sh","workerUrl":"https://api.example.com","scopes":["manifest:read"],"keyId":"cpk_2026_07","status":"connected","updated":false,"authorizedBy":"ada@example.com","actorKind":"dashboard","purpose":"Support triage, reading threads and replying."}
+{"command":"dashboard.connect","schemaVersion":2,"environment":"prod","connectionId":"b6a1f0c2-…","issuer":"https://app.pithy.sh","workerUrl":"https://api.example.com","scopes":["manifest:read"],"keyId":"cpk_2026_07","status":"connected","updated":false,"authorizedBy":"ada@example.com","actorKind":"dashboard","purpose":"Support triage, reading threads and replying."}
 ```
 
 | key | type | meaning |
@@ -158,12 +188,18 @@ $ pithy dashboard connect --env prod --json
 | `workerUrl` | `string` | The Worker URL the management client will call |
 | `scopes` | `string[]` | The operations granted, as stored on the row |
 | `keyId` | `string \| null` | The key registered by this run, or `null` when `--update` only re-pointed |
-| `status` | `"connected" \| "needs_reconnect" \| "unreachable" \| "registered"` | Whether a signed ping proved the connection. `registered` is the `--public-key` path: written, but nothing proved it; `unreachable` is a management client that never answered |
+| `status` | `"connected" \| "needs_reconnect" \| "unreachable" \| "registered" \| "awaiting_first_call"` | Whether a signed ping proved the connection. `registered` is the `--public-key` path: written, but nothing proved it; `unreachable` is a management client that never answered; `awaiting_first_call` is an `--oidc-issuer` trust, which nothing can prove until a workload calls |
 | `detail` | `string` | Operator-facing context for a status that is not `connected`. Absent otherwise |
 | `updated` | `boolean` | True when an existing connection was re-pointed rather than a new one created |
 | `authorizedBy` | `string \| null` | Who sanctioned the connection — the signed-in session's email — or `null` for one registered before principals were recorded |
 | `actorKind` | `"agent" \| "dashboard" \| "script" \| null` | What kind of client it is for, or `null` for one registered before it was recorded |
 | `purpose` | `string \| null` | What the client is for, in the registering operator's words, or `null` when it was never said |
+| `trust` | `object` | The trust an `--oidc-issuer` run registered. Absent otherwise |
+| `trust.trustId` | `string` | The trust's id — what a call names on `pithy-control-plane-trust` |
+| `trust.issuer` | `string` | The `iss` it accepts |
+| `trust.audience` | `string` | The `aud` a token must name |
+| `trust.claims` | `object` | Who it admits: every named claim must equal its value |
+| `trust.notes` | `string[]` | What to read once, such as the trade of matching on a name rather than an id |
 
 ```
 $ pithy dashboard rotate --env prod --json
@@ -209,6 +245,7 @@ $ pithy dashboard revoke-key --env prod --key-id cpk_2026_07 --yes --json
 | `connection.keys[].validFrom` | `string` | ISO-8601. When the key became valid |
 | `connection.keys[].validUntil` | `string \| null` | ISO-8601, or `null` while open-ended. Set only by the expire route |
 | `connection.keys[].revokedAt` | `string \| null` | ISO-8601, or `null`. Revocation ignores `validUntil` and takes effect immediately |
+| `connection.trusts` | `object[]` | Every OIDC trust the connection honors, live and revoked: `trustId`, `issuer`, `jwksUrl`, `audience`, `claims`, `authorizedBy`, `validFrom`, `revokedAt`, `firstCallAt`. Absent from an older CLI |
 | `connection.createdAt` | `string` | ISO-8601. When the connection was registered |
 | `connection.updatedAt` | `string` | ISO-8601. When the row last changed |
 
@@ -228,6 +265,21 @@ $ pithy dashboard disconnect --env prod --yes --json
 | `removed` | `boolean` | Whether a row was deleted. `false` on a re-run, which is not an error |
 | `dashboardNotified` | `boolean` | Whether the management client was successfully told. Never gates the revocation — `--local` makes it `false` by choice |
 | `detail` | `string` | Why the management client was not told, when it was not. Absent otherwise |
+| `trustLatency` | `string` | When the connection held a live trust: a token already minted stays usable until it expires. Absent otherwise |
+
+```
+$ pithy dashboard revoke-trust --env prod --trust-id 4b8f0c1e-… --yes --json
+{"command":"dashboard.revoke-trust","schemaVersion":1,"environment":"prod","trustId":"4b8f0c1e-…","revoked":true,"latency":"A token cannot be revoked, only the trust. …"}
+```
+
+| key | type | meaning |
+|---|---|---|
+| `command` | `"dashboard.revoke-trust"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
+| `environment` | `string` | The environment the trust was revoked on |
+| `trustId` | `string` | The trust named by `--trust-id` |
+| `revoked` | `boolean` | `false` when no trust answered to that id. Re-running a revoke is not an error |
+| `latency` | `string` | What a caller should expect from here: a token already minted stays usable until it expires |
 
 ```
 $ pithy dashboard status --env prod --json
@@ -254,6 +306,16 @@ $ pithy dashboard status --env prod --json
 | `keys[].validFrom` | `string` | ISO-8601. When the key became valid |
 | `keys[].validUntil` | `string \| null` | ISO-8601, or `null` while open-ended |
 | `keys[].revokedAt` | `string \| null` | ISO-8601, or `null` |
+| `trusts` | `object[]` | Every OIDC trust, live and revoked |
+| `trusts[].trustId` | `string` | The trust's id, as a call names it |
+| `trusts[].issuer` | `string` | The `iss` it accepts |
+| `trusts[].audience` | `string` | The `aud` a token must name |
+| `trusts[].claims` | `object` | Who it admits — the population, on the face of the listing |
+| `trusts[].authorizedBy` | `string` | Who sanctioned it. Never who may use it |
+| `trusts[].state` | `"awaiting_first_call" \| "called" \| "revoked"` | `awaiting_first_call` until a call verifies under it |
+| `trusts[].validFrom` | `string` | ISO-8601. When it was registered |
+| `trusts[].firstCallAt` | `string \| null` | ISO-8601, or `null` while awaiting a first call |
+| `trusts[].revokedAt` | `string \| null` | ISO-8601, or `null` |
 | `status` | `"connected" \| "needs_reconnect" \| "unreachable" \| "unverified"` | `unverified` unless `--verify` was passed. `unreachable` is nothing answering at all, which says nothing about the connection. Status never claims a round-trip it did not make |
 | `detail` | `string` | Operator-facing context from the probe. Absent otherwise |
 
@@ -277,7 +339,7 @@ Add `controlplane()` to that Worker's pithy.config.ts, deploy, then run connect 
 
 Named with `--worker`, it is a usage error, exit 2: another `--worker` is the fix. The Worker the project resolved on its own is `core/precondition_failed`, exit 3, with `pithy add controlplane --worker <worker>` as its `fix`, `<worker>` being the Worker's `apps/` directory (`docs/CLI.md` §3.8).
 
-**A confirmation nobody could answer.** `revoke-key` and `disconnect` ask before they act, and the answer they default to is no. So a run that cannot ask — `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, no terminal — and did not pass `--yes` is refused before the registry is opened, never taken as yes.
+**A confirmation nobody could answer.** `revoke-key`, `revoke-trust` and `disconnect` ask before they act, and the answer they default to is no. So a run that cannot ask — `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, no terminal — and did not pass `--yes` is refused before the registry is opened, never taken as yes.
 
 ```
 $ pithy dashboard revoke-key --env prod --key-id cpk_2026_07 --json
@@ -311,12 +373,42 @@ Pass --purpose "<what it does>", e.g. --purpose "Support triage, reading threads
 
 **A purpose that cannot be stored.** Empty, longer than 200 characters, or carrying a control character, a line break or a bidi override. `validation/invalid_input`, exit 2.
 
-**`--public-key` without `--kind`, or `--kind` without `--public-key`.** The kind is the operator's to say on that path and nobody's to claim on the other: the device-code flow is the dashboard, always.
+**`--public-key` or `--oidc-issuer` without `--kind`, or `--kind` without either.** The kind is the operator's to say on those paths and nobody's to claim on the other: the device-code flow is the dashboard, always.
 
 ```
 --public-key needs --kind.
 Pass --kind agent for a client acting on its own judgment, or --kind script for automation doing one fixed thing.
 ```
+
+**A trust with no claim constraint.** Refused at registration, because an issuer alone accepts every workload it serves. `validation/invalid_input`, exit 2.
+
+```
+A trust needs at least one claim constraint. An issuer alone accepts every workload it serves.
+Name the workload with at least one --oidc-claim, preferring an immutable id: --oidc-claim repository_id=1262274726.
+```
+
+**A trust at a known issuer that names no workload.** Its claims describe the job, not whose it is, so anybody the issuer serves could match them. `validation/invalid_input`, exit 2, before a project is read.
+
+```
+Those claims describe a job, not whose it is, so this trust would admit any GitHub Actions workload that matches them.
+Add a claim that names the workload, preferring the immutable id: --oidc-claim repository_id=1262274726.
+```
+
+**`--scope`, `--kind` or `--purpose` on a trust joining a connection.** They belong to the connection, and a trust takes them as they are. Refused rather than dropped, so a `--scope content:read` never leaves a workload believed read-only holding the whole grant. `validation/invalid_input`, exit 2, and nothing is written.
+
+```
+This environment already has a connection, and a trust joins it with its grant, kind and purpose. --scope would be ignored.
+Drop --scope. To change what the connection may call, run `pithy dashboard connect` with --env prod, --update and every --scope it should hold — that changes the grant for every credential on the connection.
+```
+
+**`--oidc-claim` or `--oidc-audience` without `--oidc-issuer`, or `--oidc-issuer` beside `--public-key` or `--update`.** A partial or contradictory set is refused rather than half applied.
+
+```
+--oidc-claim and --oidc-audience only apply with --oidc-issuer.
+Pass --oidc-issuer with the exact iss the workload's tokens carry, or drop them.
+```
+
+**An issuer that does not resolve.** Its discovery document is missing, names another issuer, or points at no key set. `core/upstream_failed`, and nothing is registered.
 
 **`--update` with nothing to update.**
 
@@ -388,6 +480,32 @@ Register a key you generated, against your own management client.
 
 ```
 $ pithy dashboard connect --env prod --public-key ./client.jwk.json --issuer https://admin.example.com --kind script --purpose "Nightly refund report." --scope manifest:read
+```
+
+Trust a GitHub Actions workflow, with no key to place.
+
+```
+$ pithy dashboard connect --env prod --oidc-issuer https://token.actions.githubusercontent.com --oidc-claim repository_id=1262274726 --oidc-claim environment=prod --kind agent --purpose "Nightly audit summarizer."
+acme-api → https://api.example.com/control-plane (declared in pithy.config.ts)
+Registered prod. Awaiting a first call.
+Connection     b6a1f0c2-…
+Worker         https://api.example.com
+Scopes         manifest:read, keys:rotate, audit:events:read
+Trust          4b8f0c1e-…
+Issuer         https://token.actions.githubusercontent.com
+Audience       https://api.example.com
+Admits         repository_id=1262274726, environment=prod
+Authorized by  ada@example.com
+Kind           agent
+Purpose        Nightly audit summarizer.
+No key to place. The workload calls with its own token on pithy-control-plane-oidc, naming this trust on pithy-control-plane-trust and one scope on pithy-control-plane-scope.
+Done.
+```
+
+Stop honoring it.
+
+```
+$ pithy dashboard revoke-trust --env prod --trust-id 4b8f0c1e-… --yes
 ```
 
 Say what a connection registered before principals is for.

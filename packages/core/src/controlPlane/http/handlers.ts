@@ -3,6 +3,7 @@
 
 import type { Context } from "hono";
 import type { Capability, PithyHonoEnv } from "../../capability/capability";
+import { commandName } from "../../cli/command";
 import { causeMessage } from "../../error/cause";
 import type { RouteGroup } from "../../openapi/document";
 import type { PresenceDeclaration } from "../../presence/declaration";
@@ -15,6 +16,7 @@ import type { ControlPlaneConfig } from "../config/config";
 import type { ControlPlaneContext } from "../context";
 import { ControlPlaneConnection, type RegisteredKey } from "../data/connection";
 import { appendKey, expireKey, pruneKeys } from "../data/keyLifecycle";
+import type { OidcTrust } from "../data/oidcTrust";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, type ControlPlaneDatabase } from "../data/tables";
 import type { CapabilityDeclaration, ControlPlaneManifestWire } from "../discovery/adminRoute";
 import { type CapabilityHealthSource, readCapabilityHealth } from "../discovery/health";
@@ -31,6 +33,7 @@ import type {
   ExpireKeyResponse,
   PublicKeyView,
   RegisterKeyResponse,
+  TrustView,
 } from "./responses";
 import type { ExpireKeyParams, ExpireKeyRequest, RegisterKeyRequest } from "./schemas";
 
@@ -175,6 +178,37 @@ function publicKeyView(key: RegisteredKey): PublicKeyView {
   };
 }
 
+/** The public view of one OIDC trust: its issuer, audience and claims — the population it admits. */
+function trustView(trust: OidcTrust): TrustView {
+  return {
+    trustId: trust.trustId,
+    issuer: trust.issuer,
+    audience: trust.audience,
+    claims: { ...trust.claims },
+    authorizedBy: trust.authorizedBy,
+    validFrom: trust.validFrom.toISOString(),
+    revokedAt: trust.revokedAt?.toISOString() ?? null,
+    firstCallAt: trust.firstCallAt?.toISOString() ?? null,
+  };
+}
+
+/**
+ * Refuse a key write to a caller that verified under an OIDC trust (#722).
+ *
+ * A trust exists so that no key is held on the workload's host. Letting a trust's caller register a key would
+ * turn a short-lived identity into a standing credential at the first call — an exchange by another name, and
+ * the custody the trust was registered to avoid. Granting `keys:rotate` to a connection is a statement about
+ * its keys, never a license for a workload to mint one.
+ */
+function refuseTrustCaller(context: ControlPlaneContext, what: string): void {
+  if (context.credentialKind !== "trust") return;
+  throw new ControlPlaneKeyConflictError({
+    message: "A call under a workload trust cannot change this connection's keys.",
+    action: `Register or expire a key from a client that holds one, or with ${commandName("dashboard connect")}.`,
+    detail: `${what} refused: trust ${context.keyId} verified this call`,
+  });
+}
+
 /**
  * `GET /control-plane/ping` — connectivity and key proof.
  *
@@ -297,6 +331,7 @@ export function listKeysHandler(deps: ControlPlaneHandlerDeps) {
       authorizedBy: connection.authorizedBy,
       actorKind: connection.actorKind,
       purpose: connection.purpose,
+      trusts: (connection.trusts ?? []).map(trustView),
     } satisfies ControlPlaneKeysResponse);
   };
 }
@@ -314,6 +349,7 @@ export function listKeysHandler(deps: ControlPlaneHandlerDeps) {
 export function registerKeyHandler(deps: ControlPlaneHandlerDeps) {
   return async (c: Context<PithyHonoEnv>, body: RegisterKeyRequest) => {
     const context = caller(c);
+    refuseTrustCaller(context, "key registration");
     const db = deps.database(c);
     const now = deps.now();
     const { connection } = await loadConnection(db, context.connectionId);
@@ -384,6 +420,7 @@ export function registerKeyHandler(deps: ControlPlaneHandlerDeps) {
 export function expireKeyHandler(deps: ControlPlaneHandlerDeps) {
   return async (c: Context<PithyHonoEnv>, params: ExpireKeyParams, body: ExpireKeyRequest) => {
     const context = caller(c);
+    refuseTrustCaller(context, "key expiry");
     const db = deps.database(c);
     const now = deps.now();
     const { connection } = await loadConnection(db, context.connectionId);

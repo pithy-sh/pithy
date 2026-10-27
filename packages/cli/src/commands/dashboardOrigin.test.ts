@@ -37,6 +37,8 @@ function registryOf(connection: ControlPlaneConnection | null) {
     save: async (next) => void saved.push(next),
     appendKey: async () => connection as ControlPlaneConnection,
     revokeKey: async () => connection,
+    appendTrust: async () => connection as ControlPlaneConnection,
+    revokeTrust: async () => connection,
     remove: async () => true,
     dispose: async () => {},
   };

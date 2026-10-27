@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { personDecision } from "@pithy-sh/core/src/cli/command";
+import { commandName, personDecision } from "@pithy-sh/core/src/cli/command";
 import {
   ConnectionPurpose,
   type ControlPlaneActorKind,
@@ -11,6 +11,7 @@ import {
   MAX_CONNECTION_PURPOSE,
 } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { activeKeys } from "@pithy-sh/core/src/controlPlane/data/keyLifecycle";
+import { activeTrusts, OidcTrust, TRUST_REVOCATION_LATENCY } from "@pithy-sh/core/src/controlPlane/data/oidcTrust";
 import { ControlPlaneNotConnectedError } from "@pithy-sh/core/src/controlPlane/error/errors";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import {
@@ -24,6 +25,7 @@ import { z } from "zod";
 import { ManagementClientUnreachableError } from "./api";
 import type { ConnectionHealth, DashboardClient, DeviceAuthorization } from "./contract";
 import { defaultGrant } from "./grant";
+import { defaultAudience, nameBasedNotes, requireWorkloadIdentity, resolveIssuer } from "./oidc";
 import type { ConnectionRegistry } from "./registry";
 
 /**
@@ -72,7 +74,26 @@ const DEFAULT_CONTROL_PLANE_BASE_PATH = "/control-plane";
  * `unreachable` is the same distinction `StatusReport` draws (#614): the row was written and nothing
  * answered the probe, which is not the same as a client that answered and refused.
  */
-export type ConnectStatus = "connected" | "needs_reconnect" | "unreachable" | "registered";
+export type ConnectStatus = "connected" | "needs_reconnect" | "unreachable" | "registered" | "awaiting_first_call";
+
+/**
+ * The trust a connect run registered (#722), as the report carries it.
+ *
+ * The claims are on its face because they are the population: a trust pinned to a workflow is usable by anyone
+ * who can run that workflow, and this is the only place that is written down.
+ */
+export interface TrustReport {
+  /** The trust's id — what a call names on `pithy-control-plane-trust`. */
+  trustId: string;
+  /** The `iss` it accepts. */
+  issuer: string;
+  /** The `aud` a token must name. */
+  audience: string;
+  /** Who it admits: every named claim must equal its value. */
+  claims: Record<string, string>;
+  /** Sentences the operator should read once, such as the trade of matching on a name rather than an id. */
+  notes: string[];
+}
 
 /** What `pithy dashboard connect` did, in the shape `--json` emits and the human formatter renders. */
 export interface ConnectReport {
@@ -100,6 +121,26 @@ export interface ConnectReport {
   actorKind: ControlPlaneActorKind | null;
   /** What it is for, in the registering operator's words, or null when it was never said. */
   purpose: string | null;
+  /** The OIDC trust this run registered, when it registered one (#722). */
+  trust?: TrustReport;
+}
+
+/**
+ * A workload trust to register (#722): a third registration mode beside the dashboard and `--public-key`, and
+ * the quietest — no keypair to exchange and no client to call, so it contacts nobody.
+ */
+export interface OidcTrustRequest {
+  /** The exact `iss` the workload's tokens carry, already through `parseIssuer`. */
+  issuer: string;
+  /** Which workloads it admits. At least one claim — refused otherwise, naming why. */
+  claims: Record<string, string>;
+  /** The `aud` its tokens must name. Absent, it is this environment's own Worker origin. */
+  audience?: string;
+  /**
+   * What kind of client the workload is: `agent` or `script`, as `--public-key` takes it. Required to register
+   * a connection; refused when the trust joins one that already exists, whose kind it is not this run's to change.
+   */
+  kind?: Exclude<ControlPlaneActorKind, "dashboard">;
 }
 
 /** A key the operator generated themselves — the offline registration path, with no dashboard at all. */
@@ -258,6 +299,13 @@ export interface ConnectDashboardOptions {
   update?: boolean;
   /** Register a key the operator generated. When set, no dashboard is contacted at all. */
   publicKey?: OfflinePublicKey;
+  /** Register a workload trust (#722). When set, no dashboard is contacted at all. */
+  trust?: OidcTrustRequest;
+  /**
+   * Check a trust's issuer and return where it publishes its keys — the one thing a registration can prove.
+   * Defaults to {@link resolveIssuer}, over the network; a test injects one.
+   */
+  resolveIssuer?: (issuer: string) => Promise<string>;
   /** The management client. Absent only on the offline path. */
   client?: DashboardClient;
   /**
@@ -316,6 +364,7 @@ export async function connectDashboard(options: ConnectDashboardOptions): Promis
   const now = options.now?.() ?? new Date();
   const existing = await options.registry.read();
 
+  if (options.trust) return connectTrust(options, options.trust, existing, now);
   if (options.publicKey) return connectOffline(options, existing, now);
 
   const client = options.client;
@@ -460,10 +509,13 @@ async function registration(options: ConnectDashboardOptions, actorKind: Control
  * Required, never defaulted: `agent` and `script` are the two questions an incident asks apart, and a
  * default would answer one of them for the operator.
  */
-function requireKind(offline: OfflinePublicKey): Exclude<ControlPlaneActorKind, "dashboard"> {
+function requireKind(
+  offline: { kind?: Exclude<ControlPlaneActorKind, "dashboard"> },
+  flag = "--public-key",
+): Exclude<ControlPlaneActorKind, "dashboard"> {
   if (offline.kind !== undefined) return offline.kind;
   throw new ValidationError({
-    message: "--public-key needs --kind.",
+    message: `${flag} needs --kind.`,
     action:
       "Pass --kind agent for a client acting on its own judgment, or --kind script for automation doing one fixed thing.",
   });
@@ -484,6 +536,155 @@ async function requirePurpose(options: ConnectDashboardOptions): Promise<string>
       'Pass --purpose "<what it does>", e.g. --purpose "Support triage, reading threads and replying." It is what a review of this credential reads.',
     flag: "--purpose",
   });
+}
+
+/**
+ * Register a workload trust (#722, `docs/AGENT-ACCESS.md` §6.2.1): a row written against the adopter's own
+ * project, contacting no management client.
+ *
+ * **Through #721's seam, not around it.** The principal is the signed-in session's, asked first, and a new
+ * connection takes `--kind` and `--purpose` exactly as `--public-key` does. A trust joining a connection that
+ * already exists records its own sanctioning principal and leaves the connection's attribution alone — the
+ * connection's purpose and kind are facts of its registration, and its grant is shared by every credential on it.
+ * So `--scope`, `--kind` and `--purpose` are refused on that path rather than dropped: the grant is changed with
+ * `--update --scope`, for the whole connection.
+ *
+ * **It cannot be proven the way a key can, so it does not claim to be.** There is no private key here and no
+ * workload present, so nothing can make a call. What is checked is the issuer: its discovery document resolves
+ * and its key set parses. The report is `awaiting_first_call`, never `connected`, until a call arrives.
+ *
+ * Settled in the order a refusal costs least: the flags a join cannot apply, the session, the subject constraint, the purpose, then the one
+ * network check, then the write. A refusal anywhere before the write leaves the environment as it was.
+ */
+async function connectTrust(
+  options: ConnectDashboardOptions,
+  request: OidcTrustRequest,
+  existing: ControlPlaneConnection | null,
+  now: Date,
+): Promise<ConnectReport> {
+  // A trust joining a connection takes the connection's grant, kind and purpose — they are the connection's, not the
+  // credential's. Each one named here would be silently dropped, and a `--scope content:read` the operator believes
+  // narrowed this workload would leave it holding the whole grant. Refused, naming the command that changes it.
+  if (existing) refuseConnectionFlags(options, request);
+  const authorizedBy = await options.principal();
+  const claims = requireWorkloadIdentity(request.issuer, request.claims);
+  const attribution = existing
+    ? null
+    : { authorizedBy, actorKind: requireKind(request, "--oidc-issuer"), purpose: await requirePurpose(options) };
+
+  const workerUrl = existing ? (options.workerUrl ?? existing.workerUrl) : requireWorkerUrl(options.workerUrl);
+  const jwksUrl = await (options.resolveIssuer ?? ((issuer: string) => resolveIssuer(issuer)))(request.issuer);
+  const trust = OidcTrust.parse({
+    trustId: crypto.randomUUID(),
+    issuer: request.issuer,
+    jwksUrl,
+    // Derived, not typed: the origin `connect` resolved and printed is what stops a staging token being
+    // replayed against production.
+    audience: request.audience ?? defaultAudience(workerUrl),
+    claims,
+    authorizedBy,
+    validFrom: now,
+    revokedAt: null,
+    firstCallAt: null,
+  } satisfies z.input<typeof OidcTrust>);
+
+  let connection: ControlPlaneConnection;
+  if (attribution) {
+    connection = {
+      id: crypto.randomUUID(),
+      environment: options.environment,
+      // A connection holding only a trust has no management client's `iss` to record, so it carries the trust's.
+      // Nothing verifies it on this path; a key registered here later with `--public-key` takes its place.
+      issuer: trust.issuer,
+      workerUrl,
+      basePath: options.basePath ?? DEFAULT_CONTROL_PLANE_BASE_PATH,
+      managementOrigin: options.managementOrigin ?? null,
+      // The grant belongs to the connection, not to the credential kind, so it is decided exactly as for a key.
+      scopes: options.scopes ? [...options.scopes] : defaultGrant(options.capabilities ?? []),
+      keys: [],
+      trusts: [trust],
+      ...attribution,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await options.registry.save(connection);
+  } else {
+    // The grant stays the connection's own. A trust joining it changes who may call, never what may be called;
+    // widening or narrowing that is `--update --scope`, recorded as the grant change it is.
+    connection = await options.registry.appendTrust(trust, now);
+  }
+
+  return {
+    ...report(connection, { keyId: null, updated: existing !== null, health: null }),
+    status: "awaiting_first_call",
+    trust: {
+      trustId: trust.trustId,
+      issuer: trust.issuer,
+      audience: trust.audience,
+      claims: { ...trust.claims },
+      notes: nameBasedNotes(trust.claims),
+    },
+  };
+}
+
+/**
+ * Refuse what a trust joining an existing connection cannot apply: the grant, the kind and the purpose all belong to
+ * the connection, and every credential on it shares them.
+ */
+function refuseConnectionFlags(options: ConnectDashboardOptions, request: OidcTrustRequest): void {
+  const named = [
+    ...(options.scopes === undefined ? [] : ["--scope"]),
+    ...(request.kind === undefined ? [] : ["--kind"]),
+    ...(options.purpose === undefined ? [] : ["--purpose"]),
+  ];
+  if (named.length === 0) return;
+  throw new ValidationError({
+    message: `This environment already has a connection, and a trust joins it with its grant, kind and purpose. ${named.join(", ")} would be ignored.`,
+    // A sentence rather than a runnable line, as `connectSentence`'s re-point is: the scopes are the operator's to name.
+    action: `Drop ${named.join(", ")}. To change what the connection may call, run \`${commandName("dashboard connect")}\` with --env ${options.environment}, --update and every --scope it should hold — that changes the grant for every credential on the connection.`,
+    detail: `a trust joining the connection on ${options.environment} named ${named.join(", ")}; nothing was written`,
+  });
+}
+
+/** Options for {@link revokeDashboardTrust}. */
+export interface RevokeTrustOptions {
+  /** The adopter's registration store for this environment. */
+  registry: ConnectionRegistry;
+  /** The environment. */
+  environment: string;
+  /** The trust to revoke, as `status` lists it. */
+  trustId: string;
+  /** The clock. */
+  now?: () => Date;
+}
+
+/** What `pithy dashboard revoke-trust` did. */
+export interface RevokeTrustReport {
+  /** The environment. */
+  environment: string;
+  /** The trust asked for. */
+  trustId: string;
+  /** False when no trust answered to that id. Re-running is not an error. */
+  revoked: boolean;
+  /**
+   * What a caller should expect from here (#722): a token cannot be revoked, only the trust, so a token already
+   * minted stays in its holder's hands until it expires. Said at the moment of revocation rather than discovered.
+   */
+  latency: string;
+}
+
+/**
+ * Revoke one trust. Local, immediate and unilateral, like a key's — and unlike a key's, with a latency the
+ * report states: the trust is refused from the next call, and a token already minted stays live until it expires.
+ */
+export async function revokeDashboardTrust(options: RevokeTrustOptions): Promise<RevokeTrustReport> {
+  const updated = await options.registry.revokeTrust(options.trustId, options.now?.() ?? new Date());
+  return {
+    environment: options.environment,
+    trustId: options.trustId,
+    revoked: updated !== null,
+    latency: TRUST_REVOCATION_LATENCY,
+  };
 }
 
 /**
@@ -528,8 +729,10 @@ async function connectOffline(
 
   // The issuer is verified on every call and is effectively permanent — changing it is a migration
   // across every registered connection, not a config edit. Silently overwriting it would strand a
-  // client that still holds a working key.
-  if (existing.issuer !== offline.issuer) {
+  // client that still holds a working key. A connection that has never held a key — one registered with
+  // only an OIDC trust (#722) — has no client to strand, and takes the key's issuer as its own.
+  const neverKeyed = existing.keys.length === 0;
+  if (!neverKeyed && existing.issuer !== offline.issuer) {
     throw new ConflictError({
       message: "This environment is already connected to a different issuer.",
       action: `Disconnecting first is the way to connect again. ${personDecision("dashboard disconnect", { flags: { "--env": options.environment } })}`,
@@ -577,9 +780,10 @@ async function connectOffline(
   // before any write, so a refusal leaves the connection exactly as it was, `--update` included.
   const attribution = registered ? null : await registration(options, requireKind(offline));
 
+  const base = neverKeyed ? { ...existing, issuer: offline.issuer } : existing;
   const updated = options.update
     ? {
-        ...existing,
+        ...base,
         workerUrl: options.workerUrl ?? existing.workerUrl,
         // Same as the dashboard update path above — the mount point moves with the URL.
         basePath: options.basePath ?? existing.basePath,
@@ -588,7 +792,7 @@ async function connectOffline(
         purpose: options.purpose ?? existing.purpose,
         updatedAt: now,
       }
-    : existing;
+    : base;
   const attributed = attribution ? { ...updated, ...attribution, updatedAt: now } : updated;
   // The keys are untouched here, so the registry's gate lets this through; the key itself goes in below.
   if (options.update || attribution) await options.registry.save(attributed);
@@ -746,6 +950,11 @@ export interface DisconnectReport {
   dashboardNotified: boolean;
   /** Why the management client was not told, when it was not. */
   detail?: string;
+  /**
+   * When the connection held a live OIDC trust (#722): what a workload holding a token should expect, since a
+   * token already minted stays live until it expires. Absent otherwise.
+   */
+  trustLatency?: string;
 }
 
 /**
@@ -763,16 +972,31 @@ export async function disconnectDashboard(options: DisconnectDashboardOptions): 
   }
 
   await options.registry.remove();
+  // Said at the moment of revocation, whichever command revoked the trust (#722).
+  const latency =
+    activeTrusts(connection.trusts ?? [], new Date()).length > 0 ? { trustLatency: TRUST_REVOCATION_LATENCY } : {};
 
   if (!options.client) {
-    return { environment: options.environment, connectionId: connection.id, removed: true, dashboardNotified: false };
+    return {
+      environment: options.environment,
+      connectionId: connection.id,
+      removed: true,
+      dashboardNotified: false,
+      ...latency,
+    };
   }
 
   try {
     const authorize = options.authorize ?? ((target: DashboardClient) => authorizeDashboard(target));
     const token = await authorize(options.client);
     await options.client.deleteConnection(token, connection.id);
-    return { environment: options.environment, connectionId: connection.id, removed: true, dashboardNotified: true };
+    return {
+      environment: options.environment,
+      connectionId: connection.id,
+      removed: true,
+      dashboardNotified: true,
+      ...latency,
+    };
   } catch (error) {
     return {
       environment: options.environment,
@@ -780,6 +1004,7 @@ export async function disconnectDashboard(options: DisconnectDashboardOptions): 
       removed: true,
       dashboardNotified: false,
       detail: messageOf(error),
+      ...latency,
     };
   }
 }
@@ -797,6 +1022,31 @@ export interface KeyReport {
   /** When the key stops being accepted, or null while open-ended. */
   validUntil: string | null;
   /** When the key was revoked outright, or null. */
+  revokedAt: string | null;
+}
+
+/** One OIDC trust, as `pithy dashboard status` reports it (#722). */
+export interface TrustStatus {
+  /** The trust's id, as a call names it. */
+  trustId: string;
+  /** The `iss` it accepts. */
+  issuer: string;
+  /** The `aud` a token must name. */
+  audience: string;
+  /** Who it admits — the population, on the face of the listing. */
+  claims: Record<string, string>;
+  /** Who sanctioned it. Never who may use it. */
+  authorizedBy: string;
+  /**
+   * `awaiting_first_call` until a call verifies under it — nothing can prove a trust at registration — then
+   * `called`, or `revoked`.
+   */
+  state: "awaiting_first_call" | "called" | "revoked";
+  /** When it was registered, ISO-8601. */
+  validFrom: string;
+  /** When a call first verified under it, or null. */
+  firstCallAt: string | null;
+  /** When it was revoked, or null. */
   revokedAt: string | null;
 }
 
@@ -822,6 +1072,8 @@ export interface StatusReport {
   purpose: string | null;
   /** Every registered key, live and superseded, newest window first as stored. */
   keys: readonly KeyReport[];
+  /** Every OIDC trust, live and revoked (#722). */
+  trusts: readonly TrustStatus[];
   /**
    * `unverified` unless a probe was asked for — status never claims a round-trip it did not make.
    *
@@ -876,6 +1128,7 @@ export async function dashboardStatus(options: DashboardStatusOptions): Promise<
       actorKind: null,
       purpose: null,
       keys: [],
+      trusts: [],
       status: "unverified",
     };
   }
@@ -890,6 +1143,20 @@ export async function dashboardStatus(options: DashboardStatusOptions): Promise<
     revokedAt: key.revokedAt?.toISOString() ?? null,
   }));
 
+  const trusts = (connection.trusts ?? []).map(
+    (trust): TrustStatus => ({
+      trustId: trust.trustId,
+      issuer: trust.issuer,
+      audience: trust.audience,
+      claims: { ...trust.claims },
+      authorizedBy: trust.authorizedBy,
+      state: trust.revokedAt !== null ? "revoked" : trust.firstCallAt === null ? "awaiting_first_call" : "called",
+      validFrom: trust.validFrom.toISOString(),
+      firstCallAt: trust.firstCallAt?.toISOString() ?? null,
+      revokedAt: trust.revokedAt?.toISOString() ?? null,
+    }),
+  );
+
   const verify = options.verify;
   const health = verify ? await settle(() => verify(connection)) : null;
   return {
@@ -903,6 +1170,7 @@ export async function dashboardStatus(options: DashboardStatusOptions): Promise<
     actorKind: connection.actorKind,
     purpose: connection.purpose,
     keys,
+    trusts,
     status: health?.status ?? "unverified",
     ...(health?.detail === undefined ? {} : { detail: health.detail }),
   };

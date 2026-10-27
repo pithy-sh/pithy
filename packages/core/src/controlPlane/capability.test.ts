@@ -108,6 +108,7 @@ describe("controlplane capability", () => {
       "0001_init",
       "0002_management_origin",
       "0003_connection_principal",
+      "0004_connection_trusts",
     ]);
     expect(Object.keys(app?.tables ?? {})).toEqual([CONTROL_PLANE_CONNECTIONS_TABLE, CONTROL_PLANE_REPLAYS_TABLE]);
   });

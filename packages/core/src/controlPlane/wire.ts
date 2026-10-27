@@ -34,6 +34,32 @@
 export const CONTROL_PLANE_HEADER = "pithy-control-plane";
 
 /**
+ * The header a workload presents its OIDC token on, when it calls under a trust rather than a key (#722,
+ * `docs/AGENT-ACCESS.md` §6.2).
+ *
+ * Not `Authorization`, for the same reason as {@link CONTROL_PLANE_HEADER}, and not that header either: a call
+ * presents exactly one credential, and two names make "which one is this" a question the verifier never has
+ * to guess at. The token is the provider's own, verified per call; nothing is exchanged for it.
+ */
+export const CONTROL_PLANE_OIDC_HEADER = "pithy-control-plane-oidc";
+
+/**
+ * The header naming which of this environment's trusts an OIDC call claims, by its id — the way a token's
+ * `kid` names a key. Read before the token is verified, so it selects and grants nothing: the trust's issuer,
+ * audience and claims are what the token is then held to.
+ */
+export const CONTROL_PLANE_TRUST_HEADER = "pithy-control-plane-trust";
+
+/**
+ * The header naming the one scope an OIDC call exercises.
+ *
+ * A signed control-plane token names its scope inside the signature. A provider's identity token cannot — it
+ * proves **who**, never **what** — so the call names it out loud, and the seam checks it against the
+ * connection's grant exactly as it checks a token's. A call that names none is refused.
+ */
+export const CONTROL_PLANE_SCOPE_HEADER = "pithy-control-plane-scope";
+
+/**
  * The response header carrying the build that answered a control-plane call.
  *
  * Set on every control-plane response — allowed and denied alike, and on every capability's admin

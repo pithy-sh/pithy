@@ -777,7 +777,7 @@
         "summary": "Read the connection's key registration state.",
         "responses": {
           "200": {
-            "description": "Every key registered against this connection, with its window, and who authorized it for what.",
+            "description": "Every key and trust registered against this connection, and who authorized it for what.",
             "content": {
               "application/json": {
                 "schema": {
@@ -916,6 +916,86 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "trusts": {
+                      "description": "Every OIDC trust on this connection, revoked ones included. Absent from a Worker older than trusts.",
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "trustId": {
+                            "type": "string",
+                            "description": "The trust's id, as a call names it on `pithy-control-plane-trust`."
+                          },
+                          "issuer": {
+                            "type": "string",
+                            "description": "The `iss` the trust accepts."
+                          },
+                          "audience": {
+                            "type": "string",
+                            "description": "The `aud` a token must name."
+                          },
+                          "claims": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string",
+                              "description": "A claim name."
+                            },
+                            "additionalProperties": {
+                              "type": "string",
+                              "description": "The value that claim must have."
+                            },
+                            "description": "The subject constraint: every named claim must equal its value. This is who may use the trust."
+                          },
+                          "authorizedBy": {
+                            "type": "string",
+                            "description": "Who sanctioned the trust — never who may use it."
+                          },
+                          "validFrom": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the trust was registered, ISO-8601."
+                          },
+                          "revokedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "When it was revoked, ISO-8601, or null. A token already minted stays usable until it expires."
+                          },
+                          "firstCallAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "When a call first verified under it, ISO-8601, or null while it is awaiting a first call."
+                          }
+                        },
+                        "required": [
+                          "trustId",
+                          "issuer",
+                          "audience",
+                          "claims",
+                          "authorizedBy",
+                          "validFrom",
+                          "revokedAt",
+                          "firstCallAt"
+                        ],
+                        "description": "One OIDC trust: who it admits, and who sanctioned it."
+                      }
                     }
                   },
                   "required": [
@@ -923,7 +1003,7 @@
                     "environment",
                     "keys"
                   ],
-                  "description": "Every key registered against this connection, with its window, and who authorized it for what."
+                  "description": "Every key and trust registered against this connection, and who authorized it for what."
                 }
               }
             }

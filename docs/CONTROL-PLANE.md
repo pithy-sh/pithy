@@ -199,6 +199,23 @@ Every step default-denies, and every failure raises the same `controlplane/inval
 10. `jti` is claimed in the replay set, as a single-use insert. Already spent: denied. Last, because it is the only step that writes anything a granted call depends on.
 11. An audit event is emitted — allowed or denied — and only then does the handler run.
 
+### A call under an OIDC trust
+
+A connection can also hold OIDC trusts beside its keys ([`AGENT-ACCESS.md` §6.2](AGENT-ACCESS.md)): a CI workload or an agent runtime calls with the token its own identity provider issued, and nothing is exchanged for it. The call presents that token on `pithy-control-plane-oidc`, names the trust on `pithy-control-plane-trust`, and names the one scope it exercises on `pithy-control-plane-scope`. The OIDC header selects this path; a call presenting both it and `pithy-control-plane` is refused, because a call presents one credential.
+
+Every call is verified on its own, and every step default-denies with the same `controlplane/invalid_credential` as the key path:
+
+1. The token, the trust id and a well-formed scope must all be present, before anything is loaded.
+2. The environment's connection is loaded — one per environment, so the trust names the credential and the environment names the connection. None: `controlplane/not_connected`. The trust must be on it and live, not revoked.
+3. The token is verified against the trust's issuer, its key set (fetched from the trust's `jwksUrl` and cached per isolate), and its audience. The audience defaults to the environment's own Worker origin, so a staging token cannot reach production.
+4. The token's claims must match every claim the trust names. This is the boundary: the issuer signs for every workload it serves.
+5. The scope check of §8, against the connection's grant, exactly as for a key: `controlplane/insufficient_scope`.
+6. The trust's first allowed call is stamped on the row, once, so a listing stops saying *awaiting a first call*. It is evidence, never part of the decision.
+
+There is no `jti` claim and no body digest here: the token is the provider's, not ours, so a captured one replays against this one audience until it expires — the provider's lifetime, minutes. That is the trade [`AGENT-ACCESS.md` §6.2](AGENT-ACCESS.md) states.
+
+A call under a trust cannot register or expire a key, whatever the grant (§6). A workload able to mint a key would be exchanging its token for a standing credential, which is what the trust path exists not to do; the refusal is `controlplane/key_conflict`.
+
 ### The replay guard, and why it now holds
 
 A token is spendable exactly once, and that is a guarantee rather than a best effort.
@@ -239,7 +256,7 @@ Your trail can then answer "what did the management client do" separately from "
 
 Denials are audited too. `denied` is a first-class outcome, and this is the surface where an unaudited blocked attempt is least acceptable. An audit write that fails never turns a correct denial into a 500 — the denial has already been decided by the time it is recorded. A handler can need a grant beyond the one its route is gated on, and refuse the call itself with `controlplane/insufficient_scope` once the gate has let it in. The guard records that refusal as `controlplane/call_denied` too, with `refusedBy: "handler"`, so a credential probing for a grant it lacks is not hidden behind the gate's `call_allowed`. That row names the credential's scope and key id exactly as the gate's row does, so a read of one key's reach (§13, `@pithy-sh/audit`) finds its refusals too, even on a request with no request id to join by.
 
-**A denial names exactly what it proved.** A call that failed verification — no connection, a bad signature, an unknown or expired key — is written with no actor and no connection, because its `sub` is unproven and recording it would let a forged token name someone. A call whose credential verified and whose scope was not granted is a known connection asking for something it lacks, which is what scope probing looks like, so its `controlplane/call_denied` row carries the subject as `actorId`, the connection as `resourceType: "controlplane_connection"` and `resourceId`, the connection's `actorKind` as the allowed row carries it, and the key in `metadata.keyId`, beside `reason`, `required`, `method` and `path`. So a trail filtered on `actorKind` holds a client's refusals beside its allowed calls. An unattributed refusal carries no actor kind. **Only the first presentation of a token is attributed.** A signature proves who minted a token, not who presented it, and a token binds no path, so a captured one could be replayed at every route it does not cover. The refusal therefore spends its `jti`, and a token already spent — by an allowed call or by an earlier refusal — is written with no actor and no connection. The refusal the caller receives is the same either way.
+**A denial names exactly what it proved.** A call that failed verification — no connection, a bad signature, an unknown or expired key — is written with no actor and no connection, because its `sub` is unproven and recording it would let a forged token name someone. One refusal under an OIDC trust names more: a token whose signature, issuer and audience verified and whose claims did not match the trust's. The caller then holds a genuine token for this audience, so the `controlplane/call_denied` row records `connectionId`, `trustId` and the claims the token actually carried as `observedClaims` in `metadata` — still with no actor. That is what lets an operator read the right claims off one refused run instead of guessing at them. A call whose credential verified and whose scope was not granted is a known connection asking for something it lacks, which is what scope probing looks like, so its `controlplane/call_denied` row carries the subject as `actorId`, the connection as `resourceType: "controlplane_connection"` and `resourceId`, the connection's `actorKind` as the allowed row carries it, and the key in `metadata.keyId`, beside `reason`, `required`, `method` and `path`. Under an OIDC trust the trust's id stands in `metadata.keyId`, beside `credentialKind: "trust"`, on the allowed row and on both scope refusals, the gate's and a handler's; a key's rows carry no `credentialKind`, so a read of a trust's reach finds its refusals as a key's does. So a trail filtered on `actorKind` holds a client's refusals beside its allowed calls. An unattributed refusal carries no actor kind. **Only the first presentation of a token is attributed.** A signature proves who minted a token, not who presented it, and a token binds no path, so a captured one could be replayed at every route it does not cover. The refusal therefore spends its `jti`, and a token already spent — by an allowed call or by an earlier refusal — is written with no actor and no connection. The refusal the caller receives is the same either way.
 
 ---
 
@@ -249,7 +266,7 @@ Denials are audited too. `denied` is a first-class outcome, and this is the surf
 |---|---|---|
 | `GET /control-plane/ping` | any verified caller | Connectivity and key proof. Used at connect, and to prove a new key before the old one is expired |
 | `GET /control-plane/manifest` | `manifest:read` | Which capabilities this Worker composes, **and how to call each one's admin routes** — path, method, and required scope. Discovery over configuration (§14) |
-| `GET /control-plane/keys` | `keys:rotate` | The registration state — which keys are live, their ages, and their validity windows |
+| `GET /control-plane/keys` | `keys:rotate` | The registration state — which keys are live, their ages, and their validity windows, and every OIDC trust beside them with the claims it admits and whether it has had a first call |
 | `POST /control-plane/keys` | `keys:rotate` | Register a new public key. **Authenticated with the key it replaces** |
 | `POST /control-plane/keys/:keyId/expire` | `keys:rotate` | Expire a superseded key, naming the proven successor |
 | `GET /control-plane/migrations` | `migrations:read` | Where each database this Worker binds stands: applied, pending, undeclared, and the run that last moved it |
@@ -601,6 +618,8 @@ pithy dashboard connect --env prod --public-key ./client.jwk.json --scope manife
 pithy dashboard connect --env prod --scope all
 pithy dashboard rotate --env prod
 pithy dashboard revoke-key --env prod --key-id cpk_2026_07
+pithy dashboard connect --env prod --oidc-issuer https://token.actions.githubusercontent.com --oidc-claim repository_id=1262274726 --kind agent --purpose "Nightly audit summarizer."
+pithy dashboard revoke-trust --env prod --trust-id 4b8f0c1e-2a7d-4e0b-9c55-0f3a6d2e7b19
 pithy dashboard disconnect --env prod
 pithy dashboard status --env prod
 ```
@@ -627,8 +646,11 @@ So one rule, stated as a property rather than a list:
 | expiry | **The seam**, `POST /control-plane/keys/:keyId/expire` | `controlplane/key_expired` | Never the CLI's at all, and never was: it belongs to the client that proved the successor from its own infrastructure (§6). |
 | `revoke-key` | The CLI, into your D1 | `controlplane/connection_updated` | Revocation *removes* trust, and revocation that needed our cooperation would not be revocation (§7). |
 | `disconnect` | The CLI, into your D1 | `controlplane/connection_removed` | The same, at connection granularity: every credential for this environment stops working at once. |
+| `connect --oidc-issuer` (no connection) | The CLI, into your D1 | `controlplane/connection_registered` | The first-registration exemption, with a trust instead of a key: nothing exists to sign anything. |
+| `connect --oidc-issuer` (joining a connection) | The CLI, into your D1 | `controlplane/connection_updated` | Not the key exemption, and not an exemption at all: there is no route that registers a trust, and there must not be — a workload able to add a trust could widen its own population. Like the grant and the address, a trust is yours to write on your side. It takes the connection's grant, kind and purpose as they are; `--scope`, `--kind` and `--purpose` on a join are refused. |
+| `revoke-trust` | The CLI, into your D1 | `controlplane/connection_updated` | Removes trust, like `revoke-key`. A token already minted stays in its holder's hands until it expires, and the command says so. |
 
-Exactly one operation is exempt, and it is exempt because the seam cannot serve it rather than because it is convenient: a connection with nothing live has nothing to sign a registration with. Requiring a running Worker to register the key that lets anyone talk to it is a chicken-and-egg with no exit. That same sentence covers recovery — a connection whose every key you revoked is back to having nothing that can sign, and `connect` is the way out.
+Exactly one operation is exempt, and it is exempt because the seam cannot serve it rather than because it is convenient: a connection with nothing live has nothing to sign a registration with. A trust is not a second exemption. The rule is about keys, which the seam can register when a live key signs for one; a trust has no signer and no route, so writing it is the adopter's own act, in the same class as `--update` and `revoke-key`. Requiring a running Worker to register the key that lets anyone talk to it is a chicken-and-egg with no exit. That same sentence covers recovery — a connection whose every key you revoked is back to having nothing that can sign, and `connect` is the way out.
 
 ### A CLI-side write records itself
 

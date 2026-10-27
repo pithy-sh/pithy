@@ -196,7 +196,13 @@
         "--keyId",
         "--project",
         "--purpose",
-        "--kind"
+        "--kind",
+        "--oidc-issuer",
+        "--oidcIssuer",
+        "--oidc-claim",
+        "--oidcClaim",
+        "--oidc-audience",
+        "--oidcAudience"
       ]
     },
     {
@@ -227,6 +233,22 @@
         "--no-open",
         "--key-id",
         "--keyId",
+        "--yes",
+        "--no-yes"
+      ]
+    },
+    {
+      "path": "dashboard revoke-trust",
+      "flags": [
+        "--env",
+        "--worker",
+        "--origin",
+        "--json",
+        "--no-json",
+        "--open",
+        "--no-open",
+        "--trust-id",
+        "--trustId",
         "--yes",
         "--no-yes"
       ]
