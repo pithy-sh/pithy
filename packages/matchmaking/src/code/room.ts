@@ -30,6 +30,64 @@ export interface RoomJoin {
   usesRemaining: number;
 }
 
+/** One open room, as a management client reads it. */
+export interface OpenRoom {
+  code: string;
+  hostId: string;
+  sessionId: string;
+  /** The host plus every player who redeemed the code. */
+  occupancy: number;
+  usesRemaining: number;
+  createdAt: Date;
+  expiresAt: Date;
+}
+
+/** A page of open rooms, and the KV cursor the next page resumes from. */
+export interface OpenRoomPage {
+  rooms: OpenRoom[];
+  nextCursor: string | null;
+}
+
+/** What {@link openRooms} accepts. */
+export interface OpenRoomsQuery {
+  cursor?: string;
+  limit?: number;
+}
+
+/**
+ * One game's open rooms — every live code with a redemption left — read off the KV list entries, never a value
+ * per code.
+ *
+ * **Paged by KV's own cursor, over every game's codes.** A room is keyed by its code alone, because that is what a
+ * player redeems, so a game's rooms are not a key prefix and the page is filtered after the list: a page can hold
+ * fewer rooms than `limit`, and `nextCursor` is what says whether to read on. A spent code is not open, and is
+ * left out. Occupancy is the host plus each redemption, counted against the uses the code was opened with, or the
+ * game's configured limit for a room written before that was recorded.
+ */
+export async function openRooms(
+  namespace: KVNamespace,
+  game: MatchmakingGame,
+  query: OpenRoomsQuery,
+): Promise<OpenRoomPage> {
+  const listed = await roomStore(namespace, 60).list({ limit: query.limit, cursor: query.cursor });
+  const rooms: OpenRoom[] = [];
+  for (const entry of listed.keys) {
+    const listing = entry.metadata;
+    if (listing === null || listing.gameKey !== game.key || listing.usesRemaining <= 0) continue;
+    const opened = listing.maxUses ?? game.roomCodes.maxUses;
+    rooms.push({
+      code: entry.key.code,
+      hostId: listing.hostId,
+      sessionId: listing.sessionId,
+      occupancy: 1 + Math.max(0, opened - listing.usesRemaining),
+      usesRemaining: listing.usesRemaining,
+      createdAt: new Date(listing.createdAt),
+      expiresAt: new Date(listing.expiresAt),
+    });
+  }
+  return { rooms, nextCursor: listed.cursor ?? null };
+}
+
 /** Unambiguous letters for the code prefix — I and O are excluded (they read as 1 and 0). */
 const CODE_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 /** Unambiguous digits for the code suffix — 0 and 1 are excluded (they read as O and I/L). */
@@ -88,6 +146,7 @@ export async function createRoom(
       hostId,
       sessionId,
       usesRemaining: game.roomCodes.maxUses,
+      maxUses: game.roomCodes.maxUses,
       createdAt: now,
       expiresAt: new Date(now.getTime() + ttlSeconds * 1000),
     },

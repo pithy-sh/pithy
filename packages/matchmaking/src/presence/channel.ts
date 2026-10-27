@@ -8,9 +8,11 @@ import {
   PresenceErrorFrame,
   PresenceFriendRequestFrame,
   PresenceInitFrame,
+  PresenceInviteCanceledFrame,
   PresenceInviteFrame,
   PresenceMatchFoundFrame,
   PresencePong,
+  PresenceQueueDroppedFrame,
 } from "./frames";
 
 /** Where the presence socket mounts under the matchmaking routes. */
@@ -26,7 +28,7 @@ export function presenceSocket(basePath = "/matchmaking"): SocketChannel {
     name: "matchmakingPresence",
     path: `${basePath}${PRESENCE_PATH}`,
     summary:
-      "A player's presence: pending invites on connect, then invites, friend requests and matches as they happen.",
+      "A player's presence: pending invites on connect, then invites, friend requests, matches and operator actions as they happen.",
     description:
       "The Worker sends `init` first, then events as they happen. Send `ping` as plain text to get `pong`. On `pithy.presence.v1`, anything else is answered with an `error` frame; an unversioned socket ignores it.",
     verification: ["bearer", "session"],
@@ -40,6 +42,16 @@ export function presenceSocket(basePath = "/matchmaking"): SocketChannel {
       { name: "match_found", summary: "A match formed around the player.", schema: PresenceMatchFoundFrame },
       { name: "invite", summary: "Another player sent a direct invite.", schema: PresenceInviteFrame },
       { name: "friend_request", summary: "Another player sent a friend request.", schema: PresenceFriendRequestFrame },
+      {
+        name: "invite_canceled",
+        summary: "The operator canceled an invite the player sent or received.",
+        schema: PresenceInviteCanceledFrame,
+      },
+      {
+        name: "queue_dropped",
+        summary: "The operator dropped the player from a game's queue, and says why.",
+        schema: PresenceQueueDroppedFrame,
+      },
       { name: "error", summary: "A frame the socket could not accept.", schema: PresenceErrorFrame },
       { name: "pong", summary: "The answer to `ping`, as plain text.", text: PresencePong.value },
     ],

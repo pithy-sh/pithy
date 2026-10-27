@@ -27,6 +27,7 @@ const INVITE = inviteView({
   sessionId: null,
   createdAt: new Date("2026-07-25T10:00:00.000Z"),
   respondedAt: null,
+  cancelKey: null,
 });
 
 const FRAMES = [
@@ -34,6 +35,8 @@ const FRAMES = [
   { type: "match_found", sessionId: "s1", gameKey: "duel" },
   { type: "invite", inviteId: INVITE.id, gameKey: "duel", from: "ben" },
   { type: "friend_request", from: "ben" },
+  { type: "invite_canceled", inviteId: INVITE.id, gameKey: "duel" },
+  { type: "queue_dropped", gameKey: "duel", reason: "Queued from two devices at once." },
   { type: "error", error: { code: "validation/invalid_input", status: 400, message: "Invalid input.", issues: [] } },
 ];
 
@@ -42,8 +45,8 @@ describe("the presence frames", () => {
     expect(PresenceServerFrame.parse(frame)).toEqual(frame);
   });
 
-  test("an event is one of the three `notify()` pushes, and never the connect payload", () => {
-    expect(PresenceEvent.safeParse(FRAMES[1]).success).toBe(true);
+  test("an event is one of the `notify()` pushes, and never the connect payload", () => {
+    for (const frame of FRAMES.slice(1, -1)) expect(PresenceEvent.safeParse(frame).success, frame.type).toBe(true);
     expect(PresenceEvent.safeParse(FRAMES[0]).success).toBe(false);
   });
 
@@ -95,6 +98,8 @@ describe("the presence socket declaration", () => {
       "match_found",
       "invite",
       "friend_request",
+      "invite_canceled",
+      "queue_dropped",
       "error",
       "pong",
     ]);

@@ -14872,6 +14872,668 @@
         ]
       }
     },
+    "/matchmaking/admin/games/{game}/queue": {
+      "get": {
+        "tags": [
+          "matchmaking"
+        ],
+        "operationId": "getMatchmakingAdminGamesByGameQueue",
+        "summary": "Read who is waiting in one game's queue.",
+        "description": "Read from the game's queue Durable Object: each player's region, skill, current band, and wait.",
+        "parameters": [
+          {
+            "name": "game",
+            "in": "path",
+            "required": true,
+            "description": "The matchmaking game key from the path, resolved against the configured `games` list.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Who is waiting in one game's open queue, read from the queue's Durable Object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "gameKey": {
+                      "type": "string",
+                      "description": "The game whose queue this is."
+                    },
+                    "waiting": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "userId": {
+                            "type": "string",
+                            "description": "The waiting player's auth user id."
+                          },
+                          "region": {
+                            "type": "string",
+                            "description": "The region bucket the player is pinned to. A pair never crosses regions."
+                          },
+                          "skill": {
+                            "description": "The player's skill in the game's rating pool, or null when unrated or the game has no pool.",
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "skillBand": {
+                            "description": "How far either side of `skill` the player will match right now, or null when unbounded: unrated, or waiting past `maxWaitSeconds`.",
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "enqueuedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the player joined the queue, ISO-8601."
+                          },
+                          "waitingMs": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "How long the player has waited, in milliseconds."
+                          }
+                        },
+                        "required": [
+                          "userId",
+                          "region",
+                          "skill",
+                          "skillBand",
+                          "enqueuedAt",
+                          "waitingMs"
+                        ],
+                        "description": "One player waiting in a game's open queue, as the coordinator holds them."
+                      },
+                      "description": "Everyone waiting, longest wait first."
+                    }
+                  },
+                  "required": [
+                    "gameKey",
+                    "waiting"
+                  ],
+                  "description": "Who is waiting in one game's open queue, read from the queue's Durable Object."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "matchmaking:queues:read"
+        ]
+      }
+    },
+    "/matchmaking/admin/games/{game}/rooms": {
+      "get": {
+        "tags": [
+          "matchmaking"
+        ],
+        "operationId": "getMatchmakingAdminGamesByGameRooms",
+        "summary": "Read one game's open rooms, a page at a time.",
+        "description": "Every game's codes share one list, so a page can hold fewer rooms than asked for. Read on while `nextCursor` is set.",
+        "parameters": [
+          {
+            "name": "game",
+            "in": "path",
+            "required": true,
+            "description": "The matchmaking game key from the path, resolved against the configured `games` list.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Where to resume, from the previous page's `nextCursor`. Opaque; hand it back verbatim.",
+            "schema": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many rows to return, from 1 to 100. Defaults to a page a dashboard can render.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One game's open rooms, a page at a time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "gameKey": {
+                      "type": "string",
+                      "description": "The game these rooms are for."
+                    },
+                    "rooms": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string",
+                            "description": "The room's join code."
+                          },
+                          "hostId": {
+                            "type": "string",
+                            "description": "The user who opened the room."
+                          },
+                          "sessionId": {
+                            "type": "string",
+                            "description": "The multiplayer session the code seats players into."
+                          },
+                          "occupancy": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "The host plus every player who redeemed the code."
+                          },
+                          "capacity": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "How many players form a match in this game."
+                          },
+                          "usesRemaining": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "How many more times the code can be redeemed."
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the room was opened, ISO-8601."
+                          },
+                          "expiresAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the code expires, ISO-8601."
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "hostId",
+                          "sessionId",
+                          "occupancy",
+                          "capacity",
+                          "usesRemaining",
+                          "createdAt",
+                          "expiresAt"
+                        ],
+                        "description": "One open room: a live code with a redemption left."
+                      },
+                      "description": "The open rooms on this page. Codes for every game share one list, so a page can hold fewer than asked."
+                    },
+                    "nextCursor": {
+                      "description": "Where the next page resumes, or null at the end. A page with few rooms can still have a next one.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "gameKey",
+                    "rooms",
+                    "nextCursor"
+                  ],
+                  "description": "One game's open rooms, a page at a time."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "matchmaking:queues:read"
+        ]
+      }
+    },
+    "/matchmaking/admin/invites": {
+      "get": {
+        "tags": [
+          "matchmaking"
+        ],
+        "operationId": "getMatchmakingAdminInvites",
+        "summary": "List every pending invite, a page at a time.",
+        "parameters": [
+          {
+            "name": "game",
+            "in": "query",
+            "required": false,
+            "description": "Restrict the listing to one game. A shape check only; an unconfigured key is the handler's 404, so an operator who mistypes is told rather than shown an empty pane.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Where to resume, from the previous page's `nextCursor`. Opaque; hand it back verbatim.",
+            "schema": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many rows to return, from 1 to 100. Defaults to a page a dashboard can render.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every pending invite, a page at a time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "invites": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The invite's UUID, the id the cancel route takes."
+                          },
+                          "gameKey": {
+                            "type": "string",
+                            "description": "The matchmaking game the invite is for."
+                          },
+                          "inviterId": {
+                            "type": "string",
+                            "description": "The user who sent the invite."
+                          },
+                          "inviteeId": {
+                            "type": "string",
+                            "description": "The user the invite was sent to."
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the invite was sent, ISO-8601."
+                          },
+                          "ageMs": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "How long the invite has waited, in milliseconds."
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "gameKey",
+                          "inviterId",
+                          "inviteeId",
+                          "createdAt",
+                          "ageMs"
+                        ],
+                        "description": "One pending invite: who asked whom, to play what, and how long ago."
+                      },
+                      "description": "The pending invites on this page, newest first."
+                    },
+                    "nextCursor": {
+                      "description": "Where the next page resumes, or null at the end.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "invites",
+                    "nextCursor"
+                  ],
+                  "description": "Every pending invite, a page at a time."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "matchmaking:queues:read"
+        ]
+      }
+    },
+    "/matchmaking/admin/invites/{id}/cancel": {
+      "post": {
+        "tags": [
+          "matchmaking"
+        ],
+        "operationId": "postMatchmakingAdminInvitesByIdCancel",
+        "summary": "Cancel a pending invite.",
+        "description": "Both players are told through presence. A retry with the same `idempotencyKey` changes nothing and answers `replayed: true`.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The invite's UUID from the path — the externally-referenced invite id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A management act's idempotency key and reason.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idempotencyKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "description": "A key the client mints once per act. A retry with the same key changes nothing, emits nothing, and answers `replayed: true`. A drop's key is remembered for a day, in that game's queue. A key already spent canceling another invite, or dropping another player from the same game's queue, is refused with `core/conflict`."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why. Required, and recorded verbatim on the audit event. A queue drop also sends it to the dropped player, so write it for them."
+                  }
+                },
+                "required": [
+                  "idempotencyKey",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "A management act's idempotency key and reason."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A canceled invite, and whether the request was a retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "invite": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "The invite's UUID, the id the accept and decline routes take."
+                        },
+                        "gameKey": {
+                          "type": "string",
+                          "description": "The matchmaking game the invite is for."
+                        },
+                        "inviterId": {
+                          "type": "string",
+                          "description": "The user who sent the invite."
+                        },
+                        "inviteeId": {
+                          "type": "string",
+                          "description": "The user the invite was sent to."
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "accepted",
+                            "declined",
+                            "canceled"
+                          ],
+                          "description": "The invite's current state."
+                        },
+                        "sessionId": {
+                          "description": "The multiplayer session minted when the invite was accepted, or null otherwise.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When the invite was sent, ISO-8601."
+                        },
+                        "respondedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the invitee accepted or declined, or a management client canceled it, ISO-8601, or null while pending."
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "gameKey",
+                        "inviterId",
+                        "inviteeId",
+                        "status",
+                        "sessionId",
+                        "createdAt",
+                        "respondedAt"
+                      ],
+                      "description": "The invite as it now stands: canceled."
+                    },
+                    "replayed": {
+                      "type": "boolean",
+                      "description": "True when this idempotency key had already canceled this invite. Nothing changed, and nobody was told."
+                    }
+                  },
+                  "required": [
+                    "invite",
+                    "replayed"
+                  ],
+                  "description": "A canceled invite, and whether the request was a retry."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "matchmaking:queues:moderate"
+        ]
+      }
+    },
+    "/matchmaking/admin/games/{game}/queue/{userId}/drop": {
+      "post": {
+        "tags": [
+          "matchmaking"
+        ],
+        "operationId": "postMatchmakingAdminGamesByGameQueueByUserIdDrop",
+        "summary": "Drop a player from one game's queue.",
+        "description": "The player's presence socket is told why, in the `reason` sent. A retry with the same `idempotencyKey` changes nothing and answers `replayed: true`.",
+        "parameters": [
+          {
+            "name": "game",
+            "in": "path",
+            "required": true,
+            "description": "The matchmaking game key from the path, resolved against the configured `games` list.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The waiting player to drop, as an auth user id.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A management act's idempotency key and reason.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idempotencyKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "description": "A key the client mints once per act. A retry with the same key changes nothing, emits nothing, and answers `replayed: true`. A drop's key is remembered for a day, in that game's queue. A key already spent canceling another invite, or dropping another player from the same game's queue, is refused with `core/conflict`."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why. Required, and recorded verbatim on the audit event. A queue drop also sends it to the dropped player, so write it for them."
+                  }
+                },
+                "required": [
+                  "idempotencyKey",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "A management act's idempotency key and reason."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A player dropped from a game's open queue, and whether the request was a retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "gameKey": {
+                      "type": "string",
+                      "description": "The game whose queue the player left."
+                    },
+                    "userId": {
+                      "type": "string",
+                      "description": "The player dropped."
+                    },
+                    "replayed": {
+                      "type": "boolean",
+                      "description": "True when this idempotency key had already dropped this player. Nothing changed, and nobody was told."
+                    }
+                  },
+                  "required": [
+                    "gameKey",
+                    "userId",
+                    "replayed"
+                  ],
+                  "description": "A player dropped from a game's open queue, and whether the request was a retry."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "matchmaking:queues:moderate"
+        ]
+      }
+    },
     "/matchmaking/games/{game}/rooms": {
       "post": {
         "tags": [
@@ -15077,12 +15739,13 @@
                       "enum": [
                         "pending",
                         "accepted",
-                        "declined"
+                        "declined",
+                        "canceled"
                       ],
                       "description": "The invite's current state."
                     },
                     "sessionId": {
-                      "description": "The multiplayer session minted when the invite was accepted, or null while pending or declined.",
+                      "description": "The multiplayer session minted when the invite was accepted, or null otherwise.",
                       "type": [
                         "string",
                         "null"
@@ -15105,7 +15768,7 @@
                           "type": "null"
                         }
                       ],
-                      "description": "When the invitee accepted or declined, ISO-8601, or null while pending."
+                      "description": "When the invitee accepted or declined, or a management client canceled it, ISO-8601, or null while pending."
                     }
                   },
                   "required": [
@@ -15182,12 +15845,13 @@
                             "enum": [
                               "pending",
                               "accepted",
-                              "declined"
+                              "declined",
+                              "canceled"
                             ],
                             "description": "The invite's current state."
                           },
                           "sessionId": {
-                            "description": "The multiplayer session minted when the invite was accepted, or null while pending or declined.",
+                            "description": "The multiplayer session minted when the invite was accepted, or null otherwise.",
                             "type": [
                               "string",
                               "null"
@@ -15210,7 +15874,7 @@
                                 "type": "null"
                               }
                             ],
-                            "description": "When the invitee accepted or declined, ISO-8601, or null while pending."
+                            "description": "When the invitee accepted or declined, or a management client canceled it, ISO-8601, or null while pending."
                           }
                         },
                         "required": [
@@ -15303,12 +15967,13 @@
                       "enum": [
                         "pending",
                         "accepted",
-                        "declined"
+                        "declined",
+                        "canceled"
                       ],
                       "description": "The invite's current state."
                     },
                     "sessionId": {
-                      "description": "The multiplayer session minted when the invite was accepted, or null while pending or declined.",
+                      "description": "The multiplayer session minted when the invite was accepted, or null otherwise.",
                       "type": [
                         "string",
                         "null"
@@ -15331,7 +15996,7 @@
                           "type": "null"
                         }
                       ],
-                      "description": "When the invitee accepted or declined, ISO-8601, or null while pending."
+                      "description": "When the invitee accepted or declined, or a management client canceled it, ISO-8601, or null while pending."
                     }
                   },
                   "required": [
@@ -15416,12 +16081,13 @@
                       "enum": [
                         "pending",
                         "accepted",
-                        "declined"
+                        "declined",
+                        "canceled"
                       ],
                       "description": "The invite's current state."
                     },
                     "sessionId": {
-                      "description": "The multiplayer session minted when the invite was accepted, or null while pending or declined.",
+                      "description": "The multiplayer session minted when the invite was accepted, or null otherwise.",
                       "type": [
                         "string",
                         "null"
@@ -15444,7 +16110,7 @@
                           "type": "null"
                         }
                       ],
-                      "description": "When the invitee accepted or declined, ISO-8601, or null while pending."
+                      "description": "When the invitee accepted or declined, or a management client canceled it, ISO-8601, or null while pending."
                     }
                   },
                   "required": [

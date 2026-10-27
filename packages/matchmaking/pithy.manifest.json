@@ -32,7 +32,8 @@
     "Add `@pithy-sh/auth` if it is not already installed. Every route binds to an authenticated player; without auth all of them are denied.",
     "Add `@pithy-sh/multiplayer` and bind its SESSIONS Durable Object namespace. Without it every pairing path still runs and none of them can mint the session it exists to produce.",
     "Add `@pithy-sh/rating` and name one of its pools as a game's `skillPool` to bucket the open queue on skill. Without it the queue buckets by region only.",
-    "Read packages/matchmaking/docs/costs.md before production. The queue's `sweepSeconds` is the alarm cadence, and it is the one setting that decides whether a waiting queue costs anything."
+    "Read packages/matchmaking/docs/costs.md before production. The queue's `sweepSeconds` is the alarm cadence, and it is the one setting that decides whether a waiting queue costs anything.",
+    "Add `controlplane()` if you want a dashboard to see who is waiting. `matchmaking:queues:read` reads each game's queue, its open rooms and every pending invite; `matchmaking:queues:moderate` cancels an invite or drops a player from a queue, each with an idempotency key, a required reason and an audit event. Neither touches the friend graph."
   ],
   "configOptions": [
     {

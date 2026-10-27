@@ -6,8 +6,10 @@ import { z } from "zod";
 
 /** The lifecycle of a direct invite. */
 export const InviteStatus = z
-  .enum(["pending", "accepted", "declined"])
-  .describe("A direct invite's state: awaiting a response, accepted (a session was minted), or declined.");
+  .enum(["pending", "accepted", "declined", "canceled"])
+  .describe(
+    "A direct invite's state: awaiting a response, accepted (a session was minted), declined, or canceled by a management client.",
+  );
 export type InviteStatus = z.infer<typeof InviteStatus>;
 
 /**
@@ -22,12 +24,17 @@ export const Invite = z
     inviterId: z.string().describe("The authenticated user who sent the invite."),
     inviteeId: z.string().describe("The resolved user the invite was sent to."),
     status: InviteStatus.describe("The invite's current state."),
-    sessionId: z
+    sessionId: z.string().nullable().describe("The multiplayer session id minted on accept, or null otherwise."),
+    createdAt: SQLiteDate.describe("When the invite was sent."),
+    respondedAt: SQLiteDate.nullable().describe(
+      "When the invitee accepted or declined, or a management client canceled it, or null while pending.",
+    ),
+    cancelKey: z
       .string()
       .nullable()
-      .describe("The multiplayer session id minted on accept, or null while pending/declined."),
-    createdAt: SQLiteDate.describe("When the invite was sent."),
-    respondedAt: SQLiteDate.nullable().describe("When the invitee accepted or declined, or null while pending."),
+      .describe(
+        "The idempotency key a management client canceled this invite under, or null. Unique, so one key cancels one invite, and a retry of the same cancel finds itself here.",
+      ),
   })
   .describe("One direct invite from one player to another.");
 export type Invite = z.output<typeof Invite>;

@@ -6,7 +6,7 @@ import { createDatabase } from "@pithy-sh/core/src/data/db";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, it } from "vitest";
 import { matchmakingDatabase } from "../data/tables";
-import { matchmaking_0001_matchmaking } from "../migrations/0001_matchmaking";
+import { MATCHMAKING_MIGRATIONS } from "../migrations/chain";
 import { friendStore } from "./store";
 
 /** Rebuild the matchmaking tables from a clean slate before each test. */
@@ -14,7 +14,8 @@ beforeEach(async () => {
   for (const table of ["pithy_matchmaking_friends", "pithy_matchmaking_invites"]) {
     await env.DB.prepare(`drop table if exists ${table}`).run();
   }
-  await matchmaking_0001_matchmaking.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
+  const db = createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
+  for (const migration of Object.values(MATCHMAKING_MIGRATIONS)) await migration.up(db);
 });
 
 const AT = new Date("2026-07-25T10:00:00.000Z");

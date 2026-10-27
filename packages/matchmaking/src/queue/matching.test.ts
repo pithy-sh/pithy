@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "vitest";
 import { MatchmakingQueueSettings, MatchmakingSnapshot } from "../config/config";
-import { formMatches, type WaitingTicket } from "./matching";
+import { formMatches, skillBand, type WaitingTicket } from "./matching";
 
 // A minted-session snapshot is irrelevant to pairing — a fixed valid one keeps every ticket well-formed.
 const SNAPSHOT = MatchmakingSnapshot.parse({ kind: "connect-n", rules: {} });
@@ -99,5 +99,23 @@ describe("formMatches (the open-queue pairing rule)", () => {
     const far = ticket({ userId: "z", skill: 5000, players: 4, enqueuedAt: T0 + 3, settings: tight });
 
     expect(formMatches([...near, far], T0 + 10)).toEqual([]);
+  });
+});
+
+describe("skillBand (the window an operator reads off the queue)", () => {
+  test("starts at the initial band on enqueue", () => {
+    expect(skillBand(ticket({ userId: "a" }), T0)).toBe(100);
+  });
+
+  test("widens by widenPerSecond for every second waited", () => {
+    expect(skillBand(ticket({ userId: "a" }), T0 + 2_000)).toBe(200);
+  });
+
+  test("is null — unbounded — once the wait passes maxWaitSeconds", () => {
+    expect(skillBand(ticket({ userId: "a" }), T0 + 120_000)).toBeNull();
+  });
+
+  test("is null for an unrated player, who pairs with anyone", () => {
+    expect(skillBand(ticket({ userId: "a", skill: null }), T0)).toBeNull();
   });
 });
