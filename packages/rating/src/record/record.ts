@@ -5,13 +5,14 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { RatedOutcome, RatingEntry } from "../algorithm/algorithm";
 import type { ResolvedRatingGame } from "../config/config";
 import type { RatingRecord } from "../data/rating";
-import type { RatingStore } from "../data/store";
+import type { AppliedParticipant, RatingStore } from "../data/store";
 import { awardXp, classifyLevel, type XpOutcome, xpFor } from "../experience/xp";
 
 /**
  * Recording a game's outcome — the heart of the tracker. It loads each player's current standing in the
  * game's pool (a newcomer starts at the algorithm's `initial`), runs the algorithm's pure `update` to get
- * everyone's new skill state, folds in experience, and upserts each row.
+ * everyone's new skill state, folds in experience, and writes each row — with the outcome appended to the
+ * outcome log in the same transaction, so every rating that moves has the history that moved it (#818).
  *
  * Two rules from the issue live here:
  * - **Skill rating (MMR) always updates from a real result** — a game is a game.
@@ -27,6 +28,11 @@ export interface RecordOutcomeInput {
   teams?: Record<string, string>;
   /** Whether this game was played in a shared room with a friend. Gates XP/rank, never MMR. */
   sharedRoom?: boolean;
+  /**
+   * The result this outcome came from — a multiplayer session result, or the adopter's own id for it. Kept
+   * on the outcome log, so voiding that result can take this outcome back out of every rating it moved.
+   */
+  resultId?: string;
   /** When the game finished. */
   at: Date;
 }
@@ -88,6 +94,8 @@ export async function recordOutcome(
 
   const countsForXp = !input.sharedRoom || game.sharedRoomCounts;
   const results: RecordedPlayer[] = [];
+  const records: RatingRecord[] = [];
+  const participants: AppliedParticipant[] = [];
 
   for (const userId of playerIds) {
     const nextState = nextStates[userId];
@@ -113,7 +121,14 @@ export async function recordOutcome(
       games: (prior?.games ?? 0) + 1,
       updatedAt: input.at,
     };
-    await store.upsert(record);
+    records.push(record);
+    participants.push({
+      userId,
+      stateBefore: entries.find((entry) => entry.playerId === userId)?.state,
+      xpBefore: priorXp,
+      gamesBefore: prior?.games ?? 0,
+      xpGained: xp - priorXp,
+    });
 
     results.push({
       userId,
@@ -125,6 +140,19 @@ export async function recordOutcome(
     });
   }
 
+  await store.apply(
+    {
+      pool: game.pool,
+      game: game.key,
+      resultId: input.resultId ?? null,
+      ranks: input.ranks,
+      teams: input.teams ?? null,
+      sharedRoom: input.sharedRoom ?? false,
+      at: input.at,
+      players: participants,
+    },
+    records,
+  );
   return results;
 }
 

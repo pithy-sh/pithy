@@ -36,7 +36,7 @@ Supports: 2 or more players; teams. Skill number: `μ − 3·σ`.
 
 ## Pools
 
-An algorithm rates a pool, not a game directly. A pool is a named bucket of ratings; a game reads and writes one. Point several games at one pool (`global`) for a single cross-game rating, or give each game its own pool (the default — the pool defaults to the game key) for independent ladders. A pool is rated by a single algorithm; matchmaking buckets on the configured pool's skill number.
+An algorithm rates a pool, not a game directly. A pool is a named bucket of ratings; a game reads and writes one. Point several games at one pool (`global`) for a single cross-game rating, or give each game its own pool (the default — the pool defaults to the game key) for independent ladders. A pool is rated by a single algorithm, and assembly refuses two games that share a pool with different ones, naming both: a pool's rows hold one algorithm's state, and its outcome log replays through one algorithm. Tuning may differ by game. Matchmaking buckets on the configured pool's skill number.
 
 ## Registering your own
 

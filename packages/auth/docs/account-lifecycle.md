@@ -202,7 +202,7 @@ Every kit capability that holds rows about a person declares a `user` contributi
 |---|---|---|
 | `auth` | erase | The account, sessions, providers, devices, refresh-token ledger, pending codes, verification ledger, plugin rows. Its lifecycle history stays. |
 | `ledger` | erase | Balances in every currency, the transaction log, holds. |
-| `rating` | erase | The rating in every pool. |
+| `rating` | erase | The rating in every pool, and the control-plane acts on it. The person's place in every logged outcome is anonymized instead, so each opponent's rating still replays exactly. |
 | `leaderboard` | erase | Entries on every board, in every window, what each session result put on them, and their moderation history. |
 | `matchmaking` | erase | Invites sent or received, friendships and requests on either side, and the person's place, undelivered match and drop records in every game's queue. A room code expires on its own TTL. |
 | `multiplayer` | anonymize | Session results: the person's id in the players, scores and winner is replaced, so the other players' results stay. |

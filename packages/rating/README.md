@@ -12,9 +12,13 @@ pithy add rating
 
 _Everything else is on the site. `pithy.sh/docs` is canonical — new prose goes there, not here._
 
+## Management
+
+Every outcome rating applies is appended to an outcome log, `pithy_rating_outcomes` and `pithy_rating_outcome_players`, in the same D1 batch that moves the ratings, so when the log cannot be written no rating moves. With `controlplane()` composed, a management client reads and repairs ratings with two scopes. `rating:players:read` reads every pool with its algorithm, a pool's ratings by skill, and one player's rating with the outcomes behind it. `rating:players:adjust` recalculates a player's rating by replaying their outcomes from the log, or resets it to the algorithm's starting state, each with an idempotency key and a required reason. Each act is recorded in `pithy_rating_adjustments` with the rating before and after, and emits one audit event. A rating with no logged outcome behind it has nothing to replay, and recalculating it is refused rather than reset. A rating older than the log replays from where the log first saw it. A capability composed beside rating voids a result through `ratingPeer.voidResult`, which marks the result's outcomes void and recalculates every player they touched. The routes and the rules are in [`docs/CONTROL-PLANE.md`](../../docs/CONTROL-PLANE.md) §13.
+
 ## A person's data
 
-**Erased.** When an account is purged, rating deletes the person's rating in every pool, and an export hands it back first. Every opponent's own rating is kept in their own row. See [`@pithy-sh/auth`'s account lifecycle](../auth/docs/account-lifecycle.md#what-each-capability-does-with-a-persons-rows).
+**Erased, and anonymized in the log.** When an account is purged, rating deletes the person's rating in every pool and the control-plane acts on it, and an export hands them back first, with every outcome the person played. Their place in each logged outcome is replaced by an `erased-` stand-in, one per outcome, so every opponent's rating still replays exactly. Every opponent's own rating is kept in their own row. See [`@pithy-sh/auth`'s account lifecycle](../auth/docs/account-lifecycle.md#what-each-capability-does-with-a-persons-rows).
 
 ## License
 

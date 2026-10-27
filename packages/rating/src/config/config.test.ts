@@ -5,7 +5,7 @@ import { beforeAll, describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { RatingAlgorithm } from "../algorithm/algorithm";
 import { registerRatingAlgorithm } from "../algorithm/registry";
-import { configuredPools, RatingConfig, resolveGame, validateRatingGames } from "./config";
+import { configuredPools, RatingConfig, resolveGame, resolvePool, validateRatingGames } from "./config";
 
 function need<T>(v: T | undefined): T {
   if (v === undefined) throw new Error("expected a value");
@@ -119,5 +119,31 @@ describe("validateRatingGames", () => {
     const games = validateRatingGames(config);
     expect(resolveGame(games, "duel")?.game.key).toBe("duel");
     expect(resolveGame(games, "missing")).toBeUndefined();
+  });
+
+  test("rejects a pool two games rate with different algorithms", () => {
+    // A pool's rows carry one algorithm's state. Two algorithms writing one pool would each read the
+    // other's blob, and a replay of the pool would have no single algorithm to replay it through.
+    const config = RatingConfig.parse({
+      games: [
+        { key: "a", algorithm: "stub-many", pool: "global" },
+        { key: "b", algorithm: "stub-1v1", pool: "global" },
+      ],
+    });
+    expect(() => validateRatingGames(config)).toThrow(/pool "global".*stub-many.*stub-1v1/);
+  });
+
+  test("resolvePool names a pool's algorithm through its first game", () => {
+    const config = RatingConfig.parse({
+      games: [
+        { key: "a", algorithm: "stub-many", pool: "global" },
+        { key: "b", algorithm: "stub-many", pool: "global" },
+        { key: "duel", algorithm: "stub-1v1" },
+      ],
+    });
+    const games = validateRatingGames(config);
+    expect(resolvePool(games, "global")?.game.key).toBe("a");
+    expect(resolvePool(games, "duel")?.algorithm.id).toBe("stub-1v1");
+    expect(resolvePool(games, "missing")).toBeUndefined();
   });
 });

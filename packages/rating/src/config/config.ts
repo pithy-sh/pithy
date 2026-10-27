@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import type { RatingAlgorithm } from "../algorithm/algorithm";
 import { algorithmBounds, registeredAlgorithmIds, resolveAlgorithm } from "../algorithm/registry";
@@ -167,7 +168,7 @@ export interface ResolvedRatingGame {
  * the first recorded game. Requires the built-ins (or an adopter's algorithms) to be registered first.
  */
 export function validateRatingGames(config: RatingConfig): ResolvedRatingGame[] {
-  return config.games.map((game) => {
+  const resolved = config.games.map((game) => {
     const algorithm = resolveAlgorithm(game.algorithm);
     if (!algorithm) {
       throw new RatingUnknownAlgorithmError({
@@ -187,6 +188,31 @@ export function validateRatingGames(config: RatingConfig): ResolvedRatingGame[] 
     const params = parseParams(game, algorithm);
     return { game: { ...game, pool: game.pool ?? game.key }, algorithm, params };
   });
+  assertOneAlgorithmPerPool(resolved);
+  return resolved;
+}
+
+/**
+ * Every game sharing a pool rates it with the same algorithm. A pool's rows hold one algorithm's state, so
+ * a second algorithm would read a blob it cannot parse — and a replay of the pool (#818) would have no one
+ * algorithm to replay it through. Tuning may differ by game; each outcome replays with its own game's.
+ */
+function assertOneAlgorithmPerPool(games: readonly ResolvedRatingGame[]): void {
+  const byPool = new Map<string, ResolvedRatingGame>();
+  for (const resolved of games) {
+    const first = byPool.get(resolved.game.pool);
+    if (!first) {
+      byPool.set(resolved.game.pool, resolved);
+      continue;
+    }
+    if (first.algorithm.id !== resolved.algorithm.id) {
+      throw new ValidationError({
+        message: `Games "${first.game.key}" and "${resolved.game.key}" share pool "${resolved.game.pool}" with different algorithms: ${first.algorithm.id} and ${resolved.algorithm.id}.`,
+        action: "Give every game in a pool the same algorithm, or give one of them its own `pool`.",
+        detail: `Pool "${resolved.game.pool}" is rated by "${first.algorithm.id}" (game "${first.game.key}") and "${resolved.algorithm.id}" (game "${resolved.game.key}").`,
+      });
+    }
+  }
 }
 
 /** The roster size must fall within the algorithm's supported range. */
@@ -218,6 +244,15 @@ function parseParams(game: RatingGame, algorithm: RatingAlgorithm): unknown {
 /** The resolved game for a key, or undefined. */
 export function resolveGame(games: readonly ResolvedRatingGame[], key: string): ResolvedRatingGame | undefined {
   return games.find((g) => g.game.key === key);
+}
+
+/**
+ * The game that speaks for a pool — the first configured game rating it. Every game in a pool shares its
+ * algorithm (`validateRatingGames` refuses otherwise), so this names the pool's algorithm, and its params
+ * are the fallback for an outcome whose own game is no longer configured.
+ */
+export function resolvePool(games: readonly ResolvedRatingGame[], pool: string): ResolvedRatingGame | undefined {
+  return games.find((g) => g.game.pool === pool);
 }
 
 /** Every distinct pool name the configured games read or write. */
