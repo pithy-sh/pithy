@@ -16,7 +16,7 @@ import { z } from "zod";
 import { MULTIPLAYER_MIGRATION_ORDER, multiplayer } from "../capability";
 import type { LedgerEffect } from "../game/effects";
 import { type GameModel, registerGameModel } from "../game/model";
-import { multiplayer_0001_results } from "../migrations/0001_results";
+import { MULTIPLAYER_MIGRATIONS } from "../migrations/chain";
 import type { MultiplayerSession } from "./durableObject";
 import { USER_HEADER } from "./protocol";
 import type { GameSnapshot } from "./state";
@@ -93,7 +93,7 @@ function provider(): MigrationProvider {
       database: "app",
       namespace: "multiplayer",
       order: MULTIPLAYER_MIGRATION_ORDER,
-      migrations: { "0001_results": multiplayer_0001_results },
+      migrations: MULTIPLAYER_MIGRATIONS,
     },
   ]);
   const found = registry.app;
@@ -104,6 +104,8 @@ function provider(): MigrationProvider {
 beforeEach(async () => {
   for (const t of [
     "pithy_multiplayer_results",
+    "pithy_multiplayer_sessions",
+    "pithy_multiplayer_void_keys",
     "pithy_ledger_accounts",
     "pithy_ledger_transactions",
     "pithy_ledger_holds",
@@ -171,8 +173,7 @@ describe("the persistent-table lifecycle", () => {
     expect(closed.phase).toBe("resolved");
     // A durable result marks the table closed.
     const { resultStore } = await import("../data/store");
-    const { multiplayerDatabase } = await import("../data/tables");
-    const stored = await resultStore(multiplayerDatabase(env.DB)).get(stub.id.toString());
+    const stored = await resultStore(env.DB).get(stub.id.toString());
     expect(stored?.status).toBe("resolved");
   });
 

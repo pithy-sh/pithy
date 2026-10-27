@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
-import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { LedgerPeer } from "@pithy-sh/ledger/src/peer";
 
 /**
@@ -53,6 +53,23 @@ export type LedgerEffect =
       readonly memo?: string;
     };
 
+/** How a set of effects is settled. */
+export interface LedgerEffectOptions {
+  /**
+   * The effects settle a seat out of a session that is ending, so a `release` whose hold no longer exists is
+   * already settled rather than a failure (#820). That is the hold of a person whose ledger rows a purge erased
+   * before it reached their session: refusing it would stop every seat after theirs being settled, and every
+   * retry of the purge, for a hold that can never come back. Only `ledger/hold_not_found` is forgiven, and only
+   * here — anywhere else a release of a hold that does not exist is a model's bug.
+   */
+  readonly settlingOut?: boolean;
+}
+
+/** Whether `error` is the ledger saying the hold a release names does not exist. */
+function isMissingHold(error: unknown): boolean {
+  return error instanceof PithyError && error.payload.code === "ledger/hold_not_found";
+}
+
 /**
  * Settle a model's declared effects through the ledger the composition handed over. `@pithy-sh/ledger` is an
  * *optional* peer, reached only when a game actually emits effects — a game with no wagering never touches it.
@@ -65,6 +82,7 @@ export async function applyLedgerEffects(
   d1: D1Database,
   effects: readonly LedgerEffect[],
   peer: LedgerPeer | undefined,
+  options: LedgerEffectOptions = {},
 ): Promise<void> {
   if (effects.length === 0) return;
   if (peer === undefined) {
@@ -87,7 +105,11 @@ export async function applyLedgerEffects(
         await ledger.hold(effect.userId, effect.currency, effect.amount, effect.ref);
         break;
       case "release":
-        await ledger.release(effect.ref);
+        try {
+          await ledger.release(effect.ref);
+        } catch (error) {
+          if (!(options.settlingOut && isMissingHold(error))) throw error;
+        }
         break;
       case "capture":
         await ledger.capture(effect.ref, { amount: effect.amount, memo: effect.memo });

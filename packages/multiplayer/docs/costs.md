@@ -26,7 +26,7 @@ This is also why real-time action netcode is out of scope. A fixed high-rate tic
 
 ## Storage
 
-Session state lives in the object's SQLite-backed storage. Rows are billed exactly as D1 rows, and each object caps at 10 GB. A duel's state is tiny — metadata, two commits, one outcome — and the object is a natural place to let it expire; the durable *result* is a single row in your app's D1 (`pithy_multiplayer_results`), joinable beside your own tables.
+Session state lives in the object's SQLite-backed storage. Rows are billed exactly as D1 rows, and each object caps at 10 GB. A duel's state is tiny — metadata, two commits, one outcome — and the object is a natural place to let it expire; the durable *result* is a single row in your app's D1 (`pithy_multiplayer_results`), joinable beside your own tables. Each session also keeps one row in `pithy_multiplayer_sessions`, the index a management client lists sessions in flight from: written when it opens, rewritten at each join, leave or phase change, and deleted when it ends. That is a handful of D1 writes per session, which the model below does not price.
 
 ## Cheap idle sessions are a platform primitive, not a Pithy feature
 

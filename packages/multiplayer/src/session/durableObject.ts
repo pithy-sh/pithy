@@ -15,6 +15,7 @@ import { negotiateSubprotocol, SUBPROTOCOL_HEADER } from "@pithy-sh/core/src/htt
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
 import type { MultiplayerResult } from "../data/result";
+import { sessionIndex } from "../data/sessionStore";
 import { resultStore } from "../data/store";
 import { multiplayerDatabase } from "../data/tables";
 import "../game/builtins";
@@ -30,9 +31,9 @@ import { type GameContext, type GameModel, resolveModel } from "../game/model";
 import { createRngState, type RandomSource, randomSource } from "../game/random";
 import { ClientFrame, encodeErrorFrame, encodeStateFrame, MULTIPLAYER_SOCKET_VERSIONS } from "./frames";
 import { multiplayerPeers } from "./peers";
-import { RPC_ERROR_PREFIX, USER_HEADER } from "./protocol";
+import { OPERATOR_CLOSE_SOCKET_REASON, RPC_ERROR_PREFIX, USER_HEADER } from "./protocol";
 import { everJoined, type GameSnapshot, isTerminal, SessionMeta, SocketAttachment } from "./state";
-import type { SessionOutcome, SessionView } from "./view";
+import type { SessionInspection, SessionOutcome, SessionView } from "./view";
 
 /** The Worker env a session DO reads — the app `DB` database it writes its terminal result to. */
 export interface MultiplayerSessionEnv {
@@ -42,6 +43,20 @@ export interface MultiplayerSessionEnv {
 const META_KEY = "meta";
 const OUTCOME_KEY = "outcome";
 const MODEL_STATE_KEY = "modelState";
+/** Where an operator close records its idempotency key — one per session, because a session closes once. */
+const OPERATOR_CLOSE_KEY = "operatorClose";
+
+/** What a management client's close left in storage: the key it was sent with, and when. */
+interface OperatorCloseRecord {
+  idempotencyKey: string;
+  at: number;
+}
+
+/** What a management client's close answers: the session as it now stands, and whether this call closed it. */
+export interface OperatorCloseOutcome {
+  session: SessionInspection;
+  replayed: boolean;
+}
 
 /**
  * Any publish failure as a `PithyError`, so the log record carries a typed payload — code, message, and the
@@ -95,6 +110,22 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
    * way the support inbound handler does. The name scopes every record to this capability.
    */
   private readonly log: Logger = createWorkerLogger({ name: "multiplayer:session" });
+
+  /**
+   * The tail of the transitions queued on this object. Every transition — a create, a join, an action, a leave, a
+   * close, a management client's close, the deadline alarm — starts only once the one before it has settled (#820).
+   * Input gates hold across storage calls and nothing else, and a transition also awaits D1 — the index row, the
+   * result, the ledger — so without this two joins could each read one roster, each take its last seat, and each be
+   * told they got in. In memory only, which is enough: an object hibernates idle, with nothing queued.
+   */
+  private transitions: Promise<unknown> = Promise.resolve();
+
+  /** Run `transition` after every transition queued before it, whether that one succeeded or threw. */
+  private serially<T>(transition: () => Promise<T>): Promise<T> {
+    const next = this.transitions.then(transition, transition);
+    this.transitions = next.catch(() => undefined);
+    return next;
+  }
 
   /** The DO's own id is the session id — stable, unguessable, and the D1 result's natural key. */
   private get sessionId(): string {
@@ -229,27 +260,27 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
 
   /** Create the session (RPC entry). */
   async create(game: GameSnapshot, creatorUserId: string): Promise<SessionView> {
-    return this.guard(() => this.applyCreate(game, creatorUserId));
+    return this.guard(() => this.serially(() => this.applyCreate(game, creatorUserId)));
   }
 
   /** Join the session (RPC entry). */
   async join(userId: string): Promise<SessionView> {
-    return this.guard(() => this.applyJoin(userId));
+    return this.guard(() => this.serially(() => this.applyJoin(userId)));
   }
 
   /** Take a game action (RPC entry) — a commit, a move, whatever the game's model defines. */
   async action(userId: string, payload: unknown): Promise<SessionView> {
-    return this.guard(() => this.applyAction(userId, payload));
+    return this.guard(() => this.serially(() => this.applyAction(userId, payload)));
   }
 
   /** Leave a table seat (RPC entry, table mode). */
   async leave(userId: string): Promise<SessionView> {
-    return this.guard(() => this.applyLeave(userId));
+    return this.guard(() => this.serially(() => this.applyLeave(userId)));
   }
 
   /** Close a table (RPC entry, table mode). */
   async close(userId: string): Promise<SessionView> {
-    return this.guard(() => this.applyClose(userId));
+    return this.guard(() => this.serially(() => this.applyClose(userId)));
   }
 
   /** The redacted view for the authenticated player, who must be a current member (RPC entry). */
@@ -265,7 +296,7 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
   async result(userId: string): Promise<MultiplayerResult | null> {
     return this.guard(async () => {
       await this.memberMeta(userId, "Result", { former: true });
-      return (await resultStore(multiplayerDatabase(this.env.DB)).get(this.sessionId)) ?? null;
+      return (await resultStore(this.env.DB).get(this.sessionId)) ?? null;
     });
   }
 
@@ -311,6 +342,8 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
       await this.ctx.storage.put(MODEL_STATE_KEY, model.init(ctx));
       meta.rng.cursor = rng.spent();
     }
+    // Indexed first, so a session the index cannot record is never created: it would be in flight and unlisted.
+    await this.index(meta);
     await this.ctx.storage.put(META_KEY, meta);
     return this.snapshot(creatorUserId);
   }
@@ -359,6 +392,7 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
         await this.ctx.storage.setAlarm(meta.deadline);
       }
     }
+    await this.index(meta);
     await this.ctx.storage.put(META_KEY, meta);
     await this.broadcast();
     return this.snapshot(userId);
@@ -457,6 +491,7 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
         resolvedAt: Date.now(),
       });
     } else {
+      await this.index(meta);
       await this.ctx.storage.put(META_KEY, meta);
     }
     // The leaver is no longer a member, so their sockets go with the seat; broadcast skips them regardless.
@@ -481,6 +516,8 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
       });
     }
     if (isTerminal(meta.phase)) return this.snapshot(userId);
+    // A bet still open on the table is released, as each player leaving would release theirs, never held forever.
+    await this.settleOut(meta);
     await this.commitTerminal(meta, {
       status: "resolved",
       scores: null,
@@ -490,6 +527,114 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
     });
     await this.broadcast();
     return this.snapshot(userId);
+  }
+
+  // --- The index of sessions in flight (#820) ---
+
+  /** Write this live session's row in the index: its game, phase and players as they stand. */
+  private async index(meta: SessionMeta): Promise<void> {
+    if (isTerminal(meta.phase)) return;
+    await sessionIndex(multiplayerDatabase(this.env.DB)).put({
+      sessionId: meta.sessionId,
+      gameKey: meta.game.key,
+      phase: meta.phase === "open" ? "open" : "active",
+      players: meta.members,
+      openedAt: new Date(meta.createdAt),
+    });
+  }
+
+  // --- The management surface: what a control-plane route reads and acts through (#820) ---
+
+  /** The session as a management client reads it (RPC entry). Never the game's state. */
+  async inspect(): Promise<SessionInspection> {
+    return this.guard(() => this.applyInspect());
+  }
+
+  /**
+   * Close a session in flight on a management client's word (RPC entry). It records no result. Idempotent by the
+   * key: a retry with the key that closed it answers `replayed: true` and changes nothing.
+   */
+  async closeByOperator(idempotencyKey: string, reason: string): Promise<OperatorCloseOutcome> {
+    return this.guard(() => this.serially(() => this.applyOperatorClose(idempotencyKey, reason)));
+  }
+
+  private async applyInspect(): Promise<SessionInspection> {
+    const meta = await this.loadMeta();
+    if (!meta) throw new MultiplayerSessionNotFoundError({ detail: `Inspect: session ${this.sessionId} not found.` });
+    const connected = new Set(this.connectedUserIds());
+    return {
+      sessionId: meta.sessionId,
+      gameKey: meta.game.key,
+      kind: meta.game.kind,
+      mode: meta.game.mode,
+      phase: meta.phase,
+      players: meta.members,
+      joined: everJoined(meta),
+      connected: meta.members.filter((member) => connected.has(member)),
+      openedAt: new Date(meta.createdAt).toISOString(),
+      deadline: meta.deadline === null ? null : new Date(meta.deadline).toISOString(),
+      outcome: await this.loadOutcome(),
+    };
+  }
+
+  /**
+   * End the session with no result. A table settles each seated player out first, exactly as their leaving would,
+   * so a bet still open on it is released rather than held forever. Then the session leaves the index and turns
+   * `abandoned`, its last state frame carries the reason to every member, and their sockets close.
+   */
+  private async applyOperatorClose(idempotencyKey: string, reason: string): Promise<OperatorCloseOutcome> {
+    const meta = await this.loadMeta();
+    if (!meta) throw new MultiplayerSessionNotFoundError({ detail: `Close: session ${this.sessionId} not found.` });
+    const recorded = (await this.ctx.storage.get(OPERATOR_CLOSE_KEY)) as OperatorCloseRecord | undefined;
+    if (recorded?.idempotencyKey === idempotencyKey) return { session: await this.applyInspect(), replayed: true };
+    if (isTerminal(meta.phase)) {
+      throw new MultiplayerInvalidTransitionError({
+        message: "That session is not in flight.",
+        detail: `Operator close: session ${this.sessionId} is already ${meta.phase}.`,
+      });
+    }
+
+    if (meta.game.mode === "table") await this.settleOut(meta);
+    const now = Date.now();
+    await this.endInFlight(meta, {
+      status: "abandoned",
+      scores: null,
+      winnerUserId: null,
+      draw: false,
+      resolvedAt: now,
+      closedReason: reason,
+    });
+    await this.ctx.storage.put(OPERATOR_CLOSE_KEY, { idempotencyKey, at: now } satisfies OperatorCloseRecord);
+    await this.broadcast();
+    for (const ws of this.ctx.getWebSockets()) {
+      try {
+        ws.close(1000, OPERATOR_CLOSE_SOCKET_REASON);
+      } catch {
+        // Already closing — ignore.
+      }
+    }
+    return { session: await this.applyInspect(), replayed: false };
+  }
+
+  /** Settle every seated player out of a table, as each one leaving would — releasing what they still hold. */
+  private async settleOut(meta: SessionMeta): Promise<void> {
+    const model = this.model(meta);
+    if (!model.onLeave) return;
+    let state = await this.loadModelState(model);
+    const seated = [...meta.members];
+    for (const userId of seated) {
+      const remaining = { ...meta, members: meta.members.filter((member) => member !== userId) };
+      const { ctx, rng } = this.makeContext(remaining, model);
+      const settled = model.onLeave(ctx, state, userId);
+      // A seat whose hold a purge already erased is settled as it stands: the session is ending either way.
+      await applyLedgerEffects(this.env.DB, settled.effects ?? [], multiplayerPeers().ledger, { settlingOut: true });
+      state = settled.state;
+      meta.members = remaining.members;
+      meta.rng.cursor = rng.spent();
+      await this.ctx.storage.put(MODEL_STATE_KEY, state);
+    }
+    // The roster stays as it was for the record and the players' last frame: settling out is not leaving.
+    meta.members = seated;
   }
 
   // --- Resolution and abandonment: the terminal transitions, both idempotent ---
@@ -526,6 +671,15 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
    */
   private async commitTerminal(meta: SessionMeta, outcome: SessionOutcome): Promise<void> {
     await this.writeResult(meta, outcome);
+    await this.endInFlight(meta, outcome);
+  }
+
+  /**
+   * Take an ending session out of the index and flip it terminal. The index row goes first, for the reason the
+   * result does: a D1 failure leaves the session live and retryable, never terminal and still listed as in flight.
+   */
+  private async endInFlight(meta: SessionMeta, outcome: SessionOutcome): Promise<void> {
+    await sessionIndex(multiplayerDatabase(this.env.DB)).remove(meta.sessionId);
     meta.phase = outcome.status;
     meta.deadline = null;
     await this.ctx.storage.put(META_KEY, meta);
@@ -535,7 +689,7 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
 
   /** Write the terminal result to D1 — idempotent on sessionId, so a retry never duplicates it. */
   private async writeResult(meta: SessionMeta, outcome: SessionOutcome): Promise<void> {
-    await resultStore(multiplayerDatabase(this.env.DB)).write({
+    await resultStore(this.env.DB).write({
       id: 0,
       sessionId: meta.sessionId,
       gameKey: meta.game.key,
@@ -587,6 +741,11 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
   // --- Alarm: the action deadline. Single persisted schedule, absolute ms-epoch, idempotent handler ---
 
   override async alarm(): Promise<void> {
+    await this.serially(() => this.onDeadline());
+  }
+
+  /** The deadline passed: resolve a game its last action completed, or abandon it. */
+  private async onDeadline(): Promise<void> {
     const meta = await this.loadMeta();
     // Idempotent: a terminal session (or one with no armed deadline) is a no-op. Cloudflare fires an alarm
     // only at or after its scheduled time, so reaching here means the deadline has passed.
@@ -690,7 +849,7 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
     try {
       if (frame.type === "action") {
         // Call the internal method directly — no RPC boundary here, so it throws a real PithyError.
-        await this.applyAction(userId, frame.payload);
+        await this.serially(() => this.applyAction(userId, frame.payload));
       } else {
         ws.send(encodeStateFrame(await this.applyView(userId), protocol));
       }

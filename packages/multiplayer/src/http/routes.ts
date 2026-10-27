@@ -1,27 +1,51 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { DurableObjectNamespace, DurableObjectStub } from "@cloudflare/workers-types";
+import type { D1Database, DurableObjectNamespace, DurableObjectStub } from "@cloudflare/workers-types";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
-import { ErrorPayload } from "@pithy-sh/core/src/error/payload";
-import { InternalError, PithyError } from "@pithy-sh/core/src/error/pithyError";
+import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
+import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { negotiateSubprotocol, SUBPROTOCOL_HEADER } from "@pithy-sh/core/src/http/subprotocol";
 import { validate } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
+import { type MultiplayerAuditAction, MultiplayerAuditActions } from "../audit/actions";
 import { type ResolvedGame, resolveGame } from "../config/config";
+import { sessionIndex } from "../data/sessionStore";
+import { resultStore } from "../data/store";
+import { multiplayerDatabase } from "../data/tables";
 import { MultiplayerGameNotFoundError, MultiplayerSessionNotFoundError } from "../error/errors";
+import { callSession } from "../session/call";
 // Type-only, so it erases: the DO module imports `cloudflare:workers` and must never land on the value
 // import graph the adopter's `pithy.config.ts` pulls in. The two constants both sides need live in the
 // pure `session/protocol` module for the same reason (#172).
 import { multiplayerSocketPath } from "../session/channel";
 import type { MultiplayerSession } from "../session/durableObject";
 import { MULTIPLAYER_SOCKET_VERSIONS } from "../session/frames";
-import { RPC_ERROR_PREFIX, USER_HEADER } from "../session/protocol";
+import { multiplayerPeers } from "../session/peers";
+import { USER_HEADER } from "../session/protocol";
 import type { GameSnapshot } from "../session/state";
+import { voidMultiplayerResult } from "../void/void";
 import { requireAuth } from "./guard";
-import { SessionResult, SessionView } from "./responses";
-import { MultiplayerGameParams, MultiplayerSessionParams } from "./schemas";
+import {
+  AdminResultList,
+  AdminResultVoided,
+  AdminSessionClosed,
+  AdminSessionList,
+  SessionInspection,
+  SessionResult,
+  SessionView,
+} from "./responses";
+import {
+  AdminAct,
+  AdminResultsQuery,
+  AdminSessionsQuery,
+  MultiplayerGameParams,
+  MultiplayerSessionParams,
+} from "./schemas";
+import { MULTIPLAYER_SESSIONS_MODERATE_SCOPE, MULTIPLAYER_SESSIONS_READ_SCOPE } from "./scopes";
+import { adminResultView, adminSessionListItem, sessionResultView } from "./views";
 
 /**
  * The multiplayer routes, their declared verification strategies, and what they accept. Every route is
@@ -58,6 +82,20 @@ import { MultiplayerGameParams, MultiplayerSessionParams } from "./schemas";
  * The authenticated user id comes from the core `AuthContext` seam (`c.var.auth.userId`) and is passed to the
  * Durable Object on every call — the DO never trusts a client-supplied id. The WebSocket upgrade is forwarded
  * to the DO with that id set on {@link USER_HEADER}, a server-set header the DO trusts.
+ *
+ * ## The management surface, under `admin/` (#820)
+ *
+ * Control-plane routes, gated by `requireControlPlane(scope)` and never by `requireAuth()`: the seam leaves
+ * `c.var.auth` null by design, so a player gate on one would refuse every management call forever.
+ *
+ *   GET  /admin/sessions             → sessions in flight, paged  (multiplayer:sessions:read)      query AdminSessionsQuery
+ *   GET  /admin/sessions/:id         → one session, from its DO   (multiplayer:sessions:read)      param MultiplayerSessionParams
+ *   POST /admin/sessions/:id/close   → close a session in flight  (multiplayer:sessions:moderate)  param MultiplayerSessionParams, json AdminAct
+ *   GET  /admin/results              → results, paged             (multiplayer:sessions:read)      query AdminResultsQuery
+ *   POST /admin/results/:id/void     → void a result, cascading   (multiplayer:sessions:moderate)  param MultiplayerSessionParams, json AdminAct
+ *
+ * Each act takes an idempotency key and a reason, and emits one audit event when it changed something. The
+ * void calls every composed consumer and reports each, consumer by consumer (`void/void.ts`).
  */
 export interface MultiplayerRoutesOptions {
   /** The games, validated against their models at assembly (each carries parsed `rules`). */
@@ -94,35 +132,6 @@ function sessionsBinding(c: Context<PithyHonoEnv>): SessionsNamespace {
   return binding;
 }
 
-/**
- * Run a Durable Object RPC call, reviving a `PithyError` the DO threw.
- *
- * A `PithyError` thrown inside a DO does not cross the RPC boundary as itself — the runtime strips it to a
- * bare Error. So the DO's `guard` encodes the payload as JSON into the Error message behind
- * {@link RPC_ERROR_PREFIX} (a message is the one thing the boundary preserves), and this decodes it back
- * into a real `PithyError` so `pithyErrorHandler` maps it to the same status and body a direct throw would
- * — a `not_a_member` commit stays a 403, not a 500. Anything else propagates untouched (and 500s, correctly).
- */
-async function callSession<T>(run: () => Promise<T>): Promise<T> {
-  try {
-    return await run();
-  } catch (error) {
-    if (error instanceof PithyError) throw error;
-    const message = (error as { message?: unknown } | null)?.message;
-    if (typeof message === "string" && message.startsWith(RPC_ERROR_PREFIX)) {
-      try {
-        const parsed = ErrorPayload.safeParse(JSON.parse(message.slice(RPC_ERROR_PREFIX.length)));
-        if (parsed.success) throw new PithyError(parsed.data, { cause: error });
-      } catch (reviveError) {
-        // A revived PithyError is the intended result — rethrow it. Only a genuinely malformed envelope
-        // (JSON.parse failure) falls through to the original error below, rather than a 500 from here.
-        if (reviveError instanceof PithyError) throw reviveError;
-      }
-    }
-    throw error;
-  }
-}
-
 /** Resolve a session stub from a path id, mapping an unparseable id to a 404 rather than a 500. */
 function sessionStub(namespace: SessionsNamespace, rawId: string): DurableObjectStub<MultiplayerSession> {
   let id: ReturnType<SessionsNamespace["idFromString"]>;
@@ -147,11 +156,239 @@ function snapshot(game: ResolvedGame): GameSnapshot {
   };
 }
 
+/**
+ * Where multiplayer mounts when an adopter names nothing. Exported because the router and the manifest's
+ * `multiplayerAdminRoutes` must agree on it, or a management client composing calls from the manifest 404s.
+ */
+export const MULTIPLAYER_DEFAULT_BASE_PATH = "/multiplayer";
+
+/** A game filter resolved against config: a mistyped key is the capability's own 404, not an empty pane. */
+function filteredGame(games: readonly ResolvedGame[], key: string | undefined): string | undefined {
+  if (key === undefined) return undefined;
+  const game = resolveGame(games, key);
+  if (!game) throw new MultiplayerGameNotFoundError({ detail: `No game "${key}" is configured.` });
+  return game.key;
+}
+
+/** Read the `DB` binding off the env, or fail with a configuration error naming the missing binding. */
+function dbBinding(c: Context<PithyHonoEnv>): D1Database {
+  const binding = (c.env as Record<string, unknown>).DB as D1Database | undefined;
+  if (!binding) {
+    throw new InternalError({
+      message: "Multiplayer is not configured.",
+      action: "Bind a D1 database named DB in wrangler.jsonc.",
+      detail: "The multiplayer capability requires a `DB` d1 binding; none was present on env.",
+    });
+  }
+  return binding;
+}
+
+/**
+ * The verified management client behind a control-plane call. `requireControlPlane()` has run on every route that
+ * calls this, so a null is a route mounted without its gate — a wiring mistake, hence `InternalError`.
+ */
+function caller(c: Context<PithyHonoEnv>): ControlPlaneContext {
+  const context = c.var.controlPlane;
+  if (!context) {
+    throw new InternalError({
+      message: "Multiplayer could not identify the management caller.",
+      detail: "requireControlPlane() must run before a multiplayer management handler reads the caller.",
+    });
+  }
+  return context;
+}
+
+/** What one management act records beyond who did it. */
+interface ActRecord {
+  sessionId: string;
+  gameKey: string;
+  details: Record<string, unknown>;
+  reason: string;
+  idempotencyKey: string;
+}
+
+/**
+ * Record one management act, once, through the core `emit` seam: the connection, the session, the game and the
+ * reason. Called only when the act changed something — a replay and a refusal record nothing.
+ */
+async function record(c: Context<PithyHonoEnv>, action: MultiplayerAuditAction, act: ActRecord): Promise<void> {
+  const who = caller(c);
+  await c.var.emit({
+    action,
+    outcome: "success",
+    severity: "warning",
+    actorType: "control-plane",
+    actorId: who.subject,
+    resourceType: "multiplayer_session",
+    resourceId: act.sessionId,
+    requestId: c.req.header("cf-ray"),
+    ip: c.req.header("cf-connecting-ip"),
+    userAgent: c.req.header("user-agent"),
+    metadata: {
+      connectionId: who.connectionId,
+      gameKey: act.gameKey,
+      ...act.details,
+      reason: act.reason,
+      idempotencyKey: act.idempotencyKey,
+    },
+  });
+}
+
 export function registerMultiplayerRoutes(options: MultiplayerRoutesOptions): (app: Hono<PithyHonoEnv>) => void {
-  const base = options.basePath ?? "/multiplayer";
+  const base = options.basePath ?? MULTIPLAYER_DEFAULT_BASE_PATH;
   const { games } = options;
 
   return (app) => {
+    // --- Management (control plane, #820) ---
+    app.get(
+      `${base}/admin/sessions`,
+      describeRoute({
+        summary: "List the sessions in flight, newest first, a page at a time.",
+        description:
+          "Read from the session index each session writes when it opens and removes when it ends. A session in flight before the index existed appears at its next join, leave or phase change.",
+        verification: "control-plane",
+        scopes: [MULTIPLAYER_SESSIONS_READ_SCOPE],
+        responses: { 200: AdminSessionList },
+      }),
+      requireControlPlane(MULTIPLAYER_SESSIONS_READ_SCOPE),
+      validate("query", AdminSessionsQuery),
+      async (c) => {
+        const query = c.req.valid("query");
+        const page = await sessionIndex(multiplayerDatabase(dbBinding(c))).list({
+          gameKey: filteredGame(games, query.game),
+          cursor: query.cursor,
+          limit: query.limit,
+        });
+        const now = new Date();
+        return c.json(
+          {
+            sessions: page.items.map((entry) => adminSessionListItem(entry, now)),
+            nextCursor: page.nextCursor,
+          } satisfies AdminSessionList,
+          200,
+        );
+      },
+    );
+
+    app.get(
+      `${base}/admin/sessions/:id`,
+      describeRoute({
+        summary: "Read one session from its Durable Object.",
+        description:
+          "Its players, phase, deadline, who is connected, and how it ended. Never the game's state, which holds what a player must not see.",
+        verification: "control-plane",
+        scopes: [MULTIPLAYER_SESSIONS_READ_SCOPE],
+        responses: { 200: SessionInspection },
+      }),
+      requireControlPlane(MULTIPLAYER_SESSIONS_READ_SCOPE),
+      validate("param", MultiplayerSessionParams),
+      async (c) => {
+        const stub = sessionStub(sessionsBinding(c), c.req.valid("param").id);
+        return c.json((await callSession(() => stub.inspect())) satisfies SessionInspection, 200);
+      },
+    );
+
+    app.post(
+      `${base}/admin/sessions/:id/close`,
+      describeRoute({
+        summary: "Close a session in flight.",
+        description:
+          "It records no result. A table settles each seated player out first, releasing what they hold. Every member gets a last state frame carrying the `reason`, and their sockets close. A retry with the same `idempotencyKey` changes nothing and answers `replayed: true`. A session that already ended is `multiplayer/invalid_transition`.",
+        verification: "control-plane",
+        scopes: [MULTIPLAYER_SESSIONS_MODERATE_SCOPE],
+        responses: { 200: AdminSessionClosed },
+      }),
+      requireControlPlane(MULTIPLAYER_SESSIONS_MODERATE_SCOPE),
+      validate("param", MultiplayerSessionParams),
+      validate("json", AdminAct),
+      async (c) => {
+        const stub = sessionStub(sessionsBinding(c), c.req.valid("param").id);
+        const { idempotencyKey, reason } = c.req.valid("json");
+        const outcome = await callSession(() => stub.closeByOperator(idempotencyKey, reason));
+        if (!outcome.replayed) {
+          await record(c, MultiplayerAuditActions.sessionClosed, {
+            sessionId: outcome.session.sessionId,
+            gameKey: outcome.session.gameKey,
+            details: { players: outcome.session.players },
+            reason,
+            idempotencyKey,
+          });
+        }
+        return c.json({ session: outcome.session, replayed: outcome.replayed } satisfies AdminSessionClosed, 200);
+      },
+    );
+
+    app.get(
+      `${base}/admin/results`,
+      describeRoute({
+        summary: "List results, most recently ended first, a page at a time.",
+        verification: "control-plane",
+        scopes: [MULTIPLAYER_SESSIONS_READ_SCOPE],
+        responses: { 200: AdminResultList },
+      }),
+      requireControlPlane(MULTIPLAYER_SESSIONS_READ_SCOPE),
+      validate("query", AdminResultsQuery),
+      async (c) => {
+        const query = c.req.valid("query");
+        const page = await resultStore(dbBinding(c)).list({
+          gameKey: filteredGame(games, query.game),
+          voided: query.voided,
+          cursor: query.cursor,
+          limit: query.limit,
+        });
+        return c.json(
+          { results: page.items.map(adminResultView), nextCursor: page.nextCursor } satisfies AdminResultList,
+          200,
+        );
+      },
+    );
+
+    app.post(
+      `${base}/admin/results/:id/void`,
+      describeRoute({
+        summary: "Void a result, and take it back out of every composed consumer.",
+        description:
+          "The result is marked void, then each composed consumer is called with its id: the leaderboard removes the entries it put on a board, and rating recalculates every player it touched. The response lists each consumer's outcome, and a consumer that failed is named. A retry with the same `idempotencyKey` changes nothing, and so does voiding a result already void with every consumer done. A new key on a void with a consumer still `failed` or `pending` runs those consumers again; while a consumer is `pending` and the key holding the void was spent less than 15 minutes ago, the void may still be running, and a new key is a 409 `core/conflict` that changes nothing.",
+        verification: "control-plane",
+        scopes: [MULTIPLAYER_SESSIONS_MODERATE_SCOPE],
+        responses: { 200: AdminResultVoided },
+      }),
+      requireControlPlane(MULTIPLAYER_SESSIONS_MODERATE_SCOPE),
+      validate("param", MultiplayerSessionParams),
+      validate("json", AdminAct),
+      async (c) => {
+        const { id } = c.req.valid("param");
+        const { idempotencyKey, reason } = c.req.valid("json");
+        const outcome = await voidMultiplayerResult(
+          dbBinding(c),
+          multiplayerPeers().voidConsumers ?? [],
+          { sessionId: id, idempotencyKey },
+          new Date(),
+          c.var.log,
+        );
+        if (!outcome.replayed) {
+          await record(c, MultiplayerAuditActions.resultVoided, {
+            sessionId: outcome.result.sessionId,
+            gameKey: outcome.result.gameKey,
+            details: {
+              players: outcome.result.players,
+              consumers: outcome.consumers.map(({ consumer, status }) => ({ consumer, status })),
+            },
+            reason,
+            idempotencyKey,
+          });
+        }
+        return c.json(
+          {
+            result: adminResultView(outcome.result),
+            replayed: outcome.replayed,
+            consumers: outcome.consumers,
+          } satisfies AdminResultVoided,
+          200,
+        );
+      },
+    );
+
     // Create a session for a configured game. The creator is its first member.
     app.post(
       `${base}/games/:game`,
@@ -263,7 +500,7 @@ export function registerMultiplayerRoutes(options: MultiplayerRoutesOptions): (a
         const stub = sessionStub(sessionsBinding(c), c.req.valid("param").id);
         const result = await callSession(() => stub.result(userId(c)));
         if (!result) throw new MultiplayerSessionNotFoundError({ detail: "The session has no terminal result yet." });
-        return c.json(result, 200);
+        return c.json(sessionResultView(result) satisfies SessionResult, 200);
       },
     );
 

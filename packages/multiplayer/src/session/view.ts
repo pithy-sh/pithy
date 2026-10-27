@@ -32,6 +32,12 @@ export const SessionOutcome = z
     winnerUserId: z.string().nullable().describe("The winner's user id, or null on a draw or abandonment."),
     draw: z.boolean().describe("Whether the session ended level."),
     resolvedAt: z.number().int().describe("When the session reached its terminal state, ms-epoch."),
+    closedReason: z
+      .string()
+      .optional()
+      .describe(
+        "Present when a management client closed the session while it was in flight: the reason it gave, written for the players. Such a session is `abandoned` and records no result.",
+      ),
   })
   .describe("The resolved outcome of a terminal session.");
 export type SessionOutcome = z.infer<typeof SessionOutcome>;
@@ -64,3 +70,30 @@ export const SessionView = z
   })
   .describe("One player's view of a session — the game-agnostic envelope around a model-specific, redacted state.");
 export type SessionView = z.infer<typeof SessionView>;
+
+/**
+ * One session as a management client reads it from its Durable Object (#820): who is in it, where it stands, and
+ * who is connected. **Never the game's state**: a model's state is hidden information — an opponent's commit, a
+ * deck's order — and a console that can read it is a way to cheat. Dates cross as ISO-8601 strings.
+ *
+ * **A field added here later is `.optional()`**, because a management client reads Workers on older releases too.
+ */
+export const SessionInspection = z
+  .object({
+    sessionId: z.string().describe("The session id."),
+    gameKey: z.string().describe("The game being played."),
+    kind: z.string().describe("The game model this session uses."),
+    mode: z.enum(["match", "table"]).describe("`match` plays one game; `table` is long-lived, many rounds."),
+    phase: SessionPhase.describe("The session's current phase."),
+    players: z.array(z.string()).describe("Every current member's user id, in join order."),
+    joined: z.array(z.string()).describe("Every user id that ever joined, in first-join order, leavers included."),
+    connected: z.array(z.string()).describe("The members with a live socket on the session right now."),
+    openedAt: z.iso.datetime().describe("When the session opened, ISO-8601."),
+    deadline: z.iso
+      .datetime()
+      .nullable()
+      .describe("When the current action deadline falls, ISO-8601, or null when the session waits indefinitely."),
+    outcome: SessionOutcome.nullable().describe("How the session ended, or null while it is in flight."),
+  })
+  .describe("One session as a management client reads it from its Durable Object. Never the game's hidden state.");
+export type SessionInspection = z.infer<typeof SessionInspection>;

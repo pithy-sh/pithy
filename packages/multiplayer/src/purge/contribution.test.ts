@@ -18,6 +18,9 @@ const RESULT: MultiplayerResult = {
   draw: false,
   createdAt: new Date(0),
   resolvedAt: new Date(1),
+  voidedAt: null,
+  voidKey: null,
+  voidConsumers: null,
 };
 
 describe("anonymizedResult", () => {

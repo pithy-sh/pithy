@@ -153,6 +153,10 @@ const DECLARED_ONLY: Record<string, string> = {
  * in the log a page at a time and deletes their rating, each as one `d1.batch()`.
  * Assignment (#816) moved `support` by one: `store/assignment.ts`, which batches a thread's change of assignee with
  * its history row on D1, so a handover never lands without its record.
+ * Multiplayer's management surface (#820) moved `multiplayer` by three: `void/void.ts`, which marks a result void and
+ * hands each consumer the env's own D1; `session/peers.ts`, which types the consumer that takes it; and
+ * `test-utils/database.ts`, which migrates a suite's D1 through the real chain. Keeping every spent void key moved it
+ * by one more: `data/store.ts`, which spends a key in one `d1.batch()` with the void or the retry it was sent for.
  */
 const IMPORTERS: Record<string, number> = {
   "packages/artifacts": 3,
@@ -166,7 +170,7 @@ const IMPORTERS: Record<string, number> = {
   "packages/ledger": 4,
   "packages/matchmaking": 9,
   "packages/media": 8,
-  "packages/multiplayer": 6,
+  "packages/multiplayer": 10,
   "packages/organization": 11,
   "packages/payments": 18,
   "packages/rating": 5,
