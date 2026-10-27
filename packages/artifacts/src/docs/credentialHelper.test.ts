@@ -163,7 +163,8 @@ describe("the credential helper in docs/credential-helper.md", () => {
 
   test("refuses both a token and a key, or neither, and mints nothing", async () => {
     asked.length = 0;
-    for (const credential of [{ PITHY_APP_TOKEN: "t", PITHY_APP_KEY: "k" }, {}]) {
+    const credentials: Record<string, string>[] = [{ PITHY_APP_TOKEN: "t", PITHY_APP_KEY: "k" }, {}];
+    for (const credential of credentials) {
       const run = await fill(origin, true, credential);
       expect(run.code).not.toBe(0);
       expect(run.stderr).toContain("PITHY_APP_TOKEN or PITHY_APP_KEY");
