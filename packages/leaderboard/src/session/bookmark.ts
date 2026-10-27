@@ -38,6 +38,8 @@ type SessionStart = "first-primary" | "first-unconstrained";
 export interface LeaderboardSession {
   /** The Kysely database bound to this session. Every query through it is sequentially consistent. */
   db: LeaderboardDatabase;
+  /** The session itself, for a write that must be one `d1.batch()`. It joins the same bookmark chain as `db`. */
+  d1: D1Database;
   /** The newest bookmark across this session's queries, or null if it ran none. */
   bookmark(): string | null;
 }
@@ -58,6 +60,8 @@ export function leaderboardSession(
     // kysely-d1 drives the database through `prepare` alone, which a session provides — so a session
     // stands in for the binding without the dialect knowing the difference.
     db: leaderboardDatabase(session as unknown as D1Database),
+    // A session answers `prepare` and `batch` as the binding does, which is all a batched write needs.
+    d1: session as unknown as D1Database,
     bookmark: () => session.getBookmark(),
   };
 }

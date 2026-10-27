@@ -61,14 +61,17 @@ describe("leaderboard()", () => {
     const tables = leaderboard({ boards }).databases?.app?.tables ?? {};
     expect(Object.keys(tables).sort()).toEqual([
       "pithyLeaderboardBoards",
+      "pithyLeaderboardContributions",
       "pithyLeaderboardEntries",
       "pithyLeaderboardLocks",
+      "pithyLeaderboardModerations",
+      "pithyLeaderboardStaleWindows",
     ]);
   });
 
   it("ships its migration under a stable local key", () => {
     const spec = leaderboard({ boards }).databases?.app;
-    expect(Object.keys(spec?.migrations ?? {})).toEqual(["0001_entries"]);
+    expect(Object.keys(spec?.migrations ?? {})).toEqual(["0001_entries", "0002_control_plane"]);
     expect(spec?.migrationOrder).toBe(LEADERBOARD_MIGRATION_ORDER);
   });
 

@@ -4,13 +4,14 @@
 import { env } from "cloudflare:test";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { rollbackMigration, runMigrations } from "@pithy-sh/core/src/migrations/runner";
-import type { MigrationProvider } from "kysely/migration";
+import type { Migration, MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { LEADERBOARD_MIGRATION_ORDER } from "../capability";
 import type { LeaderboardBoard } from "../config/config";
 import { leaderboardDatabase } from "../data/tables";
 import { leaderboard_0001_entries } from "../migrations/0001_entries";
-import { entryStore } from "./store";
+import { LEADERBOARD_MIGRATIONS } from "../migrations/all";
+import { deleteEntry, entryStore, pruneWindowsBefore } from "./store";
 
 const WINDOW = "2026-07-13T00:00:00.000Z";
 const T0 = new Date(1_700_000_000_000);
@@ -27,13 +28,13 @@ const board = (overrides: Partial<LeaderboardBoard> = {}): LeaderboardBoard =>
     ...overrides,
   }) as LeaderboardBoard;
 
-function provider(): MigrationProvider {
+function provider(migrations: Record<string, Migration> = LEADERBOARD_MIGRATIONS): MigrationProvider {
   const registry = createMigrationRegistry([
     {
       database: "app",
       namespace: "leaderboard",
       order: LEADERBOARD_MIGRATION_ORDER,
-      migrations: { "0001_entries": leaderboard_0001_entries },
+      migrations,
     },
   ]);
   const found = registry.app;
@@ -52,6 +53,9 @@ const store = () => entryStore(leaderboardDatabase(env.DB));
 
 beforeEach(async () => {
   for (const t of [
+    "pithy_leaderboard_stale_windows",
+    "pithy_leaderboard_moderations",
+    "pithy_leaderboard_contributions",
     "pithy_leaderboard_entries",
     "pithy_leaderboard_boards",
     "pithy_leaderboard_locks",
@@ -64,6 +68,13 @@ beforeEach(async () => {
 });
 
 describe("leaderboard_0001_entries", () => {
+  // The first migration alone, as a database that never took the second holds it.
+  const first = { "0001_entries": leaderboard_0001_entries };
+  beforeEach(async () => {
+    // Back out the second, so the first stands as it shipped.
+    await rollbackMigration(env.DB, provider());
+  });
+
   test("up creates the tables", async () => {
     expect(await tables()).toEqual([
       "pithy_leaderboard_boards",
@@ -73,8 +84,7 @@ describe("leaderboard_0001_entries", () => {
   });
 
   test("down drops every table", async () => {
-    const p = provider();
-    const results = await rollbackMigration(env.DB, p);
+    const results = await rollbackMigration(env.DB, provider(first));
     expect(results.map((r) => [r.migrationName, r.direction, r.status])).toEqual([
       ["0400_leaderboard_0001_entries", "Down", "Success"],
     ]);
@@ -209,15 +219,15 @@ describe("entryStore — moderation and consent", () => {
     expect(await store().hide("b1", WINDOW, "ghost", true)).toBe(false);
   });
 
-  test("remove deletes the entry outright", async () => {
+  test("deleteEntry deletes the entry outright", async () => {
     const s = store();
     await s.submit(board(), WINDOW, "u1", 50, T0, true);
-    expect(await s.remove("b1", WINDOW, "u1")).toBe(true);
+    expect(await deleteEntry(env.DB, "b1", WINDOW, "u1")).toBe(true);
     expect(await s.get("b1", WINDOW, "u1")).toBeUndefined();
   });
 
-  test("remove reports false for a player with no entry", async () => {
-    expect(await store().remove("b1", WINDOW, "ghost")).toBe(false);
+  test("deleteEntry reports false for a player with no entry", async () => {
+    expect(await deleteEntry(env.DB, "b1", WINDOW, "ghost")).toBe(false);
   });
 
   test("setVisibility reports false for a player with no entry", async () => {
@@ -225,13 +235,13 @@ describe("entryStore — moderation and consent", () => {
   });
 });
 
-describe("entryStore.pruneWindowsBefore", () => {
+describe("pruneWindowsBefore", () => {
   test("deletes entries in windows chronologically before the cutoff, keeps the cutoff and newer", async () => {
     const s = store();
     await s.submit(board(), "2026-07-13T00:00:00.000Z", "u1", 1, T0, true);
     await s.submit(board(), "2026-07-12T00:00:00.000Z", "u1", 1, T0, true);
     await s.submit(board(), "2026-07-11T00:00:00.000Z", "u1", 1, T0, true);
-    const deleted = await s.pruneWindowsBefore("b1", "2026-07-12T00:00:00.000Z");
+    const deleted = await pruneWindowsBefore(env.DB, "b1", "2026-07-12T00:00:00.000Z");
     expect(deleted).toBe(1);
     expect(await s.get("b1", "2026-07-11T00:00:00.000Z", "u1")).toBeUndefined();
     expect(await s.get("b1", "2026-07-12T00:00:00.000Z", "u1")).toBeDefined();
@@ -241,14 +251,14 @@ describe("entryStore.pruneWindowsBefore", () => {
   test("never touches another board's entries", async () => {
     const s = store();
     await s.submit(board({ key: "b2" }), "2026-07-11T00:00:00.000Z", "u1", 1, T0, true);
-    await s.pruneWindowsBefore("b1", "2026-07-13T00:00:00.000Z");
+    await pruneWindowsBefore(env.DB, "b1", "2026-07-13T00:00:00.000Z");
     expect(await s.get("b2", "2026-07-11T00:00:00.000Z", "u1")).toBeDefined();
   });
 
   test("never deletes an all-time window — `all` sorts after every date key", async () => {
     const s = store();
     await s.submit(board(), "all", "u1", 1, T0, true);
-    expect(await s.pruneWindowsBefore("b1", "2026-07-13T00:00:00.000Z")).toBe(0);
+    expect(await pruneWindowsBefore(env.DB, "b1", "2026-07-13T00:00:00.000Z")).toBe(0);
     expect(await s.get("b1", "all", "u1")).toBeDefined();
   });
 });

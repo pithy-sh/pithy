@@ -7,11 +7,12 @@ import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry"
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
+import { moderateEntry } from "../admin/moderate";
 import { LEADERBOARD_MIGRATION_ORDER } from "../capability";
 import { type LeaderboardBoard, LeaderboardConfig, type LeaderboardConfigInput } from "../config/config";
-import { leaderboardDatabase } from "../data/tables";
+import { LEADERBOARD_STALE_WINDOWS_TABLE, leaderboardDatabase } from "../data/tables";
 import { entryStore } from "../entry/store";
-import { leaderboard_0001_entries } from "../migrations/0001_entries";
+import { LEADERBOARD_MIGRATIONS } from "../migrations/all";
 import { windowKeyAt } from "../window/schedule";
 import { RANK_CHUNK_SIZE } from "./materialize";
 import { runRankPass } from "./worker";
@@ -25,7 +26,7 @@ function provider(): MigrationProvider {
       database: "app",
       namespace: "leaderboard",
       order: LEADERBOARD_MIGRATION_ORDER,
-      migrations: { "0001_entries": leaderboard_0001_entries },
+      migrations: LEADERBOARD_MIGRATIONS,
     },
   ]);
   const found = registry.app;
@@ -71,6 +72,9 @@ function d1RefusingBoard(base: D1Database, boardKey: string): D1Database {
 
 beforeEach(async () => {
   for (const t of [
+    "pithy_leaderboard_stale_windows",
+    "pithy_leaderboard_moderations",
+    "pithy_leaderboard_contributions",
     "pithy_leaderboard_entries",
     "pithy_leaderboard_boards",
     "pithy_leaderboard_locks",
@@ -122,6 +126,76 @@ describe("runRankPass", () => {
     await store.submit(boardAt(c, 0), windowKeyAt(DAILY, NOW), "u2", 10, NOW, true);
     const result = await runRankPass(env.DB, c, NOW);
     expect(result.refreshed.map((r) => r.window)).toEqual([windowKeyAt(DAILY, NOW)]);
+  });
+
+  describe("a closed window an act moved", () => {
+    // Cheating usually turns up after the week it happened in, so an act on a closed window is the common
+    // case, and the pass that only renumbers the open window would leave its stored ranks wrong for good.
+    const c = config({
+      boards: [{ key: "b1", direction: "desc", window: DAILY, retain: 5 }],
+      rank: { materialize: "0 * * * *" },
+    });
+    const yesterday = new Date(NOW.getTime() - 86_400_000);
+    const closed = windowKeyAt(DAILY, yesterday);
+    const ranks = async () => {
+      const { results } = await env.DB.prepare(
+        "SELECT user_id, rank FROM pithy_leaderboard_entries WHERE window_key = ? ORDER BY user_id",
+      )
+        .bind(closed)
+        .all<{ user_id: string; rank: number | null }>();
+      return Object.fromEntries(results.map((row) => [row.user_id, row.rank]));
+    };
+    const moderate = (act: "hide" | "correct", userId: string, score?: number) =>
+      moderateEntry(env.DB, {
+        act,
+        board: boardAt(c, 0),
+        windowKey: closed,
+        userId,
+        ...(score === undefined ? {} : { score }),
+        idempotencyKey: `${act}-${userId}`,
+        reason: "Found after the day closed.",
+        actor: { connectionId: "c1", actorId: "operator-1" },
+        materialized: true,
+        now: NOW,
+      });
+
+    beforeEach(async () => {
+      const store = entryStore(leaderboardDatabase(env.DB));
+      for (const [userId, score] of [
+        ["u1", 100],
+        ["u2", 90],
+        ["u3", 80],
+      ] as const) {
+        await store.submit(boardAt(c, 0), closed, userId, score, yesterday, true);
+      }
+      // The pass that ran while the window was open left it ranked.
+      await runRankPass(env.DB, c, yesterday);
+      expect(await ranks()).toEqual({ u1: 1, u2: 2, u3: 3 });
+    });
+
+    test("hiding its #1 renumbers everyone below on the next pass", async () => {
+      await moderate("hide", "u1");
+      const result = await runRankPass(env.DB, c, NOW);
+      expect(await ranks()).toEqual({ u1: null, u2: 1, u3: 2 });
+      expect(result.refreshed.map((r) => r.window)).toEqual([windowKeyAt(DAILY, NOW), closed]);
+    });
+
+    test("a correction gets its rank back on the next pass, rather than none for good", async () => {
+      await moderate("correct", "u3", 200);
+      expect((await ranks()).u3).toBeNull();
+      await runRankPass(env.DB, c, NOW);
+      expect(await ranks()).toEqual({ u1: 2, u2: 3, u3: 1 });
+    });
+
+    test("is renumbered once: the pass clears what it renumbered", async () => {
+      await moderate("hide", "u1");
+      await runRankPass(env.DB, c, NOW);
+      expect(
+        await leaderboardDatabase(env.DB).selectFrom(LEADERBOARD_STALE_WINDOWS_TABLE).selectAll().execute(),
+      ).toEqual([]);
+      const again = await runRankPass(env.DB, c, NOW);
+      expect(again.refreshed.map((r) => r.window)).toEqual([windowKeyAt(DAILY, NOW)]);
+    });
   });
 
   test("refreshes every board", async () => {

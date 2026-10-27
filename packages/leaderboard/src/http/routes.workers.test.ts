@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, test } from "vitest";
 import type { z } from "zod";
 import { LEADERBOARD_MIGRATION_ORDER } from "../capability";
 import { LeaderboardConfig, type LeaderboardConfigInput } from "../config/config";
-import { leaderboard_0001_entries } from "../migrations/0001_entries";
+import { LEADERBOARD_MIGRATIONS } from "../migrations/all";
 import { BOOKMARK_HEADER } from "../session/bookmark";
 import { BoardList, BoardPage, OwnRank } from "./responses";
 import { registerLeaderboardRoutes } from "./routes";
@@ -26,7 +26,7 @@ function provider(): MigrationProvider {
       database: "app",
       namespace: "leaderboard",
       order: LEADERBOARD_MIGRATION_ORDER,
-      migrations: { "0001_entries": leaderboard_0001_entries },
+      migrations: LEADERBOARD_MIGRATIONS,
     },
   ]);
   const found = registry.app;
@@ -90,6 +90,9 @@ const submit = (app: Hono<PithyHonoEnv>, user: string, score: number) =>
 
 beforeEach(async () => {
   for (const t of [
+    "pithy_leaderboard_stale_windows",
+    "pithy_leaderboard_moderations",
+    "pithy_leaderboard_contributions",
     "pithy_leaderboard_entries",
     "pithy_leaderboard_boards",
     "pithy_leaderboard_locks",

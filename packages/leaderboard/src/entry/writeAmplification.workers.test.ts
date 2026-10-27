@@ -10,7 +10,7 @@ import { DEFAULT_WORKLOAD } from "../../scripts/costModel";
 import { LEADERBOARD_MIGRATION_ORDER } from "../capability";
 import type { LeaderboardBoard } from "../config/config";
 import { leaderboardDatabase } from "../data/tables";
-import { leaderboard_0001_entries } from "../migrations/0001_entries";
+import { LEADERBOARD_MIGRATIONS } from "../migrations/all";
 import { submitQuery } from "./store";
 
 /**
@@ -48,7 +48,7 @@ function provider(): MigrationProvider {
       database: "app",
       namespace: "leaderboard",
       order: LEADERBOARD_MIGRATION_ORDER,
-      migrations: { "0001_entries": leaderboard_0001_entries },
+      migrations: LEADERBOARD_MIGRATIONS,
     },
   ]);
   const found = registry.app;
@@ -65,15 +65,27 @@ async function submitAndCount(b: LeaderboardBoard, userId: string, score: number
   return result.meta.rows_written;
 }
 
+/** The indexes every entry pays for — a partial index is maintained only for the rows it covers. */
 async function indexCount(): Promise<number> {
   const { results } = await env.DB.prepare(
-    "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='index' AND tbl_name='pithy_leaderboard_entries' AND name NOT LIKE 'sqlite_%'",
+    "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='index' AND tbl_name='pithy_leaderboard_entries' AND name NOT LIKE 'sqlite_%' AND sql NOT LIKE '% where %'",
   ).all<{ n: number }>();
   return results[0]?.n ?? 0;
 }
 
+/** The partial indexes, which a plain submission never writes. */
+async function partialIndexes(): Promise<string[]> {
+  const { results } = await env.DB.prepare(
+    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='pithy_leaderboard_entries' AND sql LIKE '% where %'",
+  ).all<{ name: string }>();
+  return results.map((row) => row.name);
+}
+
 beforeEach(async () => {
   for (const t of [
+    "pithy_leaderboard_stale_windows",
+    "pithy_leaderboard_moderations",
+    "pithy_leaderboard_contributions",
     "pithy_leaderboard_entries",
     "pithy_leaderboard_boards",
     "pithy_leaderboard_locks",
@@ -90,6 +102,13 @@ describe("rows written per submission", () => {
     // The unique player index (upsert conflict target) and the rank index (ordering). Both are
     // maintained on every insert, so both are on the submission's write bill.
     expect(await indexCount()).toBe(2);
+  });
+
+  test("the result-id index is partial, so it costs a plain submission nothing", async () => {
+    // #817 indexes `result_id` for a void to find a result's entries. Over every row it would be a third
+    // index on every insert; over the rows that carry a result id it is billed only to a publish.
+    expect(await partialIndexes()).toEqual(["pithy_leaderboard_entries_result_idx"]);
+    expect(await submitAndCount(board(), "u1", 10, T0)).toBe(3);
   });
 
   test("a steady-state improving submission writes exactly the cost model's assumed rows", async () => {

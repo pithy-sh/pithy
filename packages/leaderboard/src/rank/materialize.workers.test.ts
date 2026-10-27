@@ -17,7 +17,7 @@ import { LEADERBOARD_MIGRATION_ORDER } from "../capability";
 import type { LeaderboardBoard } from "../config/config";
 import { leaderboardDatabase } from "../data/tables";
 import { entryStore } from "../entry/store";
-import { leaderboard_0001_entries } from "../migrations/0001_entries";
+import { LEADERBOARD_MIGRATIONS } from "../migrations/all";
 import { type Keyset, RANK_CHUNK_SIZE, RANK_PARAMETERS_PER_ROW, refreshWindowRanks } from "./materialize";
 import { rankOf, topEntries } from "./query";
 
@@ -33,7 +33,7 @@ function provider(): MigrationProvider {
       database: "app",
       namespace: "leaderboard",
       order: LEADERBOARD_MIGRATION_ORDER,
-      migrations: { "0001_entries": leaderboard_0001_entries },
+      migrations: LEADERBOARD_MIGRATIONS,
     },
   ]);
   const found = registry.app;
@@ -59,6 +59,9 @@ async function storedRanks(): Promise<Array<[string, number | null]>> {
 
 beforeEach(async () => {
   for (const t of [
+    "pithy_leaderboard_stale_windows",
+    "pithy_leaderboard_moderations",
+    "pithy_leaderboard_contributions",
     "pithy_leaderboard_entries",
     "pithy_leaderboard_boards",
     "pithy_leaderboard_locks",

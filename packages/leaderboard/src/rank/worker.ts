@@ -8,6 +8,7 @@ import { leaderboardDatabase } from "../data/tables";
 import { type PruneOutcome, pruneBoards } from "../retention/prune";
 import { windowKeyAt } from "../window/schedule";
 import { type RefreshResult, refreshWindowRanks } from "./materialize";
+import { clearStale, type StaleWindow, staleWindows } from "./stale";
 
 /**
  * The rank pass, in process: the retention sweep, then the rank refresh, each board ranked to completion.
@@ -30,7 +31,7 @@ import { type RefreshResult, refreshWindowRanks } from "./materialize";
  */
 export type BoardRefresh =
   | ({
-      /** This board's open window was ranked. */
+      /** This board's window was ranked: the open one, or a closed one an act or a void marked stale. */
       state: "refreshed";
       /** The board's key, as its config declares it. */
       board: string;
@@ -49,7 +50,10 @@ export type BoardRefresh =
 export interface RankPassResult {
   /** What the retention sweep deleted, and whether it reached every board. */
   pruned: PruneOutcome;
-  /** One entry per materialized board the refresh pass touched. Empty when rank is live. */
+  /**
+   * One entry per window the refresh pass touched: each materialized board's open window, then each closed
+   * window an act or a void marked stale. Empty when rank is live.
+   */
   refreshed: BoardRefresh[];
 }
 
@@ -71,24 +75,37 @@ export function materializedBoards(config: LeaderboardConfig): LeaderboardBoard[
  */
 export async function runRankPass(d1: D1Database, config: LeaderboardConfig, now: Date): Promise<RankPassResult> {
   const db = leaderboardDatabase(d1);
-  const pruned = await pruneBoards(db, config.boards, now);
+  const pruned = await pruneBoards(d1, config.boards, now);
 
   const refreshed: BoardRefresh[] = [];
   for (const board of materializedBoards(config)) {
-    // Only the open window is refreshed. A closed window's ranks stopped moving when it closed, so the
-    // pass that ran while it was open already left them final.
-    const window = windowKeyAt(board.window, now);
-    let result: RefreshResult;
+    // The open window, every pass. A closed window stopped moving when it closed, so the pass that ran
+    // while it was open left it final — unless an act or a void moved it since, and marked it stale.
+    const open = windowKeyAt(board.window, now);
+    let marked: StaleWindow[];
     try {
-      result = await refreshWindowRanks(db, board, window);
+      marked = await staleWindows(db, board.key);
     } catch {
-      // No binding. A refresh throws out of D1 with a query and an entry's identifiers in it, and this
-      // result is rendered wherever a caller renders it — so what survives is the board key and the
-      // window, both of which are the adopter's own configuration.
-      refreshed.push({ state: "unavailable", board: board.key, window });
+      // The board's own reads are failing; its refresh would too. One line for it, as below.
+      refreshed.push({ state: "unavailable", board: board.key, window: open });
       continue;
     }
-    refreshed.push({ state: "refreshed", board: board.key, window, ...result });
+    const windows = [open, ...marked.map((m) => m.windowKey).filter((key) => key !== open)];
+    for (const window of windows) {
+      let result: RefreshResult;
+      try {
+        result = await refreshWindowRanks(db, board, window);
+        const mark = marked.find((m) => m.windowKey === window);
+        if (mark) await clearStale(db, board.key, mark);
+      } catch {
+        // No binding. A refresh throws out of D1 with a query and an entry's identifiers in it, and this
+        // result is rendered wherever a caller renders it — so what survives is the board key and the
+        // window, both of which are the adopter's own configuration. An uncleared mark is retried next pass.
+        refreshed.push({ state: "unavailable", board: board.key, window });
+        continue;
+      }
+      refreshed.push({ state: "refreshed", board: board.key, window, ...result });
+    }
   }
   return { pruned, refreshed };
 }

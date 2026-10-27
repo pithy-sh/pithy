@@ -10,7 +10,7 @@ import { LEADERBOARD_MIGRATION_ORDER } from "../capability";
 import type { LeaderboardBoard } from "../config/config";
 import { leaderboardDatabase } from "../data/tables";
 import { submitQuery } from "../entry/store";
-import { leaderboard_0001_entries } from "../migrations/0001_entries";
+import { LEADERBOARD_MIGRATIONS } from "../migrations/all";
 import { rankCountQuery } from "./query";
 
 /**
@@ -34,7 +34,7 @@ function provider(): MigrationProvider {
       database: "app",
       namespace: "leaderboard",
       order: LEADERBOARD_MIGRATION_ORDER,
-      migrations: { "0001_entries": leaderboard_0001_entries },
+      migrations: LEADERBOARD_MIGRATIONS,
     },
   ]);
   const found = registry.app;
@@ -51,6 +51,9 @@ async function planFor(sql: string, parameters: readonly unknown[]): Promise<str
 
 beforeAll(async () => {
   for (const t of [
+    "pithy_leaderboard_stale_windows",
+    "pithy_leaderboard_moderations",
+    "pithy_leaderboard_contributions",
     "pithy_leaderboard_entries",
     "pithy_leaderboard_boards",
     "pithy_leaderboard_locks",

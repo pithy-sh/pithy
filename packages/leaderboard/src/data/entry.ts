@@ -46,6 +46,12 @@ export const LeaderboardEntry = z
     hidden: SQLiteBoolean.describe(
       "Whether an admin has hidden this entry. Distinct from `visible` so a moderator action cannot be undone by the player toggling their own consent.",
     ),
+    resultId: z
+      .string()
+      .nullish()
+      .describe(
+        "The result that wrote the score this entry holds now — a `@pithy-sh/multiplayer` session id — or null when a plain submission did. Kept so a voided result can find the entries it put on a board. On a `sum` board it names the last result folded in; `pithy_leaderboard_contributions` holds every one.",
+      ),
     rank: z
       .number()
       .int()
