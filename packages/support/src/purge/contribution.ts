@@ -9,10 +9,12 @@ import {
   type PurgeContext,
   purgeBinding,
 } from "@pithy-sh/core/src/capability/purge";
-import type { Expression, ExpressionBuilder, Kysely, SqlBool } from "kysely";
+import { type Expression, type ExpressionBuilder, type Kysely, type SqlBool, sql } from "kysely";
+import { SupportAssignment } from "../data/assignment";
 import { SupportAttachment } from "../data/attachment";
 import { SupportMessage } from "../data/message";
 import {
+  SUPPORT_ASSIGNMENTS_TABLE,
   SUPPORT_ATTACHMENTS_TABLE,
   SUPPORT_CLASSIFICATIONS_TABLE,
   SUPPORT_FLAGS_TABLE,
@@ -27,7 +29,8 @@ import { SUPPORT_BUCKET_BINDING } from "../secret/registry";
 /**
  * What erasing one person means for `@pithy-sh/support` (#814): every thread they opened — linked to their account,
  * or sent from their address and linked to no account — with every message in it, its attachments and raw mail in
- * R2, its classifications, and every operator's read and snooze state on it. And what exporting them hands back.
+ * R2, its classifications, every operator's read and snooze state on it, and the history of who had it (#816). And
+ * what exporting them hands back.
  *
  * **A thread is the person's when it is linked to their account or came from their address.** An email thread from
  * someone who never signed in carries no `userId`, only the address it came from; the address is read from the
@@ -39,11 +42,31 @@ import { SUPPORT_BUCKET_BINDING } from "../secret/registry";
  * their objects, so a row deleted ahead of its object would leave bytes nothing can find. An R2 delete of a key
  * already gone succeeds, so a retried step is **idempotent**, and a person with no threads finds nothing. Deleting
  * a message drops it from the full-text index through the index's own triggers.
+ *
+ * **Who had a thread goes with the thread; who handed it over is the operator's.** The assignment history is a
+ * thread's own record — each change names the thread, who had it before and after, and the assigner's note about
+ * the person's request — so it is erased with the thread and exported with it, oldest first. Who made each change,
+ * `assignedBy`, is the operator's subject or a staff member's id, not the person's: the export leaves it out of the
+ * history and of the thread, as leaderboard leaves out a moderator, and the audit trail keeps every handover with its
+ * actor.
+ *
+ * **A staff member's own handovers, on threads that are not theirs, lose their id.** On the staff session door,
+ * `assignedBy` is the signed-in user's id, written onto a customer's thread and its history. Their purge sets it to
+ * `ERASED_ASSIGNER` wherever they acted as a user — every history row with `actorType = 'user'` and their id, and the
+ * thread's own `assignedBy` when that row made its current assignment — so the handover stays in the customer's
+ * record and stops naming them. A control-plane subject that happens to share the id is a client, not the person, and
+ * is left alone. Their export hands those handovers back as which thread, when, and how they were verified, never the
+ * assignee or the note, which are about the customer's request. Who **held** a thread is kept: an assignee is an
+ * opaque reference and a name the assigner chose, support cannot tell which reference is the person, and both go
+ * when the customer's thread does.
  */
+
+/** What a purged staff member's id becomes on the handovers they made (#816). */
+export const ERASED_ASSIGNER = "erased-user";
 
 /** The one sentence the purge records with this step. */
 export const SUPPORT_PURGE_SUMMARY =
-  "Deletes every support thread the user opened, linked to their account or sent from their address and linked to no other account, with its messages, attachments, raw mail, classifications and read state.";
+  "Deletes every support thread the user opened, linked to their account or sent from their address and linked to no other account, with its messages, attachments, raw mail, classifications, read state and assignment history. On other people's threads, the handovers they made as a signed-in user lose their id; an assignee is an opaque reference the assigner named, so who held a thread stays until that thread goes.";
 
 /** How many threads one read takes, so a person with a long history is erased in bounded statements. */
 const PAGE = 50;
@@ -71,6 +94,21 @@ async function theirs(context: PurgeContext): Promise<Theirs> {
       : eb.or([eb("userId", "=", userId), eb.and([eb("fromAddress", "=", address), eb("userId", "is", null)])]);
 }
 
+/** One handover a staff member made, as their export carries it: which thread, when, and how they were verified. */
+const SupportHandover = SupportAssignment.pick({
+  id: true,
+  threadId: true,
+  actorType: true,
+  assignedBy: true,
+  createdAt: true,
+});
+
+/** A row without who made its assignment: the operator's, never the person's (#816). */
+function withoutAssigner<T extends { assignedBy?: unknown }>(row: T): Omit<T, "assignedBy"> {
+  const { assignedBy: _assigner, ...rest } = row;
+  return rest;
+}
+
 /** The person's thread ids, oldest first, at most `limit`. */
 async function threadIds(db: SupportDatabase, predicate: Theirs, limit: number): Promise<string[]> {
   const rows = await db
@@ -96,6 +134,33 @@ export function supportUserPurge(database = "DB"): ErasingPurgeContribution {
     erase: async (context) => {
       const { d1, db } = open(context.env);
       const predicate = await theirs(context);
+      // Their own acts as a signed-in user, on anybody's thread: the thread first, while its history still names them.
+      const userId = context.subject.id;
+      const anonymize = [
+        db
+          .updateTable(SUPPORT_THREADS_TABLE)
+          .set({ assignedBy: ERASED_ASSIGNER })
+          .where("assignedBy", "=", userId)
+          .where((eb) =>
+            eb.exists(
+              eb
+                .selectFrom(SUPPORT_ASSIGNMENTS_TABLE)
+                .select(sql.lit(1).as("one"))
+                .whereRef(`${SUPPORT_ASSIGNMENTS_TABLE}.threadId`, "=", `${SUPPORT_THREADS_TABLE}.id`)
+                .whereRef(`${SUPPORT_ASSIGNMENTS_TABLE}.createdAt`, "=", `${SUPPORT_THREADS_TABLE}.assignedAt`)
+                .where(`${SUPPORT_ASSIGNMENTS_TABLE}.actorType`, "=", "user")
+                .where(`${SUPPORT_ASSIGNMENTS_TABLE}.assignedBy`, "=", userId),
+            ),
+          )
+          .compile(),
+        db
+          .updateTable(SUPPORT_ASSIGNMENTS_TABLE)
+          .set({ assignedBy: ERASED_ASSIGNER })
+          .where("actorType", "=", "user")
+          .where("assignedBy", "=", userId)
+          .compile(),
+      ];
+      await d1.batch(anonymize.map((compiled) => d1.prepare(compiled.sql).bind(...(compiled.parameters as unknown[]))));
       let bucket: R2Bucket | undefined;
       for (;;) {
         const ids = await threadIds(db, predicate, PAGE);
@@ -119,6 +184,7 @@ export function supportUserPurge(database = "DB"): ErasingPurgeContribution {
         // One batch, children first, so a failure leaves the page whole and the retry erases it again.
         const statements = [
           db.deleteFrom(SUPPORT_ATTACHMENTS_TABLE).where("threadId", "in", ids).compile(),
+          db.deleteFrom(SUPPORT_ASSIGNMENTS_TABLE).where("threadId", "in", ids).compile(),
           db.deleteFrom(SUPPORT_CLASSIFICATIONS_TABLE).where("threadId", "in", ids).compile(),
           db.deleteFrom(SUPPORT_FLAGS_TABLE).where("threadId", "in", ids).compile(),
           db.deleteFrom(SUPPORT_MESSAGES_TABLE).where("threadId", "in", ids).compile(),
@@ -135,7 +201,7 @@ export function supportUserPurge(database = "DB"): ErasingPurgeContribution {
       // The thread set as a subquery, never a bound id list: a person with more threads than D1 binds in one
       // statement is answered in full.
       const threadIdsOf = db.selectFrom(SUPPORT_THREADS_TABLE).select("id").where(predicate);
-      const [threads, messages, attachments] = await Promise.all([
+      const [threads, messages, attachments, assignments, handovers] = await Promise.all([
         db.selectFrom(SUPPORT_THREADS_TABLE).selectAll().where(predicate).orderBy("createdAt").orderBy("id").execute(),
         db
           .selectFrom(SUPPORT_MESSAGES_TABLE)
@@ -151,11 +217,31 @@ export function supportUserPurge(database = "DB"): ErasingPurgeContribution {
           .orderBy("createdAt")
           .orderBy("id")
           .execute(),
+        db
+          .selectFrom(SUPPORT_ASSIGNMENTS_TABLE)
+          .selectAll()
+          .where("threadId", "in", threadIdsOf)
+          .orderBy("createdAt")
+          .orderBy("id")
+          .execute(),
+        // The handovers they made as a signed-in user, on any thread: which, when and how — never the assignee or the
+        // note, which are about somebody else's request.
+        db
+          .selectFrom(SUPPORT_ASSIGNMENTS_TABLE)
+          .select(["id", "threadId", "actorType", "assignedBy", "createdAt"])
+          .where("actorType", "=", "user")
+          .where("assignedBy", "=", context.subject.id)
+          .orderBy("threadId")
+          .orderBy("createdAt")
+          .orderBy("id")
+          .execute(),
       ]);
       return {
-        threads: exportRows(threads.map((row) => SupportThread.parse(row))),
+        threads: exportRows(threads.map((row) => withoutAssigner(SupportThread.parse(row)))),
         messages: exportRows(messages.map((row) => SupportMessage.parse(row))),
         attachments: exportRows(attachments.map((row) => SupportAttachment.parse(row))),
+        assignments: exportRows(assignments.map((row) => withoutAssigner(SupportAssignment.parse(row)))),
+        handovers: exportRows(handovers.map((row) => SupportHandover.parse(row))),
       };
     },
   };

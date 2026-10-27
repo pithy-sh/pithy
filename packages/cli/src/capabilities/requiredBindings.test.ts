@@ -226,11 +226,13 @@ describe("every required binding has somewhere to come from", () => {
     expect(kinds).toContain("workflow");
     expect(kinds).toContain("durable_object");
     // And the Durable Object sweep below is quantified over real classes, not over an empty `className`
-    // on every one of them — three, across `multiplayer` and `matchmaking`.
+    // on every one of them — four, across `multiplayer`, `matchmaking` and `support`, whose presence room
+    // is core's class (#816).
     expect(MANIFESTS.flatMap(({ manifest }) => durableObjectClasses(manifest.requiredBindings)).sort()).toEqual([
       "MatchmakingPresence",
       "MatchmakingQueue",
       "MultiplayerSession",
+      "PresenceRoom",
     ]);
   });
 
@@ -272,13 +274,16 @@ describe("every required binding has somewhere to come from", () => {
         if (binding.type !== "durable_object") continue;
         const { className, classModule } = binding;
         if (className === undefined || classModule === undefined) continue;
-        // Inside the capability's own package, and never its entry point: `src/index` is what an
-        // adopter's `pithy.config.ts` imports in Node, and a Durable Object on that path imports
-        // `cloudflare:workers` and takes every Node-side command down with it (#172, #180).
-        const inside = classModule.startsWith(`${manifest.package}/`);
-        const path = join(PACKAGES, pkg, `${classModule.slice(manifest.package.length + 1)}.ts`);
-        if (!inside || classModule === `${manifest.package}/src/index` || !exists(path)) {
-          wrong.push(`${pkg}: ${classModule} is not a module of ${manifest.package}`);
+        // Inside the capability's own package, or core's — the one package every capability already
+        // depends on, which owns the presence room every room-declaring capability binds (#815, #816) —
+        // and never an entry point: `src/index` is what an adopter's `pithy.config.ts` imports in Node,
+        // and a Durable Object on that path imports `cloudflare:workers` and takes every Node-side
+        // command down with it (#172, #180).
+        const owner = [manifest.package, "@pithy-sh/core"].find((name) => classModule.startsWith(`${name}/`));
+        const dir = owner === manifest.package ? pkg : "core";
+        const path = owner === undefined ? "" : join(PACKAGES, dir, `${classModule.slice(owner.length + 1)}.ts`);
+        if (owner === undefined || classModule === `${owner}/src/index` || !exists(path)) {
+          wrong.push(`${pkg}: ${classModule} is not a module of ${manifest.package} or of @pithy-sh/core`);
           continue;
         }
         if (!new RegExp(`export class ${className}\\b`).test(readFileSync(path, "utf8"))) {

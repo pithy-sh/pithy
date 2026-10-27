@@ -3,6 +3,7 @@
 
 import { asRead } from "@pithy-sh/core/src/projection/asRead";
 import { z } from "zod";
+import { SupportAssignmentActorType } from "../data/assignment";
 import { SUPPORT_BILLING_SCOPE } from "../data/billingScope";
 import {
   SupportAccountLinkSource,
@@ -108,6 +109,34 @@ export const SupportThreadView = z
       .nullable()
       .describe(
         "The control-plane subject that archived it, for convenience only — the answer to 'who marked this done' comes from the audit trail.",
+      ),
+    // Optional as well as nullable (#450, #816): absent says *this Worker predates assignment*, which a client
+    // must not read as *nobody has it*.
+    assigneeRef: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(
+        "Who has this conversation, as the opaque reference it was assigned to, or null when nobody has it. Absent from a Worker that predates assignment. The listing's `assignee` filter matches it.",
+      ),
+    assigneeName: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(
+        "How the assignee is shown, as the assigner named them; null when nobody has it. A label, never an identity — `assigneeRef` is that. Untrusted text; render it escaped.",
+      ),
+    assignedAt: z.iso
+      .datetime()
+      .nullable()
+      .optional()
+      .describe("When the current assignment was made, ISO-8601; null when nobody has it."),
+    assignedBy: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(
+        "Who made the current assignment — a control-plane subject, or a user of the app's id; null when nobody has it. Every earlier change is in the thread's `assignments`.",
       ),
     messageCount: z.number().int().describe("How many messages the thread holds, inbound and outbound together."),
     firstMessageAt: z.iso.datetime().describe("When the thread opened, ISO-8601."),
@@ -281,6 +310,27 @@ export const SupportThreadsResponse = z
   .describe("A page of the inbox, as one viewer sees it.");
 export type SupportThreadsResponse = z.output<typeof SupportThreadsResponse>;
 
+/** One change of a thread's assignee, as its history shows it. */
+export const SupportAssignmentView = z
+  .object({
+    id: z.string().describe("The history row's id."),
+    assigneeRef: z
+      .string()
+      .nullable()
+      .describe("Who had the thread after this change, or null when it was unassigned."),
+    assigneeName: z.string().nullable().describe("How that assignee was shown at the time, or null."),
+    previousRef: z.string().nullable().describe("Who had it before, or null when nobody did."),
+    previousName: z.string().nullable().describe("How the previous assignee was shown, or null."),
+    actorType: SupportAssignmentActorType.describe(
+      "How whoever made the change was verified: `control-plane` for a management client, `user` for a signed-in user of the app.",
+    ),
+    assignedBy: z.string().describe("Who made the change — a control-plane subject, or a user of the app's id."),
+    note: z.string().nullable().describe("Why, in the assigner's words, or null. Untrusted text; render it escaped."),
+    createdAt: z.iso.datetime().describe("When the change was made, ISO-8601."),
+  })
+  .describe("One append-only change of a conversation's assignee.");
+export type SupportAssignmentView = z.output<typeof SupportAssignmentView>;
+
 /** `GET {base}/threads/:id`. */
 export const SupportThreadResponse = z
   .object({
@@ -289,6 +339,13 @@ export const SupportThreadResponse = z
     attachments: z.array(SupportAttachmentView).describe("Its attachments, across every message."),
     sender: SenderContextView.describe("What the app already knows about the sender."),
     replies: z.array(SupportReplyView).describe("The canned replies, ordered for this thread's category."),
+    // Optional (#450): absent from a Worker that predates assignment.
+    assignments: z
+      .array(SupportAssignmentView)
+      .optional()
+      .describe(
+        "Every change of the assignee, oldest first. Empty when nobody was ever assigned; absent from a Worker that predates assignment.",
+      ),
   })
   .describe("A whole conversation, with the customer context and the replies worth offering on it.");
 export type SupportThreadResponse = z.output<typeof SupportThreadResponse>;
@@ -332,6 +389,24 @@ export const SupportReplySentResponse = z
   ])
   .describe("The reply that was filed, and which of the two ways it reaches the customer.");
 export type SupportReplySentResponse = z.output<typeof SupportReplySentResponse>;
+
+/**
+ * `POST {base}/threads/:id/assign` and `POST {base}/staff/threads/:id/assign`.
+ *
+ * The thread as the assignment left it, and whether anything changed: assigning the current assignee again
+ * is a success that wrote nothing, and a pane that re-renders from it should know not to say *reassigned*.
+ */
+export const SupportAssignResponse = z
+  .object({
+    thread: SupportThreadView.describe("The conversation, as the assignment left it."),
+    changed: z
+      .boolean()
+      .describe(
+        "Whether the assignee changed. False when the thread already had that assignee, or had none and was unassigned — nothing was recorded and nothing was audited.",
+      ),
+  })
+  .describe("The conversation after an assignment, and whether it changed anything.");
+export type SupportAssignResponse = z.output<typeof SupportAssignResponse>;
 
 /** `POST {base}/threads/:id/reclassify`. */
 export const SupportReclassifiedResponse = z
@@ -406,6 +481,10 @@ export type SupportThreadResponseAsRead = z.output<typeof SupportThreadResponseA
 /** `POST {base}/threads/:id/archive`, as a client that does not control the Worker must read it. */
 export const SupportArchiveResponseAsRead = asRead(SupportArchiveResponse);
 export type SupportArchiveResponseAsRead = z.output<typeof SupportArchiveResponseAsRead>;
+
+/** `POST {base}/threads/:id/assign`, as a client that does not control the Worker must read it. */
+export const SupportAssignResponseAsRead = asRead(SupportAssignResponse);
+export type SupportAssignResponseAsRead = z.output<typeof SupportAssignResponseAsRead>;
 
 /**
  * ## The submitter's own view, and what it deliberately omits

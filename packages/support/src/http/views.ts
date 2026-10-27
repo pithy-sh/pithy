@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { SupportAssignment } from "../data/assignment";
 import type { SupportMessage } from "../data/message";
 import type { SupportThread } from "../data/thread";
 import type { SenderContext } from "../link/sender";
 import type { ListedThread } from "../store/threads";
 import type {
   SenderContextView,
+  SupportAssignmentView,
   SupportAttachmentView,
   SupportListedThreadView,
   SupportMessageView,
@@ -60,11 +62,30 @@ export function threadView(thread: SupportThread): SupportThreadView {
     archived: thread.archived,
     archivedAt: iso(thread.archivedAt),
     archivedBy: thread.archivedBy ?? null,
+    assigneeRef: thread.assigneeRef ?? null,
+    assigneeName: thread.assigneeName ?? null,
+    assignedAt: iso(thread.assignedAt),
+    assignedBy: thread.assignedBy ?? null,
     messageCount: thread.messageCount,
     firstMessageAt: thread.firstMessageAt.toISOString(),
     lastMessageAt: thread.lastMessageAt.toISOString(),
     createdAt: thread.createdAt.toISOString(),
     updatedAt: thread.updatedAt.toISOString(),
+  };
+}
+
+/** Project one change of a thread's assignee. The thread id is the route's, so it is not repeated. */
+export function assignmentView(assignment: SupportAssignment): SupportAssignmentView {
+  return {
+    id: assignment.id,
+    assigneeRef: assignment.assigneeRef ?? null,
+    assigneeName: assignment.assigneeName ?? null,
+    previousRef: assignment.previousRef ?? null,
+    previousName: assignment.previousName ?? null,
+    actorType: assignment.actorType,
+    assignedBy: assignment.assignedBy,
+    note: assignment.note ?? null,
+    createdAt: assignment.createdAt.toISOString(),
   };
 }
 

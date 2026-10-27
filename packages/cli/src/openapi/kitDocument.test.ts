@@ -104,7 +104,8 @@ describe("the kit's AsyncAPI document", () => {
     const tags = Object.values(sockets.channels).flatMap((channel) =>
       (channel.tags as { name: string }[]).map((tag) => tag.name),
     );
-    expect([...new Set(tags)].sort()).toEqual(["matchmaking", "multiplayer"]);
+    // Support's socket is the presence room its `support.thread` kind declares (#816).
+    expect([...new Set(tags)].sort()).toEqual(["matchmaking", "multiplayer", "support"]);
     const schemas = Object.keys(sockets.components.schemas);
     // Keyed by the configured game, not its model: an adopter may run one model under two keys.
     for (const game of ["battle", "connect-four", "craps-table"]) {

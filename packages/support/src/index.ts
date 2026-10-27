@@ -25,7 +25,9 @@ export {
   SupportGuardConfig,
   SupportReplyConfig,
   SupportSearchConfig,
+  SupportStaffConfig,
 } from "./config/config";
+export { SupportAssignment, SupportAssignmentActorType, UNASSIGNED } from "./data/assignment";
 export { SupportAttachment } from "./data/attachment";
 export {
   DEFAULT_SUPPORT_CATEGORIES,
@@ -37,6 +39,7 @@ export { SupportMessageDirection, SupportPriority, SupportSentiment, UNCATEGORIZ
 export { SupportThreadFlag } from "./data/flag";
 export { SupportMessage } from "./data/message";
 export {
+  SUPPORT_ASSIGNMENTS_TABLE,
   SUPPORT_ATTACHMENTS_TABLE,
   SUPPORT_CLASSIFICATIONS_TABLE,
   SUPPORT_FLAGS_TABLE,
@@ -50,11 +53,13 @@ export { SupportThread } from "./data/thread";
 export {
   SUPPORT_CONTROL_PLANE_SCOPES,
   SUPPORT_THREADS_ARCHIVE_SCOPE,
+  SUPPORT_THREADS_ASSIGN_SCOPE,
   SUPPORT_THREADS_FLAG_SCOPE,
   SUPPORT_THREADS_READ_SCOPE,
   SUPPORT_THREADS_RECLASSIFY_SCOPE,
   SUPPORT_THREADS_REPLY_SCOPE,
 } from "./http/scopes";
+export { SUPPORT_THREAD_ACTIVITIES, SUPPORT_THREAD_ROOM } from "./presence/room";
 export {
   DEFAULT_SUPPORT_REPLIES,
   defineSupportReplies,

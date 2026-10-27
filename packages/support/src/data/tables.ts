@@ -5,6 +5,7 @@ import type { D1Database } from "@cloudflare/workers-types";
 import { createDatabase, type DatabaseSchema } from "@pithy-sh/core/src/data/db";
 import type { Kysely } from "kysely";
 import type { z } from "zod";
+import { SupportAssignment } from "./assignment";
 import { SupportAttachment } from "./attachment";
 import { SupportClassification } from "./classification";
 import { SupportThreadFlag } from "./flag";
@@ -26,6 +27,8 @@ export const SUPPORT_ATTACHMENTS_TABLE = "pithySupportAttachments";
 export const SUPPORT_CLASSIFICATIONS_TABLE = "pithySupportClassifications";
 /** Per-viewer read/snooze state. `pithy_support_thread_flags`. */
 export const SUPPORT_FLAGS_TABLE = "pithySupportThreadFlags";
+/** Append-only assignee history. `pithy_support_assignments`. */
+export const SUPPORT_ASSIGNMENTS_TABLE = "pithySupportAssignments";
 
 /**
  * The FTS5 full-text index. Not a Kysely table and deliberately not in {@link supportTables}: it is a
@@ -44,6 +47,7 @@ export const supportTables = {
   [SUPPORT_ATTACHMENTS_TABLE]: SupportAttachment,
   [SUPPORT_CLASSIFICATIONS_TABLE]: SupportClassification,
   [SUPPORT_FLAGS_TABLE]: SupportThreadFlag,
+  [SUPPORT_ASSIGNMENTS_TABLE]: SupportAssignment,
 } satisfies Record<string, z.ZodObject>;
 
 /** The support tables, as a type. */

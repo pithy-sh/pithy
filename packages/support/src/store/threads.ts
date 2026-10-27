@@ -4,6 +4,7 @@
 import { pithyCommandOf } from "@pithy-sh/core/src/cli/command";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { type SqlBool, sql } from "kysely";
+import { UNASSIGNED } from "../data/assignment";
 import { SupportAttachment } from "../data/attachment";
 import type { SupportChannel, SupportPriority, SupportSentiment } from "../data/enums";
 import { SupportMessage } from "../data/message";
@@ -87,6 +88,8 @@ export interface ListThreadsQuery {
   channel?: SupportChannel;
   /** Which inbox address, for a Worker serving more than one. */
   inbox?: string;
+  /** Whose threads: one assignee's opaque ref, or {@link UNASSIGNED} for the threads nobody has. */
+  assignee?: string;
   /** Free text over subjects and bodies. */
   q?: string;
   /** Where to resume from. */
@@ -196,6 +199,12 @@ async function runListThreads(
     builder = builder.where(`${SUPPORT_THREADS_TABLE}.sentiment`, "=", query.sentiment);
   if (query.channel !== undefined) builder = builder.where(`${SUPPORT_THREADS_TABLE}.channel`, "=", query.channel);
   if (query.inbox !== undefined) builder = builder.where(`${SUPPORT_THREADS_TABLE}.inboxAddress`, "=", query.inbox);
+  if (query.assignee !== undefined) {
+    builder =
+      query.assignee === UNASSIGNED
+        ? builder.where(`${SUPPORT_THREADS_TABLE}.assigneeRef`, "is", null)
+        : builder.where(`${SUPPORT_THREADS_TABLE}.assigneeRef`, "=", query.assignee);
+  }
   if (query.q !== undefined) {
     if (isSearchable(query.q, options.fts)) {
       builder = builder.where(searchPredicate(query.q, options));

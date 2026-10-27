@@ -1,11 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { PresenceParticipantName, PresenceParticipantRef } from "@pithy-sh/core/src/presence/frames";
 import { z } from "zod";
 import { MAX_SUBMISSION_ATTACHMENTS, MAX_SUBMISSION_BODY_CHARS, MAX_SUBMISSION_SUBJECT_CHARS } from "../config/config";
+import { UNASSIGNED } from "../data/assignment";
 import { SupportChannel, SupportPriority, SupportSentiment } from "../data/enums";
 import { SupportSubmissionContext } from "../data/message";
 import { MAX_PAGE_SIZE } from "../store/paging";
+
+/** An assignee reference, as the listing filters on it and an assignment names it. */
+const AssigneeRef = PresenceParticipantRef.refine((ref) => ref !== UNASSIGNED, {
+  message: `"${UNASSIGNED}" is reserved: it is the filter for threads nobody has`,
+}).describe(
+  "Who the thread is assigned to: an opaque reference, the participant shape presence rooms use. A management client's own reference, which it chose; or a user of the app's id. Never `none`, which is the listing's filter for threads nobody has.",
+);
 
 /**
  * The request contracts every support route declares (CLAUDE.md §HTTP).
@@ -63,6 +72,12 @@ export const ListThreadsQuery = z
       .max(256)
       .optional()
       .describe("Filter to one configured inbox address, for a Worker serving several."),
+    assignee: z
+      .union([z.literal(UNASSIGNED), AssigneeRef])
+      .optional()
+      .describe(
+        "Filter to the threads one assignee has, by their `assigneeRef`, or `none` for the threads nobody has. Absent shows every thread, assigned or not.",
+      ),
     q: z
       .string()
       .min(1)
@@ -96,6 +111,39 @@ export const ArchiveThreadInput = z
   })
   .describe("Mark a conversation done, or reopen it.");
 export type ArchiveThreadInput = z.infer<typeof ArchiveThreadInput>;
+
+/** Who a thread is assigned to. */
+export const AssigneeInput = z
+  .object({
+    ref: AssigneeRef,
+    name: PresenceParticipantName.describe(
+      "How the assignee is shown in the inbox and in the history. A label, never an identity — `ref` is that.",
+    ),
+  })
+  .describe("Somebody a thread may be assigned to: an opaque reference and the name to show.");
+export type AssigneeInput = z.infer<typeof AssigneeInput>;
+
+/** The longest assignment note, in UTF-16 code units. */
+export const MAX_ASSIGNMENT_NOTE_CHARS = 500;
+
+/** The assign/unassign body, the same on the control-plane route and the staff session route. */
+export const AssignThreadInput = z
+  .object({
+    assignee: AssigneeInput.nullable().describe(
+      "Who should have this conversation, or `null` to unassign it. Assigning the current assignee again changes nothing and records nothing.",
+    ),
+    note: z
+      .string()
+      .trim()
+      .min(1)
+      .max(MAX_ASSIGNMENT_NOTE_CHARS)
+      .optional()
+      .describe(
+        "Why, in your own words. Kept in the thread's assignment history and on the audit event, and shown to anybody who can read the thread — so it is a note to colleagues, never a place for the customer's details.",
+      ),
+  })
+  .describe("Assign a conversation to somebody, or to nobody.");
+export type AssignThreadInput = z.infer<typeof AssignThreadInput>;
 
 /** The reply body. */
 export const ReplyInput = z

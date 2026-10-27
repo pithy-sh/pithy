@@ -67,6 +67,7 @@ The registry is the definition. `pithy secrets` never invents a name — a secre
 auth-github-credentials  d1 · environment
 auth-google-credentials  d1 · environment
 auth-session-secret      d1 · environment · rotatable
+presence-ticket-key      d1 · environment · rotatable
 
 4 secrets this configuration will never read are not listed. pithy secrets ls --all shows them, and why.
 ```
@@ -82,13 +83,14 @@ auth-github-credentials     d1 · environment
 auth-google-credentials     d1 · environment
 auth-microsoft-credentials  not applicable — auth() does not enable the microsoft provider
 auth-session-secret         d1 · environment · rotatable
+presence-ticket-key         d1 · environment · rotatable
 support-r2-credentials      not applicable — SUPPORT_BUCKET declined in pithy.config.ts
 ```
 
 `--all` applies to `--json` too, rather than only the terminal — an agent is asking the same question a person is. Every row carries `applies` and, when it is `false`, `reason`, so nothing has to read the sentence; `hidden` counts what the flag would add:
 
 ```json
-{"command":"secrets ls","schemaVersion":1,"secrets":[{"name":"auth-github-credentials","description":"d1 · environment","applies":true},{"name":"auth-google-credentials","description":"d1 · environment","applies":true},{"name":"auth-session-secret","description":"d1 · environment · rotatable","applies":true}],"hidden":4,"unresolved":[]}
+{"command":"secrets ls","schemaVersion":1,"secrets":[{"name":"auth-github-credentials","description":"d1 · environment","applies":true},{"name":"auth-google-credentials","description":"d1 · environment","applies":true},{"name":"auth-session-secret","description":"d1 · environment · rotatable","applies":true},{"name":"presence-ticket-key","description":"d1 · environment · rotatable","applies":true}],"hidden":4,"unresolved":[]}
 ```
 
 A secret is hidden only when **no** Worker in the project can reach it. One Worker that still reads it is enough to leave the row alone, because the value is one value and that Worker needs it. [`pithy doctor`](./doctor.md) takes the other branch with the same answer: it is a fault report, so it leaves these out of *"No dev value for …"* entirely rather than listing something you cannot act on.
@@ -107,6 +109,7 @@ That credential is unreachable in `dev` and `staging` and read on every sign-in 
 auth-github-credentials  d1 · environment
 auth-google-credentials  d1 · environment
 auth-session-secret      d1 · environment · rotatable
+presence-ticket-key      d1 · environment · rotatable
 
 4 secrets this configuration will never read are not listed. pithy secrets ls --all shows them, and why.
 One environment did not compose, so this answer is drawn from the rest.

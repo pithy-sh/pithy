@@ -31,6 +31,15 @@ export const SupportAuditActions = {
   /** A thread was taken back out of the archive. Recorded separately, because undoing is its own decision. */
   threadUnarchived: "support/thread_unarchived",
   /**
+   * A thread was given to somebody, or handed from one person to another (#816). Audited because who has
+   * a customer's conversation decides who answers them, and the thread keeps only the current answer.
+   * Metadata: the previous assignee, the new one, and the assigner's note — staff words, never mail.
+   * Reassigning the current assignee changes nothing and emits nothing.
+   */
+  threadAssigned: "support/thread_assigned",
+  /** A thread's assignee was cleared. Its own action, because giving a conversation up is its own decision. */
+  threadUnassigned: "support/thread_unassigned",
+  /**
    * A reply went out. Audited because it leaves under the adopter's domain and their DKIM: to the
    * recipient it is indistinguishable from the founder writing it, so who actually sent it is a
    * security-relevant fact with no other record.

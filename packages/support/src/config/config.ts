@@ -343,6 +343,43 @@ export const SupportSearchConfig = z
 export type SupportSearchConfig = z.output<typeof SupportSearchConfig>;
 
 /** The full support configuration. */
+/**
+ * **Who of the app's own signed-in users works the inbox (#816).** Off until named.
+ *
+ * The inbox holds every customer's correspondence, so a signed-in user reaches it only through a power the
+ * adopter names in their own role catalog, held in the organization the request acts for — the same seam
+ * `media:manage` and `storage:manage` ask, and the same rule `artifacts({ managePower })` follows: a
+ * capability never reserves a power name in a catalog that is the adopter's.
+ *
+ * **Both powers must sit only on roles no organization can hand itself** — listed in
+ * `defineRoles({ unassignable })`, and not the role `organization({ ownership })` confers — and `support()`
+ * refuses the composition otherwise. A role is the catalog's, not one organization's, and an organization's
+ * own administrator may give any assignable role to their own members — so a support power on an assignable
+ * role would let any customer's administrator make themselves staff and read every other customer's mail.
+ * The ownership role is unassignable and still self-served: anybody may found an organization, nominate
+ * themselves its owner, and accept. On any other unassignable role it is conferred by an operator alone,
+ * through the control plane.
+ */
+export const SupportStaffConfig = z
+  .object({
+    readPower: z
+      .string()
+      .min(1)
+      .describe(
+        "The power that lets a signed-in user see who else has a thread open — what the `support.thread` presence room's session ticket asks. Your own name, declared in your role catalog on unassignable roles only, and not on the role ownership transfer confers, e.g. `support:read`.",
+      ),
+    assignPower: z
+      .string()
+      .min(1)
+      .describe(
+        "The power that lets a signed-in user assign a thread, to themselves or to somebody else, at `POST {basePath}/staff/threads/:id/assign`. Your own name, declared in your role catalog on unassignable roles only, and not on the role ownership transfer confers, e.g. `support:assign`.",
+      ),
+  })
+  .describe(
+    "Who of your app's own signed-in users works the inbox, by the organization powers their role holds. Requires `organization`, and both powers on unassignable roles other than the one ownership transfer confers. Absent, no signed-in user can assign a thread or join a thread's presence room — management clients still can, through the control plane.",
+  );
+export type SupportStaffConfig = z.output<typeof SupportStaffConfig>;
+
 export const SupportConfig = z
   .object({
     inboundAddresses: z
@@ -373,6 +410,9 @@ export const SupportConfig = z
     submission: SupportSubmissionConfig.prefault({}).describe("The in-app submission channel."),
     reply: SupportReplyConfig.prefault({}).describe("Reply settings."),
     search: SupportSearchConfig.prefault({}).describe("How text search is answered."),
+    staff: SupportStaffConfig.optional().describe(
+      "Who of your app's signed-in users works the inbox, by organization power. Absent, the staff session routes refuse everyone.",
+    ),
   })
   .describe(
     "Configuration for the support capability — which addresses it claims, and how it classifies and bounds them.",

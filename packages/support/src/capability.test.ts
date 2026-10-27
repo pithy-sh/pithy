@@ -19,7 +19,7 @@ function composed(options: Parameters<typeof support>[0] = {}) {
 }
 
 describe("support capability", () => {
-  test("contributes its five tables to the app database on the DB binding", () => {
+  test("contributes its six tables to the app database on the DB binding", () => {
     const db = composed().databases?.app;
     expect(db?.binding).toBe("DB");
     expect(Object.keys(db?.tables ?? {})).toEqual([
@@ -28,6 +28,7 @@ describe("support capability", () => {
       "pithySupportAttachments",
       "pithySupportClassifications",
       "pithySupportThreadFlags",
+      "pithySupportAssignments",
     ]);
   });
 
@@ -46,11 +47,11 @@ describe("support capability", () => {
     expect(SUPPORT_MIGRATION_ORDER).toBe(1200);
   });
 
-  test("composes only 0001_threads by default — the FTS index is opt-in", () => {
+  test("composes the schema chain and no FTS migration by default — the FTS index is opt-in", () => {
     // An FTS5 virtual table anywhere in a D1 database makes `wrangler d1 export` refuse to dump the
     // whole database. Shipping it by default would cost an adopter their backups for tables that
-    // have nothing to do with support, so the default must stay one migration.
-    expect(Object.keys(composed().databases?.app?.migrations ?? {})).toEqual(["0001_threads"]);
+    // have nothing to do with support, so the chain holds the tables and nothing else.
+    expect(Object.keys(composed().databases?.app?.migrations ?? {})).toEqual(["0001_threads", "0002_assignment"]);
   });
 
   test("the migration set is the same whether search.fts is on or off", () => {
@@ -60,7 +61,7 @@ describe("support capability", () => {
     // database, which is a whole-database outage from one capability's setting.
     const off = Object.keys(support({ search: { fts: false } }).databases?.app?.migrations ?? {});
     const on = Object.keys(support({ search: { fts: true } }).databases?.app?.migrations ?? {});
-    expect(off).toEqual(["0001_threads"]);
+    expect(off).toEqual(["0001_threads", "0002_assignment"]);
     expect(on).toEqual(off);
   });
 
@@ -88,8 +89,8 @@ describe("support capability", () => {
       submission: { attachments: { enabled: false } },
     }).requiredBindings;
     expect(bindings.map((binding) => binding.name)).not.toContain("SUPPORT_BUCKET");
-    // DB and the workflow are untouched by the bucket question.
-    expect(bindings.map((binding) => binding.name)).toEqual(["DB", "SUPPORT_CLASSIFY"]);
+    // DB, the workflow and the presence room are untouched by the bucket question.
+    expect(bindings.map((binding) => binding.name)).toEqual(["DB", "SUPPORT_CLASSIFY", "PRESENCE_ROOMS"]);
   });
 
   test("any one of the three writers is enough to declare it", () => {
@@ -127,13 +128,17 @@ describe("the admin surface support advertises", () => {
     expect(routes.every((route) => Boolean(route.scope))).toBe(true);
   });
 
-  test("advertises exactly the five scopes support defines — no sixth, and none unused", () => {
+  test("advertises exactly the six scopes support defines — no seventh, and none unused", () => {
     // The scopes are the join key with what `pithy dashboard connect` offers an adopter to grant. A
     // manifest naming a scope outside this set tells a client to ask for a grant nothing checks;
     // a scope in the set that nothing advertises is a permission no client can discover it needs.
     const scopes = new Set((composed().adminRoutes ?? []).map((route) => route.scope));
     expect(scopes).toEqual(new Set(SUPPORT_CONTROL_PLANE_SCOPES));
-    expect(SUPPORT_CONTROL_PLANE_SCOPES).toHaveLength(5);
+    expect(SUPPORT_CONTROL_PLANE_SCOPES).toHaveLength(6);
+    // `support:threads:assign` is one of them, and the assign route is what declares it (#816).
+    expect(
+      (composed().adminRoutes ?? []).filter((route) => route.scope === "support:threads:assign").map((r) => r.path),
+    ).toEqual(["/support/threads/:id/assign"]);
   });
 
   test("mounts under /support by default", () => {
@@ -151,6 +156,7 @@ describe("the admin surface support advertises", () => {
       "/inbox/threads",
       "/inbox/threads/:id",
       "/inbox/threads/:id/archive",
+      "/inbox/threads/:id/assign",
       "/inbox/threads/:id/reply",
       "/inbox/threads/:id/reclassify",
       "/inbox/threads/:id/flags",

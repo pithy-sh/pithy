@@ -15,7 +15,7 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
  * program has none of. **This module imports types and nothing else, and a gate holds it there**:
  * `tooling/browser-scopes` compiles a DOM-only program against every scope the kit declares.
  *
- * ## Five scopes, because these are five different blast radii
+ * ## Six scopes, because these are six different blast radii
  *
  * The temptation is one `support:admin` flag. It is wrong on the merits, the same way payments'
  * single flag was: **reading** an inbox exposes every customer's private correspondence, while
@@ -35,7 +35,7 @@ export const SUPPORT_THREADS_READ_SCOPE: ControlPlaneScope = "support:threads:re
 export const SUPPORT_THREADS_ARCHIVE_SCOPE: ControlPlaneScope = "support:threads:archive";
 
 /**
- * Send mail to a customer under the adopter's domain. The most dangerous of the five and the reason
+ * Send mail to a customer under the adopter's domain. The most dangerous of the six and the reason
  * a single admin flag was never an option.
  */
 export const SUPPORT_THREADS_REPLY_SCOPE: ControlPlaneScope = "support:threads:reply";
@@ -47,6 +47,12 @@ export const SUPPORT_THREADS_RECLASSIFY_SCOPE: ControlPlaneScope = "support:thre
 export const SUPPORT_THREADS_FLAG_SCOPE: ControlPlaneScope = "support:threads:flag";
 
 /**
+ * Say who has a thread, or that nobody does (#816). Shared state like archive, and its own scope like
+ * archive, because deciding who answers a customer is not the same permission as marking them done.
+ */
+export const SUPPORT_THREADS_ASSIGN_SCOPE: ControlPlaneScope = "support:threads:assign";
+
+/**
  * Every control-plane scope support defines — what `pithy dashboard connect` offers for this
  * capability, and the list a manifest or a doc quotes rather than re-typing.
  */
@@ -56,6 +62,7 @@ export const SUPPORT_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
   SUPPORT_THREADS_REPLY_SCOPE,
   SUPPORT_THREADS_RECLASSIFY_SCOPE,
   SUPPORT_THREADS_FLAG_SCOPE,
+  SUPPORT_THREADS_ASSIGN_SCOPE,
 ];
 
 /**
@@ -75,7 +82,8 @@ export function supportAdminRoutes(basePath: string): AdminRoute[] {
       method: "GET",
       path: `${basePath}/threads`,
       scope: SUPPORT_THREADS_READ_SCOPE,
-      summary: "List the inbox, newest first, filtered by category, priority, and archived, searched by text.",
+      summary:
+        "List the inbox, newest first, filtered by category, priority, assignee, and archived, searched by text.",
     },
     {
       method: "GET",
@@ -88,6 +96,12 @@ export function supportAdminRoutes(basePath: string): AdminRoute[] {
       path: `${basePath}/threads/:id/archive`,
       scope: SUPPORT_THREADS_ARCHIVE_SCOPE,
       summary: "Mark a conversation done, or reopen one.",
+    },
+    {
+      method: "POST",
+      path: `${basePath}/threads/:id/assign`,
+      scope: SUPPORT_THREADS_ASSIGN_SCOPE,
+      summary: "Give a conversation to somebody, hand it on, or give it up.",
     },
     {
       method: "POST",
