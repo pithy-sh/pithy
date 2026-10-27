@@ -4,6 +4,7 @@
 import { Hono } from "hono";
 import { beforeAll, describe, expect, test } from "vitest";
 import type { AuditEventInput } from "../../audit/auditEvent";
+import { noopEmit } from "../../audit/recorder";
 import type { PithyHonoEnv } from "../../capability/capability";
 import { pithyErrorHandler } from "../../error/http";
 import { NotFoundError, PithyError } from "../../error/pithyError";
@@ -19,6 +20,7 @@ import {
   type ControlPlaneVerifier,
   createControlPlaneVerifier,
   requireControlPlane,
+  stampActorKind,
   workerVersionHeaders,
 } from "./guard";
 import { RegisterKeyRequest } from "./schemas";
@@ -293,6 +295,14 @@ describe("requireControlPlane", () => {
       const events: AuditEventInput[] = [];
       await call(events);
       expect(events[3]).toMatchObject({ actorKind: "script" });
+    });
+
+    test("a request with no recorder keeps the no-op seam, so a reader can still tell nothing is recorded (#821)", () => {
+      // The evidence pack reads `c.var.emit !== noopEmit` past this gate to say whether control-plane calls are
+      // recorded. Wrapping the no-op in a stamping closure would make that read true on every attributed call.
+      expect(stampActorKind(noopEmit, "dashboard")).toBe(noopEmit);
+      const recording = async () => {};
+      expect(stampActorKind(recording, "dashboard")).not.toBe(recording);
     });
 
     test("a connection registered before kinds were recorded writes rows with none", async () => {

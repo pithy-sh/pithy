@@ -96,10 +96,21 @@ export const MIGRATIONS_READ_SCOPE: ControlPlaneScope = "migrations:read";
 export const PRIVACY_READ_SCOPE: ControlPlaneScope = "privacy:read";
 
 /**
+ * Read this Worker's evidence pack: the SOC 2 and ISO 27001 evidence it derives from its own declarations (#821).
+ * Read-only — the one route behind it is a `GET`, and it performs nothing it reports on.
+ *
+ * **Its own scope**, because the pack reads across the seam: every connection's principal, kind, purpose and
+ * grant, and every route's verification. It never widens another scope. A fact a capability keeps behind its own
+ * read — migration counts behind {@link MIGRATIONS_READ_SCOPE}, a capability's health behind that capability's
+ * scope — stays behind it, and a connection without that scope gets `not-derivable` naming it.
+ */
+export const EVIDENCE_READ_SCOPE: ControlPlaneScope = "evidence:read";
+
+/**
  * The seam's base grant — what `pithy dashboard connect` grants whatever the Worker composes. Ping is absent
  * because it is not grantable; see {@link ANY_VERIFIED_CALLER}.
  *
- * **{@link MIGRATIONS_READ_SCOPE} and {@link PRIVACY_READ_SCOPE} are absent on purpose.** Each is a read —
+ * **{@link MIGRATIONS_READ_SCOPE}, {@link PRIVACY_READ_SCOPE} and {@link EVIDENCE_READ_SCOPE} are absent on purpose.** Each is a read —
  * every route requiring it is a `GET` — so `connect` derives it from the seam's `adminRoutes` the way it
  * derives every capability's reads. The base exists for `keys:rotate`, which is not a read and would
  * otherwise drop out.

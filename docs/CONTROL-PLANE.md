@@ -254,6 +254,7 @@ Denials are audited too. `denied` is a first-class outcome, and this is the surf
 | `POST /control-plane/keys/:keyId/expire` | `keys:rotate` | Expire a superseded key, naming the proven successor |
 | `GET /control-plane/migrations` | `migrations:read` | Where each database this Worker binds stands: applied, pending, undeclared, and the run that last moved it |
 | `GET /control-plane/privacy` | `privacy:read` | Every stored schema holding a privacy-marked field: each field's path, its class, and where it lives |
+| `GET /control-plane/evidence` | `evidence:read` | SOC 2 and ISO 27001 evidence derived from what this Worker composes and records: per control, the facts, their sources, and what could be said |
 | `POST /control-plane/presence/tickets` | the room kind's own scope | A single-use ticket into one presence room: who else has a record open, live (below) |
 
 ### Migration state
@@ -290,6 +291,38 @@ The seam's own manifest entry carries two counts behind the same scope, so a cli
 The manifest carries the headline as `privacy`: declared classes, observed classes, a count per class, both deltas, the console gate, and which sources were walked. What `declared` means, why it is an attestation, and how stale one can be is [`docs/PRIVACY.md`](PRIVACY.md).
 
 **Encryption is a second axis on the same records** (#390). Each field record carries `encryptedAtRest`, `true` or `false`, and leaves it out where the core cannot say — so a Worker on an older core reports no encryption data rather than reporting `false`. Each schema lists `encrypted[]`, every encrypted field whether or not it carries a class, `unrotatable` where it rests outside D1. The posture, on both routes, carries `retirement: { blocked, reasons, liveVersions }`, the field key's retirement guard read directly; it is absent on an older core. What each means is [Encrypted fields](PRIVACY.md#encrypted-fields).
+
+### Evidence
+
+`GET /control-plane/evidence` answers what an auditor asks for, from what the Worker already declares (#821). An adopter facing SOC 2 or ISO 27001 no longer answers the list from screenshots and memory: the Worker reads its own composition, routes, connections, keys, migration ledgers and privacy markers, and reports them per control. It asks the Worker because the Worker **is** the deployed build.
+
+**Evidence, never a verdict.** Each entry names the control, its SOC 2 Trust Services Criteria and ISO/IEC 27001:2022 Annex A references, the facts read, the declaration each came from, and one state:
+
+- `evidenced` — the facts are present.
+- `gap` — something is missing, and `reasons` names what.
+- `not-derivable` — the Worker cannot say, and `reasons` names why: a capability not composed, a scope this connection was not granted, a table or record that could not be read on this call.
+
+**The shape** is `ControlPlaneEvidenceResponse`, exported from `@pithy-sh/core/src/controlPlane/http/responses`: `environment`, `generatedAt`, the build's `version`, `mappingVersion`, and `controls[]`, one per row of the table below and in its order. Each entry carries `control`, `title`, `soc2`, `iso27001`, `state`, `reasons` and `facts[]`, each fact `{ fact, subject?, value, source }`. A value is a word, a number, a flag, a list of names or null, so a fact names and counts and never carries a row or a key.
+
+Nothing in the pack says whether a framework is met. An auditor decides that. A control with a gap and an unknown reports `gap`, gaps first, and an unknown is never folded into `evidenced`.
+
+| Control | SOC 2 | ISO 27001:2022 | Read from |
+|---|---|---|---|
+| Audit logging in force | CC7.2 | A.8.15 | the composed audit recorder, the binding it writes through, and this request's emit seam, which the guard writes every control-plane call through (§11) |
+| Every route declares how a caller is verified | CC6.1 | A.5.15 | each route's `describeRoute` verification, off the composed route table. A route with none is named |
+| Management access attributed and scoped | CC6.2, CC6.3 | A.5.18 | every connection in this environment: its principal, actor kind, purpose and granted scopes ([`AGENT-ACCESS.md` §7](AGENT-ACCESS.md)) |
+| Keys and secrets rotate | CC6.1 | A.8.24 | each connection's live keys and the age of the oldest, `@pithy-sh/secrets`' health against its declared cadence, and the field key's retirement guard |
+| Change history per environment | CC8.1 | A.8.32 | each bound database's ledger: applied, pending and undeclared counts, the last group and when it applied |
+| Data classified and encrypted at rest | C1.1 | A.8.24 | the classes the stored schemas hold beside the classes the last `pithy deploy` attested, and the fields marked `encrypted()` |
+| CSRF wherever cookie mode is | CC6.6 | A.8.26 | the routes that accept a session cookie, and whether a composed capability publishes the same-origin policy |
+
+**The table is versioned in the kit, and `mappingVersion` is on every pack.** A reference moving, a control joining, or a rule for a state changing is a new version, so two packs can be told apart by the number on them. A control that needs a declaration the kit does not hold is a later version of the table, not a guess in this one.
+
+**It never widens a scope.** The pack is behind its own `evidence:read`, and what another read keeps behind its own scope stays there. Migration state needs `migrations:read`, as the manifest's counts do, and a capability's health needs that capability's scope, `secrets:status:read` for the rotation count. A connection without one gets a `not-derivable` reason naming the scope, and the control reports `not-derivable` unless it also found a gap. Field names stay `GET /privacy`'s: the pack carries classes and counts. Keys appear as counts and ages, never key material.
+
+**It names no person beyond what a connection records.** A principal is the email the connection holds. No audit row's actor is copied in.
+
+**It proves controls present and performs nothing.** Rotating a key, applying a migration and revoking a connection stay where they are, on their own scopes. `evidence:read` is a read, so `pithy dashboard connect` preselects it. `pithy-sh/dashboard#156` will render the pack; until it does, read the route directly. No CLI command reads it. [`COMPLIANCE.md`](COMPLIANCE.md) is the adopter's page.
 
 ### Presence rooms
 

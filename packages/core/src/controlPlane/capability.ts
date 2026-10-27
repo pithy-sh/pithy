@@ -7,6 +7,7 @@ import type { BindingSpecInput } from "../capability/bindings";
 import { type Capability, defineCapability, type PithyHonoEnv } from "../capability/capability";
 import type { DatabaseSpecMap } from "../data/databases";
 import type { KvNamespaceSpecMap, KvRegistry } from "../kv/namespaces";
+import { routeGroupsOf } from "../openapi/routeGroups";
 import type { PresenceDeclaration } from "../presence/declaration";
 import { describePresenceRooms } from "../presence/http/routes";
 import { readRetirement } from "../privacy/fieldRotation";
@@ -279,6 +280,10 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
         privacyInventory: privacy,
         retirement: (env) => readRetirement(env, composedCapabilities),
         composedPresence: () => presence,
+        composition: () => composedCapabilities,
+        // The app these routes mount on is the one `createBackend` records its route table against, once every
+        // capability has mounted — so the evidence pack, reading it per call, sees every route (#821).
+        routeGroups: () => routeGroupsOf(app),
         now,
       });
     },

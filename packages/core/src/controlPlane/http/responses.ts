@@ -5,6 +5,7 @@ import { z } from "zod";
 import { PrivacyPosture } from "../../privacy/posture";
 import { PRIVACY_SOURCES } from "../../privacy/report";
 import { ConnectionPrincipal, ConnectionPurpose, ControlPlaneActorKind, Ed25519PublicJwk } from "../data/connection";
+import { EvidenceControlId, EvidenceSource, EvidenceState } from "../evidence/mapping";
 
 /**
  * What the seam's own routes return, as Zod objects a management client can validate against.
@@ -328,3 +329,83 @@ export const ControlPlanePrivacyResponse = z
     "Every schema this Worker stores that holds a marked field, each field's path and class, and where it lives.",
   );
 export type ControlPlanePrivacyResponse = z.output<typeof ControlPlanePrivacyResponse>;
+
+/**
+ * One value a fact carries: a scalar, a list of names, or null where the record holds nothing.
+ *
+ * Scalars and string lists only, so a fact can never carry a row, a secret, or a key: it names and counts.
+ */
+export const EvidenceValue = z
+  .union([z.string(), z.number(), z.boolean(), z.null(), z.array(z.string().describe("One name."))])
+  .describe("A fact's value: a word, a number, a flag, a list of names, or null where the record holds none.");
+export type EvidenceValue = z.output<typeof EvidenceValue>;
+
+/** One fact the Worker read for a control, and the declaration it read it from (#821). */
+export const EvidenceFact = z
+  .object({
+    fact: z.string().describe("What the fact is, as one camelCase name: `auditRecorder`, `liveKeys`, `pending`."),
+    subject: z
+      .string()
+      .optional()
+      .describe(
+        "What the fact is about where a control reads several of one thing: a connection id, a database name, a capability, a class, a strategy. Absent where the fact is about the Worker as a whole.",
+      ),
+    value: EvidenceValue.describe("What the Worker read."),
+    source: EvidenceSource.describe("The declaration or record it was read from."),
+  })
+  .describe("One fact behind a control, and where it came from.");
+export type EvidenceFact = z.output<typeof EvidenceFact>;
+
+/** One control in the pack: its references, the facts read, and what the Worker could say (#821). */
+export const EvidenceEntry = z
+  .object({
+    control: EvidenceControlId,
+    title: z.string().describe("The control in one line, as the mapping table names it."),
+    soc2: z
+      .array(z.string().describe("One criterion, such as `CC6.1`."))
+      .describe("The AICPA Trust Services Criteria this control answers."),
+    iso27001: z
+      .array(z.string().describe("One Annex A control, such as `A.8.15`."))
+      .describe("The ISO/IEC 27001:2022 Annex A controls this control answers."),
+    state: EvidenceState,
+    reasons: z
+      .array(z.string().describe("One sentence."))
+      .describe(
+        "For `gap`, what is missing. For `not-derivable`, why the Worker cannot say. Empty when `evidenced`. Where both kinds apply, the gaps come first.",
+      ),
+    facts: z
+      .array(EvidenceFact)
+      .describe("Every fact read for this control, each naming its source. Read from declarations, never typed in."),
+  })
+  .describe("One control: what it answers, what the Worker read, and what it could say. Evidence, never a judgment.");
+export type EvidenceEntry = z.output<typeof EvidenceEntry>;
+
+/**
+ * `GET /control-plane/evidence` — the evidence pack, behind `evidence:read` (#821).
+ *
+ * Computed in the Worker because the Worker is the deployed build: every fact is read from what this build
+ * composes and records. It proves controls present and performs nothing.
+ */
+export const ControlPlaneEvidenceResponse = z
+  .object({
+    environment: z.string().describe("The environment this Worker answers for."),
+    generatedAt: z.iso.datetime().describe("When this Worker read the facts, ISO-8601."),
+    version: z
+      .string()
+      .nullable()
+      .describe("The Cloudflare version id of the build that answered, or null where the binding is absent."),
+    mappingVersion: z
+      .number()
+      .int()
+      .positive()
+      .describe(
+        "The version of the kit's mapping table these entries follow. A control, a reference or a rule moving is a new version.",
+      ),
+    controls: z
+      .array(EvidenceEntry)
+      .describe("One entry per control in the mapping table, in its order. Evidence for an auditor to weigh."),
+  })
+  .describe(
+    "SOC 2 and ISO 27001 evidence this Worker derives from its own declarations. Each control names its facts, their sources and what could be said. An auditor decides the rest.",
+  );
+export type ControlPlaneEvidenceResponse = z.output<typeof ControlPlaneEvidenceResponse>;

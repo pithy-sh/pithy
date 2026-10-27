@@ -8,7 +8,7 @@ import { pathParams, uncoveredParamRoutes } from "../../http/routeContract";
 import { openApiDocument, undescribedFields, undescribedRoutes } from "../../openapi/document";
 import { type ControlPlaneOptions, controlplane } from "../capability";
 import { missingAdminRoutes, undeclaredAdminRoutes } from "../discovery/drift";
-import { MIGRATIONS_READ_SCOPE, PRIVACY_READ_SCOPE } from "../scope/scope";
+import { EVIDENCE_READ_SCOPE, MIGRATIONS_READ_SCOPE, PRIVACY_READ_SCOPE } from "../scope/scope";
 
 /**
  * The control-plane seam's half of gate 2 of the route request contract. A handler can reach a path
@@ -50,9 +50,10 @@ describe("control-plane route contract", () => {
     const app = makeApp();
     expect(app.routes.length).toBeGreaterThan(0);
     const paths = [...new Set(app.routes.map((route) => route.path))].sort();
-    // Every route this seam serves. The list is what makes adding a ninth a deliberate edit rather
+    // Every route this seam serves. The list is what makes adding a tenth a deliberate edit rather
     // than a surprise, and it is the only place a control-plane route can be counted.
     expect(paths).toEqual([
+      "/control-plane/evidence",
       "/control-plane/keys",
       "/control-plane/keys/:keyId/expire",
       "/control-plane/manifest",
@@ -85,19 +86,19 @@ describe("control-plane route contract", () => {
       const key = `${route.method} ${route.path}`;
       handlerCounts.set(key, (handlerCounts.get(key) ?? 0) + 1);
     }
-    expect(handlerCounts.size).toBe(8);
+    expect(handlerCounts.size).toBe(9);
     for (const [route, count] of handlerCounts) expect(count, `${route} has no guard`).toBeGreaterThan(1);
   });
 
   test("every admin route the seam advertises is a route it actually mounts", () => {
     // The seam holds itself to the rule it imposes on every capability. `GET /control-plane/manifest`
-    // tells a management client these eight routes exist and which scope each needs; a declaration that
+    // tells a management client these nine routes exist and which scope each needs; a declaration that
     // drifted from the registrations would have the client calling paths nothing serves.
     const capability = controlplane();
     const app = new Hono<PithyHonoEnv>();
     capability.routes?.(app);
 
-    expect(capability.adminRoutes).toHaveLength(8);
+    expect(capability.adminRoutes).toHaveLength(9);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
     // And the other direction. Since #468 the CORS surface derives from `adminRoutes`, so a guarded
     // route nobody declared gets no preflight and no browser reaches it, with this suite still green.
@@ -143,6 +144,14 @@ describe("control-plane route contract", () => {
     const advertised = controlplane().adminRoutes ?? [];
     const reading = advertised.filter((route) => route.scope === PRIVACY_READ_SCOPE);
     expect(reading.map((route) => `${route.method} ${route.path}`)).toEqual(["GET /control-plane/privacy"]);
+  });
+
+  test("every route requiring evidence:read is a GET, so connect offers it as a read (#821)", () => {
+    const advertised = controlplane().adminRoutes ?? [];
+    const reading = advertised.filter((route) => route.scope === EVIDENCE_READ_SCOPE);
+    expect(reading.map((route) => `${route.method} ${route.path}`)).toEqual(["GET /control-plane/evidence"]);
+    const mounted = makeApp().routes.filter((route) => route.path === "/control-plane/evidence");
+    expect([...new Set(mounted.map((route) => route.method))]).toEqual(["GET"]);
   });
 
   test("the summary says undeclared is relative to this Worker", () => {

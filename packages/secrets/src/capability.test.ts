@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
+import { SECRETS_CAPABILITY, SECRETS_PACKAGE } from "@pithy-sh/core/src/controlPlane/evidence/mapping";
 import { afterEach, describe, expect, test } from "vitest";
 import { isSecretsCapability, masterKeyRegistryEntry, secrets } from "./capability";
 import { MASTER_KEY_BINDING } from "./env/masterKeyBinding";
@@ -230,5 +231,17 @@ describe("the Cloudflare token the manager runs on (#728)", () => {
     // We cannot mint it: that needs credentials for their account. Cloudflare can roll it and return the
     // new value, so it can still replace itself. Neither fact follows from the other.
     expect(managerRegistry[RUNTIME_TOKEN_SECRET].rotation).toMatchObject({ kind: "provider", issuer: "cloudflare" });
+  });
+});
+
+describe("the evidence pack reads this capability by name (#821)", () => {
+  test("its name and package are the ones core's evidence table looks for", () => {
+    // Core cannot import this package, so the key-rotation control finds it by name. A rename here would
+    // turn every pack's secrets evidence into `not-derivable` with nothing failing.
+    const capability = secrets({ registry: defineSecretRegistry({}) });
+    expect(capability.name).toBe(SECRETS_CAPABILITY);
+    expect(capability.package).toBe(SECRETS_PACKAGE);
+    // And it declares the health the pack grades: at least one count against a declared cadence.
+    expect(capability.health?.keys.map((key) => key.key)).toContain("secretsDueForRotation");
   });
 });

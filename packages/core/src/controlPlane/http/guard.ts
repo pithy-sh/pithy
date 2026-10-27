@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { MiddlewareHandler } from "hono";
-import type { AuditEmit } from "../../audit/recorder";
+import { type AuditEmit, noopEmit } from "../../audit/recorder";
 import type { PithyHonoEnv } from "../../capability/capability";
 import { commandName, remedy } from "../../cli/command";
 import { type AmbientEnv, compositionEnvironment } from "../../env/ambient";
@@ -232,9 +232,12 @@ export function requireControlPlaneFor(resolve: ControlPlaneRequirementResolver)
  * Only `control-plane` events, because the kind describes a management client and nothing else — a
  * handler recording what happened to a user is recording a user. An event that states a kind keeps it.
  * A connection with no recorded kind adds nothing, so its rows read exactly as they did before.
+ *
+ * The no-op comes back as itself: there is nothing to stamp, and a wrapper around it would hide that nothing is
+ * recorded from every reader past this gate — the evidence pack's `controlPlaneCallsRecorded` among them (#821).
  */
 export function stampActorKind(emit: AuditEmit, actorKind: ControlPlaneActorKind | null): AuditEmit {
-  if (actorKind === null) return emit;
+  if (actorKind === null || emit === noopEmit) return emit;
   return (event) =>
     emit(event.actorType === "control-plane" && event.actorKind == null ? { ...event, actorKind } : event);
 }

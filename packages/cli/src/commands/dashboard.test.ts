@@ -500,10 +500,11 @@ describe("the scope prompt", () => {
       "keys:rotate",
       "migrations:read",
       "privacy:read",
+      "evidence:read",
       "support:tickets:read",
       "support:tickets:close",
     ]);
-    expect(options[4]?.hint).toContain("support");
+    expect(options[5]?.hint).toContain("support");
   });
 
   test("preselects the default grant, which still leaves keys:rotate's peers to be chosen", async () => {
@@ -512,6 +513,7 @@ describe("the scope prompt", () => {
       "keys:rotate",
       "migrations:read",
       "privacy:read",
+      "evidence:read",
       "support:tickets:read",
     ]);
   });
