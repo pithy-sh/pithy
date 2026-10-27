@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
+import { PresenceRoomDescriptor } from "../../presence/http/responses";
 import { PrivacyPosture } from "../../privacy/posture";
 import { ControlPlaneScope } from "../scope/scope";
 import { ManifestConfigKey, ManifestConfigValues } from "./configuration";
@@ -112,6 +113,14 @@ export const CapabilityDeclaration = z
     config: ManifestConfigValues.default({}).describe(
       "What each declared fact resolved to for this deployment. The same answer for every caller, read off the capability's parsed config at assembly: there is no producer here, so no failure state, no per-request cost, and no staleness beyond the manifest itself.",
     ),
+    // Optional rather than defaulted, as every field added to a response now is (#450): absent says *this
+    // Worker predates presence rooms*, which a client must not read as *this capability has none* (#815).
+    presenceRooms: z
+      .array(PresenceRoomDescriptor)
+      .optional()
+      .describe(
+        "The presence room kinds this capability serves — who else has one of its records open, live — or empty when it serves none. Absent from a Worker that predates presence rooms. Mint a ticket into one at `POST /control-plane/presence/tickets` with the kind's own `scope`.",
+      ),
   })
   .describe(
     "One capability this Worker composes, the package and version it is at, the admin surface it exposes, the summary it may report, and the configured facts a client must respect to call any of it.",

@@ -73,6 +73,7 @@ const GUARDED = [
   "cloudflare/src/schema-descriptions.test.ts",
   "core/src/controlPlane/wire.test.ts",
   "core/src/logger/boundary.test.ts",
+  "core/src/presence/durableObject.test.ts",
   "core/src/schema-descriptions.test.ts",
   "core/src/worker-safety.test.ts",
   "core/src/workflow/retryClassification.test.ts",

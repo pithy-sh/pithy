@@ -39,6 +39,7 @@ import { findEntitlementGap } from "./entitlementGap";
 import { durableObjectExports, withDurableObjectExports } from "./entryExports";
 import { composedManifests } from "./manifests";
 import { MissingPrerequisite, missingPrerequisites } from "./prerequisites";
+import { presenceRoomBindings, presenceRoomsStray, retirePresenceRooms } from "./presenceRooms";
 import { capabilityProvisionRemedies, remediesSentence } from "./provisionCommand";
 import { requiredOptionRefusal } from "./requiredOptions";
 
@@ -397,6 +398,12 @@ export const ReconcilePlan = z
       .describe(
         "Whether this Worker's wrangler.jsonc lacks the `version_metadata` binding named `CF_VERSION_METADATA`. Without it a Worker cannot report which build is running, so log records carry no `version`, audit events carry no build id, and `pithy deploy` cannot verify the deploy it just made. An upgrade adds it; a config naming a different binding is reported and left alone.",
       ),
+    strayPresenceRooms: z
+      .boolean()
+      .optional()
+      .describe(
+        "Whether this Worker binds the presence room class (`PRESENCE_ROOMS` → `PresenceRoom`) while nothing it composes declares a room kind. An upgrade takes out the binding in every environment, the class's migration tag and the entry export; a room stores nothing, so nothing is lost. Absent from a plan built before presence rooms existed.",
+      ),
   })
   .describe(
     "A read-only reconcile plan for one Worker: binding/config drift, ejected skips, pending migrations, and the entitlement composition gap.",
@@ -486,6 +493,12 @@ export interface BuildReconcilePlanOptions {
   account: CloudflareAccountSelection | null;
   /** Test seam: read the migration ledger without a real Miniflare/D1 run. */
   readLedger?: ReadLedger;
+  /**
+   * This Worker composed for another environment than `env`. Asked only when the Worker binds the presence
+   * room and `env`'s composition declares none, because taking the room out is decided across every
+   * environment (#815). Defaults to loading this Worker's own `pithy.config.ts` for that environment.
+   */
+  composeEnvironment?: (env: string) => Promise<readonly Capability[]>;
   /**
    * Test seam: find the entitlement gap without a source tree that refuses to read.
    *
@@ -1292,7 +1305,8 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
       name: app.name,
       missingBindings: computeMissingBindings(app, stanzas, byName.get(app.name), new Set()),
       missingConfigKeys: [],
-      missingEntryExports: [],
+      // Only the presence room's class: it lives in core, where the app's own classes live in its own main.
+      missingEntryExports: computeMissingEntryExports(presenceRoomBindings(app.requiredBindings), entrySource),
     });
   }
   for (const manifest of manifests) {
@@ -1369,6 +1383,15 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
     // change what that source composes against, and `createBackend` asks the same question of both.
     missingPrerequisites: missingPrerequisites(manifests, composed),
     missingVersionMetadata,
+    // The composed instances decide, not the manifests: a declaration is config, and only the instance has it.
+    // Every environment's, because the retire removes from every environment (#595, #815).
+    strayPresenceRooms: await presenceRoomsStray(
+      stanzas,
+      env,
+      capabilities,
+      options.composeEnvironment ??
+        ((other) => composeFor(other, async (load) => allCapabilities(await load(workerDir)))),
+    ),
   };
 }
 
@@ -1581,6 +1604,11 @@ export interface ReconcileApplied {
    * common run, which is what idempotent looks like.
    */
   addedEntryExports: string[];
+  /**
+   * Whether this run took the presence room's binding, migration tag and entry export out of a Worker that no
+   * longer declares a room kind. Optional only so a report built before presence rooms still type-checks.
+   */
+  retiredPresenceRooms?: boolean;
 }
 
 /** Add every plan capability's missing bindings to the Worker's wrangler.jsonc, comment-preserving. Returns what was added per capability. */
@@ -1690,7 +1718,10 @@ async function applyEntryExports(
     const manifest = byName.get(cap.name);
     // Same source of truth as the binding writer — see `effectiveBindings`. Exporting a class this Worker
     // does not bind would pull a Durable Object into the bundle for nothing.
-    return manifest ? durableObjectExports(effectiveBindings(manifest, composedByName.get(cap.name), honored)) : [];
+    if (manifest) return durableObjectExports(effectiveBindings(manifest, composedByName.get(cap.name), honored));
+    // The one entry with no manifest is the app's (#662), and of its classes only the presence room's is not
+    // its own code to export (#815).
+    return durableObjectExports(presenceRoomBindings(composedByName.get(cap.name)?.requiredBindings ?? []));
   });
   if (exports.length === 0) return [];
 
@@ -1881,6 +1912,8 @@ export async function applyReconcilePlan(options: ApplyReconcilePlanOptions): Pr
   // Idempotent, and a no-op on a Worker that already declares it — including one that names a different
   // binding, which is reported rather than repointed.
   const addedVersionMetadata = plan.missingVersionMetadata ? await applyVersionMetadata(workerDir) : false;
+  // After every writer above, which read and rewrite the same wrangler.jsonc and entry.
+  const retiredPresenceRooms = plan.strayPresenceRooms ? await retirePresenceRooms(workerDir) : false;
 
   const perCapability: CapabilityApplied[] = [];
   for (const cap of plan.perCapability) {
@@ -1921,5 +1954,6 @@ export async function applyReconcilePlan(options: ApplyReconcilePlanOptions): Pr
     migrations,
     addedVersionMetadata,
     addedEntryExports,
+    retiredPresenceRooms,
   };
 }

@@ -4,6 +4,7 @@
 import type { Context } from "hono";
 import type { PithyHonoEnv } from "../../capability/capability";
 import { causeMessage } from "../../error/cause";
+import type { PresenceDeclaration } from "../../presence/declaration";
 import { privacyAttestation, privacyPosture } from "../../privacy/posture";
 import type { PrivacyInventory } from "../../privacy/report";
 import type { RetirementVerdict } from "../../privacy/retirement";
@@ -90,6 +91,11 @@ export interface ControlPlaneHandlerDeps {
    * bindings. Never throws: whatever it cannot read is incomplete coverage.
    */
   retirement: (env: Record<string, unknown>) => Promise<RetirementVerdict>;
+  /**
+   * Every presence room kind this Worker composed, by kind, with the declaration that serves it — captured
+   * by the same `compose` hook. A thunk for the same reason as {@link composedCapabilities}.
+   */
+  composedPresence: () => ReadonlyMap<string, PresenceDeclaration>;
   /** The clock, injected so a test can stand at any instant. */
   now: () => Date;
 }

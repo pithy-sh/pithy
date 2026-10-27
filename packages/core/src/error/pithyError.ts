@@ -192,6 +192,48 @@ export class WebhookUnverifiedError extends PithyError {
   }
 }
 
+/**
+ * One code for every way a presence socket's ticket fails — missing, forged, expired, spent, or minted for
+ * another room. The step goes in `detail`, which the codec strips: a caller holding somebody else's ticket
+ * learns only that it no longer works.
+ */
+export class PresenceTicketInvalidError extends PithyError {
+  declare readonly payload: Extract<ErrorPayload, { code: "core/presence_ticket_invalid" }>;
+
+  constructor(args: ErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "core/presence_ticket_invalid",
+        status: 401,
+        message: args.message ?? "That presence ticket is not valid.",
+        action: args.action ?? "Mint a fresh ticket and open the socket within 60 seconds.",
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}
+
+/** A presence room is at the participant cap its room kind declares. */
+export class PresenceRoomFullError extends PithyError {
+  declare readonly payload: Extract<ErrorPayload, { code: "core/presence_room_full" }>;
+
+  constructor(args: ErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "core/presence_room_full",
+        status: 409,
+        message: args.message ?? "That room is full.",
+        action: args.action,
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}
+
 export class ForbiddenError extends PithyError {
   declare readonly payload: Extract<ErrorPayload, { code: "auth/forbidden" }>;
 

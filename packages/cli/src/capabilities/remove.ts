@@ -6,9 +6,11 @@ import { dirname, join, resolve } from "node:path";
 import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { PRESENCE_ROOM_CLASS, PRESENCE_ROOM_MODULE } from "@pithy-sh/core/src/presence/declaration";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { type DatabaseRun, dropCapabilityTables } from "../migrations/run";
+import { appendDeletedClassMigration, type WranglerStanza } from "../project/bindingEntries";
 import { uninstallPackage } from "../project/packageManager";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { removeScaffoldPath } from "../project/scaffold";
@@ -113,7 +115,7 @@ interface WranglerBindings {
   ai?: BindingEntry;
   workflows?: BindingEntry[];
   durable_objects?: { bindings: { name: string; class_name: string }[] };
-  migrations?: { tag: string; new_sqlite_classes?: string[] }[];
+  migrations?: { tag: string; new_sqlite_classes?: string[]; deleted_classes?: string[] }[];
   env?: Record<string, WranglerBindings | undefined>;
 }
 
@@ -166,6 +168,10 @@ function stripDurableObjectMigrations(config: WranglerBindings, bindings: Bindin
   const classes = new Set(
     bindings.filter((b) => b.type === "durable_object" && b.className).map((b) => b.className as string),
   );
+  // Core's presence room is retired, never spliced (#815): it stores nothing, so a `deleted_classes` step
+  // costs no data, and a Worker that deployed with it holds its creation tag and has instances that depend
+  // on it, so splicing the tag out would make the next deploy fail.
+  if (classes.delete(PRESENCE_ROOM_CLASS)) appendDeletedClassMigration(config as WranglerStanza, [PRESENCE_ROOM_CLASS]);
   if (classes.size === 0 || !config.migrations) return;
 
   for (const migration of config.migrations) {
@@ -245,12 +251,19 @@ export async function removeFromEntry(
   // in, where `pithy.config.ts` says `./capabilities/<cap>`. `--eject` writes each file its own spelling,
   // so a predicate built from the Worker's directory would read the ejected line as somebody else's and
   // leave a re-export of a directory this command is about to delete.
-  const written = withoutDurableObjectExports(source, exports, (specifier) =>
-    isCapabilityImport(
-      specifier,
-      capabilityPackageName(capability),
-      ejectSpecifierFromDir(workerDir, dirname(path), capability),
-    ),
+  // Core's presence room is the one class a capability binds without shipping (#815): its export points at
+  // core, and it is this capability's to take out when no other capability left in the Worker declares rooms
+  // — which `removableBindings` has already decided.
+  const written = withoutDurableObjectExports(
+    source,
+    exports,
+    (specifier) =>
+      specifier === PRESENCE_ROOM_MODULE ||
+      isCapabilityImport(
+        specifier,
+        capabilityPackageName(capability),
+        ejectSpecifierFromDir(workerDir, dirname(path), capability),
+      ),
   );
   if (written === source) return [];
   await writeFile(path, written);

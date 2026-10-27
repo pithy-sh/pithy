@@ -357,14 +357,23 @@ export async function planUpgrade(projectDir: string, run: UpgradeRun, migrate: 
         }
       }
     }
-    const exports = [...new Set(worker.perCapability.flatMap((cap) => cap.missingEntryExports))];
-    if (exports.length > 0) {
+    // The entry `main` names, or wrangler.jsonc, which says where it is, when there is none to name.
+    const entryPath = async (): Promise<string> => {
       const entry = await workerEntryPath(join(projectDir, dir)).catch(() => null);
-      const path = entry === null ? `${dir}/wrangler.jsonc` : relative(projectDir, entry).split(sep).join("/");
-      edit(path, `Exports ${exports.join(", ")} from the Worker's entry.`);
-    }
+      return entry === null ? `${dir}/wrangler.jsonc` : relative(projectDir, entry).split(sep).join("/");
+    };
+    const exports = [...new Set(worker.perCapability.flatMap((cap) => cap.missingEntryExports))];
+    if (exports.length > 0) edit(await entryPath(), `Exports ${exports.join(", ")} from the Worker's entry.`);
     if (worker.missingVersionMetadata) {
       edit(`${dir}/wrangler.jsonc`, "Adds the CF_VERSION_METADATA version_metadata binding.");
+    }
+    if (worker.strayPresenceRooms) {
+      // Both halves of the retire: the config, and the entry, which is source the apply rewrites.
+      edit(
+        `${dir}/wrangler.jsonc`,
+        "Removes the PRESENCE_ROOMS binding and retires the PresenceRoom class: nothing declares a room kind.",
+      );
+      edit(await entryPath(), "Removes the PresenceRoom export from the Worker's entry.");
     }
     const migrations = count(establishedPending(worker.ledger) ?? 0, "migration");
     if (migrations !== null) {
@@ -605,6 +614,9 @@ function planLines(plan: ReconcilePlan): string[] {
   const exports = [...new Set(plan.perCapability.flatMap((cap) => cap.missingEntryExports))];
   if (exports.length > 0) lines.push(`Worker entry: export ${exports.join(", ")}.`);
   if (plan.missingVersionMetadata) lines.push("version_metadata: add CF_VERSION_METADATA.");
+  if (plan.strayPresenceRooms) {
+    lines.push("Presence rooms: none declared. Remove PRESENCE_ROOMS and the PresenceRoom export.");
+  }
   lines.push(...ledgerLines(plan));
   if (lines.length === 0) lines.push(NOTHING_TO_UPGRADE);
   lines.push(...declineLines(plan));
@@ -636,6 +648,9 @@ function appliedLines(applied: ReconcileApplied, plan: ReconcilePlan): string[] 
   }
   if (applied.addedVersionMetadata) lines.push("version_metadata: added CF_VERSION_METADATA.");
   else if (plan.missingVersionMetadata) lines.push("version_metadata: names another binding. Left alone.");
+  if (applied.retiredPresenceRooms) {
+    lines.push("Presence rooms: none declared. Removed PRESENCE_ROOMS and the PresenceRoom export.");
+  }
   if (applied.migrated) {
     const total = applied.migrations.reduce((sum, run) => sum + run.results.length, 0);
     lines.push(total === 0 ? "Migrations up to date." : `Migrated ${count(total, "migration")}.`);

@@ -252,6 +252,7 @@ Denials are audited too. `denied` is a first-class outcome, and this is the surf
 | `POST /control-plane/keys/:keyId/expire` | `keys:rotate` | Expire a superseded key, naming the proven successor |
 | `GET /control-plane/migrations` | `migrations:read` | Where each database this Worker binds stands: applied, pending, undeclared, and the run that last moved it |
 | `GET /control-plane/privacy` | `privacy:read` | Every stored schema holding a privacy-marked field: each field's path, its class, and where it lives |
+| `POST /control-plane/presence/tickets` | the room kind's own scope | A single-use ticket into one presence room: who else has a record open, live (below) |
 
 ### Migration state
 
@@ -287,6 +288,29 @@ The seam's own manifest entry carries two counts behind the same scope, so a cli
 The manifest carries the headline as `privacy`: declared classes, observed classes, a count per class, both deltas, the console gate, and which sources were walked. What `declared` means, why it is an attestation, and how stale one can be is [`docs/PRIVACY.md`](PRIVACY.md).
 
 **Encryption is a second axis on the same records** (#390). Each field record carries `encryptedAtRest`, `true` or `false`, and leaves it out where the core cannot say — so a Worker on an older core reports no encryption data rather than reporting `false`. Each schema lists `encrypted[]`, every encrypted field whether or not it carries a class, `unrotatable` where it rests outside D1. The posture, on both routes, carries `retirement: { blocked, reasons, liveVersions }`, the field key's retirement guard read directly; it is absent on an older core. What each means is [Encrypted fields](PRIVACY.md#encrypted-fields).
+
+### Presence rooms
+
+A presence room answers one question: who else has this record open, and what are they doing (#815). Two people answering one support thread reply twice when neither can see the other. A room is one record of one **room kind**, and it lives in one hibernating Durable Object, `PresenceRoom`, in your own Worker.
+
+**A capability declares its room kinds**, on the `Capability` contract's `presence` field, beside its admin routes: a name (`support.thread`), the scope that reads the record (`support:threads:read`), which must be one the capability's own admin routes already require and only `GET` routes require, so `pithy dashboard connect` offers it and joining never needs a write grant, and the activities a participant may announce (`viewing`, `replying`). The name starts with the capability's own. The manifest lists every kind under the capability that declares it, as `presenceRooms[]`: the kind, its scope, its activities, its participant cap, and the two paths below, built from that capability's own `basePath`. A Worker that predates presence rooms sends no `presenceRooms` at all, which is not the same as an empty list.
+
+**Presence adds no scope.** Anyone who may read a record may see who else has it open, so a room kind names the scope that already reads it.
+
+**Joining takes a ticket**, because a browser's `WebSocket` sets no headers: it can carry neither the control-plane token nor, cross-origin, a session cookie. There are two doors, and both answer the same `PresenceTicket`:
+
+- **Control plane:** `POST /control-plane/presence/tickets`, signed like any control-plane call, **with the room kind's own scope**. The body names the room and the participant: an opaque `ref` and a display `name`, both the client's own. The signed body is what makes them the client's claims. Which scope a call needs is named in its body, so the gate reads the kind from the body and verifies against that kind's scope, exactly as it verifies any route's own. A token minted for any other scope is refused with `controlplane/insufficient_scope` and audited like any denial: one denial row naming the kind's scope, and no allowed row. An undeclared kind is a 404.
+- **Session:** `POST {base}/presence/tickets`, for a signed-in user of the app, behind the declaring capability's own permission for reading that record. The participant is that user. A kind that declares no session gate admits management clients only.
+
+A ticket is single use, expires in 60 seconds, and is bound to one room and one participant. It is signed with `presence-ticket-key`, a secret generated per environment like the kit's other generated values: the declaring capability lists it in its `@pithy-sh/secrets` registry as `PRESENCE_TICKET_KEY_ENTRY` and in its manifest's `devSecrets`, `pithy add` mints the local one, and `pithy secrets provision` the deployed ones (`pithy provision --feature` a feature's). Every capability that declares rooms in one Worker signs with that one key.
+
+**Then the socket:** `GET {base}/presence/rooms/:kind/:recordId`, upgraded, offering `pithy.presence.v1` and `pithy.ticket.<ticket>` in `Sec-WebSocket-Protocol`. The Worker answers with `pithy.presence.v1`. A missing, forged, expired, spent or misdirected ticket is one refusal, `core/presence_ticket_invalid` (401), so a caller holding someone else's ticket learns only that it does not work. A full room is `core/presence_room_full` (409).
+
+**The room holds nothing but who is here.** Each participant — `ref`, `name`, `origin` (`control-plane` or `session`), `activity` and `joinedAt` — lives in its socket's attachment and is read back from `getWebSockets()`, so a room that hibernates wakes knowing who is in it. The first frame is `init`, everyone in the room. Then `joined`, `left` and `activity` reach every other socket as they happen, and a dropped socket leaves. Nothing is written to D1, KV or Durable Object storage, and when the last socket closes the room is gone. A management client and a signed-in user in one room see each other, each with its origin.
+
+**Bounded.** A room refuses past its kind's participant cap (25 by default, at most 100), a client frame past 1,024 bytes, and an activity its kind does not declare. A participant sends one JSON frame, `set_activity`, and the plain-text `ping`. The frames are in the AsyncAPI contract, and how they may change is [`docs/SOCKETS.md`](SOCKETS.md).
+
+**Wired by the CLI.** The first composed capability that declares a room kind makes `pithy add` and `pithy upgrade` write the `PRESENCE_ROOMS` binding, the `PresenceRoom` class migration tag and the entry export, through the Durable Object path every capability uses. The CLI reads that from the manifest, not the code: a kit capability's `pithy.manifest.json` lists the binding in `requiredBindings` exactly as `PRESENCE_ROOMS_BINDING_SPEC` gives it (`durable_object`, `PRESENCE_ROOMS`, class `PresenceRoom` from `@pithy-sh/core/src/presence/durableObject`), beside `presence-ticket-key` in `devSecrets`, and one that leaves it out gets no binding, no migration and no export from `pithy add`. Only the adopter's own `app` capability, which has no manifest, is wired by `pithy upgrade` from its composition. `pithy remove` takes them out with the last capability that declares rooms, and `pithy upgrade` takes them out of a Worker where none does any more. It uses no Cloudflare API token.
 
 ---
 
