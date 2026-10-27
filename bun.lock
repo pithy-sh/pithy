@@ -26,6 +26,7 @@
       },
       "devDependencies": {
         "@cloudflare/vitest-plugin": "^1.4.2",
+        "@pithy-sh/cloudflare": "workspace:*",
         "@pithy-sh/core": "workspace:*",
         "@pithy-sh/tsconfig": "workspace:*",
         "@types/node": "^22.15.0",

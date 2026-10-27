@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "vitest";
 import type { IntegrationCreds } from "./harness";
-import { type ReapPlanEntry, reapKinds, reapPlanLabels, testResourceReapPlan } from "./reap";
+import { type ReapPlanEntry, reapArtifactsNamespace, reapKinds, reapPlanLabels, testResourceReapPlan } from "./reap";
 
 /**
  * Unit coverage for the reap registry. The point of the registry is that reaping is a property of the
@@ -37,6 +37,7 @@ describe("testResourceReapPlan", () => {
     // The kinds any `uniqueName` call can mint. A kind absent here is a kind that leaks forever.
     expect(labels).toEqual([
       "API token",
+      "Artifacts namespace",
       "D1 database",
       "Email Routing rule",
       "KV namespace",
@@ -54,7 +55,7 @@ describe("testResourceReapPlan", () => {
     // Both kinds still appear — a missing credential must read as "not reaped, and here is why",
     // never as "nothing to reap". Silence is how the eight orphaned secrets went unnoticed.
     expect(skipped).toEqual(["Email Routing rule", "R2 bucket", "Secrets Store entry"]);
-    expect(reapPlanLabels(plan)).toHaveLength(9);
+    expect(reapPlanLabels(plan)).toHaveLength(10);
   });
 
   test("names the credential a skipped kind is waiting on", () => {
@@ -126,5 +127,50 @@ describe("reapKinds", () => {
       { now },
     );
     expect(results[0]).toEqual({ label: "Secrets Store entry", reaped: [], failed: [stale], skipped: null });
+  });
+});
+
+describe("reapArtifactsNamespace", () => {
+  /** A namespace holding `repos`, whose delete answers `answer` once they are gone. */
+  function namespaces(repos: string[], answer: "deleted" | "absent" | "occupied") {
+    const calls: string[] = [];
+    return {
+      calls,
+      artifacts: {
+        listRepos: async (namespace: string) => {
+          calls.push(`list ${namespace}`);
+          return repos;
+        },
+        deleteRepo: async (namespace: string, repo: string) => {
+          calls.push(`delete ${namespace}/${repo}`);
+          return true;
+        },
+        deleteNamespace: async (namespace: string) => {
+          calls.push(`delete ${namespace}`);
+          return answer;
+        },
+      },
+    };
+  }
+
+  test("deletes every repository, then the namespace, since Cloudflare refuses one that still holds a repo", async () => {
+    const { calls, artifacts } = namespaces(["a", "b"], "deleted");
+    await reapArtifactsNamespace(artifacts, "pithy-int-ns");
+    expect(calls).toEqual([
+      "list pithy-int-ns",
+      "delete pithy-int-ns/a",
+      "delete pithy-int-ns/b",
+      "delete pithy-int-ns",
+    ]);
+  });
+
+  test("a namespace already gone is reaped, so another runner's sweep reaching it first is no failure", async () => {
+    await expect(reapArtifactsNamespace(namespaces([], "absent").artifacts, "pithy-int-ns")).resolves.toBeUndefined();
+  });
+
+  test("a namespace still occupied throws, so it is reported as not reaped and the next run tries again", async () => {
+    await expect(reapArtifactsNamespace(namespaces(["a"], "occupied").artifacts, "pithy-int-ns")).rejects.toThrow(
+      /still holds a repository/,
+    );
   });
 });

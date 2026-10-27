@@ -42,10 +42,10 @@ const Envelope = z
   })
   .describe("A Cloudflare REST envelope.");
 
-/** One page of `GET …/repos`: only the name of each repo is read. */
-const RepoPage = z
-  .array(z.object({ name: z.string().describe("The repo's name in the namespace.") }).loose())
-  .describe("One page of an Artifacts namespace's repos.");
+/** One page of `GET …/repos` or `GET …/namespaces`: only the name of each entry is read. */
+const NamedPage = z
+  .array(z.object({ name: z.string().describe("The repo's or the namespace's name.") }).loose())
+  .describe("One page of an Artifacts listing of repos or namespaces.");
 
 /**
  * Account-level Artifacts control plane: **list and delete the repos in a namespace, then the namespace** (#673).
@@ -81,23 +81,38 @@ export class CloudflareArtifactsManager extends CloudflareManager {
    */
   async listRepos(namespace: string): Promise<string[]> {
     assertName(namespace, "namespace");
-    return cloudflareRequest(`list Artifacts repos in ${namespace}`, async () => {
-      const names = new Set<string>();
-      const followed = new Set<string>();
-      let cursor: string | undefined;
-      for (;;) {
-        const query = `limit=${PAGE_LIMIT}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
-        const page = await this.call("GET", `${this.namespacePath(namespace)}/repos?${query}`);
-        if (page === null) return [...names];
-        for (const repo of decodeResponse(RepoPage, page.result, "Artifacts repo list")) names.add(repo.name);
-        const next = page.result_info?.cursor ?? undefined;
-        // A cursor already followed is the last page answering again; stopping there is what keeps a listing
-        // that never empties its cursor from looping forever.
-        if (!next || followed.has(next)) return [...names];
-        followed.add(next);
-        cursor = next;
-      }
-    });
+    return cloudflareRequest(`list Artifacts repos in ${namespace}`, () =>
+      this.names(`${this.namespacePath(namespace)}/repos`, "Artifacts repo list"),
+    );
+  }
+
+  /**
+   * Every namespace name on the account, across every page. The live suites' debris sweep reads it to find the
+   * `pithy-int-` namespaces an aborted run left behind, since nothing else lists them.
+   */
+  async listNamespaces(): Promise<string[]> {
+    return cloudflareRequest("list Artifacts namespaces", () =>
+      this.names(`/accounts/${this.getAccountId()}/artifacts/namespaces`, "Artifacts namespace list"),
+    );
+  }
+
+  /** Every `name` a paged listing answers, following its cursor. A 404 is an empty listing. */
+  private async names(path: string, what: string): Promise<string[]> {
+    const names = new Set<string>();
+    const followed = new Set<string>();
+    let cursor: string | undefined;
+    for (;;) {
+      const query = `limit=${PAGE_LIMIT}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+      const page = await this.call("GET", `${path}?${query}`);
+      if (page === null) return [...names];
+      for (const entry of decodeResponse(NamedPage, page.result, what)) names.add(entry.name);
+      const next = page.result_info?.cursor ?? undefined;
+      // A cursor already followed is the last page answering again; stopping there is what keeps a listing
+      // that never empties its cursor from looping forever.
+      if (!next || followed.has(next)) return [...names];
+      followed.add(next);
+      cursor = next;
+    }
   }
 
   /**

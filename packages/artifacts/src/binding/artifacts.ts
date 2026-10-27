@@ -164,7 +164,8 @@ export async function callArtifacts<T>(operation: string, call: () => Promise<T>
  *
  * The listing loop then catches a live token nobody recorded: one minted on the binding by your own code, or over
  * Cloudflare's REST API. That half still reaches past the first page only while the listing leaves revoked tokens out.
- * A round that revokes nothing ends it, rather than asking again forever. A recorded token that was already dead
+ * `revokeAll.integration.test.ts` records what the real listing returns on every release run. A round that revokes
+ * nothing ends it, rather than asking again forever. A recorded token that was already dead
  * answers `false` and counts as nothing.
  */
 export async function revokeEveryToken(repo: ArtifactsRepoHandle, recorded: readonly string[] = []): Promise<number> {

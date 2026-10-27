@@ -31,6 +31,7 @@
     "test": "vitest run",
     "test:node": "vitest run --project=node",
     "test:workers": "vitest run --project=workers",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "clean": "rm -rf dist .turbo",
     "reset": "bun run clean && rm -rf node_modules"
   },
@@ -46,6 +47,7 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.4.2",
+    "@pithy-sh/cloudflare": "workspace:*",
     "@pithy-sh/core": "workspace:*",
     "@pithy-sh/tsconfig": "workspace:*",
     "@types/node": "^22.15.0",
