@@ -25,18 +25,31 @@ export const ArtifactsAuditActions = {
   grantRemoved: "artifacts/grant_removed",
   /** A git token was minted. Records its id, scope and expiry, never its value. */
   tokenMinted: "artifacts/token_minted",
-  /** The owner revoked every live token on a repository. */
+  /** Every live token on a repository was revoked: by its owner, or by a management client with a reason. */
   tokensRevoked: "artifacts/tokens_revoked",
+  /** A management client revoked one token on a repository, with a reason. */
+  tokenRevoked: "artifacts/token_revoked",
 } as const;
 
 /** One of this capability's audit actions. */
 export type ArtifactsAuditAction = (typeof ArtifactsAuditActions)[keyof typeof ArtifactsAuditActions];
 
+/** The acts that take a credential back, recorded at `warning`. */
+const REVOCATIONS: ReadonlySet<ArtifactsAuditAction> = new Set([
+  ArtifactsAuditActions.tokensRevoked,
+  ArtifactsAuditActions.tokenRevoked,
+]);
+
 /** One recorded act: who, which repository, for which organization if any, and facts that are never a credential. */
 export interface ArtifactsAuditEntry {
   /** What happened. */
   action: ArtifactsAuditAction;
-  /** The signed-in person who did it. */
+  /**
+   * Who did it: a signed-in person (`user`, the default), or a management client (`control-plane`), which is never a
+   * user of the adopter's app and is never recorded as one.
+   */
+  actorType?: "user" | "control-plane";
+  /** The signed-in person, or the management client's subject. */
   actorId: string;
   /** The repository's physical name. */
   repo: string;
@@ -58,8 +71,8 @@ export async function recordArtifactsAction(emit: AuditEmit, entry: ArtifactsAud
   await emit({
     action: entry.action,
     outcome: "success",
-    severity: entry.action === ArtifactsAuditActions.tokensRevoked ? "warning" : "info",
-    actorType: "user",
+    severity: REVOCATIONS.has(entry.action) ? "warning" : "info",
+    actorType: entry.actorType ?? "user",
     actorId: entry.actorId,
     resourceType: "artifacts_repo",
     resourceId: entry.repo,

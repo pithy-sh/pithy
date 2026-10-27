@@ -38339,6 +38339,850 @@
         ]
       }
     },
+    "/artifacts/admin/repos": {
+      "get": {
+        "tags": [
+          "artifacts"
+        ],
+        "operationId": "getArtifactsAdminRepos",
+        "summary": "Page every repository, newest first, with its owner, remote access and last push.",
+        "description": "Every owner's, not the caller's: a management client is nobody's. The last push is what Cloudflare holds, and is absent for a repository it could not answer for.",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Where to resume, from the previous page's `nextCursor`. Opaque; a malformed one is a first page.",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many repositories to return, from 1 to 100. Defaults to 25.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of every repository the kit knows.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "repos": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "description": "The physical name, as in the clone URL."
+                          },
+                          "displayName": {
+                            "type": "string",
+                            "description": "The label the owner chose."
+                          },
+                          "owner": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "org",
+                                  "user"
+                                ],
+                                "description": "Whether an organization or a person owns the repository."
+                              },
+                              "id": {
+                                "type": "string",
+                                "description": "The owning organization's id, or the owning person's user id."
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "id"
+                            ],
+                            "description": "Who owns it."
+                          },
+                          "remoteAccess": {
+                            "type": "boolean",
+                            "description": "Whether a git client may reach the repository."
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "description": "When the repository was created, ISO 8601."
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "description": "When its row last changed, ISO 8601."
+                          },
+                          "lastPushAt": {
+                            "description": "When it was last pushed to, ISO 8601, or null if never. Absent when Cloudflare could not answer for this repository.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "displayName",
+                          "owner",
+                          "remoteAccess",
+                          "createdAt",
+                          "updatedAt"
+                        ],
+                        "description": "One repository, as a management client sees it."
+                      },
+                      "description": "Repositories the kit knows, newest first."
+                    },
+                    "nextCursor": {
+                      "description": "Hand back as `cursor` for the next page, or null at the end. Opaque.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "repos",
+                    "nextCursor"
+                  ],
+                  "description": "One page of every repository the kit knows."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "artifacts:repos:read"
+        ]
+      }
+    },
+    "/artifacts/admin/repos/{name}": {
+      "get": {
+        "tags": [
+          "artifacts"
+        ],
+        "operationId": "getArtifactsAdminReposByName",
+        "summary": "Read one repository: its metadata, its grants, and a page of its commit log.",
+        "description": "The log comes from Cloudflare's `log()`, newest first, paged by `limit` and `offset`.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "The repository's physical name, as in its clone URL.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+            }
+          },
+          {
+            "name": "ref",
+            "in": "query",
+            "required": false,
+            "description": "The branch, tag or commit the log walks back from. Defaults to `HEAD`.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many commits to return, from 1 to 100. Defaults to 25.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Skip this many commits first, from the previous page's `nextOffset`. Defaults to 0.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One repository: its metadata, its grants, and a page of its history.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "repo": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "description": "The physical name, as in the clone URL."
+                        },
+                        "displayName": {
+                          "type": "string",
+                          "description": "The label the owner chose."
+                        },
+                        "owner": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "org",
+                                "user"
+                              ],
+                              "description": "Whether an organization or a person owns the repository."
+                            },
+                            "id": {
+                              "type": "string",
+                              "description": "The owning organization's id, or the owning person's user id."
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id"
+                          ],
+                          "description": "Who owns it."
+                        },
+                        "remoteAccess": {
+                          "type": "boolean",
+                          "description": "Whether a git client may reach the repository."
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "description": "When the repository was created, ISO 8601."
+                        },
+                        "updatedAt": {
+                          "type": "string",
+                          "description": "When its row last changed, ISO 8601."
+                        },
+                        "lastPushAt": {
+                          "description": "When it was last pushed to, ISO 8601, or null if never.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "description": {
+                          "description": "The description Cloudflare holds, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "defaultBranch": {
+                          "type": "string",
+                          "description": "The default branch, e.g. `main`."
+                        },
+                        "readOnly": {
+                          "type": "boolean",
+                          "description": "Whether Cloudflare holds it read-only."
+                        },
+                        "remote": {
+                          "description": "The clone URL. Absent when `remoteAccess` is false: a repository no git client may reach has no address.",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "displayName",
+                        "owner",
+                        "remoteAccess",
+                        "createdAt",
+                        "updatedAt",
+                        "lastPushAt",
+                        "description",
+                        "defaultBranch",
+                        "readOnly"
+                      ],
+                      "description": "The repository, with what Cloudflare holds about it."
+                    },
+                    "grants": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "repo": {
+                            "type": "string",
+                            "description": "The repository's physical name."
+                          },
+                          "userId": {
+                            "type": "string",
+                            "description": "The person the grant is for."
+                          },
+                          "grant": {
+                            "type": "string",
+                            "enum": [
+                              "read",
+                              "write"
+                            ],
+                            "description": "What the grant gives."
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "description": "When the grant last changed, ISO 8601."
+                          }
+                        },
+                        "required": [
+                          "repo",
+                          "userId",
+                          "grant",
+                          "updatedAt"
+                        ],
+                        "description": "One person's grant on one repository."
+                      },
+                      "description": "Every grant on the repository, by user id. The owner holds no grant row."
+                    },
+                    "commits": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "hash": {
+                            "type": "string",
+                            "description": "The commit id, 40 lowercase hex characters."
+                          },
+                          "treeHash": {
+                            "type": "string",
+                            "description": "The id of the commit's root tree."
+                          },
+                          "message": {
+                            "type": "string",
+                            "description": "The commit message."
+                          },
+                          "author": {
+                            "type": "object",
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "description": "The name recorded on the commit."
+                              },
+                              "email": {
+                                "type": "string",
+                                "description": "The address recorded on the commit."
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "email"
+                            ],
+                            "description": "Who wrote the change."
+                          },
+                          "committer": {
+                            "type": "object",
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "description": "The name recorded on the commit."
+                              },
+                              "email": {
+                                "type": "string",
+                                "description": "The address recorded on the commit."
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "email"
+                            ],
+                            "description": "Who committed it."
+                          },
+                          "parents": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "The parent commit ids, in Git order. Empty for a root commit."
+                          },
+                          "authoredAt": {
+                            "type": "number",
+                            "description": "When it was authored, in Unix seconds."
+                          },
+                          "committedAt": {
+                            "type": "number",
+                            "description": "When it was committed, in Unix seconds."
+                          }
+                        },
+                        "required": [
+                          "hash",
+                          "treeHash",
+                          "message",
+                          "author",
+                          "committer",
+                          "parents",
+                          "authoredAt",
+                          "committedAt"
+                        ],
+                        "description": "One decoded commit."
+                      },
+                      "description": "One page of its commit log, newest first, from Cloudflare's `log()`."
+                    },
+                    "nextOffset": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Hand back as `offset` for the next page of the log, or null at its end."
+                    }
+                  },
+                  "required": [
+                    "repo",
+                    "grants",
+                    "commits",
+                    "nextOffset"
+                  ],
+                  "description": "One repository: its metadata, its grants, and a page of its history."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "artifacts:repos:read"
+        ]
+      }
+    },
+    "/artifacts/admin/repos/{name}/tokens": {
+      "get": {
+        "tags": [
+          "artifacts"
+        ],
+        "operationId": "getArtifactsAdminReposByNameTokens",
+        "summary": "List every token on one repository, with its holder where the kit minted it.",
+        "description": "Every token Cloudflare lists, with its scope, state, creation and expiry. A token the kit did not mint is reported as minted outside Pithy and never given a holder. No value is ever returned.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "The repository's physical name, as in its clone URL.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every token on one repository.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tokens": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The token id Cloudflare assigned."
+                          },
+                          "scope": {
+                            "type": "string",
+                            "enum": [
+                              "read",
+                              "write"
+                            ],
+                            "description": "What the token may do: pull, or pull and push."
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "active",
+                              "expired",
+                              "revoked"
+                            ],
+                            "description": "Whether it still works, ran out, or was revoked."
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "description": "When Cloudflare created it, ISO 8601."
+                          },
+                          "expiresAt": {
+                            "type": "string",
+                            "description": "When it stops working, ISO 8601."
+                          },
+                          "minted": {
+                            "type": "string",
+                            "enum": [
+                              "pithy",
+                              "outside",
+                              "unknown"
+                            ],
+                            "description": "Who minted it: `pithy`, the kit, which recorded its holder; `outside`, something else, such as Cloudflare's dashboard or a script, so it has no holder; or `unknown`, created before the kit began recording or long expired, so the kit may have minted it with no record left."
+                          },
+                          "holderId": {
+                            "description": "The user the kit minted it for, or an `erased-` stand-in once that user's account was purged. Null for any token the kit did not record.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "source": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "credential",
+                                  "create"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "For a token the kit recorded: `credential`, minted through the credential route, or `create`, returned with a new repository and revoked before the create answered. Null otherwise."
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "scope",
+                          "state",
+                          "createdAt",
+                          "expiresAt",
+                          "minted",
+                          "holderId",
+                          "source"
+                        ],
+                        "description": "One token on a repository, with who holds it where the kit knows. Never its value."
+                      },
+                      "description": "Every token Cloudflare lists on the repository, in its order."
+                    },
+                    "total": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "How many tokens Cloudflare reports on the repository."
+                    }
+                  },
+                  "required": [
+                    "tokens",
+                    "total"
+                  ],
+                  "description": "Every token on one repository."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "artifacts:repos:read"
+        ]
+      }
+    },
+    "/artifacts/admin/repos/{name}/tokens/{tokenId}/revoke": {
+      "post": {
+        "tags": [
+          "artifacts"
+        ],
+        "operationId": "postArtifactsAdminReposByNameTokensByTokenIdRevoke",
+        "summary": "Revoke one token on a repository, with an idempotency key and a reason.",
+        "description": "A git client holding it is refused on its next request. A replay under the same key answers what the first request did and revokes nothing. A token the repository does not hold is a 404 and spends no key.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "The repository's physical name.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+            }
+          },
+          {
+            "name": "tokenId",
+            "in": "path",
+            "required": true,
+            "description": "The token to revoke, by the id Cloudflare assigned it.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "The body of a control-plane revocation.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idempotencyKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "A key the client chooses, once per revocation. A second request with the same key changes nothing and answers what the first did."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why, in a sentence. Required, and recorded on the audit event verbatim."
+                  }
+                },
+                "required": [
+                  "idempotencyKey",
+                  "reason"
+                ],
+                "description": "The body of a control-plane revocation."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "What a control-plane revocation did.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "repo": {
+                      "type": "string",
+                      "description": "The repository's physical name."
+                    },
+                    "tokenId": {
+                      "description": "The token revoked, or null for a revocation of every live token.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revoked": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "How many tokens the revocation took back. Zero when none was live."
+                    },
+                    "reason": {
+                      "type": "string",
+                      "description": "The reason the first request gave."
+                    },
+                    "revokedAt": {
+                      "type": "string",
+                      "description": "When the first request ran, ISO 8601."
+                    },
+                    "replayed": {
+                      "type": "boolean",
+                      "description": "True when this answers a key already spent: nothing was revoked now, and nothing was recorded."
+                    }
+                  },
+                  "required": [
+                    "repo",
+                    "tokenId",
+                    "revoked",
+                    "reason",
+                    "revokedAt",
+                    "replayed"
+                  ],
+                  "description": "What a control-plane revocation did."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "artifacts:tokens:revoke"
+        ]
+      }
+    },
+    "/artifacts/admin/repos/{name}/tokens/revoke": {
+      "post": {
+        "tags": [
+          "artifacts"
+        ],
+        "operationId": "postArtifactsAdminReposByNameTokensRevoke",
+        "summary": "Revoke every live token on a repository, with an idempotency key and a reason.",
+        "description": "Every git client holding one is refused on its next request and must mint again. A replay under the same key answers what the first request did, and revokes nothing minted since.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "The repository's physical name, as in its clone URL.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "The body of a control-plane revocation.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idempotencyKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "A key the client chooses, once per revocation. A second request with the same key changes nothing and answers what the first did."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why, in a sentence. Required, and recorded on the audit event verbatim."
+                  }
+                },
+                "required": [
+                  "idempotencyKey",
+                  "reason"
+                ],
+                "description": "The body of a control-plane revocation."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "What a control-plane revocation did.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "repo": {
+                      "type": "string",
+                      "description": "The repository's physical name."
+                    },
+                    "tokenId": {
+                      "description": "The token revoked, or null for a revocation of every live token.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revoked": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "How many tokens the revocation took back. Zero when none was live."
+                    },
+                    "reason": {
+                      "type": "string",
+                      "description": "The reason the first request gave."
+                    },
+                    "revokedAt": {
+                      "type": "string",
+                      "description": "When the first request ran, ISO 8601."
+                    },
+                    "replayed": {
+                      "type": "boolean",
+                      "description": "True when this answers a key already spent: nothing was revoked now, and nothing was recorded."
+                    }
+                  },
+                  "required": [
+                    "repo",
+                    "tokenId",
+                    "revoked",
+                    "reason",
+                    "revokedAt",
+                    "replayed"
+                  ],
+                  "description": "What a control-plane revocation did."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "artifacts:tokens:revoke"
+        ]
+      }
+    },
     "/artifacts/repos": {
       "post": {
         "tags": [

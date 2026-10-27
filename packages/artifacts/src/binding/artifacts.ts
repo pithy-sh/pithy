@@ -150,3 +150,23 @@ export async function callArtifacts<T>(operation: string, call: () => Promise<T>
     );
   }
 }
+
+/**
+ * Revoke every live token, a page at a time until none is left. `listTokens` answers one page with no cursor, so a
+ * round that revokes nothing ends it rather than asking again forever. Reaching the next page assumes the listing
+ * shows live tokens, as Cloudflare's REST listing does by default (`state=active`); the binding's documentation names
+ * no filter, page size or order, so a listing of dead tokens alone ends the loop early.
+ */
+export async function revokeEveryToken(repo: ArtifactsRepoHandle): Promise<number> {
+  let revoked = 0;
+  for (let round = 0; round < 50; round += 1) {
+    const live = (await repo.listTokens()).tokens.filter((token) => token.state === "active");
+    let progressed = 0;
+    for (const token of live) {
+      if (await repo.revokeToken(token.id)) progressed += 1;
+    }
+    revoked += progressed;
+    if (live.length === 0 || progressed === 0) break;
+  }
+  return revoked;
+}

@@ -28,7 +28,7 @@ describe("artifacts()", () => {
   test("migrates the app database at its allocated order, and reports its own version", () => {
     const capability = artifacts();
     expect(capability.databases?.app?.migrationOrder).toBe(ARTIFACTS_MIGRATION_ORDER);
-    expect(Object.keys(capability.databases?.app?.migrations ?? {})).toEqual(["0001_init"]);
+    expect(Object.keys(capability.databases?.app?.migrations ?? {})).toEqual(["0001_init", "0002_tokens"]);
     expect(capability.version).toBe(PACKAGE_VERSION);
     expect(capability.package).toBe(PACKAGE_NAME);
     const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {

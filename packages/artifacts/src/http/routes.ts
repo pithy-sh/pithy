@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { D1Database } from "@cloudflare/workers-types";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { InternalError, NotFoundError, UpstreamError } from "@pithy-sh/core/src/error/pithyError";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
@@ -11,15 +10,14 @@ import { type ArtifactsAccess, accessTo, tokenScope } from "../access/access";
 import { type ArtifactsAuditAction, ArtifactsAuditActions, recordArtifactsAction } from "../audit/actions";
 import {
   type ArtifactsNamespaceBinding,
-  type ArtifactsRepoHandle,
   artifactsBinding,
   callArtifacts,
+  revokeEveryToken,
   withRepo,
 } from "../binding/artifacts";
 import type { ArtifactsConfig } from "../config/config";
-import type { ArtifactsOwnerKind, ArtifactsRepoRecord } from "../data/records";
-import { type ArtifactsStore, artifactsStore } from "../data/store";
-import { artifactsDatabase } from "../data/tables";
+import { type ArtifactsOwnerKind, type ArtifactsRepoRecord, TOKEN_RECORD_RETENTION_MS } from "../data/records";
+import type { ArtifactsStore } from "../data/store";
 import {
   ArtifactsForbiddenError,
   ArtifactsInvalidNameError,
@@ -27,6 +25,8 @@ import {
   ArtifactsNotFoundError,
 } from "../error/errors";
 import { assertRepoName, generatedRepoName } from "../naming/repoName";
+import { registerArtifactsAdminRoutes } from "./adminRoutes";
+import { storeOf } from "./context";
 import { requireAuth, requireManagePower } from "./guard";
 import {
   CommitView,
@@ -40,7 +40,7 @@ import {
   TreeView,
 } from "./responses";
 import { CreateRepoBody, FileQuery, GrantParams, LogQuery, ObjectParams, RepoParams, SetGrantBody } from "./schemas";
-import { grantView, repoDetail, repoView } from "./views";
+import { commitView, grantView, repoDetail, repoView } from "./views";
 
 /**
  * The repository routes, mounted at `basePath` (default `/artifacts`).
@@ -57,6 +57,8 @@ import { grantView, repoDetail, repoView } from "./views";
  * | DELETE | `/repos/:name/credentials` | owner | Revoke every live token. |
  * | GET | `/repos/:name/log`, `/commits/:hash`, `/tree/:hash`, `/blob/:hash`, `/file` | owner or grant | In-Worker reads. |
  * | POST, GET | `/organization/repos` | `managePower` in the acting organization | Only where `organization` is composed. |
+ * | GET | `/admin/repos`, `/admin/repos/:name`, `/admin/repos/:name/tokens` | control plane, `artifacts:repos:read` | Every repository, one with its grants and log, and its tokens with their holders. |
+ * | POST | `/admin/repos/:name/tokens/:tokenId/revoke`, `/admin/repos/:name/tokens/revoke` | control plane, `artifacts:tokens:revoke` | Revoke one token, or every live one, with an idempotency key and a reason. |
  *
  * **A caller with no grant and no ownership gets the 404 a repository that does not exist gets, byte for byte.** The
  * name is in the clone URL; a refusal that told the two apart would hand it over. A caller who can see a repository
@@ -115,6 +117,9 @@ export function registerArtifactsRoutes(options: ArtifactsRoutesOptions): (app: 
     const organization = options.organization();
     // Read here, once the composition is known, so the access check and the routes agree on it.
     const managePower = organization ? config.managePower : undefined;
+
+    // The management surface: control-plane only, under `admin/`, and mounted whatever is composed.
+    registerArtifactsAdminRoutes(app, config);
 
     /** Who the caller is to the repository in the path, or the one 404. */
     async function resolve(c: Context<PithyHonoEnv>, name: string): Promise<Resolved> {
@@ -203,8 +208,19 @@ export function registerArtifactsRoutes(options: ArtifactsRoutesOptions): (app: 
       // **Cloudflare answers a create with a token: write scope, a day's life.** That is a long-lived credential this
       // capability never issues, so it is revoked before anybody can have read it. A revoke that fails, or answers
       // that it revoked nothing, deletes the repository again: with no row, nothing could ever reach it to try again.
+      //
+      // **And it is recorded, against the creator**, so the token list names it as the kit's own rather than as one
+      // minted outside Pithy.
+      //
+      // **A failure takes back only what this request wrote.** The row goes only once this request inserted it: a
+      // name-taken insert means the row is somebody else's, whose Cloudflare repository went out of band. And the
+      // Cloudflare delete runs whatever D1 does, so a database that cannot take its row back still leaks no repository.
+      let inserted = false;
       try {
-        const revoked = await withRepo(binding, name, (repo) => repo.revokeToken(created.token));
+        const { revoked, tokens } = await withRepo(binding, name, async (repo) => {
+          const revoked = await repo.revokeToken(created.token);
+          return { revoked, tokens: revoked ? (await repo.listTokens()).tokens : [] };
+        });
         if (!revoked) {
           throw new UpstreamError({
             message: "Cloudflare Artifacts could not complete the request.",
@@ -212,8 +228,24 @@ export function registerArtifactsRoutes(options: ArtifactsRoutesOptions): (app: 
           });
         }
         await store.insertRepo(row);
+        inserted = true;
+        await store.recordTokens(
+          tokens.map((token) => ({
+            id: token.id,
+            repo: name,
+            userId,
+            scope: token.scope,
+            source: "create" as const,
+            createdAt: at,
+            expiresAt: new Date(token.expiresAt),
+          })),
+        );
       } catch (error) {
-        await callArtifacts(`delete repository ${name}`, () => binding.delete(name));
+        try {
+          if (inserted) await store.deleteRepo(name);
+        } finally {
+          await callArtifacts(`delete repository ${name}`, () => binding.delete(name));
+        }
         throw error;
       }
       await record(c, { repo: row, userId }, ArtifactsAuditActions.repoCreated, {
@@ -404,10 +436,37 @@ export function registerArtifactsRoutes(options: ArtifactsRoutesOptions): (app: 
           throw new ArtifactsNotFoundError({ detail: `remote access is off for ${resolved.repo.name}` });
         }
         const scope = tokenScope(resolved.access);
+        const at = new Date();
+        // Records that have outlived any listing of their token go first, so the table is bounded by what is live.
+        await resolved.store.pruneTokens(resolved.repo.name, new Date(at.getTime() - TOKEN_RECORD_RETENTION_MS));
         const { minted, remote } = await withRepo(resolved.binding, resolved.repo.name, async (repo) => ({
           minted: await repo.createToken(scope, config.tokenTtlSeconds),
           remote: (await repo.info()).remote,
         }));
+        // **A token nobody can name is never handed out.** Its record is written before the response, and a record
+        // that cannot be written revokes the token again rather than leave a credential the list cannot attribute.
+        try {
+          await resolved.store.recordTokens([
+            {
+              id: minted.id,
+              repo: resolved.repo.name,
+              userId: resolved.userId,
+              scope: minted.scope,
+              source: "credential",
+              createdAt: at,
+              expiresAt: new Date(minted.expiresAt),
+            },
+          ]);
+        } catch (error) {
+          await withRepo(resolved.binding, resolved.repo.name, (repo) => repo.revokeToken(minted.id)).catch(
+            // The record failure is the one to report. A revoke that fails too leaves the token its TTL, no longer.
+            () => false,
+          );
+          throw new InternalError(
+            { detail: `record token ${minted.id} on repository ${resolved.repo.name}` },
+            { cause: error },
+          );
+        }
         await record(c, resolved, ArtifactsAuditActions.tokenMinted, {
           tokenId: minted.id,
           scope: minted.scope,
@@ -556,38 +615,6 @@ export function registerArtifactsRoutes(options: ArtifactsRoutesOptions): (app: 
   };
 }
 
-/**
- * Revoke every live token, a page at a time until none is left. `listTokens` answers one page with no cursor, so a
- * round that revokes nothing ends it rather than asking again forever.
- */
-async function revokeEveryToken(repo: ArtifactsRepoHandle): Promise<number> {
-  let revoked = 0;
-  for (let round = 0; round < 50; round += 1) {
-    const live = (await repo.listTokens()).tokens.filter((token) => token.state === "active");
-    let progressed = 0;
-    for (const token of live) {
-      if (await repo.revokeToken(token.id)) progressed += 1;
-    }
-    revoked += progressed;
-    if (live.length === 0 || progressed === 0) break;
-  }
-  return revoked;
-}
-
-/** A commit, with only the fields the contract states. */
-function commitView(commit: CommitView): CommitView {
-  return {
-    hash: commit.hash,
-    treeHash: commit.treeHash,
-    message: commit.message,
-    author: { name: commit.author.name, email: commit.author.email },
-    committer: { name: commit.committer.name, email: commit.committer.email },
-    parents: [...commit.parents],
-    authoredAt: commit.authoredAt,
-    committedAt: commit.committedAt,
-  };
-}
-
 /** A Git object the caller may look for and that is not there. The repository exists; the caller can see it. */
 function noSuchObject(hash: string): NotFoundError {
   return new NotFoundError({ message: "That object does not exist in this repository.", detail: `no object ${hash}` });
@@ -597,10 +624,4 @@ function signedIn(c: Context<PithyHonoEnv>): string {
   const auth = c.var.auth;
   if (!auth) throw new InternalError({ detail: "requireAuth() must run before a handler reads the user id." });
   return auth.userId;
-}
-
-function storeOf(c: Context<PithyHonoEnv>): ArtifactsStore {
-  const db = c.env.DB as D1Database | undefined;
-  if (!db) throw new InternalError({ detail: "The artifacts routes require a `DB` D1 binding." });
-  return artifactsStore(artifactsDatabase(db));
 }

@@ -19,6 +19,7 @@ import type {
 } from "../binding/artifacts";
 import { type ArtifactsOptions, artifacts } from "../capability";
 import { artifacts_0001_init } from "../migrations/0001_init";
+import { artifacts_0002_tokens } from "../migrations/0002_tokens";
 import { REPO_NAME_CHARSET } from "../naming/repoName";
 import {
   GrantView,
@@ -213,10 +214,22 @@ async function createRepo(app: Backend, user: string, displayName: string, extra
   return conforming(res, RepoView);
 }
 
+/** Every token record, as D1 holds it. */
+async function tokenRows(): Promise<Record<string, unknown>[]> {
+  return (
+    await env.DB.prepare(
+      "SELECT * FROM pithy_artifacts_tokens WHERE id != 'pithy:records-began' ORDER BY created_at, id",
+    ).all()
+  ).results;
+}
+
 beforeEach(async () => {
-  await env.DB.exec("DROP TABLE IF EXISTS pithy_artifacts_grants");
-  await env.DB.exec("DROP TABLE IF EXISTS pithy_artifacts_repos");
-  await artifacts_0001_init.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
+  for (const table of ["revocations", "tokens", "grants", "repos"]) {
+    await env.DB.exec(`DROP TABLE IF EXISTS pithy_artifacts_${table}`);
+  }
+  const db = createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
+  await artifacts_0001_init.up(db);
+  await artifacts_0002_tokens.up(db);
   namespace = fakeNamespace();
   events = [];
   output = [];
@@ -270,6 +283,61 @@ describe("creating a repository", () => {
       expect(output.join("\n")).not.toMatch(/art_v1_/);
     });
   }
+
+  test("deletes the repository and its row again when recording its create token fails", async () => {
+    const app = worker();
+    // The create token is the namespace's first, `tok_1`: a record already holding that id refuses the write.
+    await env.DB.exec(
+      "INSERT INTO pithy_artifacts_tokens (id, repo, user_id, scope, source, created_at, expires_at) VALUES ('tok_1', 'elsewhere', 'zed', 'read', 'credential', 0, 0)",
+    );
+    const res = await call(app, "/artifacts/repos", "alice", {
+      method: "POST",
+      body: JSON.stringify({ displayName: "docs" }),
+    });
+    expect(res.status).toBe(500);
+    expect(namespace.repos.size).toBe(0);
+    const listed = await conforming(await call(app, "/artifacts/repos", "alice"), RepoList);
+    expect(listed.repos).toHaveLength(0);
+    expect(await tokenRows()).toEqual([expect.objectContaining({ id: "tok_1", repo: "elsewhere" })]);
+  });
+
+  test("deletes the repository from Cloudflare even when D1 cannot take its row back", async () => {
+    const app = worker();
+    await env.DB.exec("DROP TABLE pithy_artifacts_tokens");
+    const res = await call(app, "/artifacts/repos", "alice", {
+      method: "POST",
+      body: JSON.stringify({ displayName: "docs" }),
+    });
+    expect(res.status).toBe(500);
+    expect(namespace.repos.size).toBe(0);
+  });
+
+  test("a name whose row outlived its Cloudflare repository is refused, and the existing row keeps everything", async () => {
+    const app = worker({ acceptRepoName: true });
+    await createRepo(app, "alice", "docs", { name: "shared" });
+    await call(app, "/artifacts/repos/shared/grants", "alice", {
+      method: "POST",
+      body: JSON.stringify({ userId: "carol", grant: "read" }),
+    });
+    // Deleted out of band: Cloudflare's dashboard, a namespace reset. The kit's row is still there.
+    namespace.repos.delete("shared");
+    const before = await tokenRows();
+
+    const res = await call(app, "/artifacts/repos", "bob", {
+      method: "POST",
+      body: JSON.stringify({ displayName: "docs", name: "shared" }),
+    });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe("artifacts/name_taken");
+    expect(namespace.repos.has("shared")).toBe(false);
+
+    const alices = await conforming(await call(app, "/artifacts/repos", "alice"), RepoList);
+    expect(alices.repos.map((repo) => repo.name)).toEqual(["shared"]);
+    const carols = await conforming(await call(app, "/artifacts/repos", "carol"), RepoList);
+    expect(carols.repos.map((repo) => [repo.name, repo.access])).toEqual([["shared", "read"]]);
+    expect(await tokenRows()).toEqual(before);
+    expect(before).toHaveLength(1);
+  });
 
   test("refuses a supplied name unless the Worker takes one, and then refuses one that breaks the rule", async () => {
     const closed = await call(worker(), "/artifacts/repos", "alice", {
@@ -442,6 +510,64 @@ describe("minting a token", () => {
     }
     const live = [...(namespace.repos.get(repo.name)?.tokens.values() ?? [])].filter((t) => t.state === "active");
     expect(live.map((token) => token.scope)).toEqual(["read", "read"]);
+  });
+
+  test("records every token it mints — id, repository, user, scope and expiry — and never the plaintext", async () => {
+    const app = worker();
+    const repo = await createRepo(app, "alice", "docs");
+    await call(app, `/artifacts/repos/${repo.name}/grants`, "alice", {
+      method: "POST",
+      body: JSON.stringify({ userId: "bob", grant: "read" }),
+    });
+    const res = await call(app, `/artifacts/repos/${repo.name}/credentials`, "bob", { method: "POST" });
+    const credential = await conforming(res, RepoCredential);
+    const minted = [...(namespace.repos.get(repo.name)?.tokens.values() ?? [])].find(
+      (token) => token.plaintext === credential.token,
+    );
+    const rows = await tokenRows();
+    expect(rows.find((row) => row.source === "credential")).toEqual({
+      id: minted?.id,
+      repo: repo.name,
+      user_id: "bob",
+      scope: "read",
+      source: "credential",
+      created_at: expect.any(Number),
+      expires_at: Date.parse(credential.expiresAt),
+    });
+    expect(JSON.stringify(rows)).not.toMatch(/art_v1_/);
+  });
+
+  test("records the token Cloudflare creates a repository with, against its creator", async () => {
+    const app = worker();
+    const repo = await createRepo(app, "alice", "docs");
+    const [created] = [...(namespace.repos.get(repo.name)?.tokens.values() ?? [])];
+    expect(await tokenRows()).toEqual([
+      expect.objectContaining({ id: created?.id, repo: repo.name, user_id: "alice", scope: "write", source: "create" }),
+    ]);
+  });
+
+  test("a token whose record cannot be written is revoked again, and never handed out", async () => {
+    const app = worker();
+    const repo = await createRepo(app, "alice", "docs");
+    await env.DB.exec("DROP TABLE pithy_artifacts_tokens");
+    const res = await call(app, `/artifacts/repos/${repo.name}/credentials`, "alice", { method: "POST" });
+    expect(res.status).toBe(500);
+    expect(await res.text()).not.toMatch(/art_v1_/);
+    const live = [...(namespace.repos.get(repo.name)?.tokens.values() ?? [])].filter((t) => t.state === "active");
+    expect(live).toEqual([]);
+  });
+
+  test("a mint prunes the repository's records of tokens expired longer than the record is kept", async () => {
+    const app = worker();
+    const repo = await createRepo(app, "alice", "docs");
+    const longGone = Date.now() - 31 * 86_400_000;
+    await env.DB.prepare(
+      "INSERT INTO pithy_artifacts_tokens (id, repo, user_id, scope, source, created_at, expires_at) VALUES ('tok_old', ?, 'alice', 'write', 'credential', ?, ?)",
+    )
+      .bind(repo.name, longGone, longGone)
+      .run();
+    await call(app, `/artifacts/repos/${repo.name}/credentials`, "alice", { method: "POST" });
+    expect((await tokenRows()).map((row) => row.id)).not.toContain("tok_old");
   });
 
   test("a write grant gets a write token", async () => {

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { artifacts } from "@pithy-sh/artifacts/src/capability";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { controlplane } from "@pithy-sh/core/src/controlPlane/capability";
 import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
@@ -149,6 +150,17 @@ describe("defaultGrant", () => {
   test("never adds a write", () => {
     const added = defaultGrant([support]).filter((scope) => !SEAM_SCOPES.includes(scope));
     expect(added).toEqual(["support:tickets:read"]);
+  });
+
+  test("artifacts: grants the repository read by default, and offers the token revoke without granting it", () => {
+    const composed = [artifacts() as unknown as Capability];
+    expect(defaultGrant(composed).filter((scope) => !SEAM_SCOPES.includes(scope))).toEqual(["artifacts:repos:read"]);
+    expect(grantableScopes(composed).map(({ scope, read, capability }) => ({ scope, read, capability }))).toEqual(
+      expect.arrayContaining([
+        { scope: "artifacts:repos:read", read: true, capability: "artifacts" },
+        { scope: "artifacts:tokens:revoke", read: false, capability: "artifacts" },
+      ]),
+    );
   });
 
   test("with nothing composed but the seam, it is the seam's own scopes and no more", () => {
