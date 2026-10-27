@@ -1928,6 +1928,210 @@
         ]
       }
     },
+    "/control-plane/evidence": {
+      "get": {
+        "tags": [
+          "controlplane"
+        ],
+        "operationId": "getControlPlaneEvidence",
+        "summary": "Report the evidence this Worker derives for SOC 2 and ISO 27001.",
+        "description": "Seven controls, each with its SOC 2 and ISO/IEC 27001:2022 references, the facts read, the declaration each came from, and `evidenced`, `gap` or `not-derivable` with the reason. Derived from what this Worker composes and records. Evidence for an auditor to weigh, never a judgment. A fact another read keeps behind its own scope stays behind it. Read-only.",
+        "responses": {
+          "200": {
+            "description": "SOC 2 and ISO 27001 evidence this Worker derives from its own declarations. Each control names its facts, their sources and what could be said. An auditor decides the rest.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "environment": {
+                      "type": "string",
+                      "description": "The environment this Worker answers for."
+                    },
+                    "generatedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When this Worker read the facts, ISO-8601."
+                    },
+                    "version": {
+                      "description": "The Cloudflare version id of the build that answered, or null where the binding is absent.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "mappingVersion": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "The version of the kit's mapping table these entries follow. A control, a reference or a rule moving is a new version."
+                    },
+                    "controls": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "control": {
+                            "type": "string",
+                            "enum": [
+                              "audit-logging",
+                              "route-verification",
+                              "management-access",
+                              "key-rotation",
+                              "change-history",
+                              "data-protection",
+                              "csrf"
+                            ],
+                            "description": "The control this entry reports on, as a stable id. Keyed on by clients; the title may be reworded."
+                          },
+                          "title": {
+                            "type": "string",
+                            "description": "The control in one line, as the mapping table names it."
+                          },
+                          "soc2": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "description": "One criterion, such as `CC6.1`."
+                            },
+                            "description": "The AICPA Trust Services Criteria this control answers."
+                          },
+                          "iso27001": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "description": "One Annex A control, such as `A.8.15`."
+                            },
+                            "description": "The ISO/IEC 27001:2022 Annex A controls this control answers."
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "evidenced",
+                              "gap",
+                              "not-derivable"
+                            ],
+                            "description": "What the Worker could say about this control: `evidenced` when the facts are present, `gap` when something is missing and the entry names what, `not-derivable` when the Worker cannot say and the entry names why. Evidence for an auditor, never a judgment."
+                          },
+                          "reasons": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "description": "One sentence."
+                            },
+                            "description": "For `gap`, what is missing. For `not-derivable`, why the Worker cannot say. Empty when `evidenced`. Where both kinds apply, the gaps come first."
+                          },
+                          "facts": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "fact": {
+                                  "type": "string",
+                                  "description": "What the fact is, as one camelCase name: `auditRecorder`, `liveKeys`, `pending`."
+                                },
+                                "subject": {
+                                  "description": "What the fact is about where a control reads several of one thing: a connection id, a database name, a capability, a class, a strategy. Absent where the fact is about the Worker as a whole.",
+                                  "type": "string"
+                                },
+                                "value": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "boolean"
+                                    },
+                                    {
+                                      "type": "null"
+                                    },
+                                    {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string",
+                                        "description": "One name."
+                                      }
+                                    }
+                                  ],
+                                  "description": "What the Worker read."
+                                },
+                                "source": {
+                                  "type": "string",
+                                  "enum": [
+                                    "composition",
+                                    "auditRecorder",
+                                    "bindings",
+                                    "routeSpec",
+                                    "connection",
+                                    "connectionKeys",
+                                    "capabilityHealth",
+                                    "fieldKeyRetirement",
+                                    "migrationLedger",
+                                    "privacyMarkers",
+                                    "encryptedMarkers",
+                                    "privacyAttestation",
+                                    "sameOriginGate"
+                                  ],
+                                  "description": "The declaration or record it was read from."
+                                }
+                              },
+                              "required": [
+                                "fact",
+                                "value",
+                                "source"
+                              ],
+                              "description": "One fact behind a control, and where it came from."
+                            },
+                            "description": "Every fact read for this control, each naming its source. Read from declarations, never typed in."
+                          }
+                        },
+                        "required": [
+                          "control",
+                          "title",
+                          "soc2",
+                          "iso27001",
+                          "state",
+                          "reasons",
+                          "facts"
+                        ],
+                        "description": "One control: what it answers, what the Worker read, and what it could say. Evidence, never a judgment."
+                      },
+                      "description": "One entry per control in the mapping table, in its order. Evidence for an auditor to weigh."
+                    }
+                  },
+                  "required": [
+                    "environment",
+                    "generatedAt",
+                    "version",
+                    "mappingVersion",
+                    "controls"
+                  ],
+                  "description": "SOC 2 and ISO 27001 evidence this Worker derives from its own declarations. Each control names its facts, their sources and what could be said. An auditor decides the rest."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "evidence:read"
+        ]
+      }
+    },
     "/control-plane/presence/tickets": {
       "post": {
         "tags": [

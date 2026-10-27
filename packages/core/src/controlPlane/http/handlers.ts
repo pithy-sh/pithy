@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import type { Context } from "hono";
-import type { PithyHonoEnv } from "../../capability/capability";
+import type { Capability, PithyHonoEnv } from "../../capability/capability";
 import { causeMessage } from "../../error/cause";
+import type { RouteGroup } from "../../openapi/document";
 import type { PresenceDeclaration } from "../../presence/declaration";
 import { privacyAttestation, privacyPosture } from "../../privacy/posture";
 import type { PrivacyInventory } from "../../privacy/report";
@@ -19,8 +20,10 @@ import type { CapabilityDeclaration, ControlPlaneManifestWire } from "../discove
 import { type CapabilityHealthSource, readCapabilityHealth } from "../discovery/health";
 import { healthWire } from "../discovery/healthSummary";
 import { ControlPlaneInvalidCredentialError, ControlPlaneKeyConflictError } from "../error/errors";
+import { readEvidencePack } from "../evidence/pack";
 import { type ComposedMigrationDatabase, readDatabaseMigrations } from "../migrationState/migrationState";
 import type {
+  ControlPlaneEvidenceResponse,
   ControlPlaneKeysResponse,
   ControlPlaneMigrationsResponse,
   ControlPlanePingResponse,
@@ -96,6 +99,16 @@ export interface ControlPlaneHandlerDeps {
    * by the same `compose` hook. A thunk for the same reason as {@link composedCapabilities}.
    */
   composedPresence: () => ReadonlyMap<string, PresenceDeclaration>;
+  /**
+   * Every capability this Worker composed, as the objects themselves — the evidence pack reads which one records
+   * audit events and the bindings it writes through (#821). A thunk for the same reason as the rest.
+   */
+  composition: () => readonly Capability[];
+  /**
+   * The route table `createBackend` recorded for the app these routes mounted on, or `undefined` for an app it did
+   * not assemble. Read per call, after every capability's routes have mounted, so the evidence pack sees them all.
+   */
+  routeGroups: () => readonly RouteGroup[] | undefined;
   /** The clock, injected so a test can stand at any instant. */
   now: () => Date;
 }
@@ -442,5 +455,20 @@ export function privacyHandler(deps: ControlPlaneHandlerDeps) {
         encrypted: schema.encrypted.map((field) => ({ ...field })),
       })),
     } satisfies ControlPlanePrivacyResponse);
+  };
+}
+
+/**
+ * `GET /control-plane/evidence` — the evidence pack (#821).
+ *
+ * SOC 2 and ISO 27001 evidence derived from what this Worker composes, records and declares: each control's
+ * references, the facts read and their sources, and `evidenced`, `gap` or `not-derivable` with the reason. It
+ * proves controls present and performs nothing. Behind `evidence:read`, and it never widens another scope: what
+ * a capability keeps behind its own read stays there. Read-only.
+ */
+export function evidenceHandler(deps: ControlPlaneHandlerDeps) {
+  return async (c: Context<PithyHonoEnv>) => {
+    const context = caller(c);
+    return c.json((await readEvidencePack(c, deps, context)) satisfies ControlPlaneEvidenceResponse);
   };
 }

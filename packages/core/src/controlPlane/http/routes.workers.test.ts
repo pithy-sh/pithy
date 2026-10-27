@@ -26,7 +26,13 @@ import { namedHealthValues } from "../discovery/healthSummary";
 import { controlplane_0001_init } from "../migrations/0001_init";
 import { controlplane_0002_management_origin } from "../migrations/0002_management_origin";
 import { controlplane_0003_connection_principal } from "../migrations/0003_connection_principal";
-import { KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE, MIGRATIONS_READ_SCOPE, PRIVACY_READ_SCOPE } from "../scope/scope";
+import {
+  EVIDENCE_READ_SCOPE,
+  KEYS_ROTATE_SCOPE,
+  MANIFEST_READ_SCOPE,
+  MIGRATIONS_READ_SCOPE,
+  PRIVACY_READ_SCOPE,
+} from "../scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "../token/mint";
 import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_CREATED_HEADER, CONTROL_PLANE_VERSION_HEADER } from "../wire";
 import { requireControlPlane } from "./guard";
@@ -320,6 +326,7 @@ function everyRoute(): { method: string; path: string; scope: string; body?: unk
     { method: "GET", path: "/control-plane/keys", scope: KEYS_ROTATE_SCOPE },
     { method: "GET", path: "/control-plane/migrations", scope: MIGRATIONS_READ_SCOPE },
     { method: "GET", path: "/control-plane/privacy", scope: PRIVACY_READ_SCOPE },
+    { method: "GET", path: "/control-plane/evidence", scope: EVIDENCE_READ_SCOPE },
     {
       method: "POST",
       path: "/control-plane/keys",
@@ -363,7 +370,7 @@ beforeEach(async () => {
 });
 
 describe("a Worker nobody has connected", () => {
-  test("denies every one of the eight routes with controlplane/not_connected", async () => {
+  test("denies every one of the nine routes with controlplane/not_connected", async () => {
     // The shipped state. The seam is composed, the table exists, and there is no flag that opens it —
     // `pithy dashboard connect` is the deliberate second step, and until then a perfectly well-formed,
     // correctly signed credential gets 403 on every route.
@@ -543,6 +550,7 @@ describe("GET /control-plane/manifest", () => {
     const seam = json.capabilities.find((capability) => capability.name === "controlplane");
 
     expect(seam?.adminRoutes.map((route) => `${route.method} ${route.path}`).sort()).toEqual([
+      "GET /control-plane/evidence",
       "GET /control-plane/keys",
       "GET /control-plane/manifest",
       "GET /control-plane/migrations",

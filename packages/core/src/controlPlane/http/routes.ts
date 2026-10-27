@@ -10,6 +10,7 @@ import { ControlPlanePresenceTicketRequest } from "../../presence/http/schemas";
 import { type AdminRoute, ControlPlaneManifest } from "../discovery/adminRoute";
 import {
   ANY_VERIFIED_CALLER,
+  EVIDENCE_READ_SCOPE,
   KEYS_ROTATE_SCOPE,
   MANIFEST_READ_SCOPE,
   MIGRATIONS_READ_SCOPE,
@@ -18,6 +19,7 @@ import {
 import { requireControlPlane } from "./guard";
 import {
   type ControlPlaneHandlerDeps,
+  evidenceHandler,
   expireKeyHandler,
   listKeysHandler,
   manifestHandler,
@@ -28,6 +30,7 @@ import {
 } from "./handlers";
 import { presenceTicketGate, presenceTicketHandler } from "./presence";
 import {
+  ControlPlaneEvidenceResponse,
   ControlPlaneKeysResponse,
   ControlPlaneMigrationsResponse,
   ControlPlanePingResponse,
@@ -47,6 +50,7 @@ import { ExpireKeyParams, ExpireKeyRequest, RegisterKeyRequest } from "./schemas
  *   POST /control-plane/keys/:keyId/expire    → retire a superseded key      (keys:rotate)
  *   GET  /control-plane/migrations            → where each database stands   (migrations:read)
  *   GET  /control-plane/privacy               → what each schema holds        (privacy:read)
+ *   GET  /control-plane/evidence              → SOC 2 and ISO 27001 evidence  (evidence:read)
  *   POST /control-plane/presence/tickets      → a ticket into a presence room (the room kind's scope)
  *
  * Every one is `control-plane` and default-denied — with no connection registered they all answer 403,
@@ -119,6 +123,13 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
       scope: PRIVACY_READ_SCOPE,
       summary:
         "Every stored schema holding a privacy-marked field, each field's path and class, and where it lives. Derived from the running code.",
+    },
+    {
+      method: "GET",
+      path: `${basePath}/evidence`,
+      scope: EVIDENCE_READ_SCOPE,
+      summary:
+        "SOC 2 and ISO 27001 evidence derived from what this Worker composes and records: each control's facts, their sources, and what could be said. Evidence for an auditor, never a judgment.",
     },
     {
       method: "POST",
@@ -226,6 +237,20 @@ export function registerControlPlaneRoutes(
     }),
     requireControlPlane(PRIVACY_READ_SCOPE),
     privacyHandler(deps),
+  );
+
+  app.get(
+    `${basePath}/evidence`,
+    describeRoute({
+      summary: "Report the evidence this Worker derives for SOC 2 and ISO 27001.",
+      description:
+        "Seven controls, each with its SOC 2 and ISO/IEC 27001:2022 references, the facts read, the declaration each came from, and `evidenced`, `gap` or `not-derivable` with the reason. Derived from what this Worker composes and records. Evidence for an auditor to weigh, never a judgment. A fact another read keeps behind its own scope stays behind it. Read-only.",
+      verification: "control-plane",
+      scopes: [EVIDENCE_READ_SCOPE],
+      responses: { 200: ControlPlaneEvidenceResponse },
+    }),
+    requireControlPlane(EVIDENCE_READ_SCOPE),
+    evidenceHandler(deps),
   );
 
   app.post(

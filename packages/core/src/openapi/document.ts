@@ -9,6 +9,7 @@ import { pathParams } from "../http/routeContract";
 import { type DocumentedMethod, type RouteResponse, type RouteSpec, routeSpecOf } from "../http/routeSpec";
 import { type RequestContract, requestContractOf } from "../http/validation";
 import type { VerificationStrategy } from "../http/verification";
+import { isMiddlewareOnly, type Operation, operationsOf } from "./operations";
 
 /**
  * **The OpenAPI contract, read off a composed app.**
@@ -132,33 +133,6 @@ export function operationId(method: string, path: string): string {
 export function jsonSchema(schema: z.ZodType, io: "input" | "output"): JsonSchema {
   const { $schema: _dialect, ...rest } = z.toJSONSchema(schema, { io, unrepresentable: "any" }) as JsonSchema;
   return rest;
-}
-
-/** One route's handlers, grouped by method and path the way Hono stores them: one entry per handler. */
-interface Operation {
-  readonly method: string;
-  readonly path: string;
-  readonly handlers: unknown[];
-}
-
-function operationsOf(routes: readonly RouterRoute[]): Operation[] {
-  const byKey = new Map<string, Operation>();
-  for (const route of routes) {
-    const key = `${route.method} ${route.path}`;
-    const entry = byKey.get(key) ?? { method: route.method, path: route.path, handlers: [] };
-    entry.handlers.push(route.handler);
-    byKey.set(key, entry);
-  }
-  return [...byKey.values()];
-}
-
-/**
- * An `ALL` entry with no spec is `app.use` — middleware, not a route — because Hono records both as
- * `ALL`. An `app.all` route that forgot its `describeRoute` is therefore invisible to the coverage
- * check, which is the one blind spot here; the kit has one such route and it is described.
- */
-function isMiddlewareOnly(operation: Operation): boolean {
-  return operation.method === "ALL" && !operation.handlers.some((handler) => routeSpecOf(handler));
 }
 
 /** Every route in these groups that registered no `describeRoute`. Empty is the contract being met. */
