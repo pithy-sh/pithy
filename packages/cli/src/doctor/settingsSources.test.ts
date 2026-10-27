@@ -169,6 +169,42 @@ describe("reaching the account", () => {
     expect(findTokenByName).toHaveBeenCalledTimes(2);
   });
 
+  test("a bucket's lock is missing, locked or unlocked, each asked of Cloudflare once (#822)", async () => {
+    const findBucketByName = vi.fn(async (name: string) => (name === "acme-prod-audit-checkpoints" ? null : { name }));
+    const prefixLockedIndefinitely = vi.fn(
+      async (bucket: string, prefix: string) =>
+        bucket === "acme-staging-audit-checkpoints" && prefix === "checkpoints/",
+    );
+    const answer = await settingsAccountConnection({
+      projectDir: dir,
+      account: null,
+      project: "acme",
+      offline: false,
+      env: { CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "tok" },
+      homedir: dir,
+      connect: async () => ({ r2Provisioner: () => ({ findBucketByName, prefixLockedIndefinitely }) }) as never,
+      probe: async () => ({ probe: async () => true, carries: async () => true }),
+    });
+    if (answer.state !== "reachable") throw new Error("expected reachable");
+
+    const { r2BucketLock } = answer.reader;
+    if (!r2BucketLock) throw new Error("expected the reader to ask about bucket locks");
+    const ask = (bucket: string) => r2BucketLock({ bucket, prefix: "checkpoints/" });
+    expect(await ask("acme-prod-audit-checkpoints")).toBe("missing");
+    expect(prefixLockedIndefinitely).not.toHaveBeenCalled();
+    expect(await ask("acme-staging-audit-checkpoints")).toBe("locked");
+    expect(await ask("acme-dev-audit-checkpoints")).toBe("unlocked");
+    expect(prefixLockedIndefinitely).toHaveBeenCalledWith("acme-staging-audit-checkpoints", "checkpoints/");
+
+    expect(await ask("acme-staging-audit-checkpoints")).toBe("locked");
+    expect(await ask("acme-prod-audit-checkpoints")).toBe("missing");
+    expect(findBucketByName).toHaveBeenCalledTimes(3);
+    expect(prefixLockedIndefinitely).toHaveBeenCalledTimes(2);
+    // Another prefix on the same bucket is another question.
+    expect(await r2BucketLock({ bucket: "acme-staging-audit-checkpoints", prefix: "other/" })).toBe("unlocked");
+    expect(findBucketByName).toHaveBeenCalledTimes(4);
+  });
+
   test("a Secrets Store entry is asked of the project's store, by the name it was created under", async () => {
     const exists = vi.fn(async (name: string) => name === "acme-prod-email-link-signing-key");
     const stores: string[] = [];

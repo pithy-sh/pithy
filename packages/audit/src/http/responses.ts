@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: FSL-1.1-MIT
 
 import { AuditActorType, AuditMetadata, AuditOutcome, AuditSeverity } from "@pithy-sh/core/src/audit/auditEvent";
+import { AuditChainExport, ChainBreak, ChainLink } from "@pithy-sh/core/src/audit/chain";
 import { ControlPlaneActorKind } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { z } from "zod";
 
@@ -68,6 +69,15 @@ export const AuditEventView = z
       .string()
       .nullable()
       .describe("The tenant the action was taken for, or null when it was not tenant-scoped."),
+    // Added (#822), so `.optional()` too: a client reading an older Worker receives no such field.
+    chainSeq: z
+      .number()
+      .int()
+      .nullable()
+      .optional()
+      .describe(
+        "The event's position in its tenant's hash chain, or null when it was written before the chain began and is marked so. Absent from a Worker older than the chain.",
+      ),
   })
   .describe("One audit event as the listing shows it. No client IP, no user-agent, no metadata bag.");
 export type AuditEventView = z.output<typeof AuditEventView>;
@@ -357,3 +367,51 @@ export const ControlPlaneUsageResponse = z
   })
   .describe("Which scopes one control-plane connection exercised and was refused, by key, over a window.");
 export type ControlPlaneUsageResponse = z.output<typeof ControlPlaneUsageResponse>;
+
+/** `GET {base}/control-plane/verify` (#822). */
+export const ChainVerifyResponse = z
+  .object({
+    tenant: z.string().nullable().describe("The tenant whose chain was walked, or null for the untenanted chain."),
+    since: z.iso
+      .datetime()
+      .nullable()
+      .describe("The window's inclusive start as asked, or null for the chain's start."),
+    until: z.iso.datetime().nullable().describe("The window's inclusive end as asked, or null for the chain's head."),
+    intact: z.boolean().describe("Whether the range is whole: every link, every hash, every checkpoint covering it."),
+    checked: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe("How many chained events were checked before the first break, or all of them."),
+    checkpoints: z.number().int().nonnegative().describe("How many checkpoints the walk was held to."),
+    checkpointStore: z
+      .enum(["bound", "absent"])
+      .describe(
+        "`absent` when this Worker binds no checkpoint bucket, so the walk checked links alone: a chain rewritten end to end would read as intact.",
+      ),
+    beforeChain: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe("How many of the tenant's events in the window were written before the chain, and so are not in it."),
+    outsideChain: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe(
+        "How many rows in the window carry no chain though written after it began — an older recorder's during an upgrade or a rollback. Not in the chain, and not a break: `intact` is about the chain itself.",
+      ),
+    break: ChainBreak.nullable().describe("The first break — its event, its position and why — or null."),
+    head: ChainLink.nullable().describe("The last position the walk reached intact, or null when it reached none."),
+  })
+  .describe("Whether one tenant's audit chain is whole over a window, or where it first breaks.");
+export type ChainVerifyResponse = z.output<typeof ChainVerifyResponse>;
+
+/**
+ * `GET {base}/control-plane/export` (#822). Core's export document, which `pithy audit verify` reads offline —
+ * one schema, so what the Worker writes and what the verifier accepts cannot drift.
+ */
+export const ChainExportResponse = AuditChainExport.describe(
+  "One page of one tenant's audit chain: canonical events, their hashes, the link before them and the checkpoints covering them.",
+);
+export type ChainExportResponse = z.output<typeof ChainExportResponse>;

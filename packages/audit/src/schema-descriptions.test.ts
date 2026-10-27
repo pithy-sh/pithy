@@ -32,7 +32,9 @@ declare global {
  * `@pithy-sh/core/src/schema/describedness`, where all nineteen packages get the same depth from one
  * implementation rather than nineteen that drift.
  */
-const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"], { eager: true });
+// `workflows/worker.ts` imports `cloudflare:workers` at runtime, which no node loader resolves, so it is excluded
+// rather than allowed to fail the glob; it exports no schema.
+const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts", "!./workflows/worker.ts"], { eager: true });
 describe("schema descriptions (CLAUDE.md §Zod: schemas are the docs)", () => {
   test("the sweep is looking at the package, not at nothing", () => {
     // **The guard sixteen of nineteen of these files did without** (#326, #351). A glob that matches

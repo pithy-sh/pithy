@@ -7544,6 +7544,19 @@
                               "string",
                               "null"
                             ]
+                          },
+                          "chainSeq": {
+                            "description": "The event's position in its tenant's hash chain, or null when it was written before the chain began and is marked so. Absent from a Worker older than the chain.",
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           }
                         },
                         "required": [
@@ -7761,6 +7774,19 @@
                           "type": [
                             "string",
                             "null"
+                          ]
+                        },
+                        "chainSeq": {
+                          "description": "The event's position in its tenant's hash chain, or null when it was written before the chain began and is marked so. Absent from a Worker older than the chain.",
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
                           ]
                         },
                         "ip": {
@@ -8857,6 +8883,743 @@
         ],
         "x-pithy-scopes": [
           "audit:events:read"
+        ]
+      }
+    },
+    "/audit/control-plane/verify": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "operationId": "getAuditControlPlaneVerify",
+        "summary": "Walk one tenant's audit chain against its checkpoints, and say whether it is whole.",
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "query",
+            "required": true,
+            "description": "The tenant whose chain to read. Send it empty (`?tenant=`) for the chain of events that belong to no tenant. Required: a chain is one tenant's.",
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                {
+                  "type": "string",
+                  "const": ""
+                }
+              ]
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive start of the window, ISO-8601. Omitted, the walk starts at the chain's first event.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive end of the window, ISO-8601. Omitted, the walk runs to the chain's head, and a checkpoint past it is a truncation.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Whether one tenant's audit chain is whole over a window, or where it first breaks.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tenant": {
+                      "description": "The tenant whose chain was walked, or null for the untenanted chain.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "since": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The window's inclusive start as asked, or null for the chain's start."
+                    },
+                    "until": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The window's inclusive end as asked, or null for the chain's head."
+                    },
+                    "intact": {
+                      "type": "boolean",
+                      "description": "Whether the range is whole: every link, every hash, every checkpoint covering it."
+                    },
+                    "checked": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "How many chained events were checked before the first break, or all of them."
+                    },
+                    "checkpoints": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "How many checkpoints the walk was held to."
+                    },
+                    "checkpointStore": {
+                      "type": "string",
+                      "enum": [
+                        "bound",
+                        "absent"
+                      ],
+                      "description": "`absent` when this Worker binds no checkpoint bucket, so the walk checked links alone: a chain rewritten end to end would read as intact."
+                    },
+                    "beforeChain": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "How many of the tenant's events in the window were written before the chain, and so are not in it."
+                    },
+                    "outsideChain": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "How many rows in the window carry no chain though written after it began — an older recorder's during an upgrade or a rollback. Not in the chain, and not a break: `intact` is about the chain itself."
+                    },
+                    "break": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "eventId": {
+                              "description": "The event at the break, or null where the break is an absence the trail no longer holds.",
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "position": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991,
+                              "description": "The position in the tenant's chain where the break is."
+                            },
+                            "reason": {
+                              "type": "string",
+                              "enum": [
+                                "edited",
+                                "commitment",
+                                "missing",
+                                "inserted",
+                                "unlinked",
+                                "checkpoint",
+                                "truncated"
+                              ],
+                              "description": "`edited` — the event's hash does not match its fields. `commitment` — a personal value does not match its commitment. `missing` — events before it are gone. `inserted` — it is not where the chain says it should be. `unlinked` — it does not name the event before it. `checkpoint` — its hash differs from the checkpoint at its position. `truncated` — the chain ends before a checkpoint says it reached."
+                            },
+                            "detail": {
+                              "type": "string",
+                              "description": "The break in one sentence."
+                            }
+                          },
+                          "required": [
+                            "eventId",
+                            "position",
+                            "reason",
+                            "detail"
+                          ],
+                          "description": "The first break in a chain: which event, at which position, and why."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The first break — its event, its position and why — or null."
+                    },
+                    "head": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "seq": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991,
+                              "description": "The 1-based position in the tenant's chain."
+                            },
+                            "hash": {
+                              "type": "string",
+                              "pattern": "^[0-9a-f]{64}$",
+                              "description": "The hash of the event at that position."
+                            }
+                          },
+                          "required": [
+                            "seq",
+                            "hash"
+                          ],
+                          "description": "One position in a tenant's chain and the hash of the event there."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The last position the walk reached intact, or null when it reached none."
+                    }
+                  },
+                  "required": [
+                    "tenant",
+                    "since",
+                    "until",
+                    "intact",
+                    "checked",
+                    "checkpoints",
+                    "checkpointStore",
+                    "beforeChain",
+                    "outsideChain",
+                    "break",
+                    "head"
+                  ],
+                  "description": "Whether one tenant's audit chain is whole over a window, or where it first breaks."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "audit:events:export"
+        ]
+      }
+    },
+    "/audit/control-plane/export": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "operationId": "getAuditControlPlaneExport",
+        "summary": "Export one tenant's audit chain in canonical form, with its checkpoints, to verify offline.",
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "query",
+            "required": true,
+            "description": "The tenant whose chain to read. Send it empty (`?tenant=`) for the chain of events that belong to no tenant. Required: a chain is one tenant's.",
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                {
+                  "type": "string",
+                  "const": ""
+                }
+              ]
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive start of the window, ISO-8601. Omitted, the export starts at the chain's first event.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive end of the window, ISO-8601. Omitted, the export runs to the chain's head.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Where to resume, from the previous page's `nextCursor`. A malformed one is a first page.",
+            "schema": {
+              "type": "string",
+              "maxLength": 32
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many events one page carries. At most 1000; defaults to 500.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of one tenant's audit chain: canonical events, their hashes, the link before them and the checkpoints covering them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "format": {
+                      "type": "string",
+                      "const": "pithy-audit-export/1",
+                      "description": "The export format."
+                    },
+                    "chain": {
+                      "type": "string",
+                      "const": "pithy-audit-chain/1",
+                      "description": "The canonical form every hash in it was computed over."
+                    },
+                    "tenant": {
+                      "description": "The tenant whose chain this is, or null for the untenanted chain.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "since": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The range's inclusive start as asked, or null for the chain's start."
+                    },
+                    "until": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The range's inclusive end as asked, or null for the chain's head."
+                    },
+                    "exportedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the export was taken."
+                    },
+                    "detail": {
+                      "type": "boolean",
+                      "description": "Whether the personal values travel with their commitments. Only with `audit:events:read_detail`."
+                    },
+                    "prior": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "seq": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991,
+                              "description": "The 1-based position in the tenant's chain."
+                            },
+                            "hash": {
+                              "type": "string",
+                              "pattern": "^[0-9a-f]{64}$",
+                              "description": "The hash of the event at that position."
+                            }
+                          },
+                          "required": [
+                            "seq",
+                            "hash"
+                          ],
+                          "description": "One position in a tenant's chain and the hash of the event there."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The link before the first event, or null when the range starts the chain."
+                    },
+                    "events": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "eventId": {
+                            "type": "string",
+                            "description": "The event's stable public id."
+                          },
+                          "occurredAt": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "When it happened, ms since the epoch, exactly as stored."
+                          },
+                          "action": {
+                            "type": "string",
+                            "description": "The `domain/reason` action code."
+                          },
+                          "outcome": {
+                            "type": "string",
+                            "description": "Whether it succeeded, failed, or was denied."
+                          },
+                          "severity": {
+                            "type": "string",
+                            "description": "How serious it is."
+                          },
+                          "actorType": {
+                            "type": "string",
+                            "description": "The kind of principal that acted."
+                          },
+                          "actorId": {
+                            "description": "The acting principal's id, or null.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "actorKind": {
+                            "description": "For a control-plane actor, the kind of client, or null.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "sessionId": {
+                            "description": "The session the action belongs to, or null.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "resourceType": {
+                            "description": "The kind of thing acted on, or null.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "resourceId": {
+                            "description": "The thing acted on, or null.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "requestId": {
+                            "description": "The request correlation id, or null.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "tenant": {
+                            "description": "The tenant whose chain this event is in, or null for the untenanted chain.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "project": {
+                            "description": "The project the recorder stamped, or null.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "environment": {
+                            "description": "The environment the recorder stamped, or null.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "worker": {
+                            "description": "The Worker that recorded it, or null.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "version": {
+                            "description": "The Cloudflare build id that recorded it, or null.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "ipCommitment": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^[0-9a-f]{64}$",
+                                "description": "A SHA-256 digest, 64 lowercase hex characters."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The salted hash of the client IP, or null when there was none."
+                          },
+                          "userAgentCommitment": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^[0-9a-f]{64}$",
+                                "description": "A SHA-256 digest, 64 lowercase hex characters."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The salted hash of the user-agent, or null when there was none."
+                          },
+                          "metadataCommitment": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^[0-9a-f]{64}$",
+                                "description": "A SHA-256 digest, 64 lowercase hex characters."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The salted hash of the metadata's stored JSON text, or null when there was none."
+                          },
+                          "seq": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740991,
+                            "description": "The 1-based position in the tenant's chain."
+                          },
+                          "prev": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^[0-9a-f]{64}$",
+                                "description": "A SHA-256 digest, 64 lowercase hex characters."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The hash of the event before it, or null for the first event."
+                          },
+                          "hash": {
+                            "type": "string",
+                            "pattern": "^[0-9a-f]{64}$",
+                            "description": "This event's hash, over its canonical serialization."
+                          },
+                          "salt": {
+                            "description": "The per-event salt the commitments were made under. Present only with the personal values.",
+                            "type": "string"
+                          },
+                          "ip": {
+                            "description": "The client IP. Present only with the detail scope.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "userAgent": {
+                            "description": "The user-agent. Present only with the detail scope.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "metadata": {
+                            "description": "The metadata's stored JSON text, byte for byte. Present only with the detail scope.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "eventId",
+                          "occurredAt",
+                          "action",
+                          "outcome",
+                          "severity",
+                          "actorType",
+                          "actorId",
+                          "actorKind",
+                          "sessionId",
+                          "resourceType",
+                          "resourceId",
+                          "requestId",
+                          "tenant",
+                          "project",
+                          "environment",
+                          "worker",
+                          "version",
+                          "ipCommitment",
+                          "userAgentCommitment",
+                          "metadataCommitment",
+                          "seq",
+                          "prev",
+                          "hash"
+                        ],
+                        "description": "One chained audit event as an export carries it."
+                      },
+                      "description": "The range's chained events, in chain order."
+                    },
+                    "checkpoints": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "format": {
+                            "type": "string",
+                            "const": "pithy-audit-checkpoint/1",
+                            "description": "The checkpoint format."
+                          },
+                          "tenant": {
+                            "description": "The tenant whose chain this is, or null for the untenanted chain.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "count": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740991,
+                            "description": "How many events the chain held: the head's position."
+                          },
+                          "head": {
+                            "type": "string",
+                            "pattern": "^[0-9a-f]{64}$",
+                            "description": "The hash of the event at that position."
+                          },
+                          "takenAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the checkpoint was written, ISO-8601."
+                          }
+                        },
+                        "required": [
+                          "format",
+                          "tenant",
+                          "count",
+                          "head",
+                          "takenAt"
+                        ],
+                        "description": "A tenant chain's length and head, written to append-only object storage on a schedule."
+                      },
+                      "description": "Every checkpoint covering the range, and the latest one after it."
+                    },
+                    "complete": {
+                      "type": "boolean",
+                      "description": "Whether the events run to the chain's head, so a checkpoint past the last event is a truncation."
+                    },
+                    "beforeChain": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "How many of the tenant's events in the range were written before the chain, and are not in it."
+                    },
+                    "outsideChain": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "How many rows in the range carry no chain though written after it began — an older recorder's during an upgrade or a rollback. Not in the chain, and not a break."
+                    },
+                    "nextCursor": {
+                      "description": "Where the next page resumes, or null at the end of the range.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "format",
+                    "chain",
+                    "tenant",
+                    "since",
+                    "until",
+                    "exportedAt",
+                    "detail",
+                    "prior",
+                    "events",
+                    "checkpoints",
+                    "complete",
+                    "beforeChain",
+                    "outsideChain",
+                    "nextCursor"
+                  ],
+                  "description": "One page of one tenant's audit chain: canonical events, their hashes, the link before them and the checkpoints covering them."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "audit:events:export"
         ]
       }
     },

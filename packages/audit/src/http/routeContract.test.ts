@@ -93,8 +93,10 @@ describe("audit route contract", () => {
   test("the gate is inspecting the real audit routes, not an empty app", () => {
     expect(mountedPaths(makeApp()).sort()).toEqual([
       "/audit/control-plane/access-history",
+      "/audit/control-plane/export",
       "/audit/control-plane/reach",
       "/audit/control-plane/usage",
+      "/audit/control-plane/verify",
       "/audit/events",
       "/audit/events/:eventId",
     ]);
@@ -166,6 +168,8 @@ describe("audit route contract", () => {
       `${BASE}/events?limit=nonsense&from=not-a-date`,
       `${BASE}/events/not-a-uuid`,
       `${BASE}/control-plane/reach?since=never&subjects=maybe`,
+      `${BASE}/control-plane/verify?since=never`,
+      `${BASE}/control-plane/export?limit=nonsense`,
     ];
     for (const path of malformed) {
       const response = await makeApp().request(path);
@@ -224,7 +228,8 @@ describe("the advertised admin surface", () => {
     // One `audit:read` would mean a credential issued to render a recent-activity pane could also
     // harvest every client IP, user-agent, and capability metadata bag in the project.
     expect(AUDIT_TRAIL_READ_SCOPE).not.toBe(AUDIT_EVENT_DETAIL_READ_SCOPE);
-    expect(new Set(AUDIT_CONTROL_PLANE_SCOPES).size).toBe(2);
+    // The chain's export is a third (#822): the trail in bulk, its personal values still behind the detail scope.
+    expect(new Set(AUDIT_CONTROL_PLANE_SCOPES).size).toBe(3);
     // `scopeCovers` matches exactly, so neither is a prefix of a grant that would confer the other.
     expect(AUDIT_CONTROL_PLANE_SCOPES.every((scope) => scope.startsWith("audit:"))).toBe(true);
   });

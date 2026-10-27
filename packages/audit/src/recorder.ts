@@ -7,8 +7,9 @@ import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { type D1RetryOptions, withD1Retry } from "@pithy-sh/core/src/data/withD1Retry";
 import { messageOf, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
+import { appendChained, isUnmigratedChain } from "./chain/append";
 import { AuditMetadataColumn } from "./data/auditEvent";
-import type { AuditDatabase } from "./data/tables";
+import type { AuditDatabase, AuditEventInsert } from "./data/tables";
 import { AuditInvalidEventError, AuditWriteFailedError } from "./error/errors";
 
 /**
@@ -111,43 +112,44 @@ export async function recordAuditEvent(
     // post-commit transport failure then retries onto the unique eventId index — a UNIQUE violation
     // the guard reads as "already landed", not a duplicate row.
     const eventId = crypto.randomUUID();
-    await withD1Retry(
-      () =>
-        db
-          .insertInto("pithyAuditEvents")
-          .values({
-            eventId,
-            occurredAt: SQLiteDate.encode(occurredAt),
-            action: event.action,
-            outcome: event.outcome,
-            severity: event.severity,
-            actorType: event.actorType,
-            actorId: event.actorId ?? null,
-            // Named only when the event carries one (#721). A Worker deployed ahead of
-            // `audit_0002_actor_kind` then keeps recording every row it recorded before; only a call
-            // through a connection with a kind depends on the column being there.
-            ...(event.actorKind == null ? {} : { actorKind: event.actorKind }),
-            sessionId: event.sessionId ?? null,
-            resourceType: event.resourceType ?? null,
-            resourceId: event.resourceId ?? null,
-            ip: event.ip ?? null,
-            userAgent: event.userAgent ?? null,
-            requestId: event.requestId ?? null,
-            metadata: event.metadata == null ? null : AuditMetadataColumn.encode(event.metadata),
-            // From `event`, and it is the only dimension column that is. The recorder cannot forge this
-            // one and cannot default it: `origin` is read from the Worker's own vars, and no var knows
-            // which customer an action was taken for. So it is exactly as trustworthy as the emit site,
-            // and omitted it is null — "not tenant-scoped" — rather than a guess.
-            tenant: event.tenant ?? null,
-            // Last, and from `options` rather than `event` — the event cannot reach these columns.
-            project: origin.project,
-            environment: origin.environment,
-            worker: origin.worker,
-            version: origin.version,
-          })
-          .execute(),
-      options?.retry,
-    );
+    const record: AuditEventInsert = {
+      eventId,
+      occurredAt: SQLiteDate.encode(occurredAt),
+      action: event.action,
+      outcome: event.outcome,
+      severity: event.severity,
+      actorType: event.actorType,
+      actorId: event.actorId ?? null,
+      // Named only when the event carries one (#721). A Worker deployed ahead of
+      // `audit_0002_actor_kind` then keeps recording every row it recorded before; only a call
+      // through a connection with a kind depends on the column being there.
+      ...(event.actorKind == null ? {} : { actorKind: event.actorKind }),
+      sessionId: event.sessionId ?? null,
+      resourceType: event.resourceType ?? null,
+      resourceId: event.resourceId ?? null,
+      ip: event.ip ?? null,
+      userAgent: event.userAgent ?? null,
+      requestId: event.requestId ?? null,
+      metadata: event.metadata == null ? null : AuditMetadataColumn.encode(event.metadata),
+      // From `event`, and it is the only dimension column that is. The recorder cannot forge this
+      // one and cannot default it: `origin` is read from the Worker's own vars, and no var knows
+      // which customer an action was taken for. So it is exactly as trustworthy as the emit site,
+      // and omitted it is null — "not tenant-scoped" — rather than a guess.
+      tenant: event.tenant ?? null,
+      // Last, and from `options` rather than `event` — the event cannot reach these columns.
+      project: origin.project,
+      environment: origin.environment,
+      worker: origin.worker,
+      version: origin.version,
+    };
+    try {
+      await appendChained(db, record, options?.retry ? { retry: options.retry } : {});
+    } catch (error) {
+      // A database not yet migrated to the chain still records, unchained, as every row before the chain did —
+      // the same tolerance the recorder keeps for `actorKind` ahead of its migration. `pithy migrate` closes it.
+      if (!isUnmigratedChain(error)) throw error;
+      await withD1Retry(() => db.insertInto("pithyAuditEvents").values(record).execute(), options?.retry);
+    }
   } catch (error) {
     onError(toAuditError(error));
   }

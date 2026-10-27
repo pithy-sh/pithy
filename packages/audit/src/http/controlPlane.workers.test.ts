@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: FSL-1.1-MIT
 
 import { env } from "cloudflare:test";
+import type { R2Bucket } from "@cloudflare/workers-types";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
+import { verifyChainExport } from "@pithy-sh/core/src/audit/chain";
 import type { Capability, PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { ControlPlaneConfig } from "@pithy-sh/core/src/controlPlane/config/config";
 import type { ControlPlaneConnection } from "@pithy-sh/core/src/controlPlane/data/connection";
@@ -17,18 +19,27 @@ import { Hono } from "hono";
 import type { Kysely } from "kysely";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { AuditConfig, audit } from "../capability";
+import { writeCheckpoints } from "../chain/checkpoint";
 import { type AuditDatabase, auditDatabase } from "../data/tables";
 import { audit_0001_init } from "../migrations/0001_init";
 import { audit_0002_actor_kind } from "../migrations/0002_actor_kind";
 import { audit_0003_call_index } from "../migrations/0003_call_index";
 import { audit_0004_request_index } from "../migrations/0004_request_index";
+import { audit_0005_chain } from "../migrations/0005_chain";
 import { queryAuditEvents } from "../query";
 import { recordAuditEvent } from "../recorder";
-import { AUDIT_EVENT_DETAIL_READ_SCOPE, AUDIT_TRAIL_READ_SCOPE, auditAdminRoutes } from "./guards";
+import {
+  AUDIT_CHAIN_EXPORT_SCOPE,
+  AUDIT_EVENT_DETAIL_READ_SCOPE,
+  AUDIT_TRAIL_READ_SCOPE,
+  auditAdminRoutes,
+} from "./guards";
 import {
   AccessHistoryResponse,
   AuditEventResponse,
   AuditEventsResponse,
+  ChainExportResponse,
+  ChainVerifyResponse,
   ControlPlaneReachResponse,
   ControlPlaneUsageResponse,
 } from "./responses";
@@ -193,6 +204,8 @@ beforeEach(async () => {
   await audit_0002_actor_kind.up(auditDatabase(env.DB) as unknown as Kysely<unknown>);
   await audit_0003_call_index.up(auditDatabase(env.DB) as unknown as Kysely<unknown>);
   await audit_0004_request_index.up(auditDatabase(env.DB) as unknown as Kysely<unknown>);
+  await audit_0005_chain.up(auditDatabase(env.DB) as unknown as Kysely<unknown>);
+  for (const object of (await env.AUDIT_CHECKPOINTS.list()).objects) await env.AUDIT_CHECKPOINTS.delete(object.key);
   emitted = [];
 });
 
@@ -231,6 +244,21 @@ describe("GET /audit/events", () => {
     expect(body).not.toContain("Dashboard/1.0");
     expect(body).not.toContain("ada@example.test");
     expect(body).toContain("testers/member_invited");
+  });
+
+  test("marks each event's place in its chain, and an event from before the chain as outside it (#822)", async () => {
+    await env.DB.prepare(
+      "insert into pithy_audit_events (event_id, occurred_at, action, outcome, actor_type, tenant) values ('before-chain', 1000, 'auth/login', 'success', 'user', 'acme')",
+    ).run();
+    await seed({ action: "auth/logout", outcome: "success", actorType: "user", tenant: "acme" }, new Date(2_000));
+
+    const body = await (await call(makeApp([AUDIT_TRAIL_READ_SCOPE]), `${BASE}/events`, AUDIT_TRAIL_READ_SCOPE)).json<{
+      events: { action: string; chainSeq?: number | null }[];
+    }>();
+    expect(body.events.map((e) => [e.action, e.chainSeq])).toEqual([
+      ["auth/logout", 1],
+      ["auth/login", null],
+    ]);
   });
 
   test("never discloses the internal autoincrement id", async () => {
@@ -1190,5 +1218,129 @@ describe("GET /audit/control-plane/usage (#812)", () => {
       )
     ).json();
     expect(ControlPlaneUsageResponse.parse(body)).toEqual(body);
+  });
+});
+
+describe("GET /audit/control-plane/verify and /export (#822)", () => {
+  /** The routes with the checkpoint bucket bound, as the capability binds it. */
+  function chainApp(scopes: readonly ControlPlaneScope[], bound = true) {
+    const app = harness(scopes);
+    registerAuditRoutes({
+      basePath: BASE,
+      database: () => auditDatabase(env.DB),
+      adminRoutes: () => auditAdminRoutes(BASE),
+      checkpoints: () => (bound ? (env.AUDIT_CHECKPOINTS as unknown as R2Bucket) : null),
+    })(app);
+    return app;
+  }
+
+  async function seedChain(n: number): Promise<void> {
+    for (let i = 0; i < n; i++) {
+      await seed(
+        {
+          action: "auth/login",
+          outcome: "success",
+          actorType: "user",
+          actorId: `u-${i}`,
+          tenant: "acme",
+          ip: "203.0.113.9",
+          userAgent: "curl/8",
+          metadata: { n: i },
+        },
+        new Date(NOW.getTime() - (n - i) * 60_000),
+      );
+    }
+  }
+
+  test("refuses a connection that does not hold audit:events:export, on both routes", async () => {
+    await seedChain(2);
+    for (const path of ["verify", "export"]) {
+      const app = chainApp([AUDIT_TRAIL_READ_SCOPE, AUDIT_EVENT_DETAIL_READ_SCOPE]);
+      for (const scope of [AUDIT_TRAIL_READ_SCOPE, AUDIT_EVENT_DETAIL_READ_SCOPE]) {
+        const response = await call(app, `${BASE}/control-plane/${path}?tenant=acme`, scope);
+        expect(response.status, `${path} with ${scope}`).toBe(403);
+      }
+    }
+  });
+
+  test("verify answers intact, held to the checkpoint bucket, and records the read", async () => {
+    await seedChain(3);
+    await writeCheckpoints(auditDatabase(env.DB), env.AUDIT_CHECKPOINTS as unknown as R2Bucket, NOW);
+    const response = await call(
+      chainApp([AUDIT_CHAIN_EXPORT_SCOPE]),
+      `${BASE}/control-plane/verify?tenant=acme`,
+      AUDIT_CHAIN_EXPORT_SCOPE,
+    );
+    expect(response.status).toBe(200);
+    const body = ChainVerifyResponse.parse(await response.json());
+    expect(body).toMatchObject({
+      tenant: "acme",
+      intact: true,
+      checked: 3,
+      checkpoints: 1,
+      checkpointStore: "bound",
+      break: null,
+    });
+    expect(emitted.find((event) => event.action === "audit/chain_verified")).toMatchObject({
+      outcome: "success",
+      actorId: "operator-1",
+    });
+  });
+
+  test("verify names the first break, and records it as a critical failure", async () => {
+    await seedChain(3);
+    await env.DB.prepare("update pithy_audit_events set outcome = 'denied' where chain_seq = 2").run();
+    const response = await call(
+      chainApp([AUDIT_CHAIN_EXPORT_SCOPE], false),
+      `${BASE}/control-plane/verify?tenant=acme`,
+      AUDIT_CHAIN_EXPORT_SCOPE,
+    );
+    const body = ChainVerifyResponse.parse(await response.json());
+    expect(body).toMatchObject({ intact: false, checkpointStore: "absent", break: { position: 2, reason: "edited" } });
+    expect(emitted.find((event) => event.action === "audit/chain_verified")).toMatchObject({
+      outcome: "failure",
+      severity: "critical",
+    });
+  });
+
+  test("verify refuses a request that names no tenant", async () => {
+    const response = await call(
+      chainApp([AUDIT_CHAIN_EXPORT_SCOPE]),
+      `${BASE}/control-plane/verify`,
+      AUDIT_CHAIN_EXPORT_SCOPE,
+    );
+    expect(response.status).toBe(400);
+  });
+
+  test("export carries hashes and commitments only, without the detail scope", async () => {
+    await seedChain(2);
+    const response = await call(
+      chainApp([AUDIT_CHAIN_EXPORT_SCOPE]),
+      `${BASE}/control-plane/export?tenant=acme`,
+      AUDIT_CHAIN_EXPORT_SCOPE,
+    );
+    expect(response.status).toBe(200);
+    const body = ChainExportResponse.parse(await response.json());
+    expect(body.detail).toBe(false);
+    expect(JSON.stringify(body)).not.toContain("203.0.113.9");
+    expect(JSON.stringify(body)).not.toContain("curl/8");
+    expect(await verifyChainExport(body)).toMatchObject({ intact: true, checked: 2 });
+    expect(emitted.find((event) => event.action === "audit/chain_exported")).toMatchObject({
+      metadata: { detail: false, returned: 2 },
+    });
+  });
+
+  test("export carries the personal values when the connection also holds the detail scope", async () => {
+    await seedChain(2);
+    const response = await call(
+      chainApp([AUDIT_CHAIN_EXPORT_SCOPE, AUDIT_EVENT_DETAIL_READ_SCOPE]),
+      `${BASE}/control-plane/export?tenant=acme&limit=1`,
+      AUDIT_CHAIN_EXPORT_SCOPE,
+    );
+    const body = ChainExportResponse.parse(await response.json());
+    // The cursor is the last row's position and id, so the next page resumes after that one row.
+    expect(body).toMatchObject({ detail: true, nextCursor: expect.stringMatching(/^1:\d+$/), complete: false });
+    expect(body.events[0]).toMatchObject({ ip: "203.0.113.9", userAgent: "curl/8" });
+    expect(await verifyChainExport(body)).toMatchObject({ intact: true });
   });
 });

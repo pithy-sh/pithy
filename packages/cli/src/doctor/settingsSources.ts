@@ -155,6 +155,7 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
   const fields = new Map<string, Promise<boolean>>();
   const storeEntries = new Map<string, Promise<boolean>>();
   const accountTokens = new Map<string, Promise<boolean>>();
+  const bucketLocks = new Map<string, Promise<"locked" | "unlocked" | "missing">>();
 
   const reader: SettingsAccountReader = {
     d1Databases: () => {
@@ -243,6 +244,20 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
         .findTokenByName(name)
         .then((token) => token !== null);
       accountTokens.set(name, answer);
+      return answer;
+    },
+    // The bucket first, by its exact name, so a bucket nobody created is `missing` rather than an API error; then
+    // its lock rules, read and judged by the same rule `pithy audit lock` writes (#822). Memoized like the rest.
+    r2BucketLock: async ({ bucket, prefix }) => {
+      const key = `${bucket}\u0000${prefix}`;
+      const existing = bucketLocks.get(key);
+      if (existing) return existing;
+      const r2 = clients.r2Provisioner();
+      const answer = r2.findBucketByName(bucket).then(async (found) => {
+        if (!found) return "missing" as const;
+        return (await r2.prefixLockedIndefinitely(bucket, prefix)) ? ("locked" as const) : ("unlocked" as const);
+      });
+      bucketLocks.set(key, answer);
       return answer;
     },
     // Refused, not answered, for anything that is not a kit table and a plain column: the question reads

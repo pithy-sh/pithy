@@ -44,6 +44,10 @@ function accepts<T>(schema: z.ZodType<T>, value: unknown): void {
 
 /** A fully populated row — every nullable column set, so nothing is proven only by being absent. */
 const ROW: AuditEventRow = {
+  chainSeq: 7,
+  chainPrev: "ab".repeat(32),
+  chainHash: "cd".repeat(32),
+  chainSalt: "ef".repeat(16),
   id: 41,
   eventId: "d0e0f6a2-8b0c-4a1e-9f3d-2c1b0a998877",
   occurredAt: new Date("2026-06-10T12:00:00.000Z"),
@@ -89,6 +93,11 @@ describe("audit response schemas", () => {
   test("the listing view is exactly what the listing schema declares", () => {
     accepts(AuditEventView, auditEventView(ROW));
     accepts(AuditEventView, auditEventView(SPARSE));
+  });
+
+  test("the listing view carries the event's place in its chain, and null before the chain (#822)", () => {
+    expect(auditEventView(ROW).chainSeq).toBe(7);
+    expect(auditEventView({ ...ROW, chainSeq: null }).chainSeq).toBeNull();
   });
 
   test("the detail view is exactly what the detail schema declares", () => {

@@ -1,19 +1,36 @@
 {
   "name": "audit",
   "package": "@pithy-sh/audit",
-  "requiredBindings": [{ "type": "d1", "name": "DB" }],
+  "requiredBindings": [
+    {
+      "type": "d1",
+      "name": "DB"
+    },
+    {
+      "type": "r2",
+      "name": "AUDIT_CHECKPOINTS",
+      "optional": true
+    },
+    {
+      "type": "workflow",
+      "name": "AUDIT_CHECKPOINT",
+      "job": "checkpoint",
+      "className": "AuditCheckpointWorkflow",
+      "optional": true
+    }
+  ],
   "migrationNamespace": "audit",
-  "whenToEnable": "A queryable, tamper-resistant audit trail of security-relevant actions — logins, token refreshes, entitlement grants, admin config changes. Records who did what, when, and whether it succeeded, attributed to the right actor. Other capabilities emit through the core seam; auth needs it the moment it lands.",
+  "whenToEnable": "A queryable, tamper-evident audit trail of security-relevant actions \u2014 logins, token refreshes, entitlement grants, admin config changes. Records who did what, when, and whether it succeeded, attributed to the right actor. Other capabilities emit through the core seam; auth needs it the moment it lands.",
   "configOptions": [
     {
       "key": "database",
       "default": "DB",
-      "describe": "The D1 binding the audit table and its migrations target. Defaults to `DB`, the shared app database. KV is not an option — an audit log is a query workload, not a key lookup."
+      "describe": "The D1 binding the audit table and its migrations target. Defaults to `DB`, the shared app database. KV is not an option \u2014 an audit log is a query workload, not a key lookup."
     },
     {
       "key": "basePath",
       "default": "/audit",
-      "describe": "Where the control-plane routes that read the trail mount. Reads only — the trail is append-only and this surface never writes."
+      "describe": "Where the control-plane routes that read the trail mount. Reads only \u2014 the trail is append-only and this surface never writes."
     }
   ]
 }

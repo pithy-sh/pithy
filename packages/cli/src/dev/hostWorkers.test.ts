@@ -60,7 +60,7 @@ describe("discoverHostWorkers", () => {
   });
 
   test("a capability that hosts none contributes nothing", async () => {
-    expect((await discover({ "/proj/apps/api": ["auth", "turnstile", "audit"] })).hosts).toEqual([]);
+    expect((await discover({ "/proj/apps/api": ["auth", "turnstile", "rating"] })).hosts).toEqual([]);
   });
 
   test("two Workers composing one capability share its single host", async () => {

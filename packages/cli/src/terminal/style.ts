@@ -128,17 +128,18 @@ export function workerColor(index: number): (text: string) => string {
  * it on. When off, the plain `text` is returned unchanged.
  */
 export function link(url: string, text: string): string {
-  if (!enabled) return safe(text);
-  return `\x1b]8;;${safe(url)}\x1b\\${safe(text)}\x1b]8;;\x1b\\`;
+  if (!enabled) return stripControls(text);
+  return `\x1b]8;;${stripControls(url)}\x1b\\${stripControls(text)}\x1b]8;;\x1b\\`;
 }
 
 /**
  * Strip C0/C1 control characters. Both halves of a hyperlink are values read out of a project's
  * `wrangler.jsonc` — a resource id and a URL built from it — so an embedded `ESC` could close this
  * sequence early and open its own, making the rendered link point somewhere other than what it displays.
- * Stripping them also stops a malformed id from corrupting the surrounding output.
+ * Stripping them also stops a malformed id from corrupting the surrounding output. Exported for any other value
+ * a command prints that it did not write, such as a string out of a file the user asked it to check.
  */
-function safe(value: string): string {
+export function stripControls(value: string): string {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control characters is the point.
   return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
 }

@@ -117,6 +117,36 @@ export const AuditEventRow = z
       .describe(
         "Whose action it was — the id of the tenant it was taken *for*, indexed with `occurredAt` for the (tenant, time) read this column exists to serve. **Supplied by the emitter, not stamped by the recorder** — the opposite of the four columns above it, and deliberately: `project`, `environment` and `worker` are properties of the writer, constant across every row a multi-tenant Worker writes, and no Worker var can know which customer an action belonged to. So this one is exactly as trustworthy as the call site that sets it, and it cannot be defaulted or verified here. Null means *not tenant-scoped* — a single-tenant app, a CLI-originated action, a fleet-wide operator action — and on rows written before this column existed. Never derived from a membership table afterwards: the tenant of an action is a fact at the time of the action, membership is a fact now.",
       ),
+    // The hash chain (#822, `audit_0005_chain`). All four null on a row written before the chain, which is its mark.
+    chainSeq: z
+      .number()
+      .int()
+      .nullable()
+      .default(null)
+      .describe(
+        "The event's 1-based position in its tenant's chain — one chain per tenant, and one for the events with no tenant. Null on a row written before the chain began, which is what marks it as before the chain; such a row is never back-filled.",
+      ),
+    chainPrev: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "The hash of the event before it in its chain, null for the first event and for a row before the chain.",
+      ),
+    chainHash: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "This event's SHA-256 over its canonical serialization (`@pithy-sh/core/src/audit/chain`), which covers its link and every column, with the IP, user-agent and metadata committed by salted hash. Null on a row before the chain.",
+      ),
+    chainSalt: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "The per-event salt the IP, user-agent and metadata are committed under. Travels only with those values, so a commitment in an export without them cannot be reversed by guessing. Null on a row before the chain.",
+      ),
   })
   .describe("One audit event in `pithy_audit_events` — the durable, queryable record of a security-relevant action.");
 export type AuditEventRow = z.output<typeof AuditEventRow>;

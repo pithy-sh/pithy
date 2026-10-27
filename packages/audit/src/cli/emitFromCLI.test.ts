@@ -35,6 +35,11 @@ function fakeD1(handler: (sql: string, params: unknown[]) => Promise<unknown> = 
   return { db, calls };
 }
 
+/** The one insert a write made. The chained append reads the chain's head first, so it is not the first call. */
+function insertOf(calls: { sql: string; params: unknown[] }[]): { sql: string; params: unknown[] } | undefined {
+  return calls.find((call) => /^insert into/.test(call.sql));
+}
+
 const serviceActor: ResolvedActor = {
   actorType: "service",
   actorId: "ci-deployer",
@@ -54,13 +59,13 @@ describe("emitFromCLI", () => {
     );
 
     expect(onError).not.toHaveBeenCalled();
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.sql).toMatch(/insert into "pithy_audit_events"/);
+    expect(calls.filter((call) => /^insert into/.test(call.sql))).toHaveLength(1);
+    expect(insertOf(calls)?.sql).toMatch(/insert into "pithy_audit_events"/);
     // The actor's type/id and the action are bound as parameters; the metadata merges actor + event.
-    expect(calls[0]?.params).toContain("service");
-    expect(calls[0]?.params).toContain("ci-deployer");
-    expect(calls[0]?.params).toContain("migrate/applied");
-    const metadataParam = (calls[0]?.params ?? []).find(
+    expect(insertOf(calls)?.params).toContain("service");
+    expect(insertOf(calls)?.params).toContain("ci-deployer");
+    expect(insertOf(calls)?.params).toContain("migrate/applied");
+    const metadataParam = (insertOf(calls)?.params ?? []).find(
       (p): p is string => typeof p === "string" && p.includes("cfTokenId"),
     );
     expect(JSON.parse(metadataParam ?? "{}")).toEqual({
@@ -82,8 +87,8 @@ describe("emitFromCLI", () => {
       serviceActor,
       { origin: { project: "acme", environment: null, worker: null, version: null } },
     );
-    expect(calls[0]?.params).toContain("prod");
-    expect(calls[0]?.params).toContain("acme");
+    expect(insertOf(calls)?.params).toContain("prod");
+    expect(insertOf(calls)?.params).toContain("acme");
   });
 
   test("the emitter's origin stands when the event states no environment", async () => {
@@ -91,7 +96,7 @@ describe("emitFromCLI", () => {
     await emitFromCLI(db, { action: "deploy/started", outcome: "success" }, serviceActor, {
       origin: { project: "acme", environment: "staging", worker: null, version: null },
     });
-    expect(calls[0]?.params).toContain("staging");
+    expect(insertOf(calls)?.params).toContain("staging");
   });
 
   test("`environment` never reaches the event body, only the origin", async () => {
@@ -99,9 +104,11 @@ describe("emitFromCLI", () => {
     // than record it. It is pulled off before the parse.
     const { db, calls } = fakeD1();
     await emitFromCLI(db, { action: "deploy/started", outcome: "success", environment: "prod" }, serviceActor);
-    const metadataParam = (calls[0]?.params ?? []).find((p): p is string => typeof p === "string" && p.startsWith("{"));
+    const metadataParam = (insertOf(calls)?.params ?? []).find(
+      (p): p is string => typeof p === "string" && p.startsWith("{"),
+    );
     expect(JSON.parse(metadataParam ?? "{}")).not.toHaveProperty("environment");
-    expect(calls[0]?.params).toContain("prod");
+    expect(insertOf(calls)?.params).toContain("prod");
   });
 
   test("a write failure is non-fatal: it resolves and reports an audit/write_failed error", async () => {

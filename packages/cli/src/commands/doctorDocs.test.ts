@@ -1636,6 +1636,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   command: [
     "add",
     "alias",
+    "audit",
     "backup",
     "cloudflare",
     "completion",
@@ -1688,6 +1689,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "worker",
   ],
   env: [
+    "audit",
     "backup",
     "deploy",
     "email",
@@ -1760,6 +1762,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   schemaVersion: [
     "add",
     "alias",
+    "audit",
     "backup",
     "cloudflare",
     "completion",

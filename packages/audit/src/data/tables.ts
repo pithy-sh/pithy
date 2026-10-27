@@ -3,7 +3,7 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import { createDatabase, type DatabaseSchema } from "@pithy-sh/core/src/data/db";
-import type { Kysely } from "kysely";
+import type { Insertable, Kysely } from "kysely";
 import { AuditEventRow } from "./auditEvent";
 
 /**
@@ -18,6 +18,9 @@ export type AuditTables = typeof auditTables;
 
 /** The typed Kysely view over the audit table — what the recorder and query helper run against. */
 export type AuditDatabase = Kysely<DatabaseSchema<AuditTables>>;
+
+/** One row as the recorder inserts it — the `z.input` side, every column it may name. */
+export type AuditEventInsert = Insertable<DatabaseSchema<AuditTables>["pithyAuditEvents"]>;
 
 /** Build the audit Kysely over a D1 binding (or a REST `D1Database` from `@pithy-sh/cloudflare`). */
 export function auditDatabase(d1: D1Database): AuditDatabase {

@@ -46,6 +46,7 @@ declare global {
  * "unnoticed" are the same thing unless something says out loud what the derivation currently finds.
  */
 const CLASSIFIED = [
+  "packages/audit/src/workflows/worker.ts",
   "packages/email/src/workflows/worker.ts",
   "packages/leaderboard/src/rank/worker.entry.ts",
   "packages/media/src/workflows/worker.ts",

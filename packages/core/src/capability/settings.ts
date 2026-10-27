@@ -169,6 +169,13 @@ export interface SettingsAccountReader {
    * Asked by secrets of the manager token the runtime token superseded, which nothing revokes for you.
    */
   accountToken(name: string): Promise<boolean>;
+  /**
+   * **Whether an R2 bucket's objects under `prefix` are under an indefinite lock (#822)** — `locked`, `unlocked`, or
+   * `missing` when no bucket of that name exists on the account. Asked by audit, whose checkpoints are evidence only
+   * while nothing can replace them. Optional, so a reader built before the question existed still compiles; a
+   * check asking a reader without it reports the environment unanswered rather than guessing.
+   */
+  r2BucketLock?(request: { bucket: string; prefix: string }): Promise<"locked" | "unlocked" | "missing">;
 }
 
 /** What {@link SettingsAccountReader.appRows} is asked. */

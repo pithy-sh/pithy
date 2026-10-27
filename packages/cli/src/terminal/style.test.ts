@@ -112,3 +112,10 @@ describe("supportsHyperlinks", () => {
     expect(supportsHyperlinks()).toBe(false);
   });
 });
+
+describe("stripControls", () => {
+  test("drops every C0 and C1 control character and DEL, and keeps the rest", async () => {
+    const { stripControls } = await loadStyle({});
+    expect(stripControls("a\x00b\x1b[2Kc\r\nd\x7fe\x9bf\x9fg é")).toBe("ab[2Kcdefg é");
+  });
+});

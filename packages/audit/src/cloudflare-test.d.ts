@@ -9,5 +9,6 @@
 declare namespace Cloudflare {
   interface Env {
     DB: D1Database;
+    AUDIT_CHECKPOINTS: R2Bucket;
   }
 }
