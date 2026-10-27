@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { type BindingSpec, type BindingType, TARGET_KINDS } from "@pithy-sh/core/src/capability/bindings";
+import { BindingSpec, type BindingType, TARGET_KINDS } from "@pithy-sh/core/src/capability/bindings";
 import { GLOBAL_SCOPE, isValidEnvironment } from "@pithy-sh/core/src/naming/environment";
 import { bindingResourceName } from "@pithy-sh/core/src/naming/provisionScope";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
@@ -67,6 +67,18 @@ interface QueueProducer {
   binding: string;
   queue?: string;
   remote?: boolean;
+}
+
+/**
+ * One `queues.consumers` entry (#824): the queue this Worker consumes, how often a message is retried, and the
+ * queue an exhausted one goes to. Keyed by queue name, because wrangler gives a consumer no binding.
+ */
+interface QueueConsumer {
+  queue: string;
+  max_retries?: number;
+  dead_letter_queue?: string;
+  max_batch_size?: number;
+  [field: string]: unknown;
 }
 
 /** One `artifacts` entry: the binding, and the namespace of repositories it addresses in this environment. */
@@ -162,7 +174,7 @@ export interface WranglerStanza {
   pipelines?: CarriedEntry[];
   mtls_certificates?: CarriedEntry[];
   dispatch_namespaces?: CarriedEntry[];
-  queues?: { producers?: QueueProducer[]; consumers?: unknown[] };
+  queues?: { producers?: QueueProducer[]; consumers?: QueueConsumer[] };
   send_email?: SendEmailBinding[];
   artifacts?: ArtifactsEntry[];
   ratelimits?: RateLimitBinding[];
@@ -448,6 +460,32 @@ function workflowEntry(scope: BindingScope, binding: BindingSpec): WorkflowBindi
 }
 
 /**
+ * The `queues.consumers` entry for a consuming queue (#824). The dead-letter queue is named by the composer that names
+ * every queue, from its own binding and this one's scope, so it is the queue `pithy provision` creates for that
+ * binding. A dead-letter queue this cannot name is left off rather than guessed: the consumer still delivers, and
+ * Cloudflare drops an exhausted message instead of keeping it.
+ */
+function queueConsumer(scope: BindingScope, binding: BindingSpec, queue: string): QueueConsumer {
+  const consumer = binding.consumer;
+  if (consumer === undefined) return { queue };
+  const deadLetter = proposeName(
+    scope,
+    BindingSpec.parse({
+      type: "queue",
+      name: consumer.deadLetter,
+      ...(binding.scope === undefined ? {} : { scope: binding.scope }),
+    }),
+    "queue",
+  );
+  return {
+    queue,
+    max_retries: consumer.maxRetries,
+    ...(deadLetter === undefined ? {} : { dead_letter_queue: deadLetter }),
+    ...(consumer.maxBatchSize === undefined ? {} : { max_batch_size: consumer.maxBatchSize }),
+  };
+}
+
+/**
  * Whether a stanza already declares a binding. `null` means the kind has no `wrangler.jsonc` array this
  * module writes — a `secret`, a `vectorize` index, a `service` — so there is nothing to look for and nothing
  * to report missing.
@@ -472,8 +510,14 @@ export function stanzaHasBinding(stanza: WranglerStanza, binding: BindingSpec): 
       return (stanza.ratelimits ?? []).some((entry) => entry.name === binding.name);
     case "workflow":
       return (stanza.workflows ?? []).some((entry) => entry.binding === binding.name);
-    case "queue":
-      return (stanza.queues?.producers ?? []).some((entry) => entry.binding === binding.name);
+    case "queue": {
+      // A consuming queue is two entries, and present only when both are: a producer with no consumer is a queue
+      // that fills and is never read (#824).
+      const producer = (stanza.queues?.producers ?? []).find((entry) => entry.binding === binding.name);
+      if (producer === undefined) return false;
+      if (binding.consumer === undefined) return true;
+      return (stanza.queues?.consumers ?? []).some((entry) => entry.queue === producer.queue);
+    }
     case "email":
       return (stanza.send_email ?? []).some((entry) => entry.name === binding.name);
     case "artifacts":
@@ -591,7 +635,17 @@ export function appendBinding(stanza: WranglerStanza, binding: BindingSpec, scop
       }
       stanza.queues ??= {};
       stanza.queues.producers ??= [];
-      stanza.queues.producers.push(withRemote({ binding: binding.name, queue: name }, binding));
+      // The producer the adopter already wrote is kept, and its queue is the one a consumer is added for.
+      const producer = stanza.queues.producers.find((entry) => entry.binding === binding.name);
+      if (producer === undefined)
+        stanza.queues.producers.push(withRemote({ binding: binding.name, queue: name }, binding));
+      if (binding.consumer !== undefined) {
+        const consumed = producer?.queue ?? name;
+        stanza.queues.consumers ??= [];
+        if (!stanza.queues.consumers.some((entry) => entry.queue === consumed)) {
+          stanza.queues.consumers.push(queueConsumer(scope, binding, consumed));
+        }
+      }
       return { outcome: "written" };
     }
     case "email":

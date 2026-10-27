@@ -29,6 +29,7 @@ import {
   PRESENCE_ROOMS_BINDING_SPEC,
   type PresenceDeclaration,
 } from "../presence/declaration";
+import type { CapabilityQueueHandler } from "../queue/consumer";
 import type { SeedSet } from "../seed/seed";
 import type { WorkflowSpecMap } from "../workflow/spec";
 import { BindingSpec, type BindingSpecInput } from "./bindings";
@@ -653,6 +654,13 @@ export interface Capability<
    * capability that declares one (e.g. `@pithy-sh/email`'s bounce/complaint handler).
    */
   email?: CapabilityEmailHandler;
+  /**
+   * Queue consumer (#824). The entrypoint (`createEntrypoint`) exposes the Worker's one `queue` export when any
+   * capability declares one, and hands each the messages of a batch whose body names it — see
+   * `../queue/consumer.ts` for why the body, not the queue name, decides. The queue itself is declared as a
+   * `queue` binding with a `consumer`, which is what writes the `queues.consumers` entry that delivers here.
+   */
+  queue?: CapabilityQueueHandler;
   /**
    * The audit recorder this capability provides **for code that has no request** — a Workflow step, which the
    * runtime constructs with `env` and nothing else (#622). `@pithy-sh/audit` declares it; nothing else does.

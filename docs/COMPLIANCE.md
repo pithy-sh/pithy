@@ -53,3 +53,17 @@ The evidence pack proves controls present. The erasure attestation proves that a
 **Nothing about the person survives in it** beyond the id the record already keeps. No address, no name.
 
 **It proves, and deletes nothing.** Deleting stays where it is, on its own scope. The attestation is behind `erasure:read`, a read, so `pithy dashboard connect` preselects it. The routes and their shape are [`CONTROL-PLANE.md` §12](CONTROL-PLANE.md#erasure).
+
+## Shipping the trail
+
+A security team watches its SIEM, not each vendor's console. `@pithy-sh/audit` ships the trail to sinks declared in `pithy.config.ts` — Splunk HEC, Datadog Logs, or any HTTPS endpoint — as each event is written, through a Cloudflare Queue, at least once. The setup and the formats are [`@pithy-sh/audit`'s README](../packages/audit/README.md#shipping-the-trail).
+
+**What leaves the Worker.** By default, no IP, user-agent or metadata value: each event carries their salted commitments instead. A sink declared `detail: true` receives the values and the salt. Decide that per sink, the way the control plane decides it per connection with `audit:events:read_detail`.
+
+**Who can change where it goes.** Only a deploy. A sink is declared in config and reviewed like code; no control-plane route adds, changes or removes one, so a management credential cannot redirect the trail.
+
+**How the receiver checks it.** Every shipped event is the chain's canonical form: its `eventId`, its tenant's `seq`, the `prev` hash and its own `hash`. De-duplicate a redelivery on `eventId`. A tenant's `seq` that skips, or a `prev` that names a hash you never received, is where to look. Two kinds of skip are expected: events the CLI records (`pithy deploy`, `pithy migrate`, `pithy secrets`) are in the chain and are not shipped, and a sink with an `actions` filter skips what it does not take. Reconcile a skip against an export of that range, checked with `pithy audit verify`; a missing event that is neither is a loss. With the values, recompute the commitments too.
+
+**How you know it is flowing.** Audit's manifest entry reports the backlog of events waiting on a retry, the count given up on to the dead-letter queue, and whether delivery is `delivering`, `failing` or `idle`. `pithy doctor` lists every sink and whether each environment holds its token.
+
+Shipping delivers the trail. It changes nothing in it.

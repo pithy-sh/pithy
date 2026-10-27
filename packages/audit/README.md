@@ -31,6 +31,47 @@ This proves the trail is whole. It adds no way to change it.
 
 **The erasure attestation cites it.** `@pithy-sh/audit` declares `auditCitations`, the seam through which `GET /control-plane/erasure/:subjectType/:subjectId` points at the events a purge recorded: each by event id, tenant, chain position and hash, never its IP, user-agent or metadata. Hand an auditor the attestation and an export of that chain, and `pithy audit verify` checks the events it cites. Without this capability composed, the attestation says its trail is `absent`. [`docs/CONTROL-PLANE.md` §12](../../docs/CONTROL-PLANE.md#erasure) has the shape.
 
+## Shipping the trail
+
+**Declare a sink and every event is sent to it as it is written.** Splunk HEC, Datadog Logs, or a generic JSON webhook for Elastic, Sumo Logic and anything else that takes HTTPS:
+
+```ts
+audit({
+  sinks: {
+    siem: {
+      profile: "splunk-hec", // or "datadog-logs", or "webhook"
+      url: "https://splunk.example.com:8088/services/collector/event",
+      secret: "splunk-hec-token", // the @pithy-sh/secrets name the token is read through
+      actions: ["auth/", "controlplane/"], // optional: ship only these action prefixes
+      detail: false, // the default: ship hashes, never IP, user-agent or metadata values
+    },
+  },
+});
+```
+
+Set the token with `pithy secrets create splunk-hec-token --env prod`, then run `pithy upgrade` to write the queue bindings and `pithy provision` to create the queues. An unknown profile, a URL that is not HTTPS, a misspelled key, or a sink with no secret name is refused at config load. Shipping needs the `secrets` capability and Cloudflare Queues, which is on the Workers Paid plan; a project with no sink binds no queue.
+
+**Declared, not toggled.** A sink is reviewed and deployed like code. No control-plane route adds, changes or removes one, so no management credential can point the trail somewhere new.
+
+**Delivered at least once, and never in the way.** Each event a Worker writes goes on the `AUDIT_SHIP` queue once per sink that takes it, naming the event and the sink and nothing else; the Worker's own consumer reads the row back and posts each sink's share of a batch in one request. Enqueueing happens after the write and never fails it. A redirect is never followed, so the token and the batch go only to the URL you declared; a sink answering 3xx counts as a refusal. A sink that refuses or cannot be reached retries after 30 seconds, doubling to an hour, and fails alone: the other sinks still deliver. After ten retries a message goes to `AUDIT_SHIP_DLQ` and waits there for a person. Audit's manifest entry reports `auditShipBacklog`, `auditShipDeadLettered` and `auditShipDelivery` (`delivering`, `failing`, `idle`), behind `audit:events:read`, and `pithy doctor` lists every sink and whether each environment holds its token.
+
+**Redacted by default.** Without `detail: true`, no IP, user-agent or metadata value leaves the Worker. The sink receives their salted commitments instead — the same ones the chain hashes — which verify and disclose nothing. With `detail: true` the values and their salt travel, so the receiver can check the commitments too.
+
+**Verifiable at the receiver.** Every shipped event is the chain's canonical form, format `pithy-audit-ship/1`: its `eventId`, its tenant's `seq`, the `prev` hash and its own `hash`. A receiver de-duplicates a redelivery on `eventId`, which a redelivery carries unchanged. A tenant's `seq` that skips, or a `prev` naming a hash it never received, is where to look, and not every skip is a loss:
+
+- **The CLI's events are in the chain and are not shipped.** `pithy deploy`, `pithy migrate`, `pithy secrets` and the rest record over the D1 REST API, outside any Worker, so they take a position in the chain and nothing enqueues them. Their `worker` is null.
+- **A sink with an `actions` filter** skips every position it does not take, by design.
+
+So reconcile a skip against the trail: export that range with `GET /audit/control-plane/export` and check it with `pithy audit verify`. A missing event that is neither a CLI action nor filtered out is a loss. An event from before the chain ships with `seq` and `hash` null.
+
+| Profile | Request |
+|---|---|
+| `splunk-hec` | `Authorization: Splunk <token>`. One HEC event object per event, newline-joined: `time` in epoch seconds, `source: "pithy"`, `sourcetype: "pithy:audit"`, `host` the Worker, the event under `event`. |
+| `datadog-logs` | `DD-API-KEY: <token>`. A JSON array of logs: `ddsource: "pithy"`, `service` the project, `hostname` the Worker, `ddtags` with `env`, `action` and `outcome`, a one-line `message`, the event under `audit`. |
+| `webhook` | `Authorization: Bearer <token>`. One JSON document, `{ "format": "pithy-audit-ship/1", "events": [...] }`. |
+
+This delivers the trail. It changes nothing in it.
+
 ## A person's data
 
 **Retained.** When an account is purged, audit erases nothing: *Kept as the record of who did what, which a security review or a dispute is read against.* The purge records the step as retained with that basis, and an export hands back every event where the person is the actor. See [`@pithy-sh/auth`'s account lifecycle](../auth/docs/account-lifecycle.md#what-each-capability-does-with-a-persons-rows).

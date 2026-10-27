@@ -265,6 +265,38 @@ describe("the kinds an app declares and the kit writes but never provisions (#66
     });
   });
 
+  test("writes a consuming queue's consumer entry beside its producer, dead-lettering by name (#824)", () => {
+    const shipping = { type: "queue", name: "AUDIT_SHIP", consumer: { deadLetter: "AUDIT_SHIP_DLQ", maxRetries: 8 } };
+    expect(write(shipping, { ...app, env: "prod" })).toEqual({
+      queues: {
+        producers: [{ binding: "AUDIT_SHIP", queue: "acme-prod-audit-ship" }],
+        consumers: [{ queue: "acme-prod-audit-ship", max_retries: 8, dead_letter_queue: "acme-prod-audit-ship-dlq" }],
+      },
+    });
+  });
+
+  test("adds a missing consumer to a producer already written, and is present once both are", () => {
+    const binding = BindingSpec.parse({
+      type: "queue",
+      name: "AUDIT_SHIP",
+      consumer: { deadLetter: "AUDIT_SHIP_DLQ", maxRetries: 3, maxBatchSize: 10 },
+    });
+    const stanza: WranglerStanza = { queues: { producers: [{ binding: "AUDIT_SHIP", queue: "acme-dev-audit-ship" }] } };
+    expect(stanzaHasBinding(stanza, binding)).toBe(false);
+    expect(appendBinding(stanza, binding, app)).toEqual({ outcome: "written" });
+    expect(stanza.queues?.producers).toHaveLength(1);
+    expect(stanza.queues?.consumers).toEqual([
+      {
+        queue: "acme-dev-audit-ship",
+        max_retries: 3,
+        dead_letter_queue: "acme-dev-audit-ship-dlq",
+        max_batch_size: 10,
+      },
+    ]);
+    expect(stanzaHasBinding(stanza, binding)).toBe(true);
+    expect(appendBinding(stanza, binding, app)).toEqual({ outcome: "present" });
+  });
+
   test("skips a queue it cannot name, and says why, rather than writing an entry that names nothing", () => {
     const stanza: WranglerStanza = {};
     expect(

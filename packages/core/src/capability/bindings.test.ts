@@ -252,6 +252,36 @@ describe("BindingSpec", () => {
     });
   });
 
+  test("a queue the Worker consumes names its dead-letter queue and its retries (#824)", () => {
+    const parsed = BindingSpec.parse({
+      type: "queue",
+      name: "AUDIT_SHIP",
+      consumer: { deadLetter: "AUDIT_SHIP_DLQ", maxRetries: 8 },
+    });
+    expect(parsed.consumer).toEqual({ deadLetter: "AUDIT_SHIP_DLQ", maxRetries: 8 });
+  });
+
+  test("refuses a consumer on anything but a queue", () => {
+    expect(() =>
+      BindingSpec.parse({ type: "kv", name: "THING", consumer: { deadLetter: "DLQ", maxRetries: 1 } }),
+    ).toThrow(/THING.*consumer/);
+  });
+
+  test("refuses a consumer that dead-letters into its own queue", () => {
+    expect(() =>
+      BindingSpec.parse({ type: "queue", name: "JOBS", consumer: { deadLetter: "JOBS", maxRetries: 1 } }),
+    ).toThrow(/JOBS.*dead-letter/);
+  });
+
+  test("refuses a consumer with retries outside what Cloudflare Queues accepts", () => {
+    for (const maxRetries of [-1, 101, 1.5]) {
+      expect(
+        () => BindingSpec.parse({ type: "queue", name: "JOBS", consumer: { deadLetter: "DLQ", maxRetries } }),
+        String(maxRetries),
+      ).toThrow();
+    }
+  });
+
   test("ignores a key it has never heard of, so an older kit can still read a newer manifest", () => {
     // A manifest ships in the capability's package and is parsed by whatever CLI the adopter has. A field
     // a later release adds must degrade to "not stated" in an earlier one — refusing it would take a

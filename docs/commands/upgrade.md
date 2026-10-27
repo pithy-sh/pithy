@@ -30,7 +30,7 @@ Capabilities are per Worker, so the reconcile engine is too. `upgrade` fans out 
 
 Per Worker, a plan reports five things.
 
-**Missing bindings**, per environment. A required binding the manifest declares that a wrangler stanza lacks — checked for every stanza in the file, since `env.staging` can be behind while the top-level one is current. Applying writes them in, comment-preserving, and appends any Durable Object class migrations.
+**Missing bindings**, per environment. A required binding the manifest declares that a wrangler stanza lacks — checked for every stanza in the file, since `env.staging` can be behind while the top-level one is current. Applying writes them in, comment-preserving, and appends any Durable Object class migrations. A queue the capability consumes is missing until its stanza has both the `queues.producers` entry and the `queues.consumers` entry for it, so a producer written by an older CLI is reported, and the apply adds the consumer with its dead-letter queue.
 
 **Missing config keys.** A manifest config option not yet present in that capability's registration call. Applying inserts it with the manifest's default rendered as its value and the option's rationale as the comment above it. An existing key is never rewritten. A key counts as present however it is written: `key: value`, a shorthand (`turnstile({ widgets })`), a method or an accessor. A registration that spreads or computes keys (`turnstile({ ...base })`) might already carry any option, so nothing is reported or inserted for it. A default appended after the spread would win.
 

@@ -5,9 +5,12 @@ import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
 import { workerIdentity } from "@pithy-sh/core/src/worker/identity";
 import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
+import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
+import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { z } from "zod";
 import { AUDIT_CHECKPOINT_BINDING } from "./chain/checkpoint";
 import { checkpointLockCheck } from "./chain/lockCheck";
@@ -21,9 +24,16 @@ import { audit_0002_actor_kind } from "./migrations/0002_actor_kind";
 import { audit_0003_call_index } from "./migrations/0003_call_index";
 import { audit_0004_request_index } from "./migrations/0004_request_index";
 import { audit_0005_chain } from "./migrations/0005_chain";
+import { audit_0006_sinks } from "./migrations/0006_sinks";
 import { auditUserPurge } from "./purge/contribution";
 import { recordAuditEvent } from "./recorder";
 import { auditExampleSeed } from "./seeds/example";
+import { auditShipConsumer } from "./ship/consumer";
+import { shipHealth } from "./ship/health";
+import { shipBindings } from "./ship/queue";
+import { sinkSecretsRegistry } from "./ship/secrets";
+import { shipperFor } from "./ship/shipper";
+import { AuditSinks } from "./ship/sinks";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 import { auditWorkflows } from "./workflows/specs";
 
@@ -67,6 +77,9 @@ export const AuditConfig = z
       .describe(
         "Where the control-plane routes that read the trail mount. Reads only — the trail is append-only and this surface never writes.",
       ),
+    sinks: AuditSinks.default({}).describe(
+      "Where the trail is shipped as it is written — Splunk HEC, Datadog Logs, or any HTTPS endpoint — by name. Declared here and nowhere else: no control-plane route adds, changes or removes one. Empty ships nothing and binds no queue.",
+    ),
   })
   .describe("Configuration for the audit capability.");
 export type AuditConfig = z.output<typeof AuditConfig>;
@@ -76,6 +89,8 @@ export type AuditConfigInput = z.input<typeof AuditConfig>;
 export interface AuditCapability extends Capability {
   /** The D1 binding the audit table lives in (the resolved `database` config). */
   auditDatabase: string;
+  /** The sinks the trail ships to (#824), as declared — what `pithy doctor` lists. */
+  auditSinks: AuditSinks;
 }
 
 /**
@@ -86,6 +101,12 @@ export interface AuditCapability extends Capability {
  */
 export function audit(config: AuditConfigInput = {}): AuditCapability {
   const resolved = AuditConfig.parse(config);
+  const sinks = resolved.sinks;
+  const ships = Object.keys(sinks).length > 0;
+  // The tokens each sink reads, declared on audit's own slice (#824); empty, and not declared, when nothing ships.
+  const sinkSecrets = sinkSecretsRegistry(sinks);
+  const databaseOf = (c: { var: { db: unknown } }) =>
+    (c.var.db as Record<typeof AUDIT_DATABASE_NAME, AuditDatabase>)[AUDIT_DATABASE_NAME];
   // Every composed capability's admin routes, read at `compose`. Until then — a router mounted outside a backend —
   // audit's own, so a reach read still groups its own routes rather than calling every path unmatched.
   let adminRoutes: readonly AdminRoute[] = auditAdminRoutes(resolved.basePath);
@@ -107,7 +128,38 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
       // The checkpoint Workflow's binding, derived from the spec rather than written again. Optional: it exists only
       // once the checkpoint host is deployed, and nothing in the app dispatches it — the host's cron does.
       ...workflowBindings(auditWorkflows),
+      // The shipping queue and its dead-letter queue (#824), only when a sink is declared: Cloudflare Queues needs
+      // the Workers Paid plan, so a project that ships nothing binds neither. Required when declared — a sink that
+      // could never be enqueued to is a config that does not do what it says.
+      ...shipBindings(sinks),
     ],
+    // A sink's token is read through `@pithy-sh/secrets`, so a Worker that ships needs it composed (#824).
+    ...(ships
+      ? {
+          dependsOn: ["secrets"],
+          secretRegistry: sinkSecrets,
+          // Backlog, dead-lettered and delivery state on audit's manifest entry, behind the listing's own scope.
+          health: shipHealth(sinks, databaseOf),
+          // The consumer of `AUDIT_SHIP`: one request per sink per batch, retried with back-off, dead-lettered.
+          queue: auditShipConsumer({
+            sinks,
+            database: (env) => {
+              const binding = env[resolved.database];
+              if (typeof binding !== "object" || binding === null) {
+                throw new InternalError({
+                  message: "Audit shipping cannot read the trail.",
+                  action: `Bind the ${resolved.database} D1 database to this Worker.`,
+                  detail: `no ${resolved.database} binding on the queue invocation's env`,
+                });
+              }
+              return auditDatabase(binding as D1Database);
+            },
+            token: async (env, secret) =>
+              (await sharedSecretsStore(env as unknown as SecretsStoreEnv, sinkSecrets)).get(secret) as string,
+            log: createWorkerLogger({ name: "audit" }),
+          }),
+        }
+      : {}),
     // The checkpoint job (#822), hosted by the prebuilt audit worker and fired hourly from its cron.
     workflows: auditWorkflows,
     // `pithy doctor` says whether object lock is in force on each deployed environment's checkpoint bucket (#822).
@@ -123,6 +175,7 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
           "0003_call_index": audit_0003_call_index,
           "0004_request_index": audit_0004_request_index,
           "0005_chain": audit_0005_chain,
+          "0006_sinks": audit_0006_sinks,
         },
       },
     },
@@ -142,9 +195,11 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
           log.error("audit event dropped", { reason: `no ${resolved.database} binding`, action: event.action });
           return;
         }
+        const ship = shipperFor(env, sinks);
         await recordAuditEvent(auditDatabase(binding as D1Database), event, {
           origin: workerIdentity(env),
           onError: (error) => log.error("audit event dropped", { error }),
+          ...(ship ? { ship, onShipError: (error) => log.error("audit shipment not enqueued", { error }) } : {}),
         });
       };
     },
@@ -187,22 +242,37 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
           // Worker predating these vars still records its events — just without an origin.
           // The parameter is annotated: `AuditEmit` is generic over `metadata` so a call site carrying a
           // privacy-marked value fails to compile (#132), and the recorder is the one place every event lands.
+          const ship = shipperFor(c.env as Record<string, unknown> | undefined, sinks);
+          const onShipError = (error: unknown) =>
+            c.var.log.child("audit").error("audit shipment not enqueued", { error });
           c.set("emit", (event: AuditEventInput) =>
-            recordAuditEvent(
-              (c.var.db as Record<typeof AUDIT_DATABASE_NAME, AuditDatabase>)[AUDIT_DATABASE_NAME],
-              event,
-              {
-                origin: workerIdentity(c.env),
-                onError: (error) => c.var.log.child("audit").error("audit event dropped", { error }),
-              },
-            ),
+            recordAuditEvent(databaseOf(c), event, {
+              origin: workerIdentity(c.env),
+              onError: (error) => c.var.log.child("audit").error("audit event dropped", { error }),
+              // Enqueued after the response where the runtime allows it (#824), so shipping never holds the
+              // request it records; awaited only where there is no execution context to hand it to.
+              ...(ship
+                ? {
+                    ship: (shipment: { eventId: string; action: string }) => {
+                      const sent = ship(shipment);
+                      try {
+                        c.executionCtx.waitUntil(sent.catch(onShipError));
+                        return Promise.resolve();
+                      } catch {
+                        return sent;
+                      }
+                    },
+                    onShipError,
+                  }
+                : {}),
+            }),
           );
           await next();
         });
       },
     ],
   });
-  return Object.assign(capability, { auditDatabase: resolved.database });
+  return Object.assign(capability, { auditDatabase: resolved.database, auditSinks: sinks });
 }
 
 /** Whether a capability is the audit capability — carries its resolved binding. */

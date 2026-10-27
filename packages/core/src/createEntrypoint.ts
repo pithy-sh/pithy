@@ -4,6 +4,8 @@
 import type { ExecutionContext, ForwardableEmailMessage } from "@cloudflare/workers-types";
 import type { Capability, CapabilityEmailHandler } from "./capability/capability";
 import { type CreateBackendOptions, createBackend } from "./createBackend";
+import { createWorkerLogger } from "./logger/worker";
+import { type CapabilityQueueHandler, dispatchQueueBatch, type QueueBatch } from "./queue/consumer";
 import { withLocalServices } from "./worker/serviceLoopback";
 import { triggerWorkflow } from "./workflow/dispatch";
 import { composeWorkflows, scheduledWorkflows } from "./workflow/register";
@@ -54,6 +56,12 @@ export interface PithyEntrypoint {
    * tested in staging.
    */
   scheduled?: (controller: unknown, env: Record<string, unknown>, ctx: ExecutionContext) => Promise<void>;
+  /**
+   * The Worker `queue` handler — hands each composed capability the messages of a batch that name it (#824).
+   * **Present only when at least one capability consumes a queue**, for `email`'s reason: an inert handler would
+   * acknowledge every message delivered to it and drop it.
+   */
+  queue?: (batch: QueueBatch, env: Record<string, unknown>, ctx: ExecutionContext) => Promise<void>;
 }
 
 /** The cron expression a `scheduled` event fired for, or `undefined` when the event names none. */
@@ -129,6 +137,15 @@ export function createEntrypoint<
       }
       if (failures[0] !== undefined) throw failures[0];
     };
+  }
+
+  // One `queue` export for every capability that consumes, routed by the capability each message body names.
+  const consumers = new Map<string, CapabilityQueueHandler>(
+    all.flatMap((cap) => (cap.queue ? [[cap.name, cap.queue] as const] : [])),
+  );
+  if (consumers.size > 0) {
+    entrypoint.queue = (batch, env, ctx) =>
+      dispatchQueueBatch(batch, consumers, withLocalServices(env), ctx, createWorkerLogger({ name: "queue" }));
   }
 
   // Only expose an `email` handler when something actually handles inbound mail — an inert one would

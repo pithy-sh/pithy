@@ -82,6 +82,14 @@ export interface AuditRecorderOptions {
   onError?: (error: PithyError) => void;
   /** Retry tuning for the insert. Defaults to retrying `timeout` and `database-busy`. */
   retry?: D1RetryOptions;
+  /**
+   * Hand a recorded event to its sinks (#824) — called once the row is written, with its id and action, and
+   * nothing else. It never fails the write: whatever it throws goes to {@link onShipError} and the event stands.
+   * Omitted when no sink is declared.
+   */
+  ship?: (event: { eventId: string; action: string }) => Promise<void>;
+  /** Called with whatever {@link ship} threw. The event is already written; only its shipment was lost. */
+  onShipError?: (error: unknown) => void;
 }
 
 /** Map any caught failure to its namespaced audit `PithyError`. A bad event is `invalid_event`; anything else is `write_failed`. */
@@ -105,13 +113,15 @@ export async function recordAuditEvent(
 ): Promise<void> {
   const onError = options?.onError ?? (() => {});
   const origin = options?.origin ?? NO_ORIGIN;
+  // Generated once, before the retry wrapper, so every retry of this one record reuses it. A
+  // post-commit transport failure then retries onto the unique eventId index — a UNIQUE violation
+  // the guard reads as "already landed", not a duplicate row. It is also what a sink de-duplicates on.
+  const eventId = crypto.randomUUID();
+  let action: string;
   try {
     const event = AuditEvent.parse(input);
+    action = event.action;
     const occurredAt = event.occurredAt ?? new Date();
-    // Generated once, before the retry wrapper, so every retry of this one record reuses it. A
-    // post-commit transport failure then retries onto the unique eventId index — a UNIQUE violation
-    // the guard reads as "already landed", not a duplicate row.
-    const eventId = crypto.randomUUID();
     const record: AuditEventInsert = {
       eventId,
       occurredAt: SQLiteDate.encode(occurredAt),
@@ -152,6 +162,16 @@ export async function recordAuditEvent(
     }
   } catch (error) {
     onError(toAuditError(error));
+    return;
+  }
+  // After the write, and outside it: an event that could not be enqueued is still in the trail, and the write it
+  // follows has already answered. Only a written event is shipped, so a sink never holds one the trail does not.
+  if (options?.ship) {
+    try {
+      await options.ship({ eventId, action });
+    } catch (error) {
+      options.onShipError?.(error);
+    }
   }
 }
 

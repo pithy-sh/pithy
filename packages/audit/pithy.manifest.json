@@ -17,6 +17,21 @@
       "job": "checkpoint",
       "className": "AuditCheckpointWorkflow",
       "optional": true
+    },
+    {
+      "type": "queue",
+      "name": "AUDIT_SHIP",
+      "optional": true,
+      "consumer": {
+        "deadLetter": "AUDIT_SHIP_DLQ",
+        "maxRetries": 10,
+        "maxBatchSize": 50
+      }
+    },
+    {
+      "type": "queue",
+      "name": "AUDIT_SHIP_DLQ",
+      "optional": true
     }
   ],
   "migrationNamespace": "audit",

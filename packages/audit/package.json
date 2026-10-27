@@ -39,6 +39,7 @@
   },
   "peerDependencies": {
     "@pithy-sh/core": "^0.13.0",
+    "@pithy-sh/secrets": "^0.6.1",
     "hono": "^4.13.2",
     "kysely": "^0.29.0",
     "zod": "^4.4.0"
@@ -46,6 +47,7 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.4.2",
     "@pithy-sh/core": "workspace:*",
+    "@pithy-sh/secrets": "workspace:*",
     "@pithy-sh/tsconfig": "workspace:*",
     "@types/node": "^22.15.0",
     "@vitest/coverage-v8": "^4.1.0",
