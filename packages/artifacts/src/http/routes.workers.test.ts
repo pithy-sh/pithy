@@ -59,8 +59,12 @@ function artifactsError(code: string): Error {
   return Object.assign(new Error(`ArtifactsError: ${code}`), { name: "ArtifactsError", code, numericCode: 1 });
 }
 
-/** The account's namespace, in memory, answering the way Cloudflare's binding documents. */
-function fakeNamespace() {
+/**
+ * The account's namespace, in memory, answering the way Cloudflare's binding documents. `listTokens` answers every
+ * token in every state, oldest first, one page of at most `page` with no cursor: the shape that ends a list-and-revoke
+ * loop at its first page, because revoking what a page shows does not take it off the page.
+ */
+function fakeNamespace(page = Number.POSITIVE_INFINITY) {
   const repos = new Map<string, FakeRepo>();
   let sequence = 0;
   const mint = (repo: FakeRepo, scope: "read" | "write", ttl: number) => {
@@ -84,7 +88,7 @@ function fakeNamespace() {
     },
     listTokens: async () => {
       const tokens = [...repo.tokens.values()].map(({ plaintext: _hidden, ...metadata }) => metadata);
-      return { tokens, total: tokens.length };
+      return { tokens: tokens.slice(0, page), total: tokens.length };
     },
     revokeToken: async (tokenOrId) => {
       for (const token of repo.tokens.values()) {
@@ -668,6 +672,21 @@ describe("revoking every token", () => {
     );
     const res = await call(app, `/artifacts/repos/${repo.name}/credentials`, "alice", { method: "DELETE" });
     expect(await conforming(res, RevokedTokens)).toEqual({ revoked: 2 });
+    const live = [...(namespace.repos.get(repo.name)?.tokens.values() ?? [])].filter((t) => t.state === "active");
+    expect(live).toEqual([]);
+  });
+
+  test("reaches every token the kit minted when the listing keeps revoked ones on its one page", async () => {
+    namespace = fakeNamespace(2);
+    const app = worker();
+    const repo = await createRepo(app, "alice", "docs");
+    for (let i = 0; i < 4; i += 1) {
+      expect((await call(app, `/artifacts/repos/${repo.name}/credentials`, "alice", { method: "POST" })).status).toBe(
+        201,
+      );
+    }
+    const res = await call(app, `/artifacts/repos/${repo.name}/credentials`, "alice", { method: "DELETE" });
+    expect(await conforming(res, RevokedTokens)).toEqual({ revoked: 4 });
     const live = [...(namespace.repos.get(repo.name)?.tokens.values() ?? [])].filter((t) => t.state === "active");
     expect(live).toEqual([]);
   });

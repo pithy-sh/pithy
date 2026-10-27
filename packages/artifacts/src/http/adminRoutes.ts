@@ -244,11 +244,16 @@ export function registerArtifactsAdminRoutes(app: Hono<PithyHonoEnv>, config: Ar
     validate("json", AdminRevokeBody),
     async (c) => {
       const { name } = c.req.valid("param");
+      const store = storeOf(c);
       const binding = artifactsBinding(c.env, config.binding);
-      const view = await revocation(c, { kind: "all", name, tokenId: null }, c.req.valid("json"), async (repo) => ({
-        revoked: await withRepo(binding, repo.name, revokeEveryToken),
-        facts: {},
-      }));
+      const view = await revocation(c, { kind: "all", name, tokenId: null }, c.req.valid("json"), async (repo) => {
+        // Every token the kit handed out, by its record, then whatever the listing still shows live.
+        const recorded = await store.unexpiredTokenIds(repo.name, new Date());
+        return {
+          revoked: await withRepo(binding, repo.name, (handle) => revokeEveryToken(handle, recorded)),
+          facts: {},
+        };
+      });
       return c.json(view satisfies AdminRevocation);
     },
   );

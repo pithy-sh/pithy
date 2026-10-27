@@ -152,13 +152,26 @@ export async function callArtifacts<T>(operation: string, call: () => Promise<T>
 }
 
 /**
- * Revoke every live token, a page at a time until none is left. `listTokens` answers one page with no cursor, so a
- * round that revokes nothing ends it rather than asking again forever. Reaching the next page assumes the listing
- * shows live tokens, as Cloudflare's REST listing does by default (`state=active`); the binding's documentation names
- * no filter, page size or order, so a listing of dead tokens alone ends the loop early.
+ * **Revoke every live token on a repository**: each one the kit recorded, by its id, then whatever the listing still
+ * shows live.
+ *
+ * The records come first because the listing cannot be trusted to reach them. `listTokens` answers one page with no
+ * cursor, so the only way past the first page is to revoke what it shows and ask again, and that works only while the
+ * listing leaves revoked tokens out. A listing that keeps them answers the same first page again, now dead, and the
+ * loop ends with live tokens past it. The kit records every token it hands out before the plaintext leaves the Worker,
+ * and keeps the record past the token's expiry, so revoking by record reaches every token the kit minted whatever the
+ * listing shows. Pass the ids of the records that have not yet expired.
+ *
+ * The listing loop then catches a live token nobody recorded: one minted on the binding by your own code, or over
+ * Cloudflare's REST API. That half still reaches past the first page only while the listing leaves revoked tokens out.
+ * A round that revokes nothing ends it, rather than asking again forever. A recorded token that was already dead
+ * answers `false` and counts as nothing.
  */
-export async function revokeEveryToken(repo: ArtifactsRepoHandle): Promise<number> {
+export async function revokeEveryToken(repo: ArtifactsRepoHandle, recorded: readonly string[] = []): Promise<number> {
   let revoked = 0;
+  for (const id of recorded) {
+    if (await repo.revokeToken(id)) revoked += 1;
+  }
   for (let round = 0; round < 50; round += 1) {
     const live = (await repo.listTokens()).tokens.filter((token) => token.state === "active");
     let progressed = 0;

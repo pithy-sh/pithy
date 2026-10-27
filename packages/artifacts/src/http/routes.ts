@@ -499,7 +499,11 @@ export function registerArtifactsRoutes(options: ArtifactsRoutesOptions): (app: 
       async (c) => {
         const resolved = await resolve(c, c.req.valid("param").name);
         requireOwner(resolved, "revoke every token");
-        const revoked = await withRepo(resolved.binding, resolved.repo.name, revokeEveryToken);
+        // Every token the kit handed out, by its record, then whatever the listing still shows live.
+        const recorded = await resolved.store.unexpiredTokenIds(resolved.repo.name, new Date());
+        const revoked = await withRepo(resolved.binding, resolved.repo.name, (repo) =>
+          revokeEveryToken(repo, recorded),
+        );
         await record(c, resolved, ArtifactsAuditActions.tokensRevoked, { revoked });
         return c.json({ revoked } satisfies RevokedTokens);
       },

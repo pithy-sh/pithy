@@ -64,8 +64,11 @@ interface FakeRepo {
   infoFails?: boolean;
 }
 
-/** The namespace, in memory, answering the way Cloudflare's binding documents. */
-function fakeNamespace() {
+/**
+ * The namespace, in memory, answering the way Cloudflare's binding documents. `listTokens` answers every token in every
+ * state, oldest first, one page of at most `page` with no cursor.
+ */
+function fakeNamespace(page = Number.POSITIVE_INFINITY) {
   const repos = new Map<string, FakeRepo>();
   let sequence = 0;
   const handle = (name: string, repo: FakeRepo): ArtifactsRepoHandle => ({
@@ -81,7 +84,10 @@ function fakeNamespace() {
       repo.tokens.set(token.id, token);
       return { id: token.id, plaintext: `art_v1_${"0".repeat(40)}`, scope, expiresAt: token.expiresAt };
     },
-    listTokens: async () => ({ tokens: [...repo.tokens.values()].map((t) => ({ ...t })), total: repo.tokens.size }),
+    listTokens: async () => ({
+      tokens: [...repo.tokens.values()].slice(0, page).map((t) => ({ ...t })),
+      total: repo.tokens.size,
+    }),
     revokeToken: async (id) => {
       const token = repo.tokens.get(id);
       if (token?.state !== "active") return false;
@@ -549,6 +555,22 @@ describe("revoking every live token", () => {
     expect(again).toEqual({ ...first, replayed: true });
     expect(namespace.repos.get("r1")?.tokens.get(fresh)?.state).toBe("active");
     expect(acts()).toHaveLength(1);
+  });
+
+  test("reaches every token the kit minted when the listing keeps revoked ones on its one page", async () => {
+    namespace = fakeNamespace(2);
+    await seedRepo("r1");
+    const minted = [];
+    for (let i = 0; i < 5; i += 1) minted.push(await mintFor("r1", "bob"));
+    const body = { idempotencyKey: "all-paged", reason: "Suspected leak." };
+
+    const view = await conforming(
+      await revoke(makeApp(), "/artifacts/admin/repos/r1/tokens/revoke", body),
+      AdminRevocation,
+    );
+    expect(view.revoked).toBe(5);
+    const live = minted.filter((id) => namespace.repos.get("r1")?.tokens.get(id)?.state === "active");
+    expect(live).toEqual([]);
   });
 
   test("of two concurrent requests under one key, exactly one records and emits; the other replays it", async () => {

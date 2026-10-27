@@ -73,16 +73,18 @@ describe("withRepo", () => {
 });
 
 describe("revokeEveryToken", () => {
-  /** A repository whose listing answers one page of at most `page` tokens, as Cloudflare's has no cursor. */
-  function paged(live: number, page: number, revokes = true) {
+  /**
+   * A repository whose listing answers one page of at most `page` tokens, oldest first, as Cloudflare's has no cursor.
+   * `listsRevoked` decides the one thing the binding's documentation does not: whether a revoked token is still listed.
+   */
+  function paged(live: number, page: number, revokes = true, listsRevoked = false) {
     const states = Array.from({ length: live }, () => "active" as "active" | "revoked");
     const repo = {
       listTokens: async () => {
-        const tokens = states
+        const every = states
           .map((state, index) => ({ id: `t${index}`, scope: "read" as const, state, createdAt: "", expiresAt: "" }))
-          .filter((token) => token.state === "active")
-          .slice(0, page);
-        return { tokens, total: tokens.length };
+          .filter((token) => listsRevoked || token.state === "active");
+        return { tokens: every.slice(0, page), total: every.length };
       },
       revokeToken: async (id: string) => {
         if (!revokes) return false;
@@ -102,6 +104,37 @@ describe("revokeEveryToken", () => {
   test("stops on a round that revokes nothing, rather than asking forever", async () => {
     const { repo } = paged(2, 10, false);
     expect(await revokeEveryToken(repo)).toBe(0);
+  });
+
+  test("reaches every recorded token when the listing shows revoked ones, which ends its paging at the first page", async () => {
+    const { repo, states } = paged(7, 3, true, true);
+    const recorded = states.map((_, index) => `t${index}`);
+    expect(await revokeEveryToken(repo, recorded)).toBe(7);
+    expect(states.every((state) => state === "revoked")).toBe(true);
+  });
+
+  test("still sweeps the listing for a live token nobody recorded", async () => {
+    const { repo, states } = paged(4, 10, true, true);
+    expect(await revokeEveryToken(repo, ["t0", "t1"])).toBe(4);
+    expect(states.every((state) => state === "revoked")).toBe(true);
+  });
+
+  test("counts a recorded token that was already dead as nothing", async () => {
+    const { repo, states } = paged(3, 10, true, true);
+    states[0] = "revoked";
+    const calls: string[] = [];
+    const counted = {
+      listTokens: async () => {
+        calls.push("list");
+        return repo.listTokens();
+      },
+      revokeToken: async (id: string) => {
+        calls.push(`revoke ${id}`);
+        return states[Number(id.slice(1))] === "active" ? repo.revokeToken(id) : false;
+      },
+    } as unknown as ArtifactsRepoHandle;
+    expect(await revokeEveryToken(counted, ["t0", "t1"])).toBe(2);
+    expect(calls).toEqual(["revoke t0", "revoke t1", "list", "revoke t2", "list"]);
   });
 
   test("answers zero for a repository with nothing live", async () => {
