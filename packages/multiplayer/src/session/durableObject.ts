@@ -567,6 +567,7 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
           winnerUserId: outcome.winnerUserId,
           draw: outcome.draw,
           at: new Date(outcome.resolvedAt),
+          resultId: meta.sessionId,
         },
         multiplayerPeers().leaderboard,
       );

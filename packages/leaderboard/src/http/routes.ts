@@ -9,6 +9,7 @@ import { validate } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
 import type { LeaderboardConfig } from "../config/config";
 import { BOOKMARK_HEADER, leaderboardSession, readBookmark } from "../session/bookmark";
+import { registerLeaderboardAdminRoutes } from "./adminRoutes";
 import { requireAdminScope, requireAuth, requireSubmitScope } from "./guard";
 import {
   type HandlerDeps,
@@ -70,6 +71,8 @@ import {
 export interface LeaderboardRoutesOptions {
   config: LeaderboardConfig;
   basePath?: string;
+  /** Test seam: the management surface's clock. */
+  now?: () => Date;
   /** Test seam: resolve handler deps from the request context. Defaults to the env-based resolver. */
   resolveDeps?: (c: Context<PithyHonoEnv>, write: boolean) => HandlerDeps & { bookmark(): string | null };
 }
@@ -95,7 +98,14 @@ function defaultResolveDeps(config: LeaderboardConfig) {
     if (!auth) {
       throw new InternalError({ detail: "requireAuth() must run before a leaderboard handler resolves deps." });
     }
-    return { config, db: session.db, userId: auth.userId, now: () => new Date(), bookmark: session.bookmark };
+    return {
+      config,
+      db: session.db,
+      d1: session.d1,
+      userId: auth.userId,
+      now: () => new Date(),
+      bookmark: session.bookmark,
+    };
   };
 }
 
@@ -118,7 +128,17 @@ export function registerLeaderboardRoutes(options: LeaderboardRoutesOptions): (a
     return c.json(body as object, status);
   };
 
+  const admin = registerLeaderboardAdminRoutes({
+    config: options.config,
+    basePath: base,
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+
   return (app) => {
+    // The management surface (#817), behind the control plane. Every path sits under a static `admin/`
+    // segment, so it is disjoint from the player routes by construction and its order here is presentation.
+    admin(app);
+
     app.get(
       base,
       describeRoute({

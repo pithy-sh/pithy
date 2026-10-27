@@ -3,12 +3,17 @@
 
 import { describe, expect, it } from "vitest";
 import { LeaderboardBoardRecord } from "./boardRecord";
+import { LeaderboardContribution } from "./contribution";
 import { LeaderboardEntry } from "./entry";
 import { LeaderboardLock } from "./lock";
+import { LeaderboardModeration } from "./moderation";
 import {
   LEADERBOARD_BOARDS_TABLE,
+  LEADERBOARD_CONTRIBUTIONS_TABLE,
   LEADERBOARD_ENTRIES_TABLE,
   LEADERBOARD_LOCKS_TABLE,
+  LEADERBOARD_MODERATIONS_TABLE,
+  LEADERBOARD_STALE_WINDOWS_TABLE,
   leaderboardTables,
 } from "./tables";
 
@@ -24,7 +29,14 @@ describe("table prefixing (CLAUDE.md §Data layer)", () => {
 
   it("names the tables the migration creates", () => {
     expect(Object.keys(leaderboardTables()).sort()).toEqual(
-      [LEADERBOARD_BOARDS_TABLE, LEADERBOARD_ENTRIES_TABLE, LEADERBOARD_LOCKS_TABLE].sort(),
+      [
+        LEADERBOARD_BOARDS_TABLE,
+        LEADERBOARD_CONTRIBUTIONS_TABLE,
+        LEADERBOARD_ENTRIES_TABLE,
+        LEADERBOARD_LOCKS_TABLE,
+        LEADERBOARD_MODERATIONS_TABLE,
+        LEADERBOARD_STALE_WINDOWS_TABLE,
+      ].sort(),
     );
   });
 });
@@ -90,5 +102,70 @@ describe("LeaderboardBoardRecord codec round-trip", () => {
   it("round-trips an all-time board's null window", () => {
     const allTime = { ...record, window: null };
     expect(LeaderboardBoardRecord.parse(LeaderboardBoardRecord.encode(allTime))).toEqual(allTime);
+  });
+});
+
+describe("LeaderboardContribution codec round-trip", () => {
+  it("encodes createdAt to ms-epoch and decodes it back", () => {
+    const contribution = {
+      id: 1,
+      resultId: "session-1",
+      boardId: "points",
+      windowKey: "all",
+      userId: "u1",
+      score: 3,
+      aggregation: "sum" as const,
+      createdAt: new Date(1_700_000_000_000),
+    };
+    const row = LeaderboardContribution.encode(contribution);
+    expect(row.createdAt).toBe(1_700_000_000_000);
+    expect(LeaderboardContribution.parse(row)).toEqual(contribution);
+  });
+});
+
+describe("LeaderboardModeration codec round-trip", () => {
+  const moderation = {
+    id: 1,
+    idempotencyKey: "k1",
+    act: "correct" as const,
+    boardId: "high",
+    windowKey: "all",
+    userId: "u1",
+    lockName: null,
+    reason: "Clock exploit.",
+    before: { kind: "entry" as const, score: 900, visible: true, hidden: false },
+    after: { kind: "entry" as const, score: 40, visible: true, hidden: false },
+    changed: true,
+    connectionId: "c1",
+    actorId: "operator-1",
+    createdAt: new Date(1_700_000_000_000),
+  };
+
+  it("stores before and after as JSON, the flag as 0|1 and the time as ms-epoch, and reads them back", () => {
+    const row = LeaderboardModeration.encode(moderation);
+    expect(typeof row.before).toBe("string");
+    expect(row.changed).toBe(1);
+    expect(row.createdAt).toBe(1_700_000_000_000);
+    expect(LeaderboardModeration.parse(row)).toEqual(moderation);
+  });
+
+  it("round-trips a cleared lock, which leaves no after", () => {
+    const cleared = {
+      ...moderation,
+      act: "clear_lock" as const,
+      boardId: null,
+      windowKey: null,
+      userId: null,
+      lockName: "rank-refresh",
+      before: { kind: "lock" as const, holder: "instance-7", acquiredAt: "2026-06-10T12:00:00.000Z" },
+      after: null,
+    };
+    expect(LeaderboardModeration.parse(LeaderboardModeration.encode(cleared))).toEqual(cleared);
+  });
+
+  it("refuses a state that is neither an entry's nor a lock's", () => {
+    expect(() =>
+      LeaderboardModeration.parse({ ...LeaderboardModeration.encode(moderation), before: '{"kind":"board"}' }),
+    ).toThrow();
   });
 });

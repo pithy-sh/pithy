@@ -3,7 +3,7 @@
   "package": "@pithy-sh/leaderboard",
   "requiredBindings": [{ "type": "d1", "name": "DB" }],
   "peerCapabilities": [],
-  "optionalCapabilities": ["auth"],
+  "optionalCapabilities": ["auth", "controlplane", "audit"],
   "migrationNamespace": "leaderboard",
   "whenToEnable": "Rank your players. Submit a score, read the standings, read your own rank — daily, weekly, calendar-month, calendar-year, or all-time, because a board's window is a CRON expression rather than a fixed list. Boards are config, not database rows. Everything lives in your own D1: closed windows stay for as many windows as you ask for, in plain SQL you can join against your own tables — no platform SDK offers either. One board serves iOS, Android, and web, which is why writes are server-authoritative by default: submissions need the board's submit scope, so a player's device cannot post a score it invented. Entries bind to an authenticated user, so add auth too — without it every route is denied. Read docs/costs.md before you pick a `rank` mode: live rank is correct and free under ~10k players and grows quadratically after that.",
   "scaffold": [
@@ -14,6 +14,7 @@
     "Add `@pithy-sh/auth` if it is not already installed. Leaderboard entries bind to an authenticated user; without auth every route is denied.",
     "Submit scores from your trusted backend. Compose a `resolveScopes` on `@pithy-sh/auth` that answers `leaderboard:submit` for a request your backend proves it sent, over a service binding, mTLS or a caller token, and forward the player's own session beside the proof. Never resolve that scope from the player. packages/auth/docs/server-authoritative.md ranks the three proofs.",
     "Deploy the rank worker (a cron-triggered Workflow) if `rank` is `{ materialize }` or any board sets `retain`/`retainDays`. It can be its own worker or folded into your app worker — it just needs a cron trigger. A live board set that keeps everything (the default) needs no worker.",
+    "Add `controlplane()` if you want a dashboard to read and moderate your boards. `leaderboard:entries:read` reads boards, entries and the refresh lock; `leaderboard:entries:moderate` hides, unhides and corrects an entry, or clears a stale lock, each with a required reason and an audit event. Add `audit()` to keep those events.",
     "Read packages/leaderboard/docs/costs.md before going to production. The `rank` mode you pick at 1k players decides whether 1M costs $1,030 or $75,825."
   ],
   "configOptions": [

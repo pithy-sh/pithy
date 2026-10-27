@@ -12,6 +12,7 @@ import { windowKeyAt } from "../window/schedule";
 import { acquireRefreshLock, releaseRefreshLock, requireLockStaleMs } from "./lock";
 import { type Keyset, REFRESH_BATCH_CHUNKS, type RefreshResult, refreshWindowRanks } from "./materialize";
 import { leaderboardWorkflowRetry } from "./retryPolicy";
+import { clearStale, type StaleWindow, staleWindows } from "./stale";
 import { materializedBoards } from "./worker";
 
 /**
@@ -89,31 +90,42 @@ export class RankRefreshWorkflow extends WorkflowEntrypoint<RankWorkerEnv, unkno
 
     try {
       // Prune first, in its own durable step, so the refresh never ranks rows about to be deleted.
-      await steps.do("prune", () => pruneBoards(db, config.boards, now));
+      await steps.do("prune", () => pruneBoards(this.env.DB, config.boards, now));
 
       for (const board of materializedBoards(config)) {
-        // Only the open window is refreshed; a closed window's ranks were finalized while it was open.
-        const window = windowKeyAt(board.window, now);
-        let cursor: Keyset | null = null;
-        let startRank = 0;
-        let batch = 0;
-        // One step per batch of ~64k entries, threading the cursor. A board of any size completes across
-        // however many steps it needs; each is independently retried by the Workflow runtime.
-        for (;;) {
-          const from: Keyset | undefined = cursor ?? undefined;
-          const result: RefreshResult = await steps.do(`refresh:${board.key}:${batch}`, () =>
-            refreshWindowRanks(db, board, window, {
-              maxChunks: REFRESH_BATCH_CHUNKS,
-              resumeAfter: from,
-              startRank,
-            }),
-          );
-          if (result.complete) break;
-          cursor = result.cursor;
-          startRank = result.ranked;
-          batch += 1;
-          // A batch that stopped without a cursor cannot resume — bail rather than loop forever.
-          if (!cursor) break;
+        // The open window, every pass. A closed window's ranks were finalized while it was open — unless an
+        // act or a void moved it since and marked it stale, so those are read, in a step so a replay
+        // renumbers the same set, and renumbered after it.
+        const open = windowKeyAt(board.window, now);
+        const marked: StaleWindow[] = await steps.do(`stale:${board.key}`, () => staleWindows(db, board.key));
+        const windows = [open, ...marked.map((m) => m.windowKey).filter((key) => key !== open)];
+        for (const window of windows) {
+          // The open window keeps the step names it always had, so an instance mid-flight across a deploy
+          // resumes into the same steps.
+          const name = window === open ? `refresh:${board.key}` : `refresh:${board.key}:${window}`;
+          let cursor: Keyset | null = null;
+          let startRank = 0;
+          let batch = 0;
+          // One step per batch of ~64k entries, threading the cursor. A board of any size completes across
+          // however many steps it needs; each is independently retried by the Workflow runtime.
+          for (;;) {
+            const from: Keyset | undefined = cursor ?? undefined;
+            const result: RefreshResult = await steps.do(`${name}:${batch}`, () =>
+              refreshWindowRanks(db, board, window, {
+                maxChunks: REFRESH_BATCH_CHUNKS,
+                resumeAfter: from,
+                startRank,
+              }),
+            );
+            if (result.complete) break;
+            cursor = result.cursor;
+            startRank = result.ranked;
+            batch += 1;
+            // A batch that stopped without a cursor cannot resume — bail rather than loop forever.
+            if (!cursor) break;
+          }
+          const mark = marked.find((m) => m.windowKey === window);
+          if (mark) await steps.do(`clear-stale:${board.key}:${window}`, () => clearStale(db, board.key, mark));
         }
       }
     } finally {

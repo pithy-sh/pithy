@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { D1Database } from "@cloudflare/workers-types";
 import { assertBoardDefinition } from "../board/registry";
 import type { LeaderboardBoard, LeaderboardConfig } from "../config/config";
 import type { LeaderboardDatabase } from "../data/tables";
-import { entryStore } from "../entry/store";
+import { deleteEntry, entryStore } from "../entry/store";
 import {
   LeaderboardBoardNotFoundError,
   LeaderboardEntryNotFoundError,
@@ -23,6 +24,11 @@ import type { HideBody, SegmentBody, SubmitScoreBody, VisibilityBody } from "./s
 export interface HandlerDeps {
   config: LeaderboardConfig;
   db: LeaderboardDatabase;
+  /**
+   * The D1 binding `db` runs over — this request's session — for a write that is more than one statement
+   * and so must go through `d1.batch()` to be one transaction.
+   */
+  d1: D1Database;
   /** The authenticated player, from the core AuthContext seam. Never from the request body. */
   userId: string;
   now: () => Date;
@@ -186,7 +192,7 @@ export async function removeEntry(
 ): Promise<{ removed: boolean }> {
   const b = board(deps, boardKey);
   const window = readWindow(deps, b, query.window);
-  const removed = await entryStore(deps.db).remove(b.key, window, targetUserId);
+  const removed = await deleteEntry(deps.d1, b.key, window, targetUserId);
   if (!removed) {
     throw new LeaderboardEntryNotFoundError({
       message: "That entry does not exist.",

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { z } from "zod";
 import { BOARD_KEY_PATTERN } from "../config/boardKey";
 import { MAX_SEGMENT_SIZE } from "../rank/segment";
@@ -124,3 +125,109 @@ export const HideBody = z
   })
   .describe("A moderator's hide toggle. Separate from player consent so a player cannot undo it.");
 export type HideBody = z.infer<typeof HideBody>;
+
+// --- The management surface (#817) -------------------------------------------------------------------
+
+/** How long a reason may be. Long enough to explain a ban; short enough that it is not a document. */
+export const MAX_REASON_LENGTH = 1000;
+
+/** How long an idempotency key may be. A UUID fits several times over. */
+const MAX_IDEMPOTENCY_KEY_LENGTH = 255;
+
+/** One page of entries, at most. The same ceiling every management listing in the kit uses. */
+const AdminLimit = z.coerce
+  .number()
+  .int()
+  .min(1)
+  .max(MAX_PAGE_SIZE)
+  .optional()
+  .describe(`How many entries to return, from 1 to ${MAX_PAGE_SIZE}. Defaults to a page a dashboard can render.`);
+
+export const AdminBoardParam = z
+  .object({
+    board: BoardParam.shape.board.describe(
+      "The board a management route addresses. A shape check only; whether it is configured is the handler's 404.",
+    ),
+  })
+  .describe("The `:board` segment of a management route.");
+export type AdminBoardParam = z.infer<typeof AdminBoardParam>;
+
+export const AdminEntryParam = AdminBoardParam.extend({
+  userId: EntryParam.shape.userId.describe("The player whose entry the act addresses."),
+}).describe("The board and player a management act addresses.");
+export type AdminEntryParam = z.infer<typeof AdminEntryParam>;
+
+export const AdminEntriesQuery = z
+  .object({
+    window: WindowQuery.shape.window,
+    cursor: z
+      .string()
+      .max(512)
+      .optional()
+      .describe("Where to resume, from the previous page's `nextCursor`. Opaque; a malformed one is a first page."),
+    limit: AdminLimit,
+    userId: EntryParam.shape.userId
+      .optional()
+      .describe("Read one player's entry in this window, rather than the whole board."),
+    hidden: z
+      .enum(["true", "false"])
+      .optional()
+      .describe("`true` for hidden entries only, `false` for entries not hidden. Omit for both."),
+  })
+  .describe("Which window of a board to read, filtered how, and where to resume.");
+export type AdminEntriesQuery = z.infer<typeof AdminEntriesQuery>;
+
+/** What every management act carries: who may replay it, and why it was done. */
+const ActBody = z.object({
+  idempotencyKey: z
+    .string()
+    .min(1)
+    .max(MAX_IDEMPOTENCY_KEY_LENGTH)
+    .describe(
+      "A key the client mints once per act, such as a UUID. Sending the same key again answers what the first request did, and changes and emits nothing. The same key on a different act is refused.",
+    ),
+  reason: z
+    .string()
+    .trim()
+    .min(1)
+    .max(MAX_REASON_LENGTH)
+    .describe("Why, in the operator's words. Required, recorded in the entry's history and on the audit event."),
+});
+
+export const EntryActBody = ActBody.extend({
+  window: WindowQuery.shape.window.describe(
+    "The window the entry is in — the ISO key of a window, or `all` on an all-time board. Omit for the one open now.",
+  ),
+}).describe("A hide or unhide: the entry's window, an idempotency key, and a reason.");
+export type EntryActBody = z.infer<typeof EntryActBody>;
+
+export const CorrectEntryBody = EntryActBody.extend({
+  score: z
+    .number()
+    .finite()
+    .describe("The score the entry should hold. Held to the board's `min` and `max`, as a submission is."),
+}).describe("A score correction: the entry's window, the new score, an idempotency key, and a reason.");
+export type CorrectEntryBody = z.infer<typeof CorrectEntryBody>;
+
+export const LockParam = z
+  .object({
+    name: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z][a-z0-9-]*$/, "A lock name is lowercase letters, digits and dashes.")
+      .describe("The lock to clear, as the lock read names it: `rank-refresh`."),
+  })
+  .describe("The `:name` segment of the lock route.");
+export type LockParam = z.infer<typeof LockParam>;
+
+export const ClearLockBody = ActBody.extend({
+  holder: z
+    .string()
+    .min(1)
+    .max(255)
+    .describe(
+      "The holder the lock read showed. A lock that has since changed hands is refused rather than cleared, so a clear can only release the stale holder the operator saw.",
+    ),
+}).describe("A lock clear: the holder it was taken by, an idempotency key, and a reason.");
+export type ClearLockBody = z.infer<typeof ClearLockBody>;

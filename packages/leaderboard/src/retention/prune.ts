@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { D1Database } from "@cloudflare/workers-types";
 import type { LeaderboardBoard } from "../config/config";
-import type { LeaderboardDatabase } from "../data/tables";
-import { entryStore } from "../entry/store";
+import { pruneWindowsBefore } from "../entry/store";
 import { previousWindowKeys, windowKeyAt } from "../window/schedule";
 
 /**
@@ -22,11 +22,14 @@ import { previousWindowKeys, windowKeyAt } from "../window/schedule";
  *   - `retain: N`     — keep the newest N closed windows. A product limit ("browse the last 12 weeks").
  *   - `retainDays: N` — delete windows whose data is older than N days. A compliance limit.
  *
+ * Either way a pruned window takes all of its data with it: its entries, what each result contributed to
+ * them, and the moderation history of acts on them (`pruneWindowsBefore`). The count reported is entries.
+ *
  * An all-time board never closes a window, so retention does not apply to it.
  */
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export async function pruneBoard(db: LeaderboardDatabase, board: LeaderboardBoard, now: Date): Promise<number> {
+export async function pruneBoard(d1: D1Database, board: LeaderboardBoard, now: Date): Promise<number> {
   if (board.window === undefined) return 0;
 
   if (board.retain !== undefined) {
@@ -36,7 +39,7 @@ export async function pruneBoard(db: LeaderboardDatabase, board: LeaderboardBoar
     // D1's 100-bound-parameter cap once `retain` reaches ~98 (a daily board keeping a year is retain 365).
     const closed = previousWindowKeys(board.window, now, board.retain);
     const oldestKept = closed.length > 0 ? (closed[closed.length - 1] as string) : windowKeyAt(board.window, now);
-    return entryStore(db).pruneWindowsBefore(board.key, oldestKept);
+    return pruneWindowsBefore(d1, board.key, oldestKept);
   }
 
   if (board.retainDays !== undefined) {
@@ -44,7 +47,7 @@ export async function pruneBoard(db: LeaderboardDatabase, board: LeaderboardBoar
     // whose tail is still within the retention horizon. Its key is the cutoff — delete windows before it.
     // Window keys are ISO instants, so a lexicographic `<` is a chronological one.
     const cutoff = windowKeyAt(board.window, new Date(now.getTime() - board.retainDays * DAY_MS));
-    return entryStore(db).pruneWindowsBefore(board.key, cutoff);
+    return pruneWindowsBefore(d1, board.key, cutoff);
   }
 
   // Neither limit set: keep everything. The default.
@@ -87,7 +90,7 @@ export type PruneOutcome =
  * The board key is this capability's own configuration and is the only thing anybody can act on.
  */
 export async function pruneBoards(
-  db: LeaderboardDatabase,
+  d1: D1Database,
   boards: readonly LeaderboardBoard[],
   now: Date,
 ): Promise<PruneOutcome> {
@@ -95,7 +98,7 @@ export async function pruneBoards(
   const unpruned: string[] = [];
   for (const board of boards) {
     try {
-      deleted += await pruneBoard(db, board, now);
+      deleted += await pruneBoard(d1, board, now);
     } catch {
       unpruned.push(board.key);
     }

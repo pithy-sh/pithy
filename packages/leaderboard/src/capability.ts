@@ -4,11 +4,11 @@
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { scopeGatesOf } from "@pithy-sh/core/src/http/scopeGates";
-import type { Migration } from "kysely/migration";
 import { LeaderboardConfig, type LeaderboardConfigInput, materializeSchedule } from "./config/config";
 import { leaderboardTables } from "./data/tables";
 import { registerLeaderboardRoutes } from "./http/routes";
-import { leaderboard_0001_entries } from "./migrations/0001_entries";
+import { leaderboardAdminRoutes } from "./http/scopes";
+import { LEADERBOARD_MIGRATIONS } from "./migrations/all";
 import { type LeaderboardPeer, leaderboardPeer } from "./peer";
 import { leaderboardExampleSeed } from "./seeds/example";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
@@ -57,11 +57,12 @@ export function leaderboard(options: LeaderboardOptions = { boards: [] }): Leade
   // first submission at 3am.
   const resolved = LeaderboardConfig.parse(configInput);
 
-  const migrations: Record<string, Migration> = { "0001_entries": leaderboard_0001_entries };
-
   const requiredBindings: BindingSpecInput[] = [{ type: "d1", name: "DB" }];
 
-  const routes = registerLeaderboardRoutes({ config: resolved, basePath });
+  // Resolved once, here, and handed to both the router and the manifest, so the advertised admin paths
+  // and the mounted ones cannot disagree about where anything is.
+  const mountPath = basePath ?? "/leaderboard";
+  const routes = registerLeaderboardRoutes({ config: resolved, basePath: mountPath });
   const capability = defineCapability({
     name: "leaderboard",
     // The package this capability ships in and the version it ships at, both stamped by
@@ -77,10 +78,12 @@ export function leaderboard(options: LeaderboardOptions = { boards: [] }): Leade
         binding: "DB",
         tables: leaderboardTables(),
         migrationOrder: LEADERBOARD_MIGRATION_ORDER,
-        migrations,
+        migrations: LEADERBOARD_MIGRATIONS,
       },
     },
     routes,
+    // The management surface a client composes its calls from, with the mount path actually used (#817).
+    adminRoutes: leaderboardAdminRoutes(mountPath),
     // Read off the routes above rather than listed beside them, so `pithy doctor` names exactly the gates
     // this config mounted — a gate the config switched off is not here (#560).
     scopeGates: scopeGatesOf(routes),

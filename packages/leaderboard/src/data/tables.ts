@@ -6,8 +6,11 @@ import { createDatabase, type DatabaseSchema } from "@pithy-sh/core/src/data/db"
 import type { Kysely } from "kysely";
 import type { z } from "zod";
 import { LeaderboardBoardRecord } from "./boardRecord";
+import { LeaderboardContribution } from "./contribution";
 import { LeaderboardEntry } from "./entry";
 import { LeaderboardLock } from "./lock";
+import { LeaderboardModeration } from "./moderation";
+import { LeaderboardStaleWindow } from "./staleWindow";
 
 /** The entry table. `CamelCasePlugin` snake-cases it to `pithy_leaderboard_entries` in the DDL. */
 export const LEADERBOARD_ENTRIES_TABLE = "pithyLeaderboardEntries";
@@ -15,6 +18,12 @@ export const LEADERBOARD_ENTRIES_TABLE = "pithyLeaderboardEntries";
 export const LEADERBOARD_BOARDS_TABLE = "pithyLeaderboardBoards";
 /** The advisory-lock table. `CamelCasePlugin` snake-cases it to `pithy_leaderboard_locks`. */
 export const LEADERBOARD_LOCKS_TABLE = "pithyLeaderboardLocks";
+/** What each result put on each entry. `CamelCasePlugin` snake-cases it to `pithy_leaderboard_contributions`. */
+export const LEADERBOARD_CONTRIBUTIONS_TABLE = "pithyLeaderboardContributions";
+/** The moderation history. `CamelCasePlugin` snake-cases it to `pithy_leaderboard_moderations`. */
+export const LEADERBOARD_MODERATIONS_TABLE = "pithyLeaderboardModerations";
+/** Windows waiting for a rank renumber. `CamelCasePlugin` snake-cases it to `pithy_leaderboard_stale_windows`. */
+export const LEADERBOARD_STALE_WINDOWS_TABLE = "pithyLeaderboardStaleWindows";
 
 /** The leaderboard tables map. All are always present — none is behind a config flag. */
 export function leaderboardTables(): Record<string, z.ZodObject> {
@@ -22,6 +31,9 @@ export function leaderboardTables(): Record<string, z.ZodObject> {
     [LEADERBOARD_ENTRIES_TABLE]: LeaderboardEntry,
     [LEADERBOARD_BOARDS_TABLE]: LeaderboardBoardRecord,
     [LEADERBOARD_LOCKS_TABLE]: LeaderboardLock,
+    [LEADERBOARD_CONTRIBUTIONS_TABLE]: LeaderboardContribution,
+    [LEADERBOARD_MODERATIONS_TABLE]: LeaderboardModeration,
+    [LEADERBOARD_STALE_WINDOWS_TABLE]: LeaderboardStaleWindow,
   };
 }
 
@@ -30,14 +42,13 @@ export type LeaderboardTables = {
   [LEADERBOARD_ENTRIES_TABLE]: typeof LeaderboardEntry;
   [LEADERBOARD_BOARDS_TABLE]: typeof LeaderboardBoardRecord;
   [LEADERBOARD_LOCKS_TABLE]: typeof LeaderboardLock;
+  [LEADERBOARD_CONTRIBUTIONS_TABLE]: typeof LeaderboardContribution;
+  [LEADERBOARD_MODERATIONS_TABLE]: typeof LeaderboardModeration;
+  [LEADERBOARD_STALE_WINDOWS_TABLE]: typeof LeaderboardStaleWindow;
 };
 export type LeaderboardDatabase = Kysely<DatabaseSchema<LeaderboardTables>>;
 
 /** Build the leaderboard database from the `DB` binding (CamelCasePlugin installed). */
 export function leaderboardDatabase(d1: D1Database): LeaderboardDatabase {
-  return createDatabase(d1, {
-    [LEADERBOARD_ENTRIES_TABLE]: LeaderboardEntry,
-    [LEADERBOARD_BOARDS_TABLE]: LeaderboardBoardRecord,
-    [LEADERBOARD_LOCKS_TABLE]: LeaderboardLock,
-  }) as unknown as LeaderboardDatabase;
+  return createDatabase(d1, leaderboardTables()) as unknown as LeaderboardDatabase;
 }

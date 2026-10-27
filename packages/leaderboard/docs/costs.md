@@ -54,6 +54,8 @@ The write figures rest on one number: rows written per submission per window. It
 - The first-ever submission for a player writes **3** (both indexes), amortized to almost nothing across their submissions.
 - A guarded non-improving submission writes **0**.
 
+Those are a player's own submissions. A result published by `@pithy-sh/multiplayer` also writes a row to `pithy_leaderboard_contributions`, with its indexes, and the entry's `result_id` index, so a void can find what it put there. The figures above do not price that. A plain submission to an entry no result wrote writes none of it, because the `result_id` index is partial, over the rows that carry one. A plain submission that replaces a result-written score on a `best` or `latest` board clears the entry's `result_id`, so it also drops that entry's row from the `result_id` index; a `sum` board keeps the stored id and writes no extra row. That case is not measured either.
+
 The entries table uses a plain `INTEGER PRIMARY KEY`, not `AUTOINCREMENT`, on purpose: autoincrement would add a `sqlite_sequence` write to *every* upsert — even a guarded no-op, because SQLite reserves the sequence value before it detects the conflict — turning the free no-op back into a billed one. A one-line schema choice keeps the lever sharp.
 
 ## The two walls sit in different places

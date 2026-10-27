@@ -16,6 +16,12 @@ export interface PublishInput {
   draw: boolean;
   /** When the session resolved — the instant the window is computed from and the score is stamped with. */
   at: Date;
+  /**
+   * The session's id, which is its result's id. The leaderboard records it on every entry it writes, so a
+   * voided result can take back exactly what it put on the board, and a retried publish folds nothing twice
+   * (#817).
+   */
+  resultId: string;
 }
 
 /**
@@ -46,7 +52,7 @@ export async function publishResultToLeaderboard(
       detail: `Board "${config.board}" was configured on the game and multiplayer() found no leaderboard among the composed capabilities.`,
     });
   }
-  const { ALL_TIME_WINDOW, LeaderboardBoard, entryStore, leaderboardDatabase, windowKeyAt } = peer;
+  const { ALL_TIME_WINDOW, LeaderboardBoard, entryStore, leaderboardDatabase, windowKeyAt, submitResult } = peer;
   const board = LeaderboardBoard.parse({
     key: config.board,
     direction: config.direction,
@@ -62,6 +68,20 @@ export async function publishResultToLeaderboard(
       : userId === input.winnerUserId
         ? config.points.win
         : config.points.loss;
-    await store.submit(board, windowKey, userId, points, input.at, true);
+    // A leaderboard that records results takes the session's id with the score. One that predates it (#817)
+    // has no `submitResult` on its peer surface, and gets the plain submission it always got.
+    if (submitResult) {
+      await submitResult(d1, {
+        board,
+        windowKey,
+        userId,
+        score: points,
+        at: input.at,
+        visibleByDefault: true,
+        resultId: input.resultId,
+      });
+    } else {
+      await store.submit(board, windowKey, userId, points, input.at, true);
+    }
   }
 }

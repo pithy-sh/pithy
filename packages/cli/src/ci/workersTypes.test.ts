@@ -138,6 +138,10 @@ const DECLARED_ONLY: Record<string, string> = {
  * `organization` by four: `lifecycle/hooks.ts` and `lifecycle/transitions.ts`, the same pair auth's lifecycle added,
  * and `purge/contribution.ts` and `purge/workflow.ts`, which erase an organization through the env's own D1 — and
  * `media` and `storage` by one each: their `purge/contribution.ts`, which erases the organization's records and bytes.
+ * The leaderboard's management surface (#817) moved `leaderboard` by six:
+ * `entry/result.ts` and `admin/moderate.ts`, which batch an entry's change with its record on D1;
+ * `http/adminRoutes.ts`, which reads the binding off `env`; and `entry/store.ts`, `http/handlers.ts` and
+ * `retention/prune.ts`, which delete an entry or a window together with its contributions in one batch.
  */
 const IMPORTERS: Record<string, number> = {
   "packages/artifacts": 2,
@@ -147,7 +151,7 @@ const IMPORTERS: Record<string, number> = {
   "packages/cloudflare": 2,
   "packages/core": 17,
   "packages/email": 9,
-  "packages/leaderboard": 5,
+  "packages/leaderboard": 11,
   "packages/ledger": 4,
   "packages/matchmaking": 8,
   "packages/media": 8,

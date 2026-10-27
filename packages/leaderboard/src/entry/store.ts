@@ -1,10 +1,18 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { type SqlBool, sql } from "kysely";
+import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types";
+import { type CompiledQuery, type SqlBool, sql } from "kysely";
 import type { LeaderboardBoard } from "../config/config";
 import { LeaderboardEntry } from "../data/entry";
-import { LEADERBOARD_ENTRIES_TABLE, type LeaderboardDatabase } from "../data/tables";
+import {
+  LEADERBOARD_CONTRIBUTIONS_TABLE,
+  LEADERBOARD_ENTRIES_TABLE,
+  LEADERBOARD_MODERATIONS_TABLE,
+  LEADERBOARD_STALE_WINDOWS_TABLE,
+  type LeaderboardDatabase,
+  leaderboardDatabase,
+} from "../data/tables";
 
 /**
  * Reads and writes over `pithy_leaderboard_entries`.
@@ -34,10 +42,6 @@ export interface EntryStore {
   setVisibility(boardId: string, windowKey: string, userId: string, visible: boolean): Promise<boolean>;
   /** Hide or unhide an entry as a moderator. False if they have no entry. */
   hide(boardId: string, windowKey: string, userId: string, hidden: boolean): Promise<boolean>;
-  /** Delete an entry outright. False if they have no entry. */
-  remove(boardId: string, windowKey: string, userId: string): Promise<boolean>;
-  /** Delete entries on this board in windows chronologically before `cutoffWindow`. Returns rows deleted. */
-  pruneWindowsBefore(boardId: string, cutoffWindow: string): Promise<number>;
 }
 
 /**
@@ -56,6 +60,7 @@ export function submitQuery(
   score: number,
   at: Date,
   visibleByDefault: boolean,
+  resultId?: string,
 ) {
   const insert = LeaderboardEntry.encode({
     id: 0,
@@ -68,6 +73,7 @@ export function submitQuery(
     visible: visibleByDefault,
     hidden: false,
     rank: null,
+    ...(resultId === undefined ? {} : { resultId }),
   }) as Record<string, unknown>;
   // `id` is autoincrement — let SQLite assign it rather than inserting the placeholder above.
   delete insert.id;
@@ -85,38 +91,78 @@ export function submitQuery(
   // score, so they always write and this guard never applies to them.
   const guardNoOps = board.aggregation === "best" && !board.trackActivity;
 
-  const conflict = db
-    .insertInto(LEADERBOARD_ENTRIES_TABLE)
-    // biome-ignore lint/suspicious/noExplicitAny: the encoded row is the schema's `z.input` side; Kysely's insert type is derived from it.
-    .values(insert as any)
-    .onConflict((oc) => {
-      const updated = oc.columns(["boardId", "windowKey", "userId"]).doUpdateSet(() => {
-        // A submission advances submittedAt when it writes. With `trackActivity: false` a non-improving
-        // `best` submission is skipped by the guard below and never reaches here, so submittedAt tracks
-        // progress rather than activity. Neither the player's consent nor a moderator's hide is the
-        // submitter's to reset, so `visible` and `hidden` are absent from every branch.
-        const submittedAt = sql<number>`excluded.submitted_at`;
-        if (board.aggregation === "latest") {
-          return { submittedAt, score: sql<number>`excluded.score`, achievedAt: sql<number>`excluded.achieved_at` };
-        }
-        if (board.aggregation === "sum") {
-          return {
-            submittedAt,
-            score: sql<number>`${entries}.score + excluded.score`,
-            achievedAt: sql<number>`excluded.achieved_at`,
-          };
-        }
-        // `best`: take the new score only if it improves in the board's direction. On an equal score
-        // both branches keep the stored achievedAt, so a replay cannot cost a player the first-to-reach
-        // tiebreak they already earned.
+  // A result-sourced submission folds in once per result (#817). The contribution row its batch writes
+  // second is what a retry finds, so both halves of the upsert stand down when it is already there — the
+  // insert by selecting nothing, the update by its `WHERE`. A plain submission compiles exactly as before.
+  const unrecorded =
+    resultId === undefined
+      ? undefined
+      : sql<SqlBool>`not exists ${db
+          .selectFrom(LEADERBOARD_CONTRIBUTIONS_TABLE)
+          .select(sql.lit(1).as("one"))
+          .where("resultId", "=", resultId)
+          .where("boardId", "=", board.key)
+          .where("windowKey", "=", windowKey)
+          .where("userId", "=", userId)}`;
+
+  const columns = Object.keys(insert);
+  const rows =
+    unrecorded === undefined
+      ? db
+          .insertInto(LEADERBOARD_ENTRIES_TABLE)
+          // biome-ignore lint/suspicious/noExplicitAny: the encoded row is the schema's `z.input` side; Kysely's insert type is derived from it.
+          .values(insert as any)
+      : db
+          .insertInto(LEADERBOARD_ENTRIES_TABLE)
+          // biome-ignore lint/suspicious/noExplicitAny: the encoded row's own keys, which are the table's columns.
+          .columns(columns as any)
+          .expression(
+            db
+              .selectNoFrom(columns.map((column) => sql.val(insert[column]).as(column)))
+              // The `WHERE` is also what SQLite needs to read `ON CONFLICT` as the upsert's, not the select's.
+              .where(unrecorded),
+          );
+
+  const conflict = rows.onConflict((oc) => {
+    const updated = oc.columns(["boardId", "windowKey", "userId"]).doUpdateSet(() => {
+      // A submission advances submittedAt when it writes. With `trackActivity: false` a non-improving
+      // `best` submission is skipped by the guard below and never reaches here, so submittedAt tracks
+      // progress rather than activity. Neither the player's consent nor a moderator's hide is the
+      // submitter's to reset, so `visible` and `hidden` are absent from every branch.
+      const submittedAt = sql<number>`excluded.submitted_at`;
+      // The result id follows the score it names (#817). Whatever now holds a `latest` board's score wrote
+      // it, so a plain submission clears it; a `best` board moves it only with an improving score; a `sum`
+      // board keeps the last result folded in, because a plain submission added to the total rather than
+      // replacing it.
+      if (board.aggregation === "latest") {
         return {
           submittedAt,
-          score: sql<number>`CASE WHEN ${improves} THEN excluded.score ELSE ${entries}.score END`,
-          achievedAt: sql<number>`CASE WHEN ${improves} THEN excluded.achieved_at ELSE ${entries}.achieved_at END`,
+          score: sql<number>`excluded.score`,
+          achievedAt: sql<number>`excluded.achieved_at`,
+          resultId: sql<string | null>`excluded.result_id`,
         };
-      });
-      return guardNoOps ? updated.where(improves) : updated;
+      }
+      if (board.aggregation === "sum") {
+        return {
+          submittedAt,
+          score: sql<number>`${entries}.score + excluded.score`,
+          achievedAt: sql<number>`excluded.achieved_at`,
+          resultId: sql<string | null>`coalesce(excluded.result_id, ${entries}.result_id)`,
+        };
+      }
+      // `best`: take the new score only if it improves in the board's direction. On an equal score
+      // both branches keep the stored achievedAt, so a replay cannot cost a player the first-to-reach
+      // tiebreak they already earned.
+      return {
+        submittedAt,
+        score: sql<number>`CASE WHEN ${improves} THEN excluded.score ELSE ${entries}.score END`,
+        achievedAt: sql<number>`CASE WHEN ${improves} THEN excluded.achieved_at ELSE ${entries}.achieved_at END`,
+        resultId: sql<string | null>`CASE WHEN ${improves} THEN excluded.result_id ELSE ${entries}.result_id END`,
+      };
     });
+    const guarded = guardNoOps ? updated.where(improves) : updated;
+    return unrecorded === undefined ? guarded : guarded.where(unrecorded);
+  });
 
   return conflict;
 }
@@ -159,26 +205,86 @@ export function entryStore(db: LeaderboardDatabase): EntryStore {
         .executeTakeFirst();
       return Number(result.numUpdatedRows) > 0;
     },
-
-    async remove(boardId, windowKey, userId) {
-      const result = await db
-        .deleteFrom(LEADERBOARD_ENTRIES_TABLE)
-        .where("boardId", "=", boardId)
-        .where("windowKey", "=", windowKey)
-        .where("userId", "=", userId)
-        .executeTakeFirst();
-      return Number(result.numDeletedRows) > 0;
-    },
-
-    async pruneWindowsBefore(boardId, cutoffWindow) {
-      // Window keys are ISO instants, so `<` is chronological. `all` is never a windowed board's key, so
-      // an all-time window (which retention never targets) cannot be caught here.
-      const result = await db
-        .deleteFrom(LEADERBOARD_ENTRIES_TABLE)
-        .where("boardId", "=", boardId)
-        .where("windowKey", "<", cutoffWindow)
-        .executeTakeFirst();
-      return Number(result.numDeletedRows);
-    },
   };
+}
+
+/** Bind a compiled statement to D1, so it can join a `batch`. */
+function prepared(d1: D1Database, compiled: CompiledQuery): D1PreparedStatement {
+  return d1.prepare(compiled.sql).bind(...(compiled.parameters as unknown[]));
+}
+
+/**
+ * Delete an entry outright, and what every result put on it (#817). False if the player has no entry.
+ *
+ * The deletes take a D1 binding rather than the Kysely database because they are more than one statement,
+ * and only `d1.batch()` makes them one transaction. A contribution must never outlive its entry: a void
+ * reads it as "this result's points are in whatever entry this player holds now", so one left behind would
+ * take points back out of the player's next entry, which never held them, or delete that entry outright.
+ */
+export async function deleteEntry(
+  d1: D1Database,
+  boardId: string,
+  windowKey: string,
+  userId: string,
+): Promise<boolean> {
+  const db = leaderboardDatabase(d1);
+  const entry = db
+    .deleteFrom(LEADERBOARD_ENTRIES_TABLE)
+    .where("boardId", "=", boardId)
+    .where("windowKey", "=", windowKey)
+    .where("userId", "=", userId)
+    .compile();
+  const contributions = db
+    .deleteFrom(LEADERBOARD_CONTRIBUTIONS_TABLE)
+    .where("boardId", "=", boardId)
+    .where("windowKey", "=", windowKey)
+    .where("userId", "=", userId)
+    .compile();
+  const [deleted] = await d1.batch([prepared(d1, entry), prepared(d1, contributions)]);
+  return (deleted?.meta.changes ?? 0) > 0;
+}
+
+/**
+ * Delete everything on this board in windows chronologically before `cutoffWindow`, in one transaction.
+ * Returns the entries deleted.
+ *
+ * Everything means every row that names one of those windows: the entries, what each result contributed to
+ * them, the moderation history of acts on them, and any mark waiting for the refresh. `retainDays` is a compliance limit, and a contribution
+ * or a moderation's before and after hold a player's id and score as surely as the entry does. A moderation
+ * kept past its window would also be audit history for an entry nobody can find any more. A cleared lock's
+ * history names no window, so retention never reaches it.
+ *
+ * Window keys are ISO instants, so `<` is chronological. `all` is never a windowed board's key, so an
+ * all-time window (which retention never targets) cannot be caught here. Each table's
+ * `(boardId, windowKey, …)` index serves its delete.
+ */
+export async function pruneWindowsBefore(d1: D1Database, boardId: string, cutoffWindow: string): Promise<number> {
+  const db = leaderboardDatabase(d1);
+  const entries = db
+    .deleteFrom(LEADERBOARD_ENTRIES_TABLE)
+    .where("boardId", "=", boardId)
+    .where("windowKey", "<", cutoffWindow)
+    .compile();
+  const contributions = db
+    .deleteFrom(LEADERBOARD_CONTRIBUTIONS_TABLE)
+    .where("boardId", "=", boardId)
+    .where("windowKey", "<", cutoffWindow)
+    .compile();
+  const moderations = db
+    .deleteFrom(LEADERBOARD_MODERATIONS_TABLE)
+    .where("boardId", "=", boardId)
+    .where("windowKey", "<", cutoffWindow)
+    .compile();
+  const stale = db
+    .deleteFrom(LEADERBOARD_STALE_WINDOWS_TABLE)
+    .where("boardId", "=", boardId)
+    .where("windowKey", "<", cutoffWindow)
+    .compile();
+  const [deleted] = await d1.batch([
+    prepared(d1, entries),
+    prepared(d1, contributions),
+    prepared(d1, moderations),
+    prepared(d1, stale),
+  ]);
+  return deleted?.meta.changes ?? 0;
 }

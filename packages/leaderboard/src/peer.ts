@@ -3,6 +3,7 @@
 
 import { LeaderboardBoard } from "./config/config";
 import { leaderboardDatabase } from "./data/tables";
+import { submitResult, voidResult } from "./entry/result";
 import { entryStore } from "./entry/store";
 import { ALL_TIME_WINDOW, windowKeyAt } from "./window/schedule";
 
@@ -24,6 +25,13 @@ export const leaderboardPeer = {
   entryStore,
   ALL_TIME_WINDOW,
   windowKeyAt,
+  /**
+   * Fold a result's score in once, recording which result it was (#817). A dependent prefers it to
+   * `entryStore(…).submit` when it is present, and falls back on a leaderboard that predates it.
+   */
+  submitResult,
+  /** Take back everything one result put on every board — the void cascade's leaderboard consumer (#817, #820). */
+  voidResult,
 } as const;
 
 /** The leaderboard's peer surface, by type — what `leaderboardPeer` holds. */
