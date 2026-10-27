@@ -56,7 +56,7 @@ Three structural reasons it cannot be a capability composed into the adopter's W
 
 And it is not hosted, by us or by anyone, because a hosted server would hold the signing key and would put a third party in the path of an adopter administering their own system.
 
-**It is a second transport over the client the CLI already is.** `pithy dashboard connect | rotate | revoke-key | disconnect | status` is a control-plane client today. The JWS primitives are in core. MCP is a different front end on the same client.
+**It is a second transport over the client the CLI already is.** `pithy dashboard connect | rotate | revoke-key | revoke-trust | disconnect | status` is a control-plane client today. The JWS primitives are in core. MCP is a different front end on the same client.
 
 **The tool list derives from the manifest.** `GET /control-plane/manifest` already reports every admin route with its method, its mounted path and the scope it requires — a tool definition in all but name. So the server asks the three questions a dashboard pane asks: does this Worker compose the capability, does it declare this route, and were we granted the scope. A tool that fails any of them is **not offered**, rather than offered and refused.
 
@@ -188,7 +188,11 @@ Four rules carry over, three of them already enforced in that module:
 - **The claims check is the boundary, not the signature.** An identity provider signs for everybody with the same keys. A trust with an unconstrained subject accepts every workload that provider serves, so it is **refused at registration** rather than discouraged.
 - **The verification order is a security property.** Pin the algorithm to a literal before touching a key; resolve the key by `kid` from the issuer's published set and never from the token; verify over the exact received segments; read claims only after.
 - **The claims become data here, and that is a deliberate departure.** In a webhook the predicate belongs to the route, because whoever wrote the route knows the legitimate sender. A connection's trust is per adopter, set at registration, by the party who also grants the scopes — so it is a stored matcher, validated on the way in.
-- **An identity assertion proves who, not what.** A JWS names one scope for one call; a bearer token does not, so anyone holding a live one may send any body until it expires. Either verify the token per call and still require the scope named in the request, or exchange it once for a short-lived credential and sign per call. The first is simpler; the second keeps every property.
+- **An identity assertion proves who, not what.** A JWS names one scope for one call; a bearer token does not, so anyone holding a live one may send any body until it expires.
+
+**The decision: verify the token per call, and the call still names its scope** (settled 2026-10-26, #722). Every call presents the workload's token on `pithy-control-plane-oidc`, names the trust on `pithy-control-plane-trust`, and names the one scope it exercises on `pithy-control-plane-scope`. The seam verifies the token on every call against the trust's issuer, audience and claims, through `verifyOidcToken`'s own ordering, and checks the named scope against the connection's grant exactly as it does for a key — a valid token naming an ungranted scope is refused as a key's would be. `packages/core/src/controlPlane/http/verifyTrust.ts` is the implementation.
+
+**Why an exchange was not taken.** Trading the token once for a short-lived credential would keep every property of the key path, and it would put a key on the workload's host: whatever it was exchanged for has to be held somewhere between calls, which is the custody a trust exists to remove. So there is no exchange route, and a workload calling under a trust cannot register or expire a key either, whatever its grant — that would be an exchange by another name. What remains is stated rather than hidden: a captured token is replayable against this one audience until it expires, which is the provider's lifetime, minutes, and the same bound as revocation's latency. There is no `jti` to spend, because one token serves every call in its job.
 
 ### 6.2.1 Registering one
 
@@ -199,10 +203,13 @@ pithy dashboard connect --env prod \
   --oidc-issuer https://token.actions.githubusercontent.com \
   --oidc-claim repository_id=1262274726 \
   --oidc-claim environment=leed-release \
+  --kind agent \
   --purpose 'nightly audit summarizer'
 ```
 
-**No `--scope` there, deliberately.** At a terminal the command lists every operation the Worker exposes, in each capability's own words, preselected to the derived default, with `a` to toggle all and `i` to invert — and **`--scope` answers that same question non-interactively**, narrowing to exactly what is passed. For an agent the prompt is the better path and should stay the documented one: choosing what a standing credential may do is precisely the decision a human should be shown rather than type from memory. `--scope` is for a scripted or CI registration, and `--scope all` is the `a` key without a terminal.
+That is the trust registering a new connection, so `--kind` and `--purpose` are required as they are for `--public-key`. On an environment that already has a connection, the trust joins it instead: drop `--kind` and `--purpose`, which that connection already holds.
+
+**No `--scope` there, deliberately.** When the trust registers a new connection, at a terminal the command lists every operation the Worker exposes, in each capability's own words, preselected to the derived default, with `a` to toggle all and `i` to invert — and **`--scope` answers that same question non-interactively**, narrowing to exactly what is passed. For an agent the prompt is the better path and should stay the documented one: choosing what a standing credential may do is precisely the decision a human should be shown rather than type from memory. `--scope` is for a scripted or CI registration, and `--scope all` is the `a` key without a terminal.
 
 Passing it skips the question and nothing else: the address is still resolved and printed, the default is still derived from what the Worker declares, and an explicitly empty selection is still passed through as empty rather than quietly collapsed into the default.
 
@@ -216,7 +223,7 @@ Passing it skips the question and nothing else: the address is still resolved an
 
 **And this removes a question that would otherwise have to be asked.** Matching `sub` would mean knowing whether a repository predates GitHub's 2026-07-15 immutable default, because the string differs either side of it. `repository_id` is present as a claim in both eras, so the question never arises — the cutover is a `sub` problem and matching claims is not subject to it.
 
-**The grant is the same surface, unchanged.** The derived default, the interactive list in each capability's own words, `a` and `i`, `--scope`, `--scope all`, and the empty selection passed through as empty — all of it applies, because the grant belongs to the connection and not to the credential kind.
+**The grant is the same surface, unchanged.** The derived default, the interactive list in each capability's own words, `a` and `i`, `--scope`, `--scope all`, and the empty selection passed through as empty — all of it applies when a trust registers a new connection, because the grant belongs to the connection and not to the credential kind. For the same reason, a trust joining an existing connection takes that connection's grant, kind and purpose as they stand: it asks no scope question, and `--scope`, `--kind` and `--purpose` are refused rather than dropped, naming `connect --update --scope`, which changes the grant for every credential on the connection.
 
 **Known issuers ship as profiles; anything else is custom and says so.** A profile is a provider's claim vocabulary — which claims its tokens carry, which of them are the recommended constraint, and an example of each — so registering against a recognized issuer is a prompt over real choices rather than a string somebody composes from documentation. Two, as a starting point:
 
@@ -227,7 +234,9 @@ Passing it skips the question and nothing else: the address is still resolved an
 
 **A custom issuer is a first-class answer, not a failure mode.** Name the issuer, name the claims and values, and the trust registers — the kit validates the *shape* of what it was given and nothing about whether the provider will send it. That is honest about where the knowledge sits, and it means a provider nobody has profiled is not a provider nobody can use.
 
-**Nothing is enforced against a profile.** A profile informs a prompt and seeds a default; it never refuses a claim it has not heard of. GitHub's template is customizable per organization and repository, so a kit that validated against its own table would eventually refuse a legitimate token with a refusal the adopter can neither argue with nor work around.
+**A profile never refuses a claim it has not heard of.** A profile informs a prompt and seeds a default. GitHub's template is customizable per organization and repository, so a kit that validated claim names against its own table would eventually refuse a legitimate token with a refusal the adopter can neither argue with nor work around.
+
+**It does refuse a matcher that names no workload.** A profiled issuer is a shared one: GitHub signs for every repository with the same keys. A trust matching only on what the job is — `environment`, `ref`, `ref_type`, `event_name` — admits anybody who creates a repository with that environment or branch, which is the unconstrained subject §6.2.1 refuses, said with more claims. So each profile names the claims that identify a workload (for GitHub the repository, its owner, `sub`, and the workflow refs; for GitLab the project, its namespace, and `sub`), and a matcher for that issuer must carry one. A custom issuer is held to shape only, because nothing knows which of its claims name a workload.
 
 Two further consequences, and the second is what makes the custom path survivable:
 
@@ -240,7 +249,7 @@ Two further consequences, and the second is what makes the custom path survivabl
 
 **Rotation does not apply; review does.** There is no key to append, prove and expire. The hygiene a trust needs instead is the review-by date of §6.3, because its usable population can change with no event here.
 
-**Revocation changes shape.** A token cannot be revoked; the **trust** is revoked, and anything already minted stays live until it expires. So the kill switch has latency bounded by token lifetime, which has to be said at the moment of revocation rather than discovered afterwards.
+**Revocation changes shape.** A token cannot be revoked; the **trust** is revoked, and anything already minted stays live until it expires. So the kill switch has latency bounded by token lifetime, which has to be said at the moment of revocation rather than discovered afterwards — `pithy dashboard revoke-trust` says it, and `disconnect` says it when the connection it removes held a live trust.
 
 ### 6.3 A key is a bearer; a trust is a policy
 
@@ -264,7 +273,7 @@ Three fields, on the **connection** rather than the credential, so they hold for
 
 **It belongs on the adopter's side**, since they perform the review, on their own trail, possibly without any dashboard open. **It is editable and the edit is audited**, because an agent's job changes and a label nobody may correct is a label that rots. **It is untrusted input**, written by a customer and rendered elsewhere, and is validated at the boundary like anything else that crosses one.
 
-**The principal is derived from a signed-in session, and there is no flag.** Registering a connection — through the dashboard's device-code flow, with `--public-key`, or, once #722 lands, as an OIDC trust — resolves the CLI's actor as a session and records its email, read through `GET /user` under the session's own token. Nobody types it. One seam decides it, `requireRegisteringPrincipal` in `packages/cli/src/dashboard/principal.ts`, and every registration path calls it rather than restating the rule.
+**The principal is derived from a signed-in session, and there is no flag.** Registering a connection — through the dashboard's device-code flow, with `--public-key`, or as an OIDC trust with `--oidc-issuer` — resolves the CLI's actor as a session and records its email, read through `GET /user` under the session's own token. Nobody types it. One seam decides it, `requireRegisteringPrincipal` in `packages/cli/src/dashboard/principal.ts`, and every registration path calls it rather than restating the rule.
 
 **No session, no connection, in every environment, `dev` included.** An account token, a session whose `GET /user` yields no email, and no credential at all are each refused before anything is written, and the refusal names `pithy cloudflare connect`. A new key on a connection with nothing live is a new standing credential, so it is held to the same rule and takes `--kind` and `--purpose` again; the row then names whoever sanctioned that key. Signing in is already the onboarding step, so it costs a `dev` run nothing in practice, and every connection row names a person. CI keeps its account token for migrating and deploying. It registers nothing.
 
@@ -313,5 +322,4 @@ Stated so a reader can tell a decision from a gap.
 - The agent fields of §7, and the actor kind, are not implemented. A connection records none of them.
 - No Cloudflare browser sign-in exists, so §7's principal is given rather than derived. `pithy-sh/pithy#759` is the fix; `#721` ships before it.
 - Neither MCP server exists. The CLI's `mcp/` directory writes client configuration for an external server and contains no server.
-- The OIDC credential kind of §6.2 is not registrable; the verifier exists, the trust does not.
 - The data-defined tools of §4.2 presuppose an analytical capability that is not built.

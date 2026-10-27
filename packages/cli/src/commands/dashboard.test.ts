@@ -12,6 +12,7 @@ import { readSource } from "../ci/sourceFiles";
 import { authorizeDashboard } from "../dashboard/connect";
 import type { DashboardClient, DeviceAuthorization } from "../dashboard/contract";
 import { defaultGrant, grantableScopes } from "../dashboard/grant";
+import type { IssuerProfile } from "../dashboard/oidc";
 import { OPEN_PROMPT, offerToOpen } from "../platform/browser";
 import { latchInputMode } from "../terminal/inputMode";
 import type { KeyStream } from "../terminal/keys";
@@ -19,16 +20,20 @@ import { readKeys } from "../terminal/keys";
 import { expectConforms } from "../test-utils/payloadContract";
 import dashboard, {
   announceFor,
+  collectRepeatedFlag,
   collectScopeFlags,
   confirmOrRefuse,
+  decideTrustGrant,
   formatConnectReport,
   formatDisconnectReport,
   formatRevokeKeyReport,
+  formatRevokeTrustReport,
   formatRotateReport,
   formatStatusReport,
   offerIsAnswerable,
   parseKindFlag,
   parsePublicKey,
+  trustClaimsFor,
 } from "./dashboard";
 
 /** The `pithy dashboard connect` a line names, as `connectSentence` answers it for a two-Worker project. */
@@ -57,12 +62,19 @@ function argNames(name: string): string[] {
 }
 
 describe("the command surface", () => {
-  test("connect, rotate, revoke-key, disconnect, and status", () => {
-    expect(Object.keys(subCommands())).toEqual(["connect", "rotate", "revoke-key", "disconnect", "status"]);
+  test("connect, rotate, revoke-key, revoke-trust, disconnect, and status", () => {
+    expect(Object.keys(subCommands())).toEqual([
+      "connect",
+      "rotate",
+      "revoke-key",
+      "revoke-trust",
+      "disconnect",
+      "status",
+    ]);
   });
 
-  test("every subcommand is agent-drivable — --json and --env on all five", () => {
-    for (const name of ["connect", "rotate", "revoke-key", "disconnect", "status"]) {
+  test("every subcommand is agent-drivable — --json and --env on all six", () => {
+    for (const name of ["connect", "rotate", "revoke-key", "revoke-trust", "disconnect", "status"]) {
       expect(argNames(name)).toContain("json");
       expect(argNames(name)).toContain("env");
     }
@@ -81,6 +93,9 @@ describe("the command surface", () => {
         "project",
         "purpose",
         "kind",
+        "oidc-issuer",
+        "oidc-claim",
+        "oidc-audience",
       ]),
     );
   });
@@ -109,6 +124,95 @@ describe("collectScopeFlags", () => {
 
   test("no --scope is an empty list, not a default — the caller decides what absent means", () => {
     expect(collectScopeFlags(["connect", "--env", "prod"])).toEqual([]);
+  });
+});
+
+describe("collectRepeatedFlag", () => {
+  test("collects every --oidc-claim, in both spellings", () => {
+    expect(
+      collectRepeatedFlag(
+        ["connect", "--oidc-claim", "repository_id=1", "--oidc-claim=ref=refs/heads/main"],
+        "--oidc-claim",
+      ),
+    ).toEqual(["repository_id=1", "ref=refs/heads/main"]);
+  });
+});
+
+/**
+ * The trust's flag set (#722), run through the command itself: each refusal is an argument rule, so it lands
+ * before a project is read, and a command that skipped it would fail on the missing project instead.
+ */
+describe("connect refuses a partial or contradictory OIDC flag set", () => {
+  afterEach(() => {
+    latchInputMode(false);
+    vi.restoreAllMocks();
+  });
+
+  async function refusal(args: Record<string, unknown>, rawArgs: string[] = []): Promise<Record<string, unknown>> {
+    latchInputMode(true);
+    const written: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      written.push(String(chunk));
+      return true;
+    });
+    vi.spyOn(process, "exit").mockImplementation((code) => {
+      throw new Error(`exit ${code}`);
+    });
+    await expect(
+      subCommands().connect?.run?.({
+        args: { env: "prod", update: false, json: true, open: false, _: [], ...args },
+        rawArgs,
+        cmd: {},
+      } as never),
+    ).rejects.toThrow(/^exit /);
+    return (JSON.parse(written.join("").trim()) as { error: Record<string, unknown> }).error;
+  }
+
+  test("an issuer with no claim is refused, naming why", async () => {
+    const error = await refusal({ "oidc-issuer": "https://token.actions.githubusercontent.com", kind: "agent" });
+    expect(error.message).toMatch(/every workload it serves/);
+  });
+
+  test("a GitHub trust matching only on the job is refused before a project is read", async () => {
+    const error = await refusal(
+      { "oidc-issuer": "https://token.actions.githubusercontent.com", kind: "agent", purpose: "x" },
+      ["--oidc-claim", "environment=production"],
+    );
+    expect(error.message).toMatch(/describe a job, not whose it is/);
+    expect(error.action).toMatch(/--oidc-claim repository_id=/);
+  });
+
+  test("a claim with no issuer is refused", async () => {
+    const error = await refusal({ "oidc-claim": "repository_id=1" }, ["--oidc-claim", "repository_id=1"]);
+    expect(error.message).toMatch(/only apply with --oidc-issuer/);
+  });
+
+  test("an audience with no issuer is refused", async () => {
+    const error = await refusal({ "oidc-audience": "https://api.example.com" });
+    expect(error.message).toMatch(/only apply with --oidc-issuer/);
+  });
+
+  test("an issuer that is not https is refused", async () => {
+    const error = await refusal({ "oidc-issuer": "http://issuer.example" }, ["--oidc-claim", "sub=x"]);
+    expect(error.message).toMatch(/https URL/);
+  });
+
+  test("a trust and a public key in one run are refused", async () => {
+    const error = await refusal({
+      "oidc-issuer": "https://token.actions.githubusercontent.com",
+      "public-key": "key.jwk",
+      issuer: "https://agent.example.com",
+    });
+    expect(error.message).toMatch(/two credentials/);
+  });
+
+  test("a trust with --update is refused", async () => {
+    const error = await refusal({
+      "oidc-issuer": "https://token.actions.githubusercontent.com",
+      update: true,
+      purpose: "x",
+    });
+    expect(error.message).toMatch(/--update re-points/);
   });
 });
 
@@ -226,6 +330,177 @@ describe("formatConnectReport", () => {
       actorKind: "dashboard",
       purpose: "Support triage, reading threads and replying.",
     });
+  });
+});
+
+describe("formatConnectReport — an OIDC trust (#722)", () => {
+  const report = {
+    environment: "prod",
+    connectionId: "5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31",
+    issuer: "https://token.actions.githubusercontent.com",
+    workerUrl: "https://api.example.com",
+    scopes: ["manifest:read"],
+    keyId: null,
+    status: "awaiting_first_call" as const,
+    updated: false,
+    authorizedBy: "ada@example.com",
+    actorKind: "agent" as const,
+    purpose: "Nightly audit summarizer.",
+    trust: {
+      trustId: "t-1",
+      issuer: "https://token.actions.githubusercontent.com",
+      audience: "https://api.example.com",
+      claims: { repository: "acme/api", environment: "prod" },
+      notes: ["repository is a name. repository_id survives a rename; prefer it."],
+    },
+  };
+
+  test("says awaiting a first call, never connected", () => {
+    const out = formatConnectReport(report, { json: false, connect: CONNECT });
+    expect(out).toContain("Registered prod. Awaiting a first call.");
+    expect(out).not.toMatch(/Connected/);
+  });
+
+  test("puts the subject constraint on the face of it, with the trade stated", () => {
+    const out = formatConnectReport(report, { json: false, connect: CONNECT });
+    expect(out).toMatch(/Admits\s+repository=acme\/api, environment=prod/);
+    expect(out).toMatch(/Audience\s+https:\/\/api\.example\.com/);
+    expect(out).toContain("repository_id survives a rename");
+    expect(out).toContain("pithy-control-plane-oidc");
+  });
+});
+
+describe("the trust claims prompt (#722)", () => {
+  /** Run the prompt over a profile, answering each claim from `answers`, and return what it asked and kept. */
+  async function prompted(answers: Record<string, string>) {
+    const asked: Record<string, unknown>[] = [];
+    vi.doMock("@clack/prompts", () => ({
+      isCancel: () => false,
+      text: async (options: { message: string }) => {
+        asked.push(options);
+        const claim = options.message.split("?")[0] ?? "";
+        return answers[claim] ?? "";
+      },
+    }));
+    vi.resetModules();
+    const { promptTrustClaims } = await import("./dashboard");
+    const { profileFor } = await import("../dashboard/oidc");
+    const profile = profileFor("https://token.actions.githubusercontent.com");
+    if (!profile) throw new Error("GitHub is profiled");
+    const claims = await promptTrustClaims(profile);
+    vi.doUnmock("@clack/prompts");
+    return { asked, claims };
+  }
+
+  test("asks a profiled issuer's recommended claims in order, an immutable id first, each with an example", async () => {
+    const { asked } = await prompted({});
+    expect(asked.map((options) => String(options.message).split("?")[0])).toEqual([
+      "repository_id",
+      "environment",
+      "ref",
+    ]);
+    expect(asked[0]?.placeholder).toBe("1262274726");
+  });
+
+  test("the immutable id is required: an empty answer is refused, and only that claim is held to it", async () => {
+    const { asked } = await prompted({ repository_id: "1262274726" });
+    const validate = asked[0]?.validate as (value?: string) => string | undefined;
+    expect(validate("")).toMatch(/repository_id is required/);
+    expect(validate("  ")).toMatch(/required/);
+    expect(validate("1262274726")).toBeUndefined();
+    expect(asked[1]?.validate).toBeUndefined();
+    expect(asked[2]?.validate).toBeUndefined();
+  });
+
+  test("keeps what was answered and skips what was left empty", async () => {
+    const { claims } = await prompted({ repository_id: "1262274726", ref: "refs/heads/main" });
+    expect(claims).toEqual({ repository_id: "1262274726", ref: "refs/heads/main" });
+  });
+});
+
+describe("trustClaimsFor (#722): a profiled issuer registers by prompt", () => {
+  const GITHUB = "https://token.actions.githubusercontent.com";
+  const answered = { repository_id: "1262274726", environment: "prod" };
+
+  test("a profiled issuer at a terminal with no --oidc-claim is asked for its claims", async () => {
+    const prompt = vi.fn(async (_profile: IssuerProfile) => answered);
+    expect(await trustClaimsFor({ issuer: GITHUB, claimFlags: [], interactive: true, prompt })).toEqual(answered);
+    expect(prompt).toHaveBeenCalledOnce();
+    expect(prompt.mock.calls[0]?.[0]).toMatchObject({ recommended: expect.any(Array) });
+  });
+
+  test("--oidc-claim wins over the prompt, even at a terminal", async () => {
+    const prompt = vi.fn(async () => answered);
+    expect(
+      await trustClaimsFor({ issuer: GITHUB, claimFlags: ["repository_id=42"], interactive: true, prompt }),
+    ).toEqual({ repository_id: "42" });
+    expect(prompt).not.toHaveBeenCalled();
+  });
+
+  test("a custom issuer is never asked: no claim is refused", async () => {
+    const prompt = vi.fn(async () => answered);
+    await expect(
+      trustClaimsFor({ issuer: "https://idp.acme.example", claimFlags: [], interactive: true, prompt }),
+    ).rejects.toBeInstanceOf(PithyError);
+    expect(prompt).not.toHaveBeenCalled();
+  });
+
+  test("a run that cannot ask is never asked: no claim is refused", async () => {
+    const prompt = vi.fn(async () => answered);
+    await expect(trustClaimsFor({ issuer: GITHUB, claimFlags: [], interactive: false, prompt })).rejects.toBeInstanceOf(
+      PithyError,
+    );
+    expect(prompt).not.toHaveBeenCalled();
+  });
+
+  test("what the prompt answers is still held to naming the workload", async () => {
+    const prompt = vi.fn(async () => ({ environment: "prod" }));
+    await expect(trustClaimsFor({ issuer: GITHUB, claimFlags: [], interactive: true, prompt })).rejects.toThrow(
+      /describe a job/,
+    );
+  });
+});
+
+describe("decideTrustGrant (#722)", () => {
+  test("a trust joining a connection asks nothing: the connection's grant is the one it takes", async () => {
+    const decide = vi.fn(async () => ["manifest:read"]);
+    expect(await decideTrustGrant(true, false, decide)).toBeUndefined();
+    expect(decide).not.toHaveBeenCalled();
+  });
+
+  test("a --scope on a join is still resolved, so the registration refuses it by name", async () => {
+    const decide = vi.fn(async () => ["content:read"]);
+    expect(await decideTrustGrant(true, true, decide)).toEqual(["content:read"]);
+  });
+
+  test("a new connection decides its grant as a key's does", async () => {
+    const decide = vi.fn(async () => ["manifest:read"]);
+    expect(await decideTrustGrant(false, false, decide)).toEqual(["manifest:read"]);
+    expect(decide).toHaveBeenCalledOnce();
+  });
+});
+
+describe("formatRevokeTrustReport", () => {
+  test("states the latency at the moment of revocation", () => {
+    const out = formatRevokeTrustReport(
+      {
+        environment: "prod",
+        trustId: "t-1",
+        revoked: true,
+        latency: "A token already minted stays usable until it expires.",
+      },
+      { json: false },
+    );
+    expect(out).toContain("Revoked trust t-1 on prod.");
+    expect(out).toContain("until it expires");
+  });
+
+  test("a trust it does not hold says so, and how to list them", () => {
+    const out = formatRevokeTrustReport(
+      { environment: "prod", trustId: "nope", revoked: false, latency: "x" },
+      { json: false },
+    );
+    expect(out).toContain("No trust nope on prod.");
   });
 });
 
@@ -397,6 +672,7 @@ describe("formatStatusReport", () => {
         revokedAt: null,
       },
     ],
+    trusts: [],
     status: "unverified" as const,
   };
 
@@ -404,6 +680,31 @@ describe("formatStatusReport", () => {
     const parsed = JSON.parse(formatStatusReport(report, { json: true, connect: CONNECT }));
     expect(parsed).toMatchObject({ command: "dashboard.status", connected: true });
     expect(parsed.keys).toHaveLength(2);
+  });
+
+  test("lists each trust with its state and the population it admits (#722)", () => {
+    const out = formatStatusReport(
+      {
+        ...report,
+        trusts: [
+          {
+            trustId: "t-1",
+            issuer: "https://token.actions.githubusercontent.com",
+            audience: "https://api.example.com",
+            claims: { repository_id: "1262274726" },
+            authorizedBy: "ada@example.com",
+            state: "awaiting_first_call" as const,
+            validFrom: "2026-10-01T00:00:00.000Z",
+            firstCallAt: null,
+            revokedAt: null,
+          },
+        ],
+      },
+      { json: false, connect: CONNECT },
+    );
+    expect(out).toMatch(
+      /t-1\s+awaiting a first call\s+https:\/\/token\.actions\.githubusercontent\.com\s+repository_id=1262274726/,
+    );
   });
 
   test("lists every key with its age and whether it is live", () => {
@@ -426,6 +727,7 @@ describe("formatStatusReport", () => {
         actorKind: null,
         purpose: null,
         keys: [],
+        trusts: [],
         status: "unverified",
       },
       { json: false, connect: CONNECT },
@@ -852,6 +1154,7 @@ describe("the --yes confirmations", () => {
   test.each([
     ["disconnect", { env: "prod", yes: false, local: true }, "Disconnect the management client from prod?"],
     ["revoke-key", { env: "prod", yes: false, "key-id": "k1" }, "Revoke key k1 on prod?"],
+    ["revoke-trust", { env: "prod", yes: false, "trust-id": "t1" }, "Revoke trust t1 on prod?"],
   ])("%s refuses under the switch, naming --yes, before it opens anything", async (name, args, message) => {
     attachTerminal();
     latchInputMode(true);
@@ -998,6 +1301,7 @@ describe("pithy dashboard --json conforms to its published payloads", () => {
               revokedAt: null,
             },
           ],
+          trusts: [],
           status: "unverified",
         },
         { json: true, connect: CONNECT },
@@ -1016,8 +1320,131 @@ describe("pithy dashboard --json conforms to its published payloads", () => {
           actorKind: null,
           purpose: null,
           keys: [],
+          trusts: [],
           status: "unreachable",
           detail: "Nothing answered.",
+        },
+        { json: true, connect: CONNECT },
+      ),
+    );
+  });
+});
+
+describe("pithy dashboard --json conforms for an OIDC trust (#722)", () => {
+  const id = "5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31";
+  const trust = {
+    trustId: "t-1",
+    issuer: "https://token.actions.githubusercontent.com",
+    audience: "https://api.example.com",
+    claims: { repository_id: "1262274726" },
+  };
+
+  test("connect, registering a trust", async () => {
+    await expectConforms("dashboard connect", () =>
+      formatConnectReport(
+        {
+          environment: "prod",
+          connectionId: id,
+          issuer: trust.issuer,
+          workerUrl: "https://api.example.com",
+          scopes: ["manifest:read"],
+          keyId: null,
+          status: "awaiting_first_call",
+          updated: false,
+          authorizedBy: "ada@example.com",
+          actorKind: "agent",
+          purpose: "Nightly audit summarizer.",
+          trust: { ...trust, notes: [] },
+        },
+        { json: true, connect: CONNECT },
+      ),
+    );
+  });
+
+  test("revoke-trust, revoked and not", async () => {
+    await expectConforms("dashboard revoke-trust", () =>
+      formatRevokeTrustReport(
+        { environment: "prod", trustId: "t-1", revoked: true, latency: "Tokens stay usable until they expire." },
+        { json: true },
+      ),
+    );
+    await expectConforms("dashboard revoke-trust", () =>
+      formatRevokeTrustReport({ environment: "prod", trustId: "t-9", revoked: false, latency: "x" }, { json: true }),
+    );
+  });
+
+  test("disconnect, from a connection that held a trust", async () => {
+    await expectConforms("dashboard disconnect", () =>
+      formatDisconnectReport(
+        { environment: "prod", connectionId: id, removed: true, dashboardNotified: false, trustLatency: "x" },
+        { json: true },
+      ),
+    );
+  });
+
+  test("status, with a trust", async () => {
+    await expectConforms("dashboard status", () =>
+      formatStatusReport(
+        {
+          environment: "prod",
+          connected: true,
+          connectionId: id,
+          issuer: trust.issuer,
+          workerUrl: "https://api.example.com",
+          scopes: ["manifest:read"],
+          authorizedBy: "ada@example.com",
+          actorKind: "agent",
+          purpose: "Nightly audit summarizer.",
+          keys: [],
+          trusts: [
+            {
+              ...trust,
+              authorizedBy: "ada@example.com",
+              state: "called",
+              validFrom: "2026-10-01T00:00:00.000Z",
+              firstCallAt: "2026-10-02T00:00:00.000Z",
+              revokedAt: null,
+            },
+          ],
+          status: "unverified",
+        },
+        { json: true, connect: CONNECT },
+      ),
+    );
+  });
+
+  test("revoke-key, on a connection that also holds a trust", async () => {
+    await expectConforms("dashboard revoke-key", () =>
+      formatRevokeKeyReport(
+        {
+          environment: "prod",
+          keyId: "key_1",
+          revoked: true,
+          connection: {
+            id,
+            environment: "prod",
+            issuer: "https://app.pithy.sh",
+            workerUrl: "https://api.example.com",
+            basePath: "/control-plane",
+            managementOrigin: null,
+            authorizedBy: "ada@example.com",
+            actorKind: "agent",
+            purpose: "Nightly refund sweep.",
+            scopes: ["manifest:read"],
+            keys: [],
+            trusts: [
+              {
+                ...trust,
+                jwksUrl: "https://token.actions.githubusercontent.com/.well-known/jwks",
+                authorizedBy: "ada@example.com",
+                validFrom: new Date("2026-10-01T00:00:00Z"),
+                revokedAt: null,
+                firstCallAt: null,
+              },
+            ],
+            createdAt: new Date("2026-01-01T00:00:00Z"),
+            updatedAt: new Date("2026-02-01T00:00:00Z"),
+          },
         },
         { json: true, connect: CONNECT },
       ),

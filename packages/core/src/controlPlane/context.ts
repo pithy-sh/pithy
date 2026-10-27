@@ -52,11 +52,19 @@ export const ControlPlaneContext = z
     keyId: z
       .string()
       .describe(
-        "Which registered key verified this call. Recorded so a rotation can be traced through the trail, and so a key still in use is visible before it is expired.",
+        "Which registered key verified this call — or, for a call under an OIDC trust, which trust. Recorded so a rotation can be traced through the trail, and so a credential still in use is visible before it is retired.",
       ),
     tokenId: z
       .string()
-      .describe("The token's `jti`, already claimed in the replay set. Recorded to tie one audit event to one call."),
+      .describe(
+        "The token's `jti`, already claimed in the replay set. Recorded to tie one audit event to one call. For a call under an OIDC trust, the provider token's own `jti` when it carries one, else empty: such a token is verified per call and never spent.",
+      ),
+    credentialKind: z
+      .enum(["key", "trust"])
+      .optional()
+      .describe(
+        "Which kind of credential verified this call: a registered `key`, or an OIDC `trust` (#722), in which case `keyId` names the trust. Absent reads as a key, which is every call made before trusts existed.",
+      ),
     actorKind: ControlPlaneActorKind.nullable().describe(
       "What kind of client the connection is for — `agent`, `dashboard` or `script` — read from the adopter's own row, never from the token. The gate stamps it onto every control-plane audit row this call writes. Null for a connection registered before the kind was recorded (#721).",
     ),

@@ -241,7 +241,7 @@
       }
     },
     "dashboard connect": {
-      "schemaVersion": 1,
+      "schemaVersion": 2,
       "payload": {
         "$": "object",
         "$.command": "\"dashboard.connect\"",
@@ -252,12 +252,20 @@
         "$.scopes": "array",
         "$.scopes[]": "string",
         "$.keyId": "null | string",
-        "$.status": "\"connected\" | \"needs_reconnect\" | \"registered\" | \"unreachable\"",
+        "$.status": "\"awaiting_first_call\" | \"connected\" | \"needs_reconnect\" | \"registered\" | \"unreachable\"",
         "$.detail": "string?",
         "$.updated": "boolean",
         "$.authorizedBy": "null | string?",
         "$.actorKind": "\"agent\" | \"dashboard\" | \"script\" | null?",
-        "$.purpose": "null | string?"
+        "$.purpose": "null | string?",
+        "$.trust": "object?",
+        "$.trust.trustId": "string",
+        "$.trust.issuer": "string",
+        "$.trust.audience": "string",
+        "$.trust.claims": "object",
+        "$.trust.claims{}": "string",
+        "$.trust.notes": "array",
+        "$.trust.notes[]": "string"
       }
     },
     "dashboard disconnect": {
@@ -269,7 +277,8 @@
         "$.connectionId": "null | string",
         "$.removed": "boolean",
         "$.dashboardNotified": "boolean",
-        "$.detail": "string?"
+        "$.detail": "string?",
+        "$.trustLatency": "string?"
       }
     },
     "dashboard revoke-key": {
@@ -302,8 +311,31 @@
         "$.connection.keys[].validFrom": "string",
         "$.connection.keys[].validUntil": "null | string",
         "$.connection.keys[].revokedAt": "null | string",
+        "$.connection.trusts": "array?",
+        "$.connection.trusts[]": "object",
+        "$.connection.trusts[].trustId": "string",
+        "$.connection.trusts[].issuer": "string",
+        "$.connection.trusts[].jwksUrl": "string",
+        "$.connection.trusts[].audience": "string",
+        "$.connection.trusts[].claims": "object",
+        "$.connection.trusts[].claims{}": "string",
+        "$.connection.trusts[].authorizedBy": "string",
+        "$.connection.trusts[].validFrom": "string",
+        "$.connection.trusts[].revokedAt": "null | string",
+        "$.connection.trusts[].firstCallAt": "null | string",
         "$.connection.createdAt": "string",
         "$.connection.updatedAt": "string"
+      }
+    },
+    "dashboard revoke-trust": {
+      "schemaVersion": 1,
+      "payload": {
+        "$": "object",
+        "$.command": "\"dashboard.revoke-trust\"",
+        "$.environment": "string",
+        "$.trustId": "string",
+        "$.revoked": "boolean",
+        "$.latency": "string"
       }
     },
     "dashboard rotate": {
@@ -343,6 +375,18 @@
         "$.keys[].validFrom": "string",
         "$.keys[].validUntil": "null | string",
         "$.keys[].revokedAt": "null | string",
+        "$.trusts": "array?",
+        "$.trusts[]": "object",
+        "$.trusts[].trustId": "string",
+        "$.trusts[].issuer": "string",
+        "$.trusts[].audience": "string",
+        "$.trusts[].claims": "object",
+        "$.trusts[].claims{}": "string",
+        "$.trusts[].authorizedBy": "string",
+        "$.trusts[].state": "\"awaiting_first_call\" | \"called\" | \"revoked\"",
+        "$.trusts[].validFrom": "string",
+        "$.trusts[].firstCallAt": "null | string",
+        "$.trusts[].revokedAt": "null | string",
         "$.status": "\"connected\" | \"needs_reconnect\" | \"unreachable\" | \"unverified\"",
         "$.detail": "string?"
       }

@@ -11,6 +11,7 @@ import { CONTROL_PLANE_CONNECTIONS_TABLE, CONTROL_PLANE_REPLAYS_TABLE, controlPl
 import { controlplane_0001_init } from "./0001_init";
 import { controlplane_0002_management_origin } from "./0002_management_origin";
 import { controlplane_0003_connection_principal } from "./0003_connection_principal";
+import { controlplane_0004_connection_trusts } from "./0004_connection_trusts";
 
 const db = () => createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
 
@@ -442,5 +443,101 @@ describe("controlplane_0003_connection_principal", () => {
       .execute();
 
     expect((await stored()).purpose).toBe("Support triage.");
+  });
+});
+
+describe("controlplane_0004_connection_trusts", () => {
+  const trust = {
+    trustId: "4b8f0c1e-2a7d-4e0b-9c55-0f3a6d2e7b19",
+    issuer: "https://token.actions.githubusercontent.com",
+    jwksUrl: "https://token.actions.githubusercontent.com/.well-known/jwks",
+    audience: "https://api.example.com",
+    claims: { repository_id: "1262274726" },
+    authorizedBy: "ada@example.com",
+    validFrom: new Date("2026-10-01T00:00:00.000Z"),
+    revokedAt: null,
+    firstCallAt: null,
+  };
+
+  async function stored(): Promise<ControlPlaneConnection> {
+    const row = await controlPlaneDatabase(env.DB)
+      .selectFrom(CONTROL_PLANE_CONNECTIONS_TABLE)
+      .selectAll()
+      .where("id", "=", connection.id)
+      .executeTakeFirstOrThrow();
+    return ControlPlaneConnection.parse(row);
+  }
+
+  async function throughPrincipal(): Promise<void> {
+    await controlplane_0001_init.up(db());
+    await controlplane_0002_management_origin.up(db());
+    await controlplane_0003_connection_principal.up(db());
+  }
+
+  test("a connection registered before it reads as holding no trust, its keys intact", async () => {
+    await throughPrincipal();
+    await controlPlaneDatabase(env.DB)
+      .insertInto(CONTROL_PLANE_CONNECTIONS_TABLE)
+      .values(ControlPlaneConnection.encode(connection))
+      .execute();
+    await controlplane_0004_connection_trusts.up(db());
+
+    const read = await stored();
+    expect(read.trusts).toEqual([]);
+    expect(read.keys).toEqual(connection.keys);
+  });
+
+  test("a trust round-trips through real D1 beside a key", async () => {
+    await throughPrincipal();
+    await controlplane_0004_connection_trusts.up(db());
+    await controlPlaneDatabase(env.DB)
+      .insertInto(CONTROL_PLANE_CONNECTIONS_TABLE)
+      .values(ControlPlaneConnection.encode({ ...connection, trusts: [trust] }))
+      .execute();
+
+    const read = await stored();
+    expect(read.trusts).toEqual([trust]);
+    expect(read.keys).toEqual(connection.keys);
+  });
+
+  test("a connection may hold a trust and no key", async () => {
+    await throughPrincipal();
+    await controlplane_0004_connection_trusts.up(db());
+    await controlPlaneDatabase(env.DB)
+      .insertInto(CONTROL_PLANE_CONNECTIONS_TABLE)
+      .values(ControlPlaneConnection.encode({ ...connection, keys: [], trusts: [trust] }))
+      .execute();
+
+    const read = await stored();
+    expect(read.keys).toEqual([]);
+    expect(read.trusts).toEqual([trust]);
+  });
+
+  test("down drops the column and leaves every key on the row intact", async () => {
+    await throughPrincipal();
+    await controlplane_0004_connection_trusts.up(db());
+    await controlPlaneDatabase(env.DB)
+      .insertInto(CONTROL_PLANE_CONNECTIONS_TABLE)
+      .values(ControlPlaneConnection.encode({ ...connection, trusts: [trust] }))
+      .execute();
+
+    await controlplane_0004_connection_trusts.down?.(db());
+
+    const row = await env.DB.prepare("select * from pithy_controlplane_connections").first<Record<string, unknown>>();
+    expect(Object.keys(row ?? {})).not.toContain("trusts");
+    expect(row?.keys).toBe(ControlPlaneConnection.shape.keys.encode([...connection.keys]));
+  });
+
+  test("up after down leaves the column there again", async () => {
+    await throughPrincipal();
+    await controlplane_0004_connection_trusts.up(db());
+    await controlplane_0004_connection_trusts.down?.(db());
+    await controlplane_0004_connection_trusts.up(db());
+    await controlPlaneDatabase(env.DB)
+      .insertInto(CONTROL_PLANE_CONNECTIONS_TABLE)
+      .values(ControlPlaneConnection.encode({ ...connection, trusts: [trust] }))
+      .execute();
+
+    expect((await stored()).trusts).toEqual([trust]);
   });
 });

@@ -11,10 +11,22 @@ import { workerVersionMetadata } from "../../worker/identity";
 import { ControlPlaneAuditActions, safeEmit } from "../audit/actions";
 import type { ControlPlaneContext } from "../context";
 import type { ControlPlaneActorKind } from "../data/connection";
-import { ControlPlaneInsufficientScopeError, ControlPlaneNotConnectedError } from "../error/errors";
+import {
+  ControlPlaneInsufficientScopeError,
+  ControlPlaneInvalidCredentialError,
+  ControlPlaneNotConnectedError,
+} from "../error/errors";
 import type { ControlPlaneRequirement } from "../scope/scope";
-import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_CREATED_HEADER, CONTROL_PLANE_VERSION_HEADER } from "../wire";
+import {
+  CONTROL_PLANE_HEADER,
+  CONTROL_PLANE_OIDC_HEADER,
+  CONTROL_PLANE_SCOPE_HEADER,
+  CONTROL_PLANE_TRUST_HEADER,
+  CONTROL_PLANE_VERSION_CREATED_HEADER,
+  CONTROL_PLANE_VERSION_HEADER,
+} from "../wire";
 import { type ControlPlaneVerifyDeps, verifyControlPlaneCall } from "./verify";
+import { type ControlPlaneTrustVerifyDeps, verifyControlPlaneTrustCall } from "./verifyTrust";
 
 /**
  * `requireControlPlane(scope)` — the gate every control-plane route wears, including the ones
@@ -57,8 +69,39 @@ export type ControlPlaneVerifier = (
  * Build the verifier the seam's middleware publishes. Split out from the middleware so the wiring is
  * testable without a Worker, and so `verify.ts` stays free of Hono.
  */
-export function createControlPlaneVerifier(deps: ControlPlaneVerifyDeps): ControlPlaneVerifier {
+export function createControlPlaneVerifier(
+  deps: ControlPlaneVerifyDeps,
+  /**
+   * The trust path's own dependencies (#722). Absent, a call presenting an OIDC token is refused like any other
+   * credential this Worker cannot verify — the seam fails closed rather than waving an unverifiable token through.
+   */
+  trusts?: ControlPlaneTrustVerifyDeps,
+): ControlPlaneVerifier {
   return async (request, requirement) => {
+    // A call presents one credential. The OIDC header selects the trust path; both at once is refused rather
+    // than resolved, because "which of these did the caller mean" is not a question a verifier should answer.
+    const oidc = request.headers.get(CONTROL_PLANE_OIDC_HEADER);
+    if (oidc !== null) {
+      if (request.headers.get(CONTROL_PLANE_HEADER) !== null) {
+        throw new ControlPlaneInvalidCredentialError({
+          detail: "a call presented both a signed token and an OIDC token",
+        });
+      }
+      if (!trusts) {
+        throw new ControlPlaneInvalidCredentialError({
+          detail: "an OIDC token was presented and this Worker verifies none",
+        });
+      }
+      return await verifyControlPlaneTrustCall(
+        {
+          token: oidc,
+          trustId: request.headers.get(CONTROL_PLANE_TRUST_HEADER) ?? undefined,
+          scope: request.headers.get(CONTROL_PLANE_SCOPE_HEADER) ?? undefined,
+          requirement,
+        },
+        trusts,
+      );
+    }
     // Clone before reading. The handler still has to parse this body through `validate`, and a stream
     // consumed here would reach it empty — the digest check would pass and the request would then fail
     // validation for no visible reason.
@@ -199,6 +242,8 @@ export function requireControlPlaneFor(resolve: ControlPlaneRequirementResolver)
           connectionEnvironment: context.environment,
           scope: context.scope,
           keyId: context.keyId,
+          // Said only for a trust, so a row written by a key reads exactly as it did before trusts existed.
+          ...(context.credentialKind === "trust" ? { credentialKind: "trust" } : {}),
           method: c.req.method,
           path: c.req.path,
         },
@@ -257,7 +302,7 @@ export function stampActorKind(emit: AuditEmit, actorKind: ControlPlaneActorKind
  * signature, an unknown or expired key — names nobody, because nothing about it is proven. A call whose credential
  * verified and whose scope was not granted is a known connection asking for an operation it lacks, which is what
  * scope probing looks like, so its row carries the subject as `actorId`, the connection as its resource, the key
- * in `metadata.keyId`, and the connection's `actorKind` — the same four the allowed row carries. Only the first presentation of a token is: the verifier
+ * in `metadata.keyId` (and `credentialKind: "trust"` when that key is a trust), and the connection's `actorKind` — the same four the allowed row carries. Only the first presentation of a token is: the verifier
  * spends the jti of a scope refusal and names no caller on a token already spent, because a signature proves who minted
  * a token, not who presented it. Only the row changes; the error thrown is the same.
  *
@@ -271,7 +316,23 @@ async function auditDenial(
 ): Promise<void> {
   const code = cause instanceof PithyError ? cause.payload.code : "core/internal";
   const proven = cause instanceof ControlPlaneInsufficientScopeError ? cause.caller : null;
-  const metadata = { reason: code, required: String(requirement), method: c.req.method, path: c.req.path };
+  // A claim mismatch on an OIDC token whose signature, issuer and audience verified (#722): the claims it carried
+  // are recorded, which is how an operator picks a matcher for a custom issuer. Nobody is named as the actor — the
+  // token is genuine, but not for any workload this Worker trusts.
+  const refusedTrust = cause instanceof ControlPlaneInvalidCredentialError ? cause.refusedTrust : null;
+  const metadata = {
+    reason: code,
+    required: String(requirement),
+    method: c.req.method,
+    path: c.req.path,
+    ...(refusedTrust
+      ? {
+          connectionId: refusedTrust.connectionId,
+          trustId: refusedTrust.trustId,
+          observedClaims: { ...refusedTrust.observedClaims },
+        }
+      : {}),
+  };
   await safeEmit(
     c.var.emit,
     {
@@ -290,7 +351,13 @@ async function auditDenial(
       requestId: c.req.header("cf-ray"),
       ip: c.req.header("cf-connecting-ip"),
       userAgent: c.req.header("user-agent"),
-      metadata: proven ? { ...metadata, keyId: proven.keyId } : metadata,
+      metadata: proven
+        ? {
+            ...metadata,
+            keyId: proven.keyId,
+            ...(proven.credentialKind === "trust" ? { credentialKind: "trust" } : {}),
+          }
+        : metadata,
     },
     c.var.log,
   );
@@ -304,7 +371,7 @@ async function auditDenial(
  * {@link auditDenial}, with two differences that follow from the call having been verified: the actor is
  * the proven subject and its connection, and `refusedBy` says the gate passed it — `required` is the
  * gate's requirement, which this call met; what it lacked is in the log, with the rest of `detail`.
- * `scope` and `keyId` name the refused credential exactly as the gate's `call_allowed` row does, so a
+ * `scope`, `keyId` and `credentialKind` name the refused credential exactly as the gate's `call_allowed` row does, so a
  * read of one key's reach (#828) finds its refusals too, even on a request with no `cf-ray` to join by.
  */
 async function auditHandlerDenial(
@@ -337,6 +404,7 @@ async function auditHandlerDenial(
         connectionId: context.connectionId,
         scope: context.scope,
         keyId: context.keyId,
+        ...(context.credentialKind === "trust" ? { credentialKind: "trust" } : {}),
         method: c.req.method,
         path: c.req.path,
       },

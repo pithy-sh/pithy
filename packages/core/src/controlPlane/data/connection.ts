@@ -4,6 +4,7 @@
 import { z } from "zod";
 import { JsonDate, SQLiteDate, sqliteJson } from "../../data/codecs";
 import { ControlPlaneScope } from "../scope/scope";
+import { OidcTrust } from "./oidcTrust";
 
 /**
  * The registration record: who may call this Worker's control-plane routes, from where, with what
@@ -208,6 +209,11 @@ export const ControlPlaneConnection = z
     keys: sqliteJson(z.array(RegisteredKey)).describe(
       "Every key this connection may sign with, current and superseded. One JSON column rather than a child table, so a rotation is one atomic UPDATE and verification is one read.",
     ),
+    trusts: sqliteJson(z.array(OidcTrust))
+      .optional()
+      .describe(
+        "Every OIDC trust this connection honors, live and revoked (#722) — the second credential kind beside `keys`, so a connection may hold a trust, a key, or both. Optional on the type, and absent reads as none: a connection value built before trusts existed still describes a connection, and the column itself defaults to an empty list.",
+      ),
     createdAt: SQLiteDate.describe("When the connection was registered. Ms-epoch in SQLite, a Date in TypeScript."),
     updatedAt: SQLiteDate.describe(
       "When the row last changed — a key registered or expired, or the Worker URL re-pointed.",

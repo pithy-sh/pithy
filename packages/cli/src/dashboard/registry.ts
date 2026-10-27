@@ -8,6 +8,12 @@ import { type ControlPlaneAuditAction, ControlPlaneAuditActions } from "@pithy-s
 import { ControlPlaneConnection, type RegisteredKey } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { activeKeys, appendKey as appendRegisteredKey } from "@pithy-sh/core/src/controlPlane/data/keyLifecycle";
 import {
+  activeTrusts,
+  appendTrust as appendOidcTrust,
+  type OidcTrust,
+  revokeTrust as revokeOidcTrust,
+} from "@pithy-sh/core/src/controlPlane/data/oidcTrust";
+import {
   CONTROL_PLANE_CONNECTIONS_TABLE,
   type ControlPlaneDatabase,
   controlPlaneDatabase,
@@ -141,6 +147,8 @@ function removalEvent(existing: ControlPlaneConnection, extra: Record<string, un
     basePath: existing.basePath,
     scopes: [...existing.scopes],
     removedKeyIds: keyIds(existing),
+    // Every trust stopped being honored with the row (#722), and the trail names which.
+    ...(trustIds(existing).length === 0 ? {} : { removedTrustIds: trustIds(existing) }),
     // The kind, purpose and principal it had, as a registration records them (#831): the access history names who
     // the removed connection was for, from this row alone.
     authorizedBy: existing.authorizedBy,
@@ -148,6 +156,25 @@ function removalEvent(existing: ControlPlaneConnection, extra: Record<string, un
     purpose: existing.purpose,
     ...extra,
   });
+}
+
+/** Trust ids (#722). Said only where a connection holds one, so a key-only row reads as it always did. */
+function trustIds(connection: ControlPlaneConnection): string[] {
+  return (connection.trusts ?? []).map((trust) => trust.trustId);
+}
+
+/**
+ * A trust as the trail records it: who it admits — the issuer, the audience and the claims, which *are* the
+ * population — and who sanctioned it. Nothing here is secret.
+ */
+function trustRecord(trust: OidcTrust): Record<string, unknown> {
+  return {
+    trustId: trust.trustId,
+    issuer: trust.issuer,
+    audience: trust.audience,
+    claims: { ...trust.claims },
+    trustAuthorizedBy: trust.authorizedBy,
+  };
 }
 
 /** Key **ids**, never key material — the trail is queryable and long-lived. */
@@ -248,6 +275,22 @@ export interface ConnectionRegistry {
    * needs nothing from the management client — which is what "immediate and unilateral" has to mean.
    */
   revokeKey(keyId: string, now: Date): Promise<ControlPlaneConnection | null>;
+  /**
+   * Add an OIDC trust to the environment's connection, beside whatever keys and trusts it holds (#722), and
+   * return the updated connection.
+   *
+   * **Not held to the key invariant, and that is not an exemption.** #287 routes a key through the seam because
+   * a live key can sign for its successor there. Nothing can sign for a trust — the seam has no route that
+   * registers one, and must not: a workload able to add a trust could widen its own population. So, like the
+   * grant and the address, a trust is the adopter's to write, on the adopter's side, and it is recorded here.
+   */
+  appendTrust(trust: OidcTrust, now: Date): Promise<ControlPlaneConnection>;
+  /**
+   * Revoke one trust, immediately. Returns the updated connection, or null when no trust answers to that id.
+   * Every call naming it is refused from the next one on; a token already minted stays in its holder's hands
+   * until it expires, which the caller says out loud.
+   */
+  revokeTrust(trustId: string, now: Date): Promise<ControlPlaneConnection | null>;
   /** Delete the registration. `false` when there was nothing to delete — re-running is not an error. */
   remove(): Promise<boolean>;
   /** Release whatever the registry opened (the local Miniflare instance; nothing remotely). */
@@ -348,6 +391,9 @@ export function connectionRegistry(
           basePath: connection.basePath,
           scopes: [...connection.scopes],
           registeredKeyIds: keyIds(connection),
+          ...(trustIds(connection).length === 0
+            ? {}
+            : { registeredTrusts: (connection.trusts ?? []).map(trustRecord) }),
           // Who sanctioned it, what kind of client, and what for (#721) — on the adopter's own trail, where
           // the review of this credential is performed, possibly with no dashboard open.
           authorizedBy: connection.authorizedBy,
@@ -422,6 +468,67 @@ export function connectionRegistry(
           changed: ["keys"],
           revokedKeyId: keyId,
           liveKeyIdsAfter: activeKeys(updated.keys, now).map((key) => key.keyId),
+        }),
+      );
+      return updated;
+    },
+
+    async appendTrust(trust, now) {
+      const connection = await read();
+      if (!connection) {
+        throw new ControlPlaneNotConnectedError({
+          detail: `no connection registered for environment ${env}`,
+        });
+      }
+      // Core owns the rule: a duplicate id is refused, since the id is what a call addresses.
+      const trusts = appendOidcTrust(connection.trusts ?? [], trust);
+      const updated: ControlPlaneConnection = { ...connection, trusts, updatedAt: now };
+      await db
+        .updateTable(CONTROL_PLANE_CONNECTIONS_TABLE)
+        .set({
+          trusts: ControlPlaneConnection.shape.trusts.encode(trusts),
+          updatedAt: ControlPlaneConnection.shape.updatedAt.encode(now),
+        })
+        .where("id", "=", connection.id)
+        .execute();
+      await record(
+        lifecycleEvent(ControlPlaneAuditActions.connectionUpdated, updated, {
+          changed: ["trusts"],
+          registeredTrust: trustRecord(trust),
+          trustIds: trustIds(updated),
+        }),
+      );
+      return updated;
+    },
+
+    async revokeTrust(trustId, now) {
+      const connection = await read();
+      if (!connection) {
+        throw new ControlPlaneNotConnectedError({
+          detail: `no connection registered for environment ${env}`,
+        });
+      }
+      const trusts = revokeOidcTrust(connection.trusts ?? [], trustId, now);
+      if (trusts === null) return null;
+      const updated: ControlPlaneConnection = { ...connection, trusts, updatedAt: now };
+      // Only the trusts column and the stamp, never the whole row: nothing else on it is this write's to touch.
+      // A first call the Worker recorded between the read and this write is lost to it, which costs a listing
+      // one timestamp until the next call; the opposite race — the Worker's write undoing a revocation — is the
+      // one that matters, and `recordTrustFirstCall` is built so it cannot happen.
+      await db
+        .updateTable(CONTROL_PLANE_CONNECTIONS_TABLE)
+        .set({
+          trusts: ControlPlaneConnection.shape.trusts.encode(trusts),
+          updatedAt: ControlPlaneConnection.shape.updatedAt.encode(now),
+        })
+        .where("id", "=", connection.id)
+        .execute();
+      // Recorded after the revocation and never able to fail it, for the reason `revokeKey` gives.
+      await record(
+        lifecycleEvent(ControlPlaneAuditActions.connectionUpdated, updated, {
+          changed: ["trusts"],
+          revokedTrustId: trustId,
+          liveTrustIdsAfter: activeTrusts(trusts, now).map((trust) => trust.trustId),
         }),
       );
       return updated;

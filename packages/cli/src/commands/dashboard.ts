@@ -29,13 +29,23 @@ import {
   dashboardStatus,
   disconnectDashboard,
   type OfflinePublicKey,
+  type OidcTrustRequest,
   parsePurpose,
+  type RevokeTrustReport,
   type RotateReport,
+  revokeDashboardTrust,
   rotateDashboardKey,
   type StatusReport,
 } from "../dashboard/connect";
 import type { DashboardClient, DeviceAuthorization } from "../dashboard/contract";
 import { decideGrant, type GrantableScope, isNarrowed, readScopeRequest } from "../dashboard/grant";
+import {
+  type IssuerProfile,
+  parseIssuer,
+  parseOidcClaims,
+  profileFor,
+  requireWorkloadIdentity,
+} from "../dashboard/oidc";
 import { type ResolvedOrigin, repointsOrigin, resolveDashboardOrigin } from "../dashboard/origin";
 import { requireRegisteringPrincipal } from "../dashboard/principal";
 import { type ConnectionRegistry, openConnectionRegistry } from "../dashboard/registry";
@@ -87,17 +97,25 @@ function block(rows: Row[]): string {
  * `--permission` and `--set` are read from `rawArgs`.
  */
 export function collectScopeFlags(rawArgs: string[]): string[] {
+  return collectRepeatedFlag(rawArgs, "--scope");
+}
+
+/**
+ * Every value of one repeatable flag, from the raw argv: `--flag value` and `--flag=value` alike. `--scope` and
+ * `--oidc-claim` both repeat, and citty keeps only the last of either.
+ */
+export function collectRepeatedFlag(rawArgs: string[], flag: string): string[] {
   const found: string[] = [];
   for (let i = 0; i < rawArgs.length; i++) {
     const arg = rawArgs[i];
-    if (arg === "--scope") {
+    if (arg === flag) {
       const value = rawArgs[i + 1];
       if (value !== undefined) {
         found.push(value);
         i++;
       }
-    } else if (arg?.startsWith("--scope=")) {
-      found.push(arg.slice("--scope=".length));
+    } else if (arg?.startsWith(`${flag}=`)) {
+      found.push(arg.slice(flag.length + 1));
     }
   }
   return found;
@@ -209,6 +227,7 @@ export function formatConnectReport(
   },
 ): string {
   if (options.json) return `${formatJsonLine({ command: "dashboard.connect", ...report })}\n`;
+  if (report.trust) return formatTrustRegistered(report, report.trust);
 
   const rows: Row[] = [
     { name: "Connection", description: dim(report.connectionId) },
@@ -254,6 +273,37 @@ export function formatConnectReport(
   return `${headline}\n${block(rows)}${unproven}${formatDone()}\n`;
 }
 
+/** A trust's subject constraint on one line, `name=value` pairs in the order they were registered. */
+function admits(claims: Readonly<Record<string, string>>): string {
+  return Object.entries(claims)
+    .map(([name, value]) => `${name}=${value}`)
+    .join(", ");
+}
+
+/**
+ * Render a trust registration (#722). Never `Connected`: nothing can prove a trust at registration, so the state
+ * is awaiting a first call, and the line says what that call carries.
+ */
+function formatTrustRegistered(report: ConnectReport, trust: NonNullable<ConnectReport["trust"]>): string {
+  const rows: Row[] = [
+    { name: "Connection", description: dim(report.connectionId) },
+    { name: "Worker", description: dim(report.workerUrl) },
+    { name: "Scopes", description: dim(report.scopes.join(", ")) },
+    { name: "Trust", description: dim(trust.trustId) },
+    { name: "Issuer", description: dim(trust.issuer) },
+    { name: "Audience", description: dim(trust.audience) },
+    // The population, on the face of it: whoever can run a workload carrying these claims can use this trust.
+    { name: "Admits", description: dim(admits(trust.claims)) },
+    ...attributionRows(report),
+  ];
+  const headline = report.updated
+    ? `Added a trust to ${report.environment}. Awaiting a first call.`
+    : `Registered ${report.environment}. Awaiting a first call.`;
+  const how =
+    "No key to place. The workload calls with its own token on pithy-control-plane-oidc, naming this trust on pithy-control-plane-trust and one scope on pithy-control-plane-scope.";
+  return [headline, block(rows).trimEnd(), ...trust.notes, how, formatDone(), ""].join("\n");
+}
+
 /** Render a rotation. The line about the old key staying live is the point of the whole command. */
 export function formatRotateReport(report: RotateReport, options: { json: boolean }): string {
   if (options.json) return `${formatJsonLine({ command: "dashboard.rotate", ...report })}\n`;
@@ -284,7 +334,8 @@ export function formatDisconnectReport(report: DisconnectReport, options: { json
   const courtesy = report.dashboardNotified
     ? ""
     : `The management client wasn't told: ${report.detail ?? "no reason given."} Your revocation stands.\n`;
-  return `Disconnected ${report.environment}.\n${courtesy}${formatDone()}\n`;
+  const latency = report.trustLatency === undefined ? "" : `${report.trustLatency}\n`;
+  return `Disconnected ${report.environment}.\n${courtesy}${latency}${formatDone()}\n`;
 }
 
 /** Render the registration state, keys and ages included. */
@@ -331,9 +382,18 @@ export function formatStatusReport(
     name: key.keyId,
     description: dim(`${key.live ? "live" : key.revokedAt ? "revoked" : "expired"}  ${key.ageDays} days`),
   }));
+  // A trust's state never reads `live`: until a call verifies under it, nothing has proven it (#722).
+  const trusts = report.trusts.map((trust) => ({
+    name: trust.trustId,
+    description: dim(
+      `${trust.state === "awaiting_first_call" ? "awaiting a first call" : trust.state}  ${trust.issuer}  ${admits(trust.claims)}`,
+    ),
+  }));
   // A row with no principal is one registered before they were recorded: it still works, and says so.
   const legacy = report.authorizedBy === null ? beforePrincipals(report) : "";
-  const parts = [headline, block(rows).trimEnd(), block(keys).trimEnd(), legacy].filter((part) => part !== "");
+  const parts = [headline, block(rows).trimEnd(), block(keys).trimEnd(), block(trusts).trimEnd(), legacy].filter(
+    (part) => part !== "",
+  );
   return `${parts.join("\n")}\n`;
 }
 
@@ -636,6 +696,103 @@ export function formatRevokeKeyReport(
   return `Revoked ${report.keyId} on ${report.environment}.\n${stranded}${formatDone()}\n`;
 }
 
+/**
+ * Render a trust revocation (#722), and say the latency out loud: a token cannot be revoked, only the trust, so
+ * one already minted stays in its holder's hands until it expires.
+ */
+export function formatRevokeTrustReport(report: RevokeTrustReport, options: { json: boolean }): string {
+  if (options.json) return `${formatJsonLine({ command: "dashboard.revoke-trust", ...report })}\n`;
+  if (!report.revoked) {
+    return `No trust ${report.trustId} on ${report.environment}.\nRun ${pithyCommand("dashboard status", { flags: { "--env": report.environment } })} to list the trusts.\n`;
+  }
+  return `Revoked trust ${report.trustId} on ${report.environment}.\n${report.latency}\n${formatDone()}\n`;
+}
+
+/** The confirmation `revoke-trust` asks, and the refusal it gives when it cannot. */
+function revokeTrustQuestion(trustId: string, env: string): Pick<ConfirmOrRefuseOptions, "message" | "action"> {
+  return { message: `Revoke trust ${trustId} on ${env}?`, action: "Pass --yes to revoke it without asking." };
+}
+
+/**
+ * The grant a trust registration carries (#722), decided once it is known whether a connection exists.
+ *
+ * Joining one takes that connection's grant, so nothing is asked: a scope prompt there would be a question whose
+ * answer is thrown away. A `--scope` passed anyway is still resolved, so `connectTrust` refuses it by name rather
+ * than this run dropping it. Registering a new connection decides it exactly as for a key.
+ */
+export async function decideTrustGrant<T>(
+  joining: boolean,
+  narrowed: boolean,
+  decide: () => Promise<T | undefined>,
+): Promise<T | undefined> {
+  return joining && !narrowed ? undefined : decide();
+}
+
+/** Confirm a trust revocation at a terminal. `--yes` skips it. */
+export async function confirmRevokeTrust(trustId: string, env: string): Promise<void> {
+  const { confirm, isCancel } = await import("@clack/prompts");
+  const answer = await confirm({ message: revokeTrustQuestion(trustId, env).message, initialValue: false });
+  if (isCancel(answer)) canceled();
+  if (answer !== true) declined();
+}
+
+/**
+ * Ask for a profiled issuer's recommended claims, one at a time (#722).
+ *
+ * A prompt over real choices rather than a string composed from documentation: each claim says what it pins and
+ * shows an example. The first claim names the workload and must be answered; an empty answer skips any other.
+ * Nothing here refuses a claim the profile does not name —
+ * `--oidc-claim` takes any, because a customized template carries claims no profile knows.
+ */
+export async function promptTrustClaims(profile: IssuerProfile): Promise<Record<string, string>> {
+  const { isCancel, text } = await import("@clack/prompts");
+  const claims: Record<string, string> = {};
+  for (const [index, entry] of profile.recommended.entries()) {
+    // The first claim names the workload, and is required: a trust matching only on what the job is admits anybody
+    // the issuer serves who can make a job look like it. The rest narrow it, and may be skipped.
+    const required = index === 0;
+    const answer = await text({
+      message: `${entry.claim}?\n${dim(entry.hint)}`,
+      placeholder: entry.example,
+      ...(required
+        ? { validate: (value?: string) => ((value ?? "").trim() === "" ? `${entry.claim} is required.` : undefined) }
+        : {}),
+    });
+    if (isCancel(answer)) canceled();
+    const value = typeof answer === "string" ? answer.trim() : "";
+    if (value !== "") claims[entry.claim] = value;
+  }
+  return claims;
+}
+
+/** What {@link trustClaimsFor} decides from. */
+export interface TrustClaimsInput {
+  /** The issuer, as `--oidc-issuer` named it. */
+  issuer: string;
+  /** Every `--oidc-claim`, unparsed. */
+  claimFlags: readonly string[];
+  /** Whether a person at a terminal can be asked. */
+  interactive: boolean;
+  /** Ask for a profiled issuer's claims. {@link promptTrustClaims} unless a test supplies its own. */
+  prompt?: (profile: IssuerProfile) => Promise<Record<string, string>>;
+}
+
+/**
+ * The claims a trust registers with (#722): its `--oidc-claim`s, or — for a profiled issuer, at a terminal, when none
+ * was passed — the answers to {@link promptTrustClaims}. Flags win over the prompt. A custom issuer is never asked,
+ * because nothing here knows what that provider sends, and a run that cannot ask is never asked: both are refused
+ * when no claim names the workload. Whichever way they came, the claims are held to {@link requireWorkloadIdentity}.
+ */
+export async function trustClaimsFor(input: TrustClaimsInput): Promise<Record<string, string>> {
+  const { issuer, claimFlags, interactive, prompt = promptTrustClaims } = input;
+  const profile = profileFor(issuer);
+  const claims =
+    claimFlags.length === 0 && profile !== undefined && interactive
+      ? await prompt(profile)
+      : parseOidcClaims(claimFlags);
+  return requireWorkloadIdentity(issuer, claims);
+}
+
 /** What {@link confirmOrRefuse} asks, and how it answers when it cannot ask. */
 export interface ConfirmOrRefuseOptions {
   /** The question, which is also the refusal's problem line when nobody can be asked. */
@@ -734,6 +891,19 @@ const Purpose = ConnectionPurpose.nullable()
   .describe("What the client is for, in the registering operator's words, or `null` when it was never said.");
 const IsoOrNull = (what: string) => z.string().nullable().describe(`${what}, ISO-8601, or \`null\`.`);
 
+/** A trust's subject constraint as `--json` writes it (#722): the population it admits. */
+const TrustClaims = z
+  .record(z.string().describe("A claim name."), z.string().describe("The value that claim must have."))
+  .describe("Who the trust admits: every named claim must equal its value.");
+
+/**
+ * The latency a trust revocation carries (#722): a token cannot be revoked, only the trust, so one already minted
+ * stays usable until it expires.
+ */
+const TrustLatency = z
+  .string()
+  .describe("What a workload holding a token already minted should expect: it stays usable until it expires.");
+
 /** A connection row as `--json` writes it: the stored shape, dates as ISO-8601 strings. */
 const ConnectionJson = z
   .object({
@@ -763,6 +933,25 @@ const ConnectionJson = z
           .describe("One registered key and its validity window."),
       )
       .describe("Every key the connection may sign with, current and superseded."),
+    // Added (#722), so `.optional()`: a line from an older CLI carries none.
+    trusts: z
+      .array(
+        z
+          .object({
+            trustId: z.string().describe("The trust's id, as a call names it."),
+            issuer: z.string().describe("The `iss` it accepts."),
+            jwksUrl: z.string().describe("Where the issuer publishes its keys."),
+            audience: z.string().describe("The `aud` a token must name."),
+            claims: TrustClaims,
+            authorizedBy: z.string().describe("Who sanctioned the trust."),
+            validFrom: Iso("When the trust was registered"),
+            revokedAt: IsoOrNull("When the trust was revoked"),
+            firstCallAt: IsoOrNull("When a call first verified under it"),
+          })
+          .describe("One OIDC trust."),
+      )
+      .optional()
+      .describe("Every OIDC trust the connection honors, live and revoked."),
     createdAt: Iso("When the connection was registered"),
     updatedAt: Iso("When the row last changed"),
   })
@@ -779,13 +968,27 @@ const DashboardConnectPayload = z
     scopes: Scopes,
     keyId: z.string().nullable().describe("The key registered by this run, or `null` when `--update` only re-pointed."),
     status: z
-      .enum(["connected", "needs_reconnect", "unreachable", "registered"])
-      .describe("`connected` is proven by a signed ping; `registered` is the offline path, written and not proven."),
+      .enum(["connected", "needs_reconnect", "unreachable", "registered", "awaiting_first_call"])
+      .describe(
+        "`connected` is proven by a signed ping; `registered` is the offline path, written and not proven; `awaiting_first_call` is a trust, which nothing can prove until a workload calls.",
+      ),
     detail: Detail,
     updated: z.boolean().describe("Whether an existing connection was re-pointed rather than a new one created."),
     authorizedBy: AuthorizedBy,
     actorKind: ActorKind,
     purpose: Purpose,
+    trust: z
+      .object({
+        trustId: z.string().describe("The trust's id — what a call names on `pithy-control-plane-trust`."),
+        issuer: z.string().describe("The `iss` it accepts."),
+        audience: z.string().describe("The `aud` a token must name."),
+        claims: TrustClaims,
+        notes: z
+          .array(z.string().describe("One sentence."))
+          .describe("What the operator should read once, such as the trade of matching on a name rather than an id."),
+      })
+      .optional()
+      .describe("The OIDC trust this run registered, when `--oidc-issuer` registered one."),
   })
   .describe("What `pithy dashboard connect` did.");
 
@@ -813,6 +1016,7 @@ const DashboardDisconnectPayload = z
     removed: z.boolean().describe("Whether a row was deleted. `false` on a re-run, which is not an error."),
     dashboardNotified: z.boolean().describe("Whether the management client was told. Never gates the revocation."),
     detail: Detail,
+    trustLatency: TrustLatency.optional(),
   })
   .describe("What `pithy dashboard disconnect` did.");
 
@@ -826,6 +1030,17 @@ const DashboardRevokeKeyPayload = z
     connection: ConnectionJson.nullable().describe("The connection after the write, or `null` when nothing matched."),
   })
   .describe("What `pithy dashboard revoke-key` did.");
+
+/** `pithy dashboard revoke-trust --json`. */
+const DashboardRevokeTrustPayload = z
+  .object({
+    command: z.literal("dashboard.revoke-trust").describe('`"dashboard.revoke-trust"`.'),
+    environment: Environment,
+    trustId: z.string().describe("The trust asked for."),
+    revoked: z.boolean().describe("`false` when no trust answered to that id. Re-running is not an error."),
+    latency: TrustLatency,
+  })
+  .describe("What `pithy dashboard revoke-trust` did.");
 
 /** `pithy dashboard status --json`. */
 const DashboardStatusPayload = z
@@ -854,6 +1069,26 @@ const DashboardStatusPayload = z
           .describe("One registered key."),
       )
       .describe("Every registered key, live and superseded."),
+    trusts: z
+      .array(
+        z
+          .object({
+            trustId: z.string().describe("The trust's id, as a call names it."),
+            issuer: z.string().describe("The `iss` it accepts."),
+            audience: z.string().describe("The `aud` a token must name."),
+            claims: TrustClaims,
+            authorizedBy: z.string().describe("Who sanctioned it. Never who may use it."),
+            state: z
+              .enum(["awaiting_first_call", "called", "revoked"])
+              .describe("`awaiting_first_call` until a call verifies under it; nothing proves a trust before then."),
+            validFrom: Iso("When the trust was registered"),
+            firstCallAt: IsoOrNull("When a call first verified under it"),
+            revokedAt: IsoOrNull("When it was revoked"),
+          })
+          .describe("One OIDC trust."),
+      )
+      .optional()
+      .describe("Every OIDC trust, live and revoked. Absent from an older CLI."),
     status: z
       .enum(["connected", "needs_reconnect", "unreachable", "unverified"])
       .describe("`unverified` unless `--verify` asked for a probe; `unreachable` when nothing answered it."),
@@ -888,7 +1123,22 @@ const connect = withContract(
         type: "string",
         description: "What this client is for, in one line. Required to register; with --update, replaces it",
       },
-      kind: { type: "string", description: "With --public-key: agent or script — what kind of client holds the key" },
+      kind: {
+        type: "string",
+        description: "With --public-key or --oidc-issuer: agent or script — what kind of client it is",
+      },
+      "oidc-issuer": {
+        type: "string",
+        description: "Register a workload trust: the exact iss its OIDC tokens carry. No key, no dashboard",
+      },
+      "oidc-claim": {
+        type: "string",
+        description: "With --oidc-issuer: a claim the token must carry, name=value (repeatable). At least one",
+      },
+      "oidc-audience": {
+        type: "string",
+        description: "With --oidc-issuer: the aud its tokens must name (default: this environment's worker origin)",
+      },
     },
     // `rawArgs` because a repeated `--scope` only survives there.
     run: ({ args, rawArgs }) =>
@@ -899,6 +1149,8 @@ const connect = withContract(
         const scopeRequest = readScopeRequest(collectScopeFlags(rawArgs));
         const narrowed = isNarrowed(scopeRequest);
         const offlinePath = args["public-key"] !== undefined;
+        const trustPath = args["oidc-issuer"] !== undefined;
+        const claimFlags = collectRepeatedFlag(rawArgs, "--oidc-claim");
 
         // Cross-arg rules, checked here rather than by a helper: docs/STACK.md proposes
         // requireWhen/exactlyOne, but they do not exist yet, and inventing them for one command would be
@@ -921,10 +1173,29 @@ const connect = withContract(
             action: "Drop --key-id. The dashboard mints the keypair and names the key.",
           });
         }
-        if (!offlinePath && args.kind !== undefined) {
+        if (!offlinePath && !trustPath && args.kind !== undefined) {
           throw new ValidationError({
-            message: "--kind only applies with --public-key.",
+            message: "--kind only applies with --public-key or --oidc-issuer.",
             action: "Drop --kind. A connection through the dashboard is the dashboard's, always.",
+          });
+        }
+        // The trust's flag set (#722): a partial one is refused rather than half applied.
+        if (!trustPath && (claimFlags.length > 0 || args["oidc-audience"] !== undefined)) {
+          throw new ValidationError({
+            message: "--oidc-claim and --oidc-audience only apply with --oidc-issuer.",
+            action: "Pass --oidc-issuer with the exact iss the workload's tokens carry, or drop them.",
+          });
+        }
+        if (trustPath && offlinePath) {
+          throw new ValidationError({
+            message: "--oidc-issuer and --public-key are two credentials. Register one per run.",
+            action: "Drop one of them. A connection may hold both; register the second in a run of its own.",
+          });
+        }
+        if (trustPath && args.update) {
+          throw new ValidationError({
+            message: "--oidc-issuer registers a trust, and --update re-points a connection.",
+            action: "Drop --update. A trust joins the connection this environment already has.",
           });
         }
         if (
@@ -944,6 +1215,23 @@ const connect = withContract(
         const kind = args.kind === undefined ? undefined : parseKindFlag(args.kind);
         const purpose = args.purpose === undefined ? undefined : parsePurpose(args.purpose);
 
+        const interactive = isInteractive(args.json);
+
+        // The trust, settled before a project is read, like every other argument rule. An issuer and at least one
+        // claim are both required; a profiled issuer at a terminal may be asked for its claims instead, and a custom
+        // one never is — the operator names the claims, because nothing here knows what that provider sends.
+        let trust: OidcTrustRequest | undefined;
+        if (trustPath) {
+          const issuer = parseIssuer(args["oidc-issuer"] as string);
+          const claims = await trustClaimsFor({ issuer, claimFlags, interactive });
+          trust = {
+            issuer,
+            claims,
+            ...(args["oidc-audience"] === undefined ? {} : { audience: args["oidc-audience"] }),
+            ...(kind === undefined ? {} : { kind }),
+          };
+        }
+
         let publicKey: OfflinePublicKey | undefined;
         if (offlinePath) {
           const raw = await readFile(args["public-key"] as string, "utf8");
@@ -951,7 +1239,6 @@ const connect = withContract(
           publicKey = { ...key, issuer: args.issuer as string, ...(kind === undefined ? {} : { kind }) };
         }
 
-        const interactive = isInteractive(args.json);
         const projectDir = process.cwd();
 
         // Which Worker, at what address, with the seam mounted where — resolved from the project rather
@@ -995,13 +1282,18 @@ const connect = withContract(
 
         // The whole decision, in one place that a test can execute — what is stored, what is asked, and
         // what the prompt is preselected with. `connect` derives no part of it.
-        const granted = await decideGrant({
-          request: scopeRequest,
-          composed,
-          interactive,
-          update: args.update,
-          prompt: promptScopes,
-        });
+        //
+        // A trust decides it inside the registry, once it knows whether a connection exists: joining one takes that
+        // connection's grant, so there is nothing to ask, and a `--scope` passed anyway is refused there by name.
+        const decide = () =>
+          decideGrant({
+            request: scopeRequest,
+            composed,
+            interactive,
+            update: args.update,
+            prompt: promptScopes,
+          });
+        const granted = trustPath ? undefined : await decide();
 
         // One load, two answers. `--project` overrides only the *name* sent to the client; whether this
         // environment holds live data is the project's policy either way, and it is exactly the list that
@@ -1015,6 +1307,26 @@ const connect = withContract(
         // The account the session must belong to, read the way `withRegistry` reads it.
         const account = await projectCloudflareAccount(projectDir);
         const report = await withRegistry(args, async (registry) => {
+          // A trust contacts no management client (#722): it is a row written against this project, so there is
+          // no dashboard to resolve, and none is built.
+          if (trust) {
+            const trustGrant = await decideTrustGrant((await registry.read()) !== null, narrowed, decide);
+            return connectDashboard({
+              registry,
+              project,
+              environment: args.env,
+              connect: () => connectSentence({ projectDir, environment: args.env }),
+              ...(workerUrl === undefined ? {} : { workerUrl }),
+              ...(target === null ? {} : { basePath: target.basePath }),
+              ...(trustGrant === undefined ? {} : { scopes: trustGrant }),
+              capabilities: composed,
+              trust,
+              ...(args.origin === undefined ? {} : { managementOrigin: args.origin }),
+              principal: () => requireRegisteringPrincipal({ account }),
+              ...(purpose === undefined ? {} : { purpose }),
+              ...(interactive ? { askPurpose: promptPurpose } : {}),
+            });
+          }
           // Resolved once: the same answer decides which client is called and what the row records, so
           // the two cannot disagree about which dashboard this connection belongs to (#614).
           const { client, resolved } = await clientFor(registry, args);
@@ -1058,10 +1370,36 @@ const connect = withContract(
   }),
   {
     ...DASHBOARD,
+    // 2 since #722: `status` gained `awaiting_first_call`, a value a consumer switching over the old four never saw.
+    schemaVersion: 2,
     payload: DashboardConnectPayload,
     idempotent: false,
-    flags: { scope: { repeatable: true } },
+    flags: { scope: { repeatable: true }, "oidc-claim": { repeatable: true } },
     flagGroups: [
+      {
+        kind: "requires",
+        flag: "--oidc-claim",
+        needs: ["--oidc-issuer"],
+        any: false,
+        rule: "--oidc-claim and --oidc-audience only apply with --oidc-issuer.",
+      },
+      {
+        kind: "requires",
+        flag: "--oidc-audience",
+        needs: ["--oidc-issuer"],
+        any: false,
+        rule: "--oidc-claim and --oidc-audience only apply with --oidc-issuer.",
+      },
+      {
+        kind: "atMostOne",
+        flags: ["--oidc-issuer", "--public-key"],
+        rule: "--oidc-issuer and --public-key are two credentials. Register one per run.",
+      },
+      {
+        kind: "atMostOne",
+        flags: ["--oidc-issuer", "--update"],
+        rule: "--oidc-issuer registers a trust, and --update re-points a connection.",
+      },
       { kind: "requires", flag: "--public-key", needs: ["--issuer"], any: false, rule: "--public-key needs --issuer." },
       {
         kind: "requires",
@@ -1080,9 +1418,9 @@ const connect = withContract(
       {
         kind: "requires",
         flag: "--kind",
-        needs: ["--public-key"],
-        any: false,
-        rule: "--kind only applies with --public-key.",
+        needs: ["--public-key", "--oidc-issuer"],
+        any: true,
+        rule: "--kind only applies with --public-key or --oidc-issuer.",
       },
       {
         kind: "requires",
@@ -1192,6 +1530,37 @@ const revokeKey = withContract(
   { ...DASHBOARD, payload: DashboardRevokeKeyPayload, idempotent: true },
 );
 
+/**
+ * `pithy dashboard revoke-trust` — stop honoring one OIDC trust (#722).
+ *
+ * Local, immediate and unilateral, like `revoke-key`. And unlike it, with a latency the output states: a token
+ * cannot be revoked, only the trust, so one already minted stays in its holder's hands until it expires.
+ */
+const revokeTrust = withContract(
+  defineCommand({
+    meta: { name: "revoke-trust", description: "Revoke one OIDC trust immediately, leaving the connection in place" },
+    args: {
+      ...commonArgs,
+      "trust-id": { type: "string", required: true, description: "The trust to revoke, as reported by `status`" },
+      yes: { type: "boolean", default: false, description: "Skip the confirmation (how CI runs it)" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        await confirmOrRefuse({
+          ...revokeTrustQuestion(args["trust-id"], args.env),
+          json: args.json,
+          yes: args.yes,
+          ask: () => confirmRevokeTrust(args["trust-id"], args.env),
+        });
+        const report = await withRegistry(args, (registry) =>
+          revokeDashboardTrust({ registry, environment: args.env, trustId: args["trust-id"] }),
+        );
+        process.stdout.write(formatRevokeTrustReport(report, { json: args.json }));
+      }),
+  }),
+  { ...DASHBOARD, payload: DashboardRevokeTrustPayload, idempotent: true, needsNetwork: true },
+);
+
 /** `pithy dashboard status` — what is registered, and (with `--verify`) whether it still answers. */
 const status = withContract(
   defineCommand({
@@ -1240,5 +1609,5 @@ export default defineCommand({
     name: "dashboard",
     description: "Connect, rotate, revoke, and inspect a management client (control-plane seam)",
   },
-  subCommands: { connect, rotate, "revoke-key": revokeKey, disconnect, status },
+  subCommands: { connect, rotate, "revoke-key": revokeKey, "revoke-trust": revokeTrust, disconnect, status },
 });

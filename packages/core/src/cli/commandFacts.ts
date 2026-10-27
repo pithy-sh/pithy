@@ -56,6 +56,7 @@ export const WORKER_NARROWS = [
   "contract",
   "dashboard disconnect",
   "dashboard revoke-key",
+  "dashboard revoke-trust",
   "dashboard rotate",
   "dashboard status",
   "doctor",
@@ -100,6 +101,7 @@ export const MEANING_ONLY_WITH = { remove: "--drop", upgrade: "--migrate" } as c
 export const DESTRUCTIVE_COMMANDS = {
   "dashboard disconnect": "the environment's dashboard connection and the key it signs with",
   "dashboard revoke-key": "a signing key the dashboard holds",
+  "dashboard revoke-trust": "an OIDC trust a workload calls under",
   "email deprovision": "the email Workers, and with --suppression the suppression database",
   "feature destroy": "the feature's worktree, its branch and every resource it provisioned",
   "media deprovision": "the media Worker, and with --storage its bucket",

@@ -26,6 +26,7 @@ import { namedHealthValues } from "../discovery/healthSummary";
 import { controlplane_0001_init } from "../migrations/0001_init";
 import { controlplane_0002_management_origin } from "../migrations/0002_management_origin";
 import { controlplane_0003_connection_principal } from "../migrations/0003_connection_principal";
+import { controlplane_0004_connection_trusts } from "../migrations/0004_connection_trusts";
 import {
   EVIDENCE_READ_SCOPE,
   KEYS_ROTATE_SCOPE,
@@ -362,6 +363,7 @@ beforeEach(async () => {
   await controlplane_0001_init.up(db);
   await controlplane_0002_management_origin.up(db);
   await controlplane_0003_connection_principal.up(db);
+  await controlplane_0004_connection_trusts.up(db);
   // The replay set is a table now, not a KV namespace, and it is on the verification path for every
   [alice, bob, carol] = await Promise.all([signer("cpk_alice"), signer("cpk_bob"), signer("cpk_carol")]);
   vaultUp = true;
@@ -848,6 +850,44 @@ describe("GET /control-plane/keys", () => {
     expect(json).toMatchObject({ authorizedBy: null, actorKind: null, purpose: null });
   });
 
+  test("lists every OIDC trust beside the keys, its subject constraint on the face of it (#722)", async () => {
+    await connect([registered(alice)]);
+    const trust = {
+      trustId: "4b8f0c1e-2a7d-4e0b-9c55-0f3a6d2e7b19",
+      issuer: "https://token.actions.githubusercontent.com",
+      jwksUrl: "https://token.actions.githubusercontent.com/.well-known/jwks",
+      audience: "https://api.acme.example",
+      claims: { repository_id: "1262274726", environment: "prod" },
+      authorizedBy: "ada@example.com",
+      validFrom: new Date("2026-10-01T00:00:00.000Z"),
+      revokedAt: null,
+      firstCallAt: null,
+    };
+    await controlPlaneDatabase(env.DB)
+      .updateTable(CONTROL_PLANE_CONNECTIONS_TABLE)
+      .set({ trusts: ControlPlaneConnection.shape.trusts.encode([trust]) })
+      .where("id", "=", CONNECTION_ID)
+      .execute();
+
+    const raw = await body<unknown>(await call("GET", "/control-plane/keys", { key: alice, scope: KEYS_ROTATE_SCOPE }));
+    // Held to the bytes: the schema a management client validates with is the shape the Worker sends.
+    expect(ControlPlaneKeysResponse.parse(raw)).toEqual(raw);
+    expect(ControlPlaneKeysResponse.parse(raw).trusts).toEqual([
+      {
+        trustId: trust.trustId,
+        issuer: trust.issuer,
+        audience: trust.audience,
+        claims: { repository_id: "1262274726", environment: "prod" },
+        authorizedBy: "ada@example.com",
+        validFrom: "2026-10-01T00:00:00.000Z",
+        revokedAt: null,
+        firstCallAt: null,
+      },
+    ]);
+    // The key set is the key set; the trust is beside it, never in it.
+    expect(ControlPlaneKeysResponse.parse(raw).keys.map((key) => key.keyId)).toEqual(["cpk_alice"]);
+  });
+
   test("still validates a response from an older Worker, which sends none of the three", () => {
     expect(
       ControlPlaneKeysResponse.safeParse({ connectionId: CONNECTION_ID, environment: ENVIRONMENT, keys: [] }).success,
@@ -1161,6 +1201,7 @@ describe("GET /control-plane/migrations", () => {
   const SEAM_1 = "1100_controlplane_0001_init";
   const SEAM_2 = "1100_controlplane_0002_management_origin";
   const SEAM_3 = "1100_controlplane_0003_connection_principal";
+  const SEAM_4 = "1100_controlplane_0004_connection_trusts";
 
   /** A second database on `ANALYTICS`, so one can be unreadable while the other answers. */
   const reporting = defineCapability({
@@ -1249,6 +1290,7 @@ describe("GET /control-plane/migrations", () => {
           pending: [
             { name: SEAM_2, namespace: "controlplane" },
             { name: SEAM_3, namespace: "controlplane" },
+            { name: SEAM_4, namespace: "controlplane" },
           ],
           undeclared: [{ name: "0400_vault_0001_init", namespace: "vault" }],
           lastGroup: {
@@ -1313,7 +1355,7 @@ describe("GET /control-plane/migrations", () => {
       ["pendingMigrations", { atMost: 0 }],
       ["undeclaredMigrations", null],
     ]);
-    expect(seam?.health).toEqual({ state: "reported", values: { pendingMigrations: 2, undeclaredMigrations: 1 } });
+    expect(seam?.health).toEqual({ state: "reported", values: { pendingMigrations: 3, undeclaredMigrations: 1 } });
   });
 
   test("a connection without migrations:read gets no value for either key, rather than a zero", async () => {

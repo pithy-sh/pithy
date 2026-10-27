@@ -6,6 +6,7 @@ import type { Migration } from "kysely/migration";
 import type { BindingSpecInput } from "../capability/bindings";
 import { type Capability, defineCapability, type PithyHonoEnv } from "../capability/capability";
 import type { DatabaseSpecMap } from "../data/databases";
+import { memoryJwksCache } from "../http/oidcWebhook";
 import type { KvNamespaceSpecMap, KvRegistry } from "../kv/namespaces";
 import { routeGroupsOf } from "../openapi/routeGroups";
 import type { PresenceDeclaration } from "../presence/declaration";
@@ -17,6 +18,7 @@ import { ENVIRONMENT_VAR } from "../worker/identity";
 import { ControlPlaneConfig, type ControlPlaneConfigInput } from "./config/config";
 import { ControlPlaneConnection } from "./data/connection";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, type ControlPlaneDatabase, controlPlaneTables } from "./data/tables";
+import { recordTrustFirstCall } from "./data/trustFirstCall";
 import type { CapabilityDeclaration } from "./discovery/adminRoute";
 import { type CapabilityHealthSource, capabilityHealthSources, defineCapabilityHealth } from "./discovery/health";
 import { createControlPlaneVerifier } from "./http/guard";
@@ -30,6 +32,7 @@ import {
 import { controlplane_0001_init } from "./migrations/0001_init";
 import { controlplane_0002_management_origin } from "./migrations/0002_management_origin";
 import { controlplane_0003_connection_principal } from "./migrations/0003_connection_principal";
+import { controlplane_0004_connection_trusts } from "./migrations/0004_connection_trusts";
 import { d1ReplayGuard } from "./replay/d1Guard";
 import type { ReplayGuard } from "./replay/guard";
 import {
@@ -92,6 +95,7 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
     "0001_init": controlplane_0001_init,
     "0002_management_origin": controlplane_0002_management_origin,
     "0003_connection_principal": controlplane_0003_connection_principal,
+    "0004_connection_trusts": controlplane_0004_connection_trusts,
   };
   const requiredBindings: BindingSpecInput[] = [
     // The app database — the connections table lives here, beside auth's and audit's. Not the secrets
@@ -121,6 +125,12 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
   const database = (c: Context<PithyHonoEnv>): ControlPlaneDatabase => (c.var.db as { app: ControlPlaneDatabase }).app;
 
   const now = () => new Date();
+
+  // The issuers' key sets for every OIDC trust this Worker honors (#722), held for the life of the isolate and
+  // shared by every call. Built once here, never per request: a call naming a real trust and an invented `kid`
+  // is anonymous traffic, and without a held set and its refresh window each one would buy a round trip to the
+  // issuer — `memoryJwksCache` is what bounds that, and only if it outlives the request.
+  const jwksCache = memoryJwksCache({ now });
 
   /**
    * The replay guard for this request, chosen once by config.
@@ -243,28 +253,47 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
         // on a route that has nothing to do with the seam.
         app.use("*", async (c, next) => {
           const db = database(c);
+          const environment = String((c.env as Record<string, unknown>)[ENVIRONMENT_VAR] ?? "");
           c.set(
             "controlPlaneVerifier",
-            createControlPlaneVerifier({
-              loadConnection: async (connectionId) => {
-                const row = await db
-                  .selectFrom(CONTROL_PLANE_CONNECTIONS_TABLE)
-                  .selectAll()
-                  .where("id", "=", connectionId)
-                  .executeTakeFirst();
-                return row ? ControlPlaneConnection.parse(row) : null;
+            createControlPlaneVerifier(
+              {
+                loadConnection: async (connectionId) => {
+                  const row = await db
+                    .selectFrom(CONTROL_PLANE_CONNECTIONS_TABLE)
+                    .selectAll()
+                    .where("id", "=", connectionId)
+                    .executeTakeFirst();
+                  return row ? ControlPlaneConnection.parse(row) : null;
+                },
+                countConnections: async () => {
+                  const rows = await db.selectFrom(CONTROL_PLANE_CONNECTIONS_TABLE).select("id").limit(1).execute();
+                  return rows.length;
+                },
+                replay: replay(c),
+                // The environment a credential is bound to. Absent off-platform, where the empty string
+                // matches no stored connection and every call therefore denies — the right failure.
+                environment,
+                config,
+                now,
               },
-              countConnections: async () => {
-                const rows = await db.selectFrom(CONTROL_PLANE_CONNECTIONS_TABLE).select("id").limit(1).execute();
-                return rows.length;
+              {
+                // One connection per environment (docs/CONTROL-PLANE.md §15), so a call under a trust names the
+                // trust and the environment names the connection.
+                loadEnvironmentConnection: async () => {
+                  const row = await db
+                    .selectFrom(CONTROL_PLANE_CONNECTIONS_TABLE)
+                    .selectAll()
+                    .where("environment", "=", environment)
+                    .executeTakeFirst();
+                  return row ? ControlPlaneConnection.parse(row) : null;
+                },
+                environment,
+                now,
+                jwksCache,
+                recordFirstCall: (connectionId, trustId, at) => recordTrustFirstCall(db, connectionId, trustId, at),
               },
-              replay: replay(c),
-              // The environment a credential is bound to. Absent off-platform, where the empty string
-              // matches no stored connection and every call therefore denies — the right failure.
-              environment: String((c.env as Record<string, unknown>)[ENVIRONMENT_VAR] ?? ""),
-              config,
-              now,
-            }),
+            ),
           );
           await next();
         });

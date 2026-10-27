@@ -46,6 +46,35 @@ export const PublicKeyView = z
 export type PublicKeyView = z.output<typeof PublicKeyView>;
 
 /**
+ * One OIDC trust as `GET {basePath}/keys` lists it (#722): who it admits, beside who sanctioned it.
+ *
+ * **The subject constraint is on the face of the listing**, because it *is* the population: a trust pinned to a
+ * workflow is usable by anyone who can run that workflow, and the claims are the only place that is written down.
+ * Nothing here is secret — an issuer, an audience and claim values are all public facts about a workload.
+ */
+export const TrustView = z
+  .object({
+    trustId: z.string().describe("The trust's id, as a call names it on `pithy-control-plane-trust`."),
+    issuer: z.string().describe("The `iss` the trust accepts."),
+    audience: z.string().describe("The `aud` a token must name."),
+    claims: z
+      .record(z.string().describe("A claim name."), z.string().describe("The value that claim must have."))
+      .describe("The subject constraint: every named claim must equal its value. This is who may use the trust."),
+    authorizedBy: z.string().describe("Who sanctioned the trust — never who may use it."),
+    validFrom: z.iso.datetime().describe("When the trust was registered, ISO-8601."),
+    revokedAt: z.iso
+      .datetime()
+      .nullable()
+      .describe("When it was revoked, ISO-8601, or null. A token already minted stays usable until it expires."),
+    firstCallAt: z.iso
+      .datetime()
+      .nullable()
+      .describe("When a call first verified under it, ISO-8601, or null while it is awaiting a first call."),
+  })
+  .describe("One OIDC trust: who it admits, and who sanctioned it.");
+export type TrustView = z.output<typeof TrustView>;
+
+/**
  * `GET /control-plane/ping`.
  *
  * It echoes the `keyId` that verified the call, so a client rotating a key can confirm *which* key
@@ -85,8 +114,13 @@ export const ControlPlaneKeysResponse = z
       .describe(
         "What the client is for, in the registering operator's words. Untrusted text: render it escaped. Null for a connection registered before it was recorded; absent from an older Worker.",
       ),
+    // Added (#722), so `.optional()`: a Worker older than trusts sends none.
+    trusts: z
+      .array(TrustView)
+      .optional()
+      .describe("Every OIDC trust on this connection, revoked ones included. Absent from a Worker older than trusts."),
   })
-  .describe("Every key registered against this connection, with its window, and who authorized it for what.");
+  .describe("Every key and trust registered against this connection, and who authorized it for what.");
 export type ControlPlaneKeysResponse = z.output<typeof ControlPlaneKeysResponse>;
 
 /** `POST /control-plane/keys` — the appended key, and the set as it now stands. */

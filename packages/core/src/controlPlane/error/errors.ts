@@ -55,11 +55,38 @@ export class ControlPlaneNotConnectedError extends PithyError {
 }
 
 /**
+ * What a call under an OIDC trust carried when its claims did not match (#722), for the audit row and nobody
+ * else.
+ *
+ * Set only once the token's signature, issuer and audience have verified: by then the caller demonstrably
+ * holds a genuine token for this audience, so naming the claims it sent leaks nothing it does not already
+ * hold — and those claims are what an operator picks a matcher from. Before that the single-error discipline
+ * holds, and no refusal carries this.
+ */
+export interface ControlPlaneRefusedTrust {
+  /** The connection whose trust was named. */
+  readonly connectionId: string;
+  /** The trust the call named. */
+  readonly trustId: string;
+  /** The workload's claims, as strings, capped — `observedClaims` in `../data/oidcTrust`. */
+  readonly observedClaims: Readonly<Record<string, string>>;
+}
+
+/**
  * The credential failed verification. One error for every step — pass the step in `detail` so the log
  * can say which, and the caller cannot.
  */
 export class ControlPlaneInvalidCredentialError extends PithyError {
-  constructor(args: ControlPlaneErrorArgs = {}, options?: { cause?: unknown }) {
+  /**
+   * A claim mismatch on an otherwise verified OIDC token, for the denial row. A property of the vehicle, never of
+   * `payload`, so the refusal a caller receives is the same one every other step answers. Null everywhere else.
+   */
+  readonly refusedTrust: ControlPlaneRefusedTrust | null;
+
+  constructor(
+    args: ControlPlaneErrorArgs & { refusedTrust?: ControlPlaneRefusedTrust } = {},
+    options?: { cause?: unknown },
+  ) {
     super(
       {
         code: "controlplane/invalid_credential",
@@ -73,6 +100,7 @@ export class ControlPlaneInvalidCredentialError extends PithyError {
       },
       options,
     );
+    this.refusedTrust = args.refusedTrust ?? null;
   }
 }
 
@@ -88,8 +116,13 @@ export interface ControlPlaneRefusedCaller {
   readonly connectionId: string;
   /** The token's `sub`, proven by the signature. */
   readonly subject: string;
-  /** The registered key that verified the signature. */
+  /** The registered key that verified the signature — or, for a call under an OIDC trust, the trust. */
   readonly keyId: string;
+  /**
+   * Said only for a call under an OIDC trust (#722), in which case `keyId` names the trust. Absent reads as a key, as
+   * it does on the allowed row, so a trust's refusals are not recorded as a key's with an id no key has.
+   */
+  readonly credentialKind?: "trust";
   /**
    * The kind of client the connection was registered as, from the adopter's row and never the token — the same value
    * the allowed row is stamped with, so a trail filtered on kind holds a client's refusals beside its calls. Null for a
