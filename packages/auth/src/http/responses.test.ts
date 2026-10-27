@@ -174,6 +174,8 @@ describe("the deletion lifecycle's responses (#622)", () => {
           suspendedUntil: null,
           step: null,
           notify: null,
+          mode: "soft",
+          purgeAfter: at,
           createdAt: at,
         },
       ],

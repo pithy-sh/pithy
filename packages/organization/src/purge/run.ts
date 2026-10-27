@@ -13,6 +13,7 @@ import {
   dueOrganizationPurges,
   type OrganizationLifecycleDeps,
   organizationPurgeSubject,
+  recordOrganizationPurgeFailure,
   recordOrganizationPurgeStep,
 } from "../lifecycle/transitions";
 import { organizationWorkflowRetry } from "./retryPolicy";
@@ -31,6 +32,10 @@ import { ORGANIZATION_CAPABILITY, type OrganizationPurgeDueParams, type Organiza
  * 3. **`erase organization`** — this capability's own contribution, last: every other capability's step may still
  *    read a membership while it erases, and this one takes the memberships with the organization.
  * 4. **`complete`** — the `purged` record and `onOrganizationPurged`. Once.
+ *
+ * Every step from 2 on records an audit event as well as its row (#823), which the erasure attestation cites. A step
+ * that exhausts its retries is caught once, recorded in its own `fail` step with the step it stopped at, and thrown
+ * on unchanged, so the instance fails exactly as it did and the record does not read as a purge still running.
  */
 
 /** What a purge does with the organization's own records. */
@@ -43,22 +48,50 @@ export interface OrganizationPurgeOps {
   recordRetained(organizationId: string, step: string, basis: string): Promise<void>;
   /** Write the `purged` record and fire the hook. Says whether this call wrote them. */
   complete(organizationId: string): Promise<boolean>;
+  /** Record that the purge gave up at `step`, in the history and the trail (#823). */
+  fail(organizationId: string, step: string): Promise<void>;
 }
 
-/** The operations, over the lifecycle transitions — and the audit event the finished purge owes the trail. */
+/** The audit events a purge owes the trail (#823). Each is the caller's to write, as every event here is. */
+export interface OrganizationPurgeAudit {
+  /** One step erased or kept a capability's rows. */
+  step(organizationId: string, step: string, disposition: "erased" | "retained"): Promise<void>;
+  /** The purge gave up at `step`. */
+  failed(organizationId: string, step: string): Promise<void>;
+  /** The purge finished. Written once, by whichever purge finished it. */
+  purged(organizationId: string): Promise<void>;
+}
+
+/** A trail that records nothing — a purge with no audit composed. */
+const UNAUDITED: OrganizationPurgeAudit = {
+  step: async () => {},
+  failed: async () => {},
+  purged: async () => {},
+};
+
+/** The operations, over the lifecycle transitions — and the audit events the purge owes the trail. */
 export function organizationPurgeOps(
   deps: OrganizationLifecycleDeps,
-  audited: (organizationId: string) => Promise<void> = async () => {},
+  audit: OrganizationPurgeAudit = UNAUDITED,
 ): OrganizationPurgeOps {
   return {
     due: (organizationId) => organizationPurgeSubject(deps, organizationId),
-    recordStep: (organizationId, step, summary) => recordOrganizationPurgeStep(deps, { organizationId, step, summary }),
-    recordRetained: (organizationId, step, basis) =>
-      recordOrganizationPurgeStep(deps, { organizationId, step, summary: basis, retained: true }),
+    recordStep: async (organizationId, step, summary) => {
+      await recordOrganizationPurgeStep(deps, { organizationId, step, summary });
+      await audit.step(organizationId, step, "erased");
+    },
+    recordRetained: async (organizationId, step, basis) => {
+      await recordOrganizationPurgeStep(deps, { organizationId, step, summary: basis, retained: true });
+      await audit.step(organizationId, step, "retained");
+    },
     complete: async (organizationId) => {
       const { changed } = await completeOrganizationPurge(deps, { organizationId });
-      if (changed) await audited(organizationId);
+      if (changed) await audit.purged(organizationId);
       return changed;
+    },
+    fail: async (organizationId, step) => {
+      await recordOrganizationPurgeFailure(deps, { organizationId, step });
+      await audit.failed(organizationId, step);
     },
   };
 }
@@ -102,16 +135,42 @@ export async function purgeOrganization(
   const others = run.steps.filter((each) => each.step !== ORGANIZATION_CAPABILITY);
   const erased: string[] = [];
   const retained: string[] = [];
-  for (const each of [...others, ...mine]) {
-    const { contribution } = each;
-    if (isRetained(contribution)) {
-      retained.push(await retainStep(step, run.ops, each.step, contribution.retain.basis, organizationId));
-    } else {
-      erased.push(await eraseStep(step, run.ops, each, context));
+  // The step running now, so a failure records where it stopped.
+  let current = "due";
+  try {
+    for (const each of [...others, ...mine]) {
+      const { contribution } = each;
+      current = each.step;
+      if (isRetained(contribution)) {
+        retained.push(await retainStep(step, run.ops, each.step, contribution.retain.basis, organizationId));
+      } else {
+        erased.push(await eraseStep(step, run.ops, each, context));
+      }
     }
+    current = "complete";
+    await own.do("complete", () => run.ops.complete(organizationId));
+    return { organizationId, state: "purged", erased, retained };
+  } catch (error) {
+    await recordFailure(step, run.ops, organizationId, current);
+    throw error;
   }
-  await own.do("complete", () => run.ops.complete(organizationId));
-  return { organizationId, state: "purged", erased, retained };
+}
+
+/** Record where a purge gave up, in its own step, and never mask the failure that stopped it. */
+async function recordFailure(
+  step: WorkflowStepLike,
+  ops: OrganizationPurgeOps,
+  organizationId: string,
+  at: string,
+): Promise<void> {
+  try {
+    await step.do("fail", async () => {
+      await ops.fail(organizationId, at);
+      return at;
+    });
+  } catch {
+    // The original failure is the one to report, and the next daily pass starts the purge again.
+  }
 }
 
 /**

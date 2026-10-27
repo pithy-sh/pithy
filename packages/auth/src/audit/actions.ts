@@ -185,6 +185,17 @@ export const AuthAuditActions = {
   adminUserRestored: "auth/admin_user_restored",
   /** A deleted account's data was erased. Recorded once, when the last purge step has run. */
   adminUserPurged: "auth/admin_user_purged",
+  /**
+   * One purge step answered for a capability's rows: erased them, or kept them under a stated basis (#814).
+   * `metadata.step` names the capability and `metadata.disposition` says which. The erasure attestation cites it
+   * by event id and chain position (#823).
+   */
+  adminUserPurgeStep: "auth/admin_user_purge_step",
+  /**
+   * A purge gave up at the step `metadata.step` names, until the next daily pass starts it again (#823). The
+   * erasure attestation cites it, and names every failed purge in a period.
+   */
+  adminUserPurgeFailed: "auth/admin_user_purge_failed",
   /** The account's own holder deleted their account. Always a soft deletion, on the configured window. */
   userSelfDeleted: "auth/user_self_deleted",
   /**

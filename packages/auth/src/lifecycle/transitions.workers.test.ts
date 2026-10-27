@@ -16,6 +16,7 @@ import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
 import { AUTH_MIGRATIONS } from "../migrations/set";
 import { purgeOps } from "../purge/run";
 import { readLifecycleColumns, suspensionReason } from "./enforce";
+import { userErasureReader } from "./erasure";
 import type { UserLifecycleHookEvent, UserLifecycleHooks } from "./hooks";
 import {
   completePurge,
@@ -24,6 +25,7 @@ import {
   type LifecycleDeps,
   mailPurgeComplete,
   purgeSubject,
+  recordPurgeFailure,
   recordPurgeStep,
   reinstateUser,
   requirePresent,
@@ -1020,5 +1022,126 @@ describe("the purge's operations over the transitions (#622)", () => {
     expect((await history()).filter((row) => row.action === "purged")).toHaveLength(1);
     expect(h.fired.filter((each) => each.hook === "onUserPurged")).toHaveLength(1);
     expect(h.events.filter((event) => event.action === "auth/admin_user_purged")).toHaveLength(1);
+  });
+});
+
+describe("the erasure record (#823)", () => {
+  test("a deletion's row keeps its mode and when its purge comes due, so the purge cannot erase them", async () => {
+    for (const id of ["soft", "hard", "forward"]) await seedUser(id);
+    const h = harness();
+    await deleteUser(h.deps, { userId: "soft", actor: OPERATOR, reason: "x" });
+    await deleteUser(h.deps, { userId: "hard", actor: OPERATOR, reason: "x", mode: "hard" });
+    await deleteUser(h.deps, { userId: "forward", actor: OPERATOR, reason: "x" });
+    const later = { ...h.deps, now: () => new Date(NOW.getTime() + DAY) };
+    await deleteUser(later, { userId: "forward", actor: OPERATOR, reason: "now", mode: "hard" });
+    const rows = (await Promise.all(["soft", "hard", "forward"].map((id) => history(id))))
+      .flat()
+      .filter((row) => row.action === "deleted");
+    expect(rows.map((row) => [row.userId, row.mode, row.purgeAfter?.getTime()])).toEqual([
+      ["soft", "soft", NOW.getTime() + 30 * DAY],
+      ["hard", "hard", NOW.getTime()],
+      ["forward", "soft", NOW.getTime() + 30 * DAY],
+      ["forward", "hard", NOW.getTime() + DAY],
+    ]);
+  });
+
+  test("every purge step records an audit event naming the step and its disposition, and never the summary", async () => {
+    await seedUser();
+    const h = harness();
+    await recordPurgeStep(h.deps, { userId: "u1", step: "media", summary: "Deletes uploads." });
+    await recordPurgeStep(h.deps, { userId: "u1", step: "payments", summary: "Kept for tax records.", retained: true });
+    expect(h.events.map((event) => [event.action, event.resourceType, event.resourceId, event.metadata])).toEqual([
+      ["auth/admin_user_purge_step", "user", "u1", { step: "media", disposition: "erased" }],
+      ["auth/admin_user_purge_step", "user", "u1", { step: "payments", disposition: "retained" }],
+    ]);
+    expect(h.events.every((event) => event.actorType === "system")).toBe(true);
+  });
+
+  test("a purge that gave up records the step it stopped at, in the history and the trail", async () => {
+    const h = harness();
+    await recordPurgeFailure(h.deps, { userId: "u1", step: "ledger" });
+    expect(await history()).toEqual([
+      expect.objectContaining({ action: "purge_failed", step: "ledger", reason: null, actorType: "system" }),
+    ]);
+    expect(h.events).toEqual([
+      expect.objectContaining({
+        action: "auth/admin_user_purge_failed",
+        resourceId: "u1",
+        metadata: { step: "ledger" },
+      }),
+    ]);
+  });
+
+  test("the reader hands core every erasure row, oldest first, and never a suspension", async () => {
+    await seedUser();
+    const h = harness();
+    await suspendUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Hold." });
+    await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Asked.", mode: "hard" });
+    await recordPurgeStep(h.deps, { userId: "u1", step: "media", summary: "Deletes uploads." });
+    await recordPurgeFailure(h.deps, { userId: "u1", step: "ledger" });
+    await completePurge(h.deps, { userId: "u1" });
+    const rows = await userErasureReader(h.deps.db).history(["u1", "nobody"]);
+    expect(rows.map((row) => [row.action, row.step, row.mode])).toEqual([
+      ["deleted", null, "hard"],
+      ["purge_step", "media", null],
+      ["purge_failed", "ledger", null],
+      ["purged", null, null],
+    ]);
+    expect(rows[0]).toMatchObject({ subjectId: "u1", actorType: "control-plane", reason: "Asked.", purgeAfter: NOW });
+    expect(await userErasureReader(h.deps.db).history([])).toEqual([]);
+  });
+
+  test("the period lists a subject by its purge's activity or its due instant in the window, and no other", async () => {
+    for (const id of ["ran", "due", "later", "outside"]) await seedUser(id);
+    const h = harness();
+    const at = (offset: number) => ({ ...h.deps, now: () => new Date(NOW.getTime() + offset) });
+    // Ran a step in the window, its deletion long before it.
+    await deleteUser(at(-100 * DAY), { userId: "ran", actor: OPERATOR, reason: "x" });
+    await recordPurgeStep(at(0), { userId: "ran", step: "media" });
+    // Came due in the window, nothing run yet.
+    await deleteUser(at(-25 * DAY), { userId: "due", actor: OPERATOR, reason: "x" });
+    // Deleted in the window, due after it.
+    await deleteUser(at(0), { userId: "later", actor: OPERATOR, reason: "x" });
+    // Everything before the window.
+    await deleteUser(at(-200 * DAY), { userId: "outside", actor: OPERATOR, reason: "x", mode: "hard" });
+    await completePurge(at(-199 * DAY), { userId: "outside" });
+    const ids = await userErasureReader(h.deps.db).subjectsIn(
+      new Date(NOW.getTime() - 10 * DAY),
+      new Date(NOW.getTime() + 10 * DAY),
+    );
+    expect(ids).toEqual(["due", "ran"]);
+  });
+
+  test("the period lists a purge outstanding in the window though it came due before it and has done nothing since", async () => {
+    for (const id of ["stuck", "legacy", "finished", "restored", "after"]) await seedUser(id);
+    const h = harness();
+    const at = (offset: number) => ({ ...h.deps, now: () => new Date(NOW.getTime() + offset) });
+    // Deleted 100 days ago, due 70 days ago, and no purge row since: the stuck one the read exists to name.
+    await deleteUser(at(-100 * DAY), { userId: "stuck", actor: OPERATOR, reason: "x" });
+    // Deleted before the due instant was recorded: no purgeAfter on its row, and its purge never ran.
+    await deleteUser(at(-100 * DAY), { userId: "legacy", actor: OPERATOR, reason: "x" });
+    await h.deps.db
+      .updateTable("pithyAuthUserLifecycle")
+      .set({ purgeAfter: null })
+      .where("userId", "=", "legacy")
+      .execute();
+    // Due before the window and completed before it.
+    await deleteUser(at(-100 * DAY), { userId: "finished", actor: OPERATOR, reason: "x" });
+    await completePurge(at(-60 * DAY), { userId: "finished" });
+    // Deleted and restored before the window.
+    await deleteUser(at(-100 * DAY), { userId: "restored", actor: OPERATOR, reason: "x" });
+    await restoreUser(at(-90 * DAY), { userId: "restored", actor: OPERATOR, reason: "x" });
+    // Deleted after the window closed, its due instant unrecorded.
+    await deleteUser(at(20 * DAY), { userId: "after", actor: OPERATOR, reason: "x" });
+    await h.deps.db
+      .updateTable("pithyAuthUserLifecycle")
+      .set({ purgeAfter: null })
+      .where("userId", "=", "after")
+      .execute();
+    const ids = await userErasureReader(h.deps.db).subjectsIn(
+      new Date(NOW.getTime() - 10 * DAY),
+      new Date(NOW.getTime() + 10 * DAY),
+    );
+    expect(ids).toEqual(["legacy", "stuck"]);
   });
 });

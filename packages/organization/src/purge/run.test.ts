@@ -79,6 +79,7 @@ function ops(log: string[], due: "due" | "not_due" | "gone" = "due"): Organizati
       completed = true;
       return first;
     },
+    fail: async (organizationId, step) => void log.push(`fail ${organizationId} at ${step}`),
   };
 }
 
@@ -162,6 +163,30 @@ describe("purgeOrganization", () => {
     });
     expect(replay.ran).toEqual(["erase app", "erase organization", "complete"]);
     expect(media.erases()).toBe(1);
+  });
+
+  test("a purge that gives up records the step it stopped at, in its own step, and fails as it would have (#823)", async () => {
+    const log: string[] = [];
+    const { step, ran } = workflow(3);
+    const run = {
+      steps: [contribution("media", log, 3), contribution("organization", log)],
+      env: {},
+      ops: ops(log),
+    };
+    await expect(purgeOrganization(run, step, Terminal, { organizationId: "o1" })).rejects.toThrow("media is down");
+    expect(log).toContain("fail o1 at media");
+    expect(ran.at(-1)).toBe("fail");
+  });
+
+  test("a failure the purge cannot record still reports the failure that stopped it (#823)", async () => {
+    const log: string[] = [];
+    const broken = { ...ops(log), fail: async () => Promise.reject(new Error("database gone")) };
+    const { step } = workflow();
+    await expect(
+      purgeOrganization({ steps: [contribution("media", log, 9)], env: {}, ops: broken }, step, Terminal, {
+        organizationId: "o1",
+      }),
+    ).rejects.toThrow("media is down");
   });
 
   test("an organization not due, or gone, erases nothing and completes nothing", async () => {

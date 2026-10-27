@@ -37,3 +37,19 @@ The pack is `GET /control-plane/evidence`, behind `evidence:read`. It is a read,
 **It proves, and performs nothing.** Rotating a key, applying a migration and revoking a connection stay where they are, each on its own scope.
 
 The route, its shape and its schema are [`CONTROL-PLANE.md` §12](CONTROL-PLANE.md#evidence). What the privacy classes mean is [`PRIVACY.md`](PRIVACY.md).
+
+## Erasure attestation
+
+The evidence pack proves controls present. The erasure attestation proves that a deletion happened, correctly, and that every one did.
+
+**For one person or one organization**, `GET /control-plane/erasure/user/<id>` or `GET /control-plane/erasure/organization/<id>` answers when it was deleted, by which kind of actor and why, soft or hard, and each purge step: which capability, whether it erased the rows or kept them, the reason it kept them, and when it finished. Then whether the purge is complete, in progress or failed, and the audit event that records each step, by event id and chain position.
+
+**For a period**, `GET /control-plane/erasure?since=…&until=…` counts every purge in the window — complete, in progress, failed — and names each failed or overdue one with the step it stopped at. That is the half an auditor actually asks for: *every erasure last quarter completed*.
+
+**A kept row is never an erased one.** A capability that keeps a person's rows says why, in a sentence written for the person: payments kept for tax law, a suppression kept so the unsubscribe holds (#814). The attestation shows that step as `retained`, with that sentence.
+
+**It cites the trail; it signs nothing.** Every step, the completion and a failure are recorded as audit events, and the trail's hash chain is what makes them tamper-evident. Hand an auditor the attestation and an export of the chain, and `pithy audit verify` checks the events it cites. Without `@pithy-sh/audit` composed, the attestation still reads the purge's own record and says the trail is `absent`.
+
+**Nothing about the person survives in it** beyond the id the record already keeps. No address, no name.
+
+**It proves, and deletes nothing.** Deleting stays where it is, on its own scope. The attestation is behind `erasure:read`, a read, so `pithy dashboard connect` preselects it. The routes and their shape are [`CONTROL-PLANE.md` §12](CONTROL-PLANE.md#erasure).

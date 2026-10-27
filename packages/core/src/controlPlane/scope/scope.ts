@@ -107,10 +107,20 @@ export const PRIVACY_READ_SCOPE: ControlPlaneScope = "privacy:read";
 export const EVIDENCE_READ_SCOPE: ControlPlaneScope = "evidence:read";
 
 /**
+ * Read the erasure attestation (#823): one subject's purge, or every purge in a period, with the audit events that
+ * record each step. Read-only — both routes behind it are `GET`s — and kind `reads`.
+ *
+ * **Its own scope**, because it answers across subjects: which accounts and organizations were deleted, by which
+ * kind of actor and why. It carries nothing about a person beyond the id the lifecycle trail already keeps, and it
+ * never widens `audit:events:read`: it cites an event by id and chain position, never its contents.
+ */
+export const ERASURE_READ_SCOPE: ControlPlaneScope = "erasure:read";
+
+/**
  * The seam's base grant — what `pithy dashboard connect` grants whatever the Worker composes. Ping is absent
  * because it is not grantable; see {@link ANY_VERIFIED_CALLER}.
  *
- * **{@link MIGRATIONS_READ_SCOPE}, {@link PRIVACY_READ_SCOPE} and {@link EVIDENCE_READ_SCOPE} are absent on purpose.** Each is a read —
+ * **{@link MIGRATIONS_READ_SCOPE}, {@link PRIVACY_READ_SCOPE}, {@link EVIDENCE_READ_SCOPE} and {@link ERASURE_READ_SCOPE} are absent on purpose.** Each is a read —
  * every route requiring it is a `GET` — so `connect` derives it from the seam's `adminRoutes` the way it
  * derives every capability's reads. The base exists for `keys:rotate`, which is not a read and would
  * otherwise drop out.

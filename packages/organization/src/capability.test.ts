@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
-import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, type PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { EXAMPLE_ADA, EXAMPLE_ALAN, EXAMPLE_GRACE } from "@pithy-sh/core/src/seed/exampleIdentities";
 import { describe, expect, test } from "vitest";
@@ -153,6 +153,7 @@ describe("migrations", () => {
       "0001_init",
       "0002_seat_limit",
       "0003_organization_lifecycle",
+      "0004_erasure_record",
     ]);
   });
 
@@ -466,6 +467,35 @@ describe("the email an invitation is mailed through", () => {
 
   test("a project that delivers the link itself needs no email", () => {
     expect(assemble({ ...BASE, sendInvitationEmail: false }, [])).toBeUndefined();
+  });
+});
+
+describe("the erasure record (#823)", () => {
+  test("declares the organization subject, its resource type, and every action its purge records", () => {
+    // The control plane finds this among the composed capabilities: drop it, or name a wrong action, and every
+    // organization attestation is a 404 or cites no deletion, with nothing else failing.
+    const records = organization(BASE).erasureRecords;
+    expect(records).toMatchObject({
+      subject: "organization",
+      resourceType: "organization",
+      auditActions: {
+        deleted: [
+          OrganizationAuditActions.adminOrganizationDeleted,
+          OrganizationAuditActions.adminOrganizationHardDeleted,
+        ],
+        step: OrganizationAuditActions.purgeStep,
+        failed: OrganizationAuditActions.purgeFailed,
+        purged: OrganizationAuditActions.purged,
+      },
+    });
+    expect(typeof records?.read).toBe("function");
+  });
+
+  test("reading it without the DB binding is an internal error naming the binding, never a silent empty record", () => {
+    const records = organization(BASE).erasureRecords;
+    expect(() => records?.read({})).toThrow(InternalError);
+    expect(() => records?.read({ DB: "not a database" })).toThrow(InternalError);
+    expect(() => records?.read({ DB: null })).toThrow(/organization database is not bound/);
   });
 });
 

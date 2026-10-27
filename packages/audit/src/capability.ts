@@ -11,6 +11,7 @@ import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
 import { z } from "zod";
 import { AUDIT_CHECKPOINT_BINDING } from "./chain/checkpoint";
 import { checkpointLockCheck } from "./chain/lockCheck";
+import { auditCitationsFor } from "./citations";
 import type { AuditDatabase } from "./data/tables";
 import { auditDatabase, auditTables } from "./data/tables";
 import { auditAdminRoutes } from "./http/guards";
@@ -147,6 +148,9 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
         });
       };
     },
+    // Where a resource's events sit in their chains, for the control plane's erasure attestation (#823). Found by
+    // core's `composedAuditCitations`, so the attestation imports nothing from here.
+    auditCitations: auditCitationsFor(resolved.database),
     // Built from the resolved `basePath`, never the default: an adopter who mounts this at `/trail`
     // gets a manifest naming their paths, where a client assuming the default would 404.
     adminRoutes: auditAdminRoutes(resolved.basePath),

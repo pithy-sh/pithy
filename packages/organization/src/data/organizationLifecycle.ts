@@ -19,9 +19,9 @@ import { z } from "zod";
 
 /** What happened to the organization. */
 export const OrganizationLifecycleAction = z
-  .enum(["suspended", "reinstated", "deleted", "restored", "purge_step", "purge_retained", "purged"])
+  .enum(["suspended", "reinstated", "deleted", "restored", "purge_step", "purge_retained", "purge_failed", "purged"])
   .describe(
-    "The transition: `suspended` and `reinstated`; `deleted` and `restored` inside the purge window; `purge_step`, one capability's rows erased during a purge, named in `step`; `purge_retained`, one capability's rows kept through a purge under the basis in `reason` (#814); and `purged`, the erasure finished.",
+    "The transition: `suspended` and `reinstated`; `deleted` and `restored` inside the purge window; `purge_step`, one capability's rows erased during a purge, named in `step`; `purge_retained`, one capability's rows kept through a purge under the basis in `reason` (#814); `purge_failed`, the purge gave up at the step named in `step`, until the next daily pass (#823); and `purged`, the erasure finished.",
   );
 export type OrganizationLifecycleAction = z.output<typeof OrganizationLifecycleAction>;
 
@@ -64,7 +64,19 @@ export const OrganizationLifecycleEvent = z
       .string()
       .nullable()
       .describe(
-        "For a `purge_step` row, the capability whose rows that step erased; for a `purge_retained` row, the capability whose rows it kept — the purge's step name. Null for every other action.",
+        "For a `purge_step` row, the capability whose rows that step erased; for a `purge_retained` row, the capability whose rows it kept; for a `purge_failed` row, the step the purge gave up at. Null for every other action.",
+      ),
+    mode: z
+      .enum(["soft", "hard"])
+      .nullable()
+      .default(null)
+      .describe(
+        "For a `deleted` row, how the deletion was asked for: `soft` with a window, `hard` with none — a hard deletion bringing a soft one forward writes its own `hard` row. Null for every other row, and for a deletion recorded before `0004_erasure_record` (#823).",
+      ),
+    purgeAfter: SQLiteDate.nullable()
+      .default(null)
+      .describe(
+        "For a `deleted` row, when its purge comes due — kept here because the purge erases the organization's own column. Null for every other row, and before `0004_erasure_record` (#823).",
       ),
     createdAt: SQLiteDate.describe("When the transition happened. Ms-epoch in SQLite; a `Date` in app code."),
   })

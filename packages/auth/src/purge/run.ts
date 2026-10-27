@@ -15,6 +15,7 @@ import {
   mailPurgeComplete,
   purgeAddress,
   purgeSubject,
+  recordPurgeFailure,
   recordPurgeStep,
 } from "../lifecycle/transitions";
 import { authWorkflowRetry } from "./retryPolicy";
@@ -38,6 +39,15 @@ import { AUTH_CAPABILITY, type AuthPurgeDueParams, type AuthPurgeParams } from "
  *    one, so it is in no Workflow's journal.
  * 4. **`erase auth`** — auth's own contribution, last for that reason.
  * 5. **`complete`** — the `purged` record, the audit event, `onUserPurged`. Once.
+ *
+ * Every step from 2 on records an audit event as well as its row (#823), which the erasure attestation cites.
+ *
+ * ## A purge that gives up says where (#823)
+ *
+ * A step that exhausts its retries fails the instance, and the daily pass starts a fresh one tomorrow. Until then the
+ * record would read as a purge still running. So the failure is caught once, recorded in its own `fail` step —
+ * the step it stopped at, in the history and the trail — and thrown on unchanged, so the instance still fails
+ * exactly as it did. A `fail` step that cannot write either is swallowed: the original failure is the one to report.
  */
 
 /** What a purge does with the account's own records — the transitions, over one set of dependencies. */
@@ -60,6 +70,8 @@ export interface PurgeOps {
   mailComplete(userId: string, notify: boolean | undefined): Promise<boolean>;
   /** Write the `purged` record, the audit event and the hook. Says whether this call wrote them. */
   complete(userId: string): Promise<boolean>;
+  /** Record that the purge gave up at `step`, in the history and the trail (#823). */
+  fail(userId: string, step: string): Promise<void>;
 }
 
 /** The operations, over the lifecycle transitions. */
@@ -79,6 +91,7 @@ export function purgeOps(deps: LifecycleDeps): PurgeOps {
         .mailed;
     },
     complete: async (userId) => (await completePurge(deps, { userId })).changed,
+    fail: (userId, step) => recordPurgeFailure(deps, { userId, step }),
   };
 }
 
@@ -127,17 +140,42 @@ export async function purgeUser(
   const others = run.steps.filter((each) => each.step !== AUTH_CAPABILITY);
   const erased: string[] = [];
   const retained: string[] = [];
+  // The step running now, so a failure records where it stopped.
+  let current = "due";
   const runStep = async (each: PurgeStep) => {
     const { contribution } = each;
+    current = each.step;
     if (isRetained(contribution))
       retained.push(await retainStep(step, run.ops, each.step, contribution.retain.basis, userId));
     else erased.push(await eraseStep(step, run.ops, each, context));
   };
-  for (const each of others) await runStep(each);
-  const mailed = await own.do("mail", () => run.ops.mailComplete(userId, params.notify));
-  for (const each of auth) await runStep(each);
-  await own.do("complete", () => run.ops.complete(userId));
-  return { userId, state: "purged", erased, retained, mailed };
+  try {
+    for (const each of others) await runStep(each);
+    current = "mail";
+    const mailed = await own.do("mail", () => run.ops.mailComplete(userId, params.notify));
+    for (const each of auth) await runStep(each);
+    current = "complete";
+    await own.do("complete", () => run.ops.complete(userId));
+    return { userId, state: "purged", erased, retained, mailed };
+  } catch (error) {
+    await recordFailure(step, run.ops, userId, current);
+    throw error;
+  }
+}
+
+/**
+ * Record where a purge gave up, in its own step, and never mask the failure that stopped it: a `fail` step that
+ * cannot write is swallowed. See the file header.
+ */
+async function recordFailure(step: WorkflowStepLike, ops: PurgeOps, userId: string, at: string): Promise<void> {
+  try {
+    await step.do("fail", async () => {
+      await ops.fail(userId, at);
+      return at;
+    });
+  } catch {
+    // The original failure is the one to report, and the next daily pass starts the purge again.
+  }
 }
 
 /**

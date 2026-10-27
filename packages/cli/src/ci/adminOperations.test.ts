@@ -26,6 +26,8 @@ const PUBLISHED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
     "migrations.read": "GET /control-plane/migrations",
     "privacy.read": "GET /control-plane/privacy",
     "evidence.read": "GET /control-plane/evidence",
+    "erasure.list": "GET /control-plane/erasure",
+    "erasure.read": "GET /control-plane/erasure/:subjectType/:subjectId",
     "presence.tickets.mint": "POST /control-plane/presence/tickets",
   },
   secrets: {

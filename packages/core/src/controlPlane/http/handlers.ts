@@ -22,10 +22,13 @@ import type { CapabilityDeclaration, ControlPlaneManifestWire } from "../discove
 import { type CapabilityHealthSource, readCapabilityHealth } from "../discovery/health";
 import { healthWire } from "../discovery/healthSummary";
 import { routeInputs, withRouteInputs } from "../discovery/routeInput";
+import { readErasurePeriod, readErasureSubject } from "../erasure/read";
 import { ControlPlaneInvalidCredentialError, ControlPlaneKeyConflictError } from "../error/errors";
 import { readEvidencePack } from "../evidence/pack";
 import { type ComposedMigrationDatabase, readDatabaseMigrations } from "../migrationState/migrationState";
 import type {
+  ControlPlaneErasurePeriodResponse,
+  ControlPlaneErasureSubjectResponse,
   ControlPlaneEvidenceResponse,
   ControlPlaneKeysResponse,
   ControlPlaneMigrationsResponse,
@@ -36,7 +39,13 @@ import type {
   RegisterKeyResponse,
   TrustView,
 } from "./responses";
-import type { ExpireKeyParams, ExpireKeyRequest, RegisterKeyRequest } from "./schemas";
+import type {
+  ErasurePeriodQuery,
+  ErasureSubjectParams,
+  ExpireKeyParams,
+  ExpireKeyRequest,
+  RegisterKeyRequest,
+} from "./schemas";
 
 /**
  * The seam's own route handlers.
@@ -516,5 +525,35 @@ export function evidenceHandler(deps: ControlPlaneHandlerDeps) {
   return async (c: Context<PithyHonoEnv>) => {
     const context = caller(c);
     return c.json((await readEvidencePack(c, deps, context)) satisfies ControlPlaneEvidenceResponse);
+  };
+}
+
+/**
+ * `GET /control-plane/erasure/:subjectType/:subjectId` — one subject's erasure, attested (#823).
+ *
+ * Read from the purge's own lifecycle rows, through the capability that owns the subject, and cited in the audit
+ * chain through the composed audit. A subject with no deletion in force is a 404. Read-only.
+ */
+export function erasureSubjectHandler(deps: ControlPlaneHandlerDeps) {
+  return async (c: Context<PithyHonoEnv>, params: ErasureSubjectParams) => {
+    caller(c);
+    const env = (c.env ?? {}) as Record<string, unknown>;
+    return c.json(
+      (await readErasureSubject(
+        env,
+        deps,
+        params.subjectType,
+        params.subjectId,
+      )) satisfies ControlPlaneErasureSubjectResponse,
+    );
+  };
+}
+
+/** `GET /control-plane/erasure?since&until` — every purge in a period, counted (#823). Read-only. */
+export function erasurePeriodHandler(deps: ControlPlaneHandlerDeps) {
+  return async (c: Context<PithyHonoEnv>, query: ErasurePeriodQuery) => {
+    caller(c);
+    const env = (c.env ?? {}) as Record<string, unknown>;
+    return c.json((await readErasurePeriod(env, deps, query)) satisfies ControlPlaneErasurePeriodResponse);
   };
 }

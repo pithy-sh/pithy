@@ -5,9 +5,11 @@ import { env } from "cloudflare:test";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
+import { OrganizationLifecycleEvent } from "../data/organizationLifecycle";
 import { ORGANIZATION_MIGRATION_ORDER, organization_0001_init } from "./0001_init";
 import { organization_0002_seat_limit } from "./0002_seat_limit";
 import { organization_0003_organization_lifecycle } from "./0003_organization_lifecycle";
+import { organization_0004_erasure_record } from "./0004_erasure_record";
 
 /**
  * The one migration, both ways, against real D1.
@@ -301,5 +303,56 @@ describe("0003_organization_lifecycle", () => {
     await organization_0003_organization_lifecycle.down?.(db());
     await organization_0003_organization_lifecycle.up(db());
     expect(await catalog()).toEqual([...EXPECTED_CATALOG, ...ADDED].sort());
+  });
+});
+
+describe("0004_erasure_record", () => {
+  const ACME = "11111111-1111-4111-8111-111111111111";
+
+  async function lifecycleColumns(): Promise<string[]> {
+    const { results } = await env.DB.prepare("PRAGMA table_info(pithy_organization_lifecycle)").all<{ name: string }>();
+    return results.map((row) => row.name);
+  }
+
+  const ADDED = ["pithy_organization_lifecycle_created_at_idx", "pithy_organization_lifecycle_purge_after_idx"];
+
+  beforeEach(async () => {
+    await organization_0001_init.up(db());
+    await organization_0002_seat_limit.up(db());
+    await organization_0003_organization_lifecycle.up(db());
+  });
+
+  test("up adds a deletion's mode and due instant, nullable, and a row carrying them round-trips (#823)", async () => {
+    await organization_0004_erasure_record.up(db());
+    expect(await lifecycleColumns()).toEqual(expect.arrayContaining(["mode", "purge_after"]));
+    expect(await catalog()).toEqual(expect.arrayContaining(ADDED));
+    await env.DB.prepare(
+      "insert into pithy_organization_lifecycle (organization_id, action, actor_type, mode, purge_after, created_at) values (?, 'deleted', 'control-plane', 'soft', 9, 1)",
+    )
+      .bind(ACME)
+      .run();
+    const raw = await createDatabase(env.DB, { pithyOrganizationLifecycle: OrganizationLifecycleEvent })
+      .selectFrom("pithyOrganizationLifecycle")
+      .selectAll()
+      .executeTakeFirstOrThrow();
+    const row = OrganizationLifecycleEvent.parse(raw);
+    expect([row.mode, row.purgeAfter?.getTime()]).toEqual(["soft", 9]);
+  });
+
+  test("down takes the columns and indexes back out, the history stays, and up after down is clean", async () => {
+    await organization_0004_erasure_record.up(db());
+    await env.DB.prepare(
+      "insert into pithy_organization_lifecycle (organization_id, action, actor_type, created_at) values (?, 'deleted', 'system', 1)",
+    )
+      .bind(ACME)
+      .run();
+    await organization_0004_erasure_record.down?.(db());
+    expect(await lifecycleColumns()).not.toContain("mode");
+    expect(await lifecycleColumns()).not.toContain("purge_after");
+    for (const name of ADDED) expect(await catalog()).not.toContain(name);
+    const left = await env.DB.prepare("select count(*) as n from pithy_organization_lifecycle").first<{ n: number }>();
+    expect(left?.n).toBe(1);
+    await organization_0004_erasure_record.up(db());
+    expect(await catalog()).toEqual(expect.arrayContaining(ADDED));
   });
 });

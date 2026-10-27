@@ -134,6 +134,15 @@ describe("defaultGrant", () => {
     ]);
   });
 
+  test("offers erasure:read as a read, preselected and grantable on its own — both its routes are GETs (#823)", () => {
+    const erasure = grantableScopes([controlplane()]).find((entry) => entry.scope === "erasure:read");
+    expect(erasure?.read).toBe(true);
+    expect(defaultGrant([controlplane()])).toContain("erasure:read");
+    expect(resolveScopeRequest(readScopeRequest(["erasure:read"]), grantableScopes([controlplane()]))).toEqual([
+      "erasure:read",
+    ]);
+  });
+
   test("offers ledger:accounts:adjust as a write, off the real capability, and never grants it unasked (#811)", () => {
     // The ledger's two reads are granted by default; its one write moves money, so it is offered at the
     // prompt and granted only when an adopter picks it.
@@ -331,6 +340,7 @@ describe("--scope all resolves to the list the prompt renders", () => {
     "migrations:read",
     "privacy:read",
     "evidence:read",
+    "erasure:read",
     "audit:events:read",
     "audit:events:read_detail",
     "support:tickets:read",
@@ -363,6 +373,7 @@ describe("--scope all resolves to the list the prompt renders", () => {
       "migrations:read",
       "privacy:read",
       "evidence:read",
+      "erasure:read",
       "audit:events:read",
       "audit:events:read_detail",
       "support:tickets:read",
@@ -379,6 +390,7 @@ describe("--scope all resolves to the list the prompt renders", () => {
       "migrations:read",
       "privacy:read",
       "evidence:read",
+      "erasure:read",
     ]);
   });
 
@@ -392,6 +404,7 @@ describe("--scope all resolves to the list the prompt renders", () => {
       "migrations:read",
       "privacy:read",
       "evidence:read",
+      "erasure:read",
       "audit:events:read",
       "audit:events:read_detail",
       "support:tickets:read",
@@ -454,6 +467,7 @@ describe("decideGrant", () => {
       "migrations:read",
       "privacy:read",
       "evidence:read",
+      "erasure:read",
       "audit:events:read",
       "audit:events:read_detail",
       "support:tickets:read",
@@ -504,6 +518,7 @@ describe("decideGrant", () => {
       "migrations:read",
       "privacy:read",
       "evidence:read",
+      "erasure:read",
       "audit:events:read",
       "audit:events:read_detail",
       "support:tickets:read",
@@ -515,6 +530,7 @@ describe("decideGrant", () => {
       "migrations:read",
       "privacy:read",
       "evidence:read",
+      "erasure:read",
       "audit:events:read",
       "audit:events:read_detail",
       "support:tickets:read",

@@ -73,7 +73,7 @@ It works on `--update` too, which is the case it exists for: widening an existin
 
 ```
 $ pithy dashboard connect --env prod --scope all --json
-{"command":"dashboard.connect","schemaVersion":2,…,"scopes":["manifest:read","keys:rotate","migrations:read","privacy:read","evidence:read","audit:events:read","audit:events:read_detail","support:threads:read","support:threads:archive","support:threads:reply"],…}
+{"command":"dashboard.connect","schemaVersion":2,…,"scopes":["manifest:read","keys:rotate","migrations:read","privacy:read","evidence:read","erasure:read","audit:events:read","audit:events:read_detail","support:threads:read","support:threads:archive","support:threads:reply"],…}
 ```
 
 `--scope all` beside another `--scope` is refused, because they are two answers to one question and keeping either silently would decide an authorization for you.
@@ -85,10 +85,10 @@ Pass one or the other.
 
 Whatever you end up with is printed on the `Scopes` line and stored on your row, and your Worker enforces that row and nothing else. A narrowed grant refuses every call it left out with `controlplane/insufficient_scope`, and the manifest tells a client which routes those are before it tries.
 
-**A connection made before a scope existed does not hold it.** `migrations:read`, `privacy:read` and `evidence:read` are the ones to know: a connection minted before the seam reported migration state gets no migration route and no migration counts on the manifest until it is granted, and one minted before the privacy inventory gets no `GET /control-plane/privacy` until it holds `privacy:read`, and one minted before the evidence pack gets no `GET /control-plane/evidence` until it holds `evidence:read`. The manifest's `privacy` block needs only `manifest:read`, because it names classes and counts and never a field. The upgrade is `pithy dashboard connect --update --scope migrations:read`, with every scope the connection already holds passed beside it. `--scope` names the whole grant, so passed alone it narrows the connection to that one scope. `pithy dashboard status` prints what it holds now.
+**A connection made before a scope existed does not hold it.** `migrations:read`, `privacy:read`, `evidence:read` and `erasure:read` are the ones to know: a connection minted before the seam reported migration state gets no migration route and no migration counts on the manifest until it is granted, and one minted before the privacy inventory gets no `GET /control-plane/privacy` until it holds `privacy:read`, one minted before the evidence pack gets no `GET /control-plane/evidence` until it holds `evidence:read`, and one minted before the erasure attestation gets no `GET /control-plane/erasure` until it holds `erasure:read`. The manifest's `privacy` block needs only `manifest:read`, because it names classes and counts and never a field. The upgrade is `pithy dashboard connect --update --scope migrations:read`, with every scope the connection already holds passed beside it. `--scope` names the whole grant, so passed alone it narrows the connection to that one scope. `pithy dashboard status` prints what it holds now.
 
 ```
-$ pithy dashboard connect --env prod --update --scope manifest:read --scope keys:rotate --scope migrations:read --scope privacy:read --scope evidence:read
+$ pithy dashboard connect --env prod --update --scope manifest:read --scope keys:rotate --scope migrations:read --scope privacy:read --scope evidence:read --scope erasure:read
 ```
 
 Then the device-code flow: a short user code, your browser, your approval. The management client generates the Ed25519 keypair, keeps the private half, and returns the public one; the CLI writes it into your D1. **Nothing reports connected until a signed `ping` round-trips** against your Worker. A registration that was written but cannot be reached is a dead link, and reporting it as connected is how an operator finds out weeks later — so that case is `needs_reconnect`, and the command deliberately does not print `Done.`
@@ -460,7 +460,7 @@ Connected prod.
 Connection     b6a1f0c2-…
 Issuer         https://app.pithy.sh
 Worker         https://api.example.com
-Scopes         manifest:read, keys:rotate, migrations:read, privacy:read, evidence:read, auth:users:read, audit:events:read, audit:events:read_detail, email:jobs:read, email:suppressions:read
+Scopes         manifest:read, keys:rotate, migrations:read, privacy:read, evidence:read, erasure:read, auth:users:read, audit:events:read, audit:events:read_detail, email:jobs:read, email:suppressions:read
 Key            cpk_2026_07
 Authorized by  ada@example.com
 Kind           dashboard

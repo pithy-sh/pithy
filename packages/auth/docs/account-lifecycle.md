@@ -42,7 +42,7 @@ A transition that finds the account already where it was asked to put it does no
 
 Suspending an account that is already suspended is the one exception. It restates the suspension: the new reason and end replace the old, a row records them, and the mail and the audit event go out. The start stays, and no hook fires, because the account was suspended and still is.
 
-Each transition also writes an audit event: `auth/admin_user_suspended`, `auth/admin_user_reinstated`, `auth/admin_user_soft_deleted`, `auth/admin_user_hard_deleted`, `auth/admin_user_restored`, `auth/admin_user_purged`, and `auth/user_self_deleted` when the account's holder deletes it. An export writes `auth/admin_user_exported`.
+Each transition also writes an audit event: `auth/admin_user_suspended`, `auth/admin_user_reinstated`, `auth/admin_user_soft_deleted`, `auth/admin_user_hard_deleted`, `auth/admin_user_restored`, `auth/admin_user_purged`, and `auth/user_self_deleted` when the account's holder deletes it. A purge adds `auth/admin_user_purge_step` per step and `auth/admin_user_purge_failed` when it gives up. An export writes `auth/admin_user_exported`.
 
 ## Scopes
 
@@ -120,6 +120,8 @@ A purge erases one deleted account from every capability that holds rows about i
 3. The deletion-complete mail, **before the address is erased**: auth's rows, which hold it, are still there.
 4. Auth's own: the user row, its sessions, linked providers, devices, refresh-token ledger, pending sign-in codes and its rows in the verification ledger, and its rows in every table a composed Better Auth plugin created with a `userId` column — a two-factor secret and its backup codes, a passkey, an API key. Its history stays — the one `pithy_auth_*` row left.
 5. The `purged` record, `auth/admin_user_purged`, and `onUserPurged`, once — even when two purges of one account overlap.
+
+Every step from 2 on also records an audit event, `auth/admin_user_purge_step`, with the step's name and whether it erased or retained in its metadata, and never the summary. A step that runs out of retries fails the instance, and before it does the purge records where: a `purge_failed` row naming the step, and `auth/admin_user_purge_failed`. The failure's message is never written. The `deleted` row keeps the deletion's mode and when its purge comes due, because the purge erases the account's own columns. Together they are what [the erasure attestation](../../../docs/CONTROL-PLANE.md#erasure) reads: `GET /control-plane/erasure/user/:userId`, under `erasure:read`.
 
 A daily cron at 02:00 UTC starts the purge for every account past its `purge_after`, and for none before it. A hard deletion starts its own. Either way the instance is named for the deletion and the UTC day, so a hard deletion repeated, or one the daily pass also finds due, is one purge, and a purge that failed is started again by the next day's pass. A hard deletion's `notify: false` is saved with the deletion, so it holds when the daily pass is the one that starts its purge.
 

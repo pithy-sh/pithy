@@ -5,6 +5,7 @@ import type { ExecutionContext, ForwardableEmailMessage } from "@cloudflare/work
 import type { Hono, MiddlewareHandler } from "hono";
 import type { z } from "zod";
 import type { ActingOrganizationResolver } from "../access/acting";
+import type { AuditCitationReader } from "../audit/citations";
 import type { AuditEmit } from "../audit/recorder";
 import type { ControlPlaneContext } from "../controlPlane/context";
 import type { AdminRoute } from "../controlPlane/discovery/adminRoute";
@@ -32,6 +33,7 @@ import type { SeedSet } from "../seed/seed";
 import type { WorkflowSpecMap } from "../workflow/spec";
 import { BindingSpec, type BindingSpecInput } from "./bindings";
 import type { ClientProjection, ClientProjectionContext } from "./client";
+import type { ErasureRecords } from "./erasure";
 import { assertPurgeContributions, type PurgeContribution } from "./purge";
 import type { CapabilitySettings } from "./settings";
 
@@ -663,6 +665,12 @@ export interface Capability<
    */
   auditRecorder?: (env: Record<string, unknown>) => AuditEmit;
   /**
+   * The trail's citation reader (#823): which recorded events name a resource, and where each sits in its chain.
+   * `@pithy-sh/audit` declares it; nothing else does. The erasure attestation cites a purge's events through it,
+   * found among the composed capabilities by `../audit/citations.ts`, so the control plane imports no audit package.
+   */
+  auditCitations?: (env: Record<string, unknown>) => AuditCitationReader;
+  /**
    * Named D1 databases this capability contributes tables to (database name → {@link DatabaseSpec}).
    * `createBackend` merges every capability's slices per database (via `composeDatabases`) and serves
    * one typed `Kysely` per database on `c.var.db.<name>`. Multiple databases (app, analytics, …)
@@ -699,6 +707,12 @@ export interface Capability<
    * on their own `app` capability for their own tables, with the same types.
    */
   purge?: readonly PurgeContribution[];
+  /**
+   * How this capability's record of a purge is read back (#823) — declared by the capability that owns a purge
+   * subject and runs its purge: `@pithy-sh/auth` for a user, `@pithy-sh/organization` for an organization. The
+   * control plane's erasure attestation reads it. See `./erasure.ts`.
+   */
+  erasureRecords?: ErasureRecords;
   /**
    * The role powers this capability's own routes gate on, through the acting-organization seam —
    * `media:manage`, `storage:manage`. Omit it when a capability asks no power, which is the normal case.

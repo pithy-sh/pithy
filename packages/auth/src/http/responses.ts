@@ -413,7 +413,7 @@ const AuthExportTransition = z
     action: z
       .string()
       .describe(
-        "What happened: `suspended`, `reinstated`, `deleted`, `restored`, `purge_step`, `purge_retained`, `purged`.",
+        "What happened: `suspended`, `reinstated`, `deleted`, `restored`, `purge_step`, `purge_retained`, `purge_failed`, `purged`.",
       ),
     actorType: z.string().describe("Who made it: `control-plane`, `user` (the account's holder), or `system`."),
     reason: z.string().nullable().describe("The reason given, in the words of whoever made the transition, or null."),

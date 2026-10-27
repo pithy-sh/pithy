@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { resolveClientProjection } from "@pithy-sh/core/src/capability/client";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import type { BetterAuthPlugin } from "better-auth";
 // The barrel, for this one only: `better-auth` publishes no `./plugins/oauth-popup` export entry.
@@ -15,6 +15,7 @@ import { magicLink } from "better-auth/plugins/magic-link";
 import { organization } from "better-auth/plugins/organization";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
+import { AuthAuditActions } from "./audit/actions";
 import { type AuthCapability, AuthConfig, type AuthConfigInput, auth, isAuthCapability } from "./capability";
 import {
   AUTH_APPLE_CREDENTIALS,
@@ -59,6 +60,7 @@ describe("auth capability", () => {
       "0004_user_lifecycle",
       "0005_purge_once",
       "0006_verification_outcomes",
+      "0007_erasure_record",
     ]);
     // A second migration never gets a second order. Renumbering would rename `0300_auth_0001_init`, and
     // Kysely would then read every applied auth migration as unapplied and run it again.
@@ -156,6 +158,7 @@ describe("additional Better Auth plugins", () => {
       "0004_user_lifecycle",
       "0005_purge_once",
       "0006_verification_outcomes",
+      "0007_erasure_record",
     ]);
     expect(cap.extensions).toEqual([]);
   });
@@ -169,6 +172,7 @@ describe("additional Better Auth plugins", () => {
       "0004_user_lifecycle",
       "0005_purge_once",
       "0006_verification_outcomes",
+      "0007_erasure_record",
       "0002_plugin_organization",
     ]);
   });
@@ -459,6 +463,43 @@ describe("the account lifecycle config (#620)", () => {
       "onUserReinstated",
       "onUserSuspended",
     ]);
+  });
+});
+
+describe("the erasure record (#823)", () => {
+  test("declares the user subject, its resource type, and every action its deletion and purge record", () => {
+    // The control plane finds this among the composed capabilities: drop it, or name a wrong action, and every
+    // user attestation is a 404, cites no deletion, or names no failure, with nothing else failing. Each of the
+    // three deletions is cited: an operator's soft and hard, and a person's own.
+    const records = build().erasureRecords;
+    expect(records).toMatchObject({
+      subject: "user",
+      resourceType: "user",
+      auditActions: {
+        deleted: [
+          AuthAuditActions.adminUserSoftDeleted,
+          AuthAuditActions.adminUserHardDeleted,
+          AuthAuditActions.userSelfDeleted,
+        ],
+        step: AuthAuditActions.adminUserPurgeStep,
+        failed: AuthAuditActions.adminUserPurgeFailed,
+        purged: AuthAuditActions.adminUserPurged,
+      },
+    });
+    expect(records?.auditActions).toEqual({
+      deleted: ["auth/admin_user_soft_deleted", "auth/admin_user_hard_deleted", "auth/user_self_deleted"],
+      step: "auth/admin_user_purge_step",
+      failed: "auth/admin_user_purge_failed",
+      purged: "auth/admin_user_purged",
+    });
+    expect(typeof records?.read).toBe("function");
+  });
+
+  test("reading it without the configured DB binding is an internal error, never a silent empty record", () => {
+    expect(() => build().erasureRecords?.read({})).toThrow(InternalError);
+    expect(() => build().erasureRecords?.read({ DB: null })).toThrow(/auth database binding is missing/);
+    // It reads the binding auth was configured with, not DB.
+    expect(() => build({ database: "ANALYTICS" }).erasureRecords?.read({ DB: {} })).toThrow(InternalError);
   });
 });
 

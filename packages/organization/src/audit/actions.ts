@@ -138,6 +138,14 @@ export const OrganizationAuditActions = {
   /** The purge erased a deleted account's data from every capability that held it. The last event it gets. */
   purged: "organization/purged",
   /**
+   * One purge step answered for a capability's rows: erased them, or kept them under a stated basis (#814).
+   * `metadata.step` names the capability and `metadata.disposition` says which. The erasure attestation cites it
+   * by event id and chain position (#823).
+   */
+  purgeStep: "organization/purge_step",
+  /** A purge gave up at the step `metadata.step` names, until the next daily pass starts it again (#823). */
+  purgeFailed: "organization/purge_failed",
+  /**
    * Somebody inside the account was refused.
    *
    * **One code for every interesting refusal, carrying the refusal's own code in `facts`.** A code per

@@ -272,6 +272,8 @@ Denials are audited too. `denied` is a first-class outcome, and this is the surf
 | `GET /control-plane/migrations` | `migrations:read` | Where each database this Worker binds stands: applied, pending, undeclared, and the run that last moved it |
 | `GET /control-plane/privacy` | `privacy:read` | Every stored schema holding a privacy-marked field: each field's path, its class, and where it lives |
 | `GET /control-plane/evidence` | `evidence:read` | SOC 2 and ISO 27001 evidence derived from what this Worker composes and records: per control, the facts, their sources, and what could be said |
+| `GET /control-plane/erasure` | `erasure:read` | Every purge in a period: counts of complete, in progress and failed, and each failed or overdue one with the step it stopped at |
+| `GET /control-plane/erasure/:subjectType/:subjectId` | `erasure:read` | One user's or organization's erasure, attested: the deletion, every step erased or kept with its reason, the state, and the audit events that record each |
 | `POST /control-plane/presence/tickets` | the room kind's own scope | A single-use ticket into one presence room: who else has a record open, live (below) |
 
 ### Migration state
@@ -340,6 +342,29 @@ Nothing in the pack says whether a framework is met. An auditor decides that. A 
 **It names no person beyond what a connection records.** A principal is the email the connection holds. No audit row's actor is copied in.
 
 **It proves controls present and performs nothing.** Rotating a key, applying a migration and revoking a connection stay where they are, on their own scopes. `evidence:read` is a read, so `pithy dashboard connect` preselects it. `pithy-sh/dashboard#156` will render the pack; until it does, read the route directly. No CLI command reads it. [`COMPLIANCE.md`](COMPLIANCE.md) is the adopter's page.
+
+### Erasure
+
+`GET /control-plane/erasure/:subjectType/:subjectId` proves that one deletion happened, correctly (#823). `subjectType` is `user` or `organization`. Deleting is the act, at its own scope; this is the proof.
+
+**It is read from the purge's own record.** A purge writes a row per step to the lifecycle table of the capability that owns the subject: `pithy_auth_user_lifecycle` for a user, `pithy_organization_lifecycle` for an organization. Those rows outlive the purge, and name the subject by id and nothing else. Each capability declares how its rows are read (`erasureRecords` on the `Capability` contract), so the seam imports neither.
+
+**The shape** is `ControlPlaneErasureSubjectResponse`, exported from `@pithy-sh/core/src/controlPlane/http/responses`: `generatedAt` and one `attestation`, which carries:
+
+- `deletion` — when, by which kind of actor (`control-plane`, `user` or `system`), why, the `mode` (`soft` or `hard`; a soft deletion a hard one brought forward reads `hard`), and when the purge came due. A deletion recorded before this release has `mode` and `purgeAfter` null.
+- `steps[]` — one per capability, in the order it first ran: `capability`, `disposition` (`erased` or `retained`), `reason` for a retained step (the basis the capability stated, #814) or `summary` for an erased one, and `completedAt`. A retained step never reads as erased. A step run again on a later pass is shown once, as it last finished.
+- `state` — `scheduled` (the window is open and nothing has run), `in_progress`, `complete`, or `failed` (the purge gave up, until the next daily pass starts it again). `overdue` is true when a purge is not complete two days after it came due. `stoppedAt` names the step a failed or overdue purge stopped at, or `due` when none has run.
+- the citations — the deletion, every step, the completion and a failure each carry the audit event that records it, by `eventId`, `tenant`, chain position `seq` and `hash`. `trail` is `absent` when no audit capability is composed, and then nothing is cited.
+
+**Tamper-evidence is the trail's.** The purge records an audit event per step (`auth/admin_user_purge_step`, `organization/purge_step`, with the step and its disposition in the metadata), one when it gives up (`…purge_failed`) and one on completion, and the trail's hash chain (#822) is what makes them evident. `pithy audit verify` checks the chain the citations point into. There is no second integrity mechanism, no signature, and no key on the Worker. The seam reads citations through `auditCitations`, which `@pithy-sh/audit` declares, and returns where each event sits, never its IP, user-agent or metadata.
+
+**Nothing about the person crosses.** No address, no name: the subject's id is the one value the lifecycle trail keeps, and the only one here. `reason` is the words of whoever deleted it.
+
+A subject never deleted, or restored since, is a 404. So is a subject kind no composed capability records.
+
+`GET /control-plane/erasure?since&until` answers *every erasure in the period completed*. A purge is in the window when it came due in it, ran a step, failed or completed in it, or was still outstanding in it: due before the window opened and neither purged nor restored by then, so a purge stuck since last quarter is named in this one too. `counts` holds `scheduled`, `inProgress`, `complete` and `failed`, and `overdue` counted within them. `attention[]` names every failed or overdue purge with the step it stopped at, and `purges[]` lists them all, oldest due first. `subjects` says which kinds this Worker records; a kind not listed was not read. `until` defaults to now, `since` to 90 days before it, and a window is at most 366 days. The period read cites nothing; the subject read does.
+
+`erasure:read` is a read — both routes are `GET`s — so `pithy dashboard connect` preselects it. It is its own scope because it says which accounts and organizations were deleted and why, across subjects. It never widens `audit:events:read`: it cites an event, never its contents. [`COMPLIANCE.md`](COMPLIANCE.md#erasure-attestation) is the adopter's page.
 
 ### Presence rooms
 

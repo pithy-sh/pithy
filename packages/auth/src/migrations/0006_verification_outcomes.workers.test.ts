@@ -114,6 +114,8 @@ describe("auth_0006_verification_outcomes", () => {
 
   test("down drops the table, leaving everything before it intact", async () => {
     await runMigrations(env.DB, provider());
+    // `0007` sits above it in the chain, so it comes down first.
+    await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());
     expect(await tableExists(TABLE)).toBe(false);
     expect(await tableExists("pithy_auth_users")).toBe(true);
@@ -122,6 +124,8 @@ describe("auth_0006_verification_outcomes", () => {
 
   test("down, then up again, is clean — the inverse is exact", async () => {
     await runMigrations(env.DB, provider());
+    // `0007` sits above it in the chain, so it comes down first.
+    await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());
     await runMigrations(env.DB, provider());
     expect(await tableExists(TABLE)).toBe(true);
