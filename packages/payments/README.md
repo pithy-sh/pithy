@@ -161,6 +161,10 @@ The body is empty and there is no amount anywhere: every refund raised is for a 
 
 **None of the six accepts a subscription, a price, or a rail.** `change` and `preview` take one field, `productId`, and the route resolves the store's own price from the catalog; `cancel` takes `timing`, which is `now` or `at_period_end` in the customer's own terms rather than the store's; `keep` and `refund` take no body at all. A body naming a price would move a customer onto a plan the project does not sell, and a body naming a subscription would move somebody else's — so neither is refused by a check, and both are unreachable because there is nowhere to write them.
 
+## A person's data
+
+**Retained.** When an account is purged, payments erases nothing: *Kept for tax and accounting records, which the law requires a business to hold after an account is closed.* The purge records the step as retained with that basis, and an export hands back a user subject's purchases, entitlements, provider accounts, overrides, meter counters and usage reports — never the provider's payload. An organization's rows are the organization's. See [`@pithy-sh/auth`'s account lifecycle](../auth/docs/account-lifecycle.md#what-each-capability-does-with-a-persons-rows).
+
 ## License
 
 MIT — adopter-side app value. The root `LICENSE` covers it.

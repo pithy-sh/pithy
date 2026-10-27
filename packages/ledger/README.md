@@ -14,6 +14,10 @@ A management client reads balances and entry logs over the control plane, and co
 
 _Everything else is on the site. `pithy.sh/docs` is canonical — new prose goes there, not here._
 
+## A person's data
+
+**Erased.** When an account is purged, ledger deletes the person's balances in every currency, every entry in their transaction log, and their holds, and an export hands them all back first. A ledger here is per person, so nobody else's total moves. See [`@pithy-sh/auth`'s account lifecycle](../auth/docs/account-lifecycle.md#what-each-capability-does-with-a-persons-rows).
+
 ## License
 
 MIT — adopter-side app value. The root `LICENSE` covers it.

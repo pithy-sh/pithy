@@ -156,7 +156,7 @@ describe("the organization purge", () => {
       Terminal,
       { organizationId: ACME },
     );
-    expect(outcome).toEqual({ organizationId: ACME, state: "purged", erased: ["media", "organization"] });
+    expect(outcome).toEqual({ organizationId: ACME, state: "purged", erased: ["media", "organization"], retained: [] });
     expect(ran).toEqual(["due", "erase media", "erase media", "erase organization", "complete"]);
 
     // Acme is gone, with its memberships and the adopter's rows. Beta is untouched.
@@ -268,7 +268,7 @@ describe("the Workflow bodies", () => {
     });
     const event = { payload: { organizationId: ACME }, workflowName: "organization-purge", instanceId: "i-1" };
     const outcome = await runOrganizationPurge({ DB: env.DB }, event, workflow().step, Terminal);
-    expect(outcome).toEqual({ organizationId: ACME, state: "purged", erased: ["organization"] });
+    expect(outcome).toEqual({ organizationId: ACME, state: "purged", erased: ["organization"], retained: [] });
     expect(await db().selectFrom(ORGANIZATIONS_TABLE).select("id").execute()).toEqual([{ id: BETA }]);
     expect(recorded).toEqual([
       {

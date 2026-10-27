@@ -6328,11 +6328,23 @@
                             "properties": {
                               "capability": {
                                 "type": "string",
-                                "description": "The capability whose rows these are — the purge step that erases them."
+                                "description": "The capability whose rows these are — the purge step that erases or keeps them."
                               },
                               "summary": {
                                 "type": "string",
-                                "description": "What that capability's purge erases or anonymizes, in its own sentence."
+                                "description": "What that capability's purge erases, anonymizes or keeps, in its own sentence."
+                              },
+                              "disposition": {
+                                "description": "What a purge does with these rows: `erase` (erased or anonymized) or `retain` (kept, for the reason in `basis`) (#814). Absent from a Worker that predates it, where every entry is `erase`.",
+                                "type": "string",
+                                "enum": [
+                                  "erase",
+                                  "retain"
+                                ]
+                              },
+                              "basis": {
+                                "description": "For a `retain` entry, why the rows are kept, in one sentence written for the person — `Kept for tax records.` Absent for `erase`.",
+                                "type": "string"
                               },
                               "state": {
                                 "type": "string",
@@ -6345,7 +6357,7 @@
                                   "type": "string"
                                 },
                                 "additionalProperties": {},
-                                "description": "What it holds about the account, in the shape that capability exports. `auth`'s is `AuthUserExport`."
+                                "description": "What it holds about the account, in the shape that capability exports. `auth`'s is `AuthUserExport`. For a `retain` entry, the rows a purge keeps."
                               }
                             },
                             "required": [
@@ -6361,16 +6373,28 @@
                             "properties": {
                               "capability": {
                                 "type": "string",
-                                "description": "The capability whose rows these are — the purge step that erases them."
+                                "description": "The capability whose rows these are — the purge step that erases or keeps them."
                               },
                               "summary": {
                                 "type": "string",
-                                "description": "What that capability's purge erases or anonymizes, in its own sentence."
+                                "description": "What that capability's purge erases, anonymizes or keeps, in its own sentence."
+                              },
+                              "disposition": {
+                                "description": "What a purge does with these rows: `erase` (erased or anonymized) or `retain` (kept, for the reason in `basis`) (#814). Absent from a Worker that predates it, where every entry is `erase`.",
+                                "type": "string",
+                                "enum": [
+                                  "erase",
+                                  "retain"
+                                ]
+                              },
+                              "basis": {
+                                "description": "For a `retain` entry, why the rows are kept, in one sentence written for the person — `Kept for tax records.` Absent for `erase`.",
+                                "type": "string"
                               },
                               "state": {
                                 "type": "string",
                                 "const": "not_exported",
-                                "description": "The capability erases rows about the account and does not say how to export them."
+                                "description": "The capability erases rows about the account and does not say how to export them. No kit capability answers it; an adopter's own may."
                               }
                             },
                             "required": [
@@ -6385,11 +6409,23 @@
                             "properties": {
                               "capability": {
                                 "type": "string",
-                                "description": "The capability whose rows these are — the purge step that erases them."
+                                "description": "The capability whose rows these are — the purge step that erases or keeps them."
                               },
                               "summary": {
                                 "type": "string",
-                                "description": "What that capability's purge erases or anonymizes, in its own sentence."
+                                "description": "What that capability's purge erases, anonymizes or keeps, in its own sentence."
+                              },
+                              "disposition": {
+                                "description": "What a purge does with these rows: `erase` (erased or anonymized) or `retain` (kept, for the reason in `basis`) (#814). Absent from a Worker that predates it, where every entry is `erase`.",
+                                "type": "string",
+                                "enum": [
+                                  "erase",
+                                  "retain"
+                                ]
+                              },
+                              "basis": {
+                                "description": "For a `retain` entry, why the rows are kept, in one sentence written for the person — `Kept for tax records.` Absent for `erase`.",
+                                "type": "string"
                               },
                               "state": {
                                 "type": "string",

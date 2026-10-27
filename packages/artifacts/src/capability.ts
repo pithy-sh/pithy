@@ -9,6 +9,7 @@ import { artifactsTables } from "./data/tables";
 import { ArtifactsInvalidConfigError } from "./error/errors";
 import { type RepoNameSeam, registerArtifactsRoutes } from "./http/routes";
 import { artifacts_0001_init } from "./migrations/0001_init";
+import { artifactsUserPurge } from "./purge/contribution";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
 /**
@@ -112,6 +113,9 @@ export function artifacts(options: ArtifactsOptions = {}): ArtifactsCapability {
       ...(repoName ? { repoName } : {}),
       organization: () => wiring.organization,
     }),
+    // A person's own repositories and the grants they hold: exported on an access request and erased by their purge,
+    // as its own step in the adopter's Worker (#814).
+    purge: [artifactsUserPurge(resolved.binding)],
   });
 
   return Object.assign(capability, { artifactsConfig: resolved });

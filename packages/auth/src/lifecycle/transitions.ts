@@ -780,6 +780,15 @@ export async function purgeSubject(
   return { state: "due", recipient: { email: row.email, name: row.name, locale: row.locale ?? null }, notify };
 }
 
+/**
+ * The account's address, as a purge step reads it (#814) — `null` when there is no account, or no address. Read
+ * inside the step that asks, so it is never carried in a Workflow's journal.
+ */
+export async function purgeAddress(db: AuthDatabase, userId: string): Promise<string | null> {
+  const row = await db.selectFrom("pithyAuthUsers").select("email").where("id", "=", userId).executeTakeFirst();
+  return row?.email ?? null;
+}
+
 /** One account whose purge is due: which, and the deletion it is due under — ms-epoch, so a Workflow journal holds it. */
 export interface DuePurge {
   readonly userId: string;
@@ -808,16 +817,18 @@ export async function duePurges(deps: LifecycleDeps, limit: number): Promise<Due
 
 /**
  * Record that one purge step — one capability's contribution — erased its rows. The contribution's summary is
- * the row's reason, so the history says what the step erased and not only that it ran.
+ * the row's reason, so the history says what the step erased and not only that it ran. With `retained`, the step
+ * kept its rows instead (#814): the row is `purge_retained`, and its reason is the basis the capability gave.
  */
 export async function recordPurgeStep(
   deps: LifecycleDeps,
-  input: { userId: string; step: string; summary?: string | null },
+  input: { userId: string; step: string; summary?: string | null; retained?: boolean },
 ): Promise<void> {
   const at = (deps.now ?? (() => new Date()))();
   await record(deps, {
     userId: input.userId,
-    action: "purge_step",
+    // A retained step kept its rows (#814): its own action, so the trail never reads a kept step as an erased one.
+    action: input.retained ? "purge_retained" : "purge_step",
     actor: PURGE,
     reason: input.summary?.trim() ? input.summary.trim().slice(0, MAX_REASON) : null,
     at,

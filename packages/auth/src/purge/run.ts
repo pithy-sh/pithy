@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { PurgeContext, PurgeStep } from "@pithy-sh/core/src/capability/purge";
+import { isRetained, type PurgeContext, type PurgeStep } from "@pithy-sh/core/src/capability/purge";
 import {
   classifiedSteps,
   type TerminalErrorConstructor,
@@ -13,6 +13,7 @@ import {
   duePurges,
   type LifecycleDeps,
   mailPurgeComplete,
+  purgeAddress,
   purgeSubject,
   recordPurgeStep,
 } from "../lifecycle/transitions";
@@ -28,7 +29,8 @@ import { AUTH_CAPABILITY, type AuthPurgeDueParams, type AuthPurgeParams } from "
  *    and one already erased all end the run here, having erased nothing. This is the one check a cron-started
  *    purge and a hard deletion's both pass through, so re-running a purge for the same subject exits cleanly.
  * 2. **`erase <capability>`** — one step per composed contribution, in composition order, each recording that it
- *    ran in `pithy_auth_user_lifecycle`. Handed to the platform's retry unclassified: an `erase` is idempotent by
+ *    ran in `pithy_auth_user_lifecycle`. A contribution that **retains** its rows (#814) is a `retain <capability>`
+ *    step instead: it erases nothing, and records `purge_retained` with the basis it gave. Handed to the platform's retry unclassified: an `erase` is idempotent by
  *    contract and runs code the kit did not write, so any fault in it is worth another attempt (`./retryPolicy.ts`).
  *    A failing contribution retries alone, and the ones that finished are served from the journal.
  * 3. **`mail`** — the deletion-complete mail, **before the address is erased**: every other capability's rows are
@@ -44,6 +46,13 @@ export interface PurgeOps {
   due(userId: string): Promise<"due" | "not_due" | "gone">;
   /** Record that one capability's step erased its rows. */
   recordStep(userId: string, step: string, summary: string): Promise<void>;
+  /** Record that one capability's step kept its rows, and why (#814). */
+  recordRetained(userId: string, step: string, basis: string): Promise<void>;
+  /**
+   * The account's address, read now, or `null` once it is gone (#814). Handed to each step as
+   * `PurgeContext.address`, so a capability holding rows by address reads it inside its own step.
+   */
+  address(userId: string): Promise<string | null>;
   /**
    * Send the deletion-complete mail to the account's address, if it is still there to read, unless this purge's
    * `notify` or the deletion's own saved choice is false. Says whether.
@@ -58,6 +67,8 @@ export function purgeOps(deps: LifecycleDeps): PurgeOps {
   return {
     due: async (userId) => (await purgeSubject(deps, userId)).state,
     recordStep: (userId, step, summary) => recordPurgeStep(deps, { userId, step, summary }),
+    recordRetained: (userId, step, basis) => recordPurgeStep(deps, { userId, step, summary: basis, retained: true }),
+    address: (userId) => purgeAddress(deps.db, userId),
     mailComplete: async (userId, notify) => {
       const subject = await purgeSubject(deps, userId);
       if (subject.state !== "due") return false;
@@ -79,6 +90,8 @@ export interface PurgeOutcome {
   readonly state: "purged" | "not_due" | "gone";
   /** Every step that erased its rows, in the order it ran. Empty when nothing was erased. */
   readonly erased: readonly string[];
+  /** Every step that kept its rows under a stated basis (#814), in the order it ran. */
+  readonly retained: readonly string[];
   /** Whether the deletion-complete mail was enqueued. */
   readonly mailed: boolean;
 }
@@ -103,21 +116,28 @@ export async function purgeUser(
   const own = classifiedSteps(step, authWorkflowRetry, terminalError);
   const userId = params.userId;
   const state = await own.do("due", () => run.ops.due(userId));
-  if (state !== "due") return { userId, state, erased: [], mailed: false };
+  if (state !== "due") return { userId, state, erased: [], retained: [], mailed: false };
 
-  const context: PurgeContext = { subject: { type: "user", id: userId }, env: run.env };
+  const context: PurgeContext = {
+    subject: { type: "user", id: userId },
+    env: run.env,
+    address: () => run.ops.address(userId),
+  };
   const auth = run.steps.filter((each) => each.step === AUTH_CAPABILITY);
   const others = run.steps.filter((each) => each.step !== AUTH_CAPABILITY);
   const erased: string[] = [];
-  for (const each of others) {
-    erased.push(await eraseStep(step, run.ops, each, context));
-  }
+  const retained: string[] = [];
+  const runStep = async (each: PurgeStep) => {
+    const { contribution } = each;
+    if (isRetained(contribution))
+      retained.push(await retainStep(step, run.ops, each.step, contribution.retain.basis, userId));
+    else erased.push(await eraseStep(step, run.ops, each, context));
+  };
+  for (const each of others) await runStep(each);
   const mailed = await own.do("mail", () => run.ops.mailComplete(userId, params.notify));
-  for (const each of auth) {
-    erased.push(await eraseStep(step, run.ops, each, context));
-  }
+  for (const each of auth) await runStep(each);
   await own.do("complete", () => run.ops.complete(userId));
-  return { userId, state: "purged", erased, mailed };
+  return { userId, state: "purged", erased, retained, mailed };
 }
 
 /**
@@ -127,9 +147,26 @@ export async function purgeUser(
  */
 function eraseStep(step: WorkflowStepLike, ops: PurgeOps, each: PurgeStep, context: PurgeContext): Promise<string> {
   return step.do(`erase ${each.step}`, async () => {
-    await each.contribution.erase(context);
+    await each.contribution.erase?.(context);
     await ops.recordStep(context.subject.id, each.step, each.contribution.summary);
     return each.step;
+  });
+}
+
+/**
+ * One capability's retained step (#814): nothing is erased, and the record says the rows were kept and why. Its own
+ * step, so the trail names it in the order it would have run, and a replay serves it from the journal.
+ */
+function retainStep(
+  step: WorkflowStepLike,
+  ops: PurgeOps,
+  name: string,
+  basis: string,
+  userId: string,
+): Promise<string> {
+  return step.do(`retain ${name}`, async () => {
+    await ops.recordRetained(userId, name, basis);
+    return name;
   });
 }
 

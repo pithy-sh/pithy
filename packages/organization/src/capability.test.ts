@@ -472,7 +472,8 @@ describe("the email an invitation is mailed through", () => {
 describe("the organization lifecycle (#623)", () => {
   test("declares its own purge contribution for the organization subject, and the two purge Workflows", () => {
     const capability = organization(BASE);
-    expect(capability.purge?.map((contribution) => contribution.subject)).toEqual(["organization"]);
+    // And a person's, beside it (#814).
+    expect(capability.purge?.map((contribution) => contribution.subject)).toEqual(["organization", "user"]);
     expect(Object.keys(capability.workflows ?? {}).sort()).toEqual(["purge", "purge-due"]);
   });
 

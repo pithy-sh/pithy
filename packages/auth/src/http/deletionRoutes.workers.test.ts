@@ -765,12 +765,22 @@ describe("the purge", () => {
   test("erases every composed capability's rows, records each step, and leaves no pithy_auth_* row but the record", async () => {
     await seedAccountFootprint(env.DB, "u-1");
     await seedAccountFootprint(env.DB, "u-2");
+    await env.DB.prepare(
+      "insert into pithy_email_suppressions (email, reason, created_at) values ('u-1@test.com', 'complaint', 0), ('u-2@test.com', 'bounce', 0)",
+    ).run();
     drafts.set("u-1", ["a draft"]);
     await remove("u-1", { mode: "hard", reason: "Fraud." });
     const steps = journal();
     const outcome = await purge("u-1", steps);
-    expect(outcome).toEqual({ userId: "u-1", state: "purged", erased: ["silent", "app", "auth"], mailed: true });
-    expect(steps.ran).toEqual(["due", "erase silent", "erase app", "mail", "erase auth", "complete"]);
+    expect(outcome).toEqual({
+      userId: "u-1",
+      state: "purged",
+      erased: ["silent", "app", "auth"],
+      // Email is composed, and keeps the address's suppression and mail log through a purge (#814).
+      retained: ["email"],
+      mailed: true,
+    });
+    expect(steps.ran).toEqual(["due", "retain email", "erase silent", "erase app", "mail", "erase auth", "complete"]);
     expect(drafts.has("u-1")).toBe(false);
 
     const counts = await footprintCounts(env.DB, "u-1");
@@ -786,11 +796,17 @@ describe("the purge", () => {
     });
     expect((await history("u-1")).map((row) => [row.action, row.step])).toEqual([
       ["deleted", null],
+      ["purge_retained", "email"],
       ["purge_step", "silent"],
       ["purge_step", "app"],
       ["purge_step", "auth"],
       ["purged", null],
     ]);
+    // Email retains: the address's suppression outlives the account it belonged to.
+    const suppressed = await env.DB.prepare("select email from pithy_email_suppressions order by email").all<{
+      email: string;
+    }>();
+    expect(suppressed.results.map((row) => row.email)).toEqual(["u-1@test.com", "u-2@test.com"]);
     // Somebody else's rows are where they were.
     expect((await footprintCounts(env.DB, "u-2")).pithy_auth_users).toBe(1);
     expect((await footprintCounts(env.DB, "u-2")).pithy_auth_verification_outcomes).toBe(1);
@@ -809,7 +825,7 @@ describe("the purge", () => {
     await seedAccountFootprint(env.DB, "u-1");
     await remove("u-1", { mode: "hard", reason: "x" });
     await purge("u-1");
-    expect(await purge("u-1")).toEqual({ userId: "u-1", state: "gone", erased: [], mailed: false });
+    expect(await purge("u-1")).toEqual({ userId: "u-1", state: "gone", erased: [], retained: [], mailed: false });
     expect(await purge("u-1", journal())).toMatchObject({ state: "gone" });
     expect(fired.map((each) => each.hook)).toEqual(["onUserDeleted", "onUserPurged"]);
     expect((await history("u-1")).filter((row) => row.action === "purged")).toHaveLength(1);
@@ -966,6 +982,9 @@ describe("DELETE /auth/account", () => {
 describe("GET /auth/admin/users/:userId/export", () => {
   test("one JSON document covering every composed capability's contribution, validated by its exported schema", async () => {
     await seedAccountFootprint(env.DB, "u-1");
+    await env.DB.prepare(
+      "insert into pithy_email_suppressions (email, reason, created_at) values ('u-1@test.com', 'complaint', 0), ('u-2@test.com', 'bounce', 0)",
+    ).run();
     drafts.set("u-1", ["a draft"]);
     const res = await exportOf("u-1", "Access request 4411.");
     expect(res.status).toBe(200);
@@ -974,14 +993,24 @@ describe("GET /auth/admin/users/:userId/export", () => {
     expect(document).toEqual(raw);
     expect(document.subject).toEqual({ type: "user", id: "u-1" });
     expect(document.capabilities.map((entry) => [entry.capability, entry.state])).toEqual([
+      ["email", "exported"],
       ["auth", "exported"],
       ["silent", "not_exported"],
       ["app", "exported"],
     ]);
-    const [authPart, , appPart] = document.capabilities;
+    // A retained part says so, and why; an erased one says that (#814).
+    expect(document.capabilities.map((entry) => entry.disposition)).toEqual(["retain", "erase", "erase", "erase"]);
+    expect(document.capabilities[0]?.basis).toMatch(/unsubscribe/);
+    const [, authPart, , appPart] = document.capabilities;
     if (authPart?.state !== "exported" || appPart?.state !== "exported") throw new Error("expected two parts");
     expect(AuthUserExport.parse(authPart.data).user.email).toBe("u-1@test.com");
     expect(appPart.data).toEqual({ drafts: ["a draft"] });
+    // Email's rows are found by the account's real address, read from its row at the step (#814).
+    const emailPart = document.capabilities[0];
+    if (emailPart?.state !== "exported") throw new Error("expected email's part");
+    expect((emailPart.data as { suppressions: { email: string }[] }).suppressions.map((row) => row.email)).toEqual([
+      "u-1@test.com",
+    ]);
     // No credential crosses: not the session token, the provider tokens, or the push token.
     for (const credential of ["token-u-1", "access-u-1", "refresh-u-1", "push-u-1"]) {
       expect(JSON.stringify(raw)).not.toContain(credential);
@@ -1000,7 +1029,7 @@ describe("GET /auth/admin/users/:userId/export", () => {
         metadata: expect.objectContaining({
           reason: "Access request 4411.",
           disclosure: true,
-          capabilities: ["auth:exported", "silent:not_exported", "app:exported"],
+          capabilities: ["email:exported", "auth:exported", "silent:not_exported", "app:exported"],
         }),
       }),
     ]);

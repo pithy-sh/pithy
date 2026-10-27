@@ -11,6 +11,7 @@ import { ratingTables } from "./data/tables";
 import { registerRatingRoutes } from "./http/routes";
 import { rating_0001_rating } from "./migrations/0001_rating";
 import { type RatingPeer, ratingPeer } from "./peer";
+import { ratingUserPurge } from "./purge/contribution";
 import { ratingExampleSeed } from "./seeds/example";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
@@ -82,6 +83,9 @@ export function rating(options: RatingOptions = { games: [] }): RatingCapability
     // this config mounted — a gate the config switched off is not here (#560).
     scopeGates: scopeGatesOf(routes),
     seeds: [ratingExampleSeed],
+    // A person's ratings: exported on an access request and erased by their purge, as its own step in the adopter's
+    // Worker (#814).
+    purge: [ratingUserPurge()],
   });
 
   return Object.assign(capability, { ratingConfig: resolved, ratingGames: games, ratingPeer });

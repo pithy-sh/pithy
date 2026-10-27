@@ -94,6 +94,8 @@ const SHIPPED_DELEGATES = [
   // calls, never in a body.
   "packages/auth/src/purge/run.ts#eraseStep",
   "packages/auth/src/purge/run.ts#purgeUser",
+  // #814. A retained step records that it kept its rows, and erases nothing.
+  "packages/auth/src/purge/run.ts#retainStep",
   "packages/auth/src/purge/run.ts#startDuePurges",
   "packages/auth/src/purge/workflow.ts#runAuthPurge",
   "packages/auth/src/purge/workflow.ts#runAuthPurgeDue",
@@ -106,6 +108,7 @@ const SHIPPED_DELEGATES = [
   // user's. Their classes are the adopter's; the clock is read inside the transitions each step calls.
   "packages/organization/src/purge/run.ts#eraseStep",
   "packages/organization/src/purge/run.ts#purgeOrganization",
+  "packages/organization/src/purge/run.ts#retainStep",
   "packages/organization/src/purge/run.ts#startDueOrganizationPurges",
   "packages/organization/src/purge/workflow.ts#runOrganizationPurge",
   "packages/organization/src/purge/workflow.ts#runOrganizationPurgeDue",

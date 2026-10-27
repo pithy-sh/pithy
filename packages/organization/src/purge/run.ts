@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { PurgeContext, PurgeStep } from "@pithy-sh/core/src/capability/purge";
+import { isRetained, type PurgeContext, type PurgeStep } from "@pithy-sh/core/src/capability/purge";
 import {
   classifiedSteps,
   type TerminalErrorConstructor,
@@ -26,7 +26,8 @@ import { ORGANIZATION_CAPABILITY, type OrganizationPurgeDueParams, type Organiza
  * 2. **`erase <capability>`** — one step per composed contribution for the `organization` subject, in composition
  *    order, each recording that it ran in `pithy_organization_lifecycle`. Handed to the platform's retry
  *    unclassified (`./retryPolicy.ts`): a failing contribution retries alone, and the ones that finished are
- *    served from the journal.
+ *    served from the journal. A contribution that **retains** its rows (#814) is a `retain <capability>` step
+ *    instead: it erases nothing, and records `purge_retained` with the basis it gave.
  * 3. **`erase organization`** — this capability's own contribution, last: every other capability's step may still
  *    read a membership while it erases, and this one takes the memberships with the organization.
  * 4. **`complete`** — the `purged` record and `onOrganizationPurged`. Once.
@@ -38,6 +39,8 @@ export interface OrganizationPurgeOps {
   due(organizationId: string): Promise<"due" | "not_due" | "gone">;
   /** Record that one capability's step erased its rows. */
   recordStep(organizationId: string, step: string, summary: string): Promise<void>;
+  /** Record that one capability's step kept its rows, and why (#814). */
+  recordRetained(organizationId: string, step: string, basis: string): Promise<void>;
   /** Write the `purged` record and fire the hook. Says whether this call wrote them. */
   complete(organizationId: string): Promise<boolean>;
 }
@@ -50,6 +53,8 @@ export function organizationPurgeOps(
   return {
     due: (organizationId) => organizationPurgeSubject(deps, organizationId),
     recordStep: (organizationId, step, summary) => recordOrganizationPurgeStep(deps, { organizationId, step, summary }),
+    recordRetained: (organizationId, step, basis) =>
+      recordOrganizationPurgeStep(deps, { organizationId, step, summary: basis, retained: true }),
     complete: async (organizationId) => {
       const { changed } = await completeOrganizationPurge(deps, { organizationId });
       if (changed) await audited(organizationId);
@@ -66,6 +71,8 @@ export interface OrganizationPurgeOutcome {
   readonly state: "purged" | "not_due" | "gone";
   /** Every step that erased its rows, in the order it ran. Empty when nothing was erased. */
   readonly erased: readonly string[];
+  /** Every step that kept its rows under a stated basis (#814), in the order it ran. */
+  readonly retained: readonly string[];
 }
 
 /** What one purge reads its plan from. */
@@ -88,17 +95,23 @@ export async function purgeOrganization(
   const own = classifiedSteps(step, organizationWorkflowRetry, terminalError);
   const organizationId = params.organizationId;
   const state = await own.do("due", () => run.ops.due(organizationId));
-  if (state !== "due") return { organizationId, state, erased: [] };
+  if (state !== "due") return { organizationId, state, erased: [], retained: [] };
 
   const context: PurgeContext = { subject: { type: "organization", id: organizationId }, env: run.env };
   const mine = run.steps.filter((each) => each.step === ORGANIZATION_CAPABILITY);
   const others = run.steps.filter((each) => each.step !== ORGANIZATION_CAPABILITY);
   const erased: string[] = [];
+  const retained: string[] = [];
   for (const each of [...others, ...mine]) {
-    erased.push(await eraseStep(step, run.ops, each, context));
+    const { contribution } = each;
+    if (isRetained(contribution)) {
+      retained.push(await retainStep(step, run.ops, each.step, contribution.retain.basis, organizationId));
+    } else {
+      erased.push(await eraseStep(step, run.ops, each, context));
+    }
   }
   await own.do("complete", () => run.ops.complete(organizationId));
-  return { organizationId, state: "purged", erased };
+  return { organizationId, state: "purged", erased, retained };
 }
 
 /**
@@ -112,9 +125,23 @@ function eraseStep(
   context: PurgeContext,
 ): Promise<string> {
   return step.do(`erase ${each.step}`, async () => {
-    await each.contribution.erase(context);
+    await each.contribution.erase?.(context);
     await ops.recordStep(context.subject.id, each.step, each.contribution.summary);
     return each.step;
+  });
+}
+
+/** One capability's retained step (#814): nothing is erased, and the record says the rows were kept and why. */
+function retainStep(
+  step: WorkflowStepLike,
+  ops: OrganizationPurgeOps,
+  name: string,
+  basis: string,
+  organizationId: string,
+): Promise<string> {
+  return step.do(`retain ${name}`, async () => {
+    await ops.recordRetained(organizationId, name, basis);
+    return name;
   });
 }
 

@@ -11,6 +11,7 @@ import { LEDGER_DEFAULT_BASE_PATH, registerLedgerRoutes } from "./http/routes";
 import { ledgerAdminRoutes } from "./http/scopes";
 import { ledger_0001_accounts } from "./migrations/0001_accounts";
 import { type LedgerPeer, ledgerPeer } from "./peer";
+import { ledgerUserPurge } from "./purge/contribution";
 import { ledgerExampleSeed } from "./seeds/example";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
@@ -102,6 +103,9 @@ export function ledger(options: LedgerOptions = { currencies: [] }): LedgerCapab
     // composes its calls from.
     adminRoutes: ledgerAdminRoutes(mountPath),
     seeds: [ledgerExampleSeed],
+    // A person's balances, log and holds: exported on an access request and erased by their purge, each as its own
+    // step in the adopter's Worker (#814).
+    purge: [ledgerUserPurge()],
   });
 
   return Object.assign(capability, { ledgerConfig: resolved, ledgerPeer });

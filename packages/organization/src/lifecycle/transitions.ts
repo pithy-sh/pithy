@@ -547,17 +547,20 @@ export async function dueOrganizationPurges(
   return rows.map((row) => ({ organizationId: row.id, deletedAt: Number(row.deletedAt) }));
 }
 
-/** Record that one purge step — one capability's contribution — erased its rows, with what it said it erases. */
+/**
+ * Record that one purge step — one capability's contribution — erased its rows, with what it said it erases. With
+ * `retained`, the step kept its rows instead (#814): the row is `purge_retained`, its reason the basis given.
+ */
 export async function recordOrganizationPurgeStep(
   deps: OrganizationLifecycleDeps,
-  input: { organizationId: string; step: string; summary: string },
+  input: { organizationId: string; step: string; summary: string; retained?: boolean },
 ): Promise<void> {
   await deps.db
     .insertInto(LIFECYCLE_TABLE)
     .values(
       encoded({
         organizationId: input.organizationId,
-        action: "purge_step",
+        action: input.retained ? "purge_retained" : "purge_step",
         actor: PURGE,
         reason: input.summary.trim() || null,
         at: nowOf(deps),

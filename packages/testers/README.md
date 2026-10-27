@@ -12,6 +12,10 @@ pithy add testers
 
 _Everything else is on the site. `pithy.sh/docs` is canonical — new prose goes there, not here._
 
+## A person's data
+
+**Erased.** When an account is purged, testers deletes the person's membership of every cohort — found by the account's address, the join key — and every event recorded against it, and an export hands them back first, without the opt-in token. Cohort counts stay. See [`@pithy-sh/auth`'s account lifecycle](../auth/docs/account-lifecycle.md#what-each-capability-does-with-a-persons-rows).
+
 ## License
 
 MIT.

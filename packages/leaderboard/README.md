@@ -24,6 +24,10 @@ A result from `@pithy-sh/multiplayer` is recorded with the entry it wrote, so vo
 
 Retention deletes a window whole. With `retain` or `retainDays`, a pruned window's entries, the result records on them and the moderation history of acts on them all go together, because each holds a player's id and score.
 
+## A person's data
+
+**Erased.** When an account is purged, leaderboard deletes the person's entries on every board, in every window, what each session result put on them, and the moderation history of those entries, and an export hands them back first. Who took a moderation act is the operator's, and the export leaves it out; the audit trail keeps it. The purge marks each window it took a ranked entry from as stale, so the rank worker closes the gap on its next pass, in a closed window as in an open one. See [`@pithy-sh/auth`'s account lifecycle](../auth/docs/account-lifecycle.md#what-each-capability-does-with-a-persons-rows).
+
 ## License
 
 MIT — adopter-side app value. The root `LICENSE` covers it.

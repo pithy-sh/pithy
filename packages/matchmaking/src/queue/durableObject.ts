@@ -13,6 +13,7 @@ import {
   type DropOutcome,
   DropRecord,
   formMatches,
+  type QueueHolding,
   StoredMatch,
   skillBand,
   type WaitingEntry,
@@ -237,7 +238,52 @@ export class MatchmakingQueue extends DurableObject<MatchmakingQueueEnv> {
     await this.reconcileAlarm(remaining, now);
   }
 
+  /**
+   * What this queue holds about one player, for an access request (#814): their ticket, their undelivered match,
+   * and their drops. Read from the coordinator's own storage, and only the player's part of each.
+   */
+  async heldFor(userId: string): Promise<QueueHolding> {
+    const ticket = (await this.readWaiting()).find((t) => t.userId === userId);
+    const match = await this.readMatch(userId);
+    const drops = [...(await this.readDrops()).values()].filter((record) => record.userId === userId);
+    return {
+      waiting: ticket ? { region: ticket.region, skill: ticket.skill, enqueuedAt: ticket.enqueuedAt } : null,
+      match: match ? { sessionId: match.sessionId, gameKey: match.gameKey, at: match.at } : null,
+      drops: drops.map((record) => ({ at: record.at })).sort((a, b) => a.at - b.at),
+    };
+  }
+
+  /**
+   * Erase one player from this queue, for a purge (#814): their ticket, their undelivered match, and every drop
+   * record naming them. Serialized with every other mutation, so a sweep in flight cannot write the ticket back.
+   * **Idempotent**: a second call finds nothing and succeeds.
+   */
+  async forget(userId: string): Promise<void> {
+    return this.serialize(async () => {
+      const waiting = await this.readWaiting();
+      const remaining = waiting.filter((t) => t.userId !== userId);
+      if (remaining.length !== waiting.length) {
+        await this.ctx.storage.put(WAITING_KEY, remaining);
+        if (remaining.length === 0) await this.ctx.storage.deleteAlarm();
+      }
+      const drops = [...(await this.readDrops()).entries()]
+        .filter(([, record]) => record.userId === userId)
+        .map(([key]) => key);
+      await this.ctx.storage.delete([matchKey(userId), ...drops]);
+    });
+  }
+
   // --- internals ---
+
+  /** Every remembered drop record that parses, by its storage key. */
+  private async readDrops(): Promise<Map<string, DropRecord>> {
+    const records = new Map<string, DropRecord>();
+    for (const [key, value] of await this.ctx.storage.list({ prefix: "drop:" })) {
+      const parsed = DropRecord.safeParse(value);
+      if (parsed.success) records.set(key, parsed.data);
+    }
+    return records;
+  }
 
   /** The waiting queue, read fresh and validated. Empty when nothing is stored. */
   private async readWaiting(): Promise<WaitingTicket[]> {

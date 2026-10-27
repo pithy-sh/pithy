@@ -93,7 +93,7 @@ The response says what happened: `outcome` is `deleted`, `brought_forward`, or `
 
 **Restore** clears both columns inside the window and records it. The person signs in again; no session comes back. A suspension the account was under before the deletion is still there, and the response says `state: "suspended"`. Once `purge_after` has passed the purge is due, so a restore is a 409 naming the date. The window is checked against the database's clock as the restore's write runs, the same clock the purge checks it against, so a restore and a purge that race always agree on which one won. A window that closes while a restore is in flight, or that a hard deletion brings forward, is the same 409. After the purge there is no account: a 404, whose action says the data is gone.
 
-**Export** answers an access request. It returns one JSON document, validated by `AdminUserExportResponse` from `@pithy-sh/auth/src/http/responses`: the subject, when it was read, and one entry per composed capability that declares a purge contribution, in the order the purge erases them. An entry is `exported` with that capability's data, `not_exported` when it erases rows it does not say how to export, or `unavailable` when its rows would not read. Auth's own part is `AuthUserExport`: the account, its sessions, linked providers, devices, history, the sign-in links and codes the verification ledger records for it, and its rows in the user-keyed tables its Better Auth plugins created, and no credential — no session token, no provider token, no push token, no two-factor secret or backup code, no key. It is audited as a disclosure, `auth/admin_user_exported`, with the operator, the reason, and which parts answered, never the data. An unknown or purged account is a 404.
+**Export** answers an access request. It returns one JSON document, validated by `AdminUserExportResponse` from `@pithy-sh/auth/src/http/responses`: the subject, when it was read, and one entry per composed capability that declares a purge contribution, in the order the purge runs them. Each entry says what a purge does with its rows — `disposition` is `erase` or `retain`, and a `retain` entry carries the `basis` it is kept on, in the sentence written for the person — and then what it answered: `exported` with that capability's data, `not_exported` when it erases rows it does not say how to export, or `unavailable` when its rows would not read. Every kit capability that holds rows about a person exports them, so `not_exported` is only ever an adopter's own capability; [what each one does](#what-each-capability-does-with-a-persons-rows) is below. Auth's own part is `AuthUserExport`: the account, its sessions, linked providers, devices, history, the sign-in links and codes the verification ledger records for it, and its rows in the user-keyed tables its Better Auth plugins created, and no credential — no session token, no provider token, no push token, no two-factor secret or backup code, no key. No kit capability's part carries one either: no opt-in token, no share link, no invitation digest, no provider payload, no Google Play purchase token, no message variables. It is audited as a disclosure, `auth/admin_user_exported`, with the operator, the reason, and which parts answered, never the data. An unknown or purged account is a 404.
 
 Every call is audited, as for suspend and reinstate: a deletion under `auth/admin_user_soft_deleted` or `auth/admin_user_hard_deleted`, a restore under `auth/admin_user_restored`, with the operator, the connection, the reason and the user id. A refusal is `denied` with its code, and a call that changed nothing is a success with `changed: false`.
 
@@ -113,12 +113,12 @@ It is always soft, on the configured window, and the subject is always the sessi
 
 ## The purge
 
-A purge erases one deleted account from every capability that holds rows about it. It runs as a Workflow, **one step per composed purge contribution**, named for its capability, so a capability that fails retries alone and the steps that finished are not run again. Each step records that it ran in `pithy_auth_user_lifecycle`, with the contribution's summary. The order:
+A purge erases one deleted account from every capability that holds rows about it. It runs as a Workflow, **one step per composed purge contribution**, named for its capability, so a capability that fails retries alone and the steps that finished are not run again. Each step records that it ran in `pithy_auth_user_lifecycle`, with the contribution's summary. A contribution that **retains** its rows is a step too, and erases nothing: it records `purge_retained`, with the basis it gave as the reason, so the history never reads a kept step as an erased one. The order:
 
 1. Is the account due — deleted, with its window closed? A restored account, one inside its window, and one already erased end the run here, having erased nothing. Re-running a purge for the same subject exits without error.
-2. Every composed contribution but auth's, in composition order, your `app` last.
+2. Every composed contribution but auth's, in composition order, your `app` last. Each reads the account's address, when it needs one, inside its own step.
 3. The deletion-complete mail, **before the address is erased**: auth's rows, which hold it, are still there.
-4. Auth's own: the user row, its sessions, linked providers, devices, refresh-token ledger, pending sign-in codes and its rows in the verification ledger, and its rows in every table a composed Better Auth plugin created with a `userId` column — a two-factor secret and its backup codes, a passkey, an API key. Its history stays — the one `pithy_auth_*` row left. `organization()`'s tables are not erased yet; a membership is the organization's as much as the person's.
+4. Auth's own: the user row, its sessions, linked providers, devices, refresh-token ledger, pending sign-in codes and its rows in the verification ledger, and its rows in every table a composed Better Auth plugin created with a `userId` column — a two-factor secret and its backup codes, a passkey, an API key. Its history stays — the one `pithy_auth_*` row left.
 5. The `purged` record, `auth/admin_user_purged`, and `onUserPurged`, once — even when two purges of one account overlap.
 
 A daily cron at 02:00 UTC starts the purge for every account past its `purge_after`, and for none before it. A hard deletion starts its own. Either way the instance is named for the deletion and the UTC day, so a hard deletion repeated, or one the daily pass also finds due, is one purge, and a purge that failed is started again by the next day's pass. A hard deletion's `notify: false` is saved with the deletion, so it holds when the daily pass is the one that starts its purge.
@@ -194,6 +194,30 @@ Each fires once per transition. A call that finds the account already where it a
 
 Three screens ship with auth and are yours after `pithy ui add react`: account suspended, account deleted, and organization suspended. Each says what happened, what it means, and who to ask, in its own English. None renders a reason or a date from its URL, because anybody can write a URL. The details are in the mail.
 
+## What each capability does with a person's rows
+
+Every kit capability that holds rows about a person declares a `user` contribution, and every one exports what it holds. Most erase. Three keep their rows, because the law or the record needs them, and say why.
+
+| Capability | Disposition | What |
+|---|---|---|
+| `auth` | erase | The account, sessions, providers, devices, refresh-token ledger, pending codes, verification ledger, plugin rows. Its lifecycle history stays. |
+| `ledger` | erase | Balances in every currency, the transaction log, holds. |
+| `rating` | erase | The rating in every pool. |
+| `leaderboard` | erase | Entries on every board, in every window, what each session result put on them, and their moderation history. |
+| `matchmaking` | erase | Invites sent or received, friendships and requests on either side, and the person's place, undelivered match and drop records in every game's queue. A room code expires on its own TTL. |
+| `multiplayer` | anonymize | Session results: the person's id in the players, scores and winner is replaced, so the other players' results stay. |
+| `support` | erase | Threads linked to the account, or sent from its address and linked to no other account, with messages, attachments, raw mail, classifications and read state. |
+| `testers` | erase | Cohort memberships under the account's address, and their events. Cohort counts stay. |
+| `artifacts` | erase | Repositories the person owns, with their contents and grants, and the grants they hold. |
+| `media` | erase | Records the person holds as themselves, with their bytes and hashes. A record made for an organization is the organization's. |
+| `storage` | erase | Files the person holds as themselves, with their bytes and share links. A file made for an organization is the organization's. |
+| `organization` | erase | Memberships, the organization each session acted for, ownership offers made to or by them, invitations addressed to them. Invitations they sent and organizations' history keep their id; an organization they were the last owner of is left without one. |
+| `payments` | retain | Purchases, entitlements, provider accounts, overrides, meter counters and usage reports of a user subject. *Kept for tax and accounting records, which the law requires a business to hold after an account is closed.* |
+| `email` | retain | The address on the suppression list, and the log of mail sent to it. *Kept so your unsubscribe holds: the address stays on the list of addresses not to mail, with the record of what was sent to it.* |
+| `audit` | retain | Every audit event where the person is the actor. *Kept as the record of who did what, which a security review or a dispute is read against.* |
+
+`packages/cli/src/capabilities/personRows.test.ts` holds the kit to it. It constructs every capability package, walks its schema, and fails the build when a table names a person — `userId`, `ownerId`, `subjectId`, `actorId`, any `…UserId`, either side of an invite or a friendship, or an address — in a capability that declares no `user` contribution, or one without an export. `isPersonColumn` and `personRowGaps` in `@pithy-sh/core/src/capability/personColumns` are the rule, if you want to hold your own capabilities to it.
+
 ## The purge contribution
 
 A purge has to reach rows other capabilities hold, and no foreign key crosses a capability. So each capability declares how one subject's rows are erased or anonymized, and what an export hands back, on the `Capability` contract:
@@ -217,3 +241,18 @@ defineCapability({ name: "app", requiredBindings: [], purge: [purge] });
 ```
 
 The purge runs every composed contribution as its own step, named for its capability, so a failure retries that capability alone. That is why there is at most one per subject per capability, and why `erase` must succeed when the rows are already gone: a step is retried after a failure that may have come once they were. Any fault in `erase` is retried with the platform's backoff, because the contract makes it safe to. `export` is optional; without one, the export lists the capability as `not_exported`. A throw from it costs its own entry, never the document. The kit knows two subjects, `user` and `organization` — the second for rows scoped to a tenant, which `@pithy-sh/organization`'s purge runs ([`organization-lifecycle.md`](../../organization/docs/organization-lifecycle.md#the-purge)) — and `defineCapability` refuses a contribution for any other. Declare one on your own `app` capability for your own tables.
+
+**Or keep the rows, and say why.** Not every row about a person should go: a payment record is commonly kept for tax law, a suppression has to outlive the person or the unsubscribe stops holding, and an audit trail is the record of who acted. A contribution with `retain` is the third disposition beside erase and anonymize. It takes a basis, one sentence written for the person, and an `export`, which it may not leave out — rows that are kept are rows an access request is answered with — and no `erase`. `defineCapability` refuses one without a basis, without an export, or with an erase as well. The purge records the step as `purge_retained` and erases nothing; the export carries the rows, `disposition: "retain"` and the basis.
+
+```ts
+const kept: PurgeContribution = {
+  subject: "user",
+  summary: "Keeps the user's invoices.",
+  retain: { basis: "Kept for tax records." },
+  export: async ({ subject, env }) => ({ invoices: [] }),
+};
+```
+
+**Rows found by address.** A step is handed `address`, a function that reads the account's address when called — `null` once it is gone. Call it inside `erase` or `export`; it is never carried in the Workflow's journal. Compare it in `normalizeAddress`'s form from `@pithy-sh/core/src/address/address`, the form the kit stores addresses in.
+
+**Rows keyed by a column.** For tables whose rows name the person in a column and need nothing but reading out and deleting, `personRowsPurge` from `@pithy-sh/core/src/capability/personRows` writes the contribution: it exports every matching row decoded through its schema, and deletes them all in one batch. `personRowsExport` is its export alone, for a contribution that retains. A table's `omit` leaves columns out of the export, and its `redact` rewrites a row before that, for a credential only some rows hold — payments uses it to drop a Google Play purchase token from the columns a Play row keys on. `credentialFields` from `@pithy-sh/core/src/capability/purge` names every field in an export that holds a credential, so a test can assert there are none.

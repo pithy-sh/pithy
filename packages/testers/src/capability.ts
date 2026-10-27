@@ -16,6 +16,7 @@ import { registerTestersRoutes } from "./http/routes";
 import { testersAdminRoutes } from "./http/scopes";
 import { testers_0001_cohorts } from "./migrations/0001_cohorts";
 import type { EnqueueNudge } from "./nudge/send";
+import { testersUserPurge } from "./purge/contribution";
 import { testersExampleSeed } from "./seeds/example";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 import { testersWorkflows } from "./workflows/specs";
@@ -162,6 +163,9 @@ export function testers(options: TestersOptions = {}): TestersCapability {
       },
     }),
     seeds: [testersExampleSeed],
+    // A person's cohort memberships, found by their address: exported on an access request and erased by their
+    // purge, as its own step in the adopter's Worker (#814).
+    purge: [testersUserPurge()],
   });
 
   return Object.assign(capability, { testersConfig: resolved });

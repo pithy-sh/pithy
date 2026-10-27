@@ -201,11 +201,32 @@ describe("the deletion lifecycle's responses (#622)", () => {
 
   test("the export document is exactly what its schema declares, every entry state included", () => {
     const document = exportView("u-1", at, [
-      { capability: "auth", summary: "Deletes the account.", state: "exported", data: { user: { id: "u-1" } } },
-      { capability: "media", summary: "Deletes the uploads.", state: "not_exported" },
-      { capability: "app", summary: "Erases the drafts.", state: "unavailable" },
+      {
+        capability: "auth",
+        summary: "Deletes the account.",
+        disposition: "erase",
+        state: "exported",
+        data: { user: { id: "u-1" } },
+      },
+      { capability: "media", summary: "Deletes the uploads.", disposition: "erase", state: "not_exported" },
+      { capability: "app", summary: "Erases the drafts.", disposition: "erase", state: "unavailable" },
+      {
+        capability: "payments",
+        summary: "Keeps the purchases.",
+        disposition: "retain",
+        basis: "Kept for tax records.",
+        state: "exported",
+        data: { purchases: [] },
+      },
     ]);
     accepts(AdminUserExportResponse, document);
+    // A Worker that predates `retain` (#814) sends neither field, and its document still parses.
+    const older = AdminUserExportResponse.parse({
+      ...document,
+      capabilities: [{ capability: "auth", summary: "Deletes the account.", state: "not_exported" }],
+    });
+    expect(older.capabilities[0]).not.toHaveProperty("disposition");
+    expect(older.capabilities[0]).not.toHaveProperty("basis");
     expect(document.subject).toEqual({ type: "user", id: "u-1" });
     expect(document.exportedAt).toBe(at.toISOString());
     // An unread part carries no `data`, so it cannot be rendered as a capability that holds nothing.

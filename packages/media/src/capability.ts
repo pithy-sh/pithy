@@ -21,7 +21,7 @@ import { mediaAdminRoutes } from "./http/scopes";
 import { media_0001_init } from "./migrations/0001_init";
 import { media_0003_ownership } from "./migrations/0003_ownership";
 import { mediaExtendMigration } from "./migrations/extend";
-import { mediaOrganizationPurge } from "./purge/contribution";
+import { mediaOrganizationPurge, mediaUserPurge } from "./purge/contribution";
 import {
   MEDIA_BUCKET_BINDING,
   MEDIA_R2_SECRET,
@@ -143,7 +143,8 @@ export function media(options: MediaOptions = {}): MediaCapability {
     workflows: mediaWorkflows,
     // What erasing one organization means here (#623): its records, their bytes and their hashes. The
     // organization purge runs it as its own step, in the adopter's Worker, which binds what it reads.
-    purge: [mediaOrganizationPurge(resolved)],
+    // A person's own records too (#814): exported on an access request and erased by their purge.
+    purge: [mediaOrganizationPurge(resolved), mediaUserPurge(resolved, schema)],
     requiredBindings,
     // The power a role holds to edit, delete and re-scope any record in its own organization. Declared so
     // tenancy can refuse a role catalog that places it nowhere — but only in a Worker that composes media.

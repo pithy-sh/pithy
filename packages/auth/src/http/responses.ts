@@ -412,7 +412,9 @@ const AuthExportTransition = z
   .object({
     action: z
       .string()
-      .describe("What happened: `suspended`, `reinstated`, `deleted`, `restored`, `purge_step`, `purged`."),
+      .describe(
+        "What happened: `suspended`, `reinstated`, `deleted`, `restored`, `purge_step`, `purge_retained`, `purged`.",
+      ),
     actorType: z.string().describe("Who made it: `control-plane`, `user` (the account's holder), or `system`."),
     reason: z.string().nullable().describe("The reason given, in the words of whoever made the transition, or null."),
     suspendedUntil: z.iso.datetime().nullable().describe("For a suspension, when it ends by itself, ISO-8601."),
@@ -461,8 +463,20 @@ export type AuthUserExport = z.output<typeof AuthUserExport>;
 
 /** Fields every capability's export entry carries. */
 const exportEntry = {
-  capability: z.string().describe("The capability whose rows these are — the purge step that erases them."),
-  summary: z.string().describe("What that capability's purge erases or anonymizes, in its own sentence."),
+  capability: z.string().describe("The capability whose rows these are — the purge step that erases or keeps them."),
+  summary: z.string().describe("What that capability's purge erases, anonymizes or keeps, in its own sentence."),
+  disposition: z
+    .enum(["erase", "retain"])
+    .optional()
+    .describe(
+      "What a purge does with these rows: `erase` (erased or anonymized) or `retain` (kept, for the reason in `basis`) (#814). Absent from a Worker that predates it, where every entry is `erase`.",
+    ),
+  basis: z
+    .string()
+    .optional()
+    .describe(
+      "For a `retain` entry, why the rows are kept, in one sentence written for the person — `Kept for tax records.` Absent for `erase`.",
+    ),
 };
 
 /** One capability's part of an export. */
@@ -475,7 +489,7 @@ const AdminUserExportEntry = z
         data: z
           .record(z.string(), z.unknown())
           .describe(
-            "What it holds about the account, in the shape that capability exports. `auth`'s is `AuthUserExport`.",
+            "What it holds about the account, in the shape that capability exports. `auth`'s is `AuthUserExport`. For a `retain` entry, the rows a purge keeps.",
           ),
       })
       .describe("A capability's rows about the account."),
@@ -484,7 +498,9 @@ const AdminUserExportEntry = z
         ...exportEntry,
         state: z
           .literal("not_exported")
-          .describe("The capability erases rows about the account and does not say how to export them."),
+          .describe(
+            "The capability erases rows about the account and does not say how to export them. No kit capability answers it; an adopter's own may.",
+          ),
       })
       .describe("A capability that holds rows it does not export. Ask its owner."),
     z

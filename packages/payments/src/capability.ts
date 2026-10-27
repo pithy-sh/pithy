@@ -28,6 +28,7 @@ import { payments_0001_purchases } from "./migrations/0001_purchases";
 import { payments_0002_allowances } from "./migrations/0002_allowances";
 import { payments_0003_webhook_targets } from "./migrations/0003_webhook_targets";
 import { type PaymentsPeer, paymentsPeer } from "./peer";
+import { paymentsUserPurge } from "./purge/contribution";
 import { paymentsInapplicableSecrets, paymentsSecretBranches } from "./secret/branches";
 import { paymentsSecretsRegistry } from "./secret/registry";
 import { paymentsExampleSeed } from "./seeds/example";
@@ -511,6 +512,9 @@ export function payments(options: PaymentsOptions): PaymentsCapability {
     // to key a row to — so they are handed the same seam rather than building one from the config alone.
     routes: registerPaymentsRoutes({ config: resolved, subject, ledger: () => peers.ledger }),
     seeds: [paymentsExampleSeed],
+    // A person's purchases and what they granted are kept through their purge, for tax law, and exported on an access
+    // request with the basis that keeps them (#814).
+    purge: [paymentsUserPurge()],
   });
 
   return Object.assign(capability, {
