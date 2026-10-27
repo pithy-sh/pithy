@@ -1,4 +1,5 @@
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
+import { devEncryptionKeys } from "@pithy-sh/secrets/src/test-utils/devEncryptionKeys";
 import { defineConfig } from "vitest/config";
 import { COMPATIBILITY_DATE } from "../../compatibility";
 import { UNIT_BUDGETS, WORKERS_ENV_SETUP } from "../../vitest.shared";
@@ -18,7 +19,10 @@ export default defineConfig({
       miniflare: {
         compatibilityDate: COMPATIBILITY_DATE,
         compatibilityFlags: ["nodejs_compat"],
-        d1Databases: ["DB"],
+        // `SECRETS` and its key are for the composed Worker the erasure attestation runs through (#823): auth
+        // composes beside organization there, and reads its session secret from the store.
+        d1Databases: ["DB", "SECRETS"],
+        bindings: { SECRETS_ENCRYPTION_KEYS: devEncryptionKeys() },
       },
     }),
   ],

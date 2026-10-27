@@ -2229,6 +2229,843 @@
         ]
       }
     },
+    "/control-plane/erasure": {
+      "get": {
+        "tags": [
+          "controlplane"
+        ],
+        "operationId": "getControlPlaneErasure",
+        "summary": "Report every purge in a period.",
+        "description": "Every user and organization purge that came due, ran a step, failed or completed in the window: counts of scheduled, in progress, complete, failed and overdue, and each failed or overdue one named with the step it stopped at. The window defaults to the 90 days before `until`, and is at most 366 days. Read-only.",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "The window's inclusive start, ISO-8601. Defaults to 90 days before `until`.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "description": "The window's inclusive end, ISO-8601. Defaults to now.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every purge in a period: counts of complete, in-progress and failed, and each failed or overdue one named with the step it stopped at.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "generatedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When this Worker read the records, ISO-8601."
+                    },
+                    "since": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "The window's inclusive start, ISO-8601."
+                    },
+                    "until": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "The window's inclusive end, ISO-8601."
+                    },
+                    "subjects": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "user",
+                          "organization"
+                        ],
+                        "description": "One kind of subject."
+                      },
+                      "description": "The kinds of subject this Worker records purges for. A kind not listed was not read, because nothing composed records it."
+                    },
+                    "counts": {
+                      "type": "object",
+                      "properties": {
+                        "scheduled": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Deleted, with the window still open."
+                        },
+                        "inProgress": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Due, and not yet finished."
+                        },
+                        "complete": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Finished."
+                        },
+                        "failed": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Gave up, until the next pass."
+                        },
+                        "overdue": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Not finished more than two days after coming due. Counted within the states above."
+                        }
+                      },
+                      "required": [
+                        "scheduled",
+                        "inProgress",
+                        "complete",
+                        "failed",
+                        "overdue"
+                      ],
+                      "description": "How many purges in the window stand where."
+                    },
+                    "attention": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "subject": {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "user",
+                                  "organization"
+                                ],
+                                "description": "The kind of subject."
+                              },
+                              "id": {
+                                "type": "string",
+                                "description": "Its id, the one value the trail keeps about it."
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "id"
+                            ],
+                            "description": "Who was erased: the kind of subject and its id. No address, no name."
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "scheduled",
+                              "in_progress",
+                              "complete",
+                              "failed"
+                            ],
+                            "description": "Where the purge stands: `scheduled`, deleted with its window still open and nothing erased yet; `in_progress`, due and not yet finished; `complete`, every step ran and the `purged` record is written; `failed`, the purge gave up at the step it names, until the next daily pass starts it again."
+                          },
+                          "overdue": {
+                            "type": "boolean",
+                            "description": "True when it came due more than two days ago and has not completed."
+                          },
+                          "purgeAfter": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "When it came due, or null for a deletion recorded before #823."
+                          },
+                          "completedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "When it finished, or null until it has."
+                          },
+                          "stoppedAt": {
+                            "description": "For a failed or overdue purge, the step it stopped at — `due` when none has run. Null otherwise.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "subject",
+                          "state",
+                          "overdue",
+                          "purgeAfter",
+                          "completedAt",
+                          "stoppedAt"
+                        ],
+                        "description": "One purge in the period, summarized. Its full record is the subject read."
+                      },
+                      "description": "Every failed or overdue purge in the window, each with the step it stopped at."
+                    },
+                    "purges": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "subject": {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "user",
+                                  "organization"
+                                ],
+                                "description": "The kind of subject."
+                              },
+                              "id": {
+                                "type": "string",
+                                "description": "Its id, the one value the trail keeps about it."
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "id"
+                            ],
+                            "description": "Who was erased: the kind of subject and its id. No address, no name."
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "scheduled",
+                              "in_progress",
+                              "complete",
+                              "failed"
+                            ],
+                            "description": "Where the purge stands: `scheduled`, deleted with its window still open and nothing erased yet; `in_progress`, due and not yet finished; `complete`, every step ran and the `purged` record is written; `failed`, the purge gave up at the step it names, until the next daily pass starts it again."
+                          },
+                          "overdue": {
+                            "type": "boolean",
+                            "description": "True when it came due more than two days ago and has not completed."
+                          },
+                          "purgeAfter": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "When it came due, or null for a deletion recorded before #823."
+                          },
+                          "completedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "When it finished, or null until it has."
+                          },
+                          "stoppedAt": {
+                            "description": "For a failed or overdue purge, the step it stopped at — `due` when none has run. Null otherwise.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "subject",
+                          "state",
+                          "overdue",
+                          "purgeAfter",
+                          "completedAt",
+                          "stoppedAt"
+                        ],
+                        "description": "One purge in the period, summarized. Its full record is the subject read."
+                      },
+                      "description": "Every purge in the window, oldest due first."
+                    }
+                  },
+                  "required": [
+                    "generatedAt",
+                    "since",
+                    "until",
+                    "subjects",
+                    "counts",
+                    "attention",
+                    "purges"
+                  ],
+                  "description": "Every purge in a period: counts of complete, in-progress and failed, and each failed or overdue one named with the step it stopped at."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "erasure:read"
+        ]
+      }
+    },
+    "/control-plane/erasure/{subjectType}/{subjectId}": {
+      "get": {
+        "tags": [
+          "controlplane"
+        ],
+        "operationId": "getControlPlaneErasureBySubjectTypeBySubjectId",
+        "summary": "Attest one subject's erasure.",
+        "description": "For one user or organization: when it was deleted, by which kind of actor and why, soft or hard, every purge step with its capability, whether it erased or kept the rows and why, and when it finished, the purge's state, and the audit events that record each step by event id and chain position. Nothing about the subject beyond its id. Read-only.",
+        "parameters": [
+          {
+            "name": "subjectType",
+            "in": "path",
+            "required": true,
+            "description": "The kind of subject: `user` or `organization`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "user",
+                "organization"
+              ]
+            }
+          },
+          {
+            "name": "subjectId",
+            "in": "path",
+            "required": true,
+            "description": "The subject's id.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One subject's erasure attestation, read from the purge's own record and cited in the audit chain.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "generatedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When this Worker read the records, ISO-8601."
+                    },
+                    "attestation": {
+                      "type": "object",
+                      "properties": {
+                        "subject": {
+                          "type": "object",
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "user",
+                                "organization"
+                              ],
+                              "description": "The kind of subject."
+                            },
+                            "id": {
+                              "type": "string",
+                              "description": "Its id, the one value the trail keeps about it."
+                            }
+                          },
+                          "required": [
+                            "type",
+                            "id"
+                          ],
+                          "description": "Who was erased: the kind of subject and its id. No address, no name."
+                        },
+                        "deletion": {
+                          "type": "object",
+                          "properties": {
+                            "at": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                              "description": "When the subject was deleted, ISO-8601."
+                            },
+                            "actorType": {
+                              "type": "string",
+                              "description": "Who deleted it: `control-plane` (a management client), `user` (the account's own holder) or `system`."
+                            },
+                            "reason": {
+                              "description": "Why, in the words of whoever deleted it. Null when nobody had to say.",
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "mode": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "soft",
+                                    "hard"
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "`soft`, with a window to restore it; `hard`, with none — a soft deletion brought forward reads as `hard`. Null for a deletion recorded before #823."
+                            },
+                            "purgeAfter": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "When the purge came due, ISO-8601. Null for a deletion recorded before #823."
+                            },
+                            "audit": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "eventId": {
+                                      "type": "string",
+                                      "description": "The audit event's stable public id."
+                                    },
+                                    "action": {
+                                      "type": "string",
+                                      "description": "Its `domain/reason` action."
+                                    },
+                                    "occurredAt": {
+                                      "type": "string",
+                                      "format": "date-time",
+                                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                      "description": "When it was recorded, ISO-8601."
+                                    },
+                                    "tenant": {
+                                      "description": "The tenant whose chain holds it, or null for the untenanted chain. `pithy audit verify` walks it.",
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "seq": {
+                                      "anyOf": [
+                                        {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ],
+                                      "description": "Its 1-based position in that chain, or null for an event recorded before the chain began."
+                                    },
+                                    "hash": {
+                                      "description": "Its chain hash, or null for an event recorded before the chain began.",
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "eventId",
+                                    "action",
+                                    "occurredAt",
+                                    "tenant",
+                                    "seq",
+                                    "hash"
+                                  ],
+                                  "description": "One audit event the attestation rests on, by id and chain position. The chain (#822) is what makes it tamper-evident; nothing here is signed."
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "The audit event that records the deletion, or null when the trail holds none."
+                            }
+                          },
+                          "required": [
+                            "at",
+                            "actorType",
+                            "reason",
+                            "mode",
+                            "purgeAfter",
+                            "audit"
+                          ],
+                          "description": "The deletion the purge erases under."
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "scheduled",
+                            "in_progress",
+                            "complete",
+                            "failed"
+                          ],
+                          "description": "Where the purge stands: `scheduled`, deleted with its window still open and nothing erased yet; `in_progress`, due and not yet finished; `complete`, every step ran and the `purged` record is written; `failed`, the purge gave up at the step it names, until the next daily pass starts it again."
+                        },
+                        "overdue": {
+                          "type": "boolean",
+                          "description": "True when the purge came due more than two days ago and has not completed: a daily pass was missed."
+                        },
+                        "stoppedAt": {
+                          "description": "For a failed purge, the step it gave up at. For an overdue one, the last step it finished, or `due` when none has run. Null otherwise.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "steps": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "capability": {
+                                "type": "string",
+                                "description": "The capability whose rows this step answered for."
+                              },
+                              "disposition": {
+                                "type": "string",
+                                "enum": [
+                                  "erased",
+                                  "retained"
+                                ],
+                                "description": "`erased`, the rows were deleted or anonymized; `retained`, the capability kept them under the reason it stated (#814). A retained step never reads as erased."
+                              },
+                              "reason": {
+                                "description": "For a retained step, the basis the capability stated, written for the person. Null for an erased step.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "summary": {
+                                "description": "For an erased step, what the capability says it erases. Null for a retained step, and when none was given.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "completedAt": {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                "description": "When the step finished, ISO-8601."
+                              },
+                              "audit": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "eventId": {
+                                        "type": "string",
+                                        "description": "The audit event's stable public id."
+                                      },
+                                      "action": {
+                                        "type": "string",
+                                        "description": "Its `domain/reason` action."
+                                      },
+                                      "occurredAt": {
+                                        "type": "string",
+                                        "format": "date-time",
+                                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                        "description": "When it was recorded, ISO-8601."
+                                      },
+                                      "tenant": {
+                                        "description": "The tenant whose chain holds it, or null for the untenanted chain. `pithy audit verify` walks it.",
+                                        "type": [
+                                          "string",
+                                          "null"
+                                        ]
+                                      },
+                                      "seq": {
+                                        "anyOf": [
+                                          {
+                                            "type": "integer",
+                                            "minimum": -9007199254740991,
+                                            "maximum": 9007199254740991
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ],
+                                        "description": "Its 1-based position in that chain, or null for an event recorded before the chain began."
+                                      },
+                                      "hash": {
+                                        "description": "Its chain hash, or null for an event recorded before the chain began.",
+                                        "type": [
+                                          "string",
+                                          "null"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "eventId",
+                                      "action",
+                                      "occurredAt",
+                                      "tenant",
+                                      "seq",
+                                      "hash"
+                                    ],
+                                    "description": "One audit event the attestation rests on, by id and chain position. The chain (#822) is what makes it tamper-evident; nothing here is signed."
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "The audit event that records this step, or null when the trail holds none: no audit composed, or a step run before #823."
+                              }
+                            },
+                            "required": [
+                              "capability",
+                              "disposition",
+                              "reason",
+                              "summary",
+                              "completedAt",
+                              "audit"
+                            ],
+                            "description": "One step of a purge: one capability's rows, erased or kept with a reason, and the event that records it."
+                          },
+                          "description": "Every step that has run, in the order it first ran. A step run again on a later pass is shown once, as it last finished."
+                        },
+                        "completedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the purge finished, ISO-8601. Null until it has."
+                        },
+                        "completion": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "eventId": {
+                                  "type": "string",
+                                  "description": "The audit event's stable public id."
+                                },
+                                "action": {
+                                  "type": "string",
+                                  "description": "Its `domain/reason` action."
+                                },
+                                "occurredAt": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                  "description": "When it was recorded, ISO-8601."
+                                },
+                                "tenant": {
+                                  "description": "The tenant whose chain holds it, or null for the untenanted chain. `pithy audit verify` walks it.",
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "seq": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "Its 1-based position in that chain, or null for an event recorded before the chain began."
+                                },
+                                "hash": {
+                                  "description": "Its chain hash, or null for an event recorded before the chain began.",
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "eventId",
+                                "action",
+                                "occurredAt",
+                                "tenant",
+                                "seq",
+                                "hash"
+                              ],
+                              "description": "One audit event the attestation rests on, by id and chain position. The chain (#822) is what makes it tamper-evident; nothing here is signed."
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "The audit event that records the purge finishing, or null until it has, or when the trail holds none."
+                        },
+                        "failure": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "eventId": {
+                                  "type": "string",
+                                  "description": "The audit event's stable public id."
+                                },
+                                "action": {
+                                  "type": "string",
+                                  "description": "Its `domain/reason` action."
+                                },
+                                "occurredAt": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                  "description": "When it was recorded, ISO-8601."
+                                },
+                                "tenant": {
+                                  "description": "The tenant whose chain holds it, or null for the untenanted chain. `pithy audit verify` walks it.",
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "seq": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "Its 1-based position in that chain, or null for an event recorded before the chain began."
+                                },
+                                "hash": {
+                                  "description": "Its chain hash, or null for an event recorded before the chain began.",
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "eventId",
+                                "action",
+                                "occurredAt",
+                                "tenant",
+                                "seq",
+                                "hash"
+                              ],
+                              "description": "One audit event the attestation rests on, by id and chain position. The chain (#822) is what makes it tamper-evident; nothing here is signed."
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "The audit event that records the purge giving up, or null."
+                        },
+                        "trail": {
+                          "type": "string",
+                          "enum": [
+                            "recorded",
+                            "absent"
+                          ],
+                          "description": "`recorded` when an audit capability is composed and its events are cited; `absent` when none is, so nothing here is cited and the lifecycle rows are the only record."
+                        }
+                      },
+                      "required": [
+                        "subject",
+                        "deletion",
+                        "state",
+                        "overdue",
+                        "stoppedAt",
+                        "steps",
+                        "completedAt",
+                        "completion",
+                        "failure",
+                        "trail"
+                      ],
+                      "description": "Proof that one subject's erasure happened: the deletion, every step with its disposition, the state, and the audit events that record each one."
+                    }
+                  },
+                  "required": [
+                    "generatedAt",
+                    "attestation"
+                  ],
+                  "description": "One subject's erasure attestation, read from the purge's own record and cited in the audit chain."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "erasure:read"
+        ]
+      }
+    },
     "/control-plane/presence/tickets": {
       "post": {
         "tags": [

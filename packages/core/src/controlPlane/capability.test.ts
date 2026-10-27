@@ -68,6 +68,8 @@ describe("controlplane capability", () => {
 
   test("a custom basePath moves every route, not some of them", () => {
     expect(registeredRoutes(controlplane({ basePath: "/admin/cp" }))).toEqual([
+      "GET /admin/cp/erasure",
+      "GET /admin/cp/erasure/:subjectType/:subjectId",
       "GET /admin/cp/evidence",
       "GET /admin/cp/keys",
       "GET /admin/cp/manifest",
@@ -80,8 +82,10 @@ describe("controlplane capability", () => {
     ]);
   });
 
-  test("registers exactly the nine seam routes", () => {
+  test("registers exactly the eleven seam routes", () => {
     expect(registeredRoutes(controlplane())).toEqual([
+      "GET /control-plane/erasure",
+      "GET /control-plane/erasure/:subjectType/:subjectId",
       "GET /control-plane/evidence",
       "GET /control-plane/keys",
       "GET /control-plane/manifest",

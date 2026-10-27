@@ -17,6 +17,7 @@ import { organizationTables } from "./data/tables";
 import { registerOrganizationRoutes } from "./http/routes";
 import { organizationAdminRoutes } from "./http/scopes";
 import type { UserLifecycleWiring } from "./lifecycle/cascade";
+import { organizationErasureRecords } from "./lifecycle/erasure";
 import type { OrganizationLifecycleHooks } from "./lifecycle/hooks";
 import type { EnqueueInvitation } from "./mail/invitation";
 import { ORGANIZATION_MIGRATION_ORDER } from "./migrations/0001_init";
@@ -359,6 +360,8 @@ export function organization<const Power extends string = never, const Role exte
     // And a person's memberships, selections, offers and invitations (#814): exported on an access request and erased
     // by their purge, as its own step in the adopter's Worker.
     purge: [organizationPurgeContribution("DB", onDelete), organizationUserPurge("DB")],
+    // How an organization purge's record is read back for the control plane's erasure attestation (#823).
+    erasureRecords: organizationErasureRecords,
     // The purge of one organization, and the daily pass that starts every due one. Both hosted by the adopter's
     // own Worker, because a purge runs every composed capability's contribution — see `purge/specs.ts`.
     workflows: organizationWorkflows,

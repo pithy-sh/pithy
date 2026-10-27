@@ -10,6 +10,7 @@ import { ControlPlanePresenceTicketRequest } from "../../presence/http/schemas";
 import { type AdminRoute, ControlPlaneManifest } from "../discovery/adminRoute";
 import {
   ANY_VERIFIED_CALLER,
+  ERASURE_READ_SCOPE,
   EVIDENCE_READ_SCOPE,
   KEYS_ROTATE_SCOPE,
   MANIFEST_READ_SCOPE,
@@ -19,6 +20,8 @@ import {
 import { requireControlPlane } from "./guard";
 import {
   type ControlPlaneHandlerDeps,
+  erasurePeriodHandler,
+  erasureSubjectHandler,
   evidenceHandler,
   expireKeyHandler,
   listKeysHandler,
@@ -30,6 +33,8 @@ import {
 } from "./handlers";
 import { presenceTicketGate, presenceTicketHandler } from "./presence";
 import {
+  ControlPlaneErasurePeriodResponse,
+  ControlPlaneErasureSubjectResponse,
   ControlPlaneEvidenceResponse,
   ControlPlaneKeysResponse,
   ControlPlaneMigrationsResponse,
@@ -38,7 +43,13 @@ import {
   ExpireKeyResponse,
   RegisterKeyResponse,
 } from "./responses";
-import { ExpireKeyParams, ExpireKeyRequest, RegisterKeyRequest } from "./schemas";
+import {
+  ErasurePeriodQuery,
+  ErasureSubjectParams,
+  ExpireKeyParams,
+  ExpireKeyRequest,
+  RegisterKeyRequest,
+} from "./schemas";
 
 /**
  * The seam's own routes, distinct from the admin routes capabilities contribute.
@@ -51,6 +62,8 @@ import { ExpireKeyParams, ExpireKeyRequest, RegisterKeyRequest } from "./schemas
  *   GET  /control-plane/migrations            → where each database stands   (migrations:read)
  *   GET  /control-plane/privacy               → what each schema holds        (privacy:read)
  *   GET  /control-plane/evidence              → SOC 2 and ISO 27001 evidence  (evidence:read)
+ *   GET  /control-plane/erasure               → every purge in a period       (erasure:read)
+ *   GET  /control-plane/erasure/:type/:id     → one subject's purge, attested (erasure:read)
  *   POST /control-plane/presence/tickets      → a ticket into a presence room (the room kind's scope)
  *
  * Every one is `control-plane` and default-denied — with no connection registered they all answer 403,
@@ -138,6 +151,22 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
       scope: EVIDENCE_READ_SCOPE,
       summary:
         "SOC 2 and ISO 27001 evidence derived from what this Worker composes and records: each control's facts, their sources, and what could be said. Evidence for an auditor, never a judgment.",
+    },
+    {
+      method: "GET",
+      operation: "erasure.list",
+      path: `${basePath}/erasure`,
+      scope: ERASURE_READ_SCOPE,
+      summary:
+        "Every purge in a period: how many completed, are in progress or failed, and each failed or overdue one with the step it stopped at.",
+    },
+    {
+      method: "GET",
+      operation: "erasure.read",
+      path: `${basePath}/erasure/:subjectType/:subjectId`,
+      scope: ERASURE_READ_SCOPE,
+      summary:
+        "One user's or organization's erasure: the deletion, every step erased or kept with its reason, the state, and the audit events that record each.",
     },
     {
       method: "POST",
@@ -260,6 +289,36 @@ export function registerControlPlaneRoutes(
     }),
     requireControlPlane(EVIDENCE_READ_SCOPE),
     evidenceHandler(deps),
+  );
+
+  app.get(
+    `${basePath}/erasure`,
+    describeRoute({
+      summary: "Report every purge in a period.",
+      description:
+        "Every user and organization purge that came due, ran a step, failed or completed in the window: counts of scheduled, in progress, complete, failed and overdue, and each failed or overdue one named with the step it stopped at. The window defaults to the 90 days before `until`, and is at most 366 days. Read-only.",
+      verification: "control-plane",
+      scopes: [ERASURE_READ_SCOPE],
+      responses: { 200: ControlPlaneErasurePeriodResponse },
+    }),
+    requireControlPlane(ERASURE_READ_SCOPE),
+    validate("query", ErasurePeriodQuery),
+    (c) => erasurePeriodHandler(deps)(c, c.req.valid("query")),
+  );
+
+  app.get(
+    `${basePath}/erasure/:subjectType/:subjectId`,
+    describeRoute({
+      summary: "Attest one subject's erasure.",
+      description:
+        "For one user or organization: when it was deleted, by which kind of actor and why, soft or hard, every purge step with its capability, whether it erased or kept the rows and why, and when it finished, the purge's state, and the audit events that record each step by event id and chain position. Nothing about the subject beyond its id. Read-only.",
+      verification: "control-plane",
+      scopes: [ERASURE_READ_SCOPE],
+      responses: { 200: ControlPlaneErasureSubjectResponse },
+    }),
+    requireControlPlane(ERASURE_READ_SCOPE),
+    validate("param", ErasureSubjectParams),
+    (c) => erasureSubjectHandler(deps)(c, c.req.valid("param")),
   );
 
   app.post(

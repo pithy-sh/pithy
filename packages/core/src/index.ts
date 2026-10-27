@@ -99,6 +99,7 @@ export {
   ANY_VERIFIED_CALLER,
   type ControlPlaneRequirement,
   ControlPlaneScope,
+  ERASURE_READ_SCOPE,
   EVIDENCE_READ_SCOPE,
   KEYS_ROTATE_SCOPE,
   MANIFEST_READ_SCOPE,

@@ -165,6 +165,10 @@ interface HistoryRow {
   readonly step?: string | null;
   /** A hard deletion's choice for the purge's last mail; see `UserLifecycleEvent.notify`. */
   readonly notify?: boolean | null;
+  /** A deletion's mode, kept for the erasure attestation (#823). */
+  readonly mode?: DeletionMode | null;
+  /** When a deletion's purge comes due, kept for the erasure attestation (#823). */
+  readonly purgeAfter?: Date | null;
 }
 
 /** The history row's values, as the table stores them. */
@@ -178,6 +182,8 @@ function encoded(row: HistoryRow) {
     suspendedUntil: row.suspendedUntil ? SQLiteDate.encode(row.suspendedUntil) : null,
     step: row.step ?? null,
     notify: row.notify === undefined || row.notify === null ? null : SQLiteBoolean.encode(row.notify),
+    mode: row.mode ?? null,
+    purgeAfter: row.purgeAfter ? SQLiteDate.encode(row.purgeAfter) : null,
     createdAt: SQLiteDate.encode(row.at),
   };
 }
@@ -203,7 +209,19 @@ async function move(deps: LifecycleDeps, update: { compile(): CompiledQuery }, r
   const v = encoded(row);
   const insert = deps.db
     .insertInto("pithyAuthUserLifecycle")
-    .columns(["userId", "action", "actorType", "actorId", "reason", "suspendedUntil", "step", "notify", "createdAt"])
+    .columns([
+      "userId",
+      "action",
+      "actorType",
+      "actorId",
+      "reason",
+      "suspendedUntil",
+      "step",
+      "notify",
+      "mode",
+      "purgeAfter",
+      "createdAt",
+    ])
     .expression(
       deps.db
         .selectNoFrom([
@@ -215,6 +233,8 @@ async function move(deps: LifecycleDeps, update: { compile(): CompiledQuery }, r
           sql.val(v.suspendedUntil).as("suspendedUntil"),
           sql.val(v.step).as("step"),
           sql.val(v.notify).as("notify"),
+          sql.val(v.mode).as("mode"),
+          sql.val(v.purgeAfter).as("purgeAfter"),
           sql.val(v.createdAt).as("createdAt"),
         ])
         .where(sql<number>`changes()`, ">", 0),
@@ -547,12 +567,16 @@ export async function deleteUser(
   const subject = await subjectOf(deps.db, input.userId);
   // A hard deletion's `notify` is the purge's to read, so it is written on the row: the purge that sends the last
   // mail may be one the daily pass started, with no request to carry it (#622).
+  // The mode and the due instant ride on the row too, because the purge erases the account's own column and the
+  // erasure attestation still has to say both (#823).
   const row: HistoryRow = {
     userId: input.userId,
     action: "deleted",
     actor: input.actor,
     reason,
     at,
+    mode: hard ? "hard" : "soft",
+    purgeAfter,
     ...(hard && input.notify !== undefined ? { notify: input.notify } : {}),
   };
   const existing = subject.columns.deletedAt;
@@ -834,6 +858,30 @@ export async function recordPurgeStep(
     at,
     step: input.step,
   });
+  // The trail's record of the step, which the erasure attestation cites by id and chain position (#823). The step's
+  // name and disposition only: the summary is the row's, and the trail never holds anything about the person.
+  await audit(deps, AuthAuditActions.adminUserPurgeStep, input.userId, PURGE, {
+    step: input.step,
+    disposition: input.retained ? "retained" : "erased",
+  });
+}
+
+/**
+ * Record that a purge gave up (#823): the step it stopped at, in the history and in the trail. The daily pass starts
+ * the purge again tomorrow, so this is where it stands until then, not an end. The failure's message is never
+ * written: it is code the kit did not write, and it may name the person.
+ */
+export async function recordPurgeFailure(deps: LifecycleDeps, input: { userId: string; step: string }): Promise<void> {
+  const at = (deps.now ?? (() => new Date()))();
+  await record(deps, {
+    userId: input.userId,
+    action: "purge_failed",
+    actor: PURGE,
+    reason: null,
+    at,
+    step: input.step,
+  });
+  await audit(deps, AuthAuditActions.adminUserPurgeFailed, input.userId, PURGE, { step: input.step });
 }
 
 /**

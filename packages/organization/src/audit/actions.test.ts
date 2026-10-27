@@ -86,6 +86,9 @@ describe("OrganizationAuditActions", () => {
       "organization/ownership_accepted",
       "organization/ownership_nominated",
       "organization/ownership_withdrawn",
+      // What a purge records, step by step and when it gives up (#823).
+      "organization/purge_failed",
+      "organization/purge_step",
       // Not an act anybody took: the purge, with nobody calling, erased a deleted organization (#623).
       "organization/purged",
       // Not an act somebody took, but an act somebody was stopped from taking — recorded because a

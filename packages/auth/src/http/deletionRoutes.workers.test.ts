@@ -7,10 +7,15 @@ import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { CONTROLPLANE_MIGRATION_ORDER, controlplane } from "@pithy-sh/core/src/controlPlane/capability";
 import { ControlPlaneConnection, type Ed25519PublicJwk } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, controlPlaneDatabase } from "@pithy-sh/core/src/controlPlane/data/tables";
+import {
+  ControlPlaneErasurePeriodResponse,
+  ControlPlaneErasureSubjectResponse,
+} from "@pithy-sh/core/src/controlPlane/http/responses";
 import { controlplane_0001_init } from "@pithy-sh/core/src/controlPlane/migrations/0001_init";
 import { controlplane_0002_management_origin } from "@pithy-sh/core/src/controlPlane/migrations/0002_management_origin";
 import { controlplane_0003_connection_principal } from "@pithy-sh/core/src/controlPlane/migrations/0003_connection_principal";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
+import { ERASURE_READ_SCOPE } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "@pithy-sh/core/src/controlPlane/token/mint";
 import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/wire";
 import { createBackend } from "@pithy-sh/core/src/createBackend";
@@ -103,6 +108,8 @@ let fired: { hook: keyof UserLifecycleHooks; event: UserLifecycleHookEvent }[] =
 /** Every purge instance the binding took, under the id it was created with. */
 let started: { id: string; params: unknown }[] = [];
 let bindPurge = true;
+/** Make the `silent` capability's erase throw, so a purge stops at its step and records the failure. */
+let failSilent = false;
 
 /**
  * The purge Workflow binding, holding one instance per id the way Cloudflare does: a `create` under an id it
@@ -181,13 +188,43 @@ const recorderCapability = defineCapability({
   name: "recorder",
   requiredBindings: [],
   auditRecorder: () => async (event) => void emitted.push(event as AuditEventInput),
+  // And the citation reader `@pithy-sh/audit` declares (#823), over the same capture: each event's place in the
+  // list stands for its chain position, so the erasure attestation's citations are checked end to end.
+  auditCitations: () => async (query) =>
+    emitted.flatMap((event, index) =>
+      event.resourceType === query.resourceType &&
+      typeof event.resourceId === "string" &&
+      query.resourceIds.includes(event.resourceId) &&
+      query.actions.includes(event.action)
+        ? [
+            {
+              eventId: `ev-${index + 1}`,
+              action: event.action,
+              resourceId: event.resourceId,
+              occurredAt: new Date(),
+              tenant: event.tenant ?? null,
+              seq: index + 1,
+              hash: "c".repeat(64),
+              step: typeof event.metadata?.step === "string" ? event.metadata.step : null,
+            },
+          ]
+        : [],
+    ),
 });
 
 /** A capability that erases rows and does not say how to export them. */
 const silentCapability = defineCapability({
   name: "silent",
   requiredBindings: [],
-  purge: [{ subject: "user", summary: "Deletes the user's scores.", erase: async () => {} }],
+  purge: [
+    {
+      subject: "user",
+      summary: "Deletes the user's scores.",
+      erase: async () => {
+        if (failSilent) throw new Error("the scores table is unreachable");
+      },
+    },
+  ],
 });
 
 const hook =
@@ -493,6 +530,7 @@ beforeEach(async () => {
   fired = [];
   started = [];
   bindPurge = true;
+  failSilent = false;
   drafts.clear();
   await grant([AUTH_USERS_DELETE_SCOPE, AUTH_USERS_EXPORT_SCOPE, AUTH_USERS_SUSPEND_SCOPE]);
 });
@@ -868,6 +906,155 @@ describe("the purge", () => {
     expect(startedParams()).toEqual([{ userId: "due-1" }, { userId: "due-2" }]);
     // One instance per deletion: each account's own id.
     expect(new Set(started.map((each) => each.id)).size).toBe(2);
+  });
+});
+
+describe("the erasure attestation (#823)", () => {
+  const attest = (userId: string, scope: ControlPlaneScope = ERASURE_READ_SCOPE) =>
+    call(`/control-plane/erasure/user/${userId}`, undefined, scope, "GET");
+
+  test("attests a purged account: the deletion, every step erased or kept with its reason, complete, each step cited", async () => {
+    await grant([AUTH_USERS_DELETE_SCOPE, ERASURE_READ_SCOPE]);
+    await seedAccountFootprint(env.DB, "u-1");
+    await remove("u-1", { mode: "hard", reason: "Fraud." });
+    await purge("u-1");
+
+    const response = await attest("u-1");
+    expect(response.status).toBe(200);
+    const body = ControlPlaneErasureSubjectResponse.parse(await response.json());
+    const { attestation } = body;
+    expect(attestation).toMatchObject({
+      subject: { type: "user", id: "u-1" },
+      deletion: {
+        actorType: "control-plane",
+        reason: "Fraud.",
+        mode: "hard",
+        audit: { action: "auth/admin_user_hard_deleted" },
+      },
+      state: "complete",
+      overdue: false,
+      stoppedAt: null,
+      trail: "recorded",
+      completion: { action: "auth/admin_user_purged" },
+      failure: null,
+    });
+    expect(attestation.steps.map((step) => [step.capability, step.disposition])).toEqual([
+      ["email", "retained"],
+      ["silent", "erased"],
+      ["app", "erased"],
+      ["auth", "erased"],
+    ]);
+    // A retained step shows its basis, and never reads as erased (#814).
+    expect(attestation.steps[0]?.reason).toBeTruthy();
+    expect(attestation.steps[0]?.summary).toBeNull();
+    // Every step and the completion are cited by id and position, each its own event.
+    const cited = [...attestation.steps.map((step) => step.audit), attestation.completion];
+    expect(cited.every((each) => each !== null && each.seq !== null)).toBe(true);
+    expect(new Set(cited.map((each) => each?.eventId)).size).toBe(cited.length);
+    expect(events("auth/admin_user_purge_step").map((event) => event.metadata)).toEqual([
+      { step: "email", disposition: "retained" },
+      { step: "silent", disposition: "erased" },
+      { step: "app", disposition: "erased" },
+      { step: "auth", disposition: "erased" },
+    ]);
+    // Nothing about the person beyond the id: not the address, not the name.
+    const text = JSON.stringify(body);
+    expect(text).not.toContain("u-1@test.com");
+    expect(text).not.toContain("Ada");
+  });
+
+  test("the period counts the purge, and names none for attention when it completed", async () => {
+    await grant([AUTH_USERS_DELETE_SCOPE, ERASURE_READ_SCOPE]);
+    await seedAccountFootprint(env.DB, "u-1");
+    await remove("u-1", { mode: "hard", reason: "Fraud." });
+    await purge("u-1");
+    const response = await call("/control-plane/erasure", undefined, ERASURE_READ_SCOPE, "GET");
+    expect(response.status).toBe(200);
+    const body = ControlPlaneErasurePeriodResponse.parse(await response.json());
+    expect(body.subjects).toEqual(["user"]);
+    expect(body.counts).toMatchObject({ complete: 1, inProgress: 0, failed: 0 });
+    expect(body.attention).toEqual([]);
+    expect(body.purges.map((entry) => entry.subject.id)).toEqual(["u-1"]);
+  });
+
+  test("the period names a purge that came due before the window and has done nothing since, overdue at `due`", async () => {
+    await grant([AUTH_USERS_DELETE_SCOPE, ERASURE_READ_SCOPE]);
+    await seedAccountFootprint(env.DB, "u-1");
+    await remove("u-1", { mode: "hard", reason: "Fraud." });
+    // Deleted 130 days ago and due 100 days ago, before the default 90-day window opened; the purge never started.
+    const now = Date.now();
+    await env.DB.prepare("update pithy_auth_user_lifecycle set created_at = ?, purge_after = ? where user_id = ?")
+      .bind(now - 130 * DAY, now - 100 * DAY, "u-1")
+      .run();
+    const response = await call("/control-plane/erasure", undefined, ERASURE_READ_SCOPE, "GET");
+    expect(response.status).toBe(200);
+    const body = ControlPlaneErasurePeriodResponse.parse(await response.json());
+    expect(body.counts).toMatchObject({ complete: 0, overdue: 1 });
+    expect(body.attention).toEqual([
+      expect.objectContaining({ subject: { type: "user", id: "u-1" }, overdue: true, stoppedAt: "due" }),
+    ]);
+  });
+
+  test("attests an operator's soft deletion: scheduled, nothing erased yet, citing auth/admin_user_soft_deleted", async () => {
+    await grant([AUTH_USERS_DELETE_SCOPE, ERASURE_READ_SCOPE]);
+    await seedAccountFootprint(env.DB, "u-1");
+    await remove("u-1", { reason: "Requested by mail." });
+
+    const response = await attest("u-1");
+    expect(response.status).toBe(200);
+    const { attestation } = ControlPlaneErasureSubjectResponse.parse(await response.json());
+    expect(attestation).toMatchObject({
+      subject: { type: "user", id: "u-1" },
+      deletion: { actorType: "control-plane", mode: "soft", audit: { action: "auth/admin_user_soft_deleted" } },
+      state: "scheduled",
+      completion: null,
+      failure: null,
+    });
+    expect(attestation.deletion.audit?.seq).not.toBeNull();
+  });
+
+  test("attests a person's own deletion, citing auth/user_self_deleted", async () => {
+    const { token, userId } = await signedIn();
+    expect((await deleteOwn(token)).status).toBe(200);
+    await grant([AUTH_USERS_DELETE_SCOPE, ERASURE_READ_SCOPE]);
+
+    const response = await attest(userId);
+    expect(response.status).toBe(200);
+    const { attestation } = ControlPlaneErasureSubjectResponse.parse(await response.json());
+    expect(attestation).toMatchObject({
+      subject: { type: "user", id: userId },
+      deletion: { actorType: "user", mode: "soft", audit: { action: "auth/user_self_deleted" } },
+      state: "scheduled",
+      failure: null,
+    });
+  });
+
+  test("attests a failed purge: failed at the step it stopped at, citing auth/admin_user_purge_failed", async () => {
+    await grant([AUTH_USERS_DELETE_SCOPE, ERASURE_READ_SCOPE]);
+    await seedAccountFootprint(env.DB, "u-1");
+    await remove("u-1", { mode: "hard", reason: "Fraud." });
+    failSilent = true;
+    await expect(purge("u-1")).rejects.toThrow();
+
+    const response = await attest("u-1");
+    expect(response.status).toBe(200);
+    const { attestation } = ControlPlaneErasureSubjectResponse.parse(await response.json());
+    expect(attestation).toMatchObject({
+      state: "failed",
+      stoppedAt: "silent",
+      completion: null,
+      failure: { action: "auth/admin_user_purge_failed" },
+    });
+    expect(attestation.failure?.seq).not.toBeNull();
+  });
+
+  test("an account never deleted is a 404, and the read is refused without erasure:read", async () => {
+    await grant([AUTH_USERS_DELETE_SCOPE, ERASURE_READ_SCOPE]);
+    await seedUser("u-2");
+    expect((await attest("u-2")).status).toBe(404);
+    await grant([AUTH_USERS_DELETE_SCOPE, AUTH_USERS_READ_SCOPE]);
+    expect((await attest("u-2", AUTH_USERS_READ_SCOPE)).status).toBe(403);
+    expect((await attest("u-2")).status).toBe(403);
   });
 });
 

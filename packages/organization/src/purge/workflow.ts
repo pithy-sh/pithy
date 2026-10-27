@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import { composedCapability } from "@pithy-sh/core/src/capability/composition";
 import { InternalError, messageOf } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
@@ -14,6 +15,7 @@ import { organizationDatabase } from "../data/tables";
 import type { OrganizationLifecycleDeps } from "../lifecycle/transitions";
 import {
   dueOrganizationPurgesOf,
+  type OrganizationPurgeAudit,
   type OrganizationPurgeDueRun,
   type OrganizationPurgeOutcome,
   organizationPurgeOps,
@@ -92,6 +94,36 @@ function runLog(env: Record<string, unknown>, event: PurgeEvent, name: string): 
   });
 }
 
+/**
+ * The trail's record of a purge (#823): each step with its disposition, a failure with where it stopped, and the
+ * end, written once by whichever purge finished it. Each in the organization's own chain, so the attestation cites
+ * them there. A step's name and disposition only: nothing about the organization beyond its id.
+ */
+export function purgeAudit(emit: AuditEmit): OrganizationPurgeAudit {
+  const event = (organizationId: string) =>
+    ({
+      outcome: "success",
+      actorType: "system",
+      actorId: null,
+      tenant: organizationId,
+      resourceType: "organization",
+      resourceId: organizationId,
+    }) as const;
+  return {
+    step: (organizationId, step, disposition) =>
+      emit({ ...event(organizationId), action: OrganizationAuditActions.purgeStep, metadata: { step, disposition } }),
+    failed: (organizationId, step) =>
+      emit({
+        ...event(organizationId),
+        action: OrganizationAuditActions.purgeFailed,
+        severity: "warning",
+        metadata: { step },
+      }),
+    purged: (organizationId) =>
+      emit({ ...event(organizationId), action: OrganizationAuditActions.purged, severity: "warning" }),
+  };
+}
+
 /** Purge one organization: every composed contribution, one step each, this capability's last. See `./run.ts`. */
 export async function runOrganizationPurge(
   env: Record<string, unknown>,
@@ -103,21 +135,8 @@ export async function runOrganizationPurge(
   const organization = composedCapability<OrganizationCapability>("organization", isOrganizationCapability);
   const lifecycle = lifecycleFor(organization, env, runLog(env, event, "organization:purge"));
   const emit = organization.auditFor(env);
-  // The trail's record that the organization is gone, written once, by whichever purge finished it.
-  const audited = async (organizationId: string) => {
-    await emit({
-      action: OrganizationAuditActions.purged,
-      outcome: "success",
-      actorType: "system",
-      actorId: null,
-      tenant: organizationId,
-      resourceType: "organization",
-      resourceId: organizationId,
-      severity: "warning",
-    });
-  };
   return purgeOrganization(
-    { steps: organization.organizationPurgeSteps, env, ops: organizationPurgeOps(lifecycle, audited) },
+    { steps: organization.organizationPurgeSteps, env, ops: organizationPurgeOps(lifecycle, purgeAudit(emit)) },
     step,
     terminalError,
     params,

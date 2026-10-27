@@ -68,3 +68,27 @@ export const ExpireKeyRequest = z
     "A request to expire one superseded key. The successor must be named and must already be live — append, verify, then expire, never replace.",
   );
 export type ExpireKeyRequest = z.infer<typeof ExpireKeyRequest>;
+
+/** `GET /control-plane/erasure/:subjectType/:subjectId` — which subject (#823). */
+export const ErasureSubjectParams = z
+  .object({
+    subjectType: z.enum(["user", "organization"]).describe("The kind of subject: `user` or `organization`."),
+    subjectId: z.string().min(1).max(255).describe("The subject's id."),
+  })
+  .describe("The subject whose erasure to attest.");
+export type ErasureSubjectParams = z.infer<typeof ErasureSubjectParams>;
+
+/** `GET /control-plane/erasure?since&until` — the period (#823). */
+export const ErasurePeriodQuery = z
+  .object({
+    since: z.iso
+      .datetime({ offset: true })
+      .optional()
+      .describe("The window's inclusive start, ISO-8601. Defaults to 90 days before `until`."),
+    until: z.iso
+      .datetime({ offset: true })
+      .optional()
+      .describe("The window's inclusive end, ISO-8601. Defaults to now."),
+  })
+  .describe("The period to attest: at most 366 days.");
+export type ErasurePeriodQuery = z.infer<typeof ErasurePeriodQuery>;

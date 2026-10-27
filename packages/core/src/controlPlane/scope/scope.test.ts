@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 import {
   ANY_VERIFIED_CALLER,
   ControlPlaneScope,
+  ERASURE_READ_SCOPE,
   EVIDENCE_READ_SCOPE,
   KEYS_ROTATE_SCOPE,
   MANIFEST_READ_SCOPE,
@@ -99,5 +100,13 @@ describe("EVIDENCE_READ_SCOPE", () => {
     expect(ControlPlaneScope.parse(EVIDENCE_READ_SCOPE)).toBe("evidence:read");
     expect([MANIFEST_READ_SCOPE, MIGRATIONS_READ_SCOPE, PRIVACY_READ_SCOPE]).not.toContain(EVIDENCE_READ_SCOPE);
     expect(SEAM_SCOPES).not.toContain(EVIDENCE_READ_SCOPE);
+  });
+});
+
+describe("ERASURE_READ_SCOPE", () => {
+  test("is a valid scope of its own, and a read connect derives rather than a base grant (#823)", () => {
+    expect(ControlPlaneScope.parse(ERASURE_READ_SCOPE)).toBe("erasure:read");
+    expect([MANIFEST_READ_SCOPE, PRIVACY_READ_SCOPE, EVIDENCE_READ_SCOPE]).not.toContain(ERASURE_READ_SCOPE);
+    expect(SEAM_SCOPES).not.toContain(ERASURE_READ_SCOPE);
   });
 });

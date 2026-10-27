@@ -81,6 +81,7 @@ function ops(log: string[], due: "due" | "not_due" | "gone" = "due"): PurgeOps {
       completed = true;
       return first;
     },
+    fail: async (userId, step) => void log.push(`fail ${userId} at ${step}`),
   };
 }
 
@@ -203,6 +204,35 @@ describe("purgeUser", () => {
     expect(outcome.state).toBe("purged");
     expect([media.erases(), app.erases(), auth.erases()]).toEqual([1, 4, 1]);
     expect(log.filter((line) => line === "mail u1")).toHaveLength(1);
+  });
+
+  test("a purge that gives up records the step it stopped at, in its own step, and fails as it would have (#823)", async () => {
+    const log: string[] = [];
+    const ledger = contribution("ledger", log, 3);
+    const { step, ran } = workflow(3);
+    const run = { steps: [contribution("media", log), ledger, contribution("auth", log)], env: {}, ops: ops(log) };
+    await expect(purgeUser(run, step, Terminal, { userId: "u1" })).rejects.toThrow("ledger is down");
+    expect(log).toContain("fail u1 at ledger");
+    expect(ran.at(-1)).toBe("fail");
+  });
+
+  test("a failure at the mail or the completion names that step (#823)", async () => {
+    const log: string[] = [];
+    const broken = { ...ops(log), mailComplete: async () => Promise.reject(new Terminal("mail binding down")) };
+    const { step } = workflow();
+    await expect(
+      purgeUser({ steps: [contribution("auth", log)], env: {}, ops: broken }, step, Terminal, { userId: "u1" }),
+    ).rejects.toThrow("mail binding down");
+    expect(log).toContain("fail u1 at mail");
+  });
+
+  test("a failure the purge cannot record still reports the failure that stopped it (#823)", async () => {
+    const log: string[] = [];
+    const broken = { ...ops(log), fail: async () => Promise.reject(new Error("database gone")) };
+    const { step } = workflow();
+    await expect(
+      purgeUser({ steps: [contribution("media", log, 9)], env: {}, ops: broken }, step, Terminal, { userId: "u1" }),
+    ).rejects.toThrow("media is down");
   });
 
   test("an account that is not due, or not there, erases nothing and exits without error", async () => {

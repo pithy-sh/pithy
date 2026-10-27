@@ -17,6 +17,7 @@ import { organization } from "../capability";
 import { Membership } from "../data/membership";
 import { Organization } from "../data/organization";
 import { LIFECYCLE_TABLE, MEMBERSHIPS_TABLE, ORGANIZATIONS_TABLE, organizationDatabase } from "../data/tables";
+import { organizationErasureReader } from "../lifecycle/erasure";
 import { removeOrganization } from "../lifecycle/transitions";
 import { ORGANIZATION_MIGRATION_ORDER } from "../migrations/0001_init";
 import { ORGANIZATION_MIGRATIONS } from "../migrations/set";
@@ -26,7 +27,7 @@ import { ORGANIZATION_PURGE_SUMMARY, organizationPurgeContribution } from "./con
 import { organizationPurgeOps, purgeOrganization } from "./run";
 import { ORGANIZATION_PURGE_BINDING } from "./specs";
 import { organizationPurgeInstanceId } from "./start";
-import { runOrganizationPurge, runOrganizationPurgeDue } from "./workflow";
+import { purgeAudit, runOrganizationPurge, runOrganizationPurgeDue } from "./workflow";
 
 /**
  * The organization purge end to end over real D1 (#623): this capability's contribution, the adopter's sweep in
@@ -210,7 +211,11 @@ describe("the organization purge", () => {
 
   test("the audit event for a finished purge is written once, by whichever run finished it", async () => {
     const audited: string[] = [];
-    const ops = organizationPurgeOps(deps(), async (organizationId) => void audited.push(organizationId));
+    const ops = organizationPurgeOps(deps(), {
+      step: async () => {},
+      failed: async () => {},
+      purged: async (organizationId) => void audited.push(organizationId),
+    });
     expect(await ops.complete(ACME)).toBe(true);
     expect(await ops.complete(ACME)).toBe(false);
     expect(audited).toEqual([ACME]);
@@ -258,7 +263,7 @@ describe("the Workflow bodies", () => {
     forgetComposition();
   });
 
-  test("runOrganizationPurge erases the organization the payload names, through the composed steps, and writes one purged event", async () => {
+  test("runOrganizationPurge erases the organization the payload names, through the composed steps, and audits each step and the end", async () => {
     await removeOrganization(deletedAt(new Date(Date.now() - HOUR)), {
       organizationId: ACME,
       actor: { type: "control-plane", id: "operator-1" },
@@ -271,6 +276,16 @@ describe("the Workflow bodies", () => {
     expect(outcome).toEqual({ organizationId: ACME, state: "purged", erased: ["organization"], retained: [] });
     expect(await db().selectFrom(ORGANIZATIONS_TABLE).select("id").execute()).toEqual([{ id: BETA }]);
     expect(recorded).toEqual([
+      {
+        action: "organization/purge_step",
+        outcome: "success",
+        actorType: "system",
+        actorId: null,
+        tenant: ACME,
+        resourceType: "organization",
+        resourceId: ACME,
+        metadata: { step: "organization", disposition: "erased" },
+      },
       {
         action: "organization/purged",
         outcome: "success",
@@ -285,7 +300,7 @@ describe("the Workflow bodies", () => {
 
     // Run again, the organization is gone: nothing erased, and no second event.
     expect((await runOrganizationPurge({ DB: env.DB }, event, workflow().step, Terminal)).state).toBe("gone");
-    expect(recorded).toHaveLength(1);
+    expect(recorded).toHaveLength(2);
   });
 
   test("a payload that is not the purge's parameters is refused before anything runs", async () => {
@@ -363,5 +378,80 @@ describe("the Workflow bodies", () => {
       purgeAfterDays: 30,
     });
     expect(await runOrganizationPurgeDue({ DB: env.DB }, {}, workflow().step, Terminal)).toEqual({ started: 0 });
+  });
+});
+
+describe("the erasure record (#823)", () => {
+  const OPERATOR = { type: "control-plane", id: "operator-1" } as const;
+  const DAY = 86_400_000;
+
+  test("a deletion's row keeps its mode and due instant; a failure and every step reach the history and the trail", async () => {
+    const events: { action: string; metadata?: unknown }[] = [];
+    const audit = purgeAudit(async (event) => void events.push({ action: event.action, metadata: event.metadata }));
+    await removeOrganization(deps(), { organizationId: ACME, actor: OPERATOR, reason: "Closed.", purgeAfterDays: 30 });
+    const later = { ...deps(), now: () => new Date(NOW.getTime() + DAY) };
+    await removeOrganization(later, {
+      organizationId: ACME,
+      actor: OPERATOR,
+      reason: "Now.",
+      mode: "hard",
+      purgeAfterDays: 30,
+    });
+    const ops = organizationPurgeOps(deps(), audit);
+    await ops.recordStep(ACME, "media", "Erases uploads.");
+    await ops.recordRetained(ACME, "books", "Kept for tax records.");
+    await ops.fail(ACME, "storage");
+    const rows = await organizationErasureReader(db()).history([ACME, BETA]);
+    expect(rows.map((row) => [row.action, row.mode, row.purgeAfter?.getTime() ?? null, row.step])).toEqual([
+      ["deleted", "soft", NOW.getTime() + 30 * DAY, null],
+      ["deleted", "hard", NOW.getTime() + DAY, null],
+      ["purge_step", null, null, "media"],
+      ["purge_retained", null, null, "books"],
+      ["purge_failed", null, null, "storage"],
+    ]);
+    expect(events).toEqual([
+      { action: "organization/purge_step", metadata: { step: "media", disposition: "erased" } },
+      { action: "organization/purge_step", metadata: { step: "books", disposition: "retained" } },
+      { action: "organization/purge_failed", metadata: { step: "storage" } },
+    ]);
+  });
+
+  test("the period lists an organization by its purge's activity or its due instant in the window", async () => {
+    await removeOrganization(
+      { ...deps(), now: () => new Date(NOW.getTime() - 25 * DAY) },
+      { organizationId: ACME, actor: OPERATOR, reason: "x", purgeAfterDays: 30 },
+    );
+    await removeOrganization(deps(), { organizationId: BETA, actor: OPERATOR, reason: "x", purgeAfterDays: 30 });
+    const reader = organizationErasureReader(db());
+    const window = [new Date(NOW.getTime() - DAY), new Date(NOW.getTime() + 10 * DAY)] as const;
+    expect(await reader.subjectsIn(...window)).toEqual([ACME]);
+    await organizationPurgeOps(deps()).recordStep(BETA, "media", "x");
+    expect(await reader.subjectsIn(...window)).toEqual([ACME, BETA]);
+    expect(await reader.history([])).toEqual([]);
+  });
+
+  test("the period lists an organization whose purge came due before the window and has done nothing since", async () => {
+    const at = (offset: number) => ({ ...deps(), now: () => new Date(NOW.getTime() + offset) });
+    // Due 70 days before now and never started: outstanding through the whole window.
+    await removeOrganization(at(-100 * DAY), {
+      organizationId: ACME,
+      actor: OPERATOR,
+      reason: "x",
+      purgeAfterDays: 30,
+    });
+    // Due as long ago, and finished before the window opened.
+    await removeOrganization(at(-100 * DAY), {
+      organizationId: BETA,
+      actor: OPERATOR,
+      reason: "x",
+      purgeAfterDays: 30,
+    });
+    await organizationPurgeOps(at(-60 * DAY)).complete(BETA);
+    const reader = organizationErasureReader(db());
+    const window = [new Date(NOW.getTime() - 10 * DAY), new Date(NOW.getTime() + 10 * DAY)] as const;
+    expect(await reader.subjectsIn(...window)).toEqual([ACME]);
+    // A deletion recorded before its due instant was: no purgeAfter, and no purge since.
+    await db().updateTable(LIFECYCLE_TABLE).set({ purgeAfter: null }).where("organizationId", "=", ACME).execute();
+    expect(await reader.subjectsIn(...window)).toEqual([ACME]);
   });
 });

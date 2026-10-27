@@ -29,6 +29,8 @@ _Everything else is on the site. `pithy.sh/docs` is canonical — new prose goes
 
 This proves the trail is whole. It adds no way to change it.
 
+**The erasure attestation cites it.** `@pithy-sh/audit` declares `auditCitations`, the seam through which `GET /control-plane/erasure/:subjectType/:subjectId` points at the events a purge recorded: each by event id, tenant, chain position and hash, never its IP, user-agent or metadata. Hand an auditor the attestation and an export of that chain, and `pithy audit verify` checks the events it cites. Without this capability composed, the attestation says its trail is `absent`. [`docs/CONTROL-PLANE.md` §12](../../docs/CONTROL-PLANE.md#erasure) has the shape.
+
 ## A person's data
 
 **Retained.** When an account is purged, audit erases nothing: *Kept as the record of who did what, which a security review or a dispute is read against.* The purge records the step as retained with that basis, and an export hands back every event where the person is the actor. See [`@pithy-sh/auth`'s account lifecycle](../auth/docs/account-lifecycle.md#what-each-capability-does-with-a-persons-rows).

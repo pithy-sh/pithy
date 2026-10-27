@@ -28,6 +28,7 @@ import { controlplane_0002_management_origin } from "../migrations/0002_manageme
 import { controlplane_0003_connection_principal } from "../migrations/0003_connection_principal";
 import { controlplane_0004_connection_trusts } from "../migrations/0004_connection_trusts";
 import {
+  ERASURE_READ_SCOPE,
   EVIDENCE_READ_SCOPE,
   KEYS_ROTATE_SCOPE,
   MANIFEST_READ_SCOPE,
@@ -328,6 +329,8 @@ function everyRoute(): { method: string; path: string; scope: string; body?: unk
     { method: "GET", path: "/control-plane/migrations", scope: MIGRATIONS_READ_SCOPE },
     { method: "GET", path: "/control-plane/privacy", scope: PRIVACY_READ_SCOPE },
     { method: "GET", path: "/control-plane/evidence", scope: EVIDENCE_READ_SCOPE },
+    { method: "GET", path: "/control-plane/erasure", scope: ERASURE_READ_SCOPE },
+    { method: "GET", path: "/control-plane/erasure/user/u1", scope: ERASURE_READ_SCOPE },
     {
       method: "POST",
       path: "/control-plane/keys",
@@ -372,7 +375,7 @@ beforeEach(async () => {
 });
 
 describe("a Worker nobody has connected", () => {
-  test("denies every one of the nine routes with controlplane/not_connected", async () => {
+  test("denies every one of the eleven routes with controlplane/not_connected", async () => {
     // The shipped state. The seam is composed, the table exists, and there is no flag that opens it —
     // `pithy dashboard connect` is the deliberate second step, and until then a perfectly well-formed,
     // correctly signed credential gets 403 on every route.
@@ -552,6 +555,8 @@ describe("GET /control-plane/manifest", () => {
     const seam = json.capabilities.find((capability) => capability.name === "controlplane");
 
     expect(seam?.adminRoutes.map((route) => `${route.method} ${route.path}`).sort()).toEqual([
+      "GET /control-plane/erasure",
+      "GET /control-plane/erasure/:subjectType/:subjectId",
       "GET /control-plane/evidence",
       "GET /control-plane/keys",
       "GET /control-plane/manifest",
@@ -593,6 +598,17 @@ describe("GET /control-plane/manifest", () => {
     expect(expire?.input).toMatchObject({
       required: ["path", "body"],
       properties: { path: { type: "object", properties: { keyId: { type: "string" } } }, body: { type: "object" } },
+    });
+    // The erasure reads (#823): the period takes an optional query, one subject takes its two path segments.
+    const period = route("GET", "/erasure");
+    expect(period?.operation).toBe("erasure.list");
+    expect(period?.input).toMatchObject({ properties: { query: { type: "object" } } });
+    expect(period?.input?.required ?? []).not.toContain("query");
+    const subject = route("GET", "/erasure/:subjectType/:subjectId");
+    expect(subject?.operation).toBe("erasure.read");
+    expect(subject?.input).toMatchObject({
+      required: ["path"],
+      properties: { path: { type: "object", properties: { subjectType: {}, subjectId: { type: "string" } } } },
     });
   });
 

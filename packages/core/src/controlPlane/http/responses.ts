@@ -443,3 +443,188 @@ export const ControlPlaneEvidenceResponse = z
     "SOC 2 and ISO 27001 evidence this Worker derives from its own declarations. Each control names its facts, their sources and what could be said. An auditor decides the rest.",
   );
 export type ControlPlaneEvidenceResponse = z.output<typeof ControlPlaneEvidenceResponse>;
+
+/** Where a purge stands (#823). */
+export const ErasureState = z
+  .enum(["scheduled", "in_progress", "complete", "failed"])
+  .describe(
+    "Where the purge stands: `scheduled`, deleted with its window still open and nothing erased yet; `in_progress`, due and not yet finished; `complete`, every step ran and the `purged` record is written; `failed`, the purge gave up at the step it names, until the next daily pass starts it again.",
+  );
+export type ErasureState = z.output<typeof ErasureState>;
+
+/** One recorded audit event, cited by id and chain position (#823). Never its personal values. */
+export const ErasureCitation = z
+  .object({
+    eventId: z.string().describe("The audit event's stable public id."),
+    action: z.string().describe("Its `domain/reason` action."),
+    occurredAt: z.iso.datetime().describe("When it was recorded, ISO-8601."),
+    tenant: z
+      .string()
+      .nullable()
+      .describe("The tenant whose chain holds it, or null for the untenanted chain. `pithy audit verify` walks it."),
+    seq: z
+      .number()
+      .int()
+      .nullable()
+      .describe("Its 1-based position in that chain, or null for an event recorded before the chain began."),
+    hash: z.string().nullable().describe("Its chain hash, or null for an event recorded before the chain began."),
+  })
+  .describe(
+    "One audit event the attestation rests on, by id and chain position. The chain (#822) is what makes it tamper-evident; nothing here is signed.",
+  );
+export type ErasureCitation = z.output<typeof ErasureCitation>;
+
+/** One purge step: whose rows, what happened to them, and the event that records it (#823). */
+export const ErasureStepView = z
+  .object({
+    capability: z.string().describe("The capability whose rows this step answered for."),
+    disposition: z
+      .enum(["erased", "retained"])
+      .describe(
+        "`erased`, the rows were deleted or anonymized; `retained`, the capability kept them under the reason it stated (#814). A retained step never reads as erased.",
+      ),
+    reason: z
+      .string()
+      .nullable()
+      .describe(
+        "For a retained step, the basis the capability stated, written for the person. Null for an erased step.",
+      ),
+    summary: z
+      .string()
+      .nullable()
+      .describe(
+        "For an erased step, what the capability says it erases. Null for a retained step, and when none was given.",
+      ),
+    completedAt: z.iso.datetime().describe("When the step finished, ISO-8601."),
+    audit: ErasureCitation.nullable().describe(
+      "The audit event that records this step, or null when the trail holds none: no audit composed, or a step run before #823.",
+    ),
+  })
+  .describe("One step of a purge: one capability's rows, erased or kept with a reason, and the event that records it.");
+export type ErasureStepView = z.output<typeof ErasureStepView>;
+
+/** The subject an attestation is about: its kind and its id, and nothing else (#823). */
+export const ErasureSubjectView = z
+  .object({
+    type: z.enum(["user", "organization"]).describe("The kind of subject."),
+    id: z.string().describe("Its id, the one value the trail keeps about it."),
+  })
+  .describe("Who was erased: the kind of subject and its id. No address, no name.");
+export type ErasureSubjectView = z.output<typeof ErasureSubjectView>;
+
+/** One subject's erasure, attested (#823). */
+export const ErasureAttestation = z
+  .object({
+    subject: ErasureSubjectView,
+    deletion: z
+      .object({
+        at: z.iso.datetime().describe("When the subject was deleted, ISO-8601."),
+        actorType: z
+          .string()
+          .describe(
+            "Who deleted it: `control-plane` (a management client), `user` (the account's own holder) or `system`.",
+          ),
+        reason: z.string().nullable().describe("Why, in the words of whoever deleted it. Null when nobody had to say."),
+        mode: z
+          .enum(["soft", "hard"])
+          .nullable()
+          .describe(
+            "`soft`, with a window to restore it; `hard`, with none — a soft deletion brought forward reads as `hard`. Null for a deletion recorded before #823.",
+          ),
+        purgeAfter: z.iso
+          .datetime()
+          .nullable()
+          .describe("When the purge came due, ISO-8601. Null for a deletion recorded before #823."),
+        audit: ErasureCitation.nullable().describe(
+          "The audit event that records the deletion, or null when the trail holds none.",
+        ),
+      })
+      .describe("The deletion the purge erases under."),
+    state: ErasureState,
+    overdue: z
+      .boolean()
+      .describe("True when the purge came due more than two days ago and has not completed: a daily pass was missed."),
+    stoppedAt: z
+      .string()
+      .nullable()
+      .describe(
+        "For a failed purge, the step it gave up at. For an overdue one, the last step it finished, or `due` when none has run. Null otherwise.",
+      ),
+    steps: z
+      .array(ErasureStepView)
+      .describe(
+        "Every step that has run, in the order it first ran. A step run again on a later pass is shown once, as it last finished.",
+      ),
+    completedAt: z.iso.datetime().nullable().describe("When the purge finished, ISO-8601. Null until it has."),
+    completion: ErasureCitation.nullable().describe(
+      "The audit event that records the purge finishing, or null until it has, or when the trail holds none.",
+    ),
+    failure: ErasureCitation.nullable().describe("The audit event that records the purge giving up, or null."),
+    trail: z
+      .enum(["recorded", "absent"])
+      .describe(
+        "`recorded` when an audit capability is composed and its events are cited; `absent` when none is, so nothing here is cited and the lifecycle rows are the only record.",
+      ),
+  })
+  .describe(
+    "Proof that one subject's erasure happened: the deletion, every step with its disposition, the state, and the audit events that record each one.",
+  );
+export type ErasureAttestation = z.output<typeof ErasureAttestation>;
+
+/** `GET /control-plane/erasure/:subjectType/:subjectId` — one subject's attestation, behind `erasure:read` (#823). */
+export const ControlPlaneErasureSubjectResponse = z
+  .object({
+    generatedAt: z.iso.datetime().describe("When this Worker read the records, ISO-8601."),
+    attestation: ErasureAttestation,
+  })
+  .describe("One subject's erasure attestation, read from the purge's own record and cited in the audit chain.");
+export type ControlPlaneErasureSubjectResponse = z.output<typeof ControlPlaneErasureSubjectResponse>;
+
+/** One purge in a period: who, where it stands, and where it stopped (#823). */
+export const ErasurePeriodEntry = z
+  .object({
+    subject: ErasureSubjectView,
+    state: ErasureState,
+    overdue: z.boolean().describe("True when it came due more than two days ago and has not completed."),
+    purgeAfter: z.iso.datetime().nullable().describe("When it came due, or null for a deletion recorded before #823."),
+    completedAt: z.iso.datetime().nullable().describe("When it finished, or null until it has."),
+    stoppedAt: z
+      .string()
+      .nullable()
+      .describe("For a failed or overdue purge, the step it stopped at — `due` when none has run. Null otherwise."),
+  })
+  .describe("One purge in the period, summarized. Its full record is the subject read.");
+export type ErasurePeriodEntry = z.output<typeof ErasurePeriodEntry>;
+
+/** `GET /control-plane/erasure` — every purge in a period, counted (#823). */
+export const ControlPlaneErasurePeriodResponse = z
+  .object({
+    generatedAt: z.iso.datetime().describe("When this Worker read the records, ISO-8601."),
+    since: z.iso.datetime().describe("The window's inclusive start, ISO-8601."),
+    until: z.iso.datetime().describe("The window's inclusive end, ISO-8601."),
+    subjects: z
+      .array(z.enum(["user", "organization"]).describe("One kind of subject."))
+      .describe(
+        "The kinds of subject this Worker records purges for. A kind not listed was not read, because nothing composed records it.",
+      ),
+    counts: z
+      .object({
+        scheduled: z.number().int().describe("Deleted, with the window still open."),
+        inProgress: z.number().int().describe("Due, and not yet finished."),
+        complete: z.number().int().describe("Finished."),
+        failed: z.number().int().describe("Gave up, until the next pass."),
+        overdue: z
+          .number()
+          .int()
+          .describe("Not finished more than two days after coming due. Counted within the states above."),
+      })
+      .describe("How many purges in the window stand where."),
+    attention: z
+      .array(ErasurePeriodEntry)
+      .describe("Every failed or overdue purge in the window, each with the step it stopped at."),
+    purges: z.array(ErasurePeriodEntry).describe("Every purge in the window, oldest due first."),
+  })
+  .describe(
+    "Every purge in a period: counts of complete, in-progress and failed, and each failed or overdue one named with the step it stopped at.",
+  );
+export type ControlPlaneErasurePeriodResponse = z.output<typeof ControlPlaneErasurePeriodResponse>;

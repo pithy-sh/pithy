@@ -25,6 +25,7 @@ import { createAuthRoutes } from "./http/routes";
 import type { GithubUserInfoResolver } from "./instance/githubUserInfo";
 import { AuthPlugin, assertAdditivePlugins } from "./instance/plugins";
 import { authSecretsRegistryFor, inapplicableProviderSecrets } from "./instance/secrets";
+import { authErasureRecords } from "./lifecycle/erasure";
 import type { UserLifecycleHooks } from "./lifecycle/hooks";
 import { AUTH_MIGRATION_ORDER } from "./migrations/0001_init";
 import { authPluginPlan } from "./migrations/pluginTables";
@@ -492,6 +493,8 @@ export function auth(options: AuthOptions): AuthCapability {
     },
     // What erasing a person means for the `pithy_auth_*` tables, and what exporting them hands back (#622).
     purge: [authPurgeContribution(resolved.database, pluginPlan.userTables)],
+    // How a purge's record is read back for the control plane's erasure attestation (#823).
+    erasureRecords: authErasureRecords(resolved.database),
     // The purge of one account, and the daily pass that starts every due one. Both hosted by the adopter's own
     // Worker, because a purge runs every composed capability's contribution — see `purge/specs.ts`.
     workflows: authWorkflows,

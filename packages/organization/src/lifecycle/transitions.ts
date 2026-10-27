@@ -64,6 +64,10 @@ interface HistoryRow {
   readonly at: Date;
   readonly suspendedUntil?: Date | null;
   readonly step?: string | null;
+  /** A deletion's mode, kept for the erasure attestation (#823). */
+  readonly mode?: OrganizationDeletionMode | null;
+  /** When a deletion's purge comes due, kept for the erasure attestation (#823). */
+  readonly purgeAfter?: Date | null;
 }
 
 /** The history row's values, as the table stores them. */
@@ -76,6 +80,8 @@ function encoded(row: HistoryRow) {
     reason: row.reason,
     suspendedUntil: row.suspendedUntil ? SQLiteDate.encode(row.suspendedUntil) : null,
     step: row.step ?? null,
+    mode: row.mode ?? null,
+    purgeAfter: row.purgeAfter ? SQLiteDate.encode(row.purgeAfter) : null,
     createdAt: SQLiteDate.encode(row.at),
   };
 }
@@ -104,7 +110,18 @@ async function move(
   const v = encoded(row);
   const insert = deps.db
     .insertInto(LIFECYCLE_TABLE)
-    .columns(["organizationId", "action", "actorType", "actorId", "reason", "suspendedUntil", "step", "createdAt"])
+    .columns([
+      "organizationId",
+      "action",
+      "actorType",
+      "actorId",
+      "reason",
+      "suspendedUntil",
+      "step",
+      "mode",
+      "purgeAfter",
+      "createdAt",
+    ])
     .expression(
       deps.db
         .selectNoFrom([
@@ -115,6 +132,8 @@ async function move(
           sql.val(v.reason).as("reason"),
           sql.val(v.suspendedUntil).as("suspendedUntil"),
           sql.val(v.step).as("step"),
+          sql.val(v.mode).as("mode"),
+          sql.val(v.purgeAfter).as("purgeAfter"),
           sql.val(v.createdAt).as("createdAt"),
         ])
         .where(sql<number>`changes()`, ">", 0),
@@ -389,12 +408,16 @@ export async function removeOrganization(
   const hard = input.mode === "hard";
   const purgeAfter = hard ? at : new Date(at.getTime() + input.purgeAfterDays * 86_400_000);
   const columns = await columnsOf(deps, input.organizationId);
+  // The mode and the due instant ride on the row, because the purge erases the organization's own column and the
+  // erasure attestation still has to say both (#823).
   const row: HistoryRow = {
     organizationId: input.organizationId,
     action: "deleted",
     actor: input.actor,
     reason: input.reason,
     at,
+    mode: hard ? "hard" : "soft",
+    purgeAfter,
   };
   const existing = columns.deletedAt;
   if (existing) {
@@ -563,6 +586,29 @@ export async function recordOrganizationPurgeStep(
         action: input.retained ? "purge_retained" : "purge_step",
         actor: PURGE,
         reason: input.summary.trim() || null,
+        at: nowOf(deps),
+        step: input.step,
+      }),
+    )
+    .execute();
+}
+
+/**
+ * Record that a purge gave up at `step` (#823), until the next daily pass starts it again. The failure's message is
+ * never written: it is code the kit did not write. The trail's event is the caller's, as every purge event here is.
+ */
+export async function recordOrganizationPurgeFailure(
+  deps: OrganizationLifecycleDeps,
+  input: { organizationId: string; step: string },
+): Promise<void> {
+  await deps.db
+    .insertInto(LIFECYCLE_TABLE)
+    .values(
+      encoded({
+        organizationId: input.organizationId,
+        action: "purge_failed",
+        actor: PURGE,
+        reason: null,
         at: nowOf(deps),
         step: input.step,
       }),

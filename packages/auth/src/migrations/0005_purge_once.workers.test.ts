@@ -87,7 +87,8 @@ describe("auth_0005_purge_once", () => {
   test("down takes the index and the column away, and the history before it stays", async () => {
     await runMigrations(env.DB, provider());
     await insert("u1", "deleted");
-    // `0006` sits above it in the chain, so it comes down first.
+    // `0007` and `0006` sit above it in the chain, so they come down first.
+    await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());
     expect(await lifecycleColumns()).not.toContain("notify");
