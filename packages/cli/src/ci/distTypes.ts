@@ -219,8 +219,11 @@ export const SIDES: readonly Side[] = ["input", "output"];
  * recalculation and reset the control plane made.
  * Moved on 2026-10-27 (#816): `@pithy-sh/support` brings `pithy_support_assignments`, every change of a
  * thread's assignee, with who had it before and who made the change.
+ * Moved on 2026-10-27 (#832): `@pithy-sh/artifacts` brings `pithy_artifacts_tokens` and
+ * `pithy_artifacts_revocations` — who each minted token was minted for, and the spent idempotency keys of
+ * control-plane revocations.
  */
-export const CENSUS = { tables: 69, packages: 18 };
+export const CENSUS = { tables: 71, packages: 18 };
 
 /**
  * Where the generated programs are written — **outside the checkout, and that is forced**.

@@ -53,6 +53,15 @@ describe("plan-and-limits.md prices what the routes call", () => {
     expect(mint).toMatch(/\.info\(\)/);
     expect(PLAN).toMatch(/A mint is three: open, the token, and the repository's remote\./);
   });
+
+  test("revoking every token counts a list per page and the list that confirms none is left", () => {
+    expect(PLAN).toMatch(
+      /Revoking every token is open, then a list and a revoke for each live token it shows, repeated until a list shows none live or a round revokes none, because the list is one page with no cursor\./,
+    );
+    expect(PLAN).toMatch(
+      /While every live token fits on one page and every revoke lands, that is open, two lists and one call per token; with none live, it is open and the list\./,
+    );
+  });
 });
 
 describe("credential-helper.md names the break-glass", () => {

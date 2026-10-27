@@ -129,3 +129,110 @@ export const TreeView = z
   })
   .describe("One Git tree.");
 export type TreeView = z.infer<typeof TreeView>;
+
+/**
+ * The control-plane routes' responses, the `Admin*` shapes. Read by a management client against a customer's Worker
+ * on whatever release it runs, so a field added here later is `.optional()`.
+ */
+
+export const AdminRepoView = z
+  .object({
+    name: z.string().describe("The physical name, as in the clone URL."),
+    displayName: z.string().describe("The label the owner chose."),
+    owner: RepoOwnerView.describe("Who owns it."),
+    remoteAccess: z.boolean().describe("Whether a git client may reach the repository."),
+    createdAt: z.string().describe("When the repository was created, ISO 8601."),
+    updatedAt: z.string().describe("When its row last changed, ISO 8601."),
+    lastPushAt: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(
+        "When it was last pushed to, ISO 8601, or null if never. Absent when Cloudflare could not answer for this repository.",
+      ),
+  })
+  .describe("One repository, as a management client sees it.");
+export type AdminRepoView = z.infer<typeof AdminRepoView>;
+
+export const AdminRepoList = z
+  .object({
+    repos: z.array(AdminRepoView).describe("Repositories the kit knows, newest first."),
+    nextCursor: z.string().nullable().describe("Hand back as `cursor` for the next page, or null at the end. Opaque."),
+  })
+  .describe("One page of every repository the kit knows.");
+export type AdminRepoList = z.infer<typeof AdminRepoList>;
+
+export const AdminRepoDetail = z
+  .object({
+    repo: AdminRepoView.extend({
+      description: z.string().nullable().describe("The description Cloudflare holds, or null."),
+      defaultBranch: z.string().describe("The default branch, e.g. `main`."),
+      lastPushAt: z.string().nullable().describe("When it was last pushed to, ISO 8601, or null if never."),
+      readOnly: z.boolean().describe("Whether Cloudflare holds it read-only."),
+      remote: z
+        .string()
+        .optional()
+        .describe(
+          "The clone URL. Absent when `remoteAccess` is false: a repository no git client may reach has no address.",
+        ),
+    }).describe("The repository, with what Cloudflare holds about it."),
+    grants: z.array(GrantView).describe("Every grant on the repository, by user id. The owner holds no grant row."),
+    commits: z.array(CommitView).describe("One page of its commit log, newest first, from Cloudflare's `log()`."),
+    nextOffset: z
+      .number()
+      .int()
+      .nullable()
+      .describe("Hand back as `offset` for the next page of the log, or null at its end."),
+  })
+  .describe("One repository: its metadata, its grants, and a page of its history.");
+export type AdminRepoDetail = z.infer<typeof AdminRepoDetail>;
+
+export const AdminTokenView = z
+  .object({
+    id: z.string().describe("The token id Cloudflare assigned."),
+    scope: z.enum(["read", "write"]).describe("What the token may do: pull, or pull and push."),
+    state: z.enum(["active", "expired", "revoked"]).describe("Whether it still works, ran out, or was revoked."),
+    createdAt: z.string().describe("When Cloudflare created it, ISO 8601."),
+    expiresAt: z.string().describe("When it stops working, ISO 8601."),
+    minted: z
+      .enum(["pithy", "outside", "unknown"])
+      .describe(
+        "Who minted it: `pithy`, the kit, which recorded its holder; `outside`, something else, such as Cloudflare's dashboard or a script, so it has no holder; or `unknown`, created before the kit began recording or long expired, so the kit may have minted it with no record left.",
+      ),
+    holderId: z
+      .string()
+      .nullable()
+      .describe(
+        "The user the kit minted it for, or an `erased-` stand-in once that user's account was purged. Null for any token the kit did not record.",
+      ),
+    source: z
+      .enum(["credential", "create"])
+      .nullable()
+      .describe(
+        "For a token the kit recorded: `credential`, minted through the credential route, or `create`, returned with a new repository and revoked before the create answered. Null otherwise.",
+      ),
+  })
+  .describe("One token on a repository, with who holds it where the kit knows. Never its value.");
+export type AdminTokenView = z.infer<typeof AdminTokenView>;
+
+export const AdminTokenList = z
+  .object({
+    tokens: z.array(AdminTokenView).describe("Every token Cloudflare lists on the repository, in its order."),
+    total: z.number().int().describe("How many tokens Cloudflare reports on the repository."),
+  })
+  .describe("Every token on one repository.");
+export type AdminTokenList = z.infer<typeof AdminTokenList>;
+
+export const AdminRevocation = z
+  .object({
+    repo: z.string().describe("The repository's physical name."),
+    tokenId: z.string().nullable().describe("The token revoked, or null for a revocation of every live token."),
+    revoked: z.number().int().describe("How many tokens the revocation took back. Zero when none was live."),
+    reason: z.string().describe("The reason the first request gave."),
+    revokedAt: z.string().describe("When the first request ran, ISO 8601."),
+    replayed: z
+      .boolean()
+      .describe("True when this answers a key already spent: nothing was revoked now, and nothing was recorded."),
+  })
+  .describe("What a control-plane revocation did.");
+export type AdminRevocation = z.infer<typeof AdminRevocation>;

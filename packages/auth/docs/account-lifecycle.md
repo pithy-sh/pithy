@@ -208,7 +208,7 @@ Every kit capability that holds rows about a person declares a `user` contributi
 | `multiplayer` | anonymize | Session results: the person's id in the players, scores and winner is replaced, so the other players' results stay. |
 | `support` | erase | Threads linked to the account, or sent from its address and linked to no other account, with messages, attachments, raw mail, classifications, read state and assignment history. On other people's threads, the handovers they made lose their id; who held a thread is an opaque reference and stays with it. |
 | `testers` | erase | Cohort memberships under the account's address, and their events. Cohort counts stay. |
-| `artifacts` | erase | Repositories the person owns, with their contents and grants, and the grants they hold. |
+| `artifacts` | erase | Repositories the person owns, with their contents and grants, and the grants they hold. The record of every token minted for them is anonymized instead, so a token still listed reads as the kit's. |
 | `media` | erase | Records the person holds as themselves, with their bytes and hashes. A record made for an organization is the organization's. |
 | `storage` | erase | Files the person holds as themselves, with their bytes and share links. A file made for an organization is the organization's. |
 | `organization` | erase | Memberships, the organization each session acted for, ownership offers made to or by them, invitations addressed to them. Invitations they sent and organizations' history keep their id; an organization they were the last owner of is left without one. |

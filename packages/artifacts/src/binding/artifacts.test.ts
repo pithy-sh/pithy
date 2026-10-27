@@ -10,6 +10,7 @@ import {
   artifactsBinding,
   artifactsErrorCode,
   callArtifacts,
+  revokeEveryToken,
   withRepo,
 } from "./artifacts";
 
@@ -68,5 +69,62 @@ describe("withRepo", () => {
       withRepo(binding, "r1", async () => Promise.reject(artifactsError("INTERNAL_ERROR"))),
     ).rejects.toThrow();
     expect(disposed).toBe(2);
+  });
+});
+
+describe("revokeEveryToken", () => {
+  /** A repository whose listing answers one page of at most `page` tokens, as Cloudflare's has no cursor. */
+  function paged(live: number, page: number, revokes = true) {
+    const states = Array.from({ length: live }, () => "active" as "active" | "revoked");
+    const repo = {
+      listTokens: async () => {
+        const tokens = states
+          .map((state, index) => ({ id: `t${index}`, scope: "read" as const, state, createdAt: "", expiresAt: "" }))
+          .filter((token) => token.state === "active")
+          .slice(0, page);
+        return { tokens, total: tokens.length };
+      },
+      revokeToken: async (id: string) => {
+        if (!revokes) return false;
+        states[Number(id.slice(1))] = "revoked";
+        return true;
+      },
+    } as unknown as ArtifactsRepoHandle;
+    return { repo, states };
+  }
+
+  test("revokes a page at a time until none is live", async () => {
+    const { repo, states } = paged(7, 3);
+    expect(await revokeEveryToken(repo)).toBe(7);
+    expect(states.every((state) => state === "revoked")).toBe(true);
+  });
+
+  test("stops on a round that revokes nothing, rather than asking forever", async () => {
+    const { repo } = paged(2, 10, false);
+    expect(await revokeEveryToken(repo)).toBe(0);
+  });
+
+  test("answers zero for a repository with nothing live", async () => {
+    expect(await revokeEveryToken(paged(0, 10).repo)).toBe(0);
+  });
+
+  test("lists, revokes each live token, then lists again to confirm none is left", async () => {
+    const calls: string[] = [];
+    const { repo } = paged(3, 10);
+    const counted = {
+      listTokens: async () => {
+        calls.push("list");
+        return repo.listTokens();
+      },
+      revokeToken: async (id: string) => {
+        calls.push("revoke");
+        return repo.revokeToken(id);
+      },
+    } as unknown as ArtifactsRepoHandle;
+    expect(await revokeEveryToken(counted)).toBe(3);
+    expect(calls).toEqual(["list", "revoke", "revoke", "revoke", "list"]);
+    calls.length = 0;
+    expect(await revokeEveryToken(counted)).toBe(0);
+    expect(calls).toEqual(["list"]);
   });
 });

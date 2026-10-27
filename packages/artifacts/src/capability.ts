@@ -8,7 +8,9 @@ import { ArtifactsConfig, type ArtifactsConfigInput, parseArtifactsConfig } from
 import { artifactsTables } from "./data/tables";
 import { ArtifactsInvalidConfigError } from "./error/errors";
 import { type RepoNameSeam, registerArtifactsRoutes } from "./http/routes";
+import { artifactsAdminRoutes } from "./http/scopes";
 import { artifacts_0001_init } from "./migrations/0001_init";
+import { artifacts_0002_tokens } from "./migrations/0002_tokens";
 import { artifactsUserPurge } from "./purge/contribution";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
@@ -59,7 +61,10 @@ export function artifacts(options: ArtifactsOptions = {}): ArtifactsCapability {
   /** Filled by `compose`, which runs before any route mounts. */
   const wiring = { organization: false };
 
-  const migrations: Record<string, Migration> = { "0001_init": artifacts_0001_init };
+  const migrations: Record<string, Migration> = {
+    "0001_init": artifacts_0001_init,
+    "0002_tokens": artifacts_0002_tokens,
+  };
   const requiredBindings: BindingSpecInput[] = [
     // The app database: the repository and grant tables live there, beside the users they name.
     { type: "d1", name: "DB" },
@@ -108,13 +113,15 @@ export function artifacts(options: ArtifactsOptions = {}): ArtifactsCapability {
         migrations,
       },
     },
+    // The management surface a manifest advertises, built from the resolved mount so it names where the routes are.
+    adminRoutes: artifactsAdminRoutes(resolved.basePath),
     routes: registerArtifactsRoutes({
       config: resolved,
       ...(repoName ? { repoName } : {}),
       organization: () => wiring.organization,
     }),
-    // A person's own repositories and the grants they hold: exported on an access request and erased by their purge,
-    // as its own step in the adopter's Worker (#814).
+    // A person's own repositories, the grants they hold and their token records: exported on an access request, and
+    // erased or anonymized by their purge, as its own step in the adopter's Worker (#814).
     purge: [artifactsUserPurge(resolved.binding)],
   });
 

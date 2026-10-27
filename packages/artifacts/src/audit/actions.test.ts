@@ -43,6 +43,19 @@ describe("recordArtifactsAction", () => {
     expect(events[0]?.metadata).toEqual({ tokenId: "tok_1", scope: "read" });
   });
 
+  test("records a management client's act as the control plane's, at warning", async () => {
+    const events: AuditEventInput[] = [];
+    await recordArtifactsAction(async (event) => void events.push(event), {
+      action: ArtifactsAuditActions.tokenRevoked,
+      actorType: "control-plane",
+      actorId: "operator-1",
+      repo: "r1",
+      tenant: null,
+      facts: { reason: "Left.", tokenId: "tok_1" },
+    });
+    expect(events[0]).toMatchObject({ actorType: "control-plane", actorId: "operator-1", severity: "warning" });
+  });
+
   test("every code sits in the artifacts domain", () => {
     for (const code of Object.values(ArtifactsAuditActions)) expect(code.startsWith("artifacts/")).toBe(true);
   });

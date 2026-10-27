@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { z } from "zod";
 import { ArtifactsGrant } from "../data/records";
 
@@ -103,3 +104,67 @@ export const FileQuery = z
   })
   .describe("The query of a read of one file at one ref.");
 export type FileQuery = z.output<typeof FileQuery>;
+
+/**
+ * The control-plane routes' requests, the `Admin*` shapes. A management client sends them across a trust boundary
+ * with a signed token, so they are bounded however trustworthy the caller is.
+ */
+
+/** A token id as a path segment: Cloudflare's, opaque, bounded, never parsed. */
+const TOKEN_ID = z.string().min(1).max(200);
+
+/** How many rows one page returns. Bounded, because a verified client can still have a bug. */
+const LIMIT = z.coerce.number().int().min(1).max(MAX_PAGE_SIZE);
+
+export const AdminReposQuery = z
+  .object({
+    cursor: z
+      .string()
+      .max(512)
+      .optional()
+      .describe("Where to resume, from the previous page's `nextCursor`. Opaque; a malformed one is a first page."),
+    limit: LIMIT.optional().describe(`How many repositories to return, from 1 to ${MAX_PAGE_SIZE}. Defaults to 25.`),
+  })
+  .describe("The query of the control-plane repository listing.");
+export type AdminReposQuery = z.output<typeof AdminReposQuery>;
+
+export const AdminRepoQuery = z
+  .object({
+    ref: REF.optional().describe("The branch, tag or commit the log walks back from. Defaults to `HEAD`."),
+    limit: LIMIT.optional().describe(`How many commits to return, from 1 to ${MAX_PAGE_SIZE}. Defaults to 25.`),
+    offset: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("Skip this many commits first, from the previous page's `nextOffset`. Defaults to 0."),
+  })
+  .describe("The query of a control-plane read of one repository, which pages its commit log.");
+export type AdminRepoQuery = z.output<typeof AdminRepoQuery>;
+
+export const AdminTokenParams = z
+  .object({
+    name: REPO_SEGMENT.describe("The repository's physical name."),
+    tokenId: TOKEN_ID.describe("The token to revoke, by the id Cloudflare assigned it."),
+  })
+  .describe("The path params of a route about one token on one repository.");
+export type AdminTokenParams = z.output<typeof AdminTokenParams>;
+
+export const AdminRevokeBody = z
+  .object({
+    idempotencyKey: z
+      .string()
+      .min(1)
+      .max(200)
+      .describe(
+        "A key the client chooses, once per revocation. A second request with the same key changes nothing and answers what the first did.",
+      ),
+    reason: z
+      .string()
+      .trim()
+      .min(1)
+      .max(500)
+      .describe("Why, in a sentence. Required, and recorded on the audit event verbatim."),
+  })
+  .describe("The body of a control-plane revocation.");
+export type AdminRevokeBody = z.output<typeof AdminRevokeBody>;
