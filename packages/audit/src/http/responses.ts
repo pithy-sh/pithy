@@ -206,3 +206,102 @@ export const AccessHistoryResponse = z
   })
   .describe("Every membership, connection and key change in a window, oldest first, with its before and after.");
 export type AccessHistoryResponse = z.output<typeof AccessHistoryResponse>;
+
+/**
+ * One tenant, action, method, route and outcome a control-plane credential reached (#828).
+ *
+ * Counts, two instants, and the route. No IP, no user-agent, no metadata key beyond what the route and scope already
+ * say: this is the credential's own footprint, which is why it sits behind the listing scope.
+ */
+export const ControlPlaneReachView = z
+  .object({
+    tenant: z
+      .string()
+      .nullable()
+      .describe(
+        "The tenant the calls reached, as the handler behind them recorded it in the same request. Null when the handler named none.",
+      ),
+    action: z
+      .string()
+      .describe("`controlplane/call_allowed` for admitted calls, `controlplane/call_denied` for refusals."),
+    method: z.string().describe("The HTTP method called."),
+    route: z
+      .string()
+      .describe("The declared admin route the calls matched, or the path as called when no declared route matched."),
+    matched: z
+      .boolean()
+      .describe("Whether `route` is a declared pattern. False marks an unmatched path, which is its own row."),
+    outcome: z
+      .string()
+      .describe(
+        "The calls' outcome: `success`, or `denied` for a call a handler refused past the gate, which is counted once, as denied.",
+      ),
+    scope: z
+      .string()
+      .nullable()
+      .describe(
+        "The scope the calls' credential carried. On a refusal it is the scope the refused credential held, not one it lacked, which the trail does not record.",
+      ),
+    count: z.number().int().describe("How many calls."),
+    subjects: z
+      .number()
+      .int()
+      .nullable()
+      .describe(
+        "How many distinct subjects the calls touched: distinct values of the route's subject parameter and the parameters before it, so one user read in two currencies is one subject. 0 for a route with no parameters, null for an unmatched path.",
+      ),
+    firstAt: z.iso.datetime().describe("When the first call landed, ISO-8601."),
+    lastAt: z.iso.datetime().describe("When the last call landed, ISO-8601."),
+  })
+  .describe("One tenant, action, method, route and outcome one control-plane credential reached in a window.");
+export type ControlPlaneReachView = z.output<typeof ControlPlaneReachView>;
+
+/** One path a route was called with, and the subject ids it names (#828). */
+export const ControlPlaneReachSubjectView = z
+  .object({
+    tenant: z.string().nullable().describe("The tenant the calls reached, or null when their handler named none."),
+    action: z.string().describe("`controlplane/call_allowed` or `controlplane/call_denied`."),
+    method: z.string().describe("The HTTP method called."),
+    route: z.string().describe("The route expanded, as asked for."),
+    matched: z.boolean().describe("Whether the route is a declared pattern."),
+    path: z.string().describe("The path as called."),
+    outcome: z.string().describe("The calls' outcome: `success` or `denied`."),
+    scope: z
+      .string()
+      .nullable()
+      .describe("The scope the calls' credential carried, refused or not. Never the scope a refusal lacked."),
+    subjectId: z
+      .string()
+      .nullable()
+      .describe(
+        "Whose data the call acted on: the value of the route's last id parameter (`id`, or a name ending in `Id`), or of its last parameter when none names an id. On `/accounts/:userId/:currency/transactions` it is the user, not the currency. `params` has the rest. Null when the route declares none.",
+      ),
+    params: z
+      .record(z.string(), z.string())
+      .describe("Every parameter the route declares, with the value it took in `path`, decoded."),
+    count: z.number().int().describe("How many calls to this path."),
+    firstAt: z.iso.datetime().describe("When the first call to this path landed, ISO-8601."),
+    lastAt: z.iso.datetime().describe("When the last call to this path landed, ISO-8601."),
+  })
+  .describe("One path a route was called with by one control-plane credential, and the subject ids it names.");
+export type ControlPlaneReachSubjectView = z.output<typeof ControlPlaneReachSubjectView>;
+
+/** `GET {base}/control-plane/reach`. */
+export const ControlPlaneReachResponse = z
+  .object({
+    connectionId: z.string().describe("The connection read, as asked for."),
+    keyId: z.string().nullable().describe("The key the read was narrowed to, or null for every key."),
+    since: z.iso.datetime().describe("The window's inclusive start, ISO-8601."),
+    until: z.iso.datetime().describe("The window's inclusive end, ISO-8601 — now, when the query named none."),
+    reach: z
+      .array(ControlPlaneReachView)
+      .describe("One row per tenant, route, action, method and outcome reached, ordered in that order."),
+    subjects: z
+      .array(ControlPlaneReachSubjectView)
+      .optional()
+      .describe(
+        "The route's subjects, one row per tenant and path called. Present only when the query asked with `subjects=true`.",
+      ),
+  })
+  .describe("Everything one control-plane credential reached over a window, by tenant, route and outcome.");
+export type ControlPlaneReachResponse = z.output<typeof ControlPlaneReachResponse>;

@@ -41,6 +41,9 @@ A web app the Worker serves calls the routes through `@pithy-sh/matchmaking/src/
 
 The presence socket's frames are Zod schemas in `src/presence/frames.ts`. Offer `pithy.presence.v1` at the upgrade. How a frame may change between releases, and why `ping` and `pong` are plain text, is [`docs/SOCKETS.md`](../../docs/SOCKETS.md).
 
+## Management
+
+With `controlplane()` composed, a management client reads who is waiting and acts on it. `matchmaking:queues:read` reads a game's queue (from its Durable Object), its open rooms, and every pending invite. `matchmaking:queues:moderate` cancels a pending invite or drops a player from a queue, each with an idempotency key and a required reason. A cancel tells both players through presence, a drop tells the player why, and each act writes one audit event. Nothing here touches the friend graph. The routes, the scopes and the rules are in [`docs/CONTROL-PLANE.md`](../../docs/CONTROL-PLANE.md) §13.
 
 ## License
 

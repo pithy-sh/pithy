@@ -53,6 +53,31 @@ export const StoredMatch = z
   .describe("A formed match recorded for one player, delivered once on the next status read.");
 export type StoredMatch = z.output<typeof StoredMatch>;
 
+/** One waiting player, as a management client reads the queue. */
+export interface WaitingEntry {
+  userId: string;
+  region: string;
+  skill: number | null;
+  /** The skill window's half-width right now, or null when it is unbounded. */
+  skillBand: number | null;
+  /** When the player entered the queue, ms epoch. */
+  enqueuedAt: number;
+}
+
+/** What a management drop did: `replayed` when this idempotency key already dropped this player. */
+export interface DropOutcome {
+  replayed: boolean;
+}
+
+/** A management drop, remembered under its idempotency key so a retry of the same request changes nothing. */
+export const DropRecord = z
+  .object({
+    userId: z.string().describe("The player this key dropped — a replay must name the same one."),
+    at: z.number().int().describe("When the drop happened, ms epoch. Keys older than a day are forgotten."),
+  })
+  .describe("A recorded management drop from a game's open queue.");
+export type DropRecord = z.output<typeof DropRecord>;
+
 /** A single formed roster — the user ids that pair into one match. */
 export interface MatchGroup {
   roster: string[];
@@ -69,6 +94,16 @@ function band(ticket: WaitingTicket, now: number): number {
   const { initialBand, widenPerSecond, maxWaitSeconds } = ticket.settings;
   if (elapsedMs >= maxWaitSeconds * 1000) return Number.POSITIVE_INFINITY;
   return initialBand + widenPerSecond * (elapsedMs / 1000);
+}
+
+/**
+ * A ticket's skill window at `now`, as a management client reads it: the band half-width, or null when it is
+ * unbounded — an unrated player, or one who has waited past `maxWaitSeconds`. The same rule the pairing
+ * applies, so what an operator sees is what the next sweep will use.
+ */
+export function skillBand(ticket: WaitingTicket, now: number): number | null {
+  const width = band(ticket, now);
+  return Number.isFinite(width) ? width : null;
 }
 
 /**

@@ -45,6 +45,7 @@ export const matchmakingExampleSeed: SeedSet = defineSeed({
         sessionId: null,
         createdAt: now(),
         respondedAt: null,
+        cancelKey: null,
       },
     ]),
   ],

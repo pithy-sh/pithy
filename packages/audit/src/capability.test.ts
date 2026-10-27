@@ -35,9 +35,15 @@ describe("audit capability", () => {
 
   test("ships its migrations in order, at its declared order", () => {
     // Asserted as a list rather than a count. `0001` was the whole schema until the first publish; after
-    // it the chain is append-only, and `0002` is the actor kind (#721).
+    // it the chain is append-only: `0002` is the actor kind (#721), `0003` the call index (#812), and `0004` the
+    // request index a credential's reach joins on (#828).
     const db = audit().databases?.app;
-    expect(Object.keys(db?.migrations ?? {})).toEqual(["0001_init", "0002_actor_kind"]);
+    expect(Object.keys(db?.migrations ?? {})).toEqual([
+      "0001_init",
+      "0002_actor_kind",
+      "0003_call_index",
+      "0004_request_index",
+    ]);
     expect(db?.migrationOrder).toBe(AUDIT_MIGRATION_ORDER);
   });
 
@@ -54,11 +60,13 @@ describe("audit capability", () => {
     expect(audit().adminRoutes?.map((route) => route.path)).toEqual([
       "/audit/events",
       "/audit/control-plane/access-history",
+      "/audit/control-plane/reach",
       "/audit/events/:eventId",
     ]);
     expect(audit({ basePath: "/trail" }).adminRoutes?.map((route) => route.path)).toEqual([
       "/trail/events",
       "/trail/control-plane/access-history",
+      "/trail/control-plane/reach",
       "/trail/events/:eventId",
     ]);
   });
@@ -66,11 +74,13 @@ describe("audit capability", () => {
   test("every advertised route is a read, and only the full event needs the detail scope", () => {
     // The trail is append-only, and the two scopes are what stops a credential issued to render a
     // recent-activity pane from also resolving every client IP in the project. The access history rides
-    // the listing scope (#831): it reads named metadata keys and never an IP or a user-agent.
+    // the listing scope (#831): it reads named metadata keys and never an IP or a user-agent. Reach rides
+    // it too (#828): it discloses no IP, user-agent or capability metadata.
     const routes = audit().adminRoutes ?? [];
     expect(routes.map((route) => [route.method, route.path, route.scope])).toEqual([
       ["GET", "/audit/events", AUDIT_TRAIL_READ_SCOPE],
       ["GET", "/audit/control-plane/access-history", AUDIT_TRAIL_READ_SCOPE],
+      ["GET", "/audit/control-plane/reach", AUDIT_TRAIL_READ_SCOPE],
       ["GET", "/audit/events/:eventId", AUDIT_EVENT_DETAIL_READ_SCOPE],
     ]);
   });

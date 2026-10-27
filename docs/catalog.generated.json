@@ -1557,6 +1557,22 @@
       "remedy": "Run the `fix` command"
     },
     {
+      "code": "ledger/entry_not_found",
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
+    },
+    {
+      "code": "ledger/entry_not_reversible",
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
+    },
+    {
       "code": "ledger/hold_not_found",
       "status": 404,
       "exitClass": "precondition",
@@ -1587,6 +1603,14 @@
       "exit": 2,
       "retryable": false,
       "remedy": "Fix the call"
+    },
+    {
+      "code": "ledger/ref_conflict",
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "matchmaking/already_friends",

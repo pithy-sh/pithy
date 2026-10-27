@@ -15,7 +15,7 @@ import { MATCHMAKING_MIGRATION_ORDER } from "../capability";
 import { MatchmakingConfig, type MatchmakingConfigInput } from "../config/config";
 import { matchmakingDatabase } from "../data/tables";
 import { inviteStore } from "../invite/store";
-import { matchmaking_0001_matchmaking } from "../migrations/0001_matchmaking";
+import { MATCHMAKING_MIGRATIONS } from "../migrations/chain";
 import { FriendList, InviteList, InviteView, QueueStanding, RoomCreated, RoomJoined } from "./responses";
 import { registerMatchmakingRoutes } from "./routes";
 import { inviteView } from "./views";
@@ -26,7 +26,7 @@ function provider(): MigrationProvider {
       database: "app",
       namespace: "matchmaking",
       order: MATCHMAKING_MIGRATION_ORDER,
-      migrations: { "0001_matchmaking": matchmaking_0001_matchmaking },
+      migrations: MATCHMAKING_MIGRATIONS,
     },
   ]);
   const found = registry.app;
@@ -312,8 +312,14 @@ describe("matchmaking routes — invites", () => {
     await seedAuthUser("bob", "bob@example.com", "Bob");
     const app = makeApp();
     const store = inviteStore(matchmakingDatabase(env.DB));
-    /** The stored row as `c.json(row)` wrote it before the view existed. */
-    const rowBytes = async (id: string): Promise<string> => JSON.stringify(await store.get(id));
+    /**
+     * The stored row as `c.json(row)` wrote it before the view existed — every column of that time. `cancelKey`
+     * came later (#819) and is internal: the view never sends it, so the wire is unchanged.
+     */
+    const rowBytes = async (id: string): Promise<string> => {
+      const { cancelKey: _internal, ...row } = (await store.get(id)) ?? {};
+      return JSON.stringify(row);
+    };
     const send = async (): Promise<Response> =>
       app.request(
         "/matchmaking/games/duel/invites",
@@ -337,7 +343,7 @@ describe("matchmaking routes — invites", () => {
     const list = await conforming(pending, InviteList);
     const rows = await store.pendingFor("bob");
     expect(list.invites.map((invite) => invite.id).sort()).toEqual([first.id, second.id].sort());
-    expect(pendingBytes).toBe(JSON.stringify({ invites: rows }));
+    expect(pendingBytes).toBe(JSON.stringify({ invites: rows.map(({ cancelKey: _internal, ...row }) => row) }));
     expect(list).toEqual({ invites: rows.map(inviteView) });
 
     const accepted = await app.request(
@@ -363,6 +369,33 @@ describe("matchmaking routes — invites", () => {
       sessionId: null,
     });
     expect(declinedBytes).toBe(await rowBytes(second.id));
+  });
+
+  test("an invite already answered cannot be answered again, and nothing is minted trying", async () => {
+    await seedAuthUser("bob", "bob@example.com", "Bob");
+    const app = makeApp();
+    const sent = await app.request(
+      "/matchmaking/games/duel/invites",
+      {
+        method: "POST",
+        headers: { "x-user": "alice", "content-type": "application/json" },
+        body: JSON.stringify({ email: "bob@example.com" }),
+      },
+      requestEnv(),
+    );
+    const { id } = InviteView.parse(await sent.json());
+    const answer = (verb: string) =>
+      app.request(`/matchmaking/invites/${id}/${verb}`, { method: "POST", headers: { "x-user": "bob" } }, requestEnv());
+
+    expect((await answer("decline")).status).toBe(200);
+    const minted = counter;
+    for (const verb of ["accept", "decline"]) {
+      const res = await answer(verb);
+      expect(res.status, verb).toBe(404);
+      expect((await res.json<{ error: { code: string } }>()).error.code).toBe("matchmaking/invite_not_found");
+    }
+    expect(counter).toBe(minted);
+    expect((await inviteStore(matchmakingDatabase(env.DB)).get(id))?.status).toBe("declined");
   });
 
   test("an invite with neither email nor name is a 400, not a misleading 404", async () => {

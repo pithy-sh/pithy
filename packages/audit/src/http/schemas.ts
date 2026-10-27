@@ -144,3 +144,46 @@ export const AccessHistoryQuery = z
   })
   .describe("The access-history query: a window, oldest first, and where to resume reading it.");
 export type AccessHistoryQuery = z.infer<typeof AccessHistoryQuery>;
+
+/** A declared route pattern or a called path, as the reach answer names it. */
+const RouteValue = z.string().min(1).max(512).startsWith("/");
+
+/**
+ * The reach query (#828): whose calls to read, over what window, and whether to expand one route into its subjects.
+ *
+ * `connectionId` and `since` are required, so a missing one is a 400 before any query runs: an unbounded read over
+ * every credential is not a question this route answers. `until` defaults to now in the handler, which is the one
+ * value a schema cannot compute for a request. A window that ends before it starts is refused rather than answered
+ * with nothing, because nothing would read as a credential that reached nothing. `subjects=true` needs a `route`:
+ * the expansion is one route's subject list, never every route's.
+ */
+export const ControlPlaneReachQuery = z
+  .object({
+    connectionId: FilterValue.describe(
+      "The control-plane connection whose reach to read — the `resourceId` its call rows carry. Required.",
+    ),
+    keyId: FilterValue.optional().describe(
+      "Narrow to the calls one registered key signed. The leaked-key question: omit it for the whole connection.",
+    ),
+    since: TimeBound.describe("Inclusive lower bound on when a call landed, ISO-8601. Required."),
+    until: TimeBound.optional().describe("Inclusive upper bound on when a call landed, ISO-8601. Defaults to now."),
+    route: RouteValue.optional().describe(
+      "Narrow to one route: a declared pattern such as `/admin/users/:userId`, or the called path of an unmatched row.",
+    ),
+    subjects: z
+      .enum(["true", "false"])
+      .optional()
+      .describe(
+        "`true` expands `route` into the paths it was called with and the subject ids they name. Needs `route`.",
+      ),
+  })
+  .refine((query) => query.until === undefined || query.until.getTime() >= query.since.getTime(), {
+    message: "`until` must not be before `since`.",
+    path: ["until"],
+  })
+  .refine((query) => query.subjects !== "true" || query.route !== undefined, {
+    message: "`subjects=true` needs a `route` to expand.",
+    path: ["route"],
+  })
+  .describe("The control-plane reach query: one connection, over a window, optionally one key and one route.");
+export type ControlPlaneReachQuery = z.infer<typeof ControlPlaneReachQuery>;

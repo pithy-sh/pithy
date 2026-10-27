@@ -7832,6 +7832,332 @@
         ]
       }
     },
+    "/audit/control-plane/reach": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "operationId": "getAuditControlPlaneReach",
+        "summary": "Read what one control-plane credential reached, by tenant, route and outcome, over a window.",
+        "parameters": [
+          {
+            "name": "connectionId",
+            "in": "query",
+            "required": true,
+            "description": "The control-plane connection whose reach to read — the `resourceId` its call rows carry. Required.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          {
+            "name": "keyId",
+            "in": "query",
+            "required": false,
+            "description": "Narrow to the calls one registered key signed. The leaked-key question: omit it for the whole connection.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": true,
+            "description": "Inclusive lower bound on when a call landed, ISO-8601. Required.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive upper bound on when a call landed, ISO-8601. Defaults to now.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          },
+          {
+            "name": "route",
+            "in": "query",
+            "required": false,
+            "description": "Narrow to one route: a declared pattern such as `/admin/users/:userId`, or the called path of an unmatched row.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "format": "starts_with",
+              "pattern": "^\\/.*"
+            }
+          },
+          {
+            "name": "subjects",
+            "in": "query",
+            "required": false,
+            "description": "`true` expands `route` into the paths it was called with and the subject ids they name. Needs `route`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Everything one control-plane credential reached over a window, by tenant, route and outcome.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "connectionId": {
+                      "type": "string",
+                      "description": "The connection read, as asked for."
+                    },
+                    "keyId": {
+                      "description": "The key the read was narrowed to, or null for every key.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "since": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "The window's inclusive start, ISO-8601."
+                    },
+                    "until": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "The window's inclusive end, ISO-8601 — now, when the query named none."
+                    },
+                    "reach": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "tenant": {
+                            "description": "The tenant the calls reached, as the handler behind them recorded it in the same request. Null when the handler named none.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "action": {
+                            "type": "string",
+                            "description": "`controlplane/call_allowed` for admitted calls, `controlplane/call_denied` for refusals."
+                          },
+                          "method": {
+                            "type": "string",
+                            "description": "The HTTP method called."
+                          },
+                          "route": {
+                            "type": "string",
+                            "description": "The declared admin route the calls matched, or the path as called when no declared route matched."
+                          },
+                          "matched": {
+                            "type": "boolean",
+                            "description": "Whether `route` is a declared pattern. False marks an unmatched path, which is its own row."
+                          },
+                          "outcome": {
+                            "type": "string",
+                            "description": "The calls' outcome: `success`, or `denied` for a call a handler refused past the gate, which is counted once, as denied."
+                          },
+                          "scope": {
+                            "description": "The scope the calls' credential carried. On a refusal it is the scope the refused credential held, not one it lacked, which the trail does not record.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "count": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "How many calls."
+                          },
+                          "subjects": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "How many distinct subjects the calls touched: distinct values of the route's subject parameter and the parameters before it, so one user read in two currencies is one subject. 0 for a route with no parameters, null for an unmatched path."
+                          },
+                          "firstAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the first call landed, ISO-8601."
+                          },
+                          "lastAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the last call landed, ISO-8601."
+                          }
+                        },
+                        "required": [
+                          "tenant",
+                          "action",
+                          "method",
+                          "route",
+                          "matched",
+                          "outcome",
+                          "scope",
+                          "count",
+                          "subjects",
+                          "firstAt",
+                          "lastAt"
+                        ],
+                        "description": "One tenant, action, method, route and outcome one control-plane credential reached in a window."
+                      },
+                      "description": "One row per tenant, route, action, method and outcome reached, ordered in that order."
+                    },
+                    "subjects": {
+                      "description": "The route's subjects, one row per tenant and path called. Present only when the query asked with `subjects=true`.",
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "tenant": {
+                            "description": "The tenant the calls reached, or null when their handler named none.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "action": {
+                            "type": "string",
+                            "description": "`controlplane/call_allowed` or `controlplane/call_denied`."
+                          },
+                          "method": {
+                            "type": "string",
+                            "description": "The HTTP method called."
+                          },
+                          "route": {
+                            "type": "string",
+                            "description": "The route expanded, as asked for."
+                          },
+                          "matched": {
+                            "type": "boolean",
+                            "description": "Whether the route is a declared pattern."
+                          },
+                          "path": {
+                            "type": "string",
+                            "description": "The path as called."
+                          },
+                          "outcome": {
+                            "type": "string",
+                            "description": "The calls' outcome: `success` or `denied`."
+                          },
+                          "scope": {
+                            "description": "The scope the calls' credential carried, refused or not. Never the scope a refusal lacked.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "subjectId": {
+                            "description": "Whose data the call acted on: the value of the route's last id parameter (`id`, or a name ending in `Id`), or of its last parameter when none names an id. On `/accounts/:userId/:currency/transactions` it is the user, not the currency. `params` has the rest. Null when the route declares none.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "params": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "string"
+                            },
+                            "description": "Every parameter the route declares, with the value it took in `path`, decoded."
+                          },
+                          "count": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "How many calls to this path."
+                          },
+                          "firstAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the first call to this path landed, ISO-8601."
+                          },
+                          "lastAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the last call to this path landed, ISO-8601."
+                          }
+                        },
+                        "required": [
+                          "tenant",
+                          "action",
+                          "method",
+                          "route",
+                          "matched",
+                          "path",
+                          "outcome",
+                          "scope",
+                          "subjectId",
+                          "params",
+                          "count",
+                          "firstAt",
+                          "lastAt"
+                        ],
+                        "description": "One path a route was called with by one control-plane credential, and the subject ids it names."
+                      }
+                    }
+                  },
+                  "required": [
+                    "connectionId",
+                    "keyId",
+                    "since",
+                    "until",
+                    "reach"
+                  ],
+                  "description": "Everything one control-plane credential reached over a window, by tenant, route and outcome."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "audit:events:read"
+        ]
+      }
+    },
     "/storage": {
       "post": {
         "tags": [
@@ -15651,6 +15977,668 @@
         ]
       }
     },
+    "/matchmaking/admin/games/{game}/queue": {
+      "get": {
+        "tags": [
+          "matchmaking"
+        ],
+        "operationId": "getMatchmakingAdminGamesByGameQueue",
+        "summary": "Read who is waiting in one game's queue.",
+        "description": "Read from the game's queue Durable Object: each player's region, skill, current band, and wait.",
+        "parameters": [
+          {
+            "name": "game",
+            "in": "path",
+            "required": true,
+            "description": "The matchmaking game key from the path, resolved against the configured `games` list.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Who is waiting in one game's open queue, read from the queue's Durable Object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "gameKey": {
+                      "type": "string",
+                      "description": "The game whose queue this is."
+                    },
+                    "waiting": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "userId": {
+                            "type": "string",
+                            "description": "The waiting player's auth user id."
+                          },
+                          "region": {
+                            "type": "string",
+                            "description": "The region bucket the player is pinned to. A pair never crosses regions."
+                          },
+                          "skill": {
+                            "description": "The player's skill in the game's rating pool, or null when unrated or the game has no pool.",
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "skillBand": {
+                            "description": "How far either side of `skill` the player will match right now, or null when unbounded: unrated, or waiting past `maxWaitSeconds`.",
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "enqueuedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the player joined the queue, ISO-8601."
+                          },
+                          "waitingMs": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "How long the player has waited, in milliseconds."
+                          }
+                        },
+                        "required": [
+                          "userId",
+                          "region",
+                          "skill",
+                          "skillBand",
+                          "enqueuedAt",
+                          "waitingMs"
+                        ],
+                        "description": "One player waiting in a game's open queue, as the coordinator holds them."
+                      },
+                      "description": "Everyone waiting, longest wait first."
+                    }
+                  },
+                  "required": [
+                    "gameKey",
+                    "waiting"
+                  ],
+                  "description": "Who is waiting in one game's open queue, read from the queue's Durable Object."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "matchmaking:queues:read"
+        ]
+      }
+    },
+    "/matchmaking/admin/games/{game}/rooms": {
+      "get": {
+        "tags": [
+          "matchmaking"
+        ],
+        "operationId": "getMatchmakingAdminGamesByGameRooms",
+        "summary": "Read one game's open rooms, a page at a time.",
+        "description": "Every game's codes share one list, so a page can hold fewer rooms than asked for. Read on while `nextCursor` is set.",
+        "parameters": [
+          {
+            "name": "game",
+            "in": "path",
+            "required": true,
+            "description": "The matchmaking game key from the path, resolved against the configured `games` list.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Where to resume, from the previous page's `nextCursor`. Opaque; hand it back verbatim.",
+            "schema": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many rows to return, from 1 to 100. Defaults to a page a dashboard can render.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One game's open rooms, a page at a time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "gameKey": {
+                      "type": "string",
+                      "description": "The game these rooms are for."
+                    },
+                    "rooms": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string",
+                            "description": "The room's join code."
+                          },
+                          "hostId": {
+                            "type": "string",
+                            "description": "The user who opened the room."
+                          },
+                          "sessionId": {
+                            "type": "string",
+                            "description": "The multiplayer session the code seats players into."
+                          },
+                          "occupancy": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "The host plus every player who redeemed the code."
+                          },
+                          "capacity": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "How many players form a match in this game."
+                          },
+                          "usesRemaining": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "How many more times the code can be redeemed."
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the room was opened, ISO-8601."
+                          },
+                          "expiresAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the code expires, ISO-8601."
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "hostId",
+                          "sessionId",
+                          "occupancy",
+                          "capacity",
+                          "usesRemaining",
+                          "createdAt",
+                          "expiresAt"
+                        ],
+                        "description": "One open room: a live code with a redemption left."
+                      },
+                      "description": "The open rooms on this page. Codes for every game share one list, so a page can hold fewer than asked."
+                    },
+                    "nextCursor": {
+                      "description": "Where the next page resumes, or null at the end. A page with few rooms can still have a next one.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "gameKey",
+                    "rooms",
+                    "nextCursor"
+                  ],
+                  "description": "One game's open rooms, a page at a time."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "matchmaking:queues:read"
+        ]
+      }
+    },
+    "/matchmaking/admin/invites": {
+      "get": {
+        "tags": [
+          "matchmaking"
+        ],
+        "operationId": "getMatchmakingAdminInvites",
+        "summary": "List every pending invite, a page at a time.",
+        "parameters": [
+          {
+            "name": "game",
+            "in": "query",
+            "required": false,
+            "description": "Restrict the listing to one game. A shape check only; an unconfigured key is the handler's 404, so an operator who mistypes is told rather than shown an empty pane.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Where to resume, from the previous page's `nextCursor`. Opaque; hand it back verbatim.",
+            "schema": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many rows to return, from 1 to 100. Defaults to a page a dashboard can render.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every pending invite, a page at a time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "invites": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The invite's UUID, the id the cancel route takes."
+                          },
+                          "gameKey": {
+                            "type": "string",
+                            "description": "The matchmaking game the invite is for."
+                          },
+                          "inviterId": {
+                            "type": "string",
+                            "description": "The user who sent the invite."
+                          },
+                          "inviteeId": {
+                            "type": "string",
+                            "description": "The user the invite was sent to."
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the invite was sent, ISO-8601."
+                          },
+                          "ageMs": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "How long the invite has waited, in milliseconds."
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "gameKey",
+                          "inviterId",
+                          "inviteeId",
+                          "createdAt",
+                          "ageMs"
+                        ],
+                        "description": "One pending invite: who asked whom, to play what, and how long ago."
+                      },
+                      "description": "The pending invites on this page, newest first."
+                    },
+                    "nextCursor": {
+                      "description": "Where the next page resumes, or null at the end.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "invites",
+                    "nextCursor"
+                  ],
+                  "description": "Every pending invite, a page at a time."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "matchmaking:queues:read"
+        ]
+      }
+    },
+    "/matchmaking/admin/invites/{id}/cancel": {
+      "post": {
+        "tags": [
+          "matchmaking"
+        ],
+        "operationId": "postMatchmakingAdminInvitesByIdCancel",
+        "summary": "Cancel a pending invite.",
+        "description": "Both players are told through presence. A retry with the same `idempotencyKey` changes nothing and answers `replayed: true`.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The invite's UUID from the path — the externally-referenced invite id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A management act's idempotency key and reason.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idempotencyKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "description": "A key the client mints once per act. A retry with the same key changes nothing, emits nothing, and answers `replayed: true`. A drop's key is remembered for a day, in that game's queue. A key already spent canceling another invite, or dropping another player from the same game's queue, is refused with `core/conflict`."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why. Required, and recorded verbatim on the audit event. A queue drop also sends it to the dropped player, so write it for them."
+                  }
+                },
+                "required": [
+                  "idempotencyKey",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "A management act's idempotency key and reason."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A canceled invite, and whether the request was a retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "invite": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "The invite's UUID, the id the accept and decline routes take."
+                        },
+                        "gameKey": {
+                          "type": "string",
+                          "description": "The matchmaking game the invite is for."
+                        },
+                        "inviterId": {
+                          "type": "string",
+                          "description": "The user who sent the invite."
+                        },
+                        "inviteeId": {
+                          "type": "string",
+                          "description": "The user the invite was sent to."
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "accepted",
+                            "declined",
+                            "canceled"
+                          ],
+                          "description": "The invite's current state."
+                        },
+                        "sessionId": {
+                          "description": "The multiplayer session minted when the invite was accepted, or null otherwise.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When the invite was sent, ISO-8601."
+                        },
+                        "respondedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the invitee accepted or declined, or a management client canceled it, ISO-8601, or null while pending."
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "gameKey",
+                        "inviterId",
+                        "inviteeId",
+                        "status",
+                        "sessionId",
+                        "createdAt",
+                        "respondedAt"
+                      ],
+                      "description": "The invite as it now stands: canceled."
+                    },
+                    "replayed": {
+                      "type": "boolean",
+                      "description": "True when this idempotency key had already canceled this invite. Nothing changed, and nobody was told."
+                    }
+                  },
+                  "required": [
+                    "invite",
+                    "replayed"
+                  ],
+                  "description": "A canceled invite, and whether the request was a retry."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "matchmaking:queues:moderate"
+        ]
+      }
+    },
+    "/matchmaking/admin/games/{game}/queue/{userId}/drop": {
+      "post": {
+        "tags": [
+          "matchmaking"
+        ],
+        "operationId": "postMatchmakingAdminGamesByGameQueueByUserIdDrop",
+        "summary": "Drop a player from one game's queue.",
+        "description": "The player's presence socket is told why, in the `reason` sent. A retry with the same `idempotencyKey` changes nothing and answers `replayed: true`.",
+        "parameters": [
+          {
+            "name": "game",
+            "in": "path",
+            "required": true,
+            "description": "The matchmaking game key from the path, resolved against the configured `games` list.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The waiting player to drop, as an auth user id.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A management act's idempotency key and reason.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idempotencyKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "description": "A key the client mints once per act. A retry with the same key changes nothing, emits nothing, and answers `replayed: true`. A drop's key is remembered for a day, in that game's queue. A key already spent canceling another invite, or dropping another player from the same game's queue, is refused with `core/conflict`."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why. Required, and recorded verbatim on the audit event. A queue drop also sends it to the dropped player, so write it for them."
+                  }
+                },
+                "required": [
+                  "idempotencyKey",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "A management act's idempotency key and reason."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A player dropped from a game's open queue, and whether the request was a retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "gameKey": {
+                      "type": "string",
+                      "description": "The game whose queue the player left."
+                    },
+                    "userId": {
+                      "type": "string",
+                      "description": "The player dropped."
+                    },
+                    "replayed": {
+                      "type": "boolean",
+                      "description": "True when this idempotency key had already dropped this player. Nothing changed, and nobody was told."
+                    }
+                  },
+                  "required": [
+                    "gameKey",
+                    "userId",
+                    "replayed"
+                  ],
+                  "description": "A player dropped from a game's open queue, and whether the request was a retry."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "matchmaking:queues:moderate"
+        ]
+      }
+    },
     "/matchmaking/games/{game}/rooms": {
       "post": {
         "tags": [
@@ -15856,12 +16844,13 @@
                       "enum": [
                         "pending",
                         "accepted",
-                        "declined"
+                        "declined",
+                        "canceled"
                       ],
                       "description": "The invite's current state."
                     },
                     "sessionId": {
-                      "description": "The multiplayer session minted when the invite was accepted, or null while pending or declined.",
+                      "description": "The multiplayer session minted when the invite was accepted, or null otherwise.",
                       "type": [
                         "string",
                         "null"
@@ -15884,7 +16873,7 @@
                           "type": "null"
                         }
                       ],
-                      "description": "When the invitee accepted or declined, ISO-8601, or null while pending."
+                      "description": "When the invitee accepted or declined, or a management client canceled it, ISO-8601, or null while pending."
                     }
                   },
                   "required": [
@@ -15961,12 +16950,13 @@
                             "enum": [
                               "pending",
                               "accepted",
-                              "declined"
+                              "declined",
+                              "canceled"
                             ],
                             "description": "The invite's current state."
                           },
                           "sessionId": {
-                            "description": "The multiplayer session minted when the invite was accepted, or null while pending or declined.",
+                            "description": "The multiplayer session minted when the invite was accepted, or null otherwise.",
                             "type": [
                               "string",
                               "null"
@@ -15989,7 +16979,7 @@
                                 "type": "null"
                               }
                             ],
-                            "description": "When the invitee accepted or declined, ISO-8601, or null while pending."
+                            "description": "When the invitee accepted or declined, or a management client canceled it, ISO-8601, or null while pending."
                           }
                         },
                         "required": [
@@ -16082,12 +17072,13 @@
                       "enum": [
                         "pending",
                         "accepted",
-                        "declined"
+                        "declined",
+                        "canceled"
                       ],
                       "description": "The invite's current state."
                     },
                     "sessionId": {
-                      "description": "The multiplayer session minted when the invite was accepted, or null while pending or declined.",
+                      "description": "The multiplayer session minted when the invite was accepted, or null otherwise.",
                       "type": [
                         "string",
                         "null"
@@ -16110,7 +17101,7 @@
                           "type": "null"
                         }
                       ],
-                      "description": "When the invitee accepted or declined, ISO-8601, or null while pending."
+                      "description": "When the invitee accepted or declined, or a management client canceled it, ISO-8601, or null while pending."
                     }
                   },
                   "required": [
@@ -16195,12 +17186,13 @@
                       "enum": [
                         "pending",
                         "accepted",
-                        "declined"
+                        "declined",
+                        "canceled"
                       ],
                       "description": "The invite's current state."
                     },
                     "sessionId": {
-                      "description": "The multiplayer session minted when the invite was accepted, or null while pending or declined.",
+                      "description": "The multiplayer session minted when the invite was accepted, or null otherwise.",
                       "type": [
                         "string",
                         "null"
@@ -16223,7 +17215,7 @@
                           "type": "null"
                         }
                       ],
-                      "description": "When the invitee accepted or declined, ISO-8601, or null while pending."
+                      "description": "When the invitee accepted or declined, or a management client canceled it, ISO-8601, or null while pending."
                     }
                   },
                   "required": [
@@ -17092,14 +18084,14 @@
                             "description": "The movement's magnitude in the minor unit — always positive; `kind` gives direction."
                           },
                           "relatedRef": {
-                            "description": "The entry this one answers: a hold's ref, or the other side of a transfer. Null when standalone.",
+                            "description": "The entry this one answers: a hold's ref, the other side of a transfer, or the entry a reversal reversed. Null when standalone.",
                             "type": [
                               "string",
                               "null"
                             ]
                           },
                           "memo": {
-                            "description": "The adopter's own note on the movement, or null.",
+                            "description": "The note on the movement — the adopter's own, or an operator's reason on a management write — or null.",
                             "type": [
                               "string",
                               "null"
@@ -17158,6 +18150,572 @@
         ],
         "x-pithy-scopes": [
           "ledger:transactions:read"
+        ]
+      }
+    },
+    "/ledger/admin/accounts/{userId}/{currency}/credit": {
+      "post": {
+        "tags": [
+          "ledger"
+        ],
+        "operationId": "postLedgerAdminAccountsByUserIdByCurrencyCredit",
+        "summary": "Credit one account, with an idempotency key and a reason.",
+        "description": "A replay with the same `ref` changes nothing, writes no audit event, and answers with the current balance and `applied: false`. The same `ref` on another account, for a debit, for another amount or naming a hold is `ledger/ref_conflict`, and nothing moves.",
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The player whose account this is — the `:userId` path segment.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "currency",
+            "in": "path",
+            "required": true,
+            "description": "The currency the account is in — the `:currency` path segment. A shape check only; an unconfigured code is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A control-plane credit or debit on the account the path names.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "amount": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": "A positive integer in the currency's minor unit."
+                  },
+                  "ref": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "description": "The idempotency key, chosen by the client and written as the entry's ref. A replay with the same key changes nothing and answers with the current balance; the same key on another account, for the other act or for another amount is `ledger/ref_conflict`. Never ends in `:reverse`, `:resolve`, `:out` or `:in`, which the ledger writes itself."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why — a refund, a payout that misfired, a hold nothing released. Required and never blank. Stored as the entry's memo, and carried verbatim on the audit event."
+                  }
+                },
+                "required": [
+                  "amount",
+                  "ref",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "A control-plane credit or debit on the account the path names."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The account one management write left, and whether it moved anything.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "userId": {
+                      "type": "string",
+                      "description": "The account owner, echoed so a response stands on its own."
+                    },
+                    "currency": {
+                      "type": "string",
+                      "description": "The currency, as the configured catalog spells it."
+                    },
+                    "ref": {
+                      "type": "string",
+                      "description": "The ref of the entry this write recorded: the key for a credit or a debit, `<ref>:reverse` for a reversal, `<ref>:resolve` for a release."
+                    },
+                    "applied": {
+                      "type": "boolean",
+                      "description": "True when this call moved the balance. False on a replay: the entry already existed, nothing moved, and no audit event was written."
+                    },
+                    "balance": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Total owned after the write, in the currency's minor unit."
+                    },
+                    "held": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "The portion reserved by open holds after the write."
+                    },
+                    "available": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Spendable after the write (`balance - held`)."
+                    }
+                  },
+                  "required": [
+                    "userId",
+                    "currency",
+                    "ref",
+                    "applied",
+                    "balance",
+                    "held",
+                    "available"
+                  ],
+                  "description": "The account one management write left, and whether it moved anything."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "ledger:accounts:adjust"
+        ]
+      }
+    },
+    "/ledger/admin/accounts/{userId}/{currency}/debit": {
+      "post": {
+        "tags": [
+          "ledger"
+        ],
+        "operationId": "postLedgerAdminAccountsByUserIdByCurrencyDebit",
+        "summary": "Debit one account, never below what it has available.",
+        "description": "Refused with `ledger/insufficient_funds` past `available`, naming the shortfall in `params`. A replay with the same `ref` changes nothing and answers with the current balance and `applied: false`; the same `ref` on another account, for a credit, for another amount or naming a hold is `ledger/ref_conflict`, and nothing moves.",
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The player whose account this is — the `:userId` path segment.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "currency",
+            "in": "path",
+            "required": true,
+            "description": "The currency the account is in — the `:currency` path segment. A shape check only; an unconfigured code is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A control-plane credit or debit on the account the path names.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "amount": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": "A positive integer in the currency's minor unit."
+                  },
+                  "ref": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "description": "The idempotency key, chosen by the client and written as the entry's ref. A replay with the same key changes nothing and answers with the current balance; the same key on another account, for the other act or for another amount is `ledger/ref_conflict`. Never ends in `:reverse`, `:resolve`, `:out` or `:in`, which the ledger writes itself."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why — a refund, a payout that misfired, a hold nothing released. Required and never blank. Stored as the entry's memo, and carried verbatim on the audit event."
+                  }
+                },
+                "required": [
+                  "amount",
+                  "ref",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "A control-plane credit or debit on the account the path names."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The account one management write left, and whether it moved anything.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "userId": {
+                      "type": "string",
+                      "description": "The account owner, echoed so a response stands on its own."
+                    },
+                    "currency": {
+                      "type": "string",
+                      "description": "The currency, as the configured catalog spells it."
+                    },
+                    "ref": {
+                      "type": "string",
+                      "description": "The ref of the entry this write recorded: the key for a credit or a debit, `<ref>:reverse` for a reversal, `<ref>:resolve` for a release."
+                    },
+                    "applied": {
+                      "type": "boolean",
+                      "description": "True when this call moved the balance. False on a replay: the entry already existed, nothing moved, and no audit event was written."
+                    },
+                    "balance": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Total owned after the write, in the currency's minor unit."
+                    },
+                    "held": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "The portion reserved by open holds after the write."
+                    },
+                    "available": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Spendable after the write (`balance - held`)."
+                    }
+                  },
+                  "required": [
+                    "userId",
+                    "currency",
+                    "ref",
+                    "applied",
+                    "balance",
+                    "held",
+                    "available"
+                  ],
+                  "description": "The account one management write left, and whether it moved anything."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "ledger:accounts:adjust"
+        ]
+      }
+    },
+    "/ledger/admin/accounts/{userId}/{currency}/reverse": {
+      "post": {
+        "tags": [
+          "ledger"
+        ],
+        "operationId": "postLedgerAdminAccountsByUserIdByCurrencyReverse",
+        "summary": "Reverse one credit or debit by posting its opposite.",
+        "description": "Written as a new entry `<ref>:reverse` whose `relatedRef` is `ref`; the original stays. A second reversal of the same entry changes nothing. Refuses any other kind, and a reversal of a reversal, with `ledger/entry_not_reversible`; refuses reversing a credit past `available` with `ledger/insufficient_funds`; refuses with `ledger/ref_conflict` when `<ref>:reverse` is held by an unrelated entry.",
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The player whose account this is — the `:userId` path segment.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "currency",
+            "in": "path",
+            "required": true,
+            "description": "The currency the account is in — the `:currency` path segment. A shape check only; an unconfigured code is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A control-plane reversal of one credit or debit, posted as the opposite movement.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "ref": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "description": "The entry to reverse — a credit or a debit on the account the path names. The reversal is written as `<ref>:reverse`, so this is also the idempotency key: a second reversal of the same entry changes nothing."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why — a refund, a payout that misfired, a hold nothing released. Required and never blank. Stored as the entry's memo, and carried verbatim on the audit event."
+                  }
+                },
+                "required": [
+                  "ref",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "A control-plane reversal of one credit or debit, posted as the opposite movement."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The account one management write left, and whether it moved anything.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "userId": {
+                      "type": "string",
+                      "description": "The account owner, echoed so a response stands on its own."
+                    },
+                    "currency": {
+                      "type": "string",
+                      "description": "The currency, as the configured catalog spells it."
+                    },
+                    "ref": {
+                      "type": "string",
+                      "description": "The ref of the entry this write recorded: the key for a credit or a debit, `<ref>:reverse` for a reversal, `<ref>:resolve` for a release."
+                    },
+                    "applied": {
+                      "type": "boolean",
+                      "description": "True when this call moved the balance. False on a replay: the entry already existed, nothing moved, and no audit event was written."
+                    },
+                    "balance": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Total owned after the write, in the currency's minor unit."
+                    },
+                    "held": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "The portion reserved by open holds after the write."
+                    },
+                    "available": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Spendable after the write (`balance - held`)."
+                    }
+                  },
+                  "required": [
+                    "userId",
+                    "currency",
+                    "ref",
+                    "applied",
+                    "balance",
+                    "held",
+                    "available"
+                  ],
+                  "description": "The account one management write left, and whether it moved anything."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "ledger:accounts:adjust"
+        ]
+      }
+    },
+    "/ledger/admin/accounts/{userId}/{currency}/release": {
+      "post": {
+        "tags": [
+          "ledger"
+        ],
+        "operationId": "postLedgerAdminAccountsByUserIdByCurrencyRelease",
+        "summary": "Release one open hold, returning its funds to available.",
+        "description": "A hold on another account is `ledger/hold_not_found`, never released; a captured one is `ledger/hold_not_open`. A release of a hold already released changes nothing and answers with the current balance and `applied: false`. When `<ref>:resolve` is held by an unrelated entry, the hold stays open and the answer is `ledger/ref_conflict`.",
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The player whose account this is — the `:userId` path segment.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "currency",
+            "in": "path",
+            "required": true,
+            "description": "The currency the account is in — the `:currency` path segment. A shape check only; an unconfigured code is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A control-plane release of one open hold, returning its funds to `available`.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "ref": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "description": "The hold to release, on the account the path names. A hold resolves once, so this is also the idempotency key: a release of a hold already released changes nothing."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why — a refund, a payout that misfired, a hold nothing released. Required and never blank. Stored as the entry's memo, and carried verbatim on the audit event."
+                  }
+                },
+                "required": [
+                  "ref",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "A control-plane release of one open hold, returning its funds to `available`."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The account one management write left, and whether it moved anything.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "userId": {
+                      "type": "string",
+                      "description": "The account owner, echoed so a response stands on its own."
+                    },
+                    "currency": {
+                      "type": "string",
+                      "description": "The currency, as the configured catalog spells it."
+                    },
+                    "ref": {
+                      "type": "string",
+                      "description": "The ref of the entry this write recorded: the key for a credit or a debit, `<ref>:reverse` for a reversal, `<ref>:resolve` for a release."
+                    },
+                    "applied": {
+                      "type": "boolean",
+                      "description": "True when this call moved the balance. False on a replay: the entry already existed, nothing moved, and no audit event was written."
+                    },
+                    "balance": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Total owned after the write, in the currency's minor unit."
+                    },
+                    "held": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "The portion reserved by open holds after the write."
+                    },
+                    "available": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Spendable after the write (`balance - held`)."
+                    }
+                  },
+                  "required": [
+                    "userId",
+                    "currency",
+                    "ref",
+                    "applied",
+                    "balance",
+                    "held",
+                    "available"
+                  ],
+                  "description": "The account one management write left, and whether it moved anything."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "ledger:accounts:adjust"
         ]
       }
     },
@@ -17233,7 +18791,7 @@
                             "description": "The movement's magnitude in the minor unit — always positive; `kind` gives direction."
                           },
                           "relatedRef": {
-                            "description": "The entry this one answers: a hold's ref, or the other side of a transfer. Null when standalone.",
+                            "description": "The entry this one answers: a hold's ref, the other side of a transfer, or the entry a reversal reversed. Null when standalone.",
                             "type": [
                               "string",
                               "null"

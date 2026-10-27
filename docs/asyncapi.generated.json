@@ -53,7 +53,7 @@
     },
     "matchmakingPresence": {
       "address": "/matchmaking/presence",
-      "summary": "A player's presence: pending invites on connect, then invites, friend requests and matches as they happen.",
+      "summary": "A player's presence: pending invites on connect, then invites, friend requests, matches and operator actions as they happen.",
       "description": "The Worker sends `init` first, then events as they happen. Send `ping` as plain text to get `pong`. On `pithy.presence.v1`, anything else is answered with an `error` frame; an unversioned socket ignores it.",
       "messages": {
         "matchmakingPresence.send.init": {
@@ -67,6 +67,12 @@
         },
         "matchmakingPresence.send.friend_request": {
           "$ref": "#/components/messages/matchmakingPresence.send.friend_request"
+        },
+        "matchmakingPresence.send.invite_canceled": {
+          "$ref": "#/components/messages/matchmakingPresence.send.invite_canceled"
+        },
+        "matchmakingPresence.send.queue_dropped": {
+          "$ref": "#/components/messages/matchmakingPresence.send.queue_dropped"
         },
         "matchmakingPresence.send.error": {
           "$ref": "#/components/messages/matchmakingPresence.send.error"
@@ -150,6 +156,12 @@
         },
         {
           "$ref": "#/channels/matchmakingPresence/messages/matchmakingPresence.send.friend_request"
+        },
+        {
+          "$ref": "#/channels/matchmakingPresence/messages/matchmakingPresence.send.invite_canceled"
+        },
+        {
+          "$ref": "#/channels/matchmakingPresence/messages/matchmakingPresence.send.queue_dropped"
         },
         {
           "$ref": "#/channels/matchmakingPresence/messages/matchmakingPresence.send.error"
@@ -591,12 +603,13 @@
                     "enum": [
                       "pending",
                       "accepted",
-                      "declined"
+                      "declined",
+                      "canceled"
                     ],
                     "description": "The invite's current state."
                   },
                   "sessionId": {
-                    "description": "The multiplayer session minted when the invite was accepted, or null while pending or declined.",
+                    "description": "The multiplayer session minted when the invite was accepted, or null otherwise.",
                     "type": [
                       "string",
                       "null"
@@ -619,7 +632,7 @@
                         "type": "null"
                       }
                     ],
-                    "description": "When the invitee accepted or declined, ISO-8601, or null while pending."
+                    "description": "When the invitee accepted or declined, or a management client canceled it, ISO-8601, or null while pending."
                   }
                 },
                 "required": [
@@ -737,6 +750,64 @@
             "from"
           ],
           "description": "Another player sent this one a friend request."
+        }
+      },
+      "matchmakingPresence.send.invite_canceled": {
+        "name": "invite_canceled",
+        "summary": "The operator canceled an invite the player sent or received.",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "invite_canceled",
+              "description": "Always `invite_canceled`."
+            },
+            "inviteId": {
+              "type": "string",
+              "description": "The invite's UUID. It can no longer be accepted or declined."
+            },
+            "gameKey": {
+              "type": "string",
+              "description": "The matchmaking game the invite was for."
+            }
+          },
+          "required": [
+            "type",
+            "inviteId",
+            "gameKey"
+          ],
+          "description": "An invite this player sent or received was canceled by the game's operator. Both players get it."
+        }
+      },
+      "matchmakingPresence.send.queue_dropped": {
+        "name": "queue_dropped",
+        "summary": "The operator dropped the player from a game's queue, and says why.",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "queue_dropped",
+              "description": "Always `queue_dropped`."
+            },
+            "gameKey": {
+              "type": "string",
+              "description": "The matchmaking game whose queue the player was dropped from."
+            },
+            "reason": {
+              "type": "string",
+              "description": "Why, in the operator's words. The same reason the audit event records, so it is written for the player."
+            }
+          },
+          "required": [
+            "type",
+            "gameKey",
+            "reason"
+          ],
+          "description": "The game's operator dropped this player from the open queue, and says why."
         }
       },
       "matchmakingPresence.send.error": {

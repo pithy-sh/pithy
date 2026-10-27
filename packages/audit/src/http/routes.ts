@@ -3,6 +3,7 @@
 
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
+import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
@@ -14,10 +15,18 @@ import { accessHistory } from "../accessHistory";
 import { AuditTrailActions } from "../actions";
 import type { AuditDatabase } from "../data/tables";
 import { pageAuditEvents, readAuditEvent } from "../query";
+import { controlPlaneReach, controlPlaneReachSubjects } from "../reach";
+import { reachPatterns } from "../routePattern";
 import { AUDIT_EVENT_DETAIL_READ_SCOPE, AUDIT_TRAIL_READ_SCOPE } from "./guards";
-import { AccessHistoryResponse, AuditEventResponse, AuditEventsResponse } from "./responses";
-import { AccessHistoryQuery, AuditEventIdParam, ListAuditEventsQuery } from "./schemas";
-import { accessChangeView, auditEventDetailView, auditEventView } from "./views";
+import { AccessHistoryResponse, AuditEventResponse, AuditEventsResponse, ControlPlaneReachResponse } from "./responses";
+import { AccessHistoryQuery, AuditEventIdParam, ControlPlaneReachQuery, ListAuditEventsQuery } from "./schemas";
+import {
+  accessChangeView,
+  auditEventDetailView,
+  auditEventView,
+  controlPlaneReachSubjectView,
+  controlPlaneReachView,
+} from "./views";
 
 /**
  * The audit routes, their verification strategies, and what each accepts:
@@ -26,6 +35,8 @@ import { accessChangeView, auditEventDetailView, auditEventView } from "./views"
  *   GET /audit/events/:eventId  → one event in full     (control-plane: audit:events:read_detail) param: AuditEventIdParam
  *   GET /audit/control-plane/access-history → every access change in a window, before and after
  *                                                       (control-plane: audit:events:read)        query: AccessHistoryQuery
+ *   GET /audit/control-plane/reach → what one credential reached, by tenant, route and outcome
+ *                                                       (control-plane: audit:events:read)        query: ControlPlaneReachQuery
  *
  * **All are reads, and there is nothing else.** The trail is append-only: no route here deletes,
  * edits, or prunes, because a management credential that could erase an audit row could erase the
@@ -65,6 +76,7 @@ export const AUDIT_ROUTES: readonly AuditRouteDeclaration[] = [
   { method: "GET", path: "/events", strategy: "control-plane", scope: AUDIT_TRAIL_READ_SCOPE },
   { method: "GET", path: "/events/:eventId", strategy: "control-plane", scope: AUDIT_EVENT_DETAIL_READ_SCOPE },
   { method: "GET", path: "/control-plane/access-history", strategy: "control-plane", scope: AUDIT_TRAIL_READ_SCOPE },
+  { method: "GET", path: "/control-plane/reach", strategy: "control-plane", scope: AUDIT_TRAIL_READ_SCOPE },
 ];
 
 /** How the audit sub-router is built. */
@@ -78,6 +90,11 @@ export interface AuditRoutesOptions {
   basePath: string;
   /** The audit database for this request — resolved by the capability, which owns the registry key. */
   database: (c: Context<PithyHonoEnv>) => AuditDatabase;
+  /**
+   * Every admin route the composed Worker declares — what the manifest reports, and what a credential's reach groups
+   * its called paths by. A function, because the capability learns them at `compose`, after these routes are built.
+   */
+  adminRoutes: () => readonly AdminRoute[];
 }
 
 /**
@@ -125,6 +142,7 @@ function askedFor(query: ListAuditEventsQuery): Record<string, unknown> {
 export function registerAuditRoutes(options: AuditRoutesOptions): (app: Hono<PithyHonoEnv>) => void {
   const base = options.basePath;
   const database = options.database;
+  const adminRoutes = options.adminRoutes;
 
   return (app) => {
     /**
@@ -269,6 +287,79 @@ export function registerAuditRoutes(options: AuditRoutesOptions): (app: Hono<Pit
             changes: page.changes.map(accessChangeView),
             nextCursor: page.nextCursor,
           } satisfies AccessHistoryResponse,
+          200,
+        );
+      },
+    );
+
+    /**
+     * CONTROL-PLANE READ (#828). What one credential reached — by tenant, action, method, route and outcome — over a
+     * window, in one SQL statement, never by paging events here. `subjects=true` expands one route into the subject
+     * ids its called paths name. Behind the listing scope, not the detail one: the answer is the tenant, the route,
+     * the scope and ids the listing already shows, and never an IP, a user-agent or any other metadata key.
+     */
+    app.get(
+      `${base}/control-plane/reach`,
+      describeRoute({
+        summary: "Read what one control-plane credential reached, by tenant, route and outcome, over a window.",
+        verification: "control-plane",
+        scopes: [AUDIT_TRAIL_READ_SCOPE],
+        responses: { 200: ControlPlaneReachResponse },
+      }),
+      requireControlPlane(AUDIT_TRAIL_READ_SCOPE),
+      validate("query", ControlPlaneReachQuery),
+      async (c) => {
+        const operator = caller(c);
+        const query = c.req.valid("query");
+        const filter = {
+          connectionId: query.connectionId,
+          since: query.since,
+          until: query.until ?? new Date(),
+          ...(query.keyId !== undefined ? { keyId: query.keyId } : {}),
+          ...(query.route !== undefined ? { route: query.route } : {}),
+        };
+        const patterns = reachPatterns(adminRoutes());
+        const expanded =
+          query.subjects === "true" && filter.route !== undefined
+            ? await controlPlaneReachSubjects(database(c), { ...filter, route: filter.route }, patterns)
+            : { reach: await controlPlaneReach(database(c), filter, patterns), subjects: undefined };
+        // Audited like the listing, and against the connection whose reach was read: "who reviewed what this
+        // credential touched" is a question the trail should answer about that credential.
+        await c.var.emit({
+          action: AuditTrailActions.reachRead,
+          outcome: "success",
+          actorType: "control-plane",
+          actorId: operator.subject,
+          resourceType: "controlplane_connection",
+          resourceId: query.connectionId,
+          requestId: c.req.header("cf-ray"),
+          ip: c.req.header("cf-connecting-ip"),
+          userAgent: c.req.header("user-agent"),
+          metadata: {
+            connectionId: operator.connectionId,
+            query: {
+              connectionId: filter.connectionId,
+              keyId: filter.keyId ?? null,
+              since: filter.since.toISOString(),
+              until: filter.until.toISOString(),
+              route: filter.route ?? null,
+              subjects: expanded.subjects !== undefined,
+            },
+            returned: expanded.reach.length,
+            ...(expanded.subjects !== undefined ? { subjects: expanded.subjects.length } : {}),
+          },
+        });
+        return c.json(
+          {
+            connectionId: filter.connectionId,
+            keyId: filter.keyId ?? null,
+            since: filter.since.toISOString(),
+            until: filter.until.toISOString(),
+            reach: expanded.reach.map(controlPlaneReachView),
+            ...(expanded.subjects !== undefined
+              ? { subjects: expanded.subjects.map(controlPlaneReachSubjectView) }
+              : {}),
+          } satisfies ControlPlaneReachResponse,
           200,
         );
       },

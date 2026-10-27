@@ -15,10 +15,11 @@ import { listAccounts, listTransactions, readAccounts } from "../admin/read";
 import { type LedgerAuditAction, LedgerAuditActions } from "../audit/actions";
 import { type LedgerConfig, resolveCurrency } from "../config/config";
 import { LedgerCurrencyNotFoundError } from "../error/errors";
-import { openLedger } from "../ledger";
+import { type LedgerWriteOutcome, openLedger, openLedgerWrites } from "../ledger";
 import { requireAdmin, requireAuth } from "./guards";
 import {
   LedgerAccountsResponse,
+  LedgerAdjustmentResponse,
   LedgerBalanceResponse,
   LedgerOwnTransactionsResponse,
   LedgerTransactionsResponse,
@@ -27,12 +28,15 @@ import {
 import {
   AdminAccountParam,
   AdminAccountsQuery,
+  AdminAdjustment,
+  AdminRelease,
+  AdminReversal,
   AdminTransactionsQuery,
   AdminUserParam,
   AdminWrite,
   CurrencyParam,
 } from "./schemas";
-import { LEDGER_ACCOUNTS_READ_SCOPE, LEDGER_TRANSACTIONS_READ_SCOPE } from "./scopes";
+import { LEDGER_ACCOUNTS_ADJUST_SCOPE, LEDGER_ACCOUNTS_READ_SCOPE, LEDGER_TRANSACTIONS_READ_SCOPE } from "./scopes";
 import { accountView, transactionView } from "./view";
 
 /**
@@ -48,19 +52,31 @@ import { accountView, transactionView } from "./view";
  *   GET  /ledger/admin/accounts                                → every account, paged        (control-plane: ledger:accounts:read)      query: AdminAccountsQuery
  *   GET  /ledger/admin/accounts/:userId                        → one player's balances       (control-plane: ledger:accounts:read)      param: AdminUserParam
  *   GET  /ledger/admin/accounts/:userId/:currency/transactions → one account's entry log     (control-plane: ledger:transactions:read)  param: AdminAccountParam, query: AdminTransactionsQuery
+ *   POST /ledger/admin/accounts/:userId/:currency/credit       → add funds                   (control-plane: ledger:accounts:adjust)    param: AdminAccountParam, json: AdminAdjustment
+ *   POST /ledger/admin/accounts/:userId/:currency/debit        → remove funds                (control-plane: ledger:accounts:adjust)    param: AdminAccountParam, json: AdminAdjustment
+ *   POST /ledger/admin/accounts/:userId/:currency/reverse      → reverse a credit or debit   (control-plane: ledger:accounts:adjust)    param: AdminAccountParam, json: AdminReversal
+ *   POST /ledger/admin/accounts/:userId/:currency/release      → release an open hold        (control-plane: ledger:accounts:adjust)    param: AdminAccountParam, json: AdminRelease
  *
  * Most balance movement happens in-process (a game model calling {@link openLedger} directly), not over
- * HTTP; these routes are the read surface players need, a trusted-server admin surface, and a read-only
- * management surface. The user id on a player route comes from the core `AuthContext` seam, never a
+ * HTTP; these routes are the read surface players need, a trusted-server admin surface, and a management
+ * surface that reads every account and corrects one. The user id on a player route comes from the core `AuthContext` seam, never a
  * request body — a player's read is always scoped to the caller.
  *
- * ## The management surface is read-only, deliberately
+ * ## What a management write guarantees
  *
- * There is no `POST /admin/adjust`. Writing to a balance ledger from an admin console needs everything
- * every other movement gets — an idempotency key so a double-click does not pay twice, a recorded
- * reason, a reversal path — and a console route with none of those would be the one place the ledger's
- * guarantees do not hold. So the seam reads and nothing else: balances, and the entries that explain
- * them.
+ * The four writes behind `ledger:accounts:adjust` carry everything every other movement gets, and the two
+ * things a console needs on top. **An idempotency key** the client chose, written as the entry's ref — for
+ * a reversal `${ref}:reverse`, for a release the hold's own `${ref}:resolve` — so a double-click moves the
+ * balance once and a replay answers 200 with the balance as it stands. **A required reason**, refused when
+ * blank before anything is written, stored as the entry's memo and carried verbatim on the audit event.
+ * **No balance goes below what it holds**: a debit, and a reversal of a credit, are refused below
+ * `available`, naming the shortfall. **Nothing is updated or deleted**: a mistake is corrected by a
+ * reversal, which is a new entry carrying the original as its `relatedRef`. And **every write that moved
+ * money is audited** at severity `warning` with the connection, the account, the act, the amount, the
+ * reason and the balance either side — and a replay or a refusal, which moved nothing, is not.
+ *
+ * A reversal or a release names a ref, and the ref must be on the account the path names: an entry or a
+ * hold elsewhere is refused as not found, never touched. The path is the account; the body never is.
  *
  * ## Why the management routes sit under `admin/`
  *
@@ -128,6 +144,30 @@ export const LEDGER_ROUTES: readonly LedgerRouteDeclaration[] = [
     strategy: "control-plane",
     scope: LEDGER_TRANSACTIONS_READ_SCOPE,
   },
+  {
+    method: "POST",
+    path: "/admin/accounts/:userId/:currency/credit",
+    strategy: "control-plane",
+    scope: LEDGER_ACCOUNTS_ADJUST_SCOPE,
+  },
+  {
+    method: "POST",
+    path: "/admin/accounts/:userId/:currency/debit",
+    strategy: "control-plane",
+    scope: LEDGER_ACCOUNTS_ADJUST_SCOPE,
+  },
+  {
+    method: "POST",
+    path: "/admin/accounts/:userId/:currency/reverse",
+    strategy: "control-plane",
+    scope: LEDGER_ACCOUNTS_ADJUST_SCOPE,
+  },
+  {
+    method: "POST",
+    path: "/admin/accounts/:userId/:currency/release",
+    strategy: "control-plane",
+    scope: LEDGER_ACCOUNTS_ADJUST_SCOPE,
+  },
 ];
 
 export interface LedgerRoutesOptions {
@@ -176,9 +216,8 @@ function caller(c: Context<PithyHonoEnv>): ControlPlaneContext {
 /**
  * Record a management read.
  *
- * **Every read, not only writes.** There are no writes on this surface, so an unaudited one would leave
- * the capability's whole management history blank — and a credential quietly paging every player's
- * balance history is exactly the thing that leaves no other trace. Counts and identifiers only: no
+ * **Every read, not only writes.** A credential quietly paging every player's balance history changes
+ * nothing, so it is exactly the thing that leaves no other trace. Counts and identifiers only: no
  * balance, no `ref`, no memo. Copying the ledger into the audit trail would make a second ledger with
  * weaker access rules than the first.
  */
@@ -203,6 +242,72 @@ async function record(
   });
 }
 
+/** What one management write did, as its audit event records it. */
+interface LedgerWriteRecord {
+  /** The act, as an operator would name it. */
+  act: "credit" | "debit" | "reverse" | "release";
+  /** The ref the request named: the key of a credit or debit, the entry reversed, the hold released. */
+  ref: string;
+  /** The ref of the entry the write recorded. */
+  entryRef: string;
+  /** How much moved, in the currency's minor unit. */
+  amount: number;
+  /** The operator's reason, verbatim. */
+  reason: string;
+  /** The account either side of the movement. */
+  outcome: LedgerWriteOutcome;
+}
+
+/**
+ * Record a management write — one that moved money, never a replay or a refusal.
+ *
+ * Severity `warning`, as payments' override writes are: nothing else on this surface changes what a
+ * player owns. Unlike a read, it carries the amount, the ref, the reason and the balance either side,
+ * because those are the record — an audit row that said only "alice's chips were adjusted" would answer
+ * none of the questions anyone asks of it.
+ */
+async function recordWrite(
+  c: Context<PithyHonoEnv>,
+  action: LedgerAuditAction,
+  account: { userId: string; currency: string },
+  write: LedgerWriteRecord,
+): Promise<void> {
+  const who = caller(c);
+  await c.var.emit({
+    action,
+    outcome: "success",
+    severity: "warning",
+    actorType: "control-plane",
+    actorId: who.subject,
+    resourceType: "ledger_account",
+    resourceId: `${account.userId}:${account.currency}`,
+    requestId: c.req.header("cf-ray"),
+    ip: c.req.header("cf-connecting-ip"),
+    userAgent: c.req.header("user-agent"),
+    metadata: {
+      connectionId: who.connectionId,
+      userId: account.userId,
+      currency: account.currency,
+      act: write.act,
+      ref: write.ref,
+      entryRef: write.entryRef,
+      amount: write.amount,
+      reason: write.reason,
+      before: write.outcome.before,
+      after: write.outcome.after,
+    },
+  });
+}
+
+/** What every management write answers: the account as the write left it, and whether it moved. */
+function adjustmentView(
+  account: { userId: string; currency: string },
+  entryRef: string,
+  outcome: LedgerWriteOutcome,
+): LedgerAdjustmentResponse {
+  return { ...account, ref: entryRef, applied: outcome.applied, ...outcome.after };
+}
+
 export function registerLedgerRoutes(options: LedgerRoutesOptions): (app: Hono<PithyHonoEnv>) => void {
   const base = options.basePath ?? LEDGER_DEFAULT_BASE_PATH;
   const { config } = options;
@@ -221,8 +326,8 @@ export function registerLedgerRoutes(options: LedgerRoutesOptions): (app: Hono<P
   };
 
   return (app) => {
-    // The management surface: control-plane, read-only. Its paths are disjoint from the player routes
-    // by construction, so registering it first is presentation rather than semantics.
+    // The management surface: control-plane reads, then writes. Its paths are disjoint from the player
+    // routes by construction, so registering it first is presentation rather than semantics.
 
     app.get(
       `${base}/admin/accounts`,
@@ -304,6 +409,143 @@ export function registerLedgerRoutes(options: LedgerRoutesOptions): (app: Hono<P
           } satisfies LedgerTransactionsResponse,
           200,
         );
+      },
+    );
+
+    // The management writes: control-plane, behind `ledger:accounts:adjust`. Each resolves the currency
+    // first, so an unconfigured one is the capability's 404 and nothing is written.
+
+    app.post(
+      `${base}/admin/accounts/:userId/:currency/credit`,
+      describeRoute({
+        summary: "Credit one account, with an idempotency key and a reason.",
+        description:
+          "A replay with the same `ref` changes nothing, writes no audit event, and answers with the current balance and `applied: false`. The same `ref` on another account, for a debit, for another amount or naming a hold is `ledger/ref_conflict`, and nothing moves.",
+        verification: "control-plane",
+        scopes: [LEDGER_ACCOUNTS_ADJUST_SCOPE],
+        responses: { 200: LedgerAdjustmentResponse },
+      }),
+      requireControlPlane(LEDGER_ACCOUNTS_ADJUST_SCOPE),
+      validate("param", AdminAccountParam),
+      validate("json", AdminAdjustment),
+      async (c) => {
+        const { userId, currency: requested } = c.req.valid("param");
+        const account = { userId, currency: currency(config, requested) };
+        const input = c.req.valid("json");
+        const outcome = await openLedgerWrites(db(c)).credit(userId, account.currency, input.amount, input.ref, {
+          memo: input.reason,
+        });
+        if (outcome.applied) {
+          await recordWrite(c, LedgerAuditActions.accountCredited, account, {
+            act: "credit",
+            ref: input.ref,
+            entryRef: input.ref,
+            amount: input.amount,
+            reason: input.reason,
+            outcome,
+          });
+        }
+        return c.json(adjustmentView(account, input.ref, outcome) satisfies LedgerAdjustmentResponse, 200);
+      },
+    );
+
+    app.post(
+      `${base}/admin/accounts/:userId/:currency/debit`,
+      describeRoute({
+        summary: "Debit one account, never below what it has available.",
+        description:
+          "Refused with `ledger/insufficient_funds` past `available`, naming the shortfall in `params`. A replay with the same `ref` changes nothing and answers with the current balance and `applied: false`; the same `ref` on another account, for a credit, for another amount or naming a hold is `ledger/ref_conflict`, and nothing moves.",
+        verification: "control-plane",
+        scopes: [LEDGER_ACCOUNTS_ADJUST_SCOPE],
+        responses: { 200: LedgerAdjustmentResponse },
+      }),
+      requireControlPlane(LEDGER_ACCOUNTS_ADJUST_SCOPE),
+      validate("param", AdminAccountParam),
+      validate("json", AdminAdjustment),
+      async (c) => {
+        const { userId, currency: requested } = c.req.valid("param");
+        const account = { userId, currency: currency(config, requested) };
+        const input = c.req.valid("json");
+        const outcome = await openLedgerWrites(db(c)).debit(userId, account.currency, input.amount, input.ref, {
+          memo: input.reason,
+        });
+        if (outcome.applied) {
+          await recordWrite(c, LedgerAuditActions.accountDebited, account, {
+            act: "debit",
+            ref: input.ref,
+            entryRef: input.ref,
+            amount: input.amount,
+            reason: input.reason,
+            outcome,
+          });
+        }
+        return c.json(adjustmentView(account, input.ref, outcome) satisfies LedgerAdjustmentResponse, 200);
+      },
+    );
+
+    app.post(
+      `${base}/admin/accounts/:userId/:currency/reverse`,
+      describeRoute({
+        summary: "Reverse one credit or debit by posting its opposite.",
+        description:
+          "Written as a new entry `<ref>:reverse` whose `relatedRef` is `ref`; the original stays. A second reversal of the same entry changes nothing. Refuses any other kind, and a reversal of a reversal, with `ledger/entry_not_reversible`; refuses reversing a credit past `available` with `ledger/insufficient_funds`; refuses with `ledger/ref_conflict` when `<ref>:reverse` is held by an unrelated entry.",
+        verification: "control-plane",
+        scopes: [LEDGER_ACCOUNTS_ADJUST_SCOPE],
+        responses: { 200: LedgerAdjustmentResponse },
+      }),
+      requireControlPlane(LEDGER_ACCOUNTS_ADJUST_SCOPE),
+      validate("param", AdminAccountParam),
+      validate("json", AdminReversal),
+      async (c) => {
+        const { userId, currency: requested } = c.req.valid("param");
+        const account = { userId, currency: currency(config, requested) };
+        const input = c.req.valid("json");
+        const outcome = await openLedgerWrites(db(c)).reverse(input.ref, { memo: input.reason, account });
+        const entryRef = `${input.ref}:reverse`;
+        if (outcome.applied) {
+          await recordWrite(c, LedgerAuditActions.entryReversed, account, {
+            act: "reverse",
+            ref: input.ref,
+            entryRef,
+            amount: outcome.entry.amount,
+            reason: input.reason,
+            outcome,
+          });
+        }
+        return c.json(adjustmentView(account, entryRef, outcome) satisfies LedgerAdjustmentResponse, 200);
+      },
+    );
+
+    app.post(
+      `${base}/admin/accounts/:userId/:currency/release`,
+      describeRoute({
+        summary: "Release one open hold, returning its funds to available.",
+        description:
+          "A hold on another account is `ledger/hold_not_found`, never released; a captured one is `ledger/hold_not_open`. A release of a hold already released changes nothing and answers with the current balance and `applied: false`. When `<ref>:resolve` is held by an unrelated entry, the hold stays open and the answer is `ledger/ref_conflict`.",
+        verification: "control-plane",
+        scopes: [LEDGER_ACCOUNTS_ADJUST_SCOPE],
+        responses: { 200: LedgerAdjustmentResponse },
+      }),
+      requireControlPlane(LEDGER_ACCOUNTS_ADJUST_SCOPE),
+      validate("param", AdminAccountParam),
+      validate("json", AdminRelease),
+      async (c) => {
+        const { userId, currency: requested } = c.req.valid("param");
+        const account = { userId, currency: currency(config, requested) };
+        const input = c.req.valid("json");
+        const outcome = await openLedgerWrites(db(c)).release(input.ref, { memo: input.reason, account });
+        const entryRef = `${input.ref}:resolve`;
+        if (outcome.applied) {
+          await recordWrite(c, LedgerAuditActions.holdReleased, account, {
+            act: "release",
+            ref: input.ref,
+            entryRef,
+            amount: outcome.hold.amount,
+            reason: input.reason,
+            outcome,
+          });
+        }
+        return c.json(adjustmentView(account, entryRef, outcome) satisfies LedgerAdjustmentResponse, 200);
       },
     );
 

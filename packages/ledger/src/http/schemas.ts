@@ -3,6 +3,7 @@
 
 import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { z } from "zod";
+import { isReservedRef } from "../data/transaction";
 
 /**
  * The HTTP boundary shapes for the ledger routes. Everything a client can send is declared here and
@@ -18,9 +19,12 @@ import { z } from "zod";
  * AuthContext seam). A write names the *player whose balance moves*, which is why the route is gated on
  * the admin scope — a client that could name any `userId` without it could credit itself.
  *
- * The `Admin*` shapes ending in `Query`/`Param` belong to the **control-plane** management routes, which
- * take no bodies at all: the ledger's management surface is read-only, so there is nothing for a client
- * to send but filters and a place to resume.
+ * The `Admin*` shapes ending in `Query`/`Param` belong to the **control-plane** management reads, which
+ * take filters and a place to resume. {@link AdminAdjustment}, {@link AdminReversal} and
+ * {@link AdminRelease} are the bodies of its four writes, and each carries the two things every
+ * management write must: an idempotency key the client chose, and a reason. The account is the path,
+ * never the body — and each is a `strictObject`, so a body that names a `userId` of its own is a 400
+ * rather than a field quietly ignored while the caller believes it took.
  */
 
 /** Mirrors the config-time currency-code pattern: lowercase, digits, and dashes. */
@@ -96,6 +100,21 @@ export const AdminTransactionsQuery = z
   .describe("The entry-log query: where to resume, and how much of it to return.");
 export type AdminTransactionsQuery = z.infer<typeof AdminTransactionsQuery>;
 
+/**
+ * The ref a control-plane credit or debit writes. Never one ending in a suffix the ledger derives
+ * ({@link isReservedRef}): that entry would take a later reversal's or resolution's ref.
+ *
+ * Only the control-plane body uses it. The player-facing `ledger:admin` credit and debit, and `openLedger`
+ * in process, take any ref, as they always have.
+ */
+const ClientRef = z
+  .string()
+  .min(1)
+  .max(255)
+  .refine((ref) => !isReservedRef(ref), {
+    message: "A ref may not end in `:reverse`, `:resolve`, `:out` or `:in`; the ledger writes those itself.",
+  });
+
 export const AdminWrite = z
   .object({
     userId: z.string().min(1).max(255).describe("The player whose balance moves."),
@@ -105,3 +124,58 @@ export const AdminWrite = z
   })
   .describe("An admin credit/debit request.");
 export type AdminWrite = z.infer<typeof AdminWrite>;
+
+/** The longest reason a management write may carry. A sentence, a ticket number — not a document. */
+const MAX_REASON_LENGTH = 500;
+
+/**
+ * Why an operator moved a balance. Required, never blank: it is stored as the entry's memo, so the log
+ * explains the movement as well as the audit trail does.
+ */
+const Reason = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MAX_REASON_LENGTH)
+  .describe(
+    "Why — a refund, a payout that misfired, a hold nothing released. Required and never blank. Stored as the entry's memo, and carried verbatim on the audit event.",
+  );
+
+export const AdminAdjustment = z
+  .strictObject({
+    amount: z.number().int().positive().describe("A positive integer in the currency's minor unit."),
+    ref: ClientRef.describe(
+      "The idempotency key, chosen by the client and written as the entry's ref. A replay with the same key changes nothing and answers with the current balance; the same key on another account, for the other act or for another amount is `ledger/ref_conflict`. Never ends in `:reverse`, `:resolve`, `:out` or `:in`, which the ledger writes itself.",
+    ),
+    reason: Reason,
+  })
+  .describe("A control-plane credit or debit on the account the path names.");
+export type AdminAdjustment = z.output<typeof AdminAdjustment>;
+
+export const AdminReversal = z
+  .strictObject({
+    ref: z
+      .string()
+      .min(1)
+      .max(255)
+      .describe(
+        "The entry to reverse — a credit or a debit on the account the path names. The reversal is written as `<ref>:reverse`, so this is also the idempotency key: a second reversal of the same entry changes nothing.",
+      ),
+    reason: Reason,
+  })
+  .describe("A control-plane reversal of one credit or debit, posted as the opposite movement.");
+export type AdminReversal = z.output<typeof AdminReversal>;
+
+export const AdminRelease = z
+  .strictObject({
+    ref: z
+      .string()
+      .min(1)
+      .max(255)
+      .describe(
+        "The hold to release, on the account the path names. A hold resolves once, so this is also the idempotency key: a release of a hold already released changes nothing.",
+      ),
+    reason: Reason,
+  })
+  .describe("A control-plane release of one open hold, returning its funds to `available`.");
+export type AdminRelease = z.output<typeof AdminRelease>;

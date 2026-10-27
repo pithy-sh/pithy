@@ -20,9 +20,14 @@ import type { z } from "zod";
 import { LedgerConfig } from "../config/config";
 import { openLedger } from "../ledger";
 import { ledger_0001_accounts } from "../migrations/0001_accounts";
-import { LedgerAccountsResponse, LedgerTransactionsResponse, LedgerUserAccountsResponse } from "./responses";
+import {
+  LedgerAccountsResponse,
+  LedgerAdjustmentResponse,
+  LedgerTransactionsResponse,
+  LedgerUserAccountsResponse,
+} from "./responses";
 import { registerLedgerRoutes } from "./routes";
-import { LEDGER_ACCOUNTS_READ_SCOPE, LEDGER_TRANSACTIONS_READ_SCOPE } from "./scopes";
+import { LEDGER_ACCOUNTS_ADJUST_SCOPE, LEDGER_ACCOUNTS_READ_SCOPE, LEDGER_TRANSACTIONS_READ_SCOPE } from "./scopes";
 
 /**
  * The management handlers, actually executed.
@@ -30,7 +35,9 @@ import { LEDGER_ACCOUNTS_READ_SCOPE, LEDGER_TRANSACTIONS_READ_SCOPE } from "./sc
  * `routeContract.test.ts` calls each of these with no credential and asserts 403, which proves the guard
  * runs and nothing else — every handler body is unreached there. What survives only here: the keyset
  * pagination (an offset would pass every test that never fetches a second page), the response
- * projections, the 404 on an unconfigured currency filter, and the audit event on a read. A guard
+ * projections, the 404 on an unconfigured currency filter, the audit event on a read, and every
+ * guarantee a write makes — the replay, the reason, the shortfall, the reversal's unique ref with two in
+ * flight, the account a ref must be on, and exactly one audit event per write that moved money. A guard
  * nothing exercises is a comment.
  */
 
@@ -136,6 +143,26 @@ async function call(app: Hono<PithyHonoEnv>, path: string, scope: ControlPlaneSc
       ...env,
       ENVIRONMENT,
     },
+  );
+}
+
+/** A POST carrying a freshly minted control-plane token, bound to the exact body it sends. */
+async function post(app: Hono<PithyHonoEnv>, path: string, scope: ControlPlaneScope, body: unknown): Promise<Response> {
+  const raw = typeof body === "string" ? body : JSON.stringify(body);
+  const token = await mintControlPlaneToken({
+    privateKey: keys.privateKey,
+    keyId: CONTROL_PLANE_KEY_ID,
+    issuer: CONTROL_PLANE_ISSUER,
+    connectionId: CONNECTION_ID,
+    subject: "operator-1",
+    scope,
+    body: new TextEncoder().encode(raw),
+    now: () => NOW,
+  });
+  return app.request(
+    `http://x${path}`,
+    { method: "POST", headers: { "content-type": "application/json", [CONTROL_PLANE_HEADER]: token }, body: raw },
+    { ...env, ENVIRONMENT },
   );
 }
 
@@ -412,10 +439,10 @@ describe("the two scopes are not interchangeable", () => {
   });
 });
 
-describe("the management surface cannot move a balance", () => {
-  test("no verb but GET answers under admin/", async () => {
-    // There is no adjustment route, on purpose. If one is ever added it must arrive with an idempotency
-    // key, a recorded reason, and a reversal path — this fails the moment one arrives without them.
+describe("the management surface moves a balance only through its four writes", () => {
+  test("no verb but GET answers on the account listing", async () => {
+    // The writes are per account, under `:userId/:currency/`. Nothing mutates the listing itself — there is
+    // no bulk adjustment — so every other verb on it is a 404.
     for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
       const response = await makeApp([LEDGER_ACCOUNTS_READ_SCOPE]).request(
         "http://x/ledger/admin/accounts",
@@ -496,5 +523,557 @@ describe("the exported response schemas against the live routes", () => {
       LEDGER_TRANSACTIONS_READ_SCOPE,
       "/ledger/admin/accounts/alice/chips/transactions",
     );
+  });
+});
+
+/** The adjust routes' paths, for one account. */
+const ADMIN = "/ledger/admin/accounts/alice/chips";
+
+interface AdjustmentBody {
+  userId: string;
+  currency: string;
+  ref: string;
+  applied: boolean;
+  balance: number;
+  held: number;
+  available: number;
+}
+
+/** Every entry on one account, oldest first. */
+async function entries(userId = "alice", currency = "chips") {
+  return (await openLedger(env.DB).transactions(userId, currency, 100)).reverse();
+}
+
+/** The events the ledger's writes emit — the guard's own denial events are not these. */
+const WRITE_ACTIONS: readonly string[] = [
+  "ledger/account_credited",
+  "ledger/account_debited",
+  "ledger/entry_reversed",
+  "ledger/hold_released",
+];
+const writeEvents = () => emitted.filter((event) => WRITE_ACTIONS.includes(event.action));
+
+describe("POST /ledger/admin/accounts/:userId/:currency/credit and /debit", () => {
+  const app = () => makeApp([LEDGER_ACCOUNTS_ADJUST_SCOPE]);
+
+  test("a credit adds funds, stores the reason as the memo, and answers with the account it left", async () => {
+    const response = await post(app(), `${ADMIN}/credit`, LEDGER_ACCOUNTS_ADJUST_SCOPE, {
+      amount: 250,
+      ref: "refund-81",
+      reason: "Refund: ticket 81",
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json<AdjustmentBody>()).toEqual({
+      userId: "alice",
+      currency: "chips",
+      ref: "refund-81",
+      applied: true,
+      balance: 250,
+      held: 0,
+      available: 250,
+    });
+    expect((await entries()).map((e) => ({ ref: e.ref, kind: e.kind, amount: e.amount, memo: e.memo }))).toEqual([
+      { ref: "refund-81", kind: "credit", amount: 250, memo: "Refund: ticket 81" },
+    ]);
+  });
+
+  test("a debit removes funds", async () => {
+    await openLedger(env.DB).credit("alice", "chips", 100, "c1");
+    const response = await post(app(), `${ADMIN}/debit`, LEDGER_ACCOUNTS_ADJUST_SCOPE, {
+      amount: 40,
+      ref: "payout-misfire",
+      reason: "Payout paid twice",
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json<AdjustmentBody>()).toMatchObject({ applied: true, balance: 60, available: 60 });
+  });
+
+  test("a debit below available is refused, naming the shortfall, and writes nothing", async () => {
+    await openLedger(env.DB).credit("alice", "chips", 100, "c1");
+    await openLedger(env.DB).hold("alice", "chips", 70, "h1");
+    const response = await post(app(), `${ADMIN}/debit`, LEDGER_ACCOUNTS_ADJUST_SCOPE, {
+      amount: 50,
+      ref: "d1",
+      reason: "Clawback",
+    });
+    expect(response.status).toBe(409);
+    const body = await response.json<{ error: { code: string; params?: Record<string, number> } }>();
+    expect(body.error.code).toBe("ledger/insufficient_funds");
+    expect(body.error.params).toEqual({ amount: 50, available: 30, shortfall: 20 });
+    expect((await entries()).map((e) => e.ref)).toEqual(["c1", "h1"]);
+    expect(await openLedger(env.DB).balance("alice", "chips")).toEqual({ balance: 100, held: 70, available: 30 });
+    expect(writeEvents()).toEqual([]);
+  });
+
+  test("an unconfigured currency is a 404, and nothing is written", async () => {
+    const response = await post(app(), "/ledger/admin/accounts/alice/doubloons/credit", LEDGER_ACCOUNTS_ADJUST_SCOPE, {
+      amount: 5,
+      ref: "c1",
+      reason: "x",
+    });
+    expect(response.status).toBe(404);
+    expect(await errorCode(response)).toBe("ledger/currency_not_found");
+    expect(await entries("alice", "doubloons")).toEqual([]);
+    expect(writeEvents()).toEqual([]);
+  });
+
+  test("a body naming a player of its own is refused — the path is the account", async () => {
+    const response = await post(app(), `${ADMIN}/credit`, LEDGER_ACCOUNTS_ADJUST_SCOPE, {
+      amount: 5,
+      ref: "c1",
+      reason: "x",
+      userId: "mallory",
+    });
+    expect(response.status).toBe(400);
+    expect(await entries("mallory")).toEqual([]);
+  });
+});
+
+describe("every write refuses a missing or empty reason before anything is written", () => {
+  const app = () => makeApp([LEDGER_ACCOUNTS_ADJUST_SCOPE]);
+
+  test.each([
+    ["credit", { amount: 5, ref: "w1" }],
+    ["credit", { amount: 5, ref: "w1", reason: "" }],
+    ["credit", { amount: 5, ref: "w1", reason: "   " }],
+    ["debit", { amount: 5, ref: "w1" }],
+    ["debit", { amount: 5, ref: "w1", reason: "" }],
+    ["reverse", { ref: "c1" }],
+    ["reverse", { ref: "c1", reason: " " }],
+    ["release", { ref: "h1" }],
+    ["release", { ref: "h1", reason: "" }],
+  ])("%s %j", async (act, body) => {
+    await openLedger(env.DB).credit("alice", "chips", 100, "c1");
+    await openLedger(env.DB).hold("alice", "chips", 10, "h1");
+    const before = await entries();
+    const response = await post(app(), `${ADMIN}/${act}`, LEDGER_ACCOUNTS_ADJUST_SCOPE, body);
+    expect(response.status).toBe(400);
+    expect(await errorCode(response)).toBe("validation/invalid_input");
+    expect(await entries()).toEqual(before);
+    expect(await openLedger(env.DB).balance("alice", "chips")).toEqual({ balance: 100, held: 10, available: 90 });
+    expect(writeEvents()).toEqual([]);
+  });
+});
+
+describe("every write is idempotent: the same request twice moves the balance once", () => {
+  const app = () => makeApp([LEDGER_ACCOUNTS_ADJUST_SCOPE]);
+  const cases: [string, Record<string, unknown>, { balance: number; held: number; available: number }][] = [
+    ["credit", { amount: 25, ref: "w1", reason: "Goodwill" }, { balance: 125, held: 10, available: 115 }],
+    ["debit", { amount: 25, ref: "w1", reason: "Clawback" }, { balance: 75, held: 10, available: 65 }],
+    ["reverse", { ref: "c1", reason: "Granted in error" }, { balance: 0, held: 0, available: 0 }],
+    ["release", { ref: "h1", reason: "Table crashed" }, { balance: 100, held: 0, available: 100 }],
+  ];
+
+  test.each(cases)("%s", async (act, body, settled) => {
+    await openLedger(env.DB).credit("alice", "chips", 100, "c1");
+    if (act !== "reverse") await openLedger(env.DB).hold("alice", "chips", 10, "h1");
+    const first = await post(app(), `${ADMIN}/${act}`, LEDGER_ACCOUNTS_ADJUST_SCOPE, body);
+    const second = await post(app(), `${ADMIN}/${act}`, LEDGER_ACCOUNTS_ADJUST_SCOPE, body);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    const one = await first.json<AdjustmentBody>();
+    const two = await second.json<AdjustmentBody>();
+    expect(one).toMatchObject({ applied: true, ...settled });
+    // The replay answers with the balance as it stands — the same one — and says it moved nothing.
+    expect(two).toEqual({ ...one, applied: false });
+    expect(await openLedger(env.DB).balance("alice", "chips")).toEqual(settled);
+    // One event for the write that moved money; none for the replay.
+    expect(writeEvents()).toHaveLength(1);
+  });
+});
+
+describe("an idempotency key is one write's: the same key on another write is a conflict, never a replay", () => {
+  const app = () => makeApp([LEDGER_ACCOUNTS_ADJUST_SCOPE]);
+
+  test("one key sent to two accounts credits the first and refuses the second", async () => {
+    const first = await post(app(), `${ADMIN}/credit`, LEDGER_ACCOUNTS_ADJUST_SCOPE, {
+      amount: 100,
+      ref: "refund-7",
+      reason: "Refund: ticket 7",
+    });
+    expect(first.status).toBe(200);
+    const second = await post(app(), "/ledger/admin/accounts/bob/chips/credit", LEDGER_ACCOUNTS_ADJUST_SCOPE, {
+      amount: 50,
+      ref: "refund-7",
+      reason: "Refund: ticket 7, reused",
+    });
+    expect(second.status).toBe(409);
+    expect(await errorCode(second)).toBe("ledger/ref_conflict");
+    expect(await openLedger(env.DB).balance("bob", "chips")).toEqual({ balance: 0, held: 0, available: 0 });
+    expect(await entries("bob")).toEqual([]);
+    expect(writeEvents()).toHaveLength(1);
+  });
+
+  test("a credit's key sent to /debit is refused, and nothing moves", async () => {
+    await post(app(), `${ADMIN}/credit`, LEDGER_ACCOUNTS_ADJUST_SCOPE, {
+      amount: 100,
+      ref: "refund-7",
+      reason: "Refund: ticket 7",
+    });
+    const response = await post(app(), `${ADMIN}/debit`, LEDGER_ACCOUNTS_ADJUST_SCOPE, {
+      amount: 100,
+      ref: "refund-7",
+      reason: "Clawback",
+    });
+    expect(response.status).toBe(409);
+    expect(await errorCode(response)).toBe("ledger/ref_conflict");
+    expect(await openLedger(env.DB).balance("alice", "chips")).toEqual({ balance: 100, held: 0, available: 100 });
+    expect((await entries()).map((e) => e.ref)).toEqual(["refund-7"]);
+    expect(writeEvents()).toHaveLength(1);
+  });
+
+  test("a key sent again for another amount, or naming a hold, is refused", async () => {
+    await openLedger(env.DB).credit("alice", "chips", 100, "c1");
+    await openLedger(env.DB).hold("alice", "chips", 10, "h1");
+    for (const body of [
+      { amount: 99, ref: "c1", reason: "Goodwill" },
+      { amount: 10, ref: "h1", reason: "Goodwill" },
+    ]) {
+      const response = await post(app(), `${ADMIN}/credit`, LEDGER_ACCOUNTS_ADJUST_SCOPE, body);
+      expect(response.status).toBe(409);
+      expect(await errorCode(response)).toBe("ledger/ref_conflict");
+    }
+    expect(await openLedger(env.DB).balance("alice", "chips")).toEqual({ balance: 100, held: 10, available: 90 });
+    expect(writeEvents()).toEqual([]);
+  });
+});
+
+describe("POST /ledger/admin/accounts/:userId/:currency/reverse", () => {
+  const app = () => makeApp([LEDGER_ACCOUNTS_ADJUST_SCOPE]);
+
+  test("posts the opposite movement against the original, which stays as it was", async () => {
+    await openLedger(env.DB).credit("alice", "chips", 100, "c1", { memo: "daily bonus" });
+    await openLedger(env.DB).debit("alice", "chips", 30, "d1", { memo: "blackjack" });
+    const response = await post(app(), `${ADMIN}/reverse`, LEDGER_ACCOUNTS_ADJUST_SCOPE, {
+      ref: "d1",
+      reason: "Hand voided",
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json<AdjustmentBody>()).toMatchObject({ ref: "d1:reverse", applied: true, balance: 100 });
+    expect(
+      (await entries()).map((e) => ({
+        ref: e.ref,
+        kind: e.kind,
+        amount: e.amount,
+        relatedRef: e.relatedRef,
+        memo: e.memo,
+      })),
+    ).toEqual([
+      { ref: "c1", kind: "credit", amount: 100, relatedRef: null, memo: "daily bonus" },
+      { ref: "d1", kind: "debit", amount: 30, relatedRef: null, memo: "blackjack" },
+      { ref: "d1:reverse", kind: "credit", amount: 30, relatedRef: "d1", memo: "Hand voided" },
+    ]);
+  });
+
+  test("two reversals of one entry in flight at once post one, and audit one", async () => {
+    await openLedger(env.DB).credit("alice", "chips", 100, "c1");
+    await openLedger(env.DB).debit("alice", "chips", 30, "d1");
+    const shared = app();
+    const [a, b] = await Promise.all([
+      post(shared, `${ADMIN}/reverse`, LEDGER_ACCOUNTS_ADJUST_SCOPE, { ref: "d1", reason: "First tab" }),
+      post(shared, `${ADMIN}/reverse`, LEDGER_ACCOUNTS_ADJUST_SCOPE, { ref: "d1", reason: "Second tab" }),
+    ]);
+    expect([a.status, b.status]).toEqual([200, 200]);
+    const applied = [(await a.json<AdjustmentBody>()).applied, (await b.json<AdjustmentBody>()).applied].sort();
+    expect(applied).toEqual([false, true]);
+    expect((await entries()).filter((e) => e.ref === "d1:reverse")).toHaveLength(1);
+    expect(await openLedger(env.DB).balance("alice", "chips")).toEqual({ balance: 100, held: 0, available: 100 });
+    expect(writeEvents()).toHaveLength(1);
+  });
+
+  test("a reversal of a reversal is refused, naming the kind", async () => {
+    await openLedger(env.DB).credit("alice", "chips", 100, "c1");
+    await openLedger(env.DB).debit("alice", "chips", 30, "d1");
+    await openLedger(env.DB).reverse("d1");
+    const response = await post(app(), `${ADMIN}/reverse`, LEDGER_ACCOUNTS_ADJUST_SCOPE, {
+      ref: "d1:reverse",
+      reason: "Undo the undo",
+    });
+    expect(response.status).toBe(409);
+    const body = await response.json<{ error: { code: string; params?: Record<string, string> } }>();
+    expect(body.error).toMatchObject({
+      code: "ledger/entry_not_reversible",
+      params: { kind: "credit", reverses: "d1" },
+    });
+    expect(writeEvents()).toEqual([]);
+  });
+
+  test.each([
+    ["h1", "hold"],
+    ["h2:resolve", "release"],
+    ["h3:resolve", "capture"],
+    ["t1:out", "transfer_out"],
+  ])("a reversal of %s is refused as a %s", async (ref, kind) => {
+    const led = openLedger(env.DB);
+    await led.credit("alice", "chips", 100, "c1");
+    await led.hold("alice", "chips", 10, "h1");
+    await led.hold("alice", "chips", 10, "h2");
+    await led.release("h2");
+    await led.hold("alice", "chips", 10, "h3");
+    await led.capture("h3");
+    await led.transfer("alice", "bob", "chips", 5, "t1");
+    const before = await entries();
+    const response = await post(app(), `${ADMIN}/reverse`, LEDGER_ACCOUNTS_ADJUST_SCOPE, { ref, reason: "x" });
+    expect(response.status).toBe(409);
+    const body = await response.json<{ error: { code: string; params?: Record<string, string> } }>();
+    expect(body.error).toMatchObject({ code: "ledger/entry_not_reversible", params: { kind } });
+    expect(await entries()).toEqual(before);
+    expect(writeEvents()).toEqual([]);
+  });
+
+  test("reversing a credit below available is refused, naming the shortfall, and writes nothing", async () => {
+    await openLedger(env.DB).credit("alice", "chips", 100, "c1");
+    await openLedger(env.DB).debit("alice", "chips", 60, "d1");
+    const response = await post(app(), `${ADMIN}/reverse`, LEDGER_ACCOUNTS_ADJUST_SCOPE, {
+      ref: "c1",
+      reason: "Granted in error",
+    });
+    expect(response.status).toBe(409);
+    const body = await response.json<{ error: { code: string; params?: Record<string, number> } }>();
+    expect(body.error).toMatchObject({
+      code: "ledger/insufficient_funds",
+      params: { amount: 100, available: 40, shortfall: 60 },
+    });
+    expect((await entries()).map((e) => e.ref)).toEqual(["c1", "d1"]);
+    expect(writeEvents()).toEqual([]);
+  });
+
+  test("an entry on another account, or none at all, is not found", async () => {
+    await openLedger(env.DB).credit("bob", "chips", 100, "bob-1");
+    await openLedger(env.DB).credit("alice", "gold", 100, "gold-1");
+    for (const ref of ["bob-1", "gold-1", "nothing"]) {
+      const response = await post(app(), `${ADMIN}/reverse`, LEDGER_ACCOUNTS_ADJUST_SCOPE, { ref, reason: "x" });
+      expect(response.status, ref).toBe(404);
+      expect(await errorCode(response), ref).toBe("ledger/entry_not_found");
+    }
+    expect(await openLedger(env.DB).balance("bob", "chips")).toEqual({ balance: 100, held: 0, available: 100 });
+    expect(writeEvents()).toEqual([]);
+  });
+});
+
+describe("a ref the ledger derives is never a client's, and never a false replay", () => {
+  const app = () => makeApp([LEDGER_ACCOUNTS_ADJUST_SCOPE]);
+
+  /** An entry written straight into the log, as a release before reserved refs were refused could have. */
+  async function legacyEntry(ref: string, userId: string) {
+    await env.DB.prepare(
+      "INSERT INTO pithy_ledger_transactions (ref, user_id, currency, kind, amount, related_ref, memo, created_at) VALUES (?, ?, 'chips', 'credit', 10, NULL, NULL, 0)",
+    )
+      .bind(ref, userId)
+      .run();
+  }
+
+  test.each([
+    ["credit", ":reverse"],
+    ["credit", ":resolve"],
+    ["debit", ":out"],
+    ["debit", ":in"],
+  ])("a %s whose ref ends in %s is refused before anything is written", async (act, suffix) => {
+    await openLedger(env.DB).credit("alice", "chips", 100, "c1");
+    const response = await post(app(), `${ADMIN}/${act}`, LEDGER_ACCOUNTS_ADJUST_SCOPE, {
+      amount: 10,
+      ref: `refund-7${suffix}`,
+      reason: "Refund",
+    });
+    expect(response.status).toBe(400);
+    expect(await errorCode(response)).toBe("validation/invalid_input");
+    expect((await entries()).map((e) => e.ref)).toEqual(["c1"]);
+    expect(writeEvents()).toEqual([]);
+  });
+
+  test("a reversal whose ref an unrelated entry holds is a conflict, not 'already reversed'", async () => {
+    await openLedger(env.DB).credit("alice", "chips", 100, "refund-7");
+    await legacyEntry("refund-7:reverse", "bob");
+    const response = await post(app(), `${ADMIN}/reverse`, LEDGER_ACCOUNTS_ADJUST_SCOPE, {
+      ref: "refund-7",
+      reason: "Granted in error",
+    });
+    expect(response.status).toBe(409);
+    expect(await errorCode(response)).toBe("ledger/ref_conflict");
+    expect(await openLedger(env.DB).balance("alice", "chips")).toEqual({ balance: 100, held: 0, available: 100 });
+    expect(writeEvents()).toEqual([]);
+  });
+
+  test("a release whose ref an unrelated entry holds is a conflict, not 'already released'", async () => {
+    await openLedger(env.DB).credit("alice", "chips", 100, "c1");
+    await openLedger(env.DB).hold("alice", "chips", 40, "H");
+    await legacyEntry("H:resolve", "bob");
+    const response = await post(app(), `${ADMIN}/release`, LEDGER_ACCOUNTS_ADJUST_SCOPE, {
+      ref: "H",
+      reason: "Table crashed",
+    });
+    expect(response.status).toBe(409);
+    expect(await errorCode(response)).toBe("ledger/ref_conflict");
+    expect(await openLedger(env.DB).balance("alice", "chips")).toEqual({ balance: 100, held: 40, available: 60 });
+    expect(writeEvents()).toEqual([]);
+  });
+});
+
+describe("POST /ledger/admin/accounts/:userId/:currency/release", () => {
+  const app = () => makeApp([LEDGER_ACCOUNTS_ADJUST_SCOPE]);
+
+  test("releases an open hold, with the reason on the release entry", async () => {
+    await openLedger(env.DB).credit("alice", "chips", 100, "c1");
+    await openLedger(env.DB).hold("alice", "chips", 40, "bet-1");
+    const response = await post(app(), `${ADMIN}/release`, LEDGER_ACCOUNTS_ADJUST_SCOPE, {
+      ref: "bet-1",
+      reason: "Table crashed mid-hand",
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json<AdjustmentBody>()).toMatchObject({
+      ref: "bet-1:resolve",
+      applied: true,
+      held: 0,
+      available: 100,
+    });
+    expect((await entries()).at(-1)).toMatchObject({
+      ref: "bet-1:resolve",
+      kind: "release",
+      memo: "Table crashed mid-hand",
+    });
+  });
+
+  test("a hold on another user or another currency is not found, and is never released", async () => {
+    await openLedger(env.DB).credit("bob", "chips", 100, "c1");
+    await openLedger(env.DB).hold("bob", "chips", 40, "bob-bet");
+    await openLedger(env.DB).credit("alice", "gold", 100, "c2");
+    await openLedger(env.DB).hold("alice", "gold", 40, "gold-bet");
+    for (const ref of ["bob-bet", "gold-bet"]) {
+      const response = await post(app(), `${ADMIN}/release`, LEDGER_ACCOUNTS_ADJUST_SCOPE, { ref, reason: "x" });
+      expect(response.status, ref).toBe(404);
+      expect(await errorCode(response), ref).toBe("ledger/hold_not_found");
+    }
+    expect((await openLedger(env.DB).balance("bob", "chips")).held).toBe(40);
+    expect((await openLedger(env.DB).balance("alice", "gold")).held).toBe(40);
+    expect(writeEvents()).toEqual([]);
+  });
+
+  test("a ref that is not an open hold is refused", async () => {
+    await openLedger(env.DB).credit("alice", "chips", 100, "c1");
+    await openLedger(env.DB).hold("alice", "chips", 40, "lost-bet");
+    await openLedger(env.DB).capture("lost-bet");
+    const notAHold = await post(app(), `${ADMIN}/release`, LEDGER_ACCOUNTS_ADJUST_SCOPE, { ref: "c1", reason: "x" });
+    expect(notAHold.status).toBe(404);
+    expect(await errorCode(notAHold)).toBe("ledger/hold_not_found");
+    const captured = await post(app(), `${ADMIN}/release`, LEDGER_ACCOUNTS_ADJUST_SCOPE, {
+      ref: "lost-bet",
+      reason: "x",
+    });
+    expect(captured.status).toBe(409);
+    expect(await errorCode(captured)).toBe("ledger/hold_not_open");
+    expect(await openLedger(env.DB).balance("alice", "chips")).toEqual({ balance: 60, held: 0, available: 60 });
+    expect(writeEvents()).toEqual([]);
+  });
+});
+
+describe("the audit event on a management write", () => {
+  test("names the connection, the account, the act, the amount, the reason and the balance either side", async () => {
+    await openLedger(env.DB).credit("alice", "chips", 100, "c1");
+    await openLedger(env.DB).hold("alice", "chips", 30, "h1");
+    await post(makeApp([LEDGER_ACCOUNTS_ADJUST_SCOPE]), `${ADMIN}/debit`, LEDGER_ACCOUNTS_ADJUST_SCOPE, {
+      amount: 20,
+      ref: "fix-1",
+      reason: "Payout paid twice",
+    });
+    expect(writeEvents()).toEqual([
+      expect.objectContaining({
+        action: "ledger/account_debited",
+        outcome: "success",
+        severity: "warning",
+        actorType: "control-plane",
+        actorId: "operator-1",
+        resourceType: "ledger_account",
+        resourceId: "alice:chips",
+        metadata: {
+          connectionId: CONNECTION_ID,
+          userId: "alice",
+          currency: "chips",
+          act: "debit",
+          ref: "fix-1",
+          entryRef: "fix-1",
+          amount: 20,
+          reason: "Payout paid twice",
+          before: { balance: 100, held: 30, available: 70 },
+          after: { balance: 80, held: 30, available: 50 },
+        },
+      }),
+    ]);
+  });
+
+  test.each([
+    ["credit", "ledger/account_credited", { amount: 5, ref: "w1", reason: "r" }, 5],
+    ["reverse", "ledger/entry_reversed", { ref: "c1", reason: "r" }, 100],
+    ["release", "ledger/hold_released", { ref: "h1", reason: "r" }, 30],
+  ])("%s emits %s", async (act, action, body, amount) => {
+    await openLedger(env.DB).credit("alice", "chips", 100, "c1");
+    if (act === "release") await openLedger(env.DB).hold("alice", "chips", 30, "h1");
+    const response = await post(
+      makeApp([LEDGER_ACCOUNTS_ADJUST_SCOPE]),
+      `${ADMIN}/${act}`,
+      LEDGER_ACCOUNTS_ADJUST_SCOPE,
+      body,
+    );
+    expect(response.status).toBe(200);
+    const events = writeEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ action, severity: "warning", actorType: "control-plane" });
+    expect(events[0]?.metadata).toMatchObject({ act, amount, reason: "r", connectionId: CONNECTION_ID });
+  });
+});
+
+describe("the adjust scope is the only one that moves a balance", () => {
+  test.each(["credit", "debit", "reverse", "release"])("%s refuses a connection without it", async (act) => {
+    await openLedger(env.DB).credit("alice", "chips", 100, "c1");
+    await openLedger(env.DB).hold("alice", "chips", 10, "h1");
+    const body =
+      act === "reverse"
+        ? { ref: "c1", reason: "x" }
+        : act === "release"
+          ? { ref: "h1", reason: "x" }
+          : { amount: 5, ref: "w1", reason: "x" };
+    // Every read the ledger has, granted and presented — and none of them confers a write.
+    for (const scope of [LEDGER_ACCOUNTS_READ_SCOPE, LEDGER_TRANSACTIONS_READ_SCOPE]) {
+      const app = makeApp([LEDGER_ACCOUNTS_READ_SCOPE, LEDGER_TRANSACTIONS_READ_SCOPE]);
+      const response = await post(app, `${ADMIN}/${act}`, scope, body);
+      expect(response.status, scope).toBe(403);
+    }
+    // A token naming the adjust scope against a connection never granted it.
+    const ungranted = await post(
+      makeApp([LEDGER_ACCOUNTS_READ_SCOPE]),
+      `${ADMIN}/${act}`,
+      LEDGER_ACCOUNTS_ADJUST_SCOPE,
+      body,
+    );
+    expect(ungranted.status).toBe(403);
+    expect(await openLedger(env.DB).balance("alice", "chips")).toEqual({ balance: 100, held: 10, available: 90 });
+    expect(writeEvents()).toEqual([]);
+  });
+
+  test("the adjust scope reads nothing", async () => {
+    const response = await call(
+      makeApp([LEDGER_ACCOUNTS_ADJUST_SCOPE]),
+      "/ledger/admin/accounts",
+      LEDGER_ACCOUNTS_ADJUST_SCOPE,
+    );
+    expect(response.status).toBe(403);
+  });
+});
+
+describe("the write response schema against the live routes", () => {
+  test("every write returns exactly its declared envelope", async () => {
+    await openLedger(env.DB).credit("alice", "chips", 100, "c1");
+    await openLedger(env.DB).hold("alice", "chips", 10, "h1");
+    const app = makeApp([LEDGER_ACCOUNTS_ADJUST_SCOPE]);
+    for (const [act, body] of [
+      ["credit", { amount: 5, ref: "w1", reason: "r" }],
+      ["debit", { amount: 5, ref: "w2", reason: "r" }],
+      ["reverse", { ref: "w2", reason: "r" }],
+      ["release", { ref: "h1", reason: "r" }],
+    ] as const) {
+      const response = await post(app, `${ADMIN}/${act}`, LEDGER_ACCOUNTS_ADJUST_SCOPE, body);
+      expect(response.status, act).toBe(200);
+      const raw = await response.json();
+      expect(LedgerAdjustmentResponse.parse(raw), act).toEqual(raw);
+    }
   });
 });

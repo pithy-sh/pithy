@@ -153,11 +153,11 @@ export interface InviteView {
   inviteeId: string;
   /** The invite's current state. */
   status: InviteStatus;
-  /** The multiplayer session minted when the invite was accepted, or null while pending or declined. */
+  /** The multiplayer session minted when the invite was accepted, or null otherwise. */
   sessionId: string | null;
   /** When the invite was sent, ISO-8601. */
   createdAt: string;
-  /** When the invitee accepted or declined, ISO-8601, or null while pending. */
+  /** When the invitee accepted or declined, or a management client canceled it, ISO-8601, or null while pending. */
   respondedAt: string | null;
 }
 

@@ -4,6 +4,7 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
+import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import { createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
 import { workerIdentity } from "@pithy-sh/core/src/worker/identity";
 import { z } from "zod";
@@ -13,6 +14,8 @@ import { auditAdminRoutes } from "./http/guards";
 import { registerAuditRoutes } from "./http/routes";
 import { audit_0001_init } from "./migrations/0001_init";
 import { audit_0002_actor_kind } from "./migrations/0002_actor_kind";
+import { audit_0003_call_index } from "./migrations/0003_call_index";
+import { audit_0004_request_index } from "./migrations/0004_request_index";
 import { recordAuditEvent } from "./recorder";
 import { auditExampleSeed } from "./seeds/example";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
@@ -76,6 +79,9 @@ export interface AuditCapability extends Capability {
  */
 export function audit(config: AuditConfigInput = {}): AuditCapability {
   const resolved = AuditConfig.parse(config);
+  // Every composed capability's admin routes, read at `compose`. Until then — a router mounted outside a backend —
+  // audit's own, so a reach read still groups its own routes rather than calling every path unmatched.
+  let adminRoutes: readonly AdminRoute[] = auditAdminRoutes(resolved.basePath);
   const capability = defineCapability({
     name: "audit",
     // The package this capability ships in and the version it ships at, both stamped by
@@ -91,7 +97,12 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
         binding: resolved.database,
         tables: auditTables,
         migrationOrder: AUDIT_MIGRATION_ORDER,
-        migrations: { "0001_init": audit_0001_init, "0002_actor_kind": audit_0002_actor_kind },
+        migrations: {
+          "0001_init": audit_0001_init,
+          "0002_actor_kind": audit_0002_actor_kind,
+          "0003_call_index": audit_0003_call_index,
+          "0004_request_index": audit_0004_request_index,
+        },
       },
     },
     seeds: [auditExampleSeed],
@@ -116,11 +127,17 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
     // Built from the resolved `basePath`, never the default: an adopter who mounts this at `/trail`
     // gets a manifest naming their paths, where a client assuming the default would 404.
     adminRoutes: auditAdminRoutes(resolved.basePath),
+    // The manifest's routes, gathered once at startup: a credential's reach groups the paths it called by the routes
+    // this Worker declares (#828), and only `compose` sees every capability.
+    compose: ({ capabilities }) => {
+      adminRoutes = capabilities.flatMap((capability) => capability.adminRoutes ?? []);
+    },
     // The registry key is this package's own detail, so the routes are handed a resolver rather than
     // being made to know it — the same reason the middleware below resolves lazily.
     routes: registerAuditRoutes({
       basePath: resolved.basePath,
       database: (c) => (c.var.db as Record<typeof AUDIT_DATABASE_NAME, AuditDatabase>)[AUDIT_DATABASE_NAME],
+      adminRoutes: () => adminRoutes,
     }),
     // Replace the no-op `emit` seam with a recorder over this request's audit database. The database
     // is resolved lazily inside the closure — only when a route actually emits — so a request that

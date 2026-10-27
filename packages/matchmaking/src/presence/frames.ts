@@ -72,6 +72,30 @@ export const PresenceFriendRequestFrame = z
   .describe("Another player sent this one a friend request.");
 export type PresenceFriendRequestFrame = z.infer<typeof PresenceFriendRequestFrame>;
 
+/** A management client canceled an invite this player sent or received. */
+export const PresenceInviteCanceledFrame = z
+  .object({
+    type: z.literal("invite_canceled").describe("Always `invite_canceled`."),
+    inviteId: z.string().describe("The invite's UUID. It can no longer be accepted or declined."),
+    gameKey: z.string().describe("The matchmaking game the invite was for."),
+  })
+  .describe("An invite this player sent or received was canceled by the game's operator. Both players get it.");
+export type PresenceInviteCanceledFrame = z.infer<typeof PresenceInviteCanceledFrame>;
+
+/** A management client dropped this player from a game's open queue. */
+export const PresenceQueueDroppedFrame = z
+  .object({
+    type: z.literal("queue_dropped").describe("Always `queue_dropped`."),
+    gameKey: z.string().describe("The matchmaking game whose queue the player was dropped from."),
+    reason: z
+      .string()
+      .describe(
+        "Why, in the operator's words. The same reason the audit event records, so it is written for the player.",
+      ),
+  })
+  .describe("The game's operator dropped this player from the open queue, and says why.");
+export type PresenceQueueDroppedFrame = z.infer<typeof PresenceQueueDroppedFrame>;
+
 /** A frame the socket could not accept. */
 export const PresenceErrorFrame = z
   .object({
@@ -85,7 +109,13 @@ export type PresenceErrorFrame = z.infer<typeof PresenceErrorFrame>;
 
 /** What `notify()` pushes to a connected player, as something happens. */
 export const PresenceEvent = z
-  .discriminatedUnion("type", [PresenceMatchFoundFrame, PresenceInviteFrame, PresenceFriendRequestFrame])
+  .discriminatedUnion("type", [
+    PresenceMatchFoundFrame,
+    PresenceInviteFrame,
+    PresenceFriendRequestFrame,
+    PresenceInviteCanceledFrame,
+    PresenceQueueDroppedFrame,
+  ])
   .describe("An event pushed to a connected player as it happens.");
 export type PresenceEvent = z.infer<typeof PresenceEvent>;
 
@@ -96,6 +126,8 @@ export const PresenceServerFrame = z
     PresenceMatchFoundFrame,
     PresenceInviteFrame,
     PresenceFriendRequestFrame,
+    PresenceInviteCanceledFrame,
+    PresenceQueueDroppedFrame,
     PresenceErrorFrame,
   ])
   .describe("A JSON frame the Worker sends on the presence socket.");

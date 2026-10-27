@@ -130,6 +130,9 @@ export const esErrors: MessageCatalog = {
   "ledger/insufficient_funds": "El saldo no es suficiente.",
   "ledger/hold_not_open": "Esa reserva de saldo ya está resuelta.",
   "ledger/invalid_amount": "El importe debe ser un número entero positivo.",
+  "ledger/entry_not_found": "Ese movimiento no existe.",
+  "ledger/entry_not_reversible": "Ese movimiento no se puede revertir.",
+  "ledger/ref_conflict": "Esa referencia ya pertenece a otro movimiento.",
 
   // Rating.
   "rating/unknown_algorithm": "Ese algoritmo de valoración no existe.",

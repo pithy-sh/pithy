@@ -118,3 +118,55 @@ export class LedgerInvalidAmountError extends PithyError {
     );
   }
 }
+
+export class LedgerEntryNotFoundError extends PithyError {
+  constructor(args: LedgerErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "ledger/entry_not_found",
+        status: 404,
+        message: args.message ?? "That entry does not exist.",
+        action: args.action ?? "Check the entry's ref against the account's entry log.",
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}
+
+export class LedgerEntryNotReversibleError extends PithyError {
+  constructor(args: LedgerErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "ledger/entry_not_reversible",
+        status: 409,
+        message: args.message ?? "That entry cannot be reversed.",
+        action:
+          args.action ??
+          "Only a credit or a debit reverses, and never a reversal. Release a hold instead; correct a capture or a transfer with a credit or a debit.",
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}
+
+export class LedgerRefConflictError extends PithyError {
+  constructor(args: LedgerErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "ledger/ref_conflict",
+        status: 409,
+        message: args.message ?? "That ref already belongs to another entry.",
+        action:
+          args.action ??
+          "Read the entry under that ref. It is not this write's: send a credit or a debit under a new ref, and correct an entry or a hold whose derived ref is taken with a credit or a debit instead.",
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}
