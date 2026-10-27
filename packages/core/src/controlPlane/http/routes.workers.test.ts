@@ -571,6 +571,31 @@ describe("GET /control-plane/manifest", () => {
     for (const route of seam?.adminRoutes ?? []) expect(route.summary.length).toBeGreaterThan(0);
   });
 
+  test("names each route's operation and carries its input, generated from the validators it runs (#723)", async () => {
+    await connect([registered(alice)]);
+
+    const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
+    const json = ControlPlaneManifest.parse(await body<unknown>(response));
+    const seam = json.capabilities.find((capability) => capability.name === "controlplane");
+    const route = (method: string, suffix: string) =>
+      seam?.adminRoutes.find((entry) => entry.method === method && entry.path.endsWith(suffix));
+
+    for (const entry of seam?.adminRoutes ?? []) {
+      expect(entry.operation).toBeDefined();
+      expect(entry.input).toMatchObject({ type: "object", additionalProperties: false });
+    }
+    expect(route("GET", "/ping")?.operation).toBe("ping");
+    // A route that validates nothing takes nothing.
+    expect(route("GET", "/ping")?.input).toEqual({ type: "object", properties: {}, additionalProperties: false });
+    // A route with a param and a body publishes both, under the part of the request each comes from.
+    const expire = route("POST", "/expire");
+    expect(expire?.operation).toBe("keys.expire");
+    expect(expire?.input).toMatchObject({
+      required: ["path", "body"],
+      properties: { path: { type: "object", properties: { keyId: { type: "string" } } }, body: { type: "object" } },
+    });
+  });
+
   test("a capability with no management surface is reported, with an empty route list", async () => {
     // "Composed but has nothing to administer" and "not installed" are different facts, and a client
     // that cannot tell them apart renders the wrong thing for both.

@@ -109,24 +109,28 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
   return [
     {
       method: "GET",
+      operation: "organizations.list",
       path: `${basePath}/admin/organizations`,
       scope: ORGANIZATION_ACCOUNTS_READ_SCOPE,
       summary: "Every tenant, newest first, with how many people are in each. Bounded, and it says when it truncated.",
     },
     {
       method: "GET",
+      operation: "members.list",
       path: `${basePath}/admin/organizations/:organizationId/members`,
       scope: ORGANIZATION_MEMBERS_READ_SCOPE,
       summary: "One tenant's roster: who is in it, at what role, with the names and addresses behind the memberships.",
     },
     {
       method: "PATCH",
+      operation: "organizations.update",
       path: one,
       scope: ORGANIZATION_ACCOUNTS_WRITE_SCOPE,
       summary: "Rename a tenant, give it a free short name, or set its seat limit. Takes a reason.",
     },
     {
       method: "POST",
+      operation: "organizations.suspend",
       path: `${one}/suspend`,
       scope: ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
       summary:
@@ -134,6 +138,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
     },
     {
       method: "POST",
+      operation: "organizations.suspend.preview",
       path: `${one}/suspend/preview`,
       scope: ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
       summary:
@@ -141,6 +146,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
     },
     {
       method: "POST",
+      operation: "organizations.reinstate",
       path: `${one}/reinstate`,
       scope: ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
       summary:
@@ -148,6 +154,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
     },
     {
       method: "DELETE",
+      operation: "organizations.delete",
       path: one,
       scope: ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
       summary:
@@ -155,6 +162,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
     },
     {
       method: "POST",
+      operation: "organizations.delete.preview",
       path: `${one}/delete/preview`,
       scope: ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
       summary:
@@ -162,12 +170,14 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
     },
     {
       method: "POST",
+      operation: "organizations.restore",
       path: `${one}/restore`,
       scope: ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
       summary: "Restore a deleted tenant inside its window, with every membership it had. Takes a reason.",
     },
     {
       method: "POST",
+      operation: "members.add",
       path: `${one}/members`,
       scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
       summary:
@@ -175,6 +185,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
     },
     {
       method: "PATCH",
+      operation: "members.update",
       path: `${one}/members/:membershipId`,
       scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
       summary:
@@ -182,18 +193,21 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
     },
     {
       method: "DELETE",
+      operation: "members.remove",
       path: `${one}/members/:membershipId`,
       scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
       summary: "Remove a member and clear their selection. Never an owner. Takes a reason.",
     },
     {
       method: "GET",
+      operation: "invitations.list",
       path: `${one}/invitations`,
       scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
       summary: "A tenant's outstanding invitations, to fix one. Takes a reason.",
     },
     {
       method: "POST",
+      operation: "invitations.resend",
       path: `${one}/invitations/:invitationId/resend`,
       scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
       summary:
@@ -201,6 +215,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
     },
     {
       method: "DELETE",
+      operation: "invitations.revoke",
       path: `${one}/invitations/:invitationId`,
       scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
       summary: "Revoke an invitation, so its link stops working. Takes a reason.",
@@ -209,6 +224,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
       ? [
           {
             method: "POST" as const,
+            operation: "ownership.transfer",
             path: `${one}/ownership`,
             scope: ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE,
             summary:

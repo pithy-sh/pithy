@@ -520,6 +520,58 @@
       ]
     },
     {
+      "path": "mcp",
+      "flags": []
+    },
+    {
+      "path": "mcp connect",
+      "flags": [
+        "--env",
+        "--worker",
+        "--worker-url",
+        "--workerUrl",
+        "--purpose",
+        "--scope",
+        "--update",
+        "--no-update",
+        "--oidc-issuer",
+        "--oidcIssuer",
+        "--oidc-claim",
+        "--oidcClaim",
+        "--oidc-audience",
+        "--oidcAudience",
+        "--oidc-token",
+        "--oidcToken",
+        "--client",
+        "--all",
+        "--no-all",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
+      "path": "mcp disconnect",
+      "flags": [
+        "--connection",
+        "--worker",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
+      "path": "mcp serve",
+      "flags": [
+        "--connection"
+      ]
+    },
+    {
+      "path": "mcp status",
+      "flags": [
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
       "path": "media",
       "flags": []
     },

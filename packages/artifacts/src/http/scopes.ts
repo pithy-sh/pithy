@@ -50,30 +50,35 @@ export function artifactsAdminRoutes(basePath: string): AdminRoute[] {
   return [
     {
       method: "GET",
+      operation: "repos.list",
       path: `${basePath}/admin/repos`,
       scope: ARTIFACTS_REPOS_READ_SCOPE,
       summary: "Page every repository, newest first, with its owner, remote access and last push.",
     },
     {
       method: "GET",
+      operation: "repos.read",
       path: `${basePath}/admin/repos/:name`,
       scope: ARTIFACTS_REPOS_READ_SCOPE,
       summary: "One repository's metadata, its grants, and its commit log, paged.",
     },
     {
       method: "GET",
+      operation: "tokens.list",
       path: `${basePath}/admin/repos/:name/tokens`,
       scope: ARTIFACTS_REPOS_READ_SCOPE,
       summary: "Every token on one repository, with its scope, state, expiry and holder.",
     },
     {
       method: "POST",
+      operation: "tokens.revoke",
       path: `${basePath}/admin/repos/:name/tokens/:tokenId/revoke`,
       scope: ARTIFACTS_TOKENS_REVOKE_SCOPE,
       summary: "Revoke one token, with an idempotency key and a reason.",
     },
     {
       method: "POST",
+      operation: "tokens.revoke_all",
       path: `${basePath}/admin/repos/:name/tokens/revoke`,
       scope: ARTIFACTS_TOKENS_REVOKE_SCOPE,
       summary: "Revoke every live token on one repository, with an idempotency key and a reason.",

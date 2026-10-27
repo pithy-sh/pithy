@@ -31,6 +31,7 @@ export function turnstileAdminRoutes(): AdminRoute[] {
   return [
     {
       method: "GET",
+      operation: "widgets.list",
       path: TURNSTILE_WIDGETS_PATH,
       scope: TURNSTILE_WIDGETS_READ_SCOPE,
       summary:

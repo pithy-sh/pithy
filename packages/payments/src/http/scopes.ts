@@ -232,6 +232,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
   return [
     {
       method: "GET",
+      operation: "catalog.read",
       path: `${basePath}/admin/catalog`,
       scope: PAYMENTS_CATALOG_READ_SCOPE,
       summary:
@@ -239,6 +240,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
     },
     {
       method: "GET",
+      operation: "purchases.list",
       path: `${basePath}/admin/purchases`,
       scope: PAYMENTS_PURCHASES_READ_SCOPE,
       summary:
@@ -246,18 +248,21 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
     },
     {
       method: "GET",
+      operation: "subscriptions.list",
       path: `${basePath}/admin/subscriptions`,
       scope: PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
       summary: "Page the purchases that renew — who is still paying, and when the period they paid for ends.",
     },
     {
       method: "GET",
+      operation: "entitlements.list",
       path: `${basePath}/admin/entitlements`,
       scope: PAYMENTS_ENTITLEMENTS_READ_SCOPE,
       summary: "Page what accounts hold — whether each entitlement grants right now, and which purchase is the reason.",
     },
     {
       method: "GET",
+      operation: "entitlements.read",
       path: `${basePath}/admin/entitlements/:subjectType/:subjectId`,
       scope: PAYMENTS_ENTITLEMENTS_READ_SCOPE,
       summary:
@@ -265,18 +270,21 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
     },
     {
       method: "GET",
+      operation: "discounts.list",
       path: `${basePath}/admin/discounts`,
       scope: PAYMENTS_DISCOUNT_READ_SCOPE,
       summary: "The discount codes this project has issued, read from the store that holds them.",
     },
     {
       method: "POST",
+      operation: "discounts.create",
       path: `${basePath}/admin/discounts`,
       scope: PAYMENTS_DISCOUNT_CREATE_SCOPE,
       summary: "Mint a discount code at one store, from terms stated in the units a customer experiences.",
     },
     {
       method: "GET",
+      operation: "reconcile_runs.list",
       path: `${basePath}/admin/reconcile-runs`,
       scope: PAYMENTS_RECONCILE_READ_SCOPE,
       summary:
@@ -284,6 +292,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
     },
     {
       method: "POST",
+      operation: "reconcile_runs.start",
       path: `${basePath}/admin/reconcile-runs`,
       scope: PAYMENTS_RECONCILE_RUN_SCOPE,
       summary:
@@ -291,18 +300,21 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
     },
     {
       method: "POST",
+      operation: "entitlements.grant",
       path: `${basePath}/entitlements/grant`,
       scope: PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
       summary: "Comp an entitlement, or repair a purchase that verified but never projected.",
     },
     {
       method: "POST",
+      operation: "entitlements.revoke",
       path: `${basePath}/entitlements/revoke`,
       scope: PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
       summary: "Take an entitlement back, effective immediately.",
     },
     {
       method: "GET",
+      operation: "usage_runs.list",
       path: `${basePath}/admin/usage-runs`,
       scope: PAYMENTS_USAGE_READ_SCOPE,
       summary:
@@ -310,6 +322,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
     },
     {
       method: "GET",
+      operation: "webhook_events.list",
       path: `${basePath}/admin/webhook-events`,
       scope: PAYMENTS_WEBHOOKS_READ_SCOPE,
       summary:
@@ -317,6 +330,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
     },
     {
       method: "GET",
+      operation: "overrides.list",
       path: `${basePath}/admin/overrides`,
       scope: PAYMENTS_ENTITLEMENTS_READ_SCOPE,
       summary:
@@ -324,6 +338,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
     },
     {
       method: "POST",
+      operation: "overrides.set",
       path: `${basePath}/entitlements/overrides`,
       scope: PAYMENTS_OVERRIDE_SET_SCOPE,
       summary:
@@ -331,6 +346,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
     },
     {
       method: "POST",
+      operation: "overrides.unrestricted",
       path: `${basePath}/entitlements/overrides/unrestricted`,
       scope: PAYMENTS_OVERRIDE_UNRESTRICTED_SCOPE,
       summary:
@@ -338,6 +354,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
     },
     {
       method: "POST",
+      operation: "overrides.clear",
       path: `${basePath}/entitlements/overrides/clear`,
       scope: PAYMENTS_OVERRIDE_CLEAR_SCOPE,
       summary:

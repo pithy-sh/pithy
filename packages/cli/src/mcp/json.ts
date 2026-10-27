@@ -3,7 +3,7 @@
 
 import { parse } from "comment-json";
 import { formatJsonc } from "../project/jsonc";
-import { DOCS_MCP_NAME, type McpClient } from "./clients";
+import { entryNameOf, type McpClient } from "./clients";
 import {
   type DocumentWriter,
   type MergeResult,
@@ -127,11 +127,11 @@ function open(document: string, client: McpClient): Opened | Refused {
   if (servers !== undefined && !isObject(servers)) {
     return { state: "refused", reason: `The \`${client.rootKey}\` key in the file is not an object.` };
   }
-  const entry = servers === undefined ? undefined : servers[DOCS_MCP_NAME];
+  const entry = servers === undefined ? undefined : servers[entryNameOf(client)];
   if (entry !== undefined && !isObject(entry)) {
     return {
       state: "refused",
-      reason: `The \`${DOCS_MCP_NAME}\` entry under \`${client.rootKey}\` is not an object, so it was left alone.`,
+      reason: `The \`${entryNameOf(client)}\` entry under \`${client.rootKey}\` is not an object, so it was left alone.`,
     };
   }
   return { state: "open", root: parsed, servers: servers ?? null, entry: entry ?? null };
@@ -139,7 +139,7 @@ function open(document: string, client: McpClient): Opened | Refused {
 
 /** The smallest document that declares the entry — the root key, us, and nothing else. */
 function snippet(client: McpClient): string {
-  return formatJsonc({ [client.rootKey]: { [DOCS_MCP_NAME]: client.entry } }, null);
+  return formatJsonc({ [client.rootKey]: { [entryNameOf(client)]: client.entry } }, null);
 }
 
 /**
@@ -166,7 +166,7 @@ function merge(document: string | null, client: McpClient, preamble?: string | n
   const servers = opened.servers ?? {};
   if (opened.servers === null) opened.root[client.rootKey] = servers;
   const entry = opened.entry ?? {};
-  if (opened.entry === null) servers[DOCS_MCP_NAME] = entry;
+  if (opened.entry === null) servers[entryNameOf(client)] = entry;
   for (const key of Object.keys(entry)) if (!(key in client.entry)) delete entry[key];
   // Cloned, so nothing in the tree the printer walks aliases the registry's own row.
   for (const [key, value] of Object.entries(client.entry)) entry[key] = structuredClone(value);
@@ -187,8 +187,8 @@ function remove(document: string, client: McpClient): RemoveResult {
   if (opened.servers === null || opened.entry === null) {
     return { state: "merged", outcome: "absent", document };
   }
-  delete opened.servers[DOCS_MCP_NAME];
-  forgetComments(opened.servers, DOCS_MCP_NAME);
+  delete opened.servers[entryNameOf(client)];
+  forgetComments(opened.servers, entryNameOf(client));
   return { state: "merged", outcome: "removed", document: formatJsonc(opened.root, document) };
 }
 

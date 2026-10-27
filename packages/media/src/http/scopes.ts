@@ -43,6 +43,7 @@ export function mediaAdminRoutes(basePath: string): AdminRoute[] {
   return [
     {
       method: "GET",
+      operation: "usage.read",
       path: `${basePath}/admin/usage`,
       scope: MEDIA_USAGE_READ_SCOPE,
       summary:
@@ -50,6 +51,7 @@ export function mediaAdminRoutes(basePath: string): AdminRoute[] {
     },
     {
       method: "GET",
+      operation: "delivery.read",
       path: `${basePath}/admin/delivery`,
       scope: MEDIA_DELIVERY_READ_SCOPE,
       summary:

@@ -41,6 +41,7 @@ export function vectorAdminRoutes(basePath: string): AdminRoute[] {
   return [
     {
       method: "GET",
+      operation: "indexes.list",
       path: vectorIndexesPath(basePath),
       scope: VECTOR_INDEXES_READ_SCOPE,
       summary:

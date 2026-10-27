@@ -1254,6 +1254,7 @@ const SPREAD_BUILT = [
   "email",
   "env",
   "feature",
+  "mcp",
   "media",
   "migrate",
   "provision",
@@ -1415,7 +1416,8 @@ describe("the docs say what the code emits", () => {
     // 35 since #762: `pithy token forget` spreads the engine's result behind its `command`, as `mint` does.
     // 36 since #765: `pithy completion` spreads each payload behind its `command` and `action`, as `alias` does.
     // 37 since #722: `pithy dashboard revoke-trust` spreads its report behind its `command`, as `revoke-key` does.
-    expect(scanned.reduce((total, [, read]) => total + read.spreadSites, 0)).toBe(37);
+    // 40 since #723: `pithy mcp` spreads its connect, update and disconnect reports behind their `command`.
+    expect(scanned.reduce((total, [, read]) => total + read.spreadSites, 0)).toBe(40);
   });
 
   /**

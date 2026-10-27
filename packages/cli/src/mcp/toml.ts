@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
-import { DOCS_MCP_NAME, type McpClient } from "./clients";
+import { entryNameOf, type McpClient } from "./clients";
 import {
   type DocumentWriter,
   type MergeResult,
@@ -171,8 +171,13 @@ function scan(document: string, client: McpClient): Scan | Refused {
       if (table === null && key[0] === client.rootKey) {
         return refuse(`This file assigns \`${client.rootKey}\` directly, so there is no table to merge into.`);
       }
-      if (table !== null && table.length === 1 && names(table)[0] === client.rootKey && key[0] === DOCS_MCP_NAME) {
-        return refuse(`This file declares \`${DOCS_MCP_NAME}\` as a key rather than as its own table.`);
+      if (
+        table !== null &&
+        table.length === 1 &&
+        names(table)[0] === client.rootKey &&
+        key[0] === entryNameOf(client)
+      ) {
+        return refuse(`This file declares \`${entryNameOf(client)}\` as a key rather than as its own table.`);
       }
       continue;
     }
@@ -188,8 +193,8 @@ function scan(document: string, client: McpClient): Scan | Refused {
     if (key[0] === client.rootKey && !line.segments.every((segment) => segment.bare)) {
       return refuse(`This file spells the \`${client.rootKey}\` table with quoted keys Pithy does not match.`);
     }
-    if (key.length === 2 && key[0] === client.rootKey && key[1] === DOCS_MCP_NAME) {
-      if (target !== null) return refuse(`This file declares the \`${DOCS_MCP_NAME}\` table more than once.`);
+    if (key.length === 2 && key[0] === client.rootKey && key[1] === entryNameOf(client)) {
+      if (target !== null) return refuse(`This file declares the \`${entryNameOf(client)}\` table more than once.`);
       target = index;
     }
     headers.push(index);
@@ -256,7 +261,7 @@ function renderBlock(client: McpClient): string[] {
     if (!BARE_KEY.test(key)) throw unrenderable(key, "a field name that is not a bare TOML key");
     return `${key} = ${renderValue(key, value)}`;
   });
-  return [`[${client.rootKey}.${DOCS_MCP_NAME}]`, ...body];
+  return [`[${client.rootKey}.${entryNameOf(client)}]`, ...body];
 }
 
 /** Lines to a document: one trailing newline, always, and nothing at all for an empty one. */

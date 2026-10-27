@@ -33,6 +33,35 @@ export const AdminRouteMethod = z
   .describe("The HTTP method this admin route answers on.");
 export type AdminRouteMethod = z.infer<typeof AdminRouteMethod>;
 
+/**
+ * An admin route's operation id (#723, `docs/AGENT-ACCESS.md` §5): lowercase words joined by `.`, `_` or `-`.
+ *
+ * **Permanent once published.** An agent names a tool in prompts, saved workflows and its own record of what
+ * worked, so a renamed operation breaks callers silently — the same class of rule as a role name. Unique within
+ * its capability; `packages/cli/src/ci/adminOperations.test.ts` holds every kit capability's to a table.
+ */
+export const AdminOperation = z
+  .string()
+  .max(64)
+  .regex(
+    /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/,
+    "An operation is lowercase words joined by `.`, `_` or `-`, e.g. `threads.reply`.",
+  )
+  .describe("An admin route's permanent name within its capability, e.g. `threads.reply`.");
+export type AdminOperation = z.infer<typeof AdminOperation>;
+
+/**
+ * An admin route's input as JSON Schema (#723): an object whose `path`, `query` and `body` properties are each
+ * the JSON Schema of the validator the route runs on that part of the request.
+ *
+ * A record rather than a modeled schema, because it is JSON Schema — a vocabulary this manifest relays, never
+ * one it defines — and an MCP client publishes it verbatim as a tool's `inputSchema`.
+ */
+export const AdminRouteInput = z
+  .record(z.string().describe("A JSON Schema keyword."), z.unknown().describe("Its value."))
+  .describe("A JSON Schema object describing the route's path parameters, query and body.");
+export type AdminRouteInput = z.infer<typeof AdminRouteInput>;
+
 /** One admin route a capability contributes behind the `control-plane` strategy. */
 export const AdminRoute = z
   .object({
@@ -50,6 +79,14 @@ export const AdminRoute = z
       .string()
       .min(1)
       .describe("One line describing what the route does, for a management client to render beside it."),
+    // Optional, as every field added to this manifest is (#450): absent says *this Worker predates operations*,
+    // and a client that names tools from them offers no tool for such a route rather than guessing a name (#723).
+    operation: AdminOperation.optional().describe(
+      "The route's permanent name within its capability — `threads.reply`, `users.suspend` — declared beside the route by the capability that owns it. Never derived from the path, which moves when an adopter moves a `basePath`, and never from the scope, which several routes share. An MCP tool is named `<capability>_<operation>`. Absent from a Worker that predates #723.",
+    ),
+    input: AdminRouteInput.optional().describe(
+      "What the route takes, as one JSON Schema object with up to three properties — `path`, `query` and `body` — generated from the Zod schemas the route validates with, so it cannot drift from what the route accepts. Filled in by the seam from the composed router, never declared by hand. Absent from a Worker that predates #723.",
+    ),
   })
   .describe(
     "One admin route, described well enough for a management client to call it without holding any capability-specific knowledge.",

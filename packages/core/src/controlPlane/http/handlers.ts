@@ -21,6 +21,7 @@ import { CONTROL_PLANE_CONNECTIONS_TABLE, type ControlPlaneDatabase } from "../d
 import type { CapabilityDeclaration, ControlPlaneManifestWire } from "../discovery/adminRoute";
 import { type CapabilityHealthSource, readCapabilityHealth } from "../discovery/health";
 import { healthWire } from "../discovery/healthSummary";
+import { routeInputs, withRouteInputs } from "../discovery/routeInput";
 import { ControlPlaneInvalidCredentialError, ControlPlaneKeyConflictError } from "../error/errors";
 import { readEvidencePack } from "../evidence/pack";
 import { type ComposedMigrationDatabase, readDatabaseMigrations } from "../migrationState/migrationState";
@@ -251,13 +252,21 @@ export function pingHandler(deps: ControlPlaneHandlerDeps) {
  * name.
  */
 export function manifestHandler(deps: ControlPlaneHandlerDeps) {
+  // Each admin route's input, converted once per route table rather than once per read (#723). Keyed on the
+  // table itself, so an app whose groups were recorded late is converted when it first has them.
+  let converted: { groups: readonly RouteGroup[]; inputs: ReturnType<typeof routeInputs> } | undefined;
+  const inputsFor = (groups: readonly RouteGroup[] | undefined) => {
+    if (groups === undefined) return undefined;
+    if (converted?.groups !== groups) converted = { groups, inputs: routeInputs(groups) };
+    return converted.inputs;
+  };
   return async (c: Context<PithyHonoEnv>) => {
     const context = caller(c);
     const sources = deps.composedHealth();
     // In parallel: each producer is bounded by its own declaration, and a Worker composing several has
     // no reason to serialize numbers that do not depend on each other.
     const capabilities = await Promise.all(
-      deps.composedCapabilities().map(async (declaration) => ({
+      withRouteInputs(deps.composedCapabilities(), inputsFor(deps.routeGroups())).map(async (declaration) => ({
         ...declaration,
         // Spread, so the values and the failure flag are written together or not at all. A handler that
         // set one and forgot the other is the shape of defect the four-state value exists to prevent.

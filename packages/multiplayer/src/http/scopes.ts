@@ -46,30 +46,35 @@ export function multiplayerAdminRoutes(basePath: string): AdminRoute[] {
   return [
     {
       method: "GET",
+      operation: "sessions.list",
       path: `${basePath}/admin/sessions`,
       scope: MULTIPLAYER_SESSIONS_READ_SCOPE,
       summary: "Sessions in flight, newest first: game, phase, players and age.",
     },
     {
       method: "GET",
+      operation: "sessions.read",
       path: `${basePath}/admin/sessions/:id`,
       scope: MULTIPLAYER_SESSIONS_READ_SCOPE,
       summary: "One session, read from its Durable Object: players, phase, deadline and who is connected.",
     },
     {
       method: "POST",
+      operation: "sessions.close",
       path: `${basePath}/admin/sessions/:id/close`,
       scope: MULTIPLAYER_SESSIONS_MODERATE_SCOPE,
       summary: "Close a session in flight, with a reason its players are told. It records no result.",
     },
     {
       method: "GET",
+      operation: "results.list",
       path: `${basePath}/admin/results`,
       scope: MULTIPLAYER_SESSIONS_READ_SCOPE,
       summary: "Results, most recently ended first: status, players, scores, winner or draw, and any void.",
     },
     {
       method: "POST",
+      operation: "results.void",
       path: `${basePath}/admin/results/:id/void`,
       scope: MULTIPLAYER_SESSIONS_MODERATE_SCOPE,
       summary: "Void a result, with a reason. The leaderboard and rating take it back, each reported.",

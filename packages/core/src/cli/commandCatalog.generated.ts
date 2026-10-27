@@ -1220,6 +1220,172 @@ export const COMMANDS = {
     },
     "groups": []
   },
+  "mcp connect": {
+    "positionals": [],
+    "flags": {
+      "--env": {
+        "type": "string",
+        "required": false,
+        "repeatable": false,
+        "default": "dev"
+      },
+      "--worker": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--worker-url": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--purpose": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--scope": {
+        "type": "string",
+        "required": false,
+        "repeatable": true
+      },
+      "--update": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      },
+      "--oidc-issuer": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--oidc-claim": {
+        "type": "string",
+        "required": false,
+        "repeatable": true
+      },
+      "--oidc-audience": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--oidc-token": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--client": {
+        "type": "string",
+        "required": false,
+        "repeatable": false,
+        "enum": [
+          "claude-code",
+          "cursor",
+          "vscode",
+          "gemini",
+          "claude-desktop",
+          "cline",
+          "zed",
+          "codex",
+          "goose",
+          "continue"
+        ]
+      },
+      "--all": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": [
+      {
+        "kind": "atMostOne",
+        "flags": [
+          "--client",
+          "--all"
+        ]
+      },
+      {
+        "kind": "atMostOne",
+        "flags": [
+          "--oidc-issuer",
+          "--update"
+        ]
+      },
+      {
+        "kind": "requires",
+        "flag": "--oidc-claim",
+        "needs": [
+          "--oidc-issuer"
+        ],
+        "any": false
+      },
+      {
+        "kind": "requires",
+        "flag": "--oidc-audience",
+        "needs": [
+          "--oidc-issuer"
+        ],
+        "any": false
+      },
+      {
+        "kind": "requires",
+        "flag": "--oidc-token",
+        "needs": [
+          "--oidc-issuer"
+        ],
+        "any": false
+      }
+    ]
+  },
+  "mcp disconnect": {
+    "positionals": [],
+    "flags": {
+      "--connection": {
+        "type": "string",
+        "required": true,
+        "repeatable": false
+      },
+      "--worker": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
+  "mcp serve": {
+    "positionals": [],
+    "flags": {
+      "--connection": {
+        "type": "string",
+        "required": true,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
+  "mcp status": {
+    "positionals": [],
+    "flags": {
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
   "media deprovision": {
     "positionals": [],
     "flags": {
@@ -2970,6 +3136,7 @@ export const GROUPS = [
   "docs",
   "email",
   "feature",
+  "mcp",
   "media",
   "payments",
   "privacy",

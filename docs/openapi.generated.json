@@ -461,6 +461,23 @@
                                   "type": "string",
                                   "minLength": 1,
                                   "description": "One line describing what the route does, for a management client to render beside it."
+                                },
+                                "operation": {
+                                  "description": "The route's permanent name within its capability — `threads.reply`, `users.suspend` — declared beside the route by the capability that owns it. Never derived from the path, which moves when an adopter moves a `basePath`, and never from the scope, which several routes share. An MCP tool is named `<capability>_<operation>`. Absent from a Worker that predates #723.",
+                                  "type": "string",
+                                  "maxLength": 64,
+                                  "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$"
+                                },
+                                "input": {
+                                  "description": "What the route takes, as one JSON Schema object with up to three properties — `path`, `query` and `body` — generated from the Zod schemas the route validates with, so it cannot drift from what the route accepts. Filled in by the seam from the composed router, never declared by hand. Absent from a Worker that predates #723.",
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string",
+                                    "description": "A JSON Schema keyword."
+                                  },
+                                  "additionalProperties": {
+                                    "description": "Its value."
+                                  }
                                 }
                               },
                               "required": [

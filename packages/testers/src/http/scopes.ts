@@ -47,30 +47,35 @@ export function testersAdminRoutes(basePath: string): AdminRoute[] {
   return [
     {
       method: "GET",
+      operation: "cohorts.list",
       path: `${basePath}/cohorts`,
       scope: TESTERS_ROSTER_READ_SCOPE,
       summary: "Cohort state, roster, per-tester activity, the forecast, and the trend series.",
     },
     {
       method: "POST",
+      operation: "testers.invite",
       path: `${basePath}/invite`,
       scope: TESTERS_ROSTER_WRITE_SCOPE,
       summary: "Invite an address onto a cohort and send its confirmation link.",
     },
     {
       method: "POST",
+      operation: "testers.resend",
       path: `${basePath}/resend`,
       scope: TESTERS_ROSTER_WRITE_SCOPE,
       summary: "Send another invitation, preserving the tester's existing history.",
     },
     {
       method: "POST",
+      operation: "testers.remove",
       path: `${basePath}/remove`,
       scope: TESTERS_ROSTER_WRITE_SCOPE,
       summary: "Take a tester off a cohort's roster.",
     },
     {
       method: "POST",
+      operation: "testers.nudge",
       path: `${basePath}/nudge`,
       scope: TESTERS_NUDGE_SEND_SCOPE,
       summary: "Nudge selected testers. Copy may be overridden as text; the cooldown is enforced here.",

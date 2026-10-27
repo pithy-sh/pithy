@@ -30,6 +30,7 @@ export function storageAdminRoutes(basePath: string): AdminRoute[] {
   return [
     {
       method: "GET",
+      operation: "usage.read",
       path: `${basePath}/admin/usage`,
       scope: STORAGE_USAGE_READ_SCOPE,
       summary:
