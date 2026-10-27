@@ -1630,9 +1630,13 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   branch: ["dev", "feature"],
   alias: ["alias", "doctor"],
   changed: ["secrets", "ui", "worker"],
+  // Every database a data command touched, one entry each: `add` migrates them, `backup` dumps them, `restore`
+  // loads them (#848).
+  databases: ["add", "backup", "restore"],
   command: [
     "add",
     "alias",
+    "backup",
     "cloudflare",
     "completion",
     "contract",
@@ -1649,6 +1653,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "payments",
     "privacy",
     "provision",
+    "restore",
     "schema",
     "secrets",
     "seed",
@@ -1683,12 +1688,14 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "worker",
   ],
   env: [
+    "backup",
     "deploy",
     "email",
     "media",
     "migrate",
     "payments",
     "provision",
+    "restore",
     "secrets",
     "seed",
     "storage",
@@ -1738,7 +1745,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "worker",
   ],
   profile: ["cloudflare", "token"],
-  project: ["doctor", "migrate", "setup"],
+  project: ["backup", "doctor", "migrate", "restore", "setup"],
   // A port a worker is pinned to, in both: `pithy worker list` reports the pin, and a `pithy dev logs`
   // `spawned` record reports the port that worker actually started on. One meaning, read two ways.
   port: ["dev", "worker"],
@@ -1753,6 +1760,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   schemaVersion: [
     "add",
     "alias",
+    "backup",
     "cloudflare",
     "completion",
     "contract",
@@ -1770,6 +1778,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "payments",
     "privacy",
     "provision",
+    "restore",
     "schema",
     "secrets",
     "seed",
@@ -1832,6 +1841,7 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
   branch: "string",
   changed: "boolean",
   command: "string",
+  databases: "object[]",
   deployedAs: "string",
   devSecrets: "object",
   domains: "object",

@@ -18,6 +18,7 @@ import { listedThreadView, messageView, threadView } from "../http/views";
 import { SUPPORT_MIGRATIONS } from "../migrations/set";
 import { assignThread } from "./assignment";
 import { MAX_PAGE_SIZE } from "./paging";
+import { provisionSearchIndex } from "./provisionIndex";
 import { indexMessage } from "./search";
 import { createSearchIndex } from "./searchIndex";
 import { listOwnThreads, listThreads, readOwnThread, readThread, setArchived, setFlags } from "./threads";
@@ -910,5 +911,49 @@ describe("the exported response schemas against real rows", () => {
     expect(SupportThreadView.parse(thread)).toEqual(thread);
     const messages = detail.messages.map(messageView);
     expect(SupportMessageView.array().parse(messages)).toEqual(messages);
+  });
+});
+
+describe("provisionSearchIndex — what `pithy support provision` and `pithy restore` both run (#848)", () => {
+  const now = new Date(T0 + 10_000_000);
+  const sqliteNames = async (): Promise<string[]> =>
+    (
+      await env.DB.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'pithy_support_search%' ORDER BY name").all<{
+        name: string;
+      }>()
+    ).results.map((row) => row.name);
+
+  beforeEach(async () => {
+    await runMigrations(env.DB, provider(BASE));
+    await seedThread({ id: "refund", lastMessageAt: T0 + 300 });
+    await seedThread({ id: "login", lastMessageAt: T0 + 200 });
+    await seedMessage({ id: "m1", threadId: "refund", subject: "Money problem", body: "I was charged twice" });
+    await seedMessage({ id: "m2", threadId: "login", subject: "Cannot log in", body: "the link never arrived" });
+  });
+
+  test("creates the index and its triggers, and backfills what is already there", async () => {
+    expect(await provisionSearchIndex(env.DB, true)).toBe("create");
+    expect(ids(await listThreads(db, { q: "charged" }, { fts: true, viewer: VIEWER, now }))).toEqual(["refund"]);
+    expect(await sqliteNames()).toEqual(expect.arrayContaining(["pithy_support_search", "pithy_support_search_ai"]));
+  });
+
+  test("a second run changes nothing and says so", async () => {
+    await provisionSearchIndex(env.DB, true);
+    expect(await provisionSearchIndex(env.DB, true)).toBe("none");
+  });
+
+  test("repairs a table whose triggers are gone, and backfills the gap", async () => {
+    await createSearchIndex(db);
+    for (const trigger of ["pithy_support_search_ai", "pithy_support_search_au", "pithy_support_search_ad"]) {
+      await env.DB.exec(`DROP TRIGGER ${trigger}`);
+    }
+    expect(await provisionSearchIndex(env.DB, true)).toBe("repair");
+    expect(ids(await listThreads(db, { q: "arrived" }, { fts: true, viewer: VIEWER, now }))).toEqual(["login"]);
+  });
+
+  test("drops the index and its triggers when search.fts is off", async () => {
+    await provisionSearchIndex(env.DB, true);
+    expect(await provisionSearchIndex(env.DB, false)).toBe("drop");
+    expect(await sqliteNames()).toEqual([]);
   });
 });

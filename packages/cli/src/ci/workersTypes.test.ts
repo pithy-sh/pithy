@@ -157,12 +157,15 @@ const DECLARED_ONLY: Record<string, string> = {
  * hands each consumer the env's own D1; `session/peers.ts`, which types the consumer that takes it; and
  * `test-utils/database.ts`, which migrates a suite's D1 through the real chain. Keeping every spent void key moved it
  * by one more: `data/store.ts`, which spends a key in one `d1.batch()` with the void or the retry it was sent for.
+ * Backup and restore (#848) moved `cli` by four: `backup/backup.ts`, `backup/inspect.ts`, `backup/owned.ts` and
+ * `backup/restore.ts`, which read and write a D1 through the binding or the REST client alike; and `support` by one:
+ * `store/provisionIndex.ts`, the index step `pithy support provision` and `pithy restore` share.
  */
 const IMPORTERS: Record<string, number> = {
   "packages/artifacts": 3,
   "packages/audit": 3,
   "packages/auth": 10,
-  "packages/cli": 15,
+  "packages/cli": 19,
   "packages/cloudflare": 2,
   "packages/core": 19,
   "packages/email": 10,
@@ -176,7 +179,7 @@ const IMPORTERS: Record<string, number> = {
   "packages/rating": 5,
   "packages/secrets": 7,
   "packages/storage": 7,
-  "packages/support": 10,
+  "packages/support": 11,
   "packages/testers": 8,
   "packages/vector": 4,
 };

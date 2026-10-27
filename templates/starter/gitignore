@@ -27,6 +27,10 @@ logs/
 .env.*
 !.env.example
 
+# `pithy backup` writes here by default. A backup holds every row, live session tokens and OAuth tokens
+# among them, so it must never be committable.
+backups/
+
 # atomic-write temp siblings (.dev.vars.<rand>.tmp, …). A write interrupted by SIGINT leaves one
 # holding the full plaintext; it must never be committable.
 *.tmp

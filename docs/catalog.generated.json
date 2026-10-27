@@ -116,6 +116,17 @@
       ]
     },
     {
+      "path": "backup",
+      "flags": [
+        "--env",
+        "--worker",
+        "--binding",
+        "--output",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
       "path": "cloudflare",
       "flags": []
     },
@@ -612,6 +623,18 @@
         "--env",
         "--destroy-retained",
         "--destroyRetained",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
+      "path": "restore",
+      "flags": [
+        "--env",
+        "--worker",
+        "--binding",
+        "--database",
+        "--group",
         "--json",
         "--no-json"
       ]

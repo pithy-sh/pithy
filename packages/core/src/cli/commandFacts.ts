@@ -53,6 +53,7 @@ export type WorkerScopedPath = (typeof WORKER_SCOPED)[number];
  * first that answers, and the flag narrows.
  */
 export const WORKER_NARROWS = [
+  "backup",
   "contract",
   "dashboard disconnect",
   "dashboard revoke-key",
@@ -63,6 +64,7 @@ export const WORKER_NARROWS = [
   "env",
   "init",
   "migrate",
+  "restore",
   "secrets tables",
   "seed",
   "support deprovision",

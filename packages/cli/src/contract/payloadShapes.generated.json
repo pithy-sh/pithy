@@ -137,6 +137,33 @@
         "$<manual=true>.alias": "string"
       }
     },
+    "backup": {
+      "schemaVersion": 1,
+      "payload": {
+        "$": "object",
+        "$.command": "\"backup\"",
+        "$.project": "string",
+        "$.env": "string",
+        "$.output": "string",
+        "$.restorable": "boolean",
+        "$.databases": "array",
+        "$.databases[]": "object",
+        "$.databases[].binding": "string",
+        "$.databases[].database": "string",
+        "$.databases[].folder": "string",
+        "$.databases[].tables": "integer",
+        "$.databases[].rows": "integer",
+        "$.databases[].virtualTables": "array",
+        "$.databases[].virtualTables[]": "string",
+        "$.databases[].restorable": "boolean",
+        "$.databases[].oversized": "array",
+        "$.databases[].oversized[]": "object",
+        "$.databases[].oversized[].file": "string",
+        "$.databases[].oversized[].line": "integer",
+        "$.databases[].oversized[].table": "string",
+        "$.databases[].oversized[].bytes": "integer"
+      }
+    },
     "cloudflare connect": {
       "schemaVersion": 1,
       "payload": {
@@ -1632,6 +1659,31 @@
         "$<event=\"settled\">.command": "\"provision\"",
         "$<event=\"settled\">.event": "\"settled\"",
         "$<event=\"settled\">.line": "string"
+      }
+    },
+    "restore": {
+      "schemaVersion": 1,
+      "payload": {
+        "$": "object",
+        "$.command": "\"restore\"",
+        "$.project": "string",
+        "$.env": "string",
+        "$.recovery": "object?",
+        "$.recovery.name": "string",
+        "$.recovery.id": "string",
+        "$.recovery.created": "boolean",
+        "$.databases": "array",
+        "$.databases[]": "object",
+        "$.databases[].binding": "string",
+        "$.databases[].database": "string",
+        "$.databases[].target": "string",
+        "$.databases[].migrations": "integer",
+        "$.databases[].tables": "integer",
+        "$.databases[].rows": "integer",
+        "$.databases[].rebuilt": "array",
+        "$.databases[].rebuilt[]": "object",
+        "$.databases[].rebuilt[].name": "string",
+        "$.databases[].rebuilt[].how": "\"provisioned\" | \"recreated-empty\""
       }
     },
     "schema": {

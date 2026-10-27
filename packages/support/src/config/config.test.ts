@@ -74,12 +74,11 @@ describe("SupportConfig defaults", () => {
     expect(reply.deliverInApp).toBe(false);
   });
 
-  test("FTS5 is off by default — an FTS5 table anywhere in a D1 database breaks `wrangler d1 export`", () => {
-    // Deliberate, and not a performance call. D1 refuses to export *any* database containing an FTS5
-    // virtual table, and the check runs before `--table` filtering — so defaulting this on would take
-    // the adopter's entire app database's backups with it, not just the support tables. If this ever
-    // flips to `true`, that is the regression this test exists to catch.
-    expect(SupportConfig.parse({}).search.fts).toBe(false);
+  test("FTS5 is on by default — `pithy backup` skips the index and `pithy restore` rebuilds it (#848)", () => {
+    // It was off while a backup of a database holding an FTS5 table had no answer. `pithy backup` leaves
+    // the virtual table, its shadow tables and its triggers out, and `pithy restore` rebuilds them through
+    // `provisionSearchIndex`, so the cost that kept it off is gone.
+    expect(SupportConfig.parse({}).search.fts).toBe(true);
   });
 
   test("no addresses are claimed by default, so the inbox is inert until an adopter names one", () => {
@@ -102,8 +101,8 @@ describe("SupportConfig partial overrides", () => {
   });
 
   test("overriding one block leaves its sibling blocks fully defaulted", () => {
-    const config = SupportConfig.parse({ search: { fts: true } });
-    expect(config.search.fts).toBe(true);
+    const config = SupportConfig.parse({ search: { fts: false } });
+    expect(config.search.fts).toBe(false);
     expect(config.guard.maxPerHour).toBe(500);
     expect(config.attachments.maxBytes).toBe(10 * 1024 * 1024);
     expect(config.reply.enabled).toBe(true);

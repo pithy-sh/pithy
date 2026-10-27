@@ -119,6 +119,11 @@ describe("scaffoldProject", () => {
     expect(ignored).toMatch(/^!\.dev\.vars\.example$/m);
   });
 
+  test("ignores backups/, where `pithy backup` writes every row, session tokens included (#848)", async () => {
+    await scaffoldProject({ targetDir: dir, appName: "my-app" });
+    expect(await readFile(join(dir, ".gitignore"), "utf8")).toMatch(/^backups\/$/m);
+  });
+
   test("the example carries no value — a committed file with a secret in it is a leaked secret", async () => {
     await scaffoldProject({ targetDir: dir, appName: "my-app" });
     // Every line is a comment or structural. `loadDevSecrets` parsing it to `{}` is the assertion: a
