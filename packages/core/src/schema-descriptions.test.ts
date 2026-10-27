@@ -13,7 +13,11 @@ declare global {
 
 // Eagerly import every source module except tests, so any newly exported schema is covered
 // automatically — there is no manual list to keep in sync.
-const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"], { eager: true });
+// The presence room's Durable Object module and the workers test entry that re-exports it are left out: they
+// import `cloudflare:workers`, which exists only in workerd, and export no schema.
+const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts", "!./presence/durableObject.ts", "!./testWorker.ts"], {
+  eager: true,
+});
 describe("schema descriptions (CLAUDE.md §Zod: schemas are the docs)", () => {
   test("the sweep is looking at the package, not at nothing", () => {
     // **The guard sixteen of nineteen of these files did without** (#326, #351). A glob that matches

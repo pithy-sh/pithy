@@ -634,6 +634,64 @@
                               ]
                             }
                           },
+                          "presenceRooms": {
+                            "description": "The presence room kinds this capability serves — who else has one of its records open, live — or empty when it serves none. Absent from a Worker that predates presence rooms. Mint a ticket into one at `POST /control-plane/presence/tickets` with the kind's own `scope`.",
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "maxLength": 64,
+                                  "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9_]*)+$",
+                                  "description": "The room kind — `support.thread`."
+                                },
+                                "scope": {
+                                  "type": "string",
+                                  "pattern": "^[a-z][a-z0-9]*(?::[a-z][a-z0-9_]*)+$",
+                                  "description": "The scope that reads the record, and so joins its room. A management client mints its ticket with exactly this scope."
+                                },
+                                "activities": {
+                                  "minItems": 1,
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 32,
+                                    "pattern": "^[a-z][a-z0-9_]*$",
+                                    "description": "What a participant is doing in the room — one of the values its room kind declares, never free text."
+                                  },
+                                  "description": "What a participant may announce. The first is what everyone starts as."
+                                },
+                                "maxParticipants": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991,
+                                  "description": "How many participants the room admits at once."
+                                },
+                                "sessionTicketPath": {
+                                  "description": "Where a signed-in user of the app mints a ticket for this kind, or null when the kind admits management clients only.",
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "socketPath": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "description": "The socket route, with `:kind` and `:recordId` to fill in — the path as the Worker mounted it."
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "scope",
+                                "activities",
+                                "maxParticipants",
+                                "sessionTicketPath",
+                                "socketPath"
+                              ],
+                              "description": "One presence room kind this capability serves, and how to join one of its rooms."
+                            }
+                          },
                           "health": {
                             "default": null,
                             "description": "Every declared value this caller may see, or null when there is none to give — either nothing is declared, or this connection lacks the scope the value is behind, or producing it failed, or the Worker predates this field. **Null is never zero.**",
@@ -1867,6 +1925,138 @@
         ],
         "x-pithy-scopes": [
           "privacy:read"
+        ]
+      }
+    },
+    "/control-plane/presence/tickets": {
+      "post": {
+        "tags": [
+          "controlplane"
+        ],
+        "operationId": "postControlPlanePresenceTickets",
+        "summary": "Mint a presence ticket for a management client.",
+        "description": "Admits the participant the body names to one room of any kind this Worker composes. Sign the call with the room kind's own scope, as the manifest lists it; presence adds no scope. Single use, for 60 seconds. Open the socket at `socketPath`, offering `protocol` and `pithy.ticket.<ticket>` in `Sec-WebSocket-Protocol`.",
+        "requestBody": {
+          "required": true,
+          "description": "The room a management client asks a presence ticket for, and who joins it.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "maxLength": 64,
+                    "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9_]*)+$",
+                    "description": "The room kind, as the manifest lists it — `support.thread`."
+                  },
+                  "recordId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]+$",
+                    "description": "The record the room is about."
+                  },
+                  "participant": {
+                    "type": "object",
+                    "properties": {
+                      "ref": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "description": "Who the participant is. A management client's own opaque reference, which it chose; or the signed-in user's id, which the Worker chose."
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 80,
+                        "description": "How the other participants see this one. A label, never an identity — `ref` and `origin` are that."
+                      }
+                    },
+                    "required": [
+                      "ref",
+                      "name"
+                    ],
+                    "description": "Who joins: the client's own opaque reference for them, and the name the others see."
+                  }
+                },
+                "required": [
+                  "kind",
+                  "recordId",
+                  "participant"
+                ],
+                "description": "The room a management client asks a presence ticket for, and who joins it."
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "A single-use, 60-second ticket into one presence room, and where to open the socket with it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ticket": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "The ticket. Offer it in `Sec-WebSocket-Protocol` as `pithy.ticket.<ticket>`, beside `protocol`. Single use."
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the ticket stops being honored, ISO-8601 — 60 seconds after minting."
+                    },
+                    "kind": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9_]*)+$",
+                      "description": "The room kind the ticket admits to."
+                    },
+                    "recordId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128,
+                      "pattern": "^[A-Za-z0-9._:-]+$",
+                      "description": "The record the room is about."
+                    },
+                    "socketPath": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "The path to open the socket at, on this Worker — this room's, already filled in."
+                    },
+                    "protocol": {
+                      "type": "string",
+                      "const": "pithy.presence.v1",
+                      "description": "The subprotocol to offer beside the ticket. The Worker answers with it."
+                    }
+                  },
+                  "required": [
+                    "ticket",
+                    "expiresAt",
+                    "kind",
+                    "recordId",
+                    "socketPath",
+                    "protocol"
+                  ],
+                  "description": "A single-use, 60-second ticket into one presence room, and where to open the socket with it."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
         ]
       }
     },

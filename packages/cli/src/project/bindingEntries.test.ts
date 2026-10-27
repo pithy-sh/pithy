@@ -5,8 +5,10 @@ import { BindingSpec, BindingType, isWrittenBinding } from "@pithy-sh/core/src/c
 import { describe, expect, test } from "vitest";
 import {
   appendBinding,
+  appendDeletedClassMigration,
   appendDurableObjectMigrations,
   generatedFieldDrift,
+  liveDurableObjectClasses,
   rateLimitNamespaceId,
   stanzaHasBinding,
   WRANGLER_KEYS,
@@ -356,5 +358,69 @@ describe("appendDurableObjectMigrations — a class registered by any verb", () 
       { tag: "v1", new_classes: ["Lobby"] },
       { tag: "v2", new_sqlite_classes: ["Room"] },
     ]);
+  });
+});
+
+/**
+ * **A class is retired by a step of its own, and the history replays in order** (#815). A deployed script
+ * holds its last tag, so a class taken out is a `deleted_classes` step appended under a new tag, never a tag
+ * edited away, and a class created again after that is live again.
+ */
+describe("retiring a Durable Object class", () => {
+  test("the live set replays creates, renames and deletes in order", () => {
+    expect([
+      ...liveDurableObjectClasses([
+        { tag: "v1", new_sqlite_classes: ["PresenceRoom", "Lobby"] },
+        { tag: "v2", renamed_classes: [{ from: "Lobby", to: "Hall" }] },
+        { tag: "v3", deleted_classes: ["PresenceRoom"] },
+      ]),
+    ]).toEqual(["Hall"]);
+    expect([
+      ...liveDurableObjectClasses([
+        { tag: "v1", new_sqlite_classes: ["PresenceRoom"] },
+        { tag: "v2", deleted_classes: ["PresenceRoom"] },
+        { tag: "v3", new_sqlite_classes: ["PresenceRoom"] },
+      ]),
+    ]).toEqual(["PresenceRoom"]);
+  });
+
+  test("a live class gets a deleted_classes step under the next tag, and the creation tag stays", () => {
+    const config: WranglerStanza = { migrations: [{ tag: "v1", new_sqlite_classes: ["PresenceRoom"] }] };
+    expect(appendDeletedClassMigration(config, ["PresenceRoom"])).toBe(true);
+    expect(config.migrations).toEqual([
+      { tag: "v1", new_sqlite_classes: ["PresenceRoom"] },
+      { tag: "v2", deleted_classes: ["PresenceRoom"] },
+    ]);
+  });
+
+  test("a class already retired, or never registered, writes nothing", () => {
+    const retired: WranglerStanza = {
+      migrations: [
+        { tag: "v1", new_sqlite_classes: ["PresenceRoom"] },
+        { tag: "v2", deleted_classes: ["PresenceRoom"] },
+      ],
+    };
+    expect(appendDeletedClassMigration(retired, ["PresenceRoom"])).toBe(false);
+    expect(retired.migrations).toHaveLength(2);
+    const bare: WranglerStanza = {};
+    expect(appendDeletedClassMigration(bare, ["PresenceRoom"])).toBe(false);
+    expect(bare.migrations).toBeUndefined();
+  });
+
+  test("a class created again after it was retired is a new create", () => {
+    const room = BindingSpec.parse({
+      type: "durable_object",
+      name: "PRESENCE_ROOMS",
+      className: "PresenceRoom",
+      classModule: "@pithy-sh/core/src/presence/durableObject",
+    });
+    const config: WranglerStanza = {
+      migrations: [
+        { tag: "v1", new_sqlite_classes: ["PresenceRoom"] },
+        { tag: "v2", deleted_classes: ["PresenceRoom"] },
+      ],
+    };
+    appendDurableObjectMigrations(config, [room]);
+    expect(config.migrations?.at(-1)).toEqual({ tag: "v3", new_sqlite_classes: ["PresenceRoom"] });
   });
 });

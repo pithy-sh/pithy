@@ -335,6 +335,12 @@ function everyRoute(): { method: string; path: string; scope: string; body?: unk
       scope: KEYS_ROTATE_SCOPE,
       body: { provenKeyId: "cpk_new" },
     },
+    {
+      method: "POST",
+      path: "/control-plane/presence/tickets",
+      scope: MANIFEST_READ_SCOPE,
+      body: { kind: "inventory.thing", recordId: "t1", participant: { ref: "a", name: "A" } },
+    },
   ];
 }
 
@@ -357,7 +363,7 @@ beforeEach(async () => {
 });
 
 describe("a Worker nobody has connected", () => {
-  test("denies every one of the seven routes with controlplane/not_connected", async () => {
+  test("denies every one of the eight routes with controlplane/not_connected", async () => {
     // The shipped state. The seam is composed, the table exists, and there is no flag that opens it —
     // `pithy dashboard connect` is the deliberate second step, and until then a perfectly well-formed,
     // correctly signed credential gets 403 on every route.
@@ -544,6 +550,7 @@ describe("GET /control-plane/manifest", () => {
       "GET /control-plane/privacy",
       "POST /control-plane/keys",
       "POST /control-plane/keys/:keyId/expire",
+      "POST /control-plane/presence/tickets",
     ]);
     // Every route says what it needs, so a client can gray out what this connection cannot do rather
     // than discovering a 403 by pressing the button.

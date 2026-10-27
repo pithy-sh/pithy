@@ -32,6 +32,7 @@ import type { Logger } from "./logger/logger";
 import { bindRequestContext, createWorkerLogger } from "./logger/worker";
 import type { RouteGroup } from "./openapi/document";
 import { recordRouteGroups } from "./openapi/routeGroups";
+import { registerPresenceRoutes } from "./presence/http/routes";
 import { refuseEncryptedKvStores } from "./privacy/encryptedColumns";
 import { HEALTH_PATH } from "./worker/health";
 import { workerVersion } from "./worker/identity";
@@ -343,6 +344,8 @@ export function createBackend<
   for (const cap of all) {
     const start = app.routes.length;
     cap.routes?.(app);
+    // A capability's presence routes are its own, tagged with it, under the base path it declared.
+    if (cap.presence && cap.presence.rooms.length > 0) registerPresenceRoutes(app, cap.presence);
     groups.push({ tag: cap.name, routes: app.routes.slice(start) });
   }
   recordRouteGroups(app, groups);

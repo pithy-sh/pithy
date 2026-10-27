@@ -120,7 +120,26 @@ export function isControlPlaneGuard(handler: unknown): boolean {
 }
 
 export function requireControlPlane(requirement: ControlPlaneRequirement): MiddlewareHandler<PithyHonoEnv> {
+  return requireControlPlaneFor(async () => requirement);
+}
+
+/**
+ * The scope a call needs, resolved from the call itself. Never throws: whatever it cannot read resolves to
+ * a requirement, and `ANY_VERIFIED_CALLER` is the least it may resolve to — never no gate at all.
+ */
+export type ControlPlaneRequirementResolver = (
+  c: Parameters<MiddlewareHandler<PithyHonoEnv>>[0],
+) => Promise<ControlPlaneRequirement>;
+
+/**
+ * {@link requireControlPlane} for a route whose scope is named by the request, which is the presence ticket
+ * route's case (#815): the room kind in its body decides the scope. Resolving it **inside the gate, before
+ * verifying**, is what keeps a refused call to the one denial row every other route writes — a handler that
+ * checked the scope after the gate let the call through would leave an allowed row ahead of its denial.
+ */
+export function requireControlPlaneFor(resolve: ControlPlaneRequirementResolver): MiddlewareHandler<PithyHonoEnv> {
   const guard: MiddlewareHandler<PithyHonoEnv> = async (c, next) => {
+    const requirement = await resolve(c);
     // Every control-plane response carries the build that produced it, allowed or denied.
     //
     // **On the guard, not on the seam's own routes**, because the guard is the one thing every

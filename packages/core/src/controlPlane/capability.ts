@@ -7,6 +7,8 @@ import type { BindingSpecInput } from "../capability/bindings";
 import { type Capability, defineCapability, type PithyHonoEnv } from "../capability/capability";
 import type { DatabaseSpecMap } from "../data/databases";
 import type { KvNamespaceSpecMap, KvRegistry } from "../kv/namespaces";
+import type { PresenceDeclaration } from "../presence/declaration";
+import { describePresenceRooms } from "../presence/http/routes";
 import { readRetirement } from "../privacy/fieldRotation";
 import { lazyPrivacyInventory } from "../privacy/inventory";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "../version.generated";
@@ -152,6 +154,10 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
   // (#132) — lazily, on the first control-plane read, and once for the isolate. Capturing the list costs
   // nothing; walking it is deferred, so a Worker whose control plane is never called never walks.
   let composedCapabilities: readonly Capability[] = [];
+
+  // Every presence room kind this Worker composed, with the declaration serving it, filled by the same hook.
+  // The seam's ticket route reaches every capability's rooms through it.
+  let presence: ReadonlyMap<string, PresenceDeclaration> = new Map();
   const privacy = lazyPrivacyInventory(() => composedCapabilities);
 
   const capability = defineCapability({
@@ -214,7 +220,16 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
         // per-request cost: a fact is resolved config, so there is nothing to ask and nothing to fail.
         configKeys: [...(cap.manifestConfig?.keys ?? [])],
         config: { ...(cap.manifestConfig?.values ?? {}) },
+        // Every room kind, with the paths built from the capability's own resolved base path.
+        presenceRooms: cap.presence ? describePresenceRooms(cap.presence) : [],
       }));
+      presence = new Map(
+        capabilities.flatMap((cap) =>
+          cap.presence
+            ? cap.presence.rooms.map((room) => [room.kind, cap.presence as PresenceDeclaration] as const)
+            : [],
+        ),
+      );
       health = capabilityHealthSources(capabilities);
       migrationDatabases = composeMigrationDatabases(capabilities);
       composedCapabilities = [...capabilities];
@@ -263,6 +278,7 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
         composedMigrations: () => migrationDatabases,
         privacyInventory: privacy,
         retirement: (env) => readRetirement(env, composedCapabilities),
+        composedPresence: () => presence,
         now,
       });
     },

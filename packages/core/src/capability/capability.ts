@@ -22,6 +22,12 @@ import type { Translator } from "../i18n/translator";
 import type { KvNamespaceSpecMap } from "../kv/namespaces";
 import type { Logger } from "../logger/logger";
 import { declareRetained } from "../migrations/retainedDeclaration";
+import { presenceRoomsSocket } from "../presence/channel";
+import {
+  assertPresenceDeclaration,
+  PRESENCE_ROOMS_BINDING_SPEC,
+  type PresenceDeclaration,
+} from "../presence/declaration";
 import type { SeedSet } from "../seed/seed";
 import type { WorkflowSpecMap } from "../workflow/spec";
 import { BindingSpec, type BindingSpecInput } from "./bindings";
@@ -557,6 +563,18 @@ export interface Capability<
    */
   sockets?: readonly SocketChannel[];
   /**
+   * The presence room kinds this capability serves (`../presence/declaration.ts`): who else has one of its
+   * records open, live. Omit it when a capability has no record more than one person acts on, which is the
+   * normal case.
+   *
+   * **Declaring it is the whole of the wiring.** `defineCapability` adds the `PRESENCE_ROOMS` Durable Object
+   * binding and the room socket to this capability's {@link requiredBindings} and {@link sockets};
+   * `createBackend` mounts `{basePath}/presence/tickets` and `{basePath}/presence/rooms/:kind/:recordId`
+   * beside its routes; the control-plane seam answers `POST /control-plane/presence/tickets` for every kind
+   * and lists them in the manifest. Build it from the resolved config, like {@link adminRoutes}.
+   */
+  presence?: PresenceDeclaration;
+  /**
    * Composable middleware (e.g. turnstile(), requireAuth()). Runs on every request, the control-plane
    * surface included. A refusal that protects a route — a rate limit, authentication, a CSRF check —
    * belongs here. A refusal because the Worker itself is broken belongs in {@link Capability.readiness}.
@@ -726,9 +744,18 @@ export function defineCapability<
   // A purge contribution no purge could run — a subject the kit does not know, or two for one — is refused
   // where it is written, naming the capability, rather than on the day somebody is erased.
   if (input.purge) assertPurgeContributions(input.name, input.purge);
+  // A capability that declares room kinds needs the room's binding and serves the room's socket, so both are
+  // added here, once, rather than spelled by every capability that declares one and drifting from it.
+  const presence = input.presence && input.presence.rooms.length > 0 ? input.presence : undefined;
+  if (presence) assertPresenceDeclaration(input.name, presence, input.adminRoutes ?? []);
+  const requiredBindings =
+    presence && !input.requiredBindings.some((binding) => binding.name === PRESENCE_ROOMS_BINDING_SPEC.name)
+      ? [...input.requiredBindings, PRESENCE_ROOMS_BINDING_SPEC]
+      : input.requiredBindings;
   return {
     ...input,
-    requiredBindings: input.requiredBindings.map((binding) => BindingSpec.parse(binding)),
+    ...(presence ? { sockets: [...(input.sockets ?? []), presenceRoomsSocket(input.name, presence)] } : {}),
+    requiredBindings: requiredBindings.map((binding) => BindingSpec.parse(binding)),
   };
 }
 

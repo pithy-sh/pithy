@@ -65,6 +65,8 @@ export const esErrors: MessageCatalog = {
   "core/unknown_workflow": "La operación solicitada no existe.",
   "core/workflow_failed": "La operación no se ha completado.",
   "core/webhook_unverified": "La firma de la notificación no es válida.",
+  "core/presence_ticket_invalid": "Ese pase de presencia no es válido.",
+  "core/presence_room_full": "La sala está llena.",
 
   // Cloudflare REST. Naming the provider is safe — it is the adopter's own account, not our infrastructure.
   "cloudflare/not_configured": "Este servicio no está disponible ahora.",

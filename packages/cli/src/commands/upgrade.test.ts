@@ -127,6 +127,13 @@ describe("plan rendering", () => {
     expect(lines).toContain("Worker entry: export MultiplayerSession.");
   });
 
+  test("a stray presence room binding gets its own line", () => {
+    expect(__test.planLines({ ...plan, strayPresenceRooms: true })).toContain(
+      "Presence rooms: none declared. Remove PRESENCE_ROOMS and the PresenceRoom export.",
+    );
+    expect(__test.planLines(plan).some((line) => line.startsWith("Presence rooms:"))).toBe(false);
+  });
+
   test("a clean worker says nothing to upgrade", () => {
     const clean: ReconcilePlan = {
       worker: "api",
@@ -170,6 +177,25 @@ describe("applied rendering", () => {
     expect(lines).toContain(
       "3 migrations pending. Run pithy upgrade --worker api --env dev --migrate, or pithy migrate --worker api --env dev.",
     );
+  });
+
+  test("reports a retired presence room binding, and nothing when none was retired", () => {
+    const applied: ReconcileApplied = {
+      worker: "api",
+      deployedAs: "acme-api",
+      perCapability: [],
+      ejectedSkipped: [],
+      migrated: false,
+      migrations: [],
+      addedVersionMetadata: false,
+      addedEntryExports: [],
+      retiredPresenceRooms: true,
+    };
+    expect(__test.appliedLines(applied, plan)).toContain(
+      "Presence rooms: none declared. Removed PRESENCE_ROOMS and the PresenceRoom export.",
+    );
+    const kept = __test.appliedLines({ ...applied, retiredPresenceRooms: false }, plan);
+    expect(kept.some((line) => line.startsWith("Presence rooms:"))).toBe(false);
   });
 
   test("reports a completed migration run instead of a pending note", () => {
@@ -1690,6 +1716,27 @@ describe("planUpgrade", () => {
         path: "apps/board/wrangler.jsonc",
         action: "edit",
         changes: ["Adds the CF_VERSION_METADATA version_metadata binding."],
+      },
+    ]);
+  });
+
+  test("a stray presence room is an edit to wrangler.jsonc and one to the entry, the source file it rewrites", async () => {
+    // The apply removes a binding, retires a class and deletes an entry export; the preview has to say so.
+    await mkdir(join(root, "apps", "board"), { recursive: true });
+    await writeFile(join(root, "apps", "board", "wrangler.jsonc"), '{ "main": "src/index.ts" }\n');
+    const planned = await planUpgrade(root, runOf({ strayPresenceRooms: true }), false);
+    expect(planned.files).toEqual([
+      {
+        path: "apps/board/wrangler.jsonc",
+        action: "edit",
+        changes: [
+          "Removes the PRESENCE_ROOMS binding and retires the PresenceRoom class: nothing declares a room kind.",
+        ],
+      },
+      {
+        path: "apps/board/src/index.ts",
+        action: "edit",
+        changes: ["Removes the PresenceRoom export from the Worker's entry."],
       },
     ]);
   });

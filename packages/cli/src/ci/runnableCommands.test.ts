@@ -126,6 +126,8 @@ const RUNTIME_LINES: Readonly<Record<string, string>> = {
   "core/src/controlPlane/error/errors.ts":
     "a control-plane refusal's default, answered to a management client over HTTP",
   "core/src/controlPlane/http/guard.ts": "the control-plane seam's answer to a management client over HTTP",
+  "core/src/presence/declaration.ts": "a presence ticket route's refusal when the Worker holds no ticket key",
+  "core/src/presence/http/routes.ts": "a presence socket's refusal when the Worker binds no room",
   "email/src/capability.ts": "the app Worker's refusal at the first suppression lookup",
   "email/src/workflows/hostEnv.ts": "the email host's boot log; doctor's settings check names the Worker",
   "payments/src/workflows/workerConfig.ts": "the reconcile host's refusal of its own projected config",

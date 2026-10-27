@@ -339,6 +339,30 @@ const WebhookUnverifiedPublic = z
   })
   .describe("An inbound webhook failed its signature check (401).");
 
+// --- @pithy-sh/core: presence rooms ---
+
+const PresenceTicketInvalidPublic = z
+  .object({
+    code: z
+      .literal("core/presence_ticket_invalid")
+      .describe(
+        "A presence socket was opened without a ticket this Worker accepts. Deliberately one code for every failing step — no ticket, a bad signature, an expired one, one already spent, or one minted for another room — so a caller holding a stolen ticket learns nothing about which check it tripped. `detail` names the step for the log, and the codec strips it.",
+      ),
+    status: z.literal(401).describe("Unauthorized — mint a fresh ticket and open the socket with it."),
+    ...publicFields,
+  })
+  .describe("A presence socket upgrade carried no valid ticket (401).");
+
+const PresenceRoomFullPublic = z
+  .object({
+    code: z
+      .literal("core/presence_room_full")
+      .describe("A presence room already holds as many participants as its room kind allows."),
+    status: z.literal(409).describe("Conflict — the room is at its participant cap. Try again when someone leaves."),
+    ...publicFields,
+  })
+  .describe("A presence room is at its participant cap (409).");
+
 // --- @pithy-sh/cloudflare: out-of-Worker CF REST client codes ---
 
 const CloudflareNotConfiguredPublic = z
@@ -1887,6 +1911,8 @@ export const KitPublicErrorPayload = z
     UnknownWorkflowPublic,
     WorkflowFailedPublic,
     WebhookUnverifiedPublic,
+    PresenceTicketInvalidPublic,
+    PresenceRoomFullPublic,
     CloudflareNotConfiguredPublic,
     CloudflareRequestFailedPublic,
     CloudflareInvalidResponsePublic,
@@ -2061,6 +2087,12 @@ const UnknownWorkflow = UnknownWorkflowPublic.extend(internalFields).describe(Un
 const WorkflowFailed = WorkflowFailedPublic.extend(internalFields).describe(WorkflowFailedPublic.description ?? "");
 const WebhookUnverified = WebhookUnverifiedPublic.extend(internalFields).describe(
   WebhookUnverifiedPublic.description ?? "",
+);
+const PresenceTicketInvalid = PresenceTicketInvalidPublic.extend(internalFields).describe(
+  PresenceTicketInvalidPublic.description ?? "",
+);
+const PresenceRoomFull = PresenceRoomFullPublic.extend(internalFields).describe(
+  PresenceRoomFullPublic.description ?? "",
 );
 const CloudflareNotConfigured = CloudflareNotConfiguredPublic.extend(internalFields).describe(
   CloudflareNotConfiguredPublic.description ?? "",
@@ -2476,6 +2508,8 @@ export const KitErrorPayload = z
     UnknownWorkflow,
     WorkflowFailed,
     WebhookUnverified,
+    PresenceTicketInvalid,
+    PresenceRoomFull,
     CloudflareNotConfigured,
     CloudflareRequestFailed,
     CloudflareInvalidResponse,

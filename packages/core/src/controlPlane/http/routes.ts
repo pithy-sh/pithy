@@ -5,6 +5,8 @@ import type { Hono } from "hono";
 import type { PithyHonoEnv } from "../../capability/capability";
 import { describeRoute } from "../../http/routeSpec";
 import { validate } from "../../http/validation";
+import { PresenceTicket } from "../../presence/http/responses";
+import { ControlPlanePresenceTicketRequest } from "../../presence/http/schemas";
 import { type AdminRoute, ControlPlaneManifest } from "../discovery/adminRoute";
 import {
   ANY_VERIFIED_CALLER,
@@ -24,6 +26,7 @@ import {
   privacyHandler,
   registerKeyHandler,
 } from "./handlers";
+import { presenceTicketGate, presenceTicketHandler } from "./presence";
 import {
   ControlPlaneKeysResponse,
   ControlPlaneMigrationsResponse,
@@ -44,6 +47,7 @@ import { ExpireKeyParams, ExpireKeyRequest, RegisterKeyRequest } from "./schemas
  *   POST /control-plane/keys/:keyId/expire    → retire a superseded key      (keys:rotate)
  *   GET  /control-plane/migrations            → where each database stands   (migrations:read)
  *   GET  /control-plane/privacy               → what each schema holds        (privacy:read)
+ *   POST /control-plane/presence/tickets      → a ticket into a presence room (the room kind's scope)
  *
  * Every one is `control-plane` and default-denied — with no connection registered they all answer 403,
  * and that is the shipped state of a Worker nobody has connected.
@@ -115,6 +119,15 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
       scope: PRIVACY_READ_SCOPE,
       summary:
         "Every stored schema holding a privacy-marked field, each field's path and class, and where it lives. Derived from the running code.",
+    },
+    {
+      method: "POST",
+      path: `${basePath}/presence/tickets`,
+      // Null because no one scope covers it: the call needs the scope of the room kind its body names, which
+      // each kind states in the manifest. Its gate resolves that scope from the body and verifies against it.
+      scope: null,
+      summary:
+        "Mint a single-use ticket into one presence room. Needs the room kind's own scope, which the manifest lists beside each kind.",
     },
   ];
 }
@@ -213,5 +226,19 @@ export function registerControlPlaneRoutes(
     }),
     requireControlPlane(PRIVACY_READ_SCOPE),
     privacyHandler(deps),
+  );
+
+  app.post(
+    `${basePath}/presence/tickets`,
+    describeRoute({
+      summary: "Mint a presence ticket for a management client.",
+      description:
+        "Admits the participant the body names to one room of any kind this Worker composes. Sign the call with the room kind's own scope, as the manifest lists it; presence adds no scope. Single use, for 60 seconds. Open the socket at `socketPath`, offering `protocol` and `pithy.ticket.<ticket>` in `Sec-WebSocket-Protocol`.",
+      verification: "control-plane",
+      responses: { 201: PresenceTicket },
+    }),
+    presenceTicketGate(deps),
+    validate("json", ControlPlanePresenceTicketRequest),
+    (c) => presenceTicketHandler(deps)(c, c.req.valid("json")),
   );
 }

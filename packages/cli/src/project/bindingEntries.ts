@@ -110,6 +110,39 @@ function classesRegisteredBy(migration: DurableObjectMigration): string[] {
 }
 
 /**
+ * The classes a migration history leaves registered, replayed in order: a class a later tag deletes or
+ * renames away is gone, and one created again after that is back. What `appendDurableObjectMigrations` asks
+ * before allocating a tag, so a class retired with `deleted_classes` (#815) is created again rather than read
+ * as still registered.
+ */
+export function liveDurableObjectClasses(migrations: readonly DurableObjectMigration[]): Set<string> {
+  const live = new Set<string>();
+  for (const migration of migrations) {
+    for (const rename of migration.renamed_classes ?? []) live.delete(rename.from);
+    for (const className of migration.deleted_classes ?? []) live.delete(className);
+    for (const className of classesRegisteredBy(migration)) live.add(className);
+  }
+  return live;
+}
+
+/**
+ * Retire Durable Object classes by appending a `deleted_classes` step under the next free tag — never by
+ * editing a tag already written, for the reason {@link appendDurableObjectMigrations} gives. A deployed
+ * script holds its last applied tag, and Cloudflare refuses an upload that stops exporting a class existing
+ * objects depend on unless a `deleted_classes` migration retires it. Only a class still registered is
+ * retired, so a second call writes nothing. Deleting a class deletes its objects' storage, so this is for a
+ * class that stores nothing: the presence room's.
+ */
+export function appendDeletedClassMigration(config: WranglerStanza, classNames: readonly string[]): boolean {
+  const live = liveDurableObjectClasses(config.migrations ?? []);
+  const retiring = [...new Set(classNames)].filter((className) => live.has(className));
+  if (retiring.length === 0) return false;
+  config.migrations ??= [];
+  config.migrations.push({ tag: nextMigrationTag(config.migrations), deleted_classes: retiring });
+  return true;
+}
+
+/**
  * The binding arrays of one wrangler stanza — every key this module touches. `durable_objects.bindings`
  * is per-environment (each environment gets its own DO namespace); DO class `migrations` are **top-level
  * only** (they register the class against the script, not per-environment), so they live on the root
@@ -647,11 +680,12 @@ export function appendDurableObjectMigrations(config: WranglerStanza, bindings: 
   if (classes.length === 0) return;
 
   config.migrations ??= [];
-  // A class any existing tag already names is registered, whether or not that tag has been deployed yet.
+  // A class the existing tags leave registered is registered, whether or not those tags have been deployed
+  // yet — and one a later tag deleted is not (`liveDurableObjectClasses`).
   // This is the whole of the idempotency: a second `pithy add` of the same capability finds nothing new
   // and returns without touching the file. Any verb counts, not only the one the kit writes: an app's own
   // class reaches this writer too, and an adopter registered it by hand (#662).
-  const registered = new Set(config.migrations.flatMap(classesRegisteredBy));
+  const registered = liveDurableObjectClasses(config.migrations);
   const fresh = [...new Set(classes)].filter((className) => !registered.has(className));
   if (fresh.length === 0) return;
 

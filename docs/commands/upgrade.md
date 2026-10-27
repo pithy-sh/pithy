@@ -40,7 +40,15 @@ Per Worker, a plan reports five things.
 
 **Pending migrations**, counted for `--env`. Reported by default; applied only with `--migrate`, which names each database and migration as it starts, as `pithy migrate` does. `--json` prints none of it.
 
-Two things sit outside that list. `entitlements` names this Worker's own source files that gate a route on an entitlement while nothing the Worker composes provides one — report-only, because which capability to compose is your decision, not the CLI's. And `missingVersionMetadata` covers the `version_metadata` binding named `CF_VERSION_METADATA`: without it a Worker cannot report which build is running, so log records carry no `version`, audit events carry no build id, and `pithy deploy` cannot verify the deploy it just made. An upgrade adds it. A config naming a *different* binding is reported and left alone.
+Three things sit outside that list. `entitlements` names this Worker's own source files that gate a route on an entitlement while nothing the Worker composes provides one — report-only, because which capability to compose is your decision, not the CLI's. And `missingVersionMetadata` covers the `version_metadata` binding named `CF_VERSION_METADATA`: without it a Worker cannot report which build is running, so log records carry no `version`, audit events carry no build id, and `pithy deploy` cannot verify the deploy it just made. An upgrade adds it. A config naming a *different* binding is reported and left alone. And `strayPresenceRooms` covers a presence room left behind: a Worker that binds `PRESENCE_ROOMS` to `PresenceRoom` while no environment's composition declares a room kind — the capability that declared one was removed, or stopped declaring it. **This is the one thing `upgrade` takes out rather than adds**, so it is decided across every environment the Worker declares, not only `--env`: each is composed, and one that still declares a room keeps it everywhere. An apply removes the binding from every environment, retires the class with a `deleted_classes` migration under a tag of its own, and removes the `export { PresenceRoom } from "@pithy-sh/core/src/presence/durableObject";` line from the Worker's entry — only that line, never an export you wrote. The creation tag stays: a Worker that deployed with the room holds it, and Cloudflare refuses a deploy that stops exporting a class without a `deleted_classes` step. A room stores nothing, so deleting the class loses nothing, and a room declared again later is created again under a new tag.
+
+```
+api:
+  Presence rooms: none declared. Remove PRESENCE_ROOMS and the PresenceRoom export.
+
+api:
+  Presence rooms: none declared. Removed PRESENCE_ROOMS and the PresenceRoom export.
+```
 
 **The entry is the one file `upgrade` writes that is source rather than config**, so both halves of that write are named. A dry run says what is missing and an apply says what it wrote:
 
@@ -56,7 +64,7 @@ Over every composed capability, not only the ones with a missing binding — a p
 
 **Installed is not composed.** The manifests are installed once at the project root and shared by every Worker, so they describe every capability installed anywhere in the project — not what this Worker is made of. A plan is scoped to the Worker's own composed set. A capability another Worker added contributes nothing here; anything else would put a foreign capability's bindings, and its Durable Object class migrations, on a script that never declared them.
 
-**The Worker's own app is checked too.** An app declares the bindings it needs in `requiredBindings`, like any capability ([CLI.md](../CLI.md#declaring-a-binding-on-your-own-app)), and the Worker refuses to boot without them. It has no manifest, so its bindings are read from the composed app instead, and reported under the app's name in `perCapability`, beside the capabilities. An apply writes them into every stanza, the same way. The app's entry never carries config keys or entry exports: its options are your own source. It is never declined either, because deleting the declaration is the decline. Its Workflows are left out here, since `app.workflows` writes the app's same-script entries.
+**The Worker's own app is checked too.** An app declares the bindings it needs in `requiredBindings`, like any capability ([CLI.md](../CLI.md#declaring-a-binding-on-your-own-app)), and the Worker refuses to boot without them. It has no manifest, so its bindings are read from the composed app instead, and reported under the app's name in `perCapability`, beside the capabilities. An apply writes them into every stanza, the same way. The app's entry never carries config keys, and carries one entry export only: `PresenceRoom`, when the app itself declares a presence room. That class lives in core, so the export is written exactly as it is for a capability's; every other Durable Object class the app binds lives in its own `main` and is its own to export. Its options are your own source. It is never declined either, because deleting the declaration is the decline. Its Workflows are left out here, since `app.workflows` writes the app's same-script entries.
 
 **A malformed manifest is named, not skipped in silence.** Faults are project-wide — one install, one `node_modules` — so they are reported once, above the Workers. A capability with a fault appears in no other line of the report: its manifest could not be read, so it contributes no drift and the run reconciles around the hole.
 
@@ -72,7 +80,7 @@ board:
 Done.
 ```
 
-`upgrade` skips ejected capabilities, touches no Cloudflare account, and writes only config files, the Worker entry's Durable Object exports, the Pithy block in `AGENTS.md`, and — with `--migrate` — the database for `--env`. With `--packages` it also writes the `package.json` files it moves and runs one install.
+`upgrade` skips ejected capabilities, touches no Cloudflare account, and writes only config files, the Worker entry's Durable Object exports — adding them, and removing the presence room's when nothing declares a room kind — the Pithy block in `AGENTS.md`, and — with `--migrate` — the database for `--env`. With `--packages` it also writes the `package.json` files it moves and runs one install.
 
 ## `--packages`
 
@@ -166,7 +174,7 @@ $ pithy upgrade --json
 
 `workers` is the reconcile's own report and keeps its shape; `plan` says the same run the way every other dry run says it, so an agent reading `pithy add --dry-run` reads this with the same parser. It is built from what the run already read, and adds no second reading of the project.
 
-- **`files`** — one `edit` per file the apply would write, each with a sentence per change: every binding a Worker's `wrangler.jsonc` gains, by name, type and stanza; every key its `pithy.config.ts` gains; the Durable Object exports its entry gains; `version_metadata`; each `--packages` move in its manifest; and `AGENTS.md`, `create` when the file is not there yet. No diffs: the reconcile plan names the binding and the key, and the bytes are written by the apply a dry run does not reach.
+- **`files`** — one `edit` per file the apply would write, each with a sentence per change: every binding a Worker's `wrangler.jsonc` gains, by name, type and stanza; every key its `pithy.config.ts` gains; the Durable Object exports its entry gains; `version_metadata`; the presence room's binding and class it loses when no environment declares a room kind, and the export its entry loses with them, as an edit to the entry; each `--packages` move in its manifest; and `AGENTS.md`, `create` when the file is not there yet. No diffs: the reconcile plan names the binding and the key, and the bytes are written by the apply a dry run does not reach.
 - **`notes`** — what the run would do that a file entry cannot say, and what it would refuse: the reinstall after a package move, each Worker's pending migrations by count (`--migrate` applies them; without it they are named, not run), and a required option with no default, which stops the apply.
 
 A Worker that could not be planned, or was refused, contributes nothing to `plan`; its entry in `workers` says why.
@@ -256,6 +264,7 @@ Every *other* Worker still reports in full. A run that loses four Workers' repor
 | `entitlements.state` | `"read"` \| `"unavailable"` | Whether the Worker's source tree was scanned |
 | `entitlements.gates` | string[] | The gating source files, relative to the Worker's directory. Empty means no gap. Present on `read` alone, so an all-clear and an unread tree cannot be confused |
 | `missingVersionMetadata` | boolean | Whether this Worker's `wrangler.jsonc` lacks the `version_metadata` binding named `CF_VERSION_METADATA` |
+| `strayPresenceRooms` | boolean | Whether this Worker binds `PRESENCE_ROOMS` to `PresenceRoom` while no environment's composition declares a room kind. An apply removes the binding, retires the class with a `deleted_classes` migration and removes its entry export. Absent from a plan an older CLI built |
 
 ### `workers[]` when `dryRun` is `false`
 
@@ -282,6 +291,7 @@ Every *other* Worker still reports in full. A run that loses four Workers' repor
 | `migrations[].sharedWith` | string[] | The other Workers bound to this same physical D1. Present only when a database is shared |
 | `addedVersionMetadata` | boolean | Whether this run added the `version_metadata` binding the Worker was missing |
 | `addedEntryExports` | string[] | The Durable Object classes this run exported from the Worker's entry. Empty when the entry already carried them |
+| `retiredPresenceRooms` | boolean | Whether this run took the presence room's binding and entry export out of a Worker that declares no room kind, and retired its class. Absent from a report an older CLI built |
 
 **The two shapes differ in what a run produced, never in how it names the Worker.** `worker` and `deployedAs` are in both, carrying the same two strings, because `workers` is one array and `dryRun` is what says which shape fills it — a key present on one side and absent on the other would mean a consumer that worked under `--dry-run` read `undefined` on the run that actually wrote something. The applied entry used to drop `deployedAs`; it does not now.
 

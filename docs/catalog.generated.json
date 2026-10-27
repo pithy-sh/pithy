@@ -1397,6 +1397,22 @@
       "remedy": "Run the `fix` command"
     },
     {
+      "code": "core/presence_room_full",
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
+    },
+    {
+      "code": "core/presence_ticket_invalid",
+      "status": 401,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
+    },
+    {
       "code": "core/unknown_workflow",
       "status": 500,
       "exitClass": "failed",

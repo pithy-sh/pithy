@@ -137,6 +137,8 @@ export const EXIT_CLASS_BY_CODE = {
   "core/conflict": "precondition",
   "core/not_found": "precondition",
   "core/precondition_failed": "precondition",
+  "core/presence_room_full": "precondition",
+  "core/presence_ticket_invalid": "precondition",
   "core/webhook_unverified": "precondition",
   "email/suppressed": "precondition",
   "email/template_not_found": "precondition",

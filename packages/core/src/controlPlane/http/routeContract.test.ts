@@ -50,7 +50,7 @@ describe("control-plane route contract", () => {
     const app = makeApp();
     expect(app.routes.length).toBeGreaterThan(0);
     const paths = [...new Set(app.routes.map((route) => route.path))].sort();
-    // Every route this seam serves. The list is what makes adding a seventh a deliberate edit rather
+    // Every route this seam serves. The list is what makes adding a ninth a deliberate edit rather
     // than a surprise, and it is the only place a control-plane route can be counted.
     expect(paths).toEqual([
       "/control-plane/keys",
@@ -58,6 +58,7 @@ describe("control-plane route contract", () => {
       "/control-plane/manifest",
       "/control-plane/migrations",
       "/control-plane/ping",
+      "/control-plane/presence/tickets",
       "/control-plane/privacy",
     ]);
     // The one param-carrying path, named exactly. Without this the check above would pass on an app
@@ -84,19 +85,19 @@ describe("control-plane route contract", () => {
       const key = `${route.method} ${route.path}`;
       handlerCounts.set(key, (handlerCounts.get(key) ?? 0) + 1);
     }
-    expect(handlerCounts.size).toBe(7);
+    expect(handlerCounts.size).toBe(8);
     for (const [route, count] of handlerCounts) expect(count, `${route} has no guard`).toBeGreaterThan(1);
   });
 
   test("every admin route the seam advertises is a route it actually mounts", () => {
     // The seam holds itself to the rule it imposes on every capability. `GET /control-plane/manifest`
-    // tells a management client these seven routes exist and which scope each needs; a declaration that
+    // tells a management client these eight routes exist and which scope each needs; a declaration that
     // drifted from the registrations would have the client calling paths nothing serves.
     const capability = controlplane();
     const app = new Hono<PithyHonoEnv>();
     capability.routes?.(app);
 
-    expect(capability.adminRoutes).toHaveLength(7);
+    expect(capability.adminRoutes).toHaveLength(8);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
     // And the other direction. Since #468 the CORS surface derives from `adminRoutes`, so a guarded
     // route nobody declared gets no preflight and no browser reaches it, with this suite still green.
@@ -119,7 +120,12 @@ describe("control-plane route contract", () => {
     const advertised = controlplane().adminRoutes ?? [];
     const ping = advertised.find((route) => route.path.endsWith("/ping"));
     expect(ping?.scope).toBeNull();
-    expect(advertised.filter((route) => route.scope === null)).toHaveLength(1);
+    // The presence ticket route is the other null, and for a different reason: the scope it needs is the
+    // room kind's, named in its body and listed beside each kind in the manifest (#815).
+    expect(advertised.filter((route) => route.scope === null).map((route) => route.path)).toEqual([
+      "/control-plane/ping",
+      "/control-plane/presence/tickets",
+    ]);
   });
 
   test("every route requiring migrations:read is a GET, so connect grants it as a read", () => {

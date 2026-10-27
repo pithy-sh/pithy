@@ -53,6 +53,10 @@ const sources = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"], {
  */
 const ALLOWED_SPECIFIERS: ReadonlySet<string> = new Set([
   "@cloudflare/workers-types",
+  // The Workers runtime's own module, never a package and never Node's: the presence room's Durable Object
+  // base class (#815). Only `presence/durableObject.ts` may name it, which is what keeps it off every path
+  // `pithy.config.ts` loads in Node — `presence/durableObject.test.ts` holds that.
+  "cloudflare:workers",
   "@hono/zod-validator",
   "hono",
   "hono/http-exception",
