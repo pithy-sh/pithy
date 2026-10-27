@@ -66,8 +66,15 @@ export const LedgerTransactionView = z
     relatedRef: z
       .string()
       .nullable()
-      .describe("The entry this one answers: a hold's ref, or the other side of a transfer. Null when standalone."),
-    memo: z.string().nullable().describe("The adopter's own note on the movement, or null."),
+      .describe(
+        "The entry this one answers: a hold's ref, the other side of a transfer, or the entry a reversal reversed. Null when standalone.",
+      ),
+    memo: z
+      .string()
+      .nullable()
+      .describe(
+        "The note on the movement — the adopter's own, or an operator's reason on a management write — or null.",
+      ),
     createdAt: z.iso.datetime().describe("When the movement was recorded, ISO-8601."),
   })
   .describe("One ledger entry as a management client sees it. No surrogate id, and no repeated owner.");
@@ -139,7 +146,9 @@ export const LedgerOwnTransactionView = z
     relatedRef: z
       .string()
       .nullable()
-      .describe("The entry this one answers: a hold's ref, or the other side of a transfer. Null when standalone."),
+      .describe(
+        "The entry this one answers: a hold's ref, the other side of a transfer, or the entry a reversal reversed. Null when standalone.",
+      ),
     memo: z.string().nullable().describe("The adopter's own note on the movement, or null."),
     createdAt: z.iso.datetime().describe("When the movement was recorded, ISO-8601."),
   })
@@ -155,3 +164,31 @@ export const LedgerOwnTransactionsResponse = z
   })
   .describe("The caller's own recent history in one currency.");
 export type LedgerOwnTransactionsResponse = z.output<typeof LedgerOwnTransactionsResponse>;
+
+/**
+ * `POST {base}/admin/accounts/:userId/:currency/{credit,debit,reverse,release}`.
+ *
+ * The account as the write left it, and whether the write moved anything. `applied` is what tells a
+ * console "done" from "that was already done": a replay answers 200 with the balance as it stands, the
+ * same as the first call did, and only `applied` differs.
+ */
+export const LedgerAdjustmentResponse = z
+  .object({
+    userId: z.string().describe("The account owner, echoed so a response stands on its own."),
+    currency: z.string().describe("The currency, as the configured catalog spells it."),
+    ref: z
+      .string()
+      .describe(
+        "The ref of the entry this write recorded: the key for a credit or a debit, `<ref>:reverse` for a reversal, `<ref>:resolve` for a release.",
+      ),
+    applied: z
+      .boolean()
+      .describe(
+        "True when this call moved the balance. False on a replay: the entry already existed, nothing moved, and no audit event was written.",
+      ),
+    balance: z.number().int().describe("Total owned after the write, in the currency's minor unit."),
+    held: z.number().int().describe("The portion reserved by open holds after the write."),
+    available: z.number().int().describe("Spendable after the write (`balance - held`)."),
+  })
+  .describe("The account one management write left, and whether it moved anything.");
+export type LedgerAdjustmentResponse = z.output<typeof LedgerAdjustmentResponse>;

@@ -14,6 +14,7 @@ import { ledger } from "../capability";
 import { LedgerConfig } from "../config/config";
 import { LEDGER_ROUTES, registerLedgerRoutes } from "./routes";
 import {
+  LEDGER_ACCOUNTS_ADJUST_SCOPE,
   LEDGER_ACCOUNTS_READ_SCOPE,
   LEDGER_CONTROL_PLANE_SCOPES,
   LEDGER_TRANSACTIONS_READ_SCOPE,
@@ -95,6 +96,10 @@ describe("ledger route contract", () => {
       "/ledger/:currency/debit",
       "/ledger/:currency/transactions",
       "/ledger/admin/accounts/:userId",
+      "/ledger/admin/accounts/:userId/:currency/credit",
+      "/ledger/admin/accounts/:userId/:currency/debit",
+      "/ledger/admin/accounts/:userId/:currency/release",
+      "/ledger/admin/accounts/:userId/:currency/reverse",
       "/ledger/admin/accounts/:userId/:currency/transactions",
     ]);
   });
@@ -150,6 +155,23 @@ describe("ledger route contract", () => {
     ];
     for (const path of malformed) {
       const response = await makeApp().request(path, { method: "GET" });
+      expect(response.status, path).toBe(403);
+    }
+    // The writes too, and with the bodies a validator would refuse: no reason, a negative amount, a
+    // stray field, no JSON at all, and a malformed path.
+    const writes: [string, string][] = [
+      ["/ledger/admin/accounts/alice/chips/credit", JSON.stringify({ amount: 5, ref: "r1" })],
+      ["/ledger/admin/accounts/alice/chips/debit", JSON.stringify({ amount: -5, ref: "r1", reason: "x" })],
+      ["/ledger/admin/accounts/alice/chips/reverse", JSON.stringify({ ref: "r1", reason: "x", userId: "bob" })],
+      ["/ledger/admin/accounts/alice/chips/release", "not json"],
+      ["/ledger/admin/accounts/alice/NOT-A-CODE/credit", JSON.stringify({ amount: 5, ref: "r1", reason: "x" })],
+    ];
+    for (const [path, body] of writes) {
+      const response = await makeApp().request(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      });
       expect(response.status, path).toBe(403);
     }
   });
@@ -243,20 +265,39 @@ describe("the advertised admin surface", () => {
     }
   });
 
-  test("reading a balance and reading its history are separate scopes", () => {
+  test("reading a balance, reading its history and moving it are three separate scopes", () => {
     // One `ledger:admin` flag would mean a credential issued to render a balances pane could also
-    // reconstruct every player's economic history. `scopeCovers` matches exactly, so these confer
-    // nothing about each other — which is only true while they are genuinely two strings.
-    expect(LEDGER_ACCOUNTS_READ_SCOPE).not.toBe(LEDGER_TRANSACTIONS_READ_SCOPE);
-    expect(new Set(LEDGER_CONTROL_PLANE_SCOPES).size).toBe(2);
+    // reconstruct every player's economic history, or move it. `scopeCovers` matches exactly, so these
+    // confer nothing about each other — which is only true while they are genuinely three strings.
+    expect(LEDGER_CONTROL_PLANE_SCOPES).toEqual([
+      LEDGER_ACCOUNTS_READ_SCOPE,
+      LEDGER_TRANSACTIONS_READ_SCOPE,
+      LEDGER_ACCOUNTS_ADJUST_SCOPE,
+    ]);
+    expect(new Set(LEDGER_CONTROL_PLANE_SCOPES).size).toBe(3);
+    expect(LEDGER_ACCOUNTS_ADJUST_SCOPE).toBe("ledger:accounts:adjust");
   });
 
-  test("nothing advertised can move a balance", () => {
-    // The whole scope of this surface. A POST, PUT, PATCH or DELETE appearing here is the review this
-    // test exists to force: an adjustment from a console needs an idempotency key, a recorded reason,
-    // and a reversal path, and none of those are designed yet.
-    for (const route of capability.adminRoutes ?? []) expect(route.method).toBe("GET");
-    for (const scope of LEDGER_CONTROL_PLANE_SCOPES) expect(scope.endsWith(":read")).toBe(true);
+  test("only the adjust scope can move a balance, and it opens exactly the four writes", () => {
+    // A write behind a read scope would hand every default `pithy dashboard connect` grant the power to
+    // move money, because `connect` grants reads unasked. So the method and the scope must agree, both
+    // ways: every non-GET is behind `ledger:accounts:adjust`, and that scope opens nothing that reads.
+    const advertised = capability.adminRoutes ?? [];
+    for (const route of advertised) {
+      expect(route.method === "GET", `${route.method} ${route.path}`).toBe(
+        route.scope !== LEDGER_ACCOUNTS_ADJUST_SCOPE,
+      );
+    }
+    expect(
+      advertised
+        .filter((route) => route.scope === LEDGER_ACCOUNTS_ADJUST_SCOPE)
+        .map((route) => `${route.method} ${route.path}`),
+    ).toEqual([
+      "POST /ledger/admin/accounts/:userId/:currency/credit",
+      "POST /ledger/admin/accounts/:userId/:currency/debit",
+      "POST /ledger/admin/accounts/:userId/:currency/reverse",
+      "POST /ledger/admin/accounts/:userId/:currency/release",
+    ]);
   });
 
   test("the player and management surfaces cannot collide", () => {

@@ -16979,14 +16979,14 @@
                             "description": "The movement's magnitude in the minor unit — always positive; `kind` gives direction."
                           },
                           "relatedRef": {
-                            "description": "The entry this one answers: a hold's ref, or the other side of a transfer. Null when standalone.",
+                            "description": "The entry this one answers: a hold's ref, the other side of a transfer, or the entry a reversal reversed. Null when standalone.",
                             "type": [
                               "string",
                               "null"
                             ]
                           },
                           "memo": {
-                            "description": "The adopter's own note on the movement, or null.",
+                            "description": "The note on the movement — the adopter's own, or an operator's reason on a management write — or null.",
                             "type": [
                               "string",
                               "null"
@@ -17045,6 +17045,572 @@
         ],
         "x-pithy-scopes": [
           "ledger:transactions:read"
+        ]
+      }
+    },
+    "/ledger/admin/accounts/{userId}/{currency}/credit": {
+      "post": {
+        "tags": [
+          "ledger"
+        ],
+        "operationId": "postLedgerAdminAccountsByUserIdByCurrencyCredit",
+        "summary": "Credit one account, with an idempotency key and a reason.",
+        "description": "A replay with the same `ref` changes nothing, writes no audit event, and answers with the current balance and `applied: false`. The same `ref` on another account, for a debit, for another amount or naming a hold is `ledger/ref_conflict`, and nothing moves.",
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The player whose account this is — the `:userId` path segment.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "currency",
+            "in": "path",
+            "required": true,
+            "description": "The currency the account is in — the `:currency` path segment. A shape check only; an unconfigured code is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A control-plane credit or debit on the account the path names.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "amount": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": "A positive integer in the currency's minor unit."
+                  },
+                  "ref": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "description": "The idempotency key, chosen by the client and written as the entry's ref. A replay with the same key changes nothing and answers with the current balance; the same key on another account, for the other act or for another amount is `ledger/ref_conflict`. Never ends in `:reverse`, `:resolve`, `:out` or `:in`, which the ledger writes itself."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why — a refund, a payout that misfired, a hold nothing released. Required and never blank. Stored as the entry's memo, and carried verbatim on the audit event."
+                  }
+                },
+                "required": [
+                  "amount",
+                  "ref",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "A control-plane credit or debit on the account the path names."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The account one management write left, and whether it moved anything.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "userId": {
+                      "type": "string",
+                      "description": "The account owner, echoed so a response stands on its own."
+                    },
+                    "currency": {
+                      "type": "string",
+                      "description": "The currency, as the configured catalog spells it."
+                    },
+                    "ref": {
+                      "type": "string",
+                      "description": "The ref of the entry this write recorded: the key for a credit or a debit, `<ref>:reverse` for a reversal, `<ref>:resolve` for a release."
+                    },
+                    "applied": {
+                      "type": "boolean",
+                      "description": "True when this call moved the balance. False on a replay: the entry already existed, nothing moved, and no audit event was written."
+                    },
+                    "balance": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Total owned after the write, in the currency's minor unit."
+                    },
+                    "held": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "The portion reserved by open holds after the write."
+                    },
+                    "available": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Spendable after the write (`balance - held`)."
+                    }
+                  },
+                  "required": [
+                    "userId",
+                    "currency",
+                    "ref",
+                    "applied",
+                    "balance",
+                    "held",
+                    "available"
+                  ],
+                  "description": "The account one management write left, and whether it moved anything."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "ledger:accounts:adjust"
+        ]
+      }
+    },
+    "/ledger/admin/accounts/{userId}/{currency}/debit": {
+      "post": {
+        "tags": [
+          "ledger"
+        ],
+        "operationId": "postLedgerAdminAccountsByUserIdByCurrencyDebit",
+        "summary": "Debit one account, never below what it has available.",
+        "description": "Refused with `ledger/insufficient_funds` past `available`, naming the shortfall in `params`. A replay with the same `ref` changes nothing and answers with the current balance and `applied: false`; the same `ref` on another account, for a credit, for another amount or naming a hold is `ledger/ref_conflict`, and nothing moves.",
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The player whose account this is — the `:userId` path segment.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "currency",
+            "in": "path",
+            "required": true,
+            "description": "The currency the account is in — the `:currency` path segment. A shape check only; an unconfigured code is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A control-plane credit or debit on the account the path names.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "amount": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": "A positive integer in the currency's minor unit."
+                  },
+                  "ref": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "description": "The idempotency key, chosen by the client and written as the entry's ref. A replay with the same key changes nothing and answers with the current balance; the same key on another account, for the other act or for another amount is `ledger/ref_conflict`. Never ends in `:reverse`, `:resolve`, `:out` or `:in`, which the ledger writes itself."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why — a refund, a payout that misfired, a hold nothing released. Required and never blank. Stored as the entry's memo, and carried verbatim on the audit event."
+                  }
+                },
+                "required": [
+                  "amount",
+                  "ref",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "A control-plane credit or debit on the account the path names."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The account one management write left, and whether it moved anything.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "userId": {
+                      "type": "string",
+                      "description": "The account owner, echoed so a response stands on its own."
+                    },
+                    "currency": {
+                      "type": "string",
+                      "description": "The currency, as the configured catalog spells it."
+                    },
+                    "ref": {
+                      "type": "string",
+                      "description": "The ref of the entry this write recorded: the key for a credit or a debit, `<ref>:reverse` for a reversal, `<ref>:resolve` for a release."
+                    },
+                    "applied": {
+                      "type": "boolean",
+                      "description": "True when this call moved the balance. False on a replay: the entry already existed, nothing moved, and no audit event was written."
+                    },
+                    "balance": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Total owned after the write, in the currency's minor unit."
+                    },
+                    "held": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "The portion reserved by open holds after the write."
+                    },
+                    "available": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Spendable after the write (`balance - held`)."
+                    }
+                  },
+                  "required": [
+                    "userId",
+                    "currency",
+                    "ref",
+                    "applied",
+                    "balance",
+                    "held",
+                    "available"
+                  ],
+                  "description": "The account one management write left, and whether it moved anything."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "ledger:accounts:adjust"
+        ]
+      }
+    },
+    "/ledger/admin/accounts/{userId}/{currency}/reverse": {
+      "post": {
+        "tags": [
+          "ledger"
+        ],
+        "operationId": "postLedgerAdminAccountsByUserIdByCurrencyReverse",
+        "summary": "Reverse one credit or debit by posting its opposite.",
+        "description": "Written as a new entry `<ref>:reverse` whose `relatedRef` is `ref`; the original stays. A second reversal of the same entry changes nothing. Refuses any other kind, and a reversal of a reversal, with `ledger/entry_not_reversible`; refuses reversing a credit past `available` with `ledger/insufficient_funds`; refuses with `ledger/ref_conflict` when `<ref>:reverse` is held by an unrelated entry.",
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The player whose account this is — the `:userId` path segment.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "currency",
+            "in": "path",
+            "required": true,
+            "description": "The currency the account is in — the `:currency` path segment. A shape check only; an unconfigured code is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A control-plane reversal of one credit or debit, posted as the opposite movement.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "ref": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "description": "The entry to reverse — a credit or a debit on the account the path names. The reversal is written as `<ref>:reverse`, so this is also the idempotency key: a second reversal of the same entry changes nothing."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why — a refund, a payout that misfired, a hold nothing released. Required and never blank. Stored as the entry's memo, and carried verbatim on the audit event."
+                  }
+                },
+                "required": [
+                  "ref",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "A control-plane reversal of one credit or debit, posted as the opposite movement."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The account one management write left, and whether it moved anything.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "userId": {
+                      "type": "string",
+                      "description": "The account owner, echoed so a response stands on its own."
+                    },
+                    "currency": {
+                      "type": "string",
+                      "description": "The currency, as the configured catalog spells it."
+                    },
+                    "ref": {
+                      "type": "string",
+                      "description": "The ref of the entry this write recorded: the key for a credit or a debit, `<ref>:reverse` for a reversal, `<ref>:resolve` for a release."
+                    },
+                    "applied": {
+                      "type": "boolean",
+                      "description": "True when this call moved the balance. False on a replay: the entry already existed, nothing moved, and no audit event was written."
+                    },
+                    "balance": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Total owned after the write, in the currency's minor unit."
+                    },
+                    "held": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "The portion reserved by open holds after the write."
+                    },
+                    "available": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Spendable after the write (`balance - held`)."
+                    }
+                  },
+                  "required": [
+                    "userId",
+                    "currency",
+                    "ref",
+                    "applied",
+                    "balance",
+                    "held",
+                    "available"
+                  ],
+                  "description": "The account one management write left, and whether it moved anything."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "ledger:accounts:adjust"
+        ]
+      }
+    },
+    "/ledger/admin/accounts/{userId}/{currency}/release": {
+      "post": {
+        "tags": [
+          "ledger"
+        ],
+        "operationId": "postLedgerAdminAccountsByUserIdByCurrencyRelease",
+        "summary": "Release one open hold, returning its funds to available.",
+        "description": "A hold on another account is `ledger/hold_not_found`, never released; a captured one is `ledger/hold_not_open`. A release of a hold already released changes nothing and answers with the current balance and `applied: false`. When `<ref>:resolve` is held by an unrelated entry, the hold stays open and the answer is `ledger/ref_conflict`.",
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The player whose account this is — the `:userId` path segment.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "currency",
+            "in": "path",
+            "required": true,
+            "description": "The currency the account is in — the `:currency` path segment. A shape check only; an unconfigured code is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A control-plane release of one open hold, returning its funds to `available`.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "ref": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "description": "The hold to release, on the account the path names. A hold resolves once, so this is also the idempotency key: a release of a hold already released changes nothing."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why — a refund, a payout that misfired, a hold nothing released. Required and never blank. Stored as the entry's memo, and carried verbatim on the audit event."
+                  }
+                },
+                "required": [
+                  "ref",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "A control-plane release of one open hold, returning its funds to `available`."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The account one management write left, and whether it moved anything.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "userId": {
+                      "type": "string",
+                      "description": "The account owner, echoed so a response stands on its own."
+                    },
+                    "currency": {
+                      "type": "string",
+                      "description": "The currency, as the configured catalog spells it."
+                    },
+                    "ref": {
+                      "type": "string",
+                      "description": "The ref of the entry this write recorded: the key for a credit or a debit, `<ref>:reverse` for a reversal, `<ref>:resolve` for a release."
+                    },
+                    "applied": {
+                      "type": "boolean",
+                      "description": "True when this call moved the balance. False on a replay: the entry already existed, nothing moved, and no audit event was written."
+                    },
+                    "balance": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Total owned after the write, in the currency's minor unit."
+                    },
+                    "held": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "The portion reserved by open holds after the write."
+                    },
+                    "available": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Spendable after the write (`balance - held`)."
+                    }
+                  },
+                  "required": [
+                    "userId",
+                    "currency",
+                    "ref",
+                    "applied",
+                    "balance",
+                    "held",
+                    "available"
+                  ],
+                  "description": "The account one management write left, and whether it moved anything."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "ledger:accounts:adjust"
         ]
       }
     },
@@ -17120,7 +17686,7 @@
                             "description": "The movement's magnitude in the minor unit — always positive; `kind` gives direction."
                           },
                           "relatedRef": {
-                            "description": "The entry this one answers: a hold's ref, or the other side of a transfer. Null when standalone.",
+                            "description": "The entry this one answers: a hold's ref, the other side of a transfer, or the entry a reversal reversed. Null when standalone.",
                             "type": [
                               "string",
                               "null"

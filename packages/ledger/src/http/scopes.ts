@@ -15,27 +15,31 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
  * program has none of. **This module imports types and nothing else, and a gate holds it there**:
  * `tooling/browser-scopes` compiles a DOM-only program against every scope the kit declares.
  *
- * ## Two scopes, not one admin flag
+ * ## Three scopes, not one admin flag
  *
- * `scopeCovers` matches exactly, with no prefix or wildcard rule, so these two confer nothing about
- * each other — and they should not, because they disclose different things. A **balance** is a number:
- * what an account holds right now. An **entry log** is a behavioral record: every wager placed, every
- * payout taken, every purchase, in order, with whatever note the adopter's own code wrote on it. A
- * balances pane and a support tool answering "why is my chip count wrong" need different halves of
- * that, and an adopter who wants to hand out only the shallower one must have a way to say so.
+ * `scopeCovers` matches exactly, with no prefix or wildcard rule, so these confer nothing about each
+ * other — and they should not, because they do different things. A **balance** is a number: what an
+ * account holds right now. An **entry log** is a behavioral record: every wager placed, every payout
+ * taken, every purchase, in order, with whatever note the adopter's own code wrote on it. A balances pane
+ * and a support tool answering "why is my chip count wrong" need different halves of that, and an
+ * adopter who wants to hand out only the shallower one must have a way to say so. And an **adjustment**
+ * moves money, which neither read does: `ledger:accounts:read` confers nothing on the write routes.
  *
  * The names are constants rather than config: a configurable scope name is a way to misconfigure a
  * default-denied gate into a differently-named one, and tooling that read the docs would then hold a
  * scope nothing checks. They are also the join key with what `pithy dashboard connect` offers an
  * adopter to grant, so they must be the same strings in both places.
  *
- * ## There is no write scope, and that is the whole design
+ * ## What a management write guarantees
  *
- * Nothing here grants a management client the ability to move a balance. Adjusting a ledger from an
- * admin console needs the same care as any other movement — an idempotency key, an audited reason, a
- * reversal path — and shipping a `POST /adjust` that has none of them would make the console the one
- * place the ledger's guarantees do not hold. Balance movement stays server-authoritative: in-process
- * through `openLedger`, or over the existing player-facing admin routes behind the auth scope.
+ * `ledger:accounts:adjust` opens four writes — credit, debit, reverse an entry, release a hold — and each
+ * carries every guarantee the in-process ledger gives, plus the two a console needs. **An idempotency
+ * key** the client chose, written as the entry's ref, so a double-click pays once and a replay answers
+ * with the balance as it stands. **A required reason**, stored as the entry's memo and carried verbatim on
+ * an audit event naming the connection, the account, the amount and the balance either side. Nothing is
+ * updated or deleted: a mistake is corrected by a **reversal**, the opposite movement as a new entry, and
+ * no write can take an account below what it holds. The scope is granted at `pithy dashboard connect`
+ * like any other, and never by default — `connect` grants reads unasked, and this is not one.
  */
 
 /** Read balances: the account list, and one player's position in each currency. A number, not a story. */
@@ -48,12 +52,19 @@ export const LEDGER_ACCOUNTS_READ_SCOPE: ControlPlaneScope = "ledger:accounts:re
 export const LEDGER_TRANSACTIONS_READ_SCOPE: ControlPlaneScope = "ledger:transactions:read";
 
 /**
+ * Move a balance from the control plane: credit, debit, reverse an entry, release a hold. Each write
+ * takes an idempotency key and a reason, and each one that moves anything is audited.
+ */
+export const LEDGER_ACCOUNTS_ADJUST_SCOPE: ControlPlaneScope = "ledger:accounts:adjust";
+
+/**
  * Every control-plane scope the ledger defines — what `pithy dashboard connect` offers for this
  * capability, and the list a manifest or a doc quotes rather than re-typing.
  */
 export const LEDGER_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
   LEDGER_ACCOUNTS_READ_SCOPE,
   LEDGER_TRANSACTIONS_READ_SCOPE,
+  LEDGER_ACCOUNTS_ADJUST_SCOPE,
 ];
 
 /**
@@ -90,6 +101,30 @@ export function ledgerAdminRoutes(basePath: string): AdminRoute[] {
       path: `${basePath}/admin/accounts/:userId/:currency/transactions`,
       scope: LEDGER_TRANSACTIONS_READ_SCOPE,
       summary: "The entry log behind one balance — every movement, newest first, with its memo.",
+    },
+    {
+      method: "POST",
+      path: `${basePath}/admin/accounts/:userId/:currency/credit`,
+      scope: LEDGER_ACCOUNTS_ADJUST_SCOPE,
+      summary: "Add funds to one account, with an idempotency key and a reason.",
+    },
+    {
+      method: "POST",
+      path: `${basePath}/admin/accounts/:userId/:currency/debit`,
+      scope: LEDGER_ACCOUNTS_ADJUST_SCOPE,
+      summary: "Remove funds from one account, never below what it has available.",
+    },
+    {
+      method: "POST",
+      path: `${basePath}/admin/accounts/:userId/:currency/reverse`,
+      scope: LEDGER_ACCOUNTS_ADJUST_SCOPE,
+      summary: "Post the opposite of one credit or debit. The original stays in the log.",
+    },
+    {
+      method: "POST",
+      path: `${basePath}/admin/accounts/:userId/:currency/release`,
+      scope: LEDGER_ACCOUNTS_ADJUST_SCOPE,
+      summary: "Release one open hold, returning its funds to available.",
     },
   ];
 }
