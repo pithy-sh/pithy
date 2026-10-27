@@ -119,7 +119,7 @@ git clone "$(printf 'Authorization: Bearer %s\n' "$PITHY_APP_TOKEN" | curl -fsS 
 
 The app's credential goes to curl on stdin, as `-H @-`, and never on its command line. A process's arguments are readable by every user on the machine, through `ps` or `/proc/<pid>/cmdline`, and this credential is the one that mints write tokens. `-H @-` needs curl 7.55 or later.
 
-Every fetch and push after that asks the helper, and the helper mints. A person with a `read` grant gets a read token, and a push is refused by Cloudflare. A person whose grant you removed is refused at the mint, and pushes with the token they hold until it expires. To stop them now, remove the grant and then revoke every token: `DELETE /artifacts/repos/<name>/credentials`. Everybody else's helper mints again on their next operation, and theirs is refused.
+Every fetch and push after that asks the helper, and the helper mints. A person with a `read` grant gets a read token, and a push is refused by Cloudflare. A person whose grant you removed is refused at the mint, and pushes with the token they hold until it expires. To stop them now, remove the grant and then revoke every token: `DELETE /artifacts/repos/<name>/credentials`. It reaches every token on the repository, past the 30 Cloudflare's listing shows at a time, and the live suite checks that with git on each release run. Everybody else's helper mints again on their next operation, and theirs is refused.
 
 ## Verify it
 

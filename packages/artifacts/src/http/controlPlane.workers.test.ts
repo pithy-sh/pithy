@@ -65,8 +65,9 @@ interface FakeRepo {
 }
 
 /**
- * The namespace, in memory, answering the way Cloudflare's binding documents. `listTokens` answers every token in every
- * state, oldest first, one page of at most `page` with no cursor.
+ * The namespace, in memory. `listTokens` answers every token in every state, oldest first, one page of at most `page`
+ * with no cursor. The real binding lists active tokens only; this one keeps revoked ones on its page, the listing that
+ * would end a list-and-revoke loop at the first page, so revoking by record is held against the worse case.
  */
 function fakeNamespace(page = Number.POSITIVE_INFINITY) {
   const repos = new Map<string, FakeRepo>();

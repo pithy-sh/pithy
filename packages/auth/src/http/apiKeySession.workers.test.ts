@@ -24,7 +24,7 @@ import {
 } from "../test-utils/scopedBackend";
 
 /**
- * **An API key mints a git token, sent the way the credential helper sends it (#849).**
+ * **An API key mints a git token, sent the way the credential helper sends it.**
  *
  * `@pithy-sh/artifacts`' credential helper is documented to work with "an API key if you compose Better Auth's
  * `apiKey()` plugin". Nothing proved it, and it was false twice over. Better Auth's plugin reads a key from

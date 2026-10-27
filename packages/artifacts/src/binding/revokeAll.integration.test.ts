@@ -19,7 +19,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { z } from "zod";
 
 /**
- * LIVE — revoking every token reaches past the first page of `listTokens()` (#849).
+ * LIVE — revoking every token reaches past the first page of `listTokens()`.
  *
  * ## The question
  *

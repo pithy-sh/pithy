@@ -74,8 +74,9 @@ describe("withRepo", () => {
 
 describe("revokeEveryToken", () => {
   /**
-   * A repository whose listing answers one page of at most `page` tokens, oldest first, as Cloudflare's has no cursor.
-   * `listsRevoked` decides the one thing the binding's documentation does not: whether a revoked token is still listed.
+   * A repository whose listing answers one page of at most `page` tokens with no cursor, as Cloudflare's does. By
+   * default it lists active tokens only, as the real binding does; `listsRevoked` keeps revoked ones on the page, the
+   * worse listing that revoking by record must survive.
    */
   function paged(live: number, page: number, revokes = true, listsRevoked = false) {
     const states = Array.from({ length: live }, () => "active" as "active" | "revoked");

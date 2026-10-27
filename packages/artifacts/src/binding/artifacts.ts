@@ -155,18 +155,16 @@ export async function callArtifacts<T>(operation: string, call: () => Promise<T>
  * **Revoke every live token on a repository**: each one the kit recorded, by its id, then whatever the listing still
  * shows live.
  *
- * The records come first because the listing cannot be trusted to reach them. `listTokens` answers one page with no
- * cursor, so the only way past the first page is to revoke what it shows and ask again, and that works only while the
- * listing leaves revoked tokens out. A listing that keeps them answers the same first page again, now dead, and the
- * loop ends with live tokens past it. The kit records every token it hands out before the plaintext leaves the Worker,
- * and keeps the record past the token's expiry, so revoking by record reaches every token the kit minted whatever the
- * listing shows. Pass the ids of the records that have not yet expired.
+ * The records come first so revoking never rests on the listing. `listTokens` answers one page with no cursor; the kit
+ * records every token it hands out before the plaintext leaves the Worker, and keeps the record past the token's
+ * expiry, so revoking by record reaches every token the kit minted whatever the listing shows. Pass the ids of the
+ * records that have not yet expired.
  *
  * The listing loop then catches a live token nobody recorded: one minted on the binding by your own code, or over
- * Cloudflare's REST API. That half still reaches past the first page only while the listing leaves revoked tokens out.
- * `revokeAll.integration.test.ts` records what the real listing returns on every release run. A round that revokes
- * nothing ends it, rather than asking again forever. A recorded token that was already dead
- * answers `false` and counts as nothing.
+ * Cloudflare's REST API. The real listing answers 30 tokens a page, newest first, active tokens only, so a revoked
+ * token leaves it and the next round sees the next page. `revokeAll.integration.test.ts` measures that against a real
+ * namespace, and checks with git that no token is left working. A round that revokes nothing ends the loop, rather
+ * than asking again forever. A recorded token that was already dead answers `false` and counts as nothing.
  */
 export async function revokeEveryToken(repo: ArtifactsRepoHandle, recorded: readonly string[] = []): Promise<number> {
   let revoked = 0;

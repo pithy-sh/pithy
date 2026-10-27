@@ -60,9 +60,9 @@ function artifactsError(code: string): Error {
 }
 
 /**
- * The account's namespace, in memory, answering the way Cloudflare's binding documents. `listTokens` answers every
- * token in every state, oldest first, one page of at most `page` with no cursor: the shape that ends a list-and-revoke
- * loop at its first page, because revoking what a page shows does not take it off the page.
+ * The account's namespace, in memory. `listTokens` answers every token in every state, oldest first, one page of at
+ * most `page` with no cursor. The real binding lists active tokens only; this one keeps revoked ones on its page, the
+ * shape that ends a list-and-revoke loop at its first page, so revoking by record is held against the worse case.
  */
 function fakeNamespace(page = Number.POSITIVE_INFINITY) {
   const repos = new Map<string, FakeRepo>();

@@ -70,7 +70,7 @@ async function resolvedScopes(
 
 /**
  * The header Better Auth's `apiKey()` plugin reads a key from by default. With `enableSessionForAPIKeys` on, the plugin
- * answers `getSession` for a request carrying one, so a key stands for its owner's session (#849). It is the default
+ * answers `getSession` for a request carrying one, so a key stands for its owner's session. It is the default
  * rather than whatever an adopter configured, because the plugin does not expose its options: an adopter who renames
  * the header keeps `x-api-key` for keys meant to reach this middleware.
  */
