@@ -98,6 +98,23 @@ describe("commands named in docs", () => {
     expect(offered).toEqual([]);
   });
 
+  // `docs/CLI.md`'s per-command index is how a reader finds a page, and nothing held it to the pages: `cloudflare`,
+  // `privacy`, `provision` and `setup` each shipped a page and no row. One row per page, and no row without one.
+  test("CLI.md's command index has exactly one row per page under docs/commands", () => {
+    const cliMd = readFileSync(join(REPO_ROOT, "docs", "CLI.md"), "utf8");
+    const rows = [
+      ...cliMd.matchAll(/^\| `pithy ([a-z][a-z-]*)` \| \[`commands\/([a-z-]+)\.md`\]\(commands\/\2\.md\)/gm),
+    ];
+    const indexed = rows.map(([, command, page]) => `${command} → ${page}`);
+    const pages = docFiles(join(REPO_ROOT, "docs", "commands"))
+      .map(([file]) => file)
+      .filter((file) => !file.includes("/"))
+      .map((file) => file.replace(/\.md$/, ""))
+      .sort();
+
+    expect(indexed).toEqual(pages.map((page) => `${page} → ${page}`));
+  });
+
   // The floor. A reader that found no commands, or no docs, reports every page clean — which is the one
   // result this test must never produce quietly. `secrets create` is asserted by name because it is the
   // spelling #503 was wrong about, so a walk that silently stopped returning subcommands fails here.

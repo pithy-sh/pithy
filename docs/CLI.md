@@ -43,6 +43,7 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | `pithy dev [--app <name>]… [--list]` | Start the local development environment — app Workers plus each composed capability's host Worker, on per-feature ports (see [`commands/dev.md`](commands/dev.md)) |
 | `pithy migrate [--worker <name>] [--binding <binding>] [--group <value>]` | Run each Worker's migration registry against an `--env`, under a named or generated group (`--rollback --group <value>` reverses that group in every database in scope, and refuses without one; retained tables refuse, and a database another environment binds is never reversed). Fans out over every Worker; Workers sharing a database migrate it once. A declared secret table that is new or changed gets its migration written and the run stops, exit 5, with nothing applied (see [`commands/migrate.md`](commands/migrate.md)) |
 | `pithy seed [--worker <name>]` | Load seed/test data (same Zod schemas/codecs) for local dev or ephemeral CI — see [`commands/seed.md`](commands/seed.md) and `docs/SEED.md` |
+| `pithy cloudflare <connect\|disconnect\|use>` | Sign in to Cloudflare in a browser and keep the session, so no API token is made by hand: `connect` asks for exactly the permissions this project's tokens carry, `use` binds a profile to a directory, and a repository's worktrees share its main checkout's session. In a bound directory, every command that reaches Cloudflare runs on that session; CI and an unbound directory still use an account token (see [`commands/cloudflare.md`](commands/cloudflare.md)) |
 | `pithy provision <--env <name> \| --feature>` | Create an environment's own Cloudflare resources — one per binding name across every Worker — write their ids into each Worker's config, and migrate. **One job, two spellings, exactly one of them required:** `--env` for an environment the project declares, `--feature` for the one this branch gets. Idempotent and adopting: a resource of the right name is taken up rather than duplicated. Every run states the file it wrote and whether that file is committed — `--env`'s ids are source in the tracked `wrangler.jsonc`, `--feature`'s are a build artifact under the already-ignored `.wrangler/`. `deploy` refuses and names this command when a binding has no id; production takes a type-to-confirm phrase that `--yes` never replaces (see [`commands/provision.md`](commands/provision.md)) |
 | `pithy feature` | Feature environment lifecycle: `create` (local worktree, ports, migrate + seed), `sync` (make an existing worktree ready: its ports, then what `pithy setup` does), `destroy` (tear it all down). All three derive the feature from the checked-out branch. Its live Cloudflare environment is `pithy provision --feature`'s |
 | `pithy env [--worker <name>]` | Report each Worker's deployment environments (`dev`/`staging`/`prod`), their bindings, resolved ids, and dashboard links — read-only, switches nothing |
@@ -187,6 +188,7 @@ One page per command, under [`docs/commands/`](commands/). Every page carries th
 |---|---|
 | `pithy add` | [`commands/add.md`](commands/add.md) — Install a capability into a Worker |
 | `pithy alias` | [`commands/alias.md`](commands/alias.md) — Install or remove the `p.` shortcut |
+| `pithy cloudflare` | [`commands/cloudflare.md`](commands/cloudflare.md) — Sign in to Cloudflare, and choose which session each directory uses |
 | `pithy completion` | [`commands/completion.md`](commands/completion.md) — Install tab completion, or print a shell's script |
 | `pithy contract` | [`commands/contract.md`](commands/contract.md) — Write each Worker's OpenAPI and AsyncAPI documents |
 | `pithy dashboard` | [`commands/dashboard.md`](commands/dashboard.md) — Register and revoke a management client's access |
@@ -201,10 +203,13 @@ One page per command, under [`docs/commands/`](commands/). Every page carries th
 | `pithy media` | [`commands/media.md`](commands/media.md) — Provision and manage the media backends |
 | `pithy migrate` | [`commands/migrate.md`](commands/migrate.md) — Run each Worker's migration registry |
 | `pithy payments` | [`commands/payments.md`](commands/payments.md) — Provision and inspect the payments capability |
+| `pithy privacy` | [`commands/privacy.md`](commands/privacy.md) — Declare privacy classes and find unmarked fields |
+| `pithy provision` | [`commands/provision.md`](commands/provision.md) — Create an environment's own Cloudflare resources, wire them into each Worker, then migrate |
 | `pithy remove` | [`commands/remove.md`](commands/remove.md) — Unwire a capability. Manual only |
 | `pithy schema` | [`commands/schema.md`](commands/schema.md) — Describe every command, flag, payload and error code as JSON |
 | `pithy secrets` | [`commands/secrets.md`](commands/secrets.md) — Create, rotate, edit, and provision the secret registry |
 | `pithy seed` | [`commands/seed.md`](commands/seed.md) — Seed an environment from your Zod-typed fixtures |
+| `pithy setup` | [`commands/setup.md`](commands/setup.md) — Make this checkout ready to develop: install, secrets, migrate, ports, seed |
 | `pithy storage` | [`commands/storage.md`](commands/storage.md) — Provision and manage the storage backends |
 | `pithy support` | [`commands/support.md`](commands/support.md) — Provision and manage the support capability |
 | `pithy testers` | [`commands/testers.md`](commands/testers.md) — Cohorts, invitations, and tester rosters |
