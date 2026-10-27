@@ -176,6 +176,12 @@ const LEDGER: Record<string, Held> = {
       "The paywall's shape again, and held by the same sweeps. It reaches the paywall through useScreenPath over a declared role rather than a path it writes down, which is the statement #393 made one — so an adopter renaming either screen moves one string and the other follows.",
   },
 
+  // ── consent ─────────────────────────────────────────────────────────────────────────────────────
+  "src/routes/pithy/consent.tsx": {
+    ungated:
+      "Everything it could drift on is read rather than written: the purposes, their versions and their minimums come from the Worker at render, the requests and the answers go through `@pithy-sh/consent`'s own client and its response schemas, and a refusal is translated by its code. The one rule it carries — withdrawing is never harder than granting — is the server's to enforce, and `routes.workers.test.ts` in the consent package holds it there, where an edit to this file cannot loosen it.",
+  },
+
   // ── the home screen, in both variants ────────────────────────────────────────────────────────────
   "src/routes/app/home.tsx": {
     ungated:

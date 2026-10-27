@@ -152,6 +152,25 @@ export const esScreens: MessageCatalog = {
   "payments/subscription.google": "Comprado en Google Play",
   "payments/subscription.more": "Ver qué más hay",
 
+  // ── consent: the reader's privacy choices ─────────────────────────────
+  "consent/settings.title": "Tus opciones de privacidad.",
+  "consent/settings.loading": "Un momento.",
+  "consent/settings.unreadable": "No pudimos cargar tus opciones.",
+  "consent/settings.none": "Aquí nada pide tu consentimiento.",
+  "consent/settings.on": "Activado.",
+  "consent/settings.off": "Desactivado.",
+  "consent/settings.renew": "El aviso ha cambiado. Acepta de nuevo para mantenerlo.",
+  "consent/settings.expired": "Ha caducado.",
+  "consent/settings.agree": "Aceptar",
+  "consent/settings.withdraw": "Retirar",
+  "consent/settings.signed_elsewhere": "Necesita tu firma en el documento que cubre.",
+  "consent/settings.type_name": "Escribe tu nombre completo para retirarlo por escrito",
+  "consent/settings.draw_name": "Firma abajo para retirarlo por escrito",
+  "consent/settings.clear": "Borrar",
+  "consent/settings.signed_with_provider":
+    "Lo firmaste con un servicio de firma electrónica. Retíralo donde lo firmaste.",
+  "consent/settings.saved": "Guardado.",
+
   // ── app: the adopter's own shell and home screen ───────────────────────────
   //
   // Under `app/` rather than a capability name because that is what these are: the router and the home

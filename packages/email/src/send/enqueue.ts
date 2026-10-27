@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { normalizeAddress } from "@pithy-sh/core/src/address/address";
+import type { ConsentReader, ConsentSubject } from "@pithy-sh/core/src/consent/reader";
 import type { MeterCharge, MeterSubject } from "@pithy-sh/core/src/entitlement/meter";
 import { isLocale } from "@pithy-sh/core/src/i18n/locale";
+import { consentGate } from "../consent/consent";
 import type { EmailJob } from "../data/emailJob";
 import { EmailJob as EmailJobSchema } from "../data/emailJob";
 import type { EmailJobStatus, SendMode, SuppressionReason } from "../data/enums";
@@ -132,6 +134,14 @@ export interface EnqueueInput {
    * enqueue past the period's quota throws `payments/quota_exceeded` and writes no job.
    */
   subject?: MeterSubject;
+  /**
+   * Whose consent this message is sent under, when `@pithy-sh/consent` is composed: the recipient's account,
+   * or the visitor id they consented under. A `marketing` template is sent only to a subject consenting to
+   * `email.marketing`, and opens and clicks are tracked only for one consenting to `email.tracking`. Omitted, a
+   * marketing message is withheld and nothing is tracked, because nobody's consent can be shown. Transactional mail
+   * is never gated, and without consent composed this is ignored.
+   */
+  consentSubject?: ConsentSubject;
 }
 
 /** Dependencies enqueue needs: the database, the from identity, optional send-Workflow binding, time, ids. */
@@ -165,6 +175,11 @@ export interface EnqueueDeps {
    * request's env. Absent when no provider is composed, and then nothing is counted.
    */
   meter?: (charge: MeterCharge) => Promise<void>;
+  /**
+   * The composed consent reader, or absent when no consent capability is composed — and then nothing is
+   * gated, exactly as before consent existed.
+   */
+  consent?: ConsentReader | null;
   now: Date;
   /** Generate a job id (a UUID in production). */
   newId: () => string;
@@ -198,6 +213,12 @@ export interface EnqueueResult {
    * operator's next move depends on.
    */
   suppressionReason?: SuppressionReason;
+  /**
+   * The consent purpose that withheld this message, when consent is composed and the subject does not hold it —
+   * `email.marketing`. The row is born `suppressed` and nothing is sent. Absent for every message consent
+   * did not withhold.
+   */
+  consentWithheld?: string;
   /**
    * The **enqueue-time** render — the sentence this call wrote to `pithy_email_jobs.subject`, in the
    * recipient's language, and the value the row is born with (pithy-sh/pithy#443).
@@ -271,9 +292,18 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
    * agreeing is what makes a hard bounce withhold an invitation while an unsubscribe does not. A caller
    * cannot influence this and is not asked to: it is the template's own declaration.
    */
-  const blocked: SuppressionReason | null = deps.suppressionDb
+  const suppressed: SuppressionReason | null = deps.suppressionDb
     ? await blockingSuppression(deps.suppressionDb, input.to, deps.now, templateKind(input.template))
     : null;
+  /**
+   * What consent allows, when it is composed: a marketing message to a subject not consenting to it is
+   * withheld like a suppressed one, and tracking runs only for a subject consenting to it. Transactional mail is
+   * never withheld. With no consent composed the gate passes everything, as before.
+   */
+  const marketing = template.category === "marketing";
+  const gate = await consentGate(deps.consent, input.consentSubject, marketing);
+  const withheld = suppressed === null ? gate.withheld : null;
+  const blocked = suppressed !== null || withheld !== null;
   // The match key, on the same normalization the suppression list is written and read under. The row
   // keeps the address as the caller typed it in `toAddress` — an operator diagnosing a send needs the
   // string that was actually addressed — and carries this beside it as `recipientKey`, which is what
@@ -337,7 +367,6 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
     await deps.meter({ subject: input.subject, meter: "emails", amount: 1, now: deps.now });
   }
 
-  const marketing = template.category === "marketing";
   const job: EmailJob = {
     id: deps.newId(),
     toAddress: input.to,
@@ -368,17 +397,19 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
     // The same shape as `renderLocale` on the send side, and for the same reason.
     locale: isLocale(input.locale ?? "") ? (input.locale ?? null) : null,
     correlation: input.correlation ?? null,
-    openTracking: input.openTracking ?? marketing,
-    clickTracking: input.clickTracking ?? marketing,
+    openTracking: (input.openTracking ?? marketing) && gate.tracking,
+    clickTracking: (input.clickTracking ?? marketing) && gate.tracking,
     messageId: null,
     // The same sentence `runSend` writes when it skips one, so the send log reads the same whichever
     // pass caught it — and, for the undispatchable row, the one sentence that says why it stopped
     // here. The status is the state; this column is what an operator reads next to it.
-    error: blocked
-      ? `recipient suppressed: ${blocked}`
-      : undispatchable
-        ? "no EMAIL_SENDER binding: this composition can start no send Workflow"
-        : null,
+    error: suppressed
+      ? `recipient suppressed: ${suppressed}`
+      : withheld
+        ? `no consent: ${withheld}`
+        : undispatchable
+          ? "no EMAIL_SENDER binding: this composition can start no send Workflow"
+          : null,
     bounceCode: null,
     bounceType: null,
     replyTo: input.replyTo ?? null,
@@ -394,9 +425,17 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
   // A withheld message is on the record as an event, not merely as a status — the send log's history is
   // what an operator reads to find out that an advisory reached nobody, and a row with no event in it
   // looks exactly like a job still waiting its turn.
-  if (blocked) {
-    await recordEvent(deps.db, { jobId: job.id, recipient, type: "suppressed", detail: blocked }, deps.now);
-    return { jobId: job.id, status, subject, suppressionReason: blocked };
+  if (suppressed) {
+    await recordEvent(deps.db, { jobId: job.id, recipient, type: "suppressed", detail: suppressed }, deps.now);
+    return { jobId: job.id, status, subject, suppressionReason: suppressed };
+  }
+  if (withheld) {
+    await recordEvent(
+      deps.db,
+      { jobId: job.id, recipient, type: "suppressed", detail: `consent:${withheld}` },
+      deps.now,
+    );
+    return { jobId: job.id, status, subject, consentWithheld: withheld };
   }
 
   // Immediate sends start the Workflow now for lowest latency, under the id the row already carries —

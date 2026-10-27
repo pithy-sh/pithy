@@ -83,3 +83,17 @@ A security team watches its SIEM, not each vendor's console. `@pithy-sh/audit` s
 **How you know it is flowing.** Audit's manifest entry reports the backlog of events waiting on a retry, the count given up on to the dead-letter queue, and whether delivery is `delivering`, `failing` or `idle`. `pithy doctor` lists every sink and whether each environment holds its token.
 
 Shipping delivers the trail. It changes nothing in it.
+
+## Consent
+
+Where consent is the legal basis, the controller has to be able to demonstrate it (GDPR Art. 7(1)). [`@pithy-sh/consent`](../packages/consent/README.md) records it in your own D1, and the record is the evidence.
+
+- **Purposes are declared and versioned.** A capability declares what it processes under consent, and email declares `email.marketing` and `email.tracking`. You declare yours in `consent({ purposes })`, each with the data classes it covers, whether it is explicit, the weakest method a grant may be given by, and whether a withdrawal must be written. Bump a notice version and every older grant answers no until renewed.
+- **The record is append-only by schema.** Every grant and withdrawal is a row the database refuses to update or delete, and an audit event in the tamper-evident trail. The account's purge keeps it, under a stated basis.
+- **A signed grant keeps its evidence.** The exact document by its hash, produced again byte for byte; the typed name, the drawn signature or the provider's envelope; how identity was verified; an expiry; and a representative. Names rest encrypted.
+- **Visitors and accounts.** A visitor consents against an anonymous device id held only once they choose, merged into their account at sign-in, and recorded. An unmerged visitor's grant expires on a declared window.
+- **Email follows it.** Marketing mail goes only to a consenting subject, tracking runs only with consent, and transactional mail is never gated. A withdrawal from marketing suppresses the address for marketing. Without consent composed, `pithy doctor` says tracking runs with no consent record behind it.
+
+**It records and gates, and decides no law.** Which jurisdiction applies, whether a purpose needs consent at all, and refusing to write a classed field without it are yours. The processing record reports the gap instead.
+
+The counts per purpose and version and a subject's record are `GET /consent/control-plane/purposes` and `GET /consent/control-plane/subjects/:kind/:subjectId`, behind `consent:read` ([`CONTROL-PLANE.md` §13](CONTROL-PLANE.md#13-capabilities-contribute-their-own-admin-routes)).

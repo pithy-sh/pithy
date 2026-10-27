@@ -148,6 +148,7 @@
         "@pithy-sh/artifacts": "workspace:*",
         "@pithy-sh/audit": "workspace:*",
         "@pithy-sh/auth": "workspace:*",
+        "@pithy-sh/consent": "workspace:*",
         "@pithy-sh/i18n": "workspace:*",
         "@pithy-sh/leaderboard": "workspace:*",
         "@pithy-sh/ledger": "workspace:*",
@@ -205,6 +206,35 @@
       },
       "peerDependencies": {
         "@pithy-sh/core": "^0.13.0",
+        "zod": "^4.4.0",
+      },
+    },
+    "packages/consent": {
+      "name": "@pithy-sh/consent",
+      "version": "0.0.0",
+      "dependencies": {
+        "@cloudflare/workers-types": "^5.20260729.1",
+        "@hono/zod-validator": "^0.9.0",
+      },
+      "devDependencies": {
+        "@cloudflare/vitest-plugin": "^1.4.2",
+        "@pithy-sh/core": "workspace:*",
+        "@pithy-sh/tsconfig": "workspace:*",
+        "@types/node": "^22.15.0",
+        "@vitest/coverage-v8": "^4.1.0",
+        "hono": "^4.13.2",
+        "kysely": "^0.29.0",
+        "kysely-d1": "^0.4.0",
+        "tsdown": "^0.23.0",
+        "typescript": "^7.0.2",
+        "vitest": "^4.1.0",
+        "wrangler": "^4.151.0",
+        "zod": "^4.4.0",
+      },
+      "peerDependencies": {
+        "@pithy-sh/core": "^0.13.0",
+        "hono": "^4.13.2",
+        "kysely": "^0.29.0",
         "zod": "^4.4.0",
       },
     },
@@ -765,6 +795,7 @@
       "version": "0.5.0",
       "devDependencies": {
         "@pithy-sh/auth": "workspace:*",
+        "@pithy-sh/consent": "workspace:*",
         "@pithy-sh/core": "workspace:*",
         "@pithy-sh/i18n": "workspace:*",
         "@pithy-sh/organization": "workspace:*",
@@ -847,6 +878,7 @@
         "@pithy-sh/audit": "workspace:*",
         "@pithy-sh/auth": "workspace:*",
         "@pithy-sh/cli": "workspace:*",
+        "@pithy-sh/consent": "workspace:*",
         "@pithy-sh/core": "workspace:*",
         "@pithy-sh/email": "workspace:*",
         "@pithy-sh/leaderboard": "workspace:*",
@@ -1286,6 +1318,8 @@
     "@pithy-sh/cli": ["@pithy-sh/cli@workspace:packages/cli"],
 
     "@pithy-sh/cloudflare": ["@pithy-sh/cloudflare@workspace:packages/cloudflare"],
+
+    "@pithy-sh/consent": ["@pithy-sh/consent@workspace:packages/consent"],
 
     "@pithy-sh/core": ["@pithy-sh/core@workspace:packages/core"],
 

@@ -13,6 +13,7 @@ async function everyScreen(): Promise<Record<string, string>> {
     auth: true,
     payments: true,
     organization: false,
+    consent: false,
     packageManager: "bun",
   });
 }

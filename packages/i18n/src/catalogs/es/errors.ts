@@ -144,6 +144,16 @@ export const esErrors: MessageCatalog = {
   "rating/pool_not_found": "Ese grupo de valoración no existe.",
   "rating/record_forbidden": "No puedes registrar resultados valorados.",
 
+  // Consent.
+  "consent/unknown_purpose": "Ese propósito de consentimiento no existe.",
+  "consent/stale_notice": "El aviso ha cambiado. Vuelve a leerlo antes de aceptar.",
+  "consent/method_below_minimum": "Este consentimiento necesita una firma más fuerte.",
+  "consent/withdrawal_below_grant": "Para retirar este consentimiento, fírmalo igual que lo diste.",
+  "consent/evidence_missing": "Falta la firma o el documento que este consentimiento necesita.",
+  "consent/expiry_passed": "Esa fecha de caducidad ya ha pasado.",
+  "consent/document_not_found": "Ese documento firmado no existe.",
+  "consent/evidence_store_missing": "No se pudo guardar la firma.",
+
   // Matchmaking.
   "matchmaking/room_not_found": "Ese código no corresponde a ninguna sala abierta.",
   "matchmaking/room_full": "Esa sala ya no admite más jugadores.",

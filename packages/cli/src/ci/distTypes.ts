@@ -224,8 +224,11 @@ export const SIDES: readonly Side[] = ["input", "output"];
  * control-plane revocations.
  * Moved on 2026-10-27 (#820): `@pithy-sh/multiplayer` brings `pithy_multiplayer_sessions` and
  * `pithy_multiplayer_void_keys` — the index of sessions in flight, and every idempotency key spent voiding a result.
+ * `@pithy-sh/consent` is the nineteenth package and brings `pithy_consent_records`,
+ * `pithy_consent_documents` and `pithy_consent_merges` — every grant and withdrawal with its evidence, each signed
+ * document kept once per hash, and every visitor merged into an account at sign-in.
  */
-export const CENSUS = { tables: 75, packages: 18 };
+export const CENSUS = { tables: 78, packages: 19 };
 
 /**
  * Where the generated programs are written — **outside the checkout, and that is forced**.

@@ -57,6 +57,9 @@ const paymentsModules = import.meta.glob<{ holdsEntitlement: (key: string) => Pr
  * A `<Link to="/paywall">` in another screen was the same defect with a quieter symptom, so the same
  * three names cover both.
  *
+ * `consent` is the privacy-choices screen, so a "your privacy choices" link in a footer names the job and not
+ * `/consent`.
+ *
  * Claim one from `src/routes/app/` to take the job over — the same shadowing rule as a path.
  */
 export type ScreenRole =
@@ -65,7 +68,8 @@ export type ScreenRole =
   | "subscription"
   | "account-suspended"
   | "account-deleted"
-  | "organization-suspended";
+  | "organization-suspended"
+  | "consent";
 
 /**
  * The parameter names a pattern declares. `"/invitations/:token"` gives `"token"`; a pattern with no

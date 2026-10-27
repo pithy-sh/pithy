@@ -224,6 +224,7 @@ Every kit capability that holds rows about a person declares a `user` contributi
 | `email` | retain | The address on the suppression list, and the log of mail sent to it. *Kept so your unsubscribe holds: the address stays on the list of addresses not to mail, with the record of what was sent to it.* |
 | `audit` | retain | Every audit event where the person is the actor. *Kept as the record of who did what, which a security review or a dispute is read against.* |
 | `controlplane` | retain | Every legal hold placed on the person, standing or released. *Kept as the record that a legal hold stood, when it was placed and why it ended.* The export says when each was placed and released, never who placed it or why. |
+| `consent` | retain | Every grant and withdrawal, with the documents and evidence behind them and the visitors merged into the account. *Kept as the proof of what you agreed to and when you withdrew it, which the law asks us to be able to show.* |
 
 `packages/cli/src/capabilities/personRows.test.ts` holds the kit to it. It constructs every capability package, walks its schema, and fails the build when a table names a person — `userId`, `ownerId`, `subjectId`, `actorId`, any `…UserId`, either side of an invite or a friendship, or an address — in a capability that declares no `user` contribution, or one without an export. `isPersonColumn` and `personRowGaps` in `@pithy-sh/core/src/capability/personColumns` are the rule, if you want to hold your own capabilities to it.
 

@@ -42,6 +42,11 @@ export interface UiStubContext {
    * is a different answer entirely.
    */
   organization: boolean;
+  /**
+   * Whether to write the consent settings screen — every purpose and where the reader stands, and a withdrawal never
+   * harder than its grant. A fourth capability-gated set, chosen exactly as the three above are.
+   */
+  consent: boolean;
   /** The project's package manager — what the generated docs and commands tell the adopter to run. */
   packageManager: PackageManager;
 }
