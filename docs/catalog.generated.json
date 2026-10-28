@@ -42,6 +42,10 @@
       "package": "@pithy-sh/matchmaking"
     },
     {
+      "name": "mcp",
+      "package": "@pithy-sh/auth"
+    },
+    {
       "name": "media",
       "package": "@pithy-sh/media"
     },
@@ -94,6 +98,7 @@
         "--no-list",
         "--worker",
         "--set",
+        "--floor",
         "--eject",
         "--no-eject",
         "--force",

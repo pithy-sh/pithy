@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { describe, expect, it } from "vitest";
-import { CATALOG, capabilityPackageDir } from "./catalog";
+import { CATALOG, capabilityManifestFile, capabilityPackageDir, packageManifestPaths } from "./catalog";
 
 /**
  * **Every package that ships a capability can be added.** The other direction of `catalog.test.ts`.
@@ -16,7 +16,7 @@ import { CATALOG, capabilityPackageDir } from "./catalog";
  * that a package contributing a `Capability` is one an adopter can reach at all. So
  * `@pithy-sh/matchmaking` and `@pithy-sh/rating` shipped complete — routes, migrations, seeds, workers
  * tests, stamped versions, every repo-wide gate green — and `pithy add matchmaking` answered *no
- * capability named "matchmaking" is installed*, having just installed it (#415).
+ * capability named "matchmaking" is installed*, having just installed it.
  *
  * Two things make a capability addable, and neither is code:
  *
@@ -125,6 +125,28 @@ describe("every capability package is addable", () => {
       }
     }
     expect(disagreeing).toEqual([]);
+  });
+
+  it("catalogs every companion manifest a package ships, under the file and package the catalog names", () => {
+    const companions = readdirSync(PACKAGES)
+      .sort()
+      .flatMap((dir) =>
+        packageManifestPaths(join(PACKAGES, dir))
+          .filter((path) => !path.endsWith("/pithy.manifest.json"))
+          .map((path) => ({ dir, path })),
+      );
+    expect(companions.map(({ dir }) => dir)).toContain("auth");
+    const wrong: string[] = [];
+    for (const { dir, path } of companions) {
+      const manifest = CapabilityManifest.parse(JSON.parse(readFileSync(path, "utf8")));
+      const entry = CATALOG.find((candidate) => candidate.name === manifest.name);
+      if (entry === undefined) wrong.push(`${path}: not in the catalog`);
+      else if (capabilityPackageDir(entry.name) !== dir || !path.endsWith(`/${capabilityManifestFile(entry.name)}`)) {
+        wrong.push(`${path}: the catalog resolves ${entry.name} elsewhere`);
+      }
+      if (!manifest.whenToEnable?.trim()) wrong.push(`${path}: no whenToEnable`);
+    }
+    expect(wrong).toEqual([]);
   });
 
   it("says what each is for, in the one sentence the CLI has to explain it with", () => {

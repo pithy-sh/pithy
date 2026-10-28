@@ -315,8 +315,8 @@ Nothing is backfilled. Retroactively deciding whether a two-year-old patch was s
 
 Every published package declares `files`, and two gates hold it:
 
-- `tooling/release/src/manifests.test.ts` — the declaration. Each package names `src`, negates `!src/**/*.test.ts`, ships its `pithy.manifest.json` where it has one, ships its `docs/`, and names nothing that is not there.
-- `bun run verify-published` — the artifact. It packs all 22 and fails on a test file, a build leftover, or a missing manifest. It runs in CI beside the CLI's own `pack:verify`, and again in the release workflow on the exact thing about to be published.
+- `tooling/release/src/manifests.test.ts` — the declaration. Each package names `src`, negates `!src/**/*.test.ts`, ships its `pithy.manifest.json` and any companion manifest beside it (`pithy.mcp.manifest.json`) where it has them, ships its `docs/`, and names nothing that is not there.
+- `bun run verify-published` — the artifact. It packs all 22 and fails on a test file, a build leftover, or a capability manifest at the package root that the tarball left out. It runs in CI beside the CLI's own `pack:verify`, and again in the release workflow on the exact thing about to be published.
 
 Both exist because **`files` does not fail on a missing path.** A field naming `pithy.manifest.json` passes every static check whether the file is there or not, and only the tarball knows the difference — which matters, because the CLI resolves every capability manifest from the adopter's `node_modules/@pithy-sh/*`. A package that ships without one is a capability `pithy add` cannot see, and it exits 0.
 

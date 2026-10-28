@@ -24,6 +24,7 @@ import {
   runAdd,
 } from "../capabilities/flow";
 import { availableManifests, ManifestFault } from "../capabilities/manifests";
+import { optionForm } from "../capabilities/optionForms";
 import { type AddPlan, planAdd } from "../capabilities/planAdd";
 import { requiredOptionRefusal } from "../capabilities/requiredOptions";
 import { cloudflareClients } from "../cloudflare/clients";
@@ -58,7 +59,7 @@ export interface BuildAuditOptions {
   /**
    * The Cloudflare account this project belongs to, from `projectCloudflareAccount(projectDir)`, or
    * `null` when it names none. Required rather than defaulted: an audit written against the wrong
-   * account is a record of this project's work in another company's database (#206).
+   * account is a record of this project's work in another company's database.
    */
   account: CloudflareAccountSelection | null;
   /** Audit factory seam (default: {@link createRemoteCliAudit}). */
@@ -74,7 +75,7 @@ export interface BuildAuditOptions {
  * A no-op when Cloudflare creds or the audit capability aren't there (which is always true the very
  * first time `pithy add audit` itself runs — nothing can audit-log its own installation).
  *
- * **A local env reads no credentials at all (#739).** Its emitter is inert whatever they say, so resolving
+ * **A local env reads no credentials at all.** Its emitter is inert whatever they say, so resolving
  * them only gave the account guard a run to refuse — an `add` in a shell holding another account's pair
  * failed over credentials it would never use. A remote env resolves, and refuses, exactly as before.
  */
@@ -126,7 +127,7 @@ export interface TargetWorkerOptions extends ResolveOptions {
  * **only** when a human is attached, so an agent driving `--json` is told what to pass instead of hanging on
  * a question.
  *
- * **Composed for `environment`, which every caller names (#595).** What comes back is a composition — the
+ * **Composed for `environment`, which every caller names.** What comes back is a composition — the
  * capabilities and the config the command goes on to read — and it was composed for no environment, so
  * `pithy remove --drop --env staging` reversed the migrations of a config evaluated for none. There is no
  * form of this that composes for none: a caller whose command is about no one environment says which
@@ -144,10 +145,8 @@ export function targetWorker(environment: string, options: TargetWorkerOptions):
 /**
  * `pithy add --list`: the built-in catalog, with installed capabilities marked.
  *
- * A package whose manifest is present and unusable is named, with the reason. It used to be dropped in
- * silence — the capability was simply absent from the listing, and the command an adopter runs *because*
- * something is missing was the command that said nothing about it (#184). Reported rather than refused:
- * one broken package must not cost the adopter the other fifteen entries.
+ * A package whose manifest is present and unusable is named, with the reason, rather than left out of the
+ * listing. Reported rather than refused: one broken package must not cost the adopter the other entries.
  */
 async function listCapabilities(projectDir: string, json: boolean): Promise<void> {
   const { manifests, faults } = await availableManifests(projectDir);
@@ -158,11 +157,15 @@ async function listCapabilities(projectDir: string, json: boolean): Promise<void
   }
   const rows = listing.map((entry) => ({
     name: entry.name,
-    description: entry.installed ? `${entry.whenToEnable} (installed)` : entry.whenToEnable,
+    description: [
+      entry.whenToEnable,
+      ...(entry.requires.length === 0 ? [] : [`Requires ${entry.requires.join(", ")}.`]),
+      ...(entry.installed ? ["(installed)"] : []),
+    ].join(" "),
   }));
   process.stdout.write(`${formatList(rows)}\n`);
   for (const fault of faults) {
-    process.stderr.write(`${fault.package} ships a malformed pithy.manifest.json. Not listed.\n${fault.reason}\n`);
+    process.stderr.write(`${fault.package} ships a malformed ${fault.file}. Not listed.\n${fault.reason}\n`);
   }
 }
 
@@ -194,8 +197,7 @@ function describeRun(run: DatabaseRun): string {
  *
  * `@clack/prompts`' `select` has no unselected state: it highlights its first option and enter accepts it.
  * So "offer no `initialValue`" does not mean "nothing is pre-committed" — it means the first choice is, and
- * for `billingSubject` that is enter silently picking a billing model, which is the exact defect #412
- * exists to close. An unanswerable first entry is what actually gives the prompt no default: enter lands
+ * for `billingSubject` that is enter silently picking a billing model. An unanswerable first entry is what actually gives the prompt no default: enter lands
  * here, and here refuses.
  *
  * The empty string cannot collide with a real choice — `ConfigOption.choices` are non-empty printable
@@ -211,9 +213,6 @@ const UNANSWERED_CHOICE = "";
  * offered nothing to accept, in either shape: a `select` opens on {@link UNANSWERED_CHOICE}, and a `text`
  * gets no `defaultValue` and no `placeholder`. Both then refuse an unanswered enter with the same error a
  * `--json` run gets, naming the same flag — so the guarantee is one guarantee rather than one per transport.
- *
- * It used to hand `String(option.default)` to every prompt, which is how pressing enter picked a billing
- * model (#412).
  */
 const promptConfigValues: ConfigPrompt = async (manifest, provided) => {
   const { isCancel, select, text } = await import("@clack/prompts");
@@ -223,7 +222,7 @@ const promptConfigValues: ConfigPrompt = async (manifest, provided) => {
     // Left as the manifest scaffolds it. A secrets registry is not something anyone types at a prompt,
     // and the fallback offered would have been the string "[object Object]".
     if (isHandWritten(option)) continue;
-    // **A choice `pithy add` refuses is not offered, and the prompt says why it is missing (#483).**
+    // **A choice `pithy add` refuses is not offered, and the prompt says why it is missing.**
     // Selecting it would be refused a moment later by the same rule `--set` is held to, and a select
     // whose entries are not all selectable is a worse prompt than a shorter one. Naming the absent value
     // matters too: `organization` is the mode a B2B project is looking for, and a list that simply does
@@ -231,16 +230,18 @@ const promptConfigValues: ConfigPrompt = async (manifest, provided) => {
     const needsCode = option.choicesNeedingCode ?? {};
     const offered = option.choices?.filter((choice) => needsCode[choice] === undefined);
     const withheld = Object.entries(needsCode).filter(([choice]) => option.choices?.includes(choice));
-    // **A choice whose missing half `pithy add` can scaffold *is* offered, and says what it will write
-    // (#500).** The two lists read alike and mean opposite things: one names a value this command refuses,
+    // **A choice whose missing half `pithy add` can scaffold *is* offered, and says what it will write.**
+    // The two lists read alike and mean opposite things: one names a value this command refuses,
     // the other names one it takes on the understanding that the Worker will not boot until the adopter
     // finishes the file it leaves them. Saying so at the prompt is the difference between choosing
     // `organization` and discovering it.
     const scaffolded = Object.entries(option.choicesNeedingSeam ?? {}).filter(([choice]) =>
       option.choices?.includes(choice),
     );
+    const form = optionForm(manifest.name, option.key);
     const message = [
       `${option.key} — ${option.describe}`,
+      ...(form?.spellings ?? []).map((one) => `  ${one.spelling}: ${one.admits}`),
       ...withheld.map(([choice, why]) => `  ${choice}: not offered here. ${why}`),
       ...scaffolded.map(([choice, seam]) => `  ${choice}: ${CONFIG_SEAMS[seam].describe}`),
     ].join("\n");
@@ -297,7 +298,7 @@ const promptPrerequisites: PrerequisitePrompt = async ({ capability, missing }) 
  * The prompts `pithy add` hands the add flow: both when this run may ask (`terminal/inputMode.ts`), neither
  * when it may not. The flow asks only through what it is handed, so with neither it reaches its own
  * refusals instead — `input/required`, naming `--set` for a required option and `--with-prerequisites`
- * for a missing prerequisite (#697).
+ * for a missing prerequisite.
  */
 export function addPrompts(interactive: boolean): Pick<RunAddOptions, "prompt" | "askPrerequisites"> {
   return interactive ? { prompt: promptConfigValues, askPrerequisites: promptPrerequisites } : {};
@@ -331,6 +332,9 @@ const AddPayload = z
               .object({
                 name: z.string().describe("The capability name — the `pithy add <name>` argument."),
                 package: z.string().describe("The npm package it ships in."),
+                requires: z
+                  .array(z.string().describe("A capability name."))
+                  .describe("The capabilities it requires, which `--with-prerequisites` composes first."),
                 whenToEnable: z.string().describe("One line: why a project would enable it."),
                 installed: z.boolean().describe("Whether this project holds a usable manifest for it."),
               })
@@ -379,6 +383,10 @@ export default withContract(
       list: { type: "boolean", default: false, description: "List the capabilities you can add" },
       worker: { type: "string", description: "Which worker to wire it into (apps/<name>)" },
       set: { type: "string", description: "Override a config option: --set key=value (repeatable)" },
+      floor: {
+        type: "string",
+        description: "With mcp, who may connect an agent: signed-in, power:<name> or entitlement:<name>",
+      },
       eject: {
         type: "boolean",
         default: false,
@@ -425,7 +433,7 @@ export default withContract(
 
         // Resolved once and used three times over: the store id `add secrets` records, the migrate it
         // finishes with, and the audit trail. Every one of them belongs to the account this project names
-        // rather than to whichever `cloudflare.json` the machine happens to hold (#234).
+        // rather than to whichever `cloudflare.json` the machine happens to hold.
         const account = await projectCloudflareAccount(projectDir);
 
         const options: RunAddOptions = {
@@ -435,7 +443,7 @@ export default withContract(
           project: await proposalProject(projectDir),
           account,
           capability: args.capability,
-          setFlags: collectSetFlags(rawArgs),
+          setFlags: [...collectSetFlags(rawArgs), ...(args.floor === undefined ? [] : [`floor=${args.floor}`])],
           ...addPrompts(interactive),
           withPrerequisites: args["with-prerequisites"],
           eject: args.eject,
@@ -456,7 +464,7 @@ export default withContract(
         }
 
         // Read before the add writes anything, so its own bindings cannot hide which environments were ready.
-        // Only `--json` carries `next`, so only `--json` reads it (#697).
+        // Only `--json` carries `next`, so only `--json` reads it.
         const ready = args.json ? await readyEnvironments({ projectDir }).catch(() => []) : [];
         // The project's own production names, so a step whose provision needs a person's phrase is not one.
         const productionEnvironments = options.productionEnvironments;
@@ -518,7 +526,7 @@ export default withContract(
             );
           }
         }
-        // The other half of the same question (#132): an audit trail records who touched what, and a privacy
+        // The other half of the same question: an audit trail records who touched what, and a privacy
         // declaration says what there is to touch. Offered, never required, and only to a person.
         if (interactive && result.capability === "audit") await (await import("./privacy")).offerPrivacy(projectDir);
         process.stdout.write(`${formatDone()}\n`);
@@ -526,7 +534,7 @@ export default withContract(
   }),
   {
     output: "document",
-    // 2: `plan.resources[].kind` takes `queue`, the fourth kind provisioning creates (#662).
+    // 2: `plan.resources[].kind` takes `queue`, the fourth kind provisioning creates.
     schemaVersion: 2,
     payload: AddPayload,
     mutates: true,

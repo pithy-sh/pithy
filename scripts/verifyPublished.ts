@@ -14,11 +14,11 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { packFaults } from "@pithy-sh/release/src/packing";
+import { CAPABILITY_MANIFEST, packFaults } from "@pithy-sh/release/src/packing";
 import { publishedPackages } from "@pithy-sh/release/src/workspace";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -96,7 +96,7 @@ for (const pkg of publishedPackages(root)) {
       name: pkg.name,
       entries: tarball.entries,
       heads: tarball.heads,
-      expectsManifest: existsSync(join(root, pkg.dir, "pithy.manifest.json")),
+      capabilityManifests: readdirSync(join(root, pkg.dir)).filter((file) => CAPABILITY_MANIFEST.test(file)),
       declared: source.files,
       manifest: tarball.manifest as Parameters<typeof packFaults>[0]["manifest"],
       stamp: { manifest: source.version, built: tarball.stamp },

@@ -39,7 +39,7 @@ import upgrade, {
 /**
  * Narrow a fan-out entry to the state that carries a plan, failing the test when the run lost it.
  *
- * Every assertion below reaching through this is one the #380 union makes unreachable without narrowing —
+ * Every assertion below reaching through this is one the result union makes unreachable without narrowing —
  * which is the point of putting the plan behind the discriminant rather than beside an `ok` flag.
  */
 function reconciled(result: UpgradeWorkerResult | undefined): Extract<UpgradeWorkerResult, { state: "reconciled" }> {
@@ -112,7 +112,7 @@ describe("plan rendering", () => {
   test("a Durable Object class the entry does not export gets its own line", () => {
     // A plan reports what an apply writes. This one wrote the export and reported nothing, so a project
     // wired before it landed — binding present, export nowhere — read as "Nothing to upgrade." while
-    // `wrangler deploy` refused it (#428).
+    // `wrangler deploy` refused it.
     const lines = __test.planLines({
       ...plan,
       perCapability: [
@@ -357,7 +357,7 @@ describe("runUpgrade — fan-out over apps/", () => {
   });
 
   /**
-   * **The dry run's plan is the one shape every `--dry-run` shares (#697)**, read off the reconcile plans:
+   * **The dry run's plan is the one shape every `--dry-run` shares**, read off the reconcile plans:
    * one `wrangler.jsonc` edit per Worker naming each binding it adds, none for a run that writes.
    */
   test("a dry run carries the shared plan: each worker's wrangler.jsonc, one change per binding", async () => {
@@ -444,8 +444,8 @@ describe("runUpgrade — fan-out over apps/", () => {
 
   test("the applied entry carries the identity the plan does — a dry run and a real one are one array", async () => {
     // `--json` reports `applied ?? plan` from the same `workers` array, so a key the plan carries and the
-    // apply drops is a payload that changes shape with a flag. A consumer that read `deployedAs` worked
-    // under `--dry-run` and got `undefined` on the run that wrote something. #231.
+    // apply drops is a payload that changes shape with a flag. A consumer reading `deployedAs` would get
+    // it under `--dry-run` and `undefined` on the run that wrote something.
     const { workers: results } = await runUpgrade({
       account: null,
       ...base,
@@ -547,11 +547,15 @@ describe("runUpgrade — fan-out over apps/", () => {
  * The warning `pithy upgrade` did not print.
  *
  * A manifest the schema refuses makes its capability vanish from every plan, so the run reconciles
- * happily around the hole and reports nothing at all (#184). The lines sit above the Workers because the
+ * happily around the hole and reports nothing at all. The lines sit above the Workers because the
  * fault belongs to none of them — manifests install once, under the project root.
  */
 describe("manifest faults", () => {
-  const fault = { package: "@pithy-sh/audit", reason: "configOptions[0].key — not a bare identifier" };
+  const fault = {
+    package: "@pithy-sh/audit",
+    file: "pithy.manifest.json",
+    reason: "configOptions[0].key — not a bare identifier",
+  };
 
   test("a broken manifest is named, with its reason, above the workers", () => {
     const clean: ReconcilePlan = {
@@ -597,12 +601,12 @@ describe("manifest faults", () => {
 });
 
 /**
- * **A Worker that could not be reconciled costs its own entry, not the run (#380).**
+ * **A Worker that could not be reconciled costs its own entry, not the run.**
  *
  * `runUpgrade` fans out over `apps/*` building and applying one plan per Worker. A plan reads that
  * Worker's own config and wrangler stanzas; an apply *writes* them. Either can fail for reasons
- * belonging to one Worker, and the throw used to propagate — so a project lost every other Worker's
- * report to one broken config, after some of those Workers' files had already been rewritten.
+ * belonging to one Worker, and a throw that propagated would lose every other Worker's report to one
+ * broken config, after some of those Workers' files had already been rewritten.
  *
  * These tests exist to fail when either guard is removed. The failure is planted in the seams the run
  * already takes (`resolveWorkers` decides the set; `readLedger` and `runMigrate` are what a plan and an
@@ -630,10 +634,9 @@ describe("runUpgrade — a worker that will not reconcile", () => {
   const base = { account: null, env: "dev", migrate: false, resolveWorkers: both } as const;
 
   /**
-   * A ledger that will not read — the failure both `#371` and `#380` were written against.
+   * A ledger that will not read.
    *
-   * It throws **synchronously** on purpose: a `.catch()` guard would not see it, and `#371`'s own plant
-   * escaped exactly such a guard.
+   * It throws **synchronously** on purpose: a `.catch()` guard would not see it.
    */
   const brokenLedger = ({ workerDir }: { workerDir: string }) => {
     if (workerDir.endsWith("collab")) throw new Error("planted: this worker's ledger will not read");
@@ -643,7 +646,7 @@ describe("runUpgrade — a worker that will not reconcile", () => {
   test("a contributor that throws leaves the other worker's plan intact", async () => {
     const run = await runUpgrade({ ...base, dryRun: true, projectDir: dir, readLedger: brokenLedger });
 
-    // Both are planned — `#371` degrades the contributor rather than losing the Worker. `#380`'s
+    // Both are planned: a failing contributor degrades rather than losing the Worker. The
     // `unplanned` state remains for a plan that cannot be built at all, which no contributor now causes.
     expect(run.workers.map((result) => [result.worker, result.state])).toEqual([
       ["api", "reconciled"],
@@ -663,9 +666,9 @@ describe("runUpgrade — a worker that will not reconcile", () => {
   });
 
   test("an unplanned worker carries its name and nothing else — no plan to read as an empty one", () => {
-    // Asserted on the shape rather than through a plant, and that is a statement about the code as it
-    // now stands: after `#371` every contributor to a plan degrades, so nothing reachable through
-    // `runUpgrade`'s own seams makes `buildReconcilePlan` throw. The state and its guard are kept as
+    // Asserted on the shape rather than through a plant, because every contributor to a plan degrades,
+    // so nothing reachable through `runUpgrade`'s own seams makes `buildReconcilePlan` throw. The state and its
+    // guard are kept as
     // depth — a future contributor added without a guard lands here rather than taking the run down —
     // and this pins the shape so it cannot quietly grow a plan-shaped hole.
     const unplanned: UpgradeWorkerResult = { state: "unplanned", worker: "collab" };
@@ -701,7 +704,7 @@ describe("runUpgrade — a worker that will not reconcile", () => {
     expect(failed && "applied" in failed).toBe(false);
   });
 
-  // The rerun an unapplied Worker names is the caller's own run, from its context (#711): it was rebuilt from the
+  // The rerun an unapplied Worker names is the caller's own run, from its context: it was rebuilt from the
   // Worker, the environment and --migrate, and dropped the --json an agent's call had asked for.
   test("an unapplied Worker's rerun is the caller's own run, --json included", async () => {
     const run = await runUpgrade({
@@ -724,7 +727,7 @@ describe("runUpgrade — a worker that will not reconcile", () => {
   test("either failure still fails the run — the gate does not weaken, it stops taking the report with it", async () => {
     // Both ledgers read. A stub rather than the real read, because the Workers here are a double over a
     // scaffold with nothing installed: the real read discovers the rest of the project beside them, and a
-    // project whose configs will not compose is refused there rather than read as having no neighbors (#586).
+    // project whose configs will not compose is refused there rather than read as having no neighbors.
     const clean = await runUpgrade({
       ...base,
       dryRun: true,
@@ -733,7 +736,7 @@ describe("runUpgrade — a worker that will not reconcile", () => {
     });
     expect(upgradeIncomplete(clean)).toBe(false);
 
-    // The composition case: `#371` degrades the ledger, so this Worker comes back `reconciled`. The
+    // The composition case: the ledger degrades, so this Worker comes back `reconciled`. The
     // gate must still fail, because the check did not happen — asking `state !== "reconciled"` alone
     // would exit 0 on a Worker nobody could read.
     const broken = await runUpgrade({ ...base, dryRun: true, projectDir: dir, readLedger: brokenLedger });
@@ -761,7 +764,7 @@ describe("runUpgrade — a worker that will not reconcile", () => {
 });
 
 /**
- * What `pithy upgrade` says about a declined binding (#440).
+ * What `pithy upgrade` says about a declined binding.
  *
  * Two tenses and one refusal. The refusal is the case worth having a test for: it happens **before the
  * first write**, and every other failure out of `applyReconcilePlan` reports as "Upgrade failed partway.
@@ -882,7 +885,7 @@ describe("declined bindings", () => {
 });
 
 /**
- * `--dry-run` and the real run must agree about a refusal (#440 review).
+ * `--dry-run` and the real run must agree about a refusal.
  *
  * A dry run's whole job is to predict the write, and a refused decline is the thing that stops it. The
  * first implementation returned at the dry-run branch *before* asking, so `pithy upgrade --dry-run`
@@ -909,7 +912,7 @@ describe("a refused decline in both tenses", () => {
 
   // `vector provision` acts on one environment and defaults to dev, and an undeclinable binding is provisioned in
   // every environment the Worker has: so the line names one command per environment, production as the person's
-  // decision it is — never only the `dev` the plan happened to count migrations in (#711).
+  // decision it is — never only the `dev` the plan happened to count migrations in.
   test("a declined Workflow whose provision acts on one environment names every environment the Worker has", () => {
     const refusal = declineRefusal(
       {
@@ -933,7 +936,7 @@ describe("a refused decline in both tenses", () => {
     );
   });
 
-  // #711: the project's own production environment is a person's decision as well, never a routine provision.
+  // The project's own production environment is a person's decision as well, never a routine provision.
   test("an environment the project calls production is a person's decision in the refusal", () => {
     const refusal = declineRefusal(
       {
@@ -957,7 +960,7 @@ describe("a refused decline in both tenses", () => {
   });
 
   // `testers provision` with no `--env` covers every environment, and refuses `--env dev`: one command, no `--env`.
-  // Bare, `testers provision` runs against production too (#711), so it is named per deployed environment: staging
+  // Bare, `testers provision` runs against production too, so it is named per deployed environment: staging
   // as a command, prod as a person's decision.
   test("a declined Workflow whose provision spans every environment names each deployed one, prod as a decision", () => {
     const refusal = declineRefusal(
@@ -1332,7 +1335,7 @@ describe("runUpgrade --packages", () => {
       reconciled: false,
       installed: true,
     });
-    // The same command, as data: the reconcile this run left to the CLI it moved (#697).
+    // The same command, as data: the reconcile this run left to the CLI it moved.
     expect(JSON.parse(upgradeJsonLine(run, "dev", false)).next).toEqual([
       {
         command: "bun x pithy upgrade",
@@ -1343,7 +1346,7 @@ describe("runUpgrade --packages", () => {
 });
 
 /**
- * **The Pithy block in `AGENTS.md`, refreshed by every upgrade (#697).** A project scaffolded before the
+ * **The Pithy block in `AGENTS.md`, refreshed by every upgrade.** A project scaffolded before the
  * block existed gets it; a stale one is rewritten in place, with every byte outside the markers as it was;
  * a current one is not written. The merge itself is `project/agentInstructions.test.ts`'s; these hold
  * `runUpgrade` to calling it, in the right tense, at the right moment, and never failing the run over it.
@@ -1369,7 +1372,7 @@ describe("runUpgrade — agent instructions", () => {
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "pithy-upgrade-agents-"));
-    // `scaffoldProject` writes no AGENTS.md — `init` does, after it — so this is a project from before #697.
+    // `scaffoldProject` writes no AGENTS.md — `init` does, after it — so this is a project with no Pithy block yet.
     await scaffoldProject({ targetDir: dir, appName: "agents-test" });
   });
 
@@ -1378,7 +1381,7 @@ describe("runUpgrade — agent instructions", () => {
   });
 
   /**
-   * **`next` names `pithy migrate` for the migrations this run counted and did not run (#697)** — and nothing
+   * **`next` names `pithy migrate` for the migrations this run counted and did not run** — and nothing
    * under `--migrate`, which ran them, or under `--dry-run`, which changed nothing to follow up on.
    */
   test("next names migrate for what it counted and did not apply, and nothing when it did or only planned", async () => {
@@ -1466,7 +1469,7 @@ describe("runUpgrade — agent instructions", () => {
 });
 
 /**
- * **Doctor's advice, followed, clears doctor's line (#634's fourth criterion).** Built from the real pieces
+ * **Doctor's advice, followed, clears doctor's line.** Built from the real pieces
  * end to end: doctor reads the project's own manifests and `node_modules`, the command it names is run, and
  * doctor is asked again with the same registry.
  */
@@ -1613,7 +1616,7 @@ describe("doctor's advice clears its own line", () => {
 });
 
 /**
- * **`planUpgrade`, branch by branch (#697).** Each case hands it a run built by hand, the way the dry run
+ * **`planUpgrade`, branch by branch.** Each case hands it a run built by hand, the way the dry run
  * hands it the one it just read, so what is under test is the restatement alone: which file each finding
  * lands in, and the sentence an agent reads for it. The project directory is real only where the plan
  * reads the disk — whether `AGENTS.md` exists, and where `main` points.
@@ -1822,7 +1825,7 @@ describe("planUpgrade", () => {
 });
 
 /**
- * **`upgradeFollowUp`, held directly (#697).** The two `runUpgrade` cases above reach it through the `--json`
+ * **`upgradeFollowUp`, held directly.** The two `runUpgrade` cases above reach it through the `--json`
  * line on one state each; these are the rest of its inputs. The count is summed across Workers and is only
  * ever whole — a Worker that is not reconciled, or a ledger read in part, fails the run, and a failed run
  * names no step — and `--packages` defers to the project's own CLI only when it moved `@pithy-sh/cli` and
@@ -1951,7 +1954,7 @@ describe("upgradeFollowUp", () => {
   });
 
   /**
-   * **The rerun is the caller's own run, less the package move it already made (#711).** `--env`, `--worker` and
+   * **The rerun is the caller's own run, less the package move it already made.** `--env`, `--worker` and
    * `--migrate` each change what the reconcile acts on, so the line that hands the reconcile to the new CLI
    * carries every one the caller gave; `--packages` and `--latest` did their work in this run, and a rerun that
    * repeated them would move the packages again. `--worker` cannot reach here beside `--packages` today

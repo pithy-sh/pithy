@@ -19,7 +19,7 @@ import type { ProjectHealth, WorkerHealth } from "./health";
 import type { MissingSecretBinding } from "./secretBindings";
 
 /**
- * **Each finding's `fix`, decided from its fields (#697).** One builder per kind of finding, each held here
+ * **Each finding's `fix`, decided from its fields.** One builder per kind of finding, each held here
  * to every state it answers: the command where one rights the finding, `null` where the remedy is an edit, a
  * person's step, or something nothing established. That every `fix` they produce is a real command with
  * declared flags is `failures.test.ts`'s, which runs each one a rendered report carries.
@@ -88,7 +88,7 @@ describe("secretBindingFix", () => {
   });
 
   // The provision that mints it runs against every environment, production included: a person's decision, never
-  // the fix for one environment's binding (#711).
+  // the fix for one environment's binding.
   test("a value the kit composes has no fix: its provision runs against production", () => {
     expect(secretBindingFix(missing({ provisionable: true }))).toBeNull();
   });
@@ -131,7 +131,7 @@ describe("the rest", () => {
   });
 
   /**
-   * **A missing peer's own peers may be missing too, and the add must compose them or refuse (#697).** `testers`
+   * **A missing peer's own peers may be missing too, and the add must compose them or refuse.** `testers`
    * declares `email`, and `email` declares `secrets`; a Worker composing `testers` alone has one finding — the
    * email — and `pithy add email` with nobody to ask refuses `input/required` over the secrets. The flag composes
    * only what is missing, so it is right whether or not there is any.
@@ -147,7 +147,7 @@ describe("the rest", () => {
     expect(capabilityReachFix({ capability: "email", workers: [] })).toBeNull();
   });
 
-  // #711: payments' billingSubject has no default, so with nothing known the line is a choice and carries no fix. A
+  // Payments' billingSubject has no default, so with nothing known the line is a choice and carries no fix. A
   // Worker whose config already composes payments with it set needs no choice: `pithy add` skips what is stated.
   test("a capability installed nowhere, on a Worker whose config settles its options, names the add that runs", () => {
     const settled = { composed: ["secrets", "payments"], answered: ["billingSubject"] };
@@ -224,7 +224,10 @@ describe("healthWithFixes", () => {
   const health: ProjectHealth = {
     ok: false,
     workers: [worker, { state: "unavailable", worker: "web", directory: dirOf("web") }],
-    manifests: { ok: false, faults: [{ package: "@pithy-sh/audit", reason: "Unexpected token." }] },
+    manifests: {
+      ok: false,
+      faults: [{ package: "@pithy-sh/audit", file: "pithy.manifest.json", reason: "Unexpected token." }],
+    },
     bindingScope: { ok: true, partial: false, split: [], divergent: [] },
     capabilityReach: {
       ok: false,

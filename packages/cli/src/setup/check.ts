@@ -11,7 +11,7 @@ import { loadProject, requireProjectName } from "../project/config";
 import { isUnknown, type ResolvedWorker, type WorkerSet } from "../project/workerScope";
 
 /**
- * **`pithy setup`'s second step: is this a project setup can finish? (#764)**
+ * **`pithy setup`'s second step: is this a project setup can finish?**
  *
  * The dev half of `pithy doctor`, and only the half that decides whether anything after it can work: the
  * root config parses and names the project, every Worker's `pithy.config.ts` loads — which is every
@@ -83,7 +83,7 @@ export async function checkProject(options: CheckProjectOptions): Promise<Checke
   for (const worker of workers) {
     const { manifests, faults } = await manifestsFor(projectDir, worker.dir);
     for (const fault of faults) {
-      problems.push(`${fault.package} has a pithy.manifest.json that cannot be used: ${fault.reason}.`);
+      problems.push(`${fault.package} has a ${fault.file} that cannot be used: ${fault.reason}.`);
     }
     const composed = new Set(worker.capabilities.map((capability) => capability.name));
     for (const { capability, requires } of missingPrerequisites(manifests, composed)) {

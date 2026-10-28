@@ -2,13 +2,19 @@
 // SPDX-License-Identifier: MIT
 
 import { readdir } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { InternalError, messageOf, NotFoundError, type PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { readFileOutcome } from "../project/readOptionalFile";
 import { addAction, addListCommand } from "./addCommand";
-import { type CatalogEntry, capabilityPackageDir, installedManifestPath, MANIFEST_FILE } from "./catalog";
+import {
+  type CatalogEntry,
+  capabilityManifestFile,
+  capabilityPackageDir,
+  installedManifestPath,
+  packageManifestPaths,
+} from "./catalog";
 import { resolveAdd } from "./notComposed";
 
 /** Every capability ships under this npm scope; the CLI resolves them by name. */
@@ -28,12 +34,10 @@ function manifestPath(projectDir: string, name: string): string {
 }
 
 /**
- * What reading one package's `pithy.manifest.json` produced.
+ * What reading one manifest file produced.
  *
- * The three answers are three different facts, and collapsing any two of them is what this file kept
- * getting wrong. "The package ships no manifest" is ordinary — `@pithy-sh/cli` is not a capability. "The
- * manifest is there and unusable" is a defect in someone's package, and it has to be said out loud. They
- * were one `catch` for as long as this code existed (#184).
+ * Three different facts. "The package ships no manifest" is ordinary — `@pithy-sh/cli` is not a capability.
+ * "The manifest is there and unusable" is a defect in someone's package, and it has to be said out loud.
  */
 type ManifestRead =
   /** The package ships a manifest, and it parses. */
@@ -44,12 +48,10 @@ type ManifestRead =
   | { readonly state: "invalid"; readonly cause: unknown };
 
 /**
- * Read and validate one package's manifest, distinguishing "not there" from "there and broken".
+ * Read and validate one manifest, distinguishing "not there" from "there and broken".
  *
- * **Only `ENOENT` means the package ships no manifest**, and that decision is {@link readFileOutcome}'s
- * now (`../project/readOptionalFile.ts`) rather than a third local copy of it. Reading any other errno as
- * absence is how a present-but-unreadable capability disappears from `pithy add --list` with nothing said
- * (#184); the primitive is where that sentence and its three producers live.
+ * **Only `ENOENT` means the package ships no manifest**, and {@link readFileOutcome} decides it. Any other
+ * errno is a manifest that is there and unreadable, which `pithy add --list` reports rather than drops.
  *
  * The read is taken as a *value* and not as a throw, because the caller decides what a fault means:
  * `loadManifest` was asked for this capability and refuses; `availableManifests` was asked for all of
@@ -85,14 +87,14 @@ export async function installedManifest(projectDir: string, name: string): Promi
  * refusal never names the command that has just run. A manifest that is there and will not open is not
  * "not installed" — telling an adopter to run `pithy add auth` when the file is unreadable sends them to
  * the command that just declined to run. Neither is a package that is installed and ships no manifest;
- * see {@link absenceRefusal}, which is the half of that sentence #415 paid for.
+ * see {@link absenceRefusal}.
  */
 export async function loadManifest(name: string, projectDir: string): Promise<CapabilityManifest> {
   const read = await readInstalledManifest(manifestPath(projectDir, name));
   if (read.state === "manifest") return read.manifest;
   if (read.state === "absent") throw await absenceRefusal(name, projectDir);
   throw new InternalError({
-    message: `${SCOPE}/${capabilityPackageDir(name)} ships a malformed ${MANIFEST_FILE}${firstFault(read.cause)}`,
+    message: `${SCOPE}/${capabilityPackageDir(name)} ships a malformed ${capabilityManifestFile(name)}${firstFault(read.cause)}`,
     action: "Reinstall the capability, or report this to its maintainer.",
     detail: faults(read.cause),
   });
@@ -103,11 +105,8 @@ export async function loadManifest(name: string, projectDir: string): Promise<Ca
  * package is.**
  *
  * `runAdd` installs the package and *then* reads its manifest, so this branch is reached with the
- * package already in `node_modules`. One sentence covered both cases for as long as the code existed,
- * and it was the wrong one for exactly the case that can be reached from `pithy add`: telling an adopter
- * to run `pithy add rating` is a dead end when `pithy add rating` is what they just ran and what
- * installed the package this is complaining about. `@pithy-sh/matchmaking` and `@pithy-sh/rating` were
- * complete, installable, and unaddable behind that answer (#415).
+ * package already in `node_modules`. Telling an adopter to run `pithy add rating` there is a dead end:
+ * it is what they just ran, and what installed the package this is complaining about.
  *
  * A package that is there and ships no manifest is a defect in the package — either it is not a
  * capability at all, or its author left the one file that makes a capability addable out of the publish.
@@ -116,21 +115,20 @@ export async function loadManifest(name: string, projectDir: string): Promise<Ca
 async function absenceRefusal(name: string, projectDir: string): Promise<PithyError> {
   const pkg = `${SCOPE}/${capabilityPackageDir(name)}`;
   if (!(await isInstalled(projectDir, name))) {
-    // Nothing here says which Worker, so a project with several gets one command per Worker (#711), each with
+    // Nothing here says which Worker, so a project with several gets one command per Worker, each with
     // whatever the manifest — the kit's, until the package is installed — says it needs.
     return new NotFoundError({
       message: `No capability named "${name}" is installed.`,
       action: addAction(resolveAdd(name, { projectDir }), (add) => `Run ${add} to install it.`),
     });
   }
-  // `core/not_found`, the same code the other branch answers — the classification was never the bug and
-  // only the sentence moved. A package that is installed and is not a capability is an adopter naming the
-  // wrong thing (`pithy add cloudflare` finds a real @pithy-sh package that ships no manifest), so a 500
+  // `core/not_found`, the same code the other branch answers. A package that is installed and is not a
+  // capability is an adopter naming the wrong thing (`pithy add cloudflare` finds a real @pithy-sh package that ships no manifest), so a 500
   // would send them to *our* logs for an answer that is not in them, and would leave a `--json` caller
   // unable to tell an ordinary mistake from a Pithy defect.
   return new NotFoundError({
-    message: `${pkg} is installed and ships no ${MANIFEST_FILE}, so there is no capability named "${name}" to wire.`,
-    action: `Check the name against ${addListCommand()}. If ${pkg} is meant to be a capability, report the missing ${MANIFEST_FILE} to its maintainer.`,
+    message: `${pkg} is installed and ships no ${capabilityManifestFile(name)}, so there is no capability named "${name}" to wire.`,
+    action: `Check the name against ${addListCommand()}. If ${pkg} is meant to be a capability, report the missing ${capabilityManifestFile(name)} to its maintainer.`,
     detail: `${manifestPath(projectDir, name)} does not exist, but the package directory does`,
   });
 }
@@ -168,7 +166,7 @@ function fieldPath(path: readonly PropertyKey[]): string {
  * A manifest's faults, one per line as `<path>: <why>` — the `detail` a refusal carries.
  *
  * A `ZodError`'s own `message` is the issue array as JSON, which buries the one sentence that says what
- * is wrong. The path is what names the option: `configOptions[2].key` is the third option, and #174's
+ * is wrong. The path is what names the option: `configOptions[2].key` is the third option, and the schema's
  * messages carry the offending key or rationale verbatim beside it.
  */
 function faults(cause: unknown): string {
@@ -197,14 +195,24 @@ function firstFault(cause: unknown): string {
 export const ManifestFault = z
   .object({
     package: z.string().describe("The package the manifest was read from, as an adopter names it: @pithy-sh/audit."),
+    file: z
+      .string()
+      .describe(
+        "The manifest file within that package: pithy.manifest.json, or a companion such as pithy.mcp.manifest.json.",
+      ),
     reason: z
       .string()
       .describe(
         "Why it could not be used: the schema's own refusal text where the schema refused it — the same sentence loadManifest gives on the direct path — or the errno where the file would not open.",
       ),
   })
-  .describe("An installed package whose pithy.manifest.json is present and unusable, named with the reason.");
+  .describe("An installed package whose manifest is present and unusable, named with the file and the reason.");
 export type ManifestFault = z.infer<typeof ManifestFault>;
+
+/** One broken manifest's identity across scans: its package and its file, since a package can ship several. */
+export function manifestFaultKey(fault: ManifestFault): string {
+  return `${fault.package}/${fault.file}`;
+}
 
 /** What a scan of `node_modules/@pithy-sh` found: the manifests it could use, and the ones it could not. */
 export interface AvailableManifests {
@@ -215,43 +223,14 @@ export interface AvailableManifests {
 }
 
 /**
- * Every installed capability's manifest, validated — what `pithy add --list`
- * cross-references against the catalog. Scans `node_modules/@pithy-sh/*` and
- * skips packages that ship no manifest (cli). Empty when nothing's installed.
+ * Every manifest reachable from a **Worker**, which is the set that Worker's plan is about.
  *
- * Core does ship one now: the `control-plane` seam is a real capability living inside it, so the
- * directory scan finds `@pithy-sh/core` and reads it out as `controlplane`. Nothing here special-cases
- * that — the scan reads whatever manifest it finds, and the name comes from the file.
- *
- * **A package shipping no manifest is skipped; a package shipping a broken one is reported.** This used
- * to be one `catch` around both, so a manifest the schema refused made the capability vanish from
- * `pithy add --list`, `pithy upgrade` and `pithy doctor` with no message anywhere — the three commands
- * most likely to be run when something is missing were the three that stayed silent (#184). The faults
- * ride back with the manifests rather than throwing, because one broken package must not take the
- * listing of the other fifteen with it.
- */
-/**
- * Every manifest reachable from a **Worker**, which is the set that Worker's plan is about (#507).
- *
- * `availableManifests` scans one directory's `node_modules/@pithy-sh/*`, and every caller passed the
- * project root because `pithy add` writes each capability to both the root manifest and the Worker's, so
- * the root copy was always there. That made the root declaration load-bearing with nothing saying so, and
- * it fails in the shape the kit tells adopters to adopt: a project that declares a capability **only** on
- * the Worker composing it — the position #480 argued for, and the one this repository's own principle
- * states, capabilities being per-Worker — installs it under `apps/<name>/node_modules`, where the root
- * scan never looks.
- *
- * **It went unnoticed because the failure looks like health.** A composed capability whose manifest was
- * not found is skipped by every loop in `buildReconcilePlan`, so its bindings go unchecked, its config
- * options go unread, and — the one that matters — `prerequisites` answers `ok: true` for a composition
- * genuinely missing a required peer. Measured on 0.2.0: the same broken config reports the fault when
- * `@pithy-sh/auth` sits in the root `node_modules` and reports healthy when it does not.
- *
- * Both directories, merged by manifest name, and **the Worker's copy wins** — it is the one that Worker
- * actually loads, so a project pinning a capability differently per Worker is described by what it runs
- * rather than by what the root happens to hoist. A scan still cannot invent a capability into a plan: every
- * consumer filters on the Worker's composed set, so a stale package left in `node_modules` after its
- * declaration was removed contributes a manifest nothing asks for.
+ * A capability declared only on the Worker composing it installs under `apps/<name>/node_modules`, where a
+ * root scan never looks — and a composed capability whose manifest is not found is skipped by every loop in
+ * `buildReconcilePlan`, so its bindings go unchecked and `prerequisites` answers `ok: true` for a
+ * composition missing a required peer. So both directories are read, merged by manifest name, and **the
+ * Worker's copy wins**: it is the one that Worker actually loads. A scan cannot invent a capability into a
+ * plan, because every consumer filters on the Worker's composed set.
  */
 export async function composedManifests(projectDir: string, workerDir: string): Promise<AvailableManifests> {
   const root = await availableManifests(projectDir);
@@ -261,13 +240,22 @@ export async function composedManifests(projectDir: string, workerDir: string): 
   const byName = new Map(root.manifests.map((manifest) => [manifest.name, manifest]));
   for (const manifest of worker.manifests) byName.set(manifest.name, manifest);
 
-  const seen = new Set(root.faults.map((fault) => fault.package));
+  const seen = new Set(root.faults.map(manifestFaultKey));
   return {
     manifests: [...byName.values()].sort((left, right) => left.name.localeCompare(right.name)),
-    faults: [...root.faults, ...worker.faults.filter((fault) => !seen.has(fault.package))],
+    faults: [...root.faults, ...worker.faults.filter((fault) => !seen.has(manifestFaultKey(fault)))],
   };
 }
 
+/**
+ * Every installed capability's manifest, validated — what `pithy add --list` cross-references against the
+ * catalog. Scans `node_modules/@pithy-sh/*`, reading each package's own manifest and every companion one
+ * (`pithy.mcp.manifest.json` in `@pithy-sh/auth`). Empty when nothing's installed.
+ *
+ * **A package shipping no manifest is skipped; a package shipping a broken one is reported.** The faults
+ * ride back with the manifests rather than throwing, because one broken package must not take the listing
+ * of the rest with it.
+ */
 export async function availableManifests(projectDir: string): Promise<AvailableManifests> {
   const scopeDir = join(projectDir, "node_modules", SCOPE);
   let entries: string[];
@@ -280,10 +268,13 @@ export async function availableManifests(projectDir: string): Promise<AvailableM
   const manifests: CapabilityManifest[] = [];
   const broken: ManifestFault[] = [];
   for (const name of entries) {
-    const read = await readInstalledManifest(join(scopeDir, name, MANIFEST_FILE));
-    if (read.state === "manifest") manifests.push(read.manifest);
-    // Absent is ordinary — `@pithy-sh/cli` is not a capability — and stays silent, as it always has.
-    if (read.state === "invalid") broken.push({ package: `${SCOPE}/${name}`, reason: faults(read.cause) });
+    for (const path of packageManifestPaths(join(scopeDir, name))) {
+      const read = await readInstalledManifest(path);
+      if (read.state === "manifest") manifests.push(read.manifest);
+      if (read.state === "invalid") {
+        broken.push({ package: `${SCOPE}/${name}`, file: basename(path), reason: faults(read.cause) });
+      }
+    }
   }
   return { manifests, faults: broken };
 }

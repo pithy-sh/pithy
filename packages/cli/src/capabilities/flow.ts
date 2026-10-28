@@ -22,6 +22,8 @@ import { addAgain, addCallerOf, composedBy, projectAddFacts } from "./addCommand
 import { capabilityPackageName } from "./catalog";
 import { type EjectCapabilityOptions, type EjectResult, ejectCapability } from "./eject";
 import { availableManifests, loadManifest } from "./manifests";
+import { MCP_CAPABILITY, mcpConfigValues, mcpNotes, mcpPromptOptions } from "./mcpAdd";
+import { optionForm } from "./optionForms";
 import { prerequisiteClosure } from "./prerequisiteClosure";
 import { prerequisiteRefusal, prerequisiteRequired } from "./prerequisites";
 import { locateRegistration } from "./reconcile";
@@ -46,6 +48,8 @@ export function isHandWritten(option: ConfigOption): boolean {
 
 /** Coerce a raw string (a `--set` value or a prompt answer) to its option's type. */
 export function coerceConfigValue(option: ConfigOption, raw: string, capability: string): ConfigValue {
+  const form = optionForm(capability, option.key);
+  if (form !== undefined) return form.parse(raw, capability);
   if (isHandWritten(option)) {
     throw new ValidationError({
       message: `${capability} option "${option.key}" is not settable from the command line.`,
@@ -58,12 +62,9 @@ export function coerceConfigValue(option: ConfigOption, raw: string, capability:
   // It applies to an option that has a default too — a manifest offering three values does not stop
   // meaning it because it also picked one.
   if (option.choices) {
-    // **A choice the CLI must not write, refused here rather than later — #483.** `pithy add` renders
-    // JSON into `pithy.config.ts` and cannot render a function, so a choice whose validity depends on a
-    // seam is one it can write and the kit will then refuse to load. `payments`' `organization` did
-    // exactly that: the add succeeded, and every later command in the project failed on the config it
-    // had just written, because they all begin by loading it. The refusal costs one hand-edit; writing
-    // it cost the project.
+    // **A choice the CLI must not write, refused here rather than later.** `pithy add` renders JSON into
+    // `pithy.config.ts` and cannot render a function, so a choice whose validity depends on a seam is one
+    // it can write and the kit will then refuse to load — and every later command begins by loading it.
     const needsCode = option.choicesNeedingCode?.[raw];
     if (needsCode !== undefined) {
       throw new ValidationError({
@@ -181,7 +182,7 @@ export type PrerequisitePrompt = (question: PrerequisiteQuestion) => Promise<boo
 export type InstallStep = (input: { projectDir: string; pkg: string }) => Promise<{ packageManager: string }>;
 
 /**
- * Declare the capability on the Worker whose config imports it, at the range the root resolved (#480).
+ * Declare the capability on the Worker whose config imports it, at the range the root resolved.
  *
  * A separate step from the install rather than a flag on it, because the two answer to different
  * directories on purpose: the install belongs at the root, where the lockfile is and where every
@@ -203,7 +204,7 @@ export interface MigrateTarget {
   /**
    * The Cloudflare account this project belongs to, or `null` when it names none. `add`'s migrate is a
    * `dev` run today, so `null` costs it nothing; it is threaded because the step it feeds
-   * (`migrateProject`) can reach a live schema and must never do so under an account nobody named (#234).
+   * (`migrateProject`) can reach a live schema and must never do so under an account nobody named.
    */
   account: CloudflareAccountSelection | null;
 }
@@ -232,9 +233,9 @@ const defaultMigrate: MigrateStep = async ({ projectDir, workerDir, worker, proj
   // this process has already imported this config — `pithy add` resolves the target Worker's capabilities
   // before it wires anything. Taking the cache here returned the module from *before* the write, so the
   // registry was built without the capability just added and its migrations were never applied. `add`
-  // reported a clean run and `pithy dev` served 500s off tables nothing had created (#273).
+  // reported a clean run and `pithy dev` served 500s off tables nothing had created.
   //
-  // And composed for `dev`, the environment it migrates (#595).
+  // And composed for `dev`, the environment it migrates.
   const config = await composeFor(LOCAL_ENVIRONMENT, (load) => load(workerDir, { fresh: true }));
   const runs = await migrateProject({
     projectDir,
@@ -267,9 +268,8 @@ export interface RunAddOptions {
   project: string;
   /**
    * The Cloudflare account this project belongs to, from `projectCloudflareAccount(projectDir)`, or
-   * `null` when it names none. Required (#234): `pithy add secrets` records the account's one
-   * `SECRETS_STORE_ID`, and it recorded the *default* account's for as long as `bootstrapAdd`'s
-   * parameter was optional and this one did not exist.
+   * `null` when it names none. Required, because `pithy add secrets` records this account's one
+   * `SECRETS_STORE_ID`, and a defaulted account would record another's.
    */
   account: CloudflareAccountSelection | null;
   /** The capability name, e.g. `auth`. */
@@ -295,12 +295,12 @@ export interface RunAddOptions {
   dryRun?: boolean;
   /**
    * The caller asked for one JSON document (`--json`): a line naming this run again carries it, so the fix an agent
-   * runs answers the way its own call did (#711).
+   * runs answers the way its own call did.
    */
   json?: boolean;
   /**
    * The project's `seed.productionEnvironments`, read by the command. A provision a note names for one of them is a
-   * person's decision, as `prod` is (#711). Omitted, the project names none beyond `prod` and `production`.
+   * person's decision, as `prod` is. Omitted, the project names none beyond `prod` and `production`.
    */
   productionEnvironments?: readonly string[];
   /** Override the eject step (tests inject a stub). */
@@ -318,13 +318,13 @@ export interface RunAddOptions {
    * The deterministic answer a non-interactive run needs. Left unset, a run with a human attached is
    * asked ({@link RunAddOptions.askPrerequisites}) and any other run is refused, naming the commands —
    * because composing a capability nobody asked for is not something to do behind an adopter's back, and
-   * neither is reporting `Done.` on a project that cannot boot (#273).
+   * neither is reporting `Done.` on a project that cannot boot.
    */
   withPrerequisites?: boolean;
   /** Ask a human whether to compose the missing prerequisites. Omitted in non-interactive / `--json` runs. */
   askPrerequisites?: PrerequisitePrompt;
   /**
-   * **The run every line naming this one again names (#711)** — set by a prerequisite's nested add to its outer
+   * **The run every line naming this one again names** — set by a prerequisite's nested add to its outer
    * run, so a refusal raised while composing `secrets` for `pithy add auth --json` sends the caller back to their
    * own `pithy add auth … --json`, not to an add of `secrets` that drops their flags and composes only it. Absent,
    * it is this run's own context ({@link addRunCaller}).
@@ -394,7 +394,7 @@ async function missingFor(
 }
 
 /**
- * **This run of `pithy add`, as its own context (#711)** — the one input every line naming it again is built from:
+ * **This run of `pithy add`, as its own context** — the one input every line naming it again is built from:
  * the caller's own when a nested add was handed one, else this run's flags, its `--set`, and the options its
  * Worker's config already states for the capability (`keys` are the options to ask about; the kit's facts when the
  * manifest is not read yet). Read before the run writes, so what the config answered is what the caller relied on.
@@ -479,13 +479,13 @@ async function composePrerequisites(
     missing,
     factsFor: projectAddFacts(projectDir),
     composed: alreadyComposed,
-    // The caller's own run (#711): a fix that dropped --eject composes from the package what the caller asked to
+    // The caller's own run: a fix that dropped --eject composes from the package what the caller asked to
     // eject, one that dropped a dry run's --dry-run writes what the caller asked only to see, and one that ignored
     // what the Worker's config answers names a choice the config already made.
     caller: options.caller,
   };
   if (options.withPrerequisites !== true) {
-    // Nobody to ask is `input/required` (#697); somebody asked who said no is a refusal of its own.
+    // Nobody to ask is `input/required`; somebody asked who said no is a refusal of its own.
     if (options.askPrerequisites === undefined) throw prerequisiteRequired(refusal);
     if (!(await options.askPrerequisites(refusal))) throw prerequisiteRefusal(refusal);
   }
@@ -500,10 +500,10 @@ async function composePrerequisites(
       account: options.account,
       capability: name,
       withPrerequisites: true,
-      // A refusal inside it sends the caller back to their own run, not to this one (#711).
+      // A refusal inside it sends the caller back to their own run, not to this one.
       caller: options.caller,
       // The run's mode, which a note naming this add again carries: its own rerun is a dry run that answers in JSON
-      // when the caller's was (#711).
+      // when the caller's was.
       ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }),
       ...(options.json === undefined ? {} : { json: options.json }),
       ...(options.install === undefined ? {} : { install: options.install }),
@@ -536,6 +536,25 @@ async function answeredConfigKeys(workerDir: string, capability: string): Promis
   const outcome = await readFileOutcome(join(workerDir, "pithy.config.ts"));
   const location = outcome.state === "read" ? locateRegistration(outcome.text, capability) : null;
   return (key) => location?.statesKey(key) ?? false;
+}
+
+/** The manifest a person is asked about: mcp's without the `database` auth's registration already answers. */
+async function promptedManifest(workerDir: string, manifest: CapabilityManifest): Promise<CapabilityManifest> {
+  if (manifest.name !== MCP_CAPABILITY) return manifest;
+  const outcome = await readFileOutcome(join(workerDir, "pithy.config.ts"));
+  if (outcome.state !== "read" || locateRegistration(outcome.text, MCP_CAPABILITY) !== null) return manifest;
+  return { ...manifest, configOptions: [...mcpPromptOptions(outcome.text, manifest.configOptions)] };
+}
+
+/** mcp's values against the Worker's config as it stands, or the caller's own where mcp is already registered. */
+async function mcpValues(
+  workerDir: string,
+  values: Record<string, ConfigValue>,
+  again: string,
+): Promise<Record<string, ConfigValue>> {
+  const outcome = await readFileOutcome(join(workerDir, "pithy.config.ts"));
+  if (outcome.state !== "read" || locateRegistration(outcome.text, MCP_CAPABILITY) !== null) return values;
+  return mcpConfigValues({ source: outcome.text, values, again });
 }
 
 /**
@@ -576,9 +595,9 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
     const manifest = await loadManifest(capability, projectDir);
 
     // Before a byte of this capability's wiring is written: what it composes against, and whether this
-    // Worker has it. Refusing here leaves an installed package and nothing else — a config half-wired
-    // around an absent peer is the state #273 is about.
-    // This run as its context, read before anything is written (#711): the one input every line naming it again
+    // Worker has it. Refusing here leaves an installed package and nothing else, never a config half-wired
+    // around an absent peer.
+    // This run as its context, read before anything is written: the one input every line naming it again
     // is built from, whatever raises it — the prerequisite refusal, a nested add, `add.ts`, the bootstrap's notes.
     const caller = addRunCaller(
       options,
@@ -593,14 +612,13 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
 
     let configValues = coerceSetFlags(manifest, options.setFlags ?? []);
     if (options.prompt && manifest.configOptions.length > 0) {
-      configValues = await options.prompt(manifest, configValues);
+      configValues = await options.prompt(await promptedManifest(workerDir, manifest), configValues);
     }
 
     // The seam, and it is after both input paths on purpose: `--set` and a prompt are two ways of
     // settling the same question, and a run with a human attached has already been asked. What is left
     // here is a run that could not be asked and did not say — and the one thing it must not do is pick.
-    // An option with no default is a decision the capability declared too expensive to guess at; before
-    // this, `pithy add payments --json` picked a billing model and exited 0 (#412).
+    // An option with no default is a decision the capability declared too expensive to guess at.
     // Minus whatever this Worker's config already answers. `runAdd` is idempotent by contract — CI re-runs
     // it, and a script re-applying a manifest runs it over a project that already composes the capability —
     // and a re-run has no `--set` because the answer is already committed to `pithy.config.ts`. Asking for
@@ -611,11 +629,16 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
     if (unsettled.length > 0) throw requiredOptionRefusal({ capability: manifest.name, missing: unsettled });
 
     // This run, as a line names it to run again: every option it settled, by `--set` or by a prompt, so the rerun is
-    // asked nothing this run was not (#711). A refusal stops the caller's run, so it names the caller's — a nested
+    // asked nothing this run was not. A refusal stops the caller's run, so it names the caller's — a nested
     // add's caller is the outer run, whose options are not this capability's. A note names this capability's own add,
     // a nested one included: its notes — the store id to record, the master key to mint — are righted only by a run
     // that reaches this bootstrap, and the caller's rerun finds this capability composed and never adds it again.
-    const settled = Object.fromEntries(Object.entries(configValues).map(([key, value]) => [key, String(value)]));
+    const settled = Object.fromEntries(
+      Object.entries(configValues).map(([key, value]) => [
+        key,
+        optionForm(manifest.name, key)?.spell(value) ?? String(value),
+      ]),
+    );
     const own =
       options.caller === undefined
         ? caller
@@ -626,6 +649,7 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
     const where = { workerDir, projectDir };
     const ownAgain = addAgain(settledBy(own, settled), where);
     const again = options.caller === undefined ? ownAgain : addAgain(caller, where);
+    if (manifest.name === MCP_CAPABILITY) configValues = await mcpValues(workerDir, configValues, again);
     const { kvNamespaces, notes: wired } = await addCapability({
       workerDir,
       manifest,
@@ -695,7 +719,12 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
       kvNamespaces: [...prerequisites.kvNamespaces, ...kvNamespaces],
       // The wiring's notes ahead of the bootstrap's, in the order the steps ran. A scaffolded seam is the
       // one line here that says the Worker will not boot, and it is not a line to bury.
-      notes: [...prerequisites.notes, ...wired, ...bootstrapped],
+      notes: [
+        ...prerequisites.notes,
+        ...wired,
+        ...bootstrapped,
+        ...(manifest.name === MCP_CAPABILITY ? mcpNotes() : []),
+      ],
       prerequisites: prerequisites.names,
       eject,
     };

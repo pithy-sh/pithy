@@ -7,6 +7,7 @@ import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import {
   type CapabilityManifest,
   CONFIG_SEAMS,
+  type ConfigOptionValue,
   renderCapabilityImport,
   renderCapabilityRegistration,
   renderConfigOptionComment,
@@ -33,8 +34,8 @@ import { ejectImportPath } from "./eject";
 import { durableObjectExports, withDurableObjectExports } from "./entryExports";
 import { requiredOptionRefusal } from "./requiredOptions";
 
-/** A config option's value: the JSON scalars a manifest default can be. */
-export type ConfigValue = string | number | boolean;
+/** A config option's value: a JSON scalar, or the structured value an option form reads one into. */
+export type ConfigValue = ConfigOptionValue;
 
 export interface AddCapabilityOptions {
   /**
@@ -49,7 +50,7 @@ export interface AddCapabilityOptions {
   configValues?: Record<string, ConfigValue>;
   /**
    * The caller's own `pithy add`, as a refusal here names it for running again — every `--set` and flag the run
-   * was given (#711). Rebuilt from the capability and the Worker alone where the caller has none to give.
+   * was given. Rebuilt from the capability and the Worker alone where the caller has none to give.
    */
   again?: string;
   /**
@@ -144,7 +145,7 @@ function wiredBindings(manifest: CapabilityManifest): BindingSpec[] {
 
 /**
  * Write the capability's Durable Object exports into the Worker's entry — the other half of a
- * `durable_objects.bindings` entry, and the half `wrangler deploy` refuses the Worker without (#428).
+ * `durable_objects.bindings` entry, and the half `wrangler deploy` refuses the Worker without.
  *
  * Silent, like the class migration tag beside it: there is nothing for the adopter to do about it, and a
  * line of output for every file a command touches is not this CLI's voice. The entry is whatever `main`
@@ -203,10 +204,8 @@ function escapeRegExp(text: string): string {
  * path and every other knob live here, in the user's surface; the handler stays
  * in the package.
  *
- * Every line of it comes from core's renderers now, the call included. This function used to interpolate
- * `manifest.name` into the call itself, which is how a manifest declaring `audit }) ; evil(` closed the
- * capabilities array and opened a call of its own (#183) — the same defect as the option key #174 closed,
- * one line up.
+ * Every line of it comes from core's renderers, the call included, so nothing a manifest states is
+ * interpolated into generated source unchecked.
  */
 function renderRegistration(
   manifest: CapabilityManifest,
@@ -226,16 +225,12 @@ function renderRegistration(
     // config. `addCapability` is called directly too, and a writer that can be reached from more than
     // one place states its own preconditions.
     if (value === undefined) throw requiredOptionRefusal({ capability: manifest.name, missing: [option] });
-    // The same two lines `pithy upgrade` writes, from the same two functions. Two renderers of one line
-    // is how `add` and `upgrade` came to disagree about a nested default in the first place (#171), and
-    // the comment was still built here and there separately until the manifest text going into it got a
-    // rule of its own (#174).
+    // The same two lines `pithy upgrade` writes, from the same two functions, so the two cannot disagree.
     optionLines.push(renderConfigOptionComment(option.describe, inner));
     optionLines.push(renderConfigOptionLine(option.key, value, inner));
   }
   // The seams the chosen values asked for, last — the callable half of the same call, after every value.
-  // Both lines come from core's closed table: nothing a manifest states is written here unquoted, which is
-  // the rule an identifier in generated source has followed since #183.
+  // Both lines come from core's closed table: nothing a manifest states is written here unquoted.
   for (const { seam } of seams) {
     optionLines.push(renderConfigOptionComment(CONFIG_SEAMS[seam].describe, inner));
     optionLines.push(renderConfigSeamLine(seam, inner));
@@ -312,8 +307,7 @@ async function updateConfig(options: AddCapabilityOptions): Promise<ResolvedSeam
   }
 
   // Idempotency on the import is keyed on the *binding*, then checked against where it comes from.
-  // Keyed on the whole line, an adopter who corrected a specifier by hand — which `pithy add secrets`
-  // required, for as long as `@pithy-sh/secrets` shipped no `src/index` — got the original line back
+  // Keyed on the whole line, an adopter who corrected a specifier by hand got the original line back
   // on the next run, and two bindings of one name is a redeclaration the config never loads past.
   // Keyed on the binding alone, an adopter's own `auth` suppressed our import while `auth()` still
   // went into the managed region, so the config composed their middleware and said nothing. One is

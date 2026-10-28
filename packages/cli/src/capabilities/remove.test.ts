@@ -29,8 +29,8 @@ import {
  * A minimal manifest for the pure helpers.
  *
  * Through `parse`, not a cast. A cast would let this suite build a manifest the schema refuses — which is
- * exactly what `remove` is asked to undo, and what #183 narrowed. The helpers under test read `name`, and
- * the whole point of the narrowing is that the name they read is a bare identifier.
+ * exactly what `remove` is asked to undo. The helpers under test read `name`, and the schema holds the
+ * name they read to a bare identifier.
  */
 function manifest(over: Partial<CapabilityManifest> & { name: string }): CapabilityManifest {
   return CapabilityManifest.parse({
@@ -463,6 +463,7 @@ describe("removeCapability", () => {
         calls.workersUsingPackage.push(pkg);
         return over.workersUsingPackage ? over.workersUsingPackage(pkg) : [];
       },
+      workersRegistering: over.workersRegistering ?? (async () => []),
     };
     return { s, calls };
   }
@@ -570,9 +571,8 @@ describe("removeCapability", () => {
   });
 
   test("ejected: a source that could not be deleted is not audited as removed", async () => {
-    // #165. `removeScaffoldPath` read every `realpath` errno as "gone", so a delete the kernel refused
-    // returned as a completed one. Here that is the worst version of it: config and wrangler are unwired
-    // *first*, so the run ended with the capability unwired, its source entire on disk, and an audit
+    // A delete the kernel refuses must not return as a completed one. Config and wrangler are unwired
+    // *first*, so that would end with the capability unwired, its source entire on disk, and an audit
     // record saying `capability/removed`, `outcome: "success"`. A false audit record is not cosmetic.
     //
     // The delete step is the real one — this is the seam `pithy remove` uses — and the block is a
@@ -676,6 +676,132 @@ describe("removeCapability", () => {
     await removeCapability({ workerDir: worker, capability: "turnstile", drop: { env: "dev" }, steps: s });
 
     expect(calls.dropTables).toEqual(["turnstile:dev"]);
+  });
+
+  test("keeps a package this worker still imports for another capability it ships", async () => {
+    await mkdir(worker, { recursive: true });
+    await writeFile(
+      join(worker, "pithy.config.ts"),
+      [
+        'import { auth, mcp } from "@pithy-sh/auth/src/index";',
+        "export default {",
+        "  capabilities: [",
+        "    auth(),",
+        "    mcp(),",
+        "    // pithy:capabilities",
+        "  ],",
+        "};",
+        "",
+      ].join("\n"),
+    );
+    await writeFile(join(worker, "wrangler.jsonc"), "{}");
+    const { s, calls } = steps({ loadCapabilities: async () => [cap("auth"), cap("mcp")] });
+
+    const result = await removeCapability({ workerDir: worker, capability: "mcp", steps: s });
+
+    expect(calls.uninstall).toEqual([]);
+    expect(result).toMatchObject({ package: "@pithy-sh/auth", keptHere: true, keptFor: [] });
+    const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
+    expect(config).not.toContain("mcp()");
+    expect(config).toContain("auth(),");
+    expect(config).toMatch(/import \{ auth \} from "@pithy-sh\/auth\/src\/index";/);
+  });
+
+  test("with the real scan: --drop of mcp proceeds past a sibling that composes auth without mcp", async () => {
+    const authAndMcp = (caps: string[]) =>
+      [
+        `import { ${caps.join(", ")} } from "@pithy-sh/auth/src/index";`,
+        "export default {",
+        "  capabilities: [",
+        ...caps.map((c) => `    ${c}(),`),
+        "    // pithy:capabilities",
+        "  ],",
+        "};",
+        "",
+      ].join("\n");
+    const admin = join(dir, "apps", "admin");
+    await mkdir(worker, { recursive: true });
+    await mkdir(admin, { recursive: true });
+    await writeFile(join(worker, "pithy.config.ts"), authAndMcp(["auth", "mcp"]));
+    await writeFile(join(worker, "wrangler.jsonc"), "{}");
+    await writeFile(join(admin, "pithy.config.ts"), authAndMcp(["auth"]));
+    await writeFile(join(admin, "wrangler.jsonc"), "{}");
+    const dropped: string[] = [];
+    const uninstalled: string[] = [];
+    const real = defaultRemoveSteps({
+      account: null,
+      projectDir: dir,
+      workerDir: worker,
+      loadCapabilities: async () => [cap("auth"), cap("mcp", { databases: withMigration })],
+      project: "acme",
+    });
+
+    const result = await removeCapability({
+      workerDir: worker,
+      capability: "mcp",
+      drop: { env: "dev" },
+      steps: {
+        ...real,
+        packageInstalled: async () => true,
+        dropTables: async (capability, env) => {
+          dropped.push(`${capability.name}:${env}`);
+          return [];
+        },
+        uninstall: async (pkg) => {
+          uninstalled.push(pkg);
+          return { packageManager: "bun", uninstalled: true };
+        },
+      },
+    });
+
+    expect(dropped).toEqual(["mcp:dev"]);
+    expect(uninstalled).toEqual([]);
+    expect(result).toMatchObject({ package: "@pithy-sh/auth", keptFor: ["admin"], keptHere: true });
+  });
+
+  test("with the real scan: --drop of mcp is refused while a sibling registers mcp", async () => {
+    const admin = join(dir, "apps", "admin");
+    const config = [
+      'import { auth, mcp } from "@pithy-sh/auth/src/index";',
+      "export default {",
+      "  capabilities: [",
+      "    auth(),",
+      "    mcp(),",
+      "    // pithy:capabilities",
+      "  ],",
+      "};",
+      "",
+    ].join("\n");
+    for (const w of [worker, admin]) {
+      await mkdir(w, { recursive: true });
+      await writeFile(join(w, "pithy.config.ts"), config);
+      await writeFile(join(w, "wrangler.jsonc"), "{}");
+    }
+    const dropped: string[] = [];
+    const real = defaultRemoveSteps({
+      account: null,
+      projectDir: dir,
+      workerDir: worker,
+      loadCapabilities: async () => [cap("auth"), cap("mcp", { databases: withMigration })],
+      project: "acme",
+    });
+
+    const failure = removeCapability({
+      workerDir: worker,
+      capability: "mcp",
+      drop: { env: "dev" },
+      steps: {
+        ...real,
+        packageInstalled: async () => true,
+        dropTables: async (capability, env) => {
+          dropped.push(`${capability.name}:${env}`);
+          return [];
+        },
+      },
+    });
+
+    await expect(failure).rejects.toThrow(/admin still wires it/);
+    expect(dropped).toEqual([]);
   });
 
   test("uninstalls the package when no other worker wires it", async () => {
@@ -902,7 +1028,7 @@ describe("removeCapability", () => {
  * **The inverse of both writers of the entry's Durable Object export.**
  *
  * `pithy add` writes `export { <Class> } from "@pithy-sh/<cap>/…"`, and `pithy add --eject` repoints that
- * same line at `./capabilities/<cap>/…` (#428). `removeCapability` uninstalls the package in the first
+ * same line at `./capabilities/<cap>/…`. `removeCapability` uninstalls the package in the first
  * case and deletes the fork directory in the second — so a line left behind either way is a Worker that no
  * longer builds. One rule covers both, and it is the rule `remove` already reads a config's *import* by:
  * the name identifies the statement, {@link isCapabilityImport} decides whether it is ours.

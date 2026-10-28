@@ -53,6 +53,16 @@ export const KIT_ADD_FACTS = {
     "peerCapabilities": [],
     "requiredOptions": []
   },
+  "mcp": {
+    "peerCapabilities": [
+      "auth"
+    ],
+    "requiredOptions": [
+      {
+        "key": "floor"
+      }
+    ]
+  },
   "media": {
     "peerCapabilities": [
       "secrets"

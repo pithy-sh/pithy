@@ -38,7 +38,7 @@ import { z } from "zod";
 import { composeForSync } from "../project/composeFor";
 
 /**
- * **The kit's own OpenAPI document — every route every capability ships, in one file (#719).**
+ * **The kit's own OpenAPI document — every route every capability ships, in one file.**
  *
  * `pithy contract` writes an adopter's document, read off the Worker they compose. This is the kit's,
  * and nobody composes the kit: so it is composed here, once, from {@link KIT_COMPOSITION} — every
@@ -63,7 +63,7 @@ import { composeForSync } from "../project/composeFor";
 /** Where the kit's document is committed, relative to the repository root. */
 export const KIT_CONTRACT_PATH = "docs/openapi.generated.json";
 
-/** Where the kit's socket document is committed, beside it (#718). */
+/** Where the kit's socket document is committed, beside it. */
 export const KIT_SOCKET_CONTRACT_PATH = "docs/asyncapi.generated.json";
 
 /** The environment the kit is composed for: the route table a shipped client calls. */
@@ -78,7 +78,7 @@ const ORIGIN = "https://app.example.com";
  * the catalog is the smallest one that has an owner to transfer.
  */
 const ORGANIZATION_ROLES = defineRoles({
-  // The power the artifacts capability is configured to gate an organization's repositories on (#673).
+  // The power the artifacts capability is configured to gate an organization's repositories on.
   powers: ["repos:manage"],
   roles: {
     member: ["organization:read"],
@@ -98,18 +98,6 @@ const ORGANIZATION_ROLES = defineRoles({
   nests: ["member", "admin", "owner"],
   unassignable: ["owner"],
 });
-
-/**
- * **Capabilities that ship inside another capability's package, and are composed by hand.** `pithy add` installs a
- * package and reads the one manifest it carries, so a second capability in that package has no `CATALOG` row of its
- * own — and its routes still belong in the kit's document. One row each, beside {@link KIT_COMPOSITION}, and
- * `kitDocument.test.ts` holds this list to the tags the document carries.
- */
-export const KIT_COMPANIONS: Readonly<Record<string, () => Capability>> = {
-  // The app's own agent surface, in `@pithy-sh/auth` because its authorization server is a plugin of the
-  // auth instance. Open to every signed-in user here, which mounts the same routes any floor does.
-  mcp: () => mcp({ floor: "signed-in" }),
-};
 
 /**
  * **Every capability in the kit, and the call that composes it with its whole route surface.** One row per
@@ -231,6 +219,8 @@ export const KIT_COMPOSITION: Readonly<Record<string, () => Capability>> = {
     organization({ baseUrl: ORIGIN, roles: ORGANIZATION_ROLES, ownership: { confers: "owner", demotesTo: "admin" } }),
   // A managePower, so the organization routes mount beside `organization` above.
   artifacts: () => artifacts({ managePower: "repos:manage" }),
+  // Open to every signed-in user here, which mounts the same routes any floor does.
+  mcp: () => mcp({ floor: "signed-in" }),
 };
 
 /** `@pithy-sh/cli`'s own version, read the way `main.ts` reads it: the document is published with the CLI. */
@@ -245,9 +235,7 @@ export function kitVersion(): string {
 /** The whole kit, assembled by `createBackend` for {@link KIT_CONTRACT_ENVIRONMENT}: its capabilities and route groups. */
 export function kitComposition(): { capabilities: readonly Capability[]; groups: readonly RouteGroup[] } {
   return composeForSync(KIT_CONTRACT_ENVIRONMENT, () => {
-    const capabilities = [...Object.values(KIT_COMPOSITION), ...Object.values(KIT_COMPANIONS)].map((compose) =>
-      compose(),
-    );
+    const capabilities = Object.values(KIT_COMPOSITION).map((compose) => compose());
     const app = createBackend({ capabilities });
     const groups = routeGroupsOf(app);
     if (groups === undefined) {

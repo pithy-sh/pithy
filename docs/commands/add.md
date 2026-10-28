@@ -8,6 +8,7 @@ Install a capability, wire it into one Worker's config and bindings, and run tha
 
 ```
 pithy add <capability> [--worker <name>] [--with-prerequisites] [--set key=value]… [--eject [--force]] [--dry-run] [--json]
+pithy add mcp --floor <floor> [--worker <name>] [--with-prerequisites] [--dry-run] [--json]
 pithy add --list [--json]
 ```
 
@@ -19,6 +20,7 @@ pithy add --list [--json]
 | `--list` | boolean | `false` | List the capabilities you can add, with the installed ones marked. Wires nothing |
 | `--worker <name>` | string | — | Which Worker to wire it into (`apps/<name>`). Optional in a single-Worker project |
 | `--set key=value` | string | — | Override one of the capability's config options. Repeatable |
+| `--floor <floor>` | string | — | With `mcp`, who may connect an agent at all: `signed-in`, `power:<name>` or `entitlement:<name>`. The same as `--set floor=<floor>` |
 | `--eject` | boolean | `false` | Copy the capability's source into your repo and repoint the wiring at it |
 | `--force` | boolean | `false` | With `--eject`, overwrite an existing local copy. Discards your edits |
 | `--with-prerequisites` | boolean | `false` | Compose the capabilities this one requires, if this Worker does not compose them yet |
@@ -29,9 +31,9 @@ pithy add --list [--json]
 
 One capability, one Worker, in this order.
 
-**Install the package.** The package name comes from the catalog, never from interpolating the capability name — `controlplane` ships inside `@pithy-sh/core`, so `@pithy-sh/controlplane` is a package that has never existed. The project's own package manager runs the install, detected from its lockfile: `bun.lock`, `pnpm-lock.yaml`, `yarn.lock`, `package-lock.json`, npm when there is none. A `@pithy-sh/*` package a linked checkout already provides is skipped, and nothing then declares it in a `package.json`. A cold install can take minutes with nothing to show for it, so it is named as it starts, in the manager's own words: `▸ Running bun add @pithy-sh/auth...`. `--json` prints none of it.
+**Install the package.** The package name comes from the catalog, never from interpolating the capability name — `controlplane` ships inside `@pithy-sh/core` and `mcp` inside `@pithy-sh/auth`, so `@pithy-sh/controlplane` and `@pithy-sh/mcp` are packages that have never existed. The project's own package manager runs the install, detected from its lockfile: `bun.lock`, `pnpm-lock.yaml`, `yarn.lock`, `package-lock.json`, npm when there is none. A `@pithy-sh/*` package a linked checkout already provides is skipped, and nothing then declares it in a `package.json`. A cold install can take minutes with nothing to show for it, so it is named as it starts, in the manager's own words: `▸ Running bun add @pithy-sh/auth...`. `--json` prints none of it.
 
-**Read the real manifest.** `node_modules/@pithy-sh/<pkg>/pithy.manifest.json`, validated. What the package says it needs is what gets wired — the catalog is a discovery list, not the contract.
+**Read the real manifest.** `node_modules/@pithy-sh/<pkg>/pithy.manifest.json`, validated — or, for a capability that shares its package with another, its own file beside it: `mcp`'s is `@pithy-sh/auth/pithy.mcp.manifest.json`. What the package says it needs is what gets wired — the catalog is a discovery list, not the contract.
 
 **Resolve what it composes against.** A manifest's `peerCapabilities` are the capabilities this one reads a seam of: `auth` declares `secrets` and `email`, `email` declares `secrets`, and `payments`, `support`, `storage`, `media` and `turnstile` all declare `secrets`. They are not advice. `createBackend` refuses to assemble a capability without them — `Capability "auth" requires the "secrets" capability, which is not composed` — so a Worker missing one does not start at all.
 
@@ -76,6 +78,8 @@ What is left out is left out because wrangler would refuse the file: a `vectoriz
 
 **An option with no default is required.** That is the whole declaration: a capability that states a default has an answer the kit is willing to pick, and one that states none has an answer only you can give. A prompt asks it with nothing to accept by pressing enter, and a run with no human is refused `input/required` unless it carries `--set key=value` — `"flag": "--set"`, with every `key=value` the first unanswered option takes in `choices`. `payments.billingSubject` is the first — whether an entitlement is held by a person or a company, which lands in a column and a UNIQUE index — and nothing guesses it. An option that also states its choices is asked as a list, and `--set` refuses anything outside them.
 
+**`pithy add mcp` takes a floor.** `mcp` lets your users' agents use the app as them ([AGENT-ACCESS.md §4](../AGENT-ACCESS.md)), and composing it means choosing who may connect one at all. There is no default. `--floor signed-in` admits every signed-in user, `--floor power:<name>` only a caller whose role holds that power, and `--floor entitlement:<name>` only a caller holding that entitlement; they are written as `floor: "signed-in"`, `floor: { power: "<name>" }` and `floor: { entitlement: "<name>" }`. `mcp` requires `auth`, so a Worker that does not compose it is refused naming `pithy add auth`, as any prerequisite is. Its `database` is the one auth's registration names, `DB` when it names none, because the provider's tables live beside auth's. A config that already composes an OAuth provider into auth is refused, naming `oauthProvider()` to remove: `mcp` composes the one its endpoint uses. Its notes name what follows — `pithy ui add` for the consent and connected-applications screens, and `describeRoute({ operation, tool })` to make a route a tool.
+
 **Eject, if asked.** Before the migrations, because eject repoints the config import at the local copy and promotes the capability's runtime dependencies into your project, and the migrate step has to load the config with everything it imports present. That install is named as it starts, the same way.
 
 **Run that Worker's dev migrations.** The config is re-read after wiring, so the migration that just arrived is in the registry. Local Miniflare state lives at the project root, shared with `wrangler dev`. Each database and migration is named as it starts, as `pithy migrate` names them. `--json` prints none of it.
@@ -104,7 +108,7 @@ One line, one object. Two shapes: one for `--list`, one for an add — real, or 
 
 ```
 $ pithy add --list --json
-{"command":"add","schemaVersion":2,"capabilities":[{"name":"auth","package":"@pithy-sh/auth","whenToEnable":"Authentication and session management.","installed":false}, …],"manifestFaults":[]}
+{"command":"add","schemaVersion":2,"capabilities":[{"name":"auth","package":"@pithy-sh/auth","requires":["secrets","email"],"whenToEnable":"Authentication and session management.","installed":false},{"name":"mcp","package":"@pithy-sh/auth","requires":["auth"],"whenToEnable":"Let your users' agents use your app as them. …","installed":false}, …],"manifestFaults":[]}
 ```
 
 | key | type | meaning |
@@ -113,11 +117,13 @@ $ pithy add --list --json
 | `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `capabilities` | array | The built-in catalog, in catalog order, each entry tagged with whether this project has it installed |
 | `capabilities[].name` | string | The capability name — the `pithy add <name>` argument |
-| `capabilities[].package` | string | The npm package it ships in. `@pithy-sh/<name>` for all but `controlplane`, which ships inside `@pithy-sh/core` |
+| `capabilities[].package` | string | The npm package it ships in. `@pithy-sh/<name>` for all but `controlplane`, which ships inside `@pithy-sh/core`, and `mcp`, which ships inside `@pithy-sh/auth` |
+| `capabilities[].requires` | string[] | The capabilities it requires, which `--with-prerequisites` composes first. Empty when it requires none |
 | `capabilities[].whenToEnable` | string | One-line rationale: why a project would enable this |
 | `capabilities[].installed` | boolean | Whether this project's `node_modules/@pithy-sh` holds a usable manifest for it |
-| `manifestFaults` | array | Installed packages shipping a `pithy.manifest.json` that is present and unusable. Empty on a healthy install |
+| `manifestFaults` | array | Installed packages shipping a manifest that is present and unusable. Empty on a healthy install |
 | `manifestFaults[].package` | string | The package the manifest was read from, as an adopter names it: `@pithy-sh/audit` |
+| `manifestFaults[].file` | string | The manifest file within that package: `pithy.manifest.json`, or a companion such as `pithy.mcp.manifest.json` |
 | `manifestFaults[].reason` | string | Why it could not be used — the schema's refusal text, or the errno where the file would not open |
 
 A faulted package is reported rather than refused: one broken manifest must not cost you the other fifteen entries. In human output the faults go to stderr; the listing still goes to stdout.
@@ -248,6 +254,21 @@ The rule underneath it: **the scaffold is a marked absence, never a working stub
 
 **A `--set` on a choice the CLI can neither write nor scaffold** is refused at the flag, naming what to do instead, rather than writing a config the kit will then refuse to load. No capability ships one today.
 
+**`pithy add mcp` with no floor**, in a run that cannot be asked. Exit 2, and the action says what each floor admits.
+
+```
+$ pithy add mcp --json
+{"error":{"code":"input/required","status":400,"flag":"--floor","choices":["signed-in","power:<name>","entitlement:<name>"],"message":"mcp needs a value for floor, and nothing in this run names one.","action":"Pass --floor signed-in, --floor power:<name> or --floor entitlement:<name>. signed-in: Every signed-in user may connect an agent. power:<name>: Only a caller whose role holds that power. entitlement:<name>: Only a caller holding that entitlement.","exit":2,"retryable":false}}
+```
+
+**`pithy add mcp` beside an OAuth provider.**
+
+```
+$ pithy add mcp --floor signed-in
+auth({ plugins }) already composes an OAuth provider.
+Remove oauthProvider() from auth({ plugins: [...] }) and its import, then run `pithy add mcp --worker board --set floor=signed-in` again. mcp composes the one its endpoint uses.
+```
+
 **A `--set` outside an option's choices.**
 
 ```
@@ -307,6 +328,17 @@ Minted a dev master key as SECRETS_ENCRYPTION_KEYS, into ~/.config/pithy/replay/
 Minted a dev email-link-signing-key into ~/.config/pithy/replay/secrets.jsonc. Local only.
 Minted a dev auth-session-secret into ~/.config/pithy/replay/secrets.jsonc. Local only.
 Deployed environments need pithy secrets create auth-session-secret.
+Done.
+```
+
+Let your users' agents in, for callers whose role holds `agents:use`.
+
+```
+$ pithy add mcp --floor power:agents:use
+Wired mcp into board.
+app: 1 applied.
+Run pithy ui add for the agent-consent and connected-applications screens. An agent's user signs in and approves on the first, and revokes on the second.
+A route is a tool only when it says so: describeRoute({ operation, tool: true }) on a GET, describeRoute({ operation, tool: { effect } }) on anything else, with the effect writes, sends, charges or deletes.
 Done.
 ```
 

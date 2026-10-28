@@ -98,7 +98,7 @@ gh auth refresh -s project
 
 **Every change that ships carries a changeset.** `/ship` writes it from the issue's **Release note**, verbatim. The first paragraph is that note, and it is what an adopter reads in the changelog — write it the way it should appear there.
 
-**What your package publishes is declared, not inherited.** Every published package carries a `files` field naming `src`, negating `!src/**/*.test.ts`, and listing its `pithy.manifest.json` and `docs/` where it has them. `bun run verify-published` packs all of them and fails on a test file, a build leftover, or a missing manifest — `files` does not fail on a missing path, so the check sits on the artifact. A new package with no `files` field ships its whole test suite to every adopter.
+**What your package publishes is declared, not inherited.** Every published package carries a `files` field naming `src`, negating `!src/**/*.test.ts`, and listing its `pithy.manifest.json`, any companion manifest beside it (`@pithy-sh/auth` ships `pithy.mcp.manifest.json` for `mcp`), and `docs/` where it has them. `bun run verify-published` packs all of them and fails on a test file, a build leftover, or any `pithy.*.manifest.json` at the package root that the tarball left out — `files` does not fail on a missing path, so the check sits on the artifact. A new package with no `files` field ships its whole test suite to every adopter.
 
 **A security-relevant change says so, in the changeset body.**
 

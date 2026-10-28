@@ -159,8 +159,9 @@ $ pithy upgrade --json
 | `dryRun` | boolean | Whether `--dry-run` was passed. **This is what says which shape `workers` carries** |
 | `workers` | array | One entry per Worker in scope, in discovery order. A plan when `dryRun` is true, an applied result otherwise |
 | `workers[].state` | `"reconciled"` \| `"unplanned"` \| `"unapplied"` \| `"refused"` | Whether this Worker was reconciled, could not be planned at all, was planned and failed partway through the apply, or was refused before the first write. The fields below appear on `reconciled` alone |
-| `manifestFaults` | array | Installed packages shipping a `pithy.manifest.json` that is present and unusable. Project-wide, not per Worker. Empty on a healthy install |
+| `manifestFaults` | array | Installed packages shipping a manifest that is present and unusable. Project-wide, not per Worker. Empty on a healthy install |
 | `manifestFaults[].package` | string | The package the manifest was read from, as an adopter names it: `@pithy-sh/audit` |
+| `manifestFaults[].file` | string | The manifest file within that package: `pithy.manifest.json`, or a companion such as `pithy.mcp.manifest.json` |
 | `manifestFaults[].reason` | string | Why it could not be used — the schema's refusal text, or the errno where the file would not open |
 | `packages` | object | Present only with `--packages`. What the package step did — below |
 | `agents` | object | The Pithy block in `AGENTS.md`. Absent only when `--packages` moved `@pithy-sh/cli`, which leaves the block to the new CLI |
