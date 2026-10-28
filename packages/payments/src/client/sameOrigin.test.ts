@@ -11,11 +11,8 @@ import { describe, expect, test } from "vitest";
  *
  * `callPayments` in `./api.ts` is the only place that knows how a browser program asks this Worker a
  * question: the base-path default, `credentials: "include"`, and the three ways an answer can fail to be
- * one. It was private, so `../pricing/visitor.ts` wrote a second fetch that agreed with it by hand — and
- * this kit's four recurring defects are all that shape. The unresolvable dependency range, the `.dev.vars`
- * file mode, the symlink escape, publishing ignored files: each because a rule lived at a call site
- * instead of at the thing being called. The second producer is the cheap one to add and the one that
- * drifts (#346).
+ * one. A second fetch that agrees with it by hand is a rule living at a call site instead of at the thing
+ * being called. The second producer is the cheap one to add and the one that drifts.
  *
  * ## Two rules, and neither permitted set is derived from the code it polices
  *
@@ -23,8 +20,7 @@ import { describe, expect, test } from "vitest";
  * are frozen literals written by hand, each entry carrying the sentence somebody has to disagree with to
  * add another. Adding one is an edit to this file, in a diff, with a reason — which is the whole point.
  *
- * 1. **`fetch(` appears only where {@link FETCH_EXEMPTIONS} says it may.** This is the grep from the
- *    issue, run over the raw text so that a doc comment cannot hide a call site from it. Every hit today
+ * 1. **`fetch(` appears only where {@link FETCH_EXEMPTIONS} says it may.** It runs over the raw text so that a doc comment cannot hide a call site from it. Every hit today
  *    is a rail's outbound transport to a *store's* API — an absolute URL, no cookie, server-side only —
  *    and each one is named with why it is not this rule.
  * 2. **The cookie mode is written in one module.** `credentials: "include"` is what makes a request
@@ -32,9 +28,9 @@ import { describe, expect, test } from "vitest";
  *    {@link withoutComments}, because the prose that explains the rule is not a breach of it, and a gate
  *    that could be satisfied by rewording a comment would be measuring the wrong thing.
  *
- * Rule 1 alone would not have caught the defect it exists for: `visitor.ts` called an injected `fetcher`,
- * so the literal `fetch(` never appeared in it. Rule 2 is the one that bites. Rule 1 is what stops the
- * next producer reaching for the global directly.
+ * Rule 1 alone misses a producer that calls an injected `fetcher`, where the literal `fetch(` never
+ * appears. Rule 2 is the one that bites. Rule 1 is what stops the next producer reaching for the global
+ * directly.
  *
  * ## The stripper is itself under test
  *
@@ -42,7 +38,7 @@ import { describe, expect, test } from "vitest";
  * It is exercised against a fixture below rather than trusted.
  */
 
-/** This package's root, so every path below reads as it does in the issue and in a `grep`. */
+/** This package's root, so every path below reads as it does in a `grep`. */
 const PACKAGE_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
 /**
@@ -283,21 +279,28 @@ describe("one producer of the same-origin request", () => {
 const BROWSER_MODULES: Readonly<Record<string, readonly string[]>> = {
   // The primitive. No imports at all, which is the strongest form the rule can take.
   "src/client/api.ts": [],
-  "src/client/hooks.ts": ["react", "./api", "./checkout", "./paddle", "./paddleLink"],
+  // `useRead` and `useAction` cross into `@pithy-sh/ui-react`, whose published source imports only React.
+  "src/client/hooks.ts": [
+    "react",
+    "@pithy-sh/ui-react/src/action",
+    "@pithy-sh/ui-react/src/read",
+    "./api",
+    "./checkout",
+    "./paddle",
+    "./paddleLink",
+  ],
   "src/client/checkout.ts": ["./api", "./paddle"],
-  // `#680`'s reader. `../data/paddleIds` is the **second** crossing out of `src/client/` on this list and
-  // it earns it the way `wholeUnits.ts` does: that module imports nothing, so a predicate reaches the
-  // bundle with no graph behind it. It was written under `rails/paddle/` first, which made a browser
-  // module read the server rail — this gate refused it, and moving it to `data/` is the fix rather than
-  // an entry added here to quiet the refusal.
+  // The payment-link reader. `../data/paddleIds` crosses out of `src/client/` and earns it the way
+  // `wholeUnits.ts` does: that module imports nothing, so a predicate reaches the bundle with no graph
+  // behind it. A browser module reading the server rail under `rails/` is what this gate refuses.
   "src/client/paddleLink.ts": ["../data/paddleIds"],
   "src/data/paddleIds.ts": [],
   // Paddle.js is the browser SDK a checkout opens with. It is the one third-party import on this side.
   "src/client/paddle.ts": ["@paddle/paddle-js", "./api", "./paddleCache", "./wholeUnits"],
-  // The zero-fraction trim. `../data/money` is the **one** import out of `src/client/` on this list, and
+  // The zero-fraction trim. `../data/money` crosses out of `src/client/`, and
   // it earns it: the ISO-4217 exponent table decides whether a currency's fraction is two digits, three
   // or none, the purchase projection already holds it, and a second copy in the browser half would be
-  // `#427`'s own defect one layer down. It is safe to cross because that module imports nothing — a set
+  // a second table to drift. It is safe to cross because that module imports nothing — a set
   // of currency codes reaches the bundle, no graph behind it.
   "src/client/wholeUnits.ts": ["../data/money"],
   "src/data/money.ts": [],

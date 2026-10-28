@@ -5,7 +5,8 @@ import {
 } from "@pithy-sh/auth/src/client/mcp";
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
-import { useCallback, useEffect, useState } from "react";
+import { useRead } from "@pithy-sh/ui-react/src/read";
+import { useState } from "react";
 import "../../pithy-screens.css";
 
 export const path = "/connected-applications";
@@ -35,35 +36,30 @@ const EN = {
 
 export default function ConnectedApplications() {
   const t = useTranslator(EN);
-  const [applications, setApplications] = useState<readonly ConnectedApplication[] | null>(null);
-  const [failed, setFailed] = useState(false);
+  const listed = useRead("connected-applications", () => listConnectedApplications({ basePath: MCP_PATH }));
+  const [revokeFailed, setRevokeFailed] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    setFailed(false);
-    const result = await listConnectedApplications({ basePath: MCP_PATH });
-    if (result.ok) setApplications(result.value);
-    else setFailed(true);
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const applications: readonly ConnectedApplication[] | null = listed.value?.ok ? listed.value.value : null;
 
   async function revoke(clientId: string): Promise<void> {
     setBusy(clientId);
     const result = await revokeConnectedApplication(clientId, { basePath: MCP_PATH });
     setBusy(null);
-    if (!result.ok) return setFailed(true);
-    await load();
+    if (!result.ok) return setRevokeFailed(true);
+    listed.refresh();
   }
 
-  if (failed) {
+  function retry(): void {
+    setRevokeFailed(false);
+    listed.refresh();
+  }
+
+  if (revokeFailed || (listed.value?.ok === false && !listed.loading)) {
     return (
       <main className="screen">
         <div className="stack">
           <p>{t.t("auth/connected.failed")}</p>
-          <button type="button" className="secondary" onClick={() => void load()}>
+          <button type="button" className="secondary" onClick={retry}>
             {t.t("auth/connected.retry")}
           </button>
         </div>

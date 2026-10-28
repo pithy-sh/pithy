@@ -1,9 +1,10 @@
 import { type ConsentView, decideConsent, readConsent } from "@pithy-sh/auth/src/client/mcp";
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
-import { useEffect, useState } from "react";
+import { useRead } from "@pithy-sh/ui-react/src/read";
+import { useState } from "react";
 import { authConfig } from "../../pithy-config";
-import { navigate, routeTable, screenPath } from "../../router";
+import { Redirect, routeTable, screenPath } from "../../router";
 import { getSession, RESUME_PARAM } from "../../session";
 import "../../pithy-screens.css";
 
@@ -63,46 +64,47 @@ function authorizeAgain(query: string): string {
   return `${authConfig.basePath}/oauth2/authorize?${params}`;
 }
 
+/** What arriving here comes to: the request to decide, a request that cannot be read, or a sign-in first. */
+type Arrival = { kind: "view"; view: ConsentView } | { kind: "failed" } | { kind: "sign-in"; to: string };
+
+async function arrive(query: string): Promise<Arrival> {
+  if ((await getSession()) === null) {
+    const resume = new URLSearchParams({ [RESUME_PARAM]: authorizeAgain(query) });
+    return { kind: "sign-in", to: `${screenPath(await routeTable(), "sign-in")}?${resume}` };
+  }
+  const result = await readConsent(query, { basePath: MCP_PATH });
+  return result.ok ? { kind: "view", view: result.value } : { kind: "failed" };
+}
+
 export default function Consent() {
   const t = useTranslator(EN);
   const query = window.location.search.replace(/^\?/, "");
-  const [view, setView] = useState<ConsentView | null>(null);
-  const [failed, setFailed] = useState(false);
+  const arrival = useRead(`consent:${query}`, () => arrive(query)).value;
+  const [refused, setRefused] = useState(false);
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    void (async () => {
-      if ((await getSession()) === null) {
-        const resume = new URLSearchParams({ [RESUME_PARAM]: authorizeAgain(query) });
-        navigate(`${screenPath(await routeTable(), "sign-in")}?${resume}`);
-        return;
-      }
-      const result = await readConsent(query, { basePath: MCP_PATH });
-      if (result.ok) setView(result.value);
-      else setFailed(true);
-    })();
-  }, [query]);
 
   async function decide(accept: boolean): Promise<void> {
     setBusy(true);
     const result = await decideConsent(query, accept, { basePath: MCP_PATH });
     if (!result.ok) {
       setBusy(false);
-      setFailed(true);
+      setRefused(true);
       return;
     }
     // The application's own address, with a code or a refusal: a document load, because it is not this app.
     window.location.assign(result.value.redirect);
   }
 
-  if (failed) {
+  if (arrival?.kind === "sign-in") return <Redirect to={arrival.to} />;
+  if (refused || arrival?.kind === "failed") {
     return (
       <main className="screen">
         <p>{t.t("auth/consent.expired")}</p>
       </main>
     );
   }
-  if (view === null) return <main className="screen" />;
+  if (arrival === undefined) return <main className="screen" />;
+  const view = arrival.view;
 
   return (
     <main className="screen">

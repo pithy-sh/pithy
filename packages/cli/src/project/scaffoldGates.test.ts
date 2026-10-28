@@ -18,11 +18,10 @@ import { resolveSingleWorker } from "./workerScope";
 /**
  * The scaffold's own gates, run for real.
  *
- * `pithy init` used to write `dev` and `deploy` and nothing else: no `typecheck`, no `test`, no `lint`,
- * and no root `tsconfig.json`. So the three checks this repo's own conventions demand could not be run on
- * a fresh project until the adopter built the setup themselves — and the first thing they discover doing
- * it is that the Worker and the client cannot share one program. A scaffold whose own gates fail is worse
- * than none, so this file scaffolds a project, adds a React front end, and runs them.
+ * `pithy init` writes `typecheck`, `test` and `lint` beside `dev` and `deploy`, with a root `tsconfig.json`
+ * whose solution keeps the Worker and the client in separate programs, because they cannot share one. A
+ * scaffold whose own gates fail is worse than none, so this file scaffolds a project, adds a React front
+ * end, and runs them.
  *
  * **The dependencies come from this monorepo, not from a registry.** A scaffolded project depends on
  * `@pithy-sh/core`, which is unpublished, so `bun install` in a temp directory cannot work. The link farm
@@ -41,11 +40,13 @@ const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", 
  * Where the link farm takes packages from, first match wins. Two workspace packages between them install
  * everything a scaffolded project needs on both sides of the split — `@pithy-sh/testers` the Worker half
  * (hono, core, the Workers types, the Vitest pool, wrangler), `@pithy-sh/ui-react` the client half (React
- * and its types, Vite) — and the repo root supplies Biome.
+ * and its types, Vite) — the CLI's tree supplies `@pithy-sh/ui-react`, and the repo root supplies Biome.
  */
 const FARM_SOURCES = [
   join(REPO, "packages", "testers", "node_modules"),
   join(REPO, "packages", "ui-react", "node_modules"),
+  // `@pithy-sh/ui-react` itself, which every scaffolded screen imports and no package installs into its own tree.
+  join(REPO, "packages", "cli", "node_modules"),
   join(REPO, "node_modules"),
 ];
 
@@ -106,11 +107,10 @@ const biome = (project: string) => join(project, "node_modules", "@biomejs", "bi
 /**
  * The fixture's two names, deliberately unequal.
  *
- * A worker deploys as `<project>-<worker>` and lives at `apps/<worker>`. Scaffolding this fixture as
- * `gates` alone made those two strings identical — `api` and `api` — so every path built from the wrong
- * one still landed on the right directory, and `pithy ui add` wrote `apps/gates-api/tsconfig.client.json`
- * into the solution file for a year of runs without a gate noticing. Two names that cannot collide is
- * what makes this file able to see that class of bug at all.
+ * A worker deploys as `<project>-<worker>` and lives at `apps/<worker>`. Were the two strings equal, a
+ * path built from the deployed name would still land on the right directory, and a deployed name written
+ * where a directory belongs would pass every gate here. Two names that cannot collide are what let this
+ * file see that class of bug at all.
  */
 const PROJECT = "gates";
 const WORKER = "board";
@@ -193,19 +193,19 @@ describe("a freshly scaffolded project", () => {
 });
 
 /**
- * The path nobody ran end to end: composing a capability.
+ * Composing a capability, end to end.
  *
  * `pithy add` renders one `key: default` per manifest option and nothing else, so an option the
- * capability *requires* and whose manifest did not state it was simply absent. `pithy add secrets`
- * wrote `secrets({ rotationIntervalDays: 30 })` against a `SecretsConfig` whose `registry` is required,
- * and the first `bun run typecheck` on a project the adopter had not touched failed TS2741 (#161).
+ * capability *requires* and whose manifest does not state is absent, and the first `bun run typecheck` on
+ * a project the adopter had not touched fails TS2741 — `secrets({ rotationIntervalDays: 30 })` against a
+ * `SecretsConfig` whose `registry` is required.
  *
  * Secrets is the capability worth spending a gate on: it is the first one most projects add, because
  * auth, email and payments all read their credentials through it.
  *
  * `runAdd` rather than `addCapability`, for the reason the `ui add` block below calls the flow — the
- * manifest load is half of what broke, and a test handed a hand-built manifest never reads the file
- * that was wrong. Install and migrate are stubbed: the package is already in the link farm, and D1 is
+ * manifest load is half of what is on trial, and a test handed a hand-built manifest never reads the
+ * file. Install and migrate are stubbed: the package is already in the link farm, and D1 is
  * not what this proves.
  *
  * Ahead of `ui add`, so the gate can be plain `tsc -b` — the whole solution file, exactly what the
@@ -248,8 +248,8 @@ describe("after pithy add secrets", () => {
 describe("after pithy ui add react", () => {
   beforeAll(async () => {
     // Resolved the way the command resolves it, not by hand: `pithy ui add` reaches the flow through
-    // `resolveSingleWorker`, and it was that hand-off that carried the deployed name where a directory
-    // belonged. A test that assembles the arguments itself never crosses the seam that broke.
+    // `resolveSingleWorker`, and that hand-off is where a deployed name can land where a directory
+    // belongs. A test that assembles the arguments itself never crosses it.
     const target = await resolveSingleWorker({ projectDir: dir, worker: WORKER });
     // The fixture's guarantee, asserted rather than assumed: the deployed name is not the directory.
     expect(target.name).toBe(`${PROJECT}-${WORKER}`);
@@ -304,20 +304,15 @@ describe("after pithy ui add react", () => {
   }, 60_000);
 
   test("runs the gates the front end seeds — in a project with no alias of the kit's in the path", async () => {
-    // **The half that was missing, and the reason it mattered (#441).** `pithy ui add` seeds test files
-    // into the adopter's repository — that is the whole of `docs/CONVENTIONS.md` § *Seeded files* — and
-    // nothing here had ever run one. The suite above runs `vitest` before the front end exists, so every
-    // seeded gate was proven only in `@pithy-sh/ui-react`, whose own Vitest config aliases the
-    // `virtual:pithy/*` modules to stubs. A gate that reaches one of those resolves here and nowhere
-    // else: `src/client.test.tsx` shipped in exactly that state, green in the kit and red on the first
-    // `vitest run` in every repository it was written into.
-    //
-    // So this runs them where they will actually run. The scaffolded project has no alias of ours, so a
+    // `pithy ui add` seeds test files into the adopter's repository — `docs/CONVENTIONS.md` § *Seeded
+    // files* — and `@pithy-sh/ui-react`'s own Vitest config aliases the `virtual:pithy/*` modules to stubs,
+    // so a seeded gate that reaches one of those passes in the kit and fails in every repository it is
+    // written into. So this runs them where they will actually run. The scaffolded project has no alias of ours, so a
     // seeded gate that needs one fails here — which is the point, and is what a unit test over the
     // template text cannot see.
     // `--reporter=verbose` because the default one prints counts and no names on a green run, and the
     // name is the assertion: `passWithNoTests` is on in the starter, so an `include` that admits no
-    // `.tsx` exits 0 with the whole front end untested — #245's other half, and silent by construction.
+    // `.tsx` exits 0 with the whole front end untested, silently.
     const { code, output } = await run(dir, vitest(dir), ["run", "--reporter=verbose"]);
     expect({ code, output }).toMatchObject({ code: 0 });
     for (const gate of ["src/client.test.tsx", "src/pithy-locale.test.tsx", "src/router.test.tsx"]) {
@@ -326,10 +321,10 @@ describe("after pithy ui add react", () => {
   }, 180_000);
 
   /**
-   * **#399's three contracts, each a relative path frozen into a file the adopter owns.**
+   * **Three contracts, each a relative path frozen into a file the adopter owns.**
    *
-   * They were declined in #391's sweep, and the reason was the same for all three: the invariant is a
-   * fact about *where the Worker sits in a scaffolded project*, not a fact about the template's text.
+   * Each invariant is a fact about *where the Worker sits in a scaffolded project*, not a fact about the
+   * template's text.
    * `../../` is right relative to `apps/<worker>/` and wrong anywhere else, and a unit test over the
    * template can only assert the string reads `"../../.wrangler/state"` — which is what a rename of the
    * layout sails straight through. So the gate belongs here, where a real layout exists to resolve
@@ -350,13 +345,10 @@ describe("after pithy ui add react", () => {
     // where `pithy seed` and `pithy migrate` put a project's local D1, `v3/d1` under the store root.
     // Two independent statements about one directory, made to agree from a scaffolded layout.
     //
-    // A third statement exists — `dev/orchestrator.ts` builds the same root for `wrangler dev
-    // --persist-to` — and is not reachable from here without exporting it. Filed as #404.
     expect(resolved).toBe(dirname(dirname(localDevStorePath(dir))));
-    // And the same directory, from the function that is now its only statement. `#404` closed the third
-    // derivation — `dev/orchestrator.ts` composed `join(projectDir, ".wrangler", "state")` itself — so
-    // this asserts the template against the root rather than against a path two `dirname`s away from a
-    // deeper one. A composed copy reappearing anywhere fails here without also having to guess where.
+    // And the same directory, from the function that is its only statement, which `dev/orchestrator.ts`
+    // reads too — so this asserts the template against the root rather than against a path two `dirname`s
+    // away from a deeper one.
     expect(resolved).toBe(localDevStateRoot(dir));
   });
 
@@ -424,7 +416,7 @@ describe("after pithy ui add react", () => {
 });
 
 /**
- * **One React, proven by planting a second one (#447).**
+ * **One React, proven by planting a second one.**
  *
  * Nothing under `@pithy-sh/*` is published, so an adopter consumes the kit from a sibling checkout by
  * symlink — and Vite resolves a symlinked package from its realpath, so a kit package importing `react`
@@ -483,7 +475,7 @@ describe("one React, however many checkouts the packages live in", () => {
     await symlink(widget, join(dir, "node_modules", "linked-widget"));
 
     // A `.tsx` test, because `.tsx` is what a front end's tests are and what the node project had to be
-    // taught to collect (#245). It renders nothing: two module namespaces either are one object or are not.
+    // taught to collect. It renders nothing: two module namespaces either are one object or are not.
     seeded = join(dir, "apps", WORKER, "src", "one-react.test.tsx");
     await writeFile(
       seeded,
@@ -541,7 +533,7 @@ describe("one React, however many checkouts the packages live in", () => {
 });
 
 /**
- * **The three answers the fixture above never reaches (#447).**
+ * **The three answers the fixture above never reaches.**
  *
  * `oneReact` in `templates/starter/vitest.config.ts` walks `apps/*` in name order and takes the first
  * Worker that resolves both React packages. The scaffolded fixture has one Worker and resolves it on the

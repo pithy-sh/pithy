@@ -54,12 +54,12 @@ vi.mock("@pithy-sh/organization/src/index", () => ({
 
 /**
  * The router, with a destination invented here, so a screen that wrote the suspended screen's path as a literal
- * goes red. Its `navigate` pushes history as the real one does, so the document-load test below still catches a
+ * goes red. Its navigation is the real one, which pushes history, so the document-load test below still catches a
  * screen that reaches for it.
  */
 const SUSPENDED_CANARY = "/canary-organization-suspended";
-vi.mock("../../router", () => ({
-  navigate: (to: string) => window.history.pushState(null, "", to),
+vi.mock("../../router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../router")>()),
   routeTable: async () => ({ byRole: new Map([["organization-suspended", SUSPENDED_CANARY]]) }),
   screenPath: (table: { byRole: Map<string, string> }, role: string) => table.byRole.get(role),
 }));

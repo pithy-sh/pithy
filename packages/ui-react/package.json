@@ -32,6 +32,14 @@
     "clean": "rm -rf dist .turbo",
     "reset": "bun run clean && rm -rf node_modules"
   },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@pithy-sh/auth": "workspace:*",
     "@pithy-sh/consent": "workspace:*",

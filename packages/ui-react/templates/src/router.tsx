@@ -1,6 +1,8 @@
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
-import { type ComponentType, lazy, type ReactNode, Suspense, use, useEffect, useState } from "react";
+import { useRead } from "@pithy-sh/ui-react/src/read";
+import { Redirect as Navigate } from "@pithy-sh/ui-react/src/redirect";
+import { type ComponentType, lazy, type ReactNode, Suspense, use, useSyncExternalStore } from "react";
 
 /**
  * ─────────────────────────────────────────────────────────────────────────────
@@ -50,12 +52,9 @@ const paymentsModules = import.meta.glob<{ holdsEntitlement: (key: string) => Pr
  *
  * **A role is how a redirect target — or a link — stays one statement.** The guard needs somewhere to
  * send a signed-out visitor, and the only honest source for that is the screen itself: it claims the
- * job (`export const role = "sign-in"`) and everything pointing at it looks the path up. Renaming
- * `/sign-in` to `/login` is an ordinary rebrand, and before this the router kept its own copy of the
- * old string — it typechecked, it built, and it redirected to the not-found screen (#393).
- *
- * A `<Link to="/paywall">` in another screen was the same defect with a quieter symptom, so the same
- * three names cover both.
+ * job (`export const role = "sign-in"`) and everything pointing at it looks the path up, so renaming
+ * `/sign-in` to `/login` moves every redirect and every link with it. A literal path in a guard or a
+ * `<Link>` would still typecheck and build after a rename, and land on the not-found screen.
  *
  * `consent` is the privacy-choices screen, so a "your privacy choices" link in a footer names the job and not
  * `/consent`.
@@ -152,8 +151,7 @@ export interface RouteTable {
  * Where a guard sends a visitor for `role` — the path the screen claiming that job declares.
  *
  * **It throws rather than falling back.** A guard with nowhere to send someone is a screen that never
- * resolves, and the whole point of #393 is that this class of break must not be silent. The message
- * names the export to add and the file to add it to.
+ * resolves, and that break must not be silent. The message names the export to add and the file to add it to.
  */
 export function screenPath(table: RouteTable, role: ScreenRole): string {
   const path = table.byRole.get(role);
@@ -300,29 +298,19 @@ export function updateSearch(patch: Record<string, string | null>, options?: { r
   else navigate(to);
 }
 
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
 /**
- * Subscribe to every navigation, reading one string out of `window.location`.
- *
- * The readers below differ only in what they read; the subscription is the part that is easy to get
- * wrong. One listener per subscriber, added on mount, called once immediately because a navigation can
- * land between the first render and the effect, and removed on unmount. Written once, so a new reader
- * is a `read` function rather than another copy of all that — and so every reader wakes on the same
- * `notify()`, which is what makes `navigate`, `replace`, `updateSearch` and the browser's own Back one
- * event rather than four.
- *
- * `read` is a module-level function in each case, so the effect subscribes once and not on every render.
+ * One string out of `window.location`, re-read on every navigation. Every reader wakes on the same `notify()`,
+ * which is what makes `navigate`, `replace`, `updateSearch` and the browser's own Back one event rather than four.
  */
 function useLocationValue(read: () => string): string {
-  const [value, setValue] = useState(read);
-  useEffect(() => {
-    const listener = () => setValue(read());
-    listeners.add(listener);
-    listener();
-    return () => {
-      listeners.delete(listener);
-    };
-  }, [read]);
-  return value;
+  return useSyncExternalStore(subscribe, read);
 }
 
 const readPathname = (): string => window.location.pathname;
@@ -338,8 +326,7 @@ export function usePath(): string {
  * subscriber on every navigation.
  *
  * The raw string rather than a `URLSearchParams`, and that is the decision: a params object is a new
- * object every render, so every `useMemo`, `useEffect` and `useCallback` downstream of one re-runs
- * forever. This hands back what `window.location.search` is, and a screen wanting one value asks
+ * object every render, so every `useMemo` and `useCallback` downstream of one re-runs forever. This hands back what `window.location.search` is, and a screen wanting one value asks
  * {@link useSearchParam} for it.
  */
 export function useSearch(): string {
@@ -376,6 +363,50 @@ export function Link(props: { to: string; className?: string; children: ReactNod
   );
 }
 
+/** Where a {@link Redirect} goes: a path, or the path of the screen claiming a {@link ScreenRole}, with an optional query. */
+export type RedirectTarget = { readonly to: string } | { readonly screen: ScreenRole; readonly search?: string };
+
+/** What {@link Redirect} takes. */
+export type RedirectProps = RedirectTarget & {
+  /** Replace the current history entry rather than push one, for a correction the reader did not make. */
+  readonly replace?: boolean;
+  /**
+   * Leave by a document load rather than a route change: for an address that is the Worker's rather than a
+   * screen's, or a change of account that nothing already on the page may survive.
+   */
+  readonly load?: boolean;
+};
+
+function inApp(to: string, options: { replace: boolean }): void {
+  if (options.replace) replace(to);
+  else navigate(to);
+}
+
+function byDocument(to: string, options: { replace: boolean }): void {
+  if (options.replace) window.location.replace(to);
+  else window.location.assign(to);
+}
+
+/**
+ * Go somewhere else, as one of the states a screen renders. When an answer means "not here" — signed out, no
+ * entitlement, a one-time code that has done its work — render this the way you render loading and failure. It
+ * navigates once and renders nothing.
+ *
+ * ```tsx
+ * if (session.value === null) return <Redirect screen="sign-in" />;
+ * ```
+ */
+export function Redirect(props: RedirectProps): ReactNode {
+  if ("screen" in props) return <RedirectToScreen {...props} />;
+  return <Navigate to={props.to} replace={props.replace} go={props.load ? byDocument : inApp} />;
+}
+
+function RedirectToScreen(props: Extract<RedirectTarget, { screen: ScreenRole }> & RedirectProps): ReactNode {
+  const path = useScreenPath(props.screen);
+  const to = props.search ? `${path}?${props.search}` : path;
+  return <Navigate to={to} replace={props.replace} go={props.load ? byDocument : inApp} />;
+}
+
 // ── guard ────────────────────────────────────────────────────────────────────
 
 /** Is there a session? True when no session module exists, so the bare template renders everything. */
@@ -399,32 +430,16 @@ async function isSignedIn(): Promise<boolean> {
  * a signed-out affordance at every returning customer for one frame.
  */
 export function useSignedIn(): boolean | null {
-  const [signedIn, setSignedIn] = useState<boolean | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    void isSignedIn().then((answer) => {
-      if (live) setSignedIn(answer);
-    });
-    return () => {
-      live = false;
-    };
-  }, []);
-
-  return signedIn;
+  return useRead("signed-in", isSignedIn).value ?? null;
 }
 
 /** Renders its children only for a signed-in visitor; everyone else is sent to the sign-in screen. */
-function Guarded(props: { children: ReactNode }): ReactNode {
+export function RequireSignedIn(props: { children: ReactNode }): ReactNode {
   const t = useTranslator(EN);
   const table = use(routeTable());
   const signedIn = useSignedIn();
-
-  useEffect(() => {
-    if (signedIn === false) navigate(screenPath(table, "sign-in"));
-  }, [signedIn, table]);
-
   if (signedIn === true) return props.children;
+  if (signedIn === false) return <Redirect to={screenPath(table, "sign-in")} />;
   return <p className="muted">{t.t("app/loading")}</p>;
 }
 
@@ -442,26 +457,12 @@ async function holdsEntitlement(key: string): Promise<boolean> {
  * every paid route checks it, and no answer here can change that. This exists so a visitor without `pro`
  * arrives at the paywall instead of watching a screen fill with 403s.
  */
-function Entitled(props: { entitlement: string; children: ReactNode }): ReactNode {
+export function RequireEntitlement(props: { entitlement: string; children: ReactNode }): ReactNode {
   const t = useTranslator(EN);
   const table = use(routeTable());
-  const [state, setState] = useState<"checking" | "in" | "out">("checking");
-
-  useEffect(() => {
-    let live = true;
-    void holdsEntitlement(props.entitlement).then((held) => {
-      if (live) setState(held ? "in" : "out");
-    });
-    return () => {
-      live = false;
-    };
-  }, [props.entitlement]);
-
-  useEffect(() => {
-    if (state === "out") navigate(screenPath(table, "paywall"));
-  }, [state, table]);
-
-  if (state === "in") return props.children;
+  const held = useRead(`entitlement:${props.entitlement}`, () => holdsEntitlement(props.entitlement));
+  if (held.value === true && !held.loading) return props.children;
+  if (held.value === false && !held.loading) return <Redirect to={screenPath(table, "paywall")} />;
   return <p className="muted">{t.t("app/loading")}</p>;
 }
 
@@ -608,13 +609,13 @@ function Screen(): ReactNode {
   // An entitlement belongs to somebody, so asking for one implies a session — the same order the server
   // declares it in, `requireAuth()` then `requireEntitlement()`. Session outside, entitlement inside.
   const screen = route.entitlement ? (
-    <Entitled entitlement={route.entitlement}>
+    <RequireEntitlement entitlement={route.entitlement}>
       <Component params={params} />
-    </Entitled>
+    </RequireEntitlement>
   ) : (
     <Component params={params} />
   );
-  return route.session === "required" || route.entitlement ? <Guarded>{screen}</Guarded> : screen;
+  return route.session === "required" || route.entitlement ? <RequireSignedIn>{screen}</RequireSignedIn> : screen;
 }
 
 /** Mount this once. It resolves the route table, then renders the screen for the current path. */

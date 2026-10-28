@@ -89,6 +89,9 @@ async function settle(): Promise<void> {
 beforeEach(() => {
   assign = vi.fn();
   vi.spyOn(window.location, "assign").mockImplementation(assign as unknown as (url: string | URL) => void);
+  // A screen that renders the router's `<Redirect>` navigates through the router's own `navigate`, which the
+  // module mock above cannot reach, so the history write is what is watched.
+  vi.spyOn(window.history, "pushState").mockImplementation((_state, _title, url) => navigate(String(url)));
 });
 
 afterEach(() => {

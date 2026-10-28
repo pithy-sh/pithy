@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useAction } from "@pithy-sh/ui-react/src/action";
+import { useRead } from "@pithy-sh/ui-react/src/read";
+import { useCallback, useRef, useState } from "react";
 import {
   type AllowancesView,
   type EntitlementView,
@@ -9,11 +11,13 @@ import {
   getEntitlements,
   openBillingPortal,
   openStoreSubscriptions,
+  PAYMENTS_UNREADABLE,
   type PaddleCheckoutHandoff,
   type PaymentsClientOptions,
   type PaymentsClientRail,
   type PaymentsFailure,
   type PaymentsHostedRail,
+  type PaymentsResult,
   type PurchaseView,
   restorePurchases,
   resumeCheckout,
@@ -66,10 +70,9 @@ import { readPaddleLinkTransaction } from "./paddleLink";
 /**
  * Hold the newest value without making it a dependency.
  *
- * Every hook below takes an options object, and a caller writing `useEntitlement("pro", { basePath })`
- * inline creates a new object every render. Depending on it would re-run the effect forever. So the
- * effects depend on the one thing that can actually change the request — `basePath`, a string — and read
- * the rest through this.
+ * Every hook below takes an options object, and a caller writing `useEntitlement("pro", { basePath })` inline
+ * creates a new object every render. So each read is keyed on the one thing that can actually change the
+ * request — `basePath`, a string — and reads the rest through this.
  */
 function useLatest<T>(value: T): { current: T } {
   const ref = useRef(value);
@@ -77,16 +80,23 @@ function useLatest<T>(value: T): { current: T } {
   return ref;
 }
 
-/** Whether a component is still mounted. Every async completion checks it before setting state. */
-function useLive(): { current: boolean } {
-  const live = useRef(true);
-  useEffect(() => {
-    live.current = true;
-    return () => {
-      live.current = false;
-    };
-  }, []);
-  return live;
+/** A refusal carried as a thrown failure through `useRead` and `useAction`, so the last answer survives it. */
+class Refused extends Error {
+  constructor(readonly failure: PaymentsFailure) {
+    super(failure.message);
+  }
+}
+
+/** The value of a result, or its refusal thrown as {@link Refused}. */
+function unwrap<T>(result: PaymentsResult<T>): T {
+  if (result.ok) return result.value;
+  throw new Refused(result.failure);
+}
+
+/** The refusal behind a failure. The calls here resolve rather than throw, so anything else is unreadable. */
+function refusalOf(failure: Error | null): PaymentsFailure | null {
+  if (failure === null) return null;
+  return failure instanceof Refused ? failure.failure : PAYMENTS_UNREADABLE;
 }
 
 /** What {@link useEntitlement} gives a screen. */
@@ -119,30 +129,17 @@ export interface UseEntitlement {
  * plan instead of locking it must not inherit this choice; see {@link useSubscription}.
  */
 export function useEntitlement(key: string, options?: PaymentsClientOptions): UseEntitlement {
-  const [entitled, setEntitled] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [readFailure, setReadFailure] = useState<PaymentsFailure | null>(null);
   const latest = useLatest(options);
-  const live = useLive();
   const basePath = options?.basePath;
-
-  const refresh = useCallback(() => {
-    setLoading(true);
-    // `basePath` is read here rather than off the ref, so it is a real dependency: it is the one option
-    // that changes the request, and a project that moved its routes must re-read. Everything else comes
-    // through the ref, which is why an inline options object does not restart this on every render.
-    void getEntitlements({ ...latest.current, basePath }).then((result) => {
-      if (!live.current) return;
-      // Fail closed on the answer, report the failure beside it. Both, not either.
-      setEntitled(result.ok && result.value.some((entitlement) => entitlement.key === key && entitlement.granted));
-      setReadFailure(result.ok ? null : result.failure);
-      setLoading(false);
-    });
-  }, [key, basePath, latest, live]);
-
-  useEffect(refresh, [refresh]);
-
-  return { entitled, loading, readFailure, refresh };
+  // The result itself is the value, so a failed read replaces the last answer: a lock fails closed on it.
+  const read = useRead(`entitlements:${basePath ?? ""}`, () => getEntitlements({ ...latest.current, basePath }));
+  const result = read.value;
+  return {
+    entitled: result?.ok === true && result.value.some((entitlement) => entitlement.key === key && entitlement.granted),
+    loading: read.loading,
+    readFailure: result?.ok === false ? result.failure : refusalOf(read.failure),
+    refresh: read.refresh,
+  };
 }
 
 /** What {@link useAllowances} gives a paywall screen. */
@@ -165,26 +162,17 @@ export interface UseAllowances {
  * the kit's meters are what refuse.
  */
 export function useAllowances(options?: PaymentsClientOptions): UseAllowances {
-  const [allowances, setAllowances] = useState<AllowancesView | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [readFailure, setReadFailure] = useState<PaymentsFailure | null>(null);
   const latest = useLatest(options);
-  const live = useLive();
   const basePath = options?.basePath;
-
-  const refresh = useCallback(() => {
-    setLoading(true);
-    void getAllowances({ ...latest.current, basePath }).then((result) => {
-      if (!live.current) return;
-      if (result.ok) setAllowances(result.value);
-      setReadFailure(result.ok ? null : result.failure);
-      setLoading(false);
-    });
-  }, [basePath, latest, live]);
-
-  useEffect(refresh, [refresh]);
-
-  return { allowances, loading, readFailure, refresh };
+  const read = useRead(`allowances:${basePath ?? ""}`, async () =>
+    unwrap(await getAllowances({ ...latest.current, basePath })),
+  );
+  return {
+    allowances: read.value ?? null,
+    loading: read.loading,
+    readFailure: refusalOf(read.failure),
+    refresh: read.refresh,
+  };
 }
 
 /** What {@link useSubscription} gives a subscription screen. */
@@ -217,6 +205,8 @@ export interface UseSubscription {
   readFailure: PaymentsFailure | null;
 }
 
+const NO_ENTITLEMENTS: readonly EntitlementView[] = [];
+
 /**
  * The caller's standing entitlements, and the one action a subscriber needs.
  *
@@ -225,41 +215,21 @@ export interface UseSubscription {
  * subscriptions are managed in their own apps, which a web screen can only link to.
  */
 export function useSubscription(options?: PaymentsClientOptions): UseSubscription {
-  const [entitlements, setEntitlements] = useState<readonly EntitlementView[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [managing, setManaging] = useState(false);
-  const [failure, setFailure] = useState<PaymentsFailure | null>(null);
-  const [readFailure, setReadFailure] = useState<PaymentsFailure | null>(null);
   const latest = useLatest(options);
-  const live = useLive();
   const basePath = options?.basePath;
-
-  const refresh = useCallback(() => {
-    setLoading(true);
-    // `basePath` explicitly, for the reason `useEntitlement` gives: it is the option that changes the
-    // request, so it has to be a dependency rather than something read off a ref.
-    void getEntitlements({ ...latest.current, basePath }).then((result) => {
-      if (!live.current) return;
-      // A refusal leaves the previous list alone rather than blanking it — the same rule `usePurchase`
-      // follows. What a screen must not do is read the untouched list as this account's current plan,
-      // which is what `readFailure` is there to stop.
-      if (result.ok) setEntitlements(result.value);
-      setReadFailure(result.ok ? null : result.failure);
-      setLoading(false);
-    });
-  }, [basePath, latest, live]);
-
-  useEffect(refresh, [refresh]);
-
-  const manage = useCallback(async () => {
-    setManaging(true);
-    setFailure(null);
+  // A refusal leaves the previous list alone rather than blanking it. What a screen must not do is read the
+  // untouched list as this account's current plan, which is what `readFailure` is there to stop.
+  const read = useRead(`subscription:${basePath ?? ""}`, async () =>
+    unwrap(await getEntitlements({ ...latest.current, basePath })),
+  );
+  const portal = useAction(async () => {
     const refused = await openBillingPortal(latest.current);
-    if (!live.current) return;
-    setManaging(false);
-    // On success the browser is already leaving; setting state is harmless and keeps the two paths one shape.
-    if (refused) setFailure(refused);
-  }, [latest, live]);
+    if (refused) throw new Refused(refused);
+  });
+  const run = portal.run;
+  const manage = useCallback(async () => {
+    await run();
+  }, [run]);
 
   const manageStore = useCallback(
     (rail: "apple" | "google") => {
@@ -270,16 +240,17 @@ export function useSubscription(options?: PaymentsClientOptions): UseSubscriptio
     [latest],
   );
 
+  const entitlements = read.value ?? NO_ENTITLEMENTS;
   return {
     entitlements,
     subscribed: entitlements.some((entitlement) => entitlement.granted),
-    loading,
-    refresh,
+    loading: read.loading,
+    refresh: read.refresh,
     manage,
     manageStore,
-    managing,
-    failure,
-    readFailure,
+    managing: portal.pending,
+    failure: refusalOf(portal.failure),
+    readFailure: refusalOf(read.failure),
   };
 }
 
@@ -301,7 +272,7 @@ export interface UseCheckout {
    *
    * Null on a redirect rail, because the browser has already left and there is nothing for a screen to
    * hold. Pass it to {@link usePaddleCheckout}, which opens it; a screen that never composes Paddle reads
-   * null forever and renders exactly as it did before this field existed.
+   * null forever and never needs to read it.
    */
   handoff: PaddleCheckoutHandoff | null;
 }
@@ -319,33 +290,35 @@ export interface UseCheckout {
  * {@link usePaddleCheckout}.
  */
 export function useCheckout(options?: PaymentsClientOptions): UseCheckout {
-  const [starting, setStarting] = useState(false);
-  const [failure, setFailure] = useState<PaymentsFailure | null>(null);
-  const [handoff, setHandoff] = useState<PaddleCheckoutHandoff | null>(null);
   const latest = useLatest(options);
-  const live = useLive();
-
-  const start = useCallback(
-    async (productId: string, choices?: { rail?: PaymentsHostedRail; discountCode?: string }) => {
-      setStarting(true);
-      setFailure(null);
-      setHandoff(null);
+  const checkout = useAction(
+    async (_signal, productId: string, choices?: { rail?: PaymentsHostedRail; discountCode?: string }) => {
       const outcome = await startCheckout(
         { productId, rail: choices?.rail, discountCode: choices?.discountCode },
         latest.current,
       );
-      if (!live.current) return;
-      setStarting(false);
       // Exhaustive on `kind` rather than truthiness. `left` is the browser already going; `paddle` is the
       // one outcome a screen must act on; `refused` is the only one that is a failure. Reading any of the
       // three as another is how a buyer ends up on a page whose button did nothing.
-      if (outcome.kind === "refused") setFailure(outcome.failure);
-      else if (outcome.kind === "paddle") setHandoff(outcome.handoff);
+      if (outcome.kind === "refused") throw new Refused(outcome.failure);
+      return outcome.kind === "paddle" ? outcome.handoff : null;
     },
-    [latest, live],
+  );
+  const run = checkout.run;
+  const start = useCallback(
+    async (productId: string, choices?: { rail?: PaymentsHostedRail; discountCode?: string }) => {
+      await run(productId, choices);
+    },
+    [run],
   );
 
-  return { start, starting, failure, handoff };
+  return {
+    start,
+    starting: checkout.pending,
+    failure: refusalOf(checkout.failure),
+    // Each attempt mints a new transaction, so the last one's handoff is nobody's while the next is out.
+    handoff: checkout.pending || checkout.failure !== null ? null : (checkout.value ?? null),
+  };
 }
 
 /** What {@link usePaddleCheckout} gives the screen that composes Paddle. */
@@ -367,53 +340,38 @@ export interface UsePaddleCheckout {
 /**
  * Open the handoff {@link useCheckout} produced, with Paddle.js, over this page or inside it.
  *
- * **In an effect, and that is the whole reason this is a hook rather than a line in a click handler.**
- * Inline checkout renders into an element the screen provides, and Paddle finds it by class name at the
- * moment `open` is called. Called from the handler that starts the checkout, the container React is about
+ * **After the render that revealed the container, which is why this is a hook rather than a line in a click
+ * handler.** Inline checkout renders into an element the screen provides, and Paddle finds it by class name at
+ * the moment `open` is called. Called from the handler that starts the checkout, the container React is about
  * to render does not exist yet — and what Paddle does then is throw `TypeError: Cannot read properties of
- * undefined (reading 'appendChild')` out of the click, which is not a sentence anyone can act on. An
- * effect runs after the commit that revealed the container, so the element is there.
+ * undefined (reading 'appendChild')` out of the click, which is not a sentence anyone can act on. A read runs
+ * after the commit, so the element is there.
  *
- * One open per handoff. `start` mints a new transaction on every attempt, so the transaction id is what a
- * fresh attempt looks like; a re-render with the same handoff must not open a second checkout over the
- * first — and neither must a second *mount* of the same one. React's `StrictMode` runs every effect,
- * cleans it up and runs it again, and that is the mode `pithy ui add` scaffolds: `client.tsx` wraps the
- * router in it. So the transaction that has been opened is remembered, rather than the effect trusting
- * that it runs once. The remembered id is the last one opened, not a flag — a buyer who closed the
- * overlay and clicked Buy again arrives with a new transaction, and that one must open.
+ * One open per handoff, keyed on its transaction id and run once per key, so a re-render, a second mount under
+ * `StrictMode` (the mode `pithy ui add` scaffolds) and an inline handoff object all open one checkout. A buyer who
+ * closed the overlay and clicked Buy again arrives with a new transaction, and that one opens.
  */
 export function usePaddleCheckout(
   handoff: PaddleCheckoutHandoff | null,
   options?: PaddleCheckoutOptions,
 ): UsePaddleCheckout {
-  const [opening, setOpening] = useState(false);
-  const [failure, setFailure] = useState<PaymentsFailure | null>(null);
   const latest = useLatest(options);
   const latestHandoff = useLatest(handoff);
-  const live = useLive();
   const transactionId = handoff?.transactionId;
-  /** The transaction this hook has already opened, so a second effect pass over it opens nothing. */
-  const opened = useRef<string | null>(null);
+  const opened = useRead(
+    `paddle-open:${transactionId ?? ""}`,
+    async () => {
+      const current = latestHandoff.current;
+      return current === null ? null : openPaddleCheckout(current, latest.current);
+    },
+    { skip: transactionId === undefined, once: true },
+  );
 
-  // `transactionId` stands in for the handoff, the way `priceQueryKey` stands in for a query: the object
-  // is rebuilt by `useCheckout` on every attempt and identity would be a fine dependency today, but a
-  // screen that builds one inline would then reopen the checkout on every render.
-  useEffect(() => {
-    const current = latestHandoff.current;
-    if (transactionId === undefined || current === null) return;
-    // StrictMode's second pass, or any remount holding the same handoff. One click bought one checkout.
-    if (opened.current === transactionId) return;
-    opened.current = transactionId;
-    setOpening(true);
-    setFailure(null);
-    void openPaddleCheckout(current, latest.current).then((refused) => {
-      if (!live.current) return;
-      setOpening(false);
-      setFailure(refused);
-    });
-  }, [transactionId, latest, latestHandoff, live]);
-
-  return { inline: handoff?.displayMode === "inline", opening, failure };
+  return {
+    inline: handoff?.displayMode === "inline",
+    opening: opened.loading,
+    failure: transactionId === undefined || opened.loading ? null : (opened.value ?? refusalOf(opened.failure)),
+  };
 }
 
 /** What {@link usePaddleLink} gives the screen a Paddle payment link lands on. */
@@ -423,13 +381,22 @@ export interface UsePaddleLink {
    *
    * Null covers three different facts and deliberately reads as one: there was no `_ptxn` in the URL, there
    * was one and it was not a transaction id, or the server has not answered yet. A screen renders its
-   * ordinary state for all three, which is what it was already rendering before this hook existed.
+   * ordinary state for all three.
    */
   handoff: PaddleCheckoutHandoff | null;
   /** Whether the resume read is in flight. A screen with nothing to show need not read it. */
   loading: boolean;
   /** The refusal, or null. A rail that is off, or a mode that cannot resume. */
   failure: PaymentsFailure | null;
+}
+
+/** The transaction a Paddle payment link put in this page's URL, or null — and null with no browser at all. */
+function arrivedTransaction(): string | null {
+  // Narrowly cast rather than read off a typed global, which is `checkout.ts`'s `documentOf` pattern and is
+  // forced by the same thing: the build's tsconfig gives `globalThis` no DOM index signature, so
+  // `globalThis.location` compiles under `typecheck` and fails the published build with TS7017.
+  const search = (globalThis as { location?: { search?: string } }).location?.search;
+  return search === undefined ? null : readPaddleLinkTransaction(search);
 }
 
 /**
@@ -442,54 +409,27 @@ export interface UsePaddleLink {
  * one already exists.
  *
  * **Pass the result to {@link usePaddleCheckout}, which opens it.** Nothing about opening is reimplemented
- * here, and that is the point: the one-open-per-transaction guard, the `StrictMode` second pass, and the
- * `PADDLE_NO_CONTAINER` refusal when an inline container is missing are all inherited by going through the
- * same hook the minted path goes through.
+ * here, and that is the point: the one-open-per-transaction rule and the `PADDLE_NO_CONTAINER` refusal when
+ * an inline container is missing are inherited by going through the same hook the minted path goes through.
  *
  * **In inline mode the page must already render the container.** Paddle finds it by class name when `open`
  * is called, so a Default payment link pointing at a page that does not render one produces a refusal
  * rather than a checkout — which makes the choice of landing page part of configuring this, not a detail.
  * `docs/paddle.md` says so where an adopter sets the link.
  *
- * Reads `location.search` once, on mount. A link is a navigation, so there is no later arrival to watch for.
- *
- * **One read per transaction, remembered rather than assumed.** The same rule {@link usePaddleCheckout}
- * states and for the same reason: `StrictMode` runs every effect, cleans it up and runs it again, and that
- * is the mode `pithy ui add` scaffolds. Without the ref this asked the server twice on every mount — not
- * harmful, since the route only echoes config, and still two requests where the file beside it had already
- * solved the problem.
+ * Reads `location.search` once, on mount, and asks the server once per transaction, `StrictMode` included. A
+ * link is a navigation, so there is no later arrival to watch for.
  */
 export function usePaddleLink(options?: PaymentsClientOptions): UsePaddleLink {
-  const [handoff, setHandoff] = useState<PaddleCheckoutHandoff | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [failure, setFailure] = useState<PaymentsFailure | null>(null);
   const latest = useLatest(options);
-  const live = useLive();
-  /** The transaction this hook has already asked about, so a second effect pass asks nothing. */
-  const asked = useRef<string | null>(null);
+  const [transactionId] = useState(arrivedTransaction);
+  const resumed = useRead(
+    `paddle-link:${transactionId ?? ""}`,
+    async () => (transactionId === null ? null : unwrap(await resumeCheckout(transactionId, latest.current))),
+    { skip: transactionId === null, once: true },
+  );
 
-  useEffect(() => {
-    // Narrowly cast rather than read off a typed global, which is `checkout.ts`'s `documentOf` pattern and
-    // is forced by the same thing: the build's tsconfig gives `globalThis` no DOM index signature, so
-    // `globalThis.location` compiles under `typecheck` and fails the published build with TS7017.
-    const search = (globalThis as { location?: { search?: string } }).location?.search;
-    // No browser, or nothing in the URL. Both are "this page was not reached from a payment link", and a
-    // server render is the first of those rather than a failure worth reporting.
-    const transactionId = search === undefined ? null : readPaddleLinkTransaction(search);
-    if (transactionId === null) return;
-    // StrictMode's second pass, or any remount holding the same URL. One arrival is one read.
-    if (asked.current === transactionId) return;
-    asked.current = transactionId;
-    setLoading(true);
-    void resumeCheckout(transactionId, latest.current).then((outcome) => {
-      if (!live.current) return;
-      setLoading(false);
-      if (outcome.ok) setHandoff(outcome.value);
-      else setFailure(outcome.failure);
-    });
-  }, [latest, live]);
-
-  return { handoff, loading, failure };
+  return { handoff: resumed.value ?? null, loading: resumed.loading, failure: refusalOf(resumed.failure) };
 }
 
 /** What {@link usePurchase} gives the screen that submits receipts. */
@@ -521,48 +461,49 @@ export interface UsePurchase {
  * paywall back over a feature the user already owns, on nothing more than a failed second submission.
  */
 export function usePurchase(options?: PaymentsClientOptions): UsePurchase {
-  const [purchase, setPurchase] = useState<PurchaseView | null>(null);
-  const [entitlements, setEntitlements] = useState<readonly EntitlementView[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState<PaymentsFailure | null>(null);
   const latest = useLatest(options);
-  const live = useLive();
-
+  // One action for both calls, so the last success of either is what the screen shows.
+  const write = useAction(
+    async (
+      _signal,
+      call:
+        | { kind: "submit"; rail: PaymentsClientRail; receipt: string }
+        | {
+            kind: "restore";
+            rail: PaymentsClientRail;
+            receipts: readonly string[];
+          },
+    ): Promise<{ purchase: PurchaseView | null; entitlements: readonly EntitlementView[] }> => {
+      if (call.kind === "submit") {
+        const written = unwrap(await submitPurchase({ rail: call.rail, receipt: call.receipt }, latest.current));
+        return { purchase: written.purchase, entitlements: written.entitlements };
+      }
+      const restored = unwrap(await restorePurchases({ rail: call.rail, receipts: call.receipts }, latest.current));
+      return { purchase: restored.purchases[0] ?? null, entitlements: restored.entitlements };
+    },
+  );
+  const run = write.run;
   const submit = useCallback(
     async (rail: PaymentsClientRail, receipt: string) => {
-      setBusy(true);
-      setFailure(null);
-      const result = await submitPurchase({ rail, receipt }, latest.current);
-      if (!live.current) return;
-      setBusy(false);
-      if (!result.ok) {
-        setFailure(result.failure);
-        return;
-      }
-      setPurchase(result.value.purchase);
-      setEntitlements(result.value.entitlements);
+      await run({ kind: "submit", rail, receipt });
     },
-    [latest, live],
+    [run],
   );
-
   const restore = useCallback(
     async (rail: PaymentsClientRail, receipts: readonly string[]) => {
-      setBusy(true);
-      setFailure(null);
-      const result = await restorePurchases({ rail, receipts }, latest.current);
-      if (!live.current) return;
-      setBusy(false);
-      if (!result.ok) {
-        setFailure(result.failure);
-        return;
-      }
-      setPurchase(result.value.purchases[0] ?? null);
-      setEntitlements(result.value.entitlements);
+      await run({ kind: "restore", rail, receipts });
     },
-    [latest, live],
+    [run],
   );
 
-  return { submit, restore, purchase, entitlements, busy, failure };
+  return {
+    submit,
+    restore,
+    purchase: write.value?.purchase ?? null,
+    entitlements: write.value?.entitlements ?? NO_ENTITLEMENTS,
+    busy: write.pending,
+    failure: refusalOf(write.failure),
+  };
 }
 
 /** What {@link usePaddle} gives a screen that has to talk to Paddle.js directly. */
@@ -588,31 +529,25 @@ export interface UsePaddle {
  * React-shaped view of it: a state a screen can render.
  */
 export function usePaddle(setup: PaddleSetup | null, options?: PaddleOptions): UsePaddle {
-  const [paddle, setPaddle] = useState<PaddleJs | null>(null);
-  const [loading, setLoading] = useState(setup !== null);
-  const [failure, setFailure] = useState<PaymentsFailure | null>(null);
   const latest = useLatest(options);
-  const live = useLive();
-  // The two fields, not the object: a screen writing `usePaddle(paymentsConfig.paddle)` passes a stable
-  // reference today, and one writing an object literal must not restart the load every render.
+  // The two fields, not the object: a screen writing an object literal must not restart the load every render.
   const clientToken = setup?.clientToken;
   const environment = setup?.environment;
+  const loaded = useRead(
+    `paddle:${environment ?? ""}:${clientToken ?? ""}`,
+    () =>
+      clientToken === undefined || environment === undefined
+        ? Promise.resolve(null)
+        : loadPaddle({ clientToken, environment }, latest.current),
+    { skip: clientToken === undefined || environment === undefined },
+  );
+  const result = loaded.value;
 
-  useEffect(() => {
-    if (clientToken === undefined || environment === undefined) {
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    void loadPaddle({ clientToken, environment }, latest.current).then((result) => {
-      if (!live.current) return;
-      setPaddle(result.ok ? result.value : null);
-      setFailure(result.ok ? null : result.failure);
-      setLoading(false);
-    });
-  }, [clientToken, environment, latest, live]);
-
-  return { paddle, loading, failure };
+  return {
+    paddle: result?.ok === true ? result.value : null,
+    loading: loaded.loading,
+    failure: result?.ok === false ? result.failure : refusalOf(loaded.failure),
+  };
 }
 
 /** What {@link usePricePreview} gives a pricing screen. */
@@ -643,70 +578,39 @@ export interface UsePricePreview {
  * $5.44 in New York, $5.75 in Chicago, $5.00 in Berlin including €0.80 of VAT, and ¥725 in Tokyo without
  * a table of tax rates aging in somebody's repository.
  *
- * `query` may be written inline. The effect depends on {@link priceQueryKey} rather than on the object,
- * so an object literal re-created on every render re-quotes when the request changed and not before.
+ * `query` may be written inline. The read is keyed on {@link priceQueryKey} rather than on the object, so an
+ * object literal re-created on every render re-quotes when the request changed and not before.
  *
- * A failure clears the previous quote rather than leaving it. The other hooks here keep their last good
- * value on a refusal, and this one deliberately does not: a re-quote happens because the *request*
+ * A failure clears the previous quote rather than leaving it, because a re-quote happens when the *request*
  * changed, so the value it would be keeping is a price for something else.
  *
- * **Only the latest quote is rendered, whichever answers first.** Two previews can be in flight at once —
- * an anonymous visitor's location resolves under the query, or a country picker moves — and the slower
- * one landing last would otherwise win, putting a price for an address the visitor has left on the one
- * screen whose entire job is showing a correct one. Superseded answers are *ignored*, not canceled:
- * Paddle.js's `PricePreview` takes no `AbortSignal` and hands back a bare promise, so there is nothing to
- * cancel and ignoring it is the whole of the fix. A superseded refusal is ignored the same way, which is
- * what stops a dead request blanking a price the visitor is already reading.
+ * **Only the latest quote is rendered, whichever answers first.** A slower quote for an address the visitor
+ * has left — an anonymous visitor's location resolving under the query, or a country picker moving — is
+ * discarded rather than rendered, and so is a superseded refusal.
  */
 export function usePricePreview(
   setup: PaddleSetup | null,
   query: PaddlePriceQuery,
   options?: PaddleOptions,
 ): UsePricePreview {
-  const [preview, setPreview] = useState<PricePreview | null>(null);
-  const [loading, setLoading] = useState(setup !== null);
-  const [failure, setFailure] = useState<PaymentsFailure | null>(null);
   const latest = useLatest(options);
   const latestQuery = useLatest(query);
-  const live = useLive();
   const clientToken = setup?.clientToken;
   const environment = setup?.environment;
-  const queryKey = priceQueryKey(query);
-  /**
-   * Which quote is the current one.
-   *
-   * A counter rather than a comparison against `queryKey`, because two quotes for the *same* query race
-   * too — a screen calling `refresh` twice is the ordinary way to get there — and a key would read those
-   * two as one and let either win. Every ask takes the next number; only the holder of the last one
-   * issued may write state.
-   */
-  const issued = useRef(0);
+  const quoted = useRead(
+    `price:${environment ?? ""}:${clientToken ?? ""}:${priceQueryKey(query)}`,
+    () =>
+      clientToken === undefined || environment === undefined
+        ? Promise.resolve(null)
+        : previewPrices({ clientToken, environment }, latestQuery.current, latest.current),
+    { skip: clientToken === undefined || environment === undefined },
+  );
+  const result = quoted.value;
 
-  // `queryKey` is a dependency the body never reads, and that is the design. It is what makes "the request
-  // changed" a value React can compare — the query itself is an object literal rebuilt every render, and
-  // depending on that would quote forever. Reading the key back inside would mean parsing it, which is how
-  // a serialization becomes a second source of truth for the thing it serializes.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: queryKey stands in for the query, deliberately.
-  const refresh = useCallback(() => {
-    if (clientToken === undefined || environment === undefined) {
-      setLoading(false);
-      return;
-    }
-    const ticket = ++issued.current;
-    setLoading(true);
-    void previewPrices({ clientToken, environment }, latestQuery.current, latest.current).then((result) => {
-      if (!live.current) return;
-      // A superseded answer is not a late answer to render, it is an answer to a question nobody is
-      // asking any more. It writes nothing at all — not the price, not the failure, and not `loading`,
-      // which still belongs to the quote that is out.
-      if (ticket !== issued.current) return;
-      setPreview(result.ok ? result.value : null);
-      setFailure(result.ok ? null : result.failure);
-      setLoading(false);
-    });
-  }, [clientToken, environment, queryKey, latest, latestQuery, live]);
-
-  useEffect(refresh, [refresh]);
-
-  return { preview, loading, failure, refresh };
+  return {
+    preview: result?.ok === true ? result.value : null,
+    loading: quoted.loading,
+    failure: result?.ok === false ? result.failure : refusalOf(quoted.failure),
+    refresh: quoted.refresh,
+  };
 }

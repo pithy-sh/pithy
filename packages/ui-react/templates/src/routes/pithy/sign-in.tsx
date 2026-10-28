@@ -1,27 +1,26 @@
 import type { AuthFetch } from "@pithy-sh/auth/src/client/api";
 import { sendMagicLink, startSocialSignIn } from "@pithy-sh/auth/src/client/api";
-// The one code a refused provider sign-in comes back with. Imported rather than spelled, for the reason
-// #393 gives about `callbackPath`: a literal here and a literal there is a pair that can drift, and the
-// drift would show as this block silently never rendering again.
+// The one code a refused provider sign-in comes back with. Imported rather than spelled: a literal here and a
+// literal there is a pair that can drift, and the drift would show as this block silently never rendering again.
 import { NEUTRAL_PROVIDER_REFUSAL } from "@pithy-sh/auth/src/http/providerRefusal";
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import type { Translator } from "@pithy-sh/core/src/i18n/translator";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
-import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, type ReactNode, useCallback, useMemo, useState } from "react";
 import { authConfig } from "../../pithy-config";
-import { navigate, routeTable, screenPath, useSearchParam } from "../../router";
+import { Redirect, useSearchParam } from "../../router";
 import { refusedAccountScreen, resumeQuery } from "../../session";
 import { Turnstile, turnstilePending, turnstileRequest } from "../../turnstile";
-// The magic link's callback URL is built from this, never from a literal of the same shape. The two are
-// one statement for the reason #393 gives: renaming `callback.tsx`'s path is an edit that typechecks,
-// builds, and breaks the one round trip nobody signed in can test.
+// The magic link's callback URL is built from this, never from a literal of the same shape: renaming
+// `callback.tsx`'s path is an edit that typechecks, builds, and would break the one round trip nobody signed in
+// can test.
 import { path as callbackPath } from "./callback";
 import "../../pithy-screens.css";
 
 export const path = "/sign-in";
 
 // The screen the router's signed-out guard sends people to. Rename `path` above and the guard follows,
-// because it reads this claim rather than holding a copy of the string (#393).
+// because it reads this claim rather than holding a copy of the string.
 export const role = "sign-in";
 
 // Pithy's screen. Yours to override: put your own file at this path under src/routes/app/ and it wins.
@@ -81,10 +80,10 @@ const EN = {
   // already correct, and they conclude the product is broken. Say what the provider told us, say that a
   // secondary is refused on purpose, then say the remedy.
   //
-  // **Not one word about whether the account exists, and the words were chosen for that (#625).** The
+  // **Not one word about whether the account exists, and the words were chosen for that.** The
   // server sends one code for "you have an account and this provider is not attached to it" and for
-  // "you have none", so a screen that named either would put back the enumeration oracle the Worker was
-  // changed to close — this time in rendered copy, where it also gets read aloud. Every sentence below
+  // "you have none", so a screen that named either would be an enumeration oracle — in rendered copy, where it
+  // also gets read aloud. Every sentence below
   // is true of both, and the remedy is the same either way, which is why it can be.
   "auth/sign_in.refused.title": "{provider} didn't sign you in.",
   "auth/sign_in.refused.primary":
@@ -101,7 +100,7 @@ const EN = {
   "auth/sign_in.signup.closed": "Existing accounts only.",
   // Said instead of `signup.answer` when a provider on this screen may sign people in but not create an
   // account for them. The blanket promise is true of the link and false of that button, and the reader
-  // finds out by being refused after a round trip to the provider (#559).
+  // finds out by being refused after a round trip to the provider.
   "auth/sign_in.signup.email_only":
     "Emailing you a link creates one. The buttons above sign in existing accounts only.",
   "auth/sign_in.sent.title": "Check your inbox.",
@@ -349,10 +348,9 @@ const SOCIAL: readonly { id: string; label: string; mark: ReactNode }[] = [
  * to the provider and returned. It renders three sentences rather than one line, because a refusal
  * whose remedy is "do a different thing first" cannot be said in a clause.
  *
- * **`refused` and not `no_account`, and the rename is the whole of #625 on this side.** The screen is
- * not told whether the account exists, because the Worker deliberately no longer says — so a name that
- * claimed it would be a claim this code cannot support, and the next person to write copy from the
- * name would reopen the oracle in words.
+ * **`refused` and not `no_account`.** The screen is not told whether the account exists, because the Worker
+ * deliberately does not say — so a name that claimed it would be a claim this code cannot support, and the next
+ * person to write copy from the name would open an enumeration oracle in words.
  */
 type Refusal = { provider: string; reason: "unconfigured" | "silent" | "refused" } | null;
 
@@ -370,8 +368,8 @@ function refusalText(t: Translator, refusal: NonNullable<Refusal>): string {
  *
  * `provider_sign_in_refused` is the one code the capability sends for every refusal its own user table
  * decided — whether the address has an account here and the provider is not attached to it, or whether
- * it has none. The screen cannot tell them apart because there is nothing left to tell apart, which is
- * the point of #625 rather than a limitation of this function.
+ * it has none. The screen cannot tell them apart because there is nothing to tell apart, which is the point
+ * rather than a limitation of this function.
  *
  * **Both halves come from the URL, and the provider half has to.** Better Auth does not put the provider
  * in the error redirect, so the screen has to carry it — and it cannot carry it in React state, because
@@ -414,10 +412,8 @@ function Frame(props: { brand: ReactNode; mark: ReactNode; children: ReactNode }
 /**
  * The screen, with every seam as a prop.
  *
- * **One way in: a magic link.** This shipped with "Email me a code" beside it. Two passwordless paths
- * on one screen is two things to explain, two surfaces to rate-limit, and two inboxes' worth of mail
- * for one intent. The link is the one that needs no retyping, so it is the one that stayed — and
- * `routes/pithy/otp.tsx` is still there if you would rather have the code.
+ * **One passwordless path: the magic link.** Two on one screen is two things to explain and two surfaces
+ * to rate-limit for one intent. `routes/pithy/otp.tsx` is there if you would rather have a code.
  *
  * **Social is never gated by the humanity check.** An OAuth redirect carries no token and the provider
  * runs its own bot defense, so the check disables the submit and nothing else — which is what
@@ -453,17 +449,13 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
   // A social sign-in the Worker refused for the account's standing — suspended, or deleted — comes back here
   // with the code as `?error=`. That is not a refusal this form can help with, so it goes on to the screen
   // for that state, by role.
-  useEffect(() => {
-    const refused = refusedAccountScreen(error);
-    if (refused) void routeTable().then((table) => navigate(screenPath(table, refused)));
-  }, [error]);
+  const refusedAccount = refusedAccountScreen(error);
 
   const offered = SOCIAL.filter((provider) => auth.providers[provider.id]);
   // Whether any button on this screen signs people in without being able to create an account for them.
   // `signUpEnabled` answers for the link and says nothing about a provider, so on its own it promises
-  // what that button will refuse — after a full round trip to the provider and back (#559). Absent
-  // `providerSignUp` (a screen copied before it was projected) reads as "no provider refuses", which is
-  // what every project's behaviour was until then.
+  // what that button will refuse — after a full round trip to the provider and back. An absent
+  // `providerSignUp` reads as "no provider refuses".
   const providerRefuses = offered.some((provider) => auth.providerSignUp?.[provider.id] === false);
 
   async function sendLink(event: FormEvent): Promise<void> {
@@ -485,8 +477,8 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
     // bot defense. `startSocialSignIn` drops one even if it is passed, so this cannot be forgotten.
     // `errorCallbackURL` returns a refusal to the screen that started it. Without it Better Auth sends
     // it to its own `/error`, which redirects on to the adopter's home route with a query string no
-    // template reads — so the whole refusal copy below would be unreachable (#554). Built from this
-    // module's own `path` for the reason #393 gives about `callbackPath`: one statement, not a literal.
+    // template reads — so the whole refusal copy below would be unreachable. Built from this module's own
+    // `path`, as `callbackPath` is: one statement, not a literal.
     const started = await startSocialSignIn(
       {
         provider: provider.id,
@@ -506,6 +498,8 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
     // anything else means our own server did not answer. Different faults, different copy.
     setRefusal({ provider: provider.label, reason: started.kind === "unconfigured" ? "unconfigured" : "silent" });
   }
+
+  if (refusedAccount) return <Redirect screen={refusedAccount} />;
 
   if (sent) {
     return (

@@ -2,16 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 import { Box, render, Static, Text, useCursor, useInput, useStdout } from "ink";
-import { useEffect, useReducer, useRef, useState, useSyncExternalStore } from "react";
+import { useReducer, useRef, useSyncExternalStore } from "react";
 import { dim } from "../../terminal/style";
 import { stripAnsi } from "../logging";
 import { ticking } from "./choose";
-import { Footer, SPINNER_INTERVAL_MS } from "./footer";
+import { Footer } from "./footer";
 import { IdentityPicker } from "./identityPicker";
 import { isResizeBurstOpen, TOP_LEFT, useEraseOnResize } from "./resize";
 import type { BarKey } from "./roster";
 import type { WorkerRow } from "./session";
 import type { CommittedLine, DevStore } from "./store";
+import { useSpinnerClock } from "./useSpinnerClock";
 
 /**
  * The keys the bar advertises, in order, and what each one needs from the selected row.
@@ -91,12 +92,11 @@ function applies(needs: "always" | "worker" | "ready-app" | "started", row: Mark
   const started = row.status !== "skipped";
   if (needs === "started") return started;
   /**
-   * **`l` is not gated on an identity, and gating it was a regression.**
+   * **`l` is not gated on an identity.**
    *
    * The `login` event is raised once, before anything spawns, so its count is a snapshot. Gating the key
-   * on it — with a dimmed key being genuinely inert — made `l` dead for the life of any session that
-   * started unseeded: `pithy seed` in a second terminal, press `l`, nothing. That is the bug this change
-   * set set out to fix, reintroduced two rounds later from the other end.
+   * on it would leave `l` dead for the life of a session that started unseeded, even after `pithy seed`
+   * in a second terminal.
    *
    * So the key always fires on a ready app worker, and the supervisor answers: it re-reads the record on
    * every press, opens the only identity, offers the picker, or says `No dev login is seeded. Run pithy
@@ -104,7 +104,7 @@ function applies(needs: "always" | "worker" | "ready-app" | "started", row: Mark
    */
   // **`ready` and not merely started.** Opening a worker that has not matched its ready signal gives a
   // connection error, and signing into one gives a dead route — `wrangler dev` has not bound the port
-  // yet, and with a front end that can be a long time (#674). So `o` and `l` wait for the row to say
+  // yet, and with a front end that can be a long time. So `o` and `l` wait for the row to say
   // `ready`, not for its child to exist.
   return started && row.status === "ready" && row.kind === "app";
 }
@@ -248,8 +248,8 @@ export function DevTui(props: {
    * A digit, forwarded verbatim to the supervisor.
    *
    * **Digits belong to `l`'s identity list, not to the roster.** `pithy seed` can mint several signed-in
-   * identities and `l` numbers them, so a digit is already an answer to a question the session asked
-   * (#667). Binding it here as "jump to row N" would have made the same keystroke mean two things, and
+   * identities and `l` numbers them, so a digit is already an answer to a question the session asked.
+   * Binding it here as "jump to row N" would have made the same keystroke mean two things, and
    * which one it meant would have depended on whether anyone had pressed `l` recently. The roster moves
    * on the arrow keys alone; the supervisor's own handler is inert when no list is open.
    */
@@ -279,7 +279,6 @@ export function DevTui(props: {
    */
   const enabled = new Map<string, boolean>(KEY_BAR.map((k) => [k.key, applies(k.needs, selectedRow)]));
   const { stdout } = useStdout();
-  const [now, setNow] = useState(() => new Date());
   const { setCursorPosition } = useCursor();
   setCursorPosition(props.anchored === false ? undefined : TOP_LEFT);
   const [, reanchor] = useReducer((renders: number) => renders + 1, 0);
@@ -290,15 +289,8 @@ export function DevTui(props: {
   if (props.frame) frameRef.current = props.frame;
   useEraseOnResize(reanchor, props.store, frameRef.current);
 
-  // **The tick runs only while something is still coming up.** A command left open all day should not be
-  // redrawing a clock into somebody's battery, so once every worker has arrived the footer is static
-  // until the next event moves it.
-  const moving = ticking(state.session.workers);
-  useEffect(() => {
-    if (!moving) return;
-    const id = setInterval(() => setNow(new Date()), SPINNER_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [moving]);
+  // The tick runs only while something is still coming up.
+  const now = useSpinnerClock(ticking(state.session.workers));
 
   useInput(
     (input, key) => {

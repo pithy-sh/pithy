@@ -1,7 +1,7 @@
 import type { AuthSession, AuthUser } from "@pithy-sh/auth/src/client/api";
 import { signOut as endSession, getSession as readSession } from "@pithy-sh/auth/src/client/api";
 import { accountRefusal } from "@pithy-sh/auth/src/client/lifecycle";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useRead } from "@pithy-sh/ui-react/src/read";
 import { authConfig } from "./pithy-config";
 import { navigate, routeTable, type ScreenRole, screenPath } from "./router";
 
@@ -60,37 +60,14 @@ export function refusedAccountScreen(code: string | null | undefined): ScreenRol
 /** End the session server-side and return to the sign-in screen. */
 export async function signOut(): Promise<void> {
   await endSession(client);
-  // Where "the sign-in screen" is comes from the screen itself, never a literal here. Renaming its
-  // path is one edit and this follows it (#393).
+  // Where "the sign-in screen" is comes from the screen itself, never a literal here.
   navigate(screenPath(await routeTable(), "sign-in"));
 }
 
 /** The session as component state, plus a `refresh` for after a sign-in completes. */
 export function useSession(): { session: Session; loading: boolean; refresh: () => void } {
-  const [current, setCurrent] = useState<Session>(null);
-  const [loading, setLoading] = useState(true);
-  // Guards against setting state after unmount. A ref rather than a local, because `refresh` is
-  // callable from an event handler long after the effect that created it has been cleaned up.
-  const live = useRef(true);
-
-  const refresh = useCallback(() => {
-    setLoading(true);
-    void getSession().then((value) => {
-      if (!live.current) return;
-      setCurrent(value);
-      setLoading(false);
-    });
-  }, []);
-
-  useEffect(() => {
-    live.current = true;
-    refresh();
-    return () => {
-      live.current = false;
-    };
-  }, [refresh]);
-
-  return { session: current, loading, refresh };
+  const read = useRead("session", getSession);
+  return { session: read.value ?? null, loading: read.loading, refresh: read.refresh };
 }
 
 /** The query parameter a sign-in carries the request it should resume in. */

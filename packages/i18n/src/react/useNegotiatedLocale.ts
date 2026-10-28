@@ -3,12 +3,14 @@
 
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { localeDirection } from "@pithy-sh/core/src/i18n/locale";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { applyDocumentLocale, readBrowserSignals, rememberBrowserLocale } from "../browser/signals";
+import { useRead } from "@pithy-sh/ui-react/src/read";
+import { useCallback, useMemo, useState } from "react";
+import { readBrowserSignals, rememberBrowserLocale } from "../browser/signals";
 import { loadKitCatalog } from "../catalogs/browser";
 import type { I18nClientProjection } from "../client/projection";
 import { resolveBrowserLocale } from "../resolve/browser";
 import type { TranslatorSource } from "./translator";
+import { useDocumentLocale } from "./useDocumentLocale";
 
 /** What the hook hands back: what to mount, what was chosen, and how to choose again. */
 export interface NegotiatedLocale {
@@ -91,13 +93,8 @@ export function useNegotiatedLocale(
   // and every hook below runs either way and answers for it rather than being skipped — a hook behind a
   // condition is the one thing React does not allow.
   const config = projection.enabled ? projection : null;
-  // The same fact as a boolean, and the two effects below depend on **this** rather than on `config`.
-  // Composed, `config` is `projection` under another name, so its identity is the caller's — and a
-  // caller is free to hand the hook a fresh object every render (`{ ...i18nConfig }`, or a parse in a
-  // component body). An effect keyed on that identity re-runs on every render; the catalog effect sets
-  // state, so it re-renders itself, forever, with no error anywhere to read. Both effects want nothing
-  // from `config` but whether it is there, and a boolean is stable by value however the caller spells
-  // its projection.
+  // The same fact as a boolean, which the catalog read and the document hook key on rather than `config`. A caller
+  // is free to hand the hook a fresh projection every render, and a boolean is stable by value however it is spelled.
   const enabled = projection.enabled;
 
   const resolved = useMemo(
@@ -108,7 +105,6 @@ export function useNegotiatedLocale(
     [config, options.account],
   );
   const [chosen, setChosen] = useState<string | null>(null);
-  const [kit, setKit] = useState<{ locale: string; catalog: MessageCatalog } | null>(null);
 
   const locale = chosen ?? resolved?.catalogLocale ?? UNNEGOTIATED_LOCALE;
   // A chosen locale is a catalog locale, so it carries no region; the negotiated one may be more
@@ -119,28 +115,18 @@ export function useNegotiatedLocale(
   // project without the capability could mean.
   const defaultLocale = config?.defaultLocale ?? UNNEGOTIATED_LOCALE;
 
-  useEffect(() => {
-    // No chunk is asked for at all with the capability uncomposed, and that is the whole of what keeps
-    // `source` null there: `kit` never arrives, so the memo below has nothing to mount and the caller
-    // renders through the same null it already renders through while a catalog is in flight.
-    if (!enabled) return;
-    let live = true;
-    loadKitCatalog(locale)
-      .then((catalog) => {
-        if (live) setKit({ locale, catalog });
-      })
-      // A per-locale chunk that will not load — a 404 after a deploy, an offline tab — must not leave
-      // the provider unmounted forever with `lang` already changed on the document. That is the
-      // "declares a language it does not speak" failure by another road: a screen reader believes the
-      // attribute and mispronounces English. An empty catalog mounts the provider, so every screen
-      // falls through to the English it was scaffolded with, which is what is actually on screen.
-      .catch(() => {
-        if (live) setKit({ locale, catalog: {} });
-      });
-    return () => {
-      live = false;
-    };
-  }, [enabled, locale]);
+  // No chunk is asked for with the capability uncomposed, which is what keeps `source` null there. A per-locale chunk
+  // that will not load — a 404 after a deploy, an offline tab — mounts an empty catalog rather than leaving the
+  // provider unmounted under a `lang` already changed on the document: every screen then falls through to the
+  // English it was scaffolded with, which is what is actually on screen.
+  const kit = useRead(
+    `catalog:${locale}`,
+    async (): Promise<{ locale: string; catalog: MessageCatalog }> => ({
+      locale,
+      catalog: await loadKitCatalog(locale).catch((): MessageCatalog => ({})),
+    }),
+    { skip: !enabled },
+  ).value;
 
   // Derived from the locale in force, never taken off `resolved`. `resolveBrowserLocale` answers for
   // what the *chain* negotiated, and `choose` moves past it: a reader who picks Arabic from a language
@@ -150,13 +136,7 @@ export function useNegotiatedLocale(
   // byte-identical to what it answered before.
   const direction = localeDirection(locale);
 
-  useEffect(() => {
-    // Nothing negotiated it, so nothing declares it. A project without the capability keeps the `lang`
-    // its `index.html` shipped — restamping the document with a locale no chain chose would be the
-    // "declares a language it does not speak" failure with the negotiation removed rather than added.
-    if (!enabled) return;
-    applyDocumentLocale(locale, direction);
-  }, [enabled, locale, direction]);
+  useDocumentLocale(enabled, locale, direction);
 
   const persist = options.persist;
   const choose = useCallback(
@@ -184,7 +164,7 @@ export function useNegotiatedLocale(
   const source = useMemo<TranslatorSource | null>(() => {
     // Only once the catalog for *this* locale has landed. Mounting the previous locale's catalog under
     // the new locale's tag is a page that says it is Spanish and reads English. This is also the one
-    // test the uncomposed case has to pass: nothing ever loads a catalog there, so `kit` stays null
+    // test the uncomposed case has to pass: nothing ever loads a catalog there, so `kit` stays undefined
     // and no provider is ever mounted over screens already rendering their baked English.
     if (kit?.locale !== locale) return null;
     return {

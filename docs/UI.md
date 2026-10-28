@@ -206,6 +206,8 @@ That is also how a language Pithy writes nothing in gets its words. The kit ship
 
 The screens are real files in **`@pithy-sh/ui-react`**, a template library the CLI depends on and copies from — not string literals inside `@pithy-sh/cli`.
 
+The same package is also a runtime dependency of what it writes. The copied screens import `useRead` and `useAction` from it, and the router's `<Redirect>` is built on its own (see [Reading data, running calls, leaving](#reading-data-running-calls-leaving)). Those hooks are code you upgrade rather than copies you own, so a fix to them reaches your screens with the package, not with a re-scaffold.
+
 That is a deliberate boundary, and it is about growth. A framework's templates need that framework's toolchain to be checked: React wants `react`, `@types/react` and a `jsx: react-jsx` program, and Svelte would want an entirely different one. Keeping them in the CLI would make the CLI carry every framework's devDependencies and every framework's tsconfig purely to typecheck files it only ever copies. Each framework therefore brings its own library — `@pithy-sh/ui-react` today, `@pithy-sh/ui-<framework>` as others land — while the stub contract that drives them stays in the CLI.
 
 It also means the screens are ordinary source: the kit's typecheck checks them and Biome lints them, in the layout they will have once copied. A template that does not compile fails CI here, rather than in your project.
@@ -234,6 +236,31 @@ Two consequences worth stating plainly.
 **The callback screen's path is the magic link's callback URL.** `sign-in.tsx` reads it from `callback.tsx`, so that rename is one edit too. This is the one round trip you cannot check by being signed in, which is why it is not left as two strings that agree today.
 
 **A test beside a screen is still just a test.** Co-locate `home.test.tsx` next to `home.tsx`, as the kit asks you to everywhere else. Both globs negate `*.test.tsx` and `*.spec.tsx` — the test runner's own names for its own files — so a co-located test is registered as nothing and reaches no bundle. That negation is the one filename rule the router has, and it earns its place: without it the file is a route, and everything in it — fixtures, stub tokens, the shape of an endpoint and how it fails — is served to anyone who asks. A companion file under another tool's convention, a `.stories.tsx` say, is not covered; give it its own negation, or keep it outside `src/routes/`.
+
+### Reading data, running calls, leaving
+
+The seeded screens call no `useEffect` of their own, and three exports carry what those effects used to do. A screen of yours can use them the same way.
+
+```tsx
+import { useRead } from "@pithy-sh/ui-react/src/read";
+import { Redirect } from "../../router";
+
+export const path = "/projects";
+
+export default function Projects() {
+  const projects = useRead("projects", (signal) => fetch("/api/projects", { signal }).then((r) => r.json()));
+  if (projects.failure) return <p>Could not load your projects.</p>;
+  if (projects.value === undefined) return <p>Loading…</p>;
+  if (projects.value.length === 0) return <Redirect to="/projects/new" replace />;
+  return <ProjectList rows={projects.value} />;
+}
+```
+
+**`useRead(key, read, options?)` loads data.** It returns `{ value, loading, failure, refresh }`. The read gets an `AbortSignal` that aborts when a newer key supersedes it or the screen unmounts, and an answer that arrives after either is dropped. A failed read lands in `failure` rather than throwing. `skip: true` makes no request until a condition holds, `deadline` (milliseconds) aborts a read nobody answers and lands it in `failure` as a `ReadTimeout`, and `once: true` runs a read at most once per key for the life of the screen, StrictMode's double mount included, for a read that costs something.
+
+**`useAction(call)` runs a call a person triggers.** It returns `{ run, pending, failure, value }`. A newer `run` aborts the older one through the same `AbortSignal`, and an unmount aborts the call in flight and sets no state.
+
+**`<Redirect>` leaves, as one of the states a screen renders.** When an answer means "not here", render it the way you render loading and failure: `to` for a path, or `screen` for whichever screen claims a role, plus `replace` for a correction the reader did not make and `load` to leave by a full document load. It navigates once and renders nothing, so the screen never draws its content on the way out. The route guards are built this way: a signed-out visitor to a guarded route sees the loading line and then the sign-in screen, never the route.
 
 ### Path parameters
 
@@ -542,6 +569,7 @@ One route is deliberately never allowlisted: one your app capability mounts at *
 | `react` | 19.2.8 | The client |
 | `react-dom` | 19.2.8 | The client |
 | `@pithy-sh/i18n` | matching your CLI | The translator every seeded screen renders through |
+| `@pithy-sh/ui-react` | the one your CLI copies from | `useRead`, `useAction` and the redirect every seeded screen loads and leaves through |
 | `@types/react` | 19.2.17 | Types |
 | `@types/react-dom` | 19.2.3 | Types |
 | `vite` | ^8.0.16 | Dev server and build |
@@ -552,7 +580,9 @@ One route is deliberately never allowlisted: one your app capability mounts at *
 
 **`@pithy-sh/i18n` is a dependency of the front end whether or not you compose the capability**, and that is not the pattern the auth and payments screens follow. Those are written only when their capability is composed, and their package arrives with `pithy add <capability>`. The translator is different because every seeded screen reads it — `src/router.tsx` and your home screen included, both written on every scaffold — so the import is there before you have decided anything about language. Composing nothing still renders the English baked into each screen, byte for byte: `useTranslator` with no provider is a translator over that catalog and nothing else. See [Two catalogs, and why](#two-catalogs-and-why), and [`docs/I18N.md`](I18N.md) for the rest.
 
-Two exceptions to the table, and they touch only the two `@pithy-sh/*` rows.
+**`@pithy-sh/ui-react` is a dependency on the same terms.** `src/router.tsx` and your home screen both import it, so every scaffold declares it, at the version of the package your CLI copied the screens from.
+
+Two exceptions to the table, and they touch only the `@pithy-sh/*` rows.
 
 The first is yours: if one is already provided by a checkout linked into your `node_modules`, `pithy ui add` writes no range for it. The package resolves either way, and a range naming a version the registry does not have would fail your next install.
 

@@ -141,6 +141,12 @@ Pithy is an open-source, **Cloudflare-native backend kit for mobile *and* web ap
 - **Operator surfaces are English, permanently.** CLI output, `renderTerminal`, `--json` lines, logs and audit rows stay greppable and match the docs.
 - `docs/I18N.md` states the rule once, for adopters. Every other doc links there rather than restating it.
 
+## React (no raw effects)
+
+- **Kit React code calls no `useEffect` or `useLayoutEffect` of its own.** `plugins/no-raw-use-effect.grit` fails `bunx biome check .` on one anywhere under `packages/*/src/**` and `packages/ui-react/templates/**`, tests aside. Load data with **`useRead`** (`@pithy-sh/ui-react/src/read`): it keys a read, aborts a superseded or unmounted one through its `AbortSignal`, discards a late answer, takes `skip`, a `deadline` and `once` per key, and returns `{ value, loading, failure, refresh }`. Run a call a person triggers with **`useAction`** (`src/action`), which returns `{ run, pending, failure, value }` and sets nothing after unmount. Navigate on an answer by rendering the scaffolded router's **`<Redirect>`** as one of the screen's states, never from an effect watching state.
+- **An effect that syncs with something outside React lives in a hook named for it, in its own file**, excluded in `biome.jsonc` beside a comment naming that system: the read, action and redirect hooks themselves, `useDocumentLocale` (the document's `lang`), the Turnstile widget, the TUI's resize listener and `useSpinnerClock`. The router's listener set is `useSyncExternalStore`, which needs none. A new exclusion is a new named hook, never a call site.
+- **`@pithy-sh/ui-react`'s published source imports only React.** `@pithy-sh/payments` and `@pithy-sh/i18n` import its hooks while its templates import them, so `turbo.jsonc` builds it with no `^build` ahead of it, and `src/leaf.test.ts` holds the source to that.
+
 ## Email, secrets, environments, Workflows
 
 - **Email** is never sent ad-hoc: enqueue a row in the `email_jobs` D1 table and let a **Workflow** send via CF Email Service with retries + history. A column per field. `@pithy-sh/email` ships polished, responsive starter templates (magic link, OTP, welcome, security alert, invite, …) — part of its definition of done.

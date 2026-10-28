@@ -6,8 +6,9 @@ import {
   listOrganizations,
   organizationRefusal,
 } from "@pithy-sh/organization/src/index";
-import { useCallback, useEffect, useState } from "react";
-import { navigate, routeTable, screenPath } from "../../router";
+import { useRead } from "@pithy-sh/ui-react/src/read";
+import { useState } from "react";
+import { Redirect, routeTable, screenPath } from "../../router";
 import "../../pithy-screens.css";
 
 export const path = "/choose-organization";
@@ -22,7 +23,7 @@ export const path = "/choose-organization";
 //     is a row rather than an inference every later request has to make again.
 //   None — a different answer entirely. Somebody who belongs nowhere is not choosing; they are waiting
 //     for an invitation, and a picker with an empty list tells them nothing. And somebody whose every
-//     account is suspended does not belong nowhere: the list counts those (#623), and they go on to the
+//     account is suspended does not belong nowhere: the list counts those, and they go on to the
 //     suspended screen, by role, rather than being told to ask for an invitation.
 //
 // The middle one is the one that gets written wrong. A screen that renders a one-item list and waits is
@@ -53,67 +54,72 @@ const EN = {
  */
 const DESTINATION = "/";
 
+/** What an arrival, or a choice, comes to: the picker, a failure, or somewhere to go. */
+type Answer =
+  | { kind: "list"; organizations: ActableOrganization[] }
+  | { kind: "failed" }
+  | { kind: "leave"; to: string; load: boolean };
+
+/**
+ * Record the choice, then leave by a document load. See the note above for why it is not an in-app route change.
+ *
+ * An account suspended since the list was drawn says so, on its own screen, by role. Nothing is in force then, so
+ * an in-app navigation carries nothing over. Any other refusal — including the ordinary 404 a caller naming an
+ * account they do not belong to gets, which is the same answer as one that does not exist — is a failure.
+ */
+async function choose(organizationId: string): Promise<Answer> {
+  const result = await chooseOrganization(organizationId);
+  if (result.ok) return { kind: "leave", to: DESTINATION, load: true };
+  if (organizationRefusal(result.failure.code) === "suspended") {
+    return { kind: "leave", to: screenPath(await routeTable(), "organization-suspended"), load: false };
+  }
+  return { kind: "failed" };
+}
+
+/** Read the memberships, and decide which of the three arrivals this is. */
+async function arrive(): Promise<Answer> {
+  const result = await listOrganizations();
+  if (!result.ok) return { kind: "failed" };
+  const { organizations, acting, suspended } = result.value;
+  // Nothing to act in, and something suspended: that is the suspended screen's answer, not "no accounts yet".
+  if (organizations.length === 0 && (suspended ?? 0) > 0) {
+    return { kind: "leave", to: screenPath(await routeTable(), "organization-suspended"), load: false };
+  }
+  // Somebody with exactly one account is put into it rather than asked. The write still happens, so `acting` is a
+  // row from here on and `chosen` says it was not a decision.
+  const only = organizations.length === 1 && acting === null ? organizations[0] : undefined;
+  if (only) return choose(only.id);
+  return { kind: "list", organizations };
+}
+
 export default function ChooseOrganization() {
   const t = useTranslator(EN);
-  const [organizations, setOrganizations] = useState<ActableOrganization[] | null>(null);
-  const [failed, setFailed] = useState(false);
+  // Once per arrival, StrictMode included: the one-membership path writes the choice.
+  const arrival = useRead("organizations", arrive, { once: true });
+  const [chosen, setChosen] = useState<Answer | null>(null);
   const [busy, setBusy] = useState(false);
 
-  /** Record the choice, then leave by a document load. See the note above for why it is not `navigate`. */
-  const choose = useCallback(async (organizationId: string) => {
+  async function pick(organizationId: string): Promise<void> {
     setBusy(true);
-    const result = await chooseOrganization(organizationId);
-    if (!result.ok) {
-      // An account suspended since the list was drawn says so, on its own screen, by role — so renaming
-      // that screen moves this with it. Nothing is in force, so an in-app navigation carries nothing over.
-      if (organizationRefusal(result.failure.code) === "suspended") {
-        navigate(screenPath(await routeTable(), "organization-suspended"));
-        return;
-      }
-      // Including the ordinary 404 a caller naming an account they do not belong to gets — which is
-      // the same answer as one that does not exist, deliberately, so there is nothing to say about
-      // which it was.
-      setBusy(false);
-      setFailed(true);
-      return;
-    }
-    window.location.assign(DESTINATION);
-  }, []);
+    const answer = await choose(organizationId);
+    setBusy(false);
+    setChosen(answer);
+  }
 
-  const load = useCallback(async () => {
-    setFailed(false);
-    const result = await listOrganizations();
-    if (!result.ok) {
-      setFailed(true);
-      return;
-    }
-    // Nothing to act in, and something suspended: that is the suspended screen's answer, not "no accounts yet".
-    if (result.value.organizations.length === 0 && (result.value.suspended ?? 0) > 0) {
-      navigate(screenPath(await routeTable(), "organization-suspended"));
-      return;
-    }
-    // Somebody with exactly one account is put into it rather than asked. The write still happens, so
-    // `acting` is a row from here on and `chosen` says it was not a decision.
-    if (result.value.organizations.length === 1 && result.value.acting === null) {
-      const only = result.value.organizations[0];
-      if (only) {
-        await choose(only.id);
-        return;
-      }
-    }
-    setOrganizations(result.value.organizations);
-  }, [choose]);
+  function retry(): void {
+    setChosen(null);
+    arrival.refresh();
+  }
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const answer = chosen ?? (arrival.loading ? null : (arrival.value ?? null));
+  if (answer?.kind === "leave") return <Redirect to={answer.to} load={answer.load} />;
 
-  if (failed) {
+  if (answer?.kind === "failed" || (answer === null && arrival.failure !== null && !arrival.loading)) {
     return (
       <main className="screen">
         <div className="stack">
           <p>{t.t("organization/choose.failed")}</p>
-          <button type="button" onClick={() => void load()}>
+          <button type="button" onClick={retry}>
             {t.t("organization/choose.retry")}
           </button>
         </div>
@@ -121,9 +127,10 @@ export default function ChooseOrganization() {
     );
   }
 
-  // The load has not answered. Nothing is drawn rather than a spinner: the one-membership path leaves
+  // The read has not answered. Nothing is drawn rather than a spinner: the one-membership path leaves
   // without ever rendering, and a flash of a picker for an account nobody chose is worse than a pause.
-  if (organizations === null) return <main className="screen" />;
+  if (answer === null) return <main className="screen" />;
+  const organizations = answer.organizations;
 
   if (organizations.length === 0) {
     return (
@@ -144,12 +151,7 @@ export default function ChooseOrganization() {
         <ul className="organizations">
           {organizations.map((organization) => (
             <li key={organization.id}>
-              <button
-                type="button"
-                className="organization"
-                disabled={busy}
-                onClick={() => void choose(organization.id)}
-              >
+              <button type="button" className="organization" disabled={busy} onClick={() => void pick(organization.id)}>
                 {/* A raster arrives as a URL on this origin and a vector as its own value; both render
                     the same way, which is why no screen has to know which it was handed. Null draws
                     initials, which is an answer rather than a placeholder. */}
