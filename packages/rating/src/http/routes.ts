@@ -234,6 +234,8 @@ export function registerRatingRoutes(options: RatingRoutesOptions): (app: Hono<P
       `${base}/games/:game/me`,
       describeRoute({
         summary: "Read the caller's own standing in a game.",
+        operation: "standing.read",
+        tool: true,
         verification: ["bearer", "session"],
         responses: { 200: RatingView },
       }),

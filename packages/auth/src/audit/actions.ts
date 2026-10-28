@@ -205,6 +205,19 @@ export const AuthAuditActions = {
    * answered; never with any of the data.
    */
   adminUserExported: "auth/admin_user_exported",
+  /**
+   * A user let an MCP client act as them in this application. The one decision the consent screen asks,
+   * recorded with the client's id and the redirect it will send tokens to — the thing that identifies it, since
+   * its name is whatever it said. Asking again is a new consent and a new row.
+   */
+  mcpGrantApproved: "auth/mcp_grant_approved",
+  /** A user refused an MCP client on the consent screen. */
+  mcpGrantDenied: "auth/mcp_grant_denied",
+  /**
+   * A user revoked an MCP client from their connected applications. Its consent and refresh tokens are gone
+   * and its next call is refused. Revocation is the only narrowing the user has, so it is recorded like a grant.
+   */
+  mcpGrantRevoked: "auth/mcp_grant_revoked",
 } as const;
 
 /** One of the auth audit action codes. */

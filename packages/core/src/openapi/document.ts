@@ -248,6 +248,11 @@ function operationOf(tag: string, method: string, operation: Operation, spec: Ro
     responses,
     ...(strategies.length === 0 ? {} : { security, "x-pithy-verification": strategies }),
     ...(spec.scopes === undefined || spec.scopes.length === 0 ? {} : { "x-pithy-scopes": spec.scopes }),
+    // What the route declared for the app's MCP endpoint: the power its gate installs, its permanent name,
+    // and its effect when it is a tool. A client generated from the contract reads the gate it will meet.
+    ...(spec.power === undefined ? {} : { "x-pithy-power": spec.power }),
+    ...(spec.operation === undefined ? {} : { "x-pithy-operation": spec.operation }),
+    ...(spec.tool === undefined ? {} : { "x-pithy-tool": spec.tool === true ? { effect: null } : spec.tool }),
   };
 }
 

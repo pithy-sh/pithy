@@ -24,8 +24,11 @@ import type { AdminRoute, AdminRouteInput, CapabilityDeclaration } from "./admin
 /** The three parts of a request an admin route's input may carry, and the validator target each comes from. */
 const PARTS = { param: "path", query: "query", json: "body" } as const;
 
-/** The JSON Schema of one route's input, built from the request contracts on its handlers. */
-function inputOf(handlers: readonly unknown[]): AdminRouteInput {
+/**
+ * The JSON Schema of one route's input, built from the request contracts on its handlers. The app's own MCP tools
+ * (`../../mcp/tools.ts`) take their input from here too, so a tool on either server has one shape.
+ */
+export function inputOf(handlers: readonly unknown[]): AdminRouteInput {
   const properties: Record<string, unknown> = {};
   const required: string[] = [];
   for (const handler of handlers) {

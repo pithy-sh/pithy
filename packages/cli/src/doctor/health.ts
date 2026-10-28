@@ -18,6 +18,7 @@ import {
 } from "../capabilities/reconcile";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { workerDirName } from "../project/workerIdentity";
+import { type AgentEndpointHealth, agentEndpointHealth } from "./agentEndpoint";
 import { type BindingScopeHealth, bindingScopeHealth } from "./bindingScope";
 import { type CapabilityReachHealth, type ComposedWorker, capabilityReachHealth } from "./capabilityReach";
 import { type ConsentHealth, consentHealth } from "./consent";
@@ -172,6 +173,11 @@ export interface WorkerChecks {
    * `doctor/consent.ts`.
    */
   consent: ConsentHealth;
+  /**
+   * Its MCP endpoint's floor — `dev`'s composition, read the way `scopes` is. **Not in `ok`**: an endpoint
+   * open to every signed-in user is a decision, stated on every run. See `doctor/agentEndpoint.ts`.
+   */
+  agents: AgentEndpointHealth;
 }
 
 /**
@@ -428,6 +434,7 @@ function healthFromPlan(
   migrations: MigrationHealth,
   scopes: ScopeGateHealth,
   consent: ConsentHealth = consentHealth([]),
+  agents: AgentEndpointHealth = agentEndpointHealth([]),
 ): WorkerHealth {
   const worker = target.name;
   const directory = workerDirName(target);
@@ -477,6 +484,7 @@ function healthFromPlan(
     prerequisites,
     scopes,
     consent,
+    agents,
   };
 }
 
@@ -595,6 +603,7 @@ export async function buildProjectHealth(options: ProjectHealthOptions): Promise
     // plan's checks. Only read when `dev` composed, which is also the only case with a plan to attach it to.
     let scopes: ScopeGateHealth = scopeGateHealth([]);
     let consent: ConsentHealth = consentHealth([]);
+    let agents: AgentEndpointHealth = agentEndpointHealth([]);
     try {
       const local = await planFor(LOCAL_ENVIRONMENT);
       const deployed = new Map<string, ReconcilePlan | null>();
@@ -605,6 +614,7 @@ export async function buildProjectHealth(options: ProjectHealthOptions): Promise
         const { capabilities } = await composed(target, LOCAL_ENVIRONMENT);
         scopes = scopeGateHealth(capabilities);
         consent = consentHealth(capabilities);
+        agents = agentEndpointHealth(capabilities);
       }
     } catch {
       plan = null;
@@ -612,7 +622,7 @@ export async function buildProjectHealth(options: ProjectHealthOptions): Promise
     workers.push(
       plan === null
         ? { state: "unavailable", worker: worker.name, directory: workerDirName(worker) }
-        : healthFromPlan(worker, plan, migrationHealth(answers), scopes, consent),
+        : healthFromPlan(worker, plan, migrationHealth(answers), scopes, consent, agents),
     );
     const succeeded: WorkerComposition[] = [];
     for (const env of environments) {

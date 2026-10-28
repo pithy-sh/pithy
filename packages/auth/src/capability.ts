@@ -17,17 +17,21 @@ import { z } from "zod";
 import { AuthAuditActions } from "./audit/actions";
 import type { AuthClientProjection } from "./client/projection";
 import { authTables } from "./data/tables";
+import { baseURLResolver } from "./http/baseUrl";
 import { publishSameOrigin } from "./http/csrf";
 import { registerDevLoginRoute } from "./http/devLoginRoute";
 import { authAdminRoutes } from "./http/guards";
 import { createSessionMiddleware } from "./http/middleware";
 import { createRateLimitMiddleware } from "./http/rateLimit";
+import { getAuthInstance } from "./http/resolve";
 import { createAuthRoutes } from "./http/routes";
 import type { GithubUserInfoResolver } from "./instance/githubUserInfo";
 import { AuthPlugin, assertAdditivePlugins } from "./instance/plugins";
 import { authSecretsRegistryFor, inapplicableProviderSecrets } from "./instance/secrets";
 import { authErasureRecords } from "./lifecycle/erasure";
 import type { UserLifecycleHooks } from "./lifecycle/hooks";
+import type { McpHost, McpWiring } from "./mcp/host";
+import { isMcpCapability } from "./mcp/marker";
 import { AUTH_MIGRATION_ORDER } from "./migrations/0001_init";
 import { authPluginPlan } from "./migrations/pluginTables";
 import { AUTH_MIGRATIONS } from "./migrations/set";
@@ -228,6 +232,11 @@ export interface AuthWiring {
    * Optional on the wiring for the reason `onSessionRevoked` is: a harness that builds this by hand composes none.
    */
   purgeSteps?: readonly PurgeStep[] | undefined;
+  /**
+   * The MCP capability's endpoint and consent screen, when one is composed beside this one. Set by
+   * `compose`; the instance then carries the OAuth provider that mints its tokens.
+   */
+  mcp?: McpWiring | undefined;
 }
 
 /** The session a {@link ScopeResolver} is asked about — the one Better Auth just resolved for this request. */
@@ -347,6 +356,8 @@ export interface AuthCapability extends Capability {
    * auth bundles them (#645). See `peer.ts`.
    */
   authPeer: AuthPeer;
+  /** What the MCP capability composed beside this one reads. See `mcp/host.ts`. */
+  mcpHost: McpHost;
 }
 
 /**
@@ -533,6 +544,8 @@ export function auth(options: AuthOptions): AuthCapability {
       assertPluginTablesUnclaimed(capabilities, resolved.database, pluginPlan.extensions);
       // Every composed capability's purge step, auth's own among them, for the export route and the purge (#622).
       steps.splice(0, steps.length, ...purgeSteps(capabilities, "user"));
+      // An agent surface, when one is composed: its authorization server lives in this instance.
+      wiring.mcp = capabilities.find(isMcpCapability)?.mcpWiring;
       composition = capabilities;
     },
     /**
@@ -603,6 +616,12 @@ export function auth(options: AuthOptions): AuthCapability {
     lifecycleHooks,
     purgeSteps: steps,
     auditFor: (env: Record<string, unknown>) => composedAuditEmit(composition, env),
+    mcpHost: {
+      instance: (c) => getAuthInstance(c, wiring),
+      baseURL: (request) => baseURLResolver(resolved.baseURL)(request),
+      basePath: resolved.basePath,
+      database: resolved.database,
+    } satisfies McpHost,
   });
 }
 

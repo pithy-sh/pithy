@@ -14,6 +14,7 @@ async function everyScreen(): Promise<Record<string, string>> {
     payments: true,
     organization: false,
     consent: false,
+    mcp: false,
     packageManager: "bun",
   });
 }

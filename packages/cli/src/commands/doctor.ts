@@ -32,6 +32,7 @@ import {
 import { projectSecretApplicability, type SecretApplicability } from "../capabilities/secretApplicability";
 import { pithyOffline } from "../cloudflare/config";
 import { withContract } from "../contract/commandContract";
+import { AgentEndpointHealth } from "../doctor/agentEndpoint";
 import {
   type AuditSinksCheck,
   type AuditSinksOptions,
@@ -2219,8 +2220,26 @@ function workerHealthLines(
 
   lines.push(...scopeLines(health));
   lines.push(...consentLines(health));
+  lines.push(...agentLines(health));
 
   return lines;
+}
+
+/**
+ * The `agents` line: which floor this Worker's MCP endpoint admits callers at. Nothing for a Worker that
+ * composes no endpoint. An endpoint open to every signed-in user says so in words, every run — it is a decision,
+ * and a decision that changes who can drive an agent against the application is one nobody should forget making.
+ */
+function agentLines(health: WorkerChecks): string[] {
+  const { composed, open, floor } = health.agents;
+  if (!composed || floor === null) return [];
+  if (open === true) {
+    return [
+      healthLine("agents", "MCP endpoint open to every signed-in user."),
+      `${HEALTH_CONT}Set mcp({ floor }) to a power or an entitlement to narrow it. Reported, not failed.`,
+    ];
+  }
+  return [healthLine("agents", `MCP endpoint ${floor} ✓`)];
 }
 
 /**
@@ -2268,11 +2287,11 @@ function consentLines(health: WorkerChecks): string[] {
 }
 
 /**
- * Whether a Worker has a scope gate nothing can open, or processes under consent with no record — reported on a
- * passing Worker, never collapsed.
+ * Whether a Worker has a scope gate nothing can open, processes under consent with no record, or has an MCP
+ * endpoint open to every signed-in user — each reported on a passing Worker, never collapsed.
  */
 function hasScopeNotes(worker: WorkerChecks): boolean {
-  return worker.scopes.denying || worker.consent.unrecorded;
+  return worker.scopes.denying || worker.consent.unrecorded || worker.agents.open === true;
 }
 
 /**
@@ -4140,6 +4159,7 @@ const WorkerHealthPayload = z
         })
           .optional()
           .describe("Its consent purposes against a consent record. Absent from a CLI older than consent."),
+        agents: AgentEndpointHealth,
       })
       .describe("A Worker whose checks ran."),
     z

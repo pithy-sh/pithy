@@ -219,6 +219,7 @@ describe("healthWithFixes", () => {
       denying: true,
     },
     consent: { recorder: null, purposes: [], unrecorded: false },
+    agents: { composed: false, open: null, floor: null },
   } as WorkerHealth;
   const health: ProjectHealth = {
     ok: false,
@@ -307,6 +308,7 @@ describe("healthWithFixes, on the findings whose remedy is an edit or a decision
       prerequisites: { ok: true, missing: [] },
       scopes: { resolver: null, gates: [], denying: false },
       consent: { recorder: null, purposes: [], unrecorded: false },
+      agents: { composed: false, open: null, floor: null },
     }) as WorkerHealth;
   const healthOf = (workers: WorkerHealth[]): ProjectHealth => ({
     ok: false,

@@ -555,6 +555,8 @@ export function registerLedgerRoutes(options: LedgerRoutesOptions): (app: Hono<P
       `${base}/:currency/transactions`,
       describeRoute({
         summary: "Read the caller's own recent entries in one currency.",
+        operation: "transactions.list",
+        tool: true,
         verification: ["bearer", "session"],
         responses: { 200: LedgerOwnTransactionsResponse },
       }),
@@ -571,6 +573,8 @@ export function registerLedgerRoutes(options: LedgerRoutesOptions): (app: Hono<P
       `${base}/:currency`,
       describeRoute({
         summary: "Read the caller's own balance in one currency.",
+        operation: "balance.read",
+        tool: true,
         verification: ["bearer", "session"],
         responses: { 200: LedgerBalanceResponse },
       }),

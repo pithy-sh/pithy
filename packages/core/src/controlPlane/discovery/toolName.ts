@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The one place an MCP tool name is made (#723, `docs/AGENT-ACCESS.md` §5).
+ * The one place an MCP tool name is made (`docs/AGENT-ACCESS.md` §5) — for the control-plane server's tools, and
+ * for the app's own MCP endpoint's (`../../mcp/tools.ts`), so one rule names both servers' tools.
  *
  * **Derived, never hand-written.** A tool is `<capability>_<operation>`: the capability's name, which already
  * partitions migrations, tables and error codes, and the operation the capability declared beside the route. Two

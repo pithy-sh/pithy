@@ -154,6 +154,43 @@ describe("openApiDocument", () => {
     expect(operation(document, "/games/{board}/top", "get")["x-pithy-scopes"]).toBeUndefined();
   });
 
+  test("publishes a route's power, operation and tool effect, and says nothing when none is declared", () => {
+    const declared = group("notes", (app) => {
+      app.post(
+        "/notes",
+        describeRoute({
+          summary: "Write.",
+          verification: "bearer",
+          responses: { 200: Entry },
+          power: "notes:write",
+          operation: "notes.write",
+          tool: { effect: "writes" },
+        }),
+        (c) => c.json({ rank: 1 }),
+      );
+      app.get(
+        "/notes",
+        describeRoute({
+          summary: "List.",
+          verification: "bearer",
+          responses: { 200: Entry },
+          operation: "notes.list",
+          tool: true,
+        }),
+        (c) => c.json({ rank: 1 }),
+      );
+    });
+    const written = openApiDocument({ title: "T", version: "1" }, [declared]);
+    expect(operation(written, "/notes", "post")).toMatchObject({
+      "x-pithy-power": "notes:write",
+      "x-pithy-operation": "notes.write",
+      "x-pithy-tool": { effect: "writes" },
+    });
+    expect(operation(written, "/notes", "get")["x-pithy-tool"]).toEqual({ effect: null });
+    expect(operation(written, "/notes", "get")["x-pithy-power"]).toBeUndefined();
+    expect(operation(document, "/games/{board}/top", "get")["x-pithy-tool"]).toBeUndefined();
+  });
+
   test("a public route is open, and a signed webhook has no scheme to require", () => {
     const hooks = group("hooks", (app) => {
       app.get("/open", describeRoute({ summary: "Open.", verification: "public", responses: { 200: Entry } }), (c) =>
