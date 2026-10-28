@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import { consent } from "./capability";
 
@@ -46,5 +47,17 @@ describe("consent()", () => {
     expect(capability.dependsOn).toEqual(["auth"]);
     expect(capability.purge?.[0]?.retain?.basis).toMatch(/proof/);
     expect(capability.requiredBindings.find((binding) => binding.name === "CONSENT_EVIDENCE")?.optional).toBe(true);
+  });
+  test("a reader with no DB bound refuses its standings with the remedy, and still lists its catalog", async () => {
+    const reader = consent({
+      purposes: [{ id: "clinic.records", summary: "Keep my record.", noticeVersion: 1 }],
+    }).consentReader?.({});
+    expect(reader?.purposes?.().map((purpose) => purpose.id)).toEqual(["clinic.records"]);
+    const refused = await reader?.standings?.().catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(PithyError);
+    expect((refused as PithyError).payload).toMatchObject({
+      code: "core/internal",
+      action: expect.stringMatching(/Bind DB/),
+    });
   });
 });

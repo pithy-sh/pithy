@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
+import { pii } from "@pithy-sh/core/src/privacy/classes";
 import { z } from "zod";
 import { SuppressionReason } from "./enums";
 
@@ -13,7 +14,7 @@ import { SuppressionReason } from "./enums";
 export const EmailSuppression = z
   .object({
     id: z.number().int().describe("Surrogate primary key, autoincremented by SQLite."),
-    email: z.string().describe("The suppressed address, lowercased. Uniquely indexed — one row per address."),
+    email: pii(z.string().describe("The suppressed address, lowercased. Uniquely indexed — one row per address.")),
     reason: SuppressionReason.describe(
       "Why the address is suppressed: hard bounce, complaint, unsubscribe, or manual.",
     ),

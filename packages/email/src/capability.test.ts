@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
+import { privacyInventory } from "@pithy-sh/core/src/privacy/inventory";
 import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { describe, expect, test } from "vitest";
 import { EMAIL_MIGRATION_ORDER, email, isEmailCapability } from "./capability";
@@ -26,6 +27,28 @@ describe("email capability", () => {
     expect(Object.keys(cap.databases?.emailSuppressions?.tables ?? {})).toEqual(["pithyEmailSuppressions"]);
     expect(typeof cap.routes).toBe("function");
     expect(typeof cap.email).toBe("function");
+  });
+
+  test("the privacy inventory sees every stored recipient address as pii, and nothing else", () => {
+    const classed = privacyInventory([email(config)]).schemas.map((schema) => [
+      schema.container,
+      schema.name,
+      schema.fields.map((field) => [field.path, field.class]),
+    ]);
+    expect(classed).toEqual(
+      expect.arrayContaining([
+        [
+          "app",
+          "pithyEmailJobs",
+          [
+            ["toAddress", "pii"],
+            ["recipientKey", "pii"],
+          ],
+        ],
+        ["app", "pithyEmailEvents", [["recipient", "pii"]]],
+        ["emailSuppressions", "pithyEmailSuppressions", [["email", "pii"]]],
+      ]),
+    );
   });
 
   test("resolves config defaults and the brand theme", () => {
@@ -145,11 +168,9 @@ describe("pithy.manifest.json", () => {
   });
 
   test("its EMAIL_SENDER binding names the same job and class this capability registers", () => {
-    // `pithy add` runs offline against the manifest and never executes this package, so the job and the
-    // class name are mirrored there — and a mirror drifts. They are what the CLI composes the deployed
-    // `<project>-<env>-email-send` name and the `class_name` from, so a manifest that fell out of step
-    // would write a `workflows` entry pointing at a Workflow nothing deploys: a config that loads, a
-    // Worker that boots, and a send that fails in production. #258.
+    // `pithy add` reads the manifest offline and never runs this package, so the job and class name are
+    // mirrored there. The CLI composes the deployed Workflow name and `class_name` from them; a mirror
+    // out of step writes a `workflows` entry naming a Workflow nothing deploys.
     const send = email(config).workflows?.send;
     const binding = manifest.requiredBindings.find((entry) => entry.name === "EMAIL_SENDER");
     expect(binding).toMatchObject({ type: "workflow", job: "send", className: send?.className });

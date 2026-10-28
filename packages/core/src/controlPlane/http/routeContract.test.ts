@@ -13,6 +13,7 @@ import {
   EVIDENCE_READ_SCOPE,
   MIGRATIONS_READ_SCOPE,
   PRIVACY_READ_SCOPE,
+  PROCESSING_READ_SCOPE,
   RETENTION_HOLD_SCOPE,
   RETENTION_READ_SCOPE,
 } from "../scope/scope";
@@ -58,7 +59,7 @@ describe("control-plane route contract", () => {
     const app = makeApp();
     expect(app.routes.length).toBeGreaterThan(0);
     const paths = [...new Set(app.routes.map((route) => route.path))].sort();
-    // Every route this seam serves. The list is what makes adding a twelfth a deliberate edit rather
+    // Every route this seam serves. The list is what makes adding a route a deliberate edit rather
     // than a surprise, and it is the only place a control-plane route can be counted.
     expect(paths).toEqual([
       "/control-plane/erasure",
@@ -73,6 +74,7 @@ describe("control-plane route contract", () => {
       "/control-plane/ping",
       "/control-plane/presence/tickets",
       "/control-plane/privacy",
+      "/control-plane/processing",
     ]);
     // The one param-carrying path, named exactly. Without this the check above would pass on an app
     // that declared no params at all, which proves nothing.
@@ -106,7 +108,7 @@ describe("control-plane route contract", () => {
       const key = `${route.method} ${route.path}`;
       handlerCounts.set(key, (handlerCounts.get(key) ?? 0) + 1);
     }
-    expect(handlerCounts.size).toBe(14);
+    expect(handlerCounts.size).toBe(15);
     for (const [route, count] of handlerCounts) expect(count, `${route} has no guard`).toBeGreaterThan(1);
   });
 
@@ -118,9 +120,9 @@ describe("control-plane route contract", () => {
     const app = new Hono<PithyHonoEnv>();
     capability.routes?.(app);
 
-    expect(capability.adminRoutes).toHaveLength(14);
+    expect(capability.adminRoutes).toHaveLength(15);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
-    // And the other direction. Since #468 the CORS surface derives from `adminRoutes`, so a guarded
+    // And the other direction. The CORS surface derives from `adminRoutes`, so a guarded
     // route nobody declared gets no preflight and no browser reaches it, with this suite still green.
     expect(undeclaredAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
   });
@@ -142,7 +144,7 @@ describe("control-plane route contract", () => {
     const ping = advertised.find((route) => route.path.endsWith("/ping"));
     expect(ping?.scope).toBeNull();
     // The presence ticket route is the other null, and for a different reason: the scope it needs is the
-    // room kind's, named in its body and listed beside each kind in the manifest (#815).
+    // room kind's, named in its body and listed beside each kind in the manifest.
     expect(advertised.filter((route) => route.scope === null).map((route) => route.path)).toEqual([
       "/control-plane/ping",
       "/control-plane/presence/tickets",
@@ -160,13 +162,13 @@ describe("control-plane route contract", () => {
     expect([...new Set(mounted.map((route) => route.method))]).toEqual(["GET"]);
   });
 
-  test("every route requiring privacy:read is a GET, so connect offers it as a read (#132)", () => {
+  test("every route requiring privacy:read is a GET, so connect offers it as a read", () => {
     const advertised = controlplane().adminRoutes ?? [];
     const reading = advertised.filter((route) => route.scope === PRIVACY_READ_SCOPE);
     expect(reading.map((route) => `${route.method} ${route.path}`)).toEqual(["GET /control-plane/privacy"]);
   });
 
-  test("every route requiring evidence:read is a GET, so connect offers it as a read (#821)", () => {
+  test("every route requiring evidence:read is a GET, so connect offers it as a read", () => {
     const advertised = controlplane().adminRoutes ?? [];
     const reading = advertised.filter((route) => route.scope === EVIDENCE_READ_SCOPE);
     expect(reading.map((route) => `${route.method} ${route.path}`)).toEqual(["GET /control-plane/evidence"]);
@@ -174,7 +176,15 @@ describe("control-plane route contract", () => {
     expect([...new Set(mounted.map((route) => route.method))]).toEqual(["GET"]);
   });
 
-  test("every route requiring erasure:read is a GET, so connect offers it as a read (#823)", () => {
+  test("every route requiring processing:read is a GET, so connect offers it as a read", () => {
+    const advertised = controlplane().adminRoutes ?? [];
+    const reading = advertised.filter((route) => route.scope === PROCESSING_READ_SCOPE);
+    expect(reading.map((route) => `${route.method} ${route.path}`)).toEqual(["GET /control-plane/processing"]);
+    const mounted = makeApp().routes.filter((route) => route.path === "/control-plane/processing");
+    expect([...new Set(mounted.map((route) => route.method))]).toEqual(["GET"]);
+  });
+
+  test("every route requiring erasure:read is a GET, so connect offers it as a read", () => {
     const advertised = controlplane().adminRoutes ?? [];
     const reading = advertised.filter((route) => route.scope === ERASURE_READ_SCOPE);
     expect(reading.map((route) => `${route.method} ${route.path}`)).toEqual([
@@ -237,7 +247,7 @@ describe("control-plane route contract: every route is described for the OpenAPI
     expect(undescribedFields(document)).toEqual([]);
   });
 
-  test("GET /privacy names its response schema and the scope it needs (#132)", () => {
+  test("GET /privacy names its response schema and the scope it needs", () => {
     const document = openApiDocument({ title: "controlplane", version: "0" }, groups());
     const operation = (document.paths as Record<string, Record<string, unknown>>)["/control-plane/privacy"]?.get as
       | { responses?: Record<string, unknown> }
