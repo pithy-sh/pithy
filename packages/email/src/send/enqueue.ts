@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { normalizeAddress } from "@pithy-sh/core/src/address/address";
+import type { ConsentReader, ConsentSubject } from "@pithy-sh/core/src/consent/reader";
 import type { MeterCharge, MeterSubject } from "@pithy-sh/core/src/entitlement/meter";
 import { isLocale } from "@pithy-sh/core/src/i18n/locale";
+import { consentGate } from "../consent/consent";
 import type { EmailJob } from "../data/emailJob";
-import { EmailJob as EmailJobSchema } from "../data/emailJob";
+import { EmailJob as EmailJobSchema, personalAddress } from "../data/emailJob";
 import type { EmailJobStatus, SendMode, SuppressionReason } from "../data/enums";
 import type { EmailDatabase, EmailSuppressionDatabase } from "../data/tables";
 import { EmailInvalidPayloadError } from "../error/errors";
@@ -23,7 +25,7 @@ import { blockingSuppression } from "./suppression";
  * `scheduled` and `timezone` jobs are left for the every-minute scheduler to pick up. The payload is
  * validated against the template schema here, so a bad call fails at enqueue, not mid-send.
  *
- * **Suppression is consulted here too, and no caller asks for it** (pithy-sh/pithy#355). A blocked
+ * **Suppression is consulted here too, and no caller asks for it**. A blocked
  * recipient never becomes a queued send: the row is born `suppressed`, no Workflow is started, and the
  * reason comes back on the result. The point is not a second gate — `runSend` is and stays the
  * authority, because whether an address is blocked is a question about the instant of sending and a
@@ -42,7 +44,7 @@ import { blockingSuppression } from "./suppression";
  * The Workflow binding used to start a send (Cloudflare `Workflow.create`). At enqueue it sends a batch
  * of one; the scheduler's fan-out starts one instance per batch through the same binding.
  *
- * `id` names the instance being created, and **every dispatcher passes one** (pithy-sh/pithy#342): the
+ * `id` names the instance being created, and **every dispatcher passes one**: the
  * scheduler passes its batch's, an enqueue passes the one it just stamped on the row, and a retry passes
  * the one it minted to replace the failed batch's. It is optional here only because the platform allows
  * omitting it, and omitting it is what made an immediate send unattributable to any instance — so the
@@ -88,7 +90,7 @@ export interface EnqueueInput {
   /**
    * What this message is *about*, when the template id does not say it on its own.
    *
-   * The discriminator for a template that carries more than one kind of message (pithy-sh/pithy#382).
+   * The discriminator for a template that carries more than one kind of message.
    * `sentSince` matches on it, so a caller deciding whether to send — or whether to send a *correction* —
    * can tell two messages apart that share a template and a recipient. Opaque: nothing here parses it,
    * renders it, or puts it on a header or a link.
@@ -132,6 +134,14 @@ export interface EnqueueInput {
    * enqueue past the period's quota throws `payments/quota_exceeded` and writes no job.
    */
   subject?: MeterSubject;
+  /**
+   * Whose consent this message is sent under, when `@pithy-sh/consent` is composed: the recipient's account,
+   * or the visitor id they consented under. A `marketing` template is sent only to a subject consenting to
+   * `email.marketing`, and opens and clicks are tracked only for one consenting to `email.tracking`. Omitted, a
+   * marketing message is withheld and nothing is tracked, because nobody's consent can be shown. Transactional mail
+   * is never gated, and without consent composed this is ignored.
+   */
+  consentSubject?: ConsentSubject;
 }
 
 /** Dependencies enqueue needs: the database, the from identity, optional send-Workflow binding, time, ids. */
@@ -165,12 +175,16 @@ export interface EnqueueDeps {
    * request's env. Absent when no provider is composed, and then nothing is counted.
    */
   meter?: (charge: MeterCharge) => Promise<void>;
+  /**
+   * The composed consent reader, or absent when no consent capability is composed — and then nothing is
+   * gated.
+   */
+  consent?: ConsentReader | null;
   now: Date;
   /** Generate a job id (a UUID in production). */
   newId: () => string;
   /**
-   * Mint the id of the batch this enqueue dispatches — **the send Workflow instance's id**
-   * (pithy-sh/pithy#342). Defaults to {@link mintBatchId}; injected only so a test can name it.
+   * Mint the id of the batch this enqueue dispatches — **the send Workflow instance's id**. Defaults to {@link mintBatchId}; injected only so a test can name it.
    */
   newBatchId?: () => string;
 }
@@ -183,7 +197,7 @@ export interface EnqueueResult {
    *
    * `pending` and `scheduled` both mean a send is on its way. `suppressed` means the address is
    * blocked. **`undispatched` means this composition binds no send Workflow**, so nothing was started
-   * and nothing is coming while it stays that way (pithy-sh/pithy#410): a caller that renders "check
+   * and nothing is coming while it stays that way: a caller that renders "check
    * your inbox" off it is reporting a delivery that cannot happen. It is the one status here that
    * describes the *deployment* rather than the message — and the scheduler drains those rows once a
    * host exists, so it is not the end of the job.
@@ -199,8 +213,14 @@ export interface EnqueueResult {
    */
   suppressionReason?: SuppressionReason;
   /**
+   * The consent purpose that withheld this message, when consent is composed and the subject does not hold it —
+   * `email.marketing`. The row is born `suppressed` and nothing is sent. Absent for every message consent
+   * did not withhold.
+   */
+  consentWithheld?: string;
+  /**
    * The **enqueue-time** render — the sentence this call wrote to `pithy_email_jobs.subject`, in the
-   * recipient's language, and the value the row is born with (pithy-sh/pithy#443).
+   * recipient's language, and the value the row is born with.
    *
    * **For the caller that has to say what it queued.** Enqueuing is what a surface does; auditing it is
    * what a surface with an administrative trail also does. Without this, that caller had to render the
@@ -271,9 +291,18 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
    * agreeing is what makes a hard bounce withhold an invitation while an unsubscribe does not. A caller
    * cannot influence this and is not asked to: it is the template's own declaration.
    */
-  const blocked: SuppressionReason | null = deps.suppressionDb
+  const suppressed: SuppressionReason | null = deps.suppressionDb
     ? await blockingSuppression(deps.suppressionDb, input.to, deps.now, templateKind(input.template))
     : null;
+  /**
+   * What consent allows, when it is composed: a marketing message to a subject not consenting to it is
+   * withheld like a suppressed one, and tracking runs only for a subject consenting to it. Transactional mail is
+   * never withheld. With no consent composed the gate passes everything.
+   */
+  const marketing = template.category === "marketing";
+  const gate = await consentGate(deps.consent, input.consentSubject, marketing);
+  const withheld = suppressed === null ? gate.withheld : null;
+  const blocked = suppressed !== null || withheld !== null;
   // The match key, on the same normalization the suppression list is written and read under. The row
   // keeps the address as the caller typed it in `toAddress` — an operator diagnosing a send needs the
   // string that was actually addressed — and carries this beside it as `recipientKey`, which is what
@@ -286,7 +315,7 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
   // else is left for the scheduler to claim.
   const sender = !blocked && mode === "immediate" ? deps.sender : undefined;
   /**
-   * An immediate job with nothing to dispatch it on (pithy-sh/pithy#410).
+   * An immediate job with nothing to dispatch it on.
    *
    * A missing binding is a **configuration fact known at compose time**, not a transient failure, and
    * the two used to be recorded identically: both left the row `pending` and told the caller "on its
@@ -309,7 +338,7 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
   const status: EmailJobStatus = blocked ? "suppressed" : undispatchable ? "undispatched" : scheduled;
   /**
    * The batch this enqueue is about to start — named here, before the row exists, because the row has to
-   * carry it (pithy-sh/pithy#342).
+   * carry it.
    *
    * Without it the row is born naming nobody, and a row naming nobody is stranded by definition: the
    * scheduler's safety net claims any `pending` job older than `graceMs` and starts a *second* send
@@ -337,11 +366,10 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
     await deps.meter({ subject: input.subject, meter: "emails", amount: 1, now: deps.now });
   }
 
-  const marketing = template.category === "marketing";
   const job: EmailJob = {
     id: deps.newId(),
-    toAddress: input.to,
-    recipientKey: recipient,
+    toAddress: personalAddress(input.to),
+    recipientKey: personalAddress(recipient),
     fromAddress: deps.fromAddress,
     fromName: deps.fromName,
     subject,
@@ -368,17 +396,19 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
     // The same shape as `renderLocale` on the send side, and for the same reason.
     locale: isLocale(input.locale ?? "") ? (input.locale ?? null) : null,
     correlation: input.correlation ?? null,
-    openTracking: input.openTracking ?? marketing,
-    clickTracking: input.clickTracking ?? marketing,
+    openTracking: (input.openTracking ?? marketing) && gate.tracking,
+    clickTracking: (input.clickTracking ?? marketing) && gate.tracking,
     messageId: null,
     // The same sentence `runSend` writes when it skips one, so the send log reads the same whichever
     // pass caught it — and, for the undispatchable row, the one sentence that says why it stopped
     // here. The status is the state; this column is what an operator reads next to it.
-    error: blocked
-      ? `recipient suppressed: ${blocked}`
-      : undispatchable
-        ? "no EMAIL_SENDER binding: this composition can start no send Workflow"
-        : null,
+    error: suppressed
+      ? `recipient suppressed: ${suppressed}`
+      : withheld
+        ? `no consent: ${withheld}`
+        : undispatchable
+          ? "no EMAIL_SENDER binding: this composition can start no send Workflow"
+          : null,
     bounceCode: null,
     bounceType: null,
     replyTo: input.replyTo ?? null,
@@ -394,9 +424,17 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
   // A withheld message is on the record as an event, not merely as a status — the send log's history is
   // what an operator reads to find out that an advisory reached nobody, and a row with no event in it
   // looks exactly like a job still waiting its turn.
-  if (blocked) {
-    await recordEvent(deps.db, { jobId: job.id, recipient, type: "suppressed", detail: blocked }, deps.now);
-    return { jobId: job.id, status, subject, suppressionReason: blocked };
+  if (suppressed) {
+    await recordEvent(deps.db, { jobId: job.id, recipient, type: "suppressed", detail: suppressed }, deps.now);
+    return { jobId: job.id, status, subject, suppressionReason: suppressed };
+  }
+  if (withheld) {
+    await recordEvent(
+      deps.db,
+      { jobId: job.id, recipient, type: "suppressed", detail: `consent:${withheld}` },
+      deps.now,
+    );
+    return { jobId: job.id, status, subject, consentWithheld: withheld };
   }
 
   // Immediate sends start the Workflow now for lowest latency, under the id the row already carries —

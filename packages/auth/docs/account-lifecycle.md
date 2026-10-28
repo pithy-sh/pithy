@@ -209,12 +209,13 @@ Every kit capability that holds rows about a person declares a `user` contributi
 | Capability | Disposition | What |
 |---|---|---|
 | `auth` | erase | The account, sessions, providers, devices, refresh-token ledger, pending codes, verification ledger, plugin rows. Its lifecycle history stays. |
+| `mcp` | erase | The consents the person gave applications to act as them, and the access and refresh tokens minted under them. A dynamically registered client is the application's and stays. |
 | `ledger` | erase | Balances in every currency, the transaction log, holds. |
 | `rating` | erase | The rating in every pool, and the control-plane acts on it. The person's place in every logged outcome is anonymized instead, so each opponent's rating still replays exactly. |
 | `leaderboard` | erase | Entries on every board, in every window, what each session result put on them, and their moderation history. |
 | `matchmaking` | erase | Invites sent or received, friendships and requests on either side, and the person's place, undelivered match and drop records in every game's queue. A room code expires on its own TTL. |
 | `multiplayer` | anonymize | Session results: the person's id in the players, scores and winner is replaced, so the other players' results stay. A session in flight they play in is closed with no result, and leaves the session index. |
-| `support` | erase | Threads linked to the account, or sent from its address and linked to no other account, with messages, attachments, raw mail, classifications, read state and assignment history. On other people's threads, the handovers they made lose their id; who held a thread is an opaque reference and stays with it. |
+| `support` | erase | Threads linked to the account, or sent from its address and linked to no other account, with messages, attachments, raw mail, classifications, read state, assignment history, and each message's vector in the semantic message index with its model stamp. On other people's threads, the handovers they made lose their id; who held a thread is an opaque reference and stays with it. |
 | `testers` | erase | Cohort memberships under the account's address, and their events. Cohort counts stay. |
 | `artifacts` | erase | Repositories the person owns, with their contents and grants, and the grants they hold. The record of every token minted for them is anonymized instead, so a token still listed reads as the kit's. |
 | `media` | erase | Records the person holds as themselves, with their bytes and hashes. A record made for an organization is the organization's. |
@@ -224,6 +225,7 @@ Every kit capability that holds rows about a person declares a `user` contributi
 | `email` | retain | The address on the suppression list, and the log of mail sent to it. *Kept so your unsubscribe holds: the address stays on the list of addresses not to mail, with the record of what was sent to it.* |
 | `audit` | retain | Every audit event where the person is the actor. *Kept as the record of who did what, which a security review or a dispute is read against.* |
 | `controlplane` | retain | Every legal hold placed on the person, standing or released. *Kept as the record that a legal hold stood, when it was placed and why it ended.* The export says when each was placed and released, never who placed it or why. |
+| `consent` | retain | Every grant and withdrawal, with the documents and evidence behind them and the visitors merged into the account. *Kept as the proof of what you agreed to and when you withdrew it, which the law asks us to be able to show.* |
 
 `packages/cli/src/capabilities/personRows.test.ts` holds the kit to it. It constructs every capability package, walks its schema, and fails the build when a table names a person — `userId`, `ownerId`, `subjectId`, `actorId`, any `…UserId`, either side of an invite or a friendship, or an address — in a capability that declares no `user` contribution, or one without an export. `isPersonColumn` and `personRowGaps` in `@pithy-sh/core/src/capability/personColumns` are the rule, if you want to hold your own capabilities to it.
 

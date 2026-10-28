@@ -6,7 +6,7 @@ import { describe, expect, test } from "vitest";
 import { kitComposition } from "../openapi/kitDocument";
 
 /**
- * **Every kit admin route's operation, as published (#723, `docs/AGENT-ACCESS.md` §5).**
+ * **Every kit admin route's operation, as published (`docs/AGENT-ACCESS.md` §5).**
  *
  * An operation names an MCP tool — `<capability>_<operation>` — and an agent references a tool by name in prompts,
  * saved workflows and its own record of what worked. So once published an operation is permanent, and the property
@@ -25,6 +25,7 @@ const PUBLISHED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
     "keys.expire": "POST /control-plane/keys/:keyId/expire",
     "migrations.read": "GET /control-plane/migrations",
     "privacy.read": "GET /control-plane/privacy",
+    "processing.read": "GET /control-plane/processing",
     "evidence.read": "GET /control-plane/evidence",
     "holds.list": "GET /control-plane/holds",
     "holds.place": "POST /control-plane/holds",
@@ -142,6 +143,7 @@ const PUBLISHED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   },
   support: {
     "threads.list": "GET /support/threads",
+    "threads.search": "GET /support/threads/search",
     "threads.read": "GET /support/threads/:id",
     "threads.archive": "POST /support/threads/:id/archive",
     "threads.assign": "POST /support/threads/:id/assign",
@@ -181,6 +183,12 @@ const PUBLISHED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
     "tokens.list": "GET /artifacts/admin/repos/:name/tokens",
     "tokens.revoke": "POST /artifacts/admin/repos/:name/tokens/:tokenId/revoke",
     "tokens.revoke_all": "POST /artifacts/admin/repos/:name/tokens/revoke",
+  },
+  consent: {
+    "purposes.read": "GET /consent/control-plane/purposes",
+    "subjects.read": "GET /consent/control-plane/subjects/:kind/:subjectId",
+    "documents.read": "GET /consent/control-plane/documents/:hash",
+    "evidence.read": "GET /consent/control-plane/evidence/:hash",
   },
 };
 

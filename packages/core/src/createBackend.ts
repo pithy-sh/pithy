@@ -30,10 +30,12 @@ import { buildKvRegistry, composeKv, type KvRegistry } from "./kv/namespaces";
 import { loggingErrorHandler } from "./logger/errorHandler";
 import type { Logger } from "./logger/logger";
 import { bindRequestContext, createWorkerLogger } from "./logger/worker";
+import { assertToolDeclarations } from "./mcp/tools";
 import type { RouteGroup } from "./openapi/document";
 import { recordRouteGroups } from "./openapi/routeGroups";
 import { registerPresenceRoutes } from "./presence/http/routes";
 import { refuseEncryptedKvStores } from "./privacy/encryptedColumns";
+import { effectiveProcessing, recordProcessing } from "./processing/composed";
 import { effectiveRetention, recordRetention } from "./retention/composed";
 import { HEALTH_PATH } from "./worker/health";
 import { workerVersion } from "./worker/identity";
@@ -71,6 +73,12 @@ export interface CreateBackendOptions<Caps extends readonly Capability[], App ex
    * refuses to deploy. See `retention/policy.ts`.
    */
   retention?: unknown;
+  /**
+   * The adopter's own processing activities, and the legal bases they state for a capability's — the `processing`
+   * block of the Worker's `pithy.config.ts`. Resolved here over what this Worker composes, so a block that does not
+   * parse, or overrides an activity nothing declares, refuses to deploy. See `processing/activity.ts`.
+   */
+  processing?: unknown;
 }
 
 /** The Hono env `createBackend` returns — `db`/`kv`/`workflows` typed precisely from the merged capabilities. */
@@ -177,11 +185,12 @@ export function createBackend<
 
   // Recorded after the hooks, so a capability found later is one whose own wiring is complete. This is
   // the only way back to a composed seam from a Workflow step, which the runtime constructs with `env`
-  // and nothing else — see `capability/composition.ts` (pithy-sh/pithy#356).
+  // and nothing else — see `capability/composition.ts`.
   recordComposition(all);
   // The retention block, resolved over what this Worker composes and recorded beside it, so a purge, a prune and
   // the inactivity pass read the policy the routes report. A block under the audit floor throws here.
   recordRetention(effectiveRetention(options.retention, all));
+  recordProcessing(effectiveProcessing(options.processing, all));
 
   const databases = composeDatabases(all);
   // Every composed capability's English, merged under the domain rule. Built once at assembly rather
@@ -191,7 +200,7 @@ export function createBackend<
   // `@pithy-sh/i18n`'s middleware replaces it per request; nothing else ever does.
   const defaultTranslator = bakedTranslator(catalogFor(messages, DEFAULT_LOCALE));
   const namespaces = composeKv(all);
-  // An encrypted field in a KV store is refused here, at boot (#390): a KV envelope cannot be found by key version,
+  // An encrypted field in a KV store is refused here, at boot: a KV envelope cannot be found by key version,
   // so it could never be rotated. The refusal names the store, the field and D1.
   refuseEncryptedKvStores(all);
   const workflows = composeWorkflows(all);
@@ -215,8 +224,7 @@ export function createBackend<
   // registries); the precise types ride on the return below.
   const app = new Hono<PithyHonoEnv>();
   // The logging handler, not the bare encoder: a fault's `action` names the var or command an operator
-  // must fix, `clientError` strips it on the way to the wire (correctly), and without this the remedy
-  // reached no surface at all in a deployed Worker — one access log line reading `status: 500` (#521).
+  // must fix, and `clientError` strips it on the way to the wire, so the log is the one surface it reaches.
   app.onError(loggingErrorHandler);
 
   // Set once at assembly (the per-request `env` constraint holds: correlation binds per request below,
@@ -308,7 +316,7 @@ export function createBackend<
    * The path is `worker/health.ts`'s, not a literal here. Three other sites need the same string — the
    * CLI's route allowlist, `pithy deploy`'s post-deploy probe, and the bare home screen a no-auth
    * scaffold seeds — and that last one is in somebody else's repository, rendering nothing but this
-   * request's answer (#400).
+   * request's answer.
    *
    * The version is what turns `pithy deploy`'s post-deploy check from a liveness probe into an
    * assertion. `status: "ok"` at the declared domain proves *a* Worker is there; it does not prove it is
@@ -344,7 +352,7 @@ export function createBackend<
   // Readiness guards after every capability's middleware, so the verifier, `emit` and every rate limit
   // are in place, and before any capability's routes, so a terminal handler cannot outrun them. Each is
   // skipped on the admin surface: the control plane answers whatever else is wrong with the Worker,
-  // because it is how a management client finds out what that is (#763).
+  // because it is how a management client finds out what that is.
   registerReadinessGuards(
     app,
     adminSurface,
@@ -360,6 +368,9 @@ export function createBackend<
     groups.push({ tag: cap.name, routes: app.routes.slice(start) });
   }
   recordRouteGroups(app, groups);
+  // A route that opts in as an MCP tool says so on `describeRoute`, which cannot see its method — so a non-GET
+  // claiming to be a read, or two routes sharing an operation, is refused here, at boot (`mcp/tools.ts`).
+  assertToolDeclarations(groups);
 
   return app as unknown as Hono<BackendEnv<readonly [...Caps, App]>>;
 }

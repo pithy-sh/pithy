@@ -10,8 +10,8 @@ import { SupportMessage } from "@pithy-sh/support/src/data/message";
 import { SUPPORT_MESSAGES_TABLE, SUPPORT_THREADS_TABLE, supportDatabase } from "@pithy-sh/support/src/data/tables";
 import { SupportThread } from "@pithy-sh/support/src/data/thread";
 import { provisionSearchIndex } from "@pithy-sh/support/src/store/provisionIndex";
+import { keywordHits } from "@pithy-sh/support/src/store/search";
 import { SEARCH_TABLE, SEARCH_TRIGGERS } from "@pithy-sh/support/src/store/searchIndex";
-import { listThreads } from "@pithy-sh/support/src/store/threads";
 import { describe, expect, test, vi } from "vitest";
 import { migrateProject } from "../migrations/run";
 import { migrateHarness, withLocalD1 } from "../test-utils/migrateHarness";
@@ -26,7 +26,6 @@ import { runRestore, type SearchIndexRebuild } from "./restore";
  */
 
 const AT = new Date(1_700_000_000_000);
-const NOW = new Date(1_800_000_000_000);
 
 /** The CLI's default loads `@pithy-sh/support` from the project's install; the fixture has none, so it is handed over. */
 const rebuild: SearchIndexRebuild = async (_projectDir, d1, wanted) => ({
@@ -101,7 +100,7 @@ async function seed(d1: D1Database): Promise<void> {
 }
 
 const search = async (d1: D1Database, q: string): Promise<string[]> =>
-  (await listThreads(supportDatabase(d1), { q }, { fts: true, viewer: "v", now: NOW })).threads.map((one) => one.id);
+  (await keywordHits(supportDatabase(d1), q, { backend: "fts", limit: 20 })).map((hit) => hit.threadId);
 
 describe("support's index through backup and restore", () => {
   const h = migrateHarness();

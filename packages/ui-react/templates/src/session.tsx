@@ -92,3 +92,51 @@ export function useSession(): { session: Session; loading: boolean; refresh: () 
 
   return { session: current, loading, refresh };
 }
+
+/** The query parameter a sign-in carries the request it should resume in. */
+export const RESUME_PARAM = "resume";
+
+/**
+ * The path the browser would load for `path`, when that load stays on `origin` — or `null`. It is resolved with the
+ * URL parser the browser itself uses rather than inspected by hand: that parser drops tab, CR and LF before it reads,
+ * so `"/\t/evil.test"` is a protocol-relative URL to it, and a check on the raw characters would wave it through.
+ */
+function ownPath(path: string, origin: string): string | null {
+  if (!path.startsWith("/")) return null;
+  let url: URL;
+  try {
+    url = new URL(path, origin);
+  } catch {
+    return null;
+  }
+  return url.origin === origin ? `${url.pathname}${url.search}${url.hash}` : null;
+}
+
+/**
+ * Where this screen's sign-in should resume, read off its own URL — or `null`. The consent screen sends somebody to
+ * sign in with the authorization request it stopped at, so the sign-in picks up where it left off rather than landing
+ * on home. A path on this origin and nothing else, carried in the URL rather than stored anywhere: it is the
+ * authorization request the application already made, and the server signs and checks it again on arrival.
+ */
+export function resumeTarget(
+  search: string = window.location.search,
+  origin: string = window.location.origin,
+): string | null {
+  const path = new URLSearchParams(search).get(RESUME_PARAM);
+  return path === null ? null : ownPath(path, origin);
+}
+
+/** `?resume=…` to carry a sign-in's resume target onward — onto a callback URL — or the empty string. */
+export function resumeQuery(search: string = window.location.search): string {
+  const target = resumeTarget(search);
+  return target === null ? "" : `?${new URLSearchParams({ [RESUME_PARAM]: target })}`;
+}
+
+/** After a sign-in: go where the URL says to resume. `true` when the browser is leaving for it. */
+export function resumeAfterSignIn(): boolean {
+  const target = resumeTarget();
+  if (target === null) return false;
+  // A document load, because the authorization endpoint is the Worker's, not a screen in this app.
+  window.location.assign(target);
+  return true;
+}

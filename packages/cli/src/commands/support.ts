@@ -12,11 +12,13 @@ import {
   CloudflareSupportDeprovisioner,
   CloudflareSupportProvisioner,
   loadSupport,
+  SUPPORT_VECTORIZE_BINDING,
   type SupportEnvResources,
 } from "../capabilities/supportProvisioner";
 import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { commandCredentials } from "../cloudflare/commandCredentials";
 import { withContract } from "../contract/commandContract";
+import { applyAppBindings, removeAppVectorize } from "../project/appBindings";
 import { resolveCapabilityWorker } from "../project/capabilityWorker";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { requireTeardownEnvironment, TEARDOWN_ENV_ARG } from "../project/environment";
@@ -68,6 +70,19 @@ async function buildAudit(projectDir: string, accountId: string, apiToken: strin
 }
 
 /**
+ * What one environment's line says about its message index. A backfill is named whether or not this run
+ * created the index, because re-running after a failed first run is how an existing, unstamped index gets one.
+ */
+export function messageIndexOutcome(
+  vectors: { created: boolean; dropped: boolean; backfilled: boolean } | undefined,
+): string {
+  if (vectors?.created) return `, message index created${vectors.backfilled ? " and backfilling" : ""}`;
+  if (vectors?.backfilled) return ", message index backfilling";
+  if (vectors?.dropped) return ", message index dropped";
+  return "";
+}
+
+/**
  * Resolve the per-environment app database the classification worker binds, from the **app Worker's**
  * `wrangler.jsonc`.
  *
@@ -105,6 +120,27 @@ function resolveRouting(
   });
 }
 
+/**
+ * Write each environment's `SUPPORT_VECTORIZE` entry into the app Worker's `wrangler.jsonc` while
+ * `search.semantic` is on, and take it out once the index is gone: a binding to a deleted index fails the
+ * next deploy.
+ */
+export async function recordSemanticBindings(
+  workerDir: string,
+  supportConfig: { search: { semantic: unknown } },
+  entries: readonly { env: string; indexName: string; dropped: boolean }[],
+): Promise<void> {
+  for (const entry of entries) {
+    if (supportConfig.search.semantic !== false && !entry.dropped) {
+      await applyAppBindings(workerDir, entry.env, {
+        vectorize: [{ binding: SUPPORT_VECTORIZE_BINDING, index_name: entry.indexName, remote: true }],
+      });
+    } else {
+      await removeAppVectorize(workerDir, entry.env, SUPPORT_VECTORIZE_BINDING);
+    }
+  }
+}
+
 const Skipped = z
   .array(SkippedEnvironment)
   .describe("One entry per declared environment nothing was provisioned for. Empty when none was skipped.");
@@ -133,6 +169,26 @@ const SupportProvisionPayload = z
           .describe("One environment's search index."),
       )
       .describe("Each environment's full-text search index."),
+    semantic: z
+      .array(
+        z
+          .object({
+            env: z.string().describe("The environment."),
+            indexName: z.string().describe("The environment's message index, `<project>-<env>-support-messages`."),
+            created: z.boolean().describe("Whether this run created it."),
+            dropped: z.boolean().describe("Whether this run dropped it, because `search.semantic` is off."),
+            backfilled: z
+              .boolean()
+              .describe(
+                "Whether this run started the index's one backfill: for an index it created, or one that holds no stamp while inbound mail exists.",
+              ),
+          })
+          .describe("One environment's semantic message index."),
+      )
+      .optional()
+      .describe(
+        "Each environment's semantic message index. Absent when the installed `@pithy-sh/support` has no semantic search.",
+      ),
     routing: z
       .object({
         created: z.boolean().describe("Whether this run created the inbound routing rule."),
@@ -225,12 +281,18 @@ const provision = withContract(
           resolveEnv: buildResolveEnv(readiness),
           ...(routing !== undefined ? { routing } : {}),
           audit: await buildAudit(projectDir, accountId, apiToken, args.worker),
+          workflows: await cloudflareWorkflows({ accountId, apiToken }),
         });
 
         // The ready list, not the declaration. The bucket and the routing rule are project-global and are
         // created whatever else skips; a skipped environment simply never reaches `deployWorker`.
         const result = await provisionSupport(provisioner, readiness.ready);
         const search = new Map(result.search.map((entry) => [entry.env, entry]));
+        // The app Worker binds the message index too — the search route embeds a query and asks it — and an
+        // index's `index_name` is a provisioning output, so the entry is written here, complete, or removed when
+        // the index was dropped: a binding to a deleted index fails the next deploy.
+        const semantic = new Map((result.semantic ?? []).map((entry) => [entry.env, entry]));
+        await recordSemanticBindings(appWorker.dir, supportConfig, result.semantic ?? []);
 
         // The caller's own run, as the refusal names it to run again: every flag it was given, and the Worker it
         // resolved when none was named (#711).
@@ -279,7 +341,7 @@ const provision = withContract(
                   : entry?.repaired
                     ? ", search index triggers restored and backfilled"
                     : "";
-              return `classification worker deployed${index}`;
+              return `classification worker deployed${index}${messageIndexOutcome(semantic.get(env))}`;
             }),
           ),
         );

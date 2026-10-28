@@ -27,6 +27,7 @@ const stub = vi.hoisted(() => ({
     auth: true,
     payments: false,
     organization: false,
+    consent: false,
     created: ["src/main.tsx"],
     skipped: ["src/styles.css"],
     unstyled: [],
@@ -75,6 +76,7 @@ describe("ui command", () => {
       "auth",
       "payments",
       "organization",
+      "consent",
       "dry-run",
       "json",
     ]);

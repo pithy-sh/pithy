@@ -92,11 +92,11 @@ let produced = 0;
 const INVENTORY_UNIT = "crate";
 
 /**
- * A capability that contributes a bounded health summary (#317): one count, behind the scope its own
+ * A capability that contributes a bounded health summary: one count, behind the scope its own
  * admin route already requires, so a client can render "3 things pending" from the manifest read it
  * already made instead of a second call per number.
  *
- * It also states a configured fact (#422), on the same entry and deliberately so: the two mechanisms
+ * It also states a configured fact, on the same entry and deliberately so: the two mechanisms
  * look alike and behave nothing alike, and the cases below hold them apart on one capability rather
  * than on two that could differ for some other reason.
  */
@@ -153,7 +153,7 @@ const VAULT_THROW_DETAIL =
   "D1 SELECT id, name FROM vault_secrets WHERE project = 'acme' failed for connection 4f21 — token sk_live_hunter2";
 
 /**
- * A capability whose health producer fails, the way a store in a customer's data path fails (#350).
+ * A capability whose health producer fails, the way a store in a customer's data path fails.
  *
  * It throws what a producer *should* throw: client-safe text in `message`, throw-site context in
  * `detail` — a query, a connection id, a token. Every one of those is a thing that must not reach the
@@ -451,7 +451,7 @@ describe("GET /control-plane/manifest", () => {
   });
 
   /**
-   * The join key the version is useless without (#626).
+   * The join key the version is useless without.
    *
    * A version joins against a release feed *by package name*, and a capability name is not one. A client
    * that guessed `@pithy-sh/${name}` is right for most capabilities and wrong for this one: the seam is
@@ -564,6 +564,7 @@ describe("GET /control-plane/manifest", () => {
       "GET /control-plane/migrations",
       "GET /control-plane/ping",
       "GET /control-plane/privacy",
+      "GET /control-plane/processing",
       "POST /control-plane/holds",
       "POST /control-plane/holds/:holdId/release",
       "POST /control-plane/keys",
@@ -602,7 +603,7 @@ describe("GET /control-plane/manifest", () => {
       required: ["path", "body"],
       properties: { path: { type: "object", properties: { keyId: { type: "string" } } }, body: { type: "object" } },
     });
-    // The erasure reads (#823): the period takes an optional query, one subject takes its two path segments.
+    // The erasure reads: the period takes an optional query, one subject takes its two path segments.
     const period = route("GET", "/erasure");
     expect(period?.operation).toBe("erasure.list");
     expect(period?.input).toMatchObject({ properties: { query: { type: "object" } } });
@@ -717,8 +718,7 @@ describe("the counts a client would otherwise pay a round trip for (#317)", () =
 
   describe("a sick capability costs its own number and nothing else (#350)", () => {
     test("a producer that throws is `unavailable`, and its sibling still reports its number", async () => {
-      // The gate. Before #350 this call was a 500 and Overview went dark for every capability on the
-      // manifest, with nothing on screen saying which one had failed.
+      // The gate: one failing producer must not take the manifest down for every capability on it.
       await connect([registered(alice)], [MANIFEST_READ_SCOPE, INVENTORY_READ_SCOPE, VAULT_READ_SCOPE]);
       vaultUp = false;
       pending = 3;
@@ -1181,7 +1181,7 @@ describe("the exported response schemas against the live routes", () => {
    * existed, which is to say the wire shape of the seam's own routes was stated nowhere.
    *
    * A schema that decodes rather than mirrors is compared through its own encoder instead, so the
-   * property survives (#350). The manifest's health value is four states on the wire's two fields, and
+   * property survives. The manifest's health value is four states on the wire's two fields, and
    * `encode(decode(raw)) === raw` still fails for a field the schema does not know about — it is the
    * same test, made honest about a boundary that now converts.
    */
@@ -1202,7 +1202,7 @@ describe("the exported response schemas against the live routes", () => {
     expect(ping.keyId).toBe(alice.keyId);
 
     // The manifest decodes rather than mirrors — its health value is four states over the wire's two
-    // fields (#350) — so the same binding is asserted through the encoder. `encode(decode(raw))` is still
+    // fields — so the same binding is asserted through the encoder. `encode(decode(raw))` is still
     // `raw` in both directions: a field the schema does not know about is dropped and shows as a
     // difference, and a field it declares wrongly fails the parse.
     const manifestResponse = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });

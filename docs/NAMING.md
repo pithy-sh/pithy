@@ -25,7 +25,7 @@ Provisioning finds a resource by name and reuses it. Without a project segment, 
 | R2 (`bucket_name`) | `<project>-<env>-<capability>` | `acme-prod-storage` |
 | Queue (`queue`) | `<project>-<env>-<binding>` | `acme-prod-jobs` |
 | Artifacts namespace | `<project>-<env>` | `acme-prod` |
-| Vectorize (`index_name`) | `<project>-<env>-vector-<index>` | `acme-prod-vector-docs` |
+| Vectorize (`index_name`) | `<project>-<env>-<capability>-<index>` | `acme-prod-vector-docs`, `acme-prod-support-messages` |
 | Worker script (capability host) | `<project>-<env>-<capability>` | `acme-prod-email` |
 | Worker script (your own, per environment) | `<project>-<env>-<worker>` | `acme-prod-api` |
 | Workflow | `<project>-<env>-<capability>-<job>` | `acme-prod-email-send` |

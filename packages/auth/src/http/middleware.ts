@@ -11,6 +11,7 @@ import { authDatabase } from "../data/tables";
 import type { AuthInstance } from "../instance/auth";
 import { lifecycleRefusalFor, noteRefusal, noticedRefusal, suspendedHolder } from "../lifecycle/enforce";
 import { LifecycleColumns } from "../lifecycle/state";
+import { dispatchedAuth } from "../mcp/dispatch";
 import { withResignedCredentials } from "./credentialResign";
 import { getAuthInstance, resolveDb } from "./resolve";
 
@@ -87,6 +88,14 @@ export function carriesCredential(headers: Headers): boolean {
 export function createSessionMiddleware(wiring: AuthWiring): PithyMiddleware {
   return (app) => {
     app.use("*", async (c, next) => {
+      // A tool call the MCP endpoint dispatched to a route. Its caller was verified there, against the
+      // token, the consent, the session and the account's standing, and it arrives with no credential of its own:
+      // the identity rides beside the request in process, where nothing on the network can put one.
+      const dispatched = dispatchedAuth(c.req.raw);
+      if (dispatched !== undefined) {
+        c.set("auth", dispatched);
+        return await next();
+      }
       if (!carriesCredential(c.req.raw.headers)) return await next();
       // A credential signed under a session secret this deployment has since rotated is re-signed under the
       // current one before anything reads it (#602), and the re-signed one rides back on the response. A

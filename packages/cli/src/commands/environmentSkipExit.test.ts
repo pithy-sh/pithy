@@ -227,6 +227,13 @@ vi.mock("../capabilities/supportProvisioner", async (importOriginal) => ({
     async ensureSearchIndex(env: ManagedEnvironment) {
       return step("support:searchIndex", env, { created: false, dropped: false, repaired: false });
     }
+    // Semantic search is off in this fixture: the index steps run and do nothing, as the live ones would.
+    async ensureSemanticIndex(env: ManagedEnvironment) {
+      return { indexName: `acme-${env}-support-messages`, created: false };
+    }
+    async settleSemanticIndex() {
+      return { dropped: false, backfilled: false };
+    }
     async ensureRoutingRule() {
       return step("support:routingRule", null, { created: true, skipped: false });
     }

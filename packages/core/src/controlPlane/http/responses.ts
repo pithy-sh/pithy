@@ -4,6 +4,7 @@
 import { z } from "zod";
 import { PrivacyPosture } from "../../privacy/posture";
 import { PRIVACY_SOURCES } from "../../privacy/report";
+import { BASIS_SOURCES, LegalBasis, PROCESSING_GAP_KINDS, RECIPIENT_SOURCES } from "../../processing/vocabulary";
 import { ConnectionPrincipal, ConnectionPurpose, ControlPlaneActorKind, Ed25519PublicJwk } from "../data/connection";
 import { EvidenceControlId, EvidenceSource, EvidenceState } from "../evidence/mapping";
 
@@ -46,7 +47,7 @@ export const PublicKeyView = z
 export type PublicKeyView = z.output<typeof PublicKeyView>;
 
 /**
- * One OIDC trust as `GET {basePath}/keys` lists it (#722): who it admits, beside who sanctioned it.
+ * One OIDC trust as `GET {basePath}/keys` lists it: who it admits, beside who sanctioned it.
  *
  * **The subject constraint is on the face of the listing**, because it *is* the population: a trust pinned to a
  * workflow is usable by anyone who can run that workflow, and the claims are the only place that is written down.
@@ -97,8 +98,7 @@ export const ControlPlaneKeysResponse = z
     connectionId: z.string().describe("The connection these keys belong to."),
     environment: z.string().describe("The environment that connection is bound to."),
     keys: z.array(PublicKeyView).describe("Every registered key, expired and revoked ones included."),
-    // Added (#721), so `.optional()` as well as `.nullable()`: a client validating against a Worker that
-    // predates the three columns receives none of them, and must still parse the answer.
+    // `.optional()` as well as `.nullable()`: a Worker that predates the three columns sends none of them.
     authorizedBy: ConnectionPrincipal.nullable()
       .optional()
       .describe(
@@ -114,7 +114,6 @@ export const ControlPlaneKeysResponse = z
       .describe(
         "What the client is for, in the registering operator's words. Untrusted text: render it escaped. Null for a connection registered before it was recorded; absent from an older Worker.",
       ),
-    // Added (#722), so `.optional()`: a Worker older than trusts sends none.
     trusts: z
       .array(TrustView)
       .optional()
@@ -267,9 +266,9 @@ export const ControlPlaneMigrationsResponse = z
 export type ControlPlaneMigrationsResponse = z.output<typeof ControlPlaneMigrationsResponse>;
 
 /**
- * One marked field, as `GET {basePath}/privacy` reports it (#132).
+ * One marked field, as `GET {basePath}/privacy` reports it.
  *
- * **The per-field record.** Since #390 it says whether the field rests encrypted beside `class`, so "which of
+ * **The per-field record.** It says whether the field rests encrypted beside `class`, so "which of
  * your PHI fields are encrypted" is a derivation over this list rather than a second inventory to keep.
  */
 export const PrivacyFieldView = z
@@ -341,7 +340,7 @@ export const PrivacySchemaView = z
 export type PrivacySchemaView = z.output<typeof PrivacySchemaView>;
 
 /**
- * `GET /control-plane/privacy` — the full inventory, behind `privacy:read` (#132).
+ * `GET /control-plane/privacy` — the full inventory, behind `privacy:read`.
  *
  * Derived at runtime from the schemas this Worker composed, walked once per isolate. The manifest's `privacy`
  * block is the headline; this is the detail, and it names fields, which is why it has a scope of its own.
@@ -374,7 +373,7 @@ export const EvidenceValue = z
   .describe("A fact's value: a word, a number, a flag, a list of names, or null where the record holds none.");
 export type EvidenceValue = z.output<typeof EvidenceValue>;
 
-/** One fact the Worker read for a control, and the declaration it read it from (#821). */
+/** One fact the Worker read for a control, and the declaration it read it from. */
 export const EvidenceFact = z
   .object({
     fact: z.string().describe("What the fact is, as one camelCase name: `auditRecorder`, `liveKeys`, `pending`."),
@@ -390,7 +389,7 @@ export const EvidenceFact = z
   .describe("One fact behind a control, and where it came from.");
 export type EvidenceFact = z.output<typeof EvidenceFact>;
 
-/** One control in the pack: its references, the facts read, and what the Worker could say (#821). */
+/** One control in the pack: its references, the facts read, and what the Worker could say. */
 export const EvidenceEntry = z
   .object({
     control: EvidenceControlId,
@@ -415,7 +414,7 @@ export const EvidenceEntry = z
 export type EvidenceEntry = z.output<typeof EvidenceEntry>;
 
 /**
- * `GET /control-plane/evidence` — the evidence pack, behind `evidence:read` (#821).
+ * `GET /control-plane/evidence` — the evidence pack, behind `evidence:read`.
  *
  * Computed in the Worker because the Worker is the deployed build: every fact is read from what this build
  * composes and records. It proves controls present and performs nothing.
@@ -444,7 +443,7 @@ export const ControlPlaneEvidenceResponse = z
   );
 export type ControlPlaneEvidenceResponse = z.output<typeof ControlPlaneEvidenceResponse>;
 
-/** Where a purge stands (#823). */
+/** Where a purge stands. */
 export const ErasureState = z
   .enum(["scheduled", "in_progress", "complete", "failed"])
   .describe(
@@ -452,7 +451,7 @@ export const ErasureState = z
   );
 export type ErasureState = z.output<typeof ErasureState>;
 
-/** One recorded audit event, cited by id and chain position (#823). Never its personal values. */
+/** One recorded audit event, cited by id and chain position. Never its personal values. */
 export const ErasureCitation = z
   .object({
     eventId: z.string().describe("The audit event's stable public id."),
@@ -474,7 +473,7 @@ export const ErasureCitation = z
   );
 export type ErasureCitation = z.output<typeof ErasureCitation>;
 
-/** One purge step: whose rows, what happened to them, and the event that records it (#823). */
+/** One purge step: whose rows, what happened to them, and the event that records it. */
 export const ErasureStepView = z
   .object({
     capability: z.string().describe("The capability whose rows this step answered for."),
@@ -503,7 +502,7 @@ export const ErasureStepView = z
   .describe("One step of a purge: one capability's rows, erased or kept with a reason, and the event that records it.");
 export type ErasureStepView = z.output<typeof ErasureStepView>;
 
-/** The subject an attestation is about: its kind and its id, and nothing else (#823). */
+/** The subject an attestation is about: its kind and its id, and nothing else. */
 export const ErasureSubjectView = z
   .object({
     type: z.enum(["user", "organization"]).describe("The kind of subject."),
@@ -512,7 +511,7 @@ export const ErasureSubjectView = z
   .describe("Who was erased: the kind of subject and its id. No address, no name.");
 export type ErasureSubjectView = z.output<typeof ErasureSubjectView>;
 
-/** One subject's erasure, attested (#823). */
+/** One subject's erasure, attested. */
 export const ErasureAttestation = z
   .object({
     subject: ErasureSubjectView,
@@ -571,7 +570,7 @@ export const ErasureAttestation = z
   );
 export type ErasureAttestation = z.output<typeof ErasureAttestation>;
 
-/** `GET /control-plane/erasure/:subjectType/:subjectId` — one subject's attestation, behind `erasure:read` (#823). */
+/** `GET /control-plane/erasure/:subjectType/:subjectId` — one subject's attestation, behind `erasure:read`. */
 export const ControlPlaneErasureSubjectResponse = z
   .object({
     generatedAt: z.iso.datetime().describe("When this Worker read the records, ISO-8601."),
@@ -580,7 +579,7 @@ export const ControlPlaneErasureSubjectResponse = z
   .describe("One subject's erasure attestation, read from the purge's own record and cited in the audit chain.");
 export type ControlPlaneErasureSubjectResponse = z.output<typeof ControlPlaneErasureSubjectResponse>;
 
-/** One purge in a period: who, where it stands, and where it stopped (#823). */
+/** One purge in a period: who, where it stands, and where it stopped. */
 export const ErasurePeriodEntry = z
   .object({
     subject: ErasureSubjectView,
@@ -596,7 +595,7 @@ export const ErasurePeriodEntry = z
   .describe("One purge in the period, summarized. Its full record is the subject read.");
 export type ErasurePeriodEntry = z.output<typeof ErasurePeriodEntry>;
 
-/** `GET /control-plane/erasure` — every purge in a period, counted (#823). */
+/** `GET /control-plane/erasure` — every purge in a period, counted. */
 export const ControlPlaneErasurePeriodResponse = z
   .object({
     generatedAt: z.iso.datetime().describe("When this Worker read the records, ISO-8601."),
@@ -667,3 +666,171 @@ export const ControlPlaneHoldResponse = z
   .object({ hold: LegalHoldView })
   .describe("One legal hold, as the call left it.");
 export type ControlPlaneHoldResponse = z.output<typeof ControlPlaneHoldResponse>;
+
+/** What kind of gap the processing record names. */
+export const ProcessingGapKind = z
+  .enum(PROCESSING_GAP_KINDS)
+  .describe(
+    "What is missing: `no-legal-basis` (an activity states none), `no-consent-purpose` (a consent basis names no purpose the catalog holds), `class-not-stored` (an activity claims a class nothing stores), `class-unclaimed` (a capability stores a class no activity claims), `phi-not-covered` (a stored `phi` field no consent purpose covers), or `no-standing-grant` (a purpose covering a class holds no standing grant).",
+  );
+export type ProcessingGapKind = z.infer<typeof ProcessingGapKind>;
+
+/** One gap in the processing record. */
+export const ProcessingGap = z
+  .object({
+    kind: ProcessingGapKind,
+    subject: z
+      .string()
+      .describe(
+        "What the gap is about: an activity id, a capability name, a consent purpose id, or a stored field as `<capability>/<table>.<path>`. A stored field is named only to a connection that also holds `privacy:read`; without it, the gap names the capability.",
+      ),
+    detail: z.string().describe("What is missing, in one sentence."),
+  })
+  .describe("Something the record needs and the Worker does not declare. Named, never filled in.");
+export type ProcessingGap = z.infer<typeof ProcessingGap>;
+
+/** Where a recipient in the record came from. */
+export const ProcessingRecipientSource = z
+  .enum(RECIPIENT_SOURCES)
+  .describe(
+    "Where the recipient came from: `platform`, Cloudflare, which runs every Worker; `binding`, a binding this Worker has, such as Workers AI; `declared`, an activity's own declaration, built from the resolved config.",
+  );
+
+/** One recipient of personal data. */
+export const ProcessingRecipientView = z
+  .object({
+    name: z.string().describe("Who receives the data."),
+    receives: z.string().describe("What they receive."),
+    classes: z.array(z.string()).describe("The data classes in what they receive."),
+    source: ProcessingRecipientSource,
+  })
+  .describe("One recipient: who, what it receives, the classes in it, and where the record learned of it.");
+export type ProcessingRecipientView = z.infer<typeof ProcessingRecipientView>;
+
+/** A consent-based activity's purpose, with where its subjects stand. */
+export const ProcessingConsentView = z
+  .object({
+    purpose: z.string().describe("The consent purpose id the activity rests on."),
+    noticeVersion: z
+      .number()
+      .int()
+      .nullable()
+      .describe("The purpose's current notice version. Null when no composed catalog declares the purpose."),
+    explicit: z.boolean().nullable().describe("Whether the purpose needs explicit consent. Null when undeclared."),
+    grants: z
+      .number()
+      .int()
+      .nullable()
+      .describe("Subjects whose latest choice is a grant. Null when the consent record could not be read."),
+    withdrawals: z
+      .number()
+      .int()
+      .nullable()
+      .describe("Subjects whose latest choice is a withdrawal. Null when the consent record could not be read."),
+    standing: z
+      .number()
+      .int()
+      .nullable()
+      .describe(
+        "Subjects whose grant stands now: current notice, at the minimum method, unexpired. Null when the consent record could not be read.",
+      ),
+  })
+  .describe("The consent purpose a consent-based activity rests on, and its grant counts.");
+export type ProcessingConsentView = z.infer<typeof ProcessingConsentView>;
+
+/** How long the data an activity uses is kept. */
+export const ProcessingRetentionView = z
+  .object({
+    classAges: z
+      .array(
+        z
+          .object({
+            class: z.string().describe("The privacy class."),
+            days: z.number().int().describe("The longest an account holding it may sit inactive, in days."),
+          })
+          .describe("One class age."),
+      )
+      .describe("The retention block's class ages for the classes this activity uses, strictest first."),
+    purgeWindows: z
+      .array(
+        z
+          .object({
+            subject: z.enum(["user", "organization"]).describe("Whose deletion the window governs."),
+            days: z.number().int().describe("How many days a deletion stays restorable before its purge."),
+            source: z.enum(["policy", "capability", "floor"]).describe("Where the value came from."),
+          })
+          .describe("One soft-delete window."),
+      )
+      .describe("Every soft-delete window the Worker runs, as it takes effect."),
+  })
+  .describe("The effective retention behind an activity: its classes' ages and the purge windows.");
+export type ProcessingRetentionView = z.infer<typeof ProcessingRetentionView>;
+
+/** One activity in the record. */
+export const ProcessingEntry = z
+  .object({
+    id: z.string().describe("The activity id, `<domain>.<name>`."),
+    purpose: z.string().describe("Why the data is processed."),
+    declaredBy: z.string().describe("The capability that declared it, or `config` for the adopter's own."),
+    classes: z.array(z.string()).describe("The data classes it uses."),
+    legalBasis: LegalBasis.nullable().describe("Its legal basis, or null: a gap the record names."),
+    basisSource: z
+      .enum(BASIS_SOURCES)
+      .nullable()
+      .describe("Where the basis came from: the declaring `capability`, or the `config` block. Null with no basis."),
+    consent: ProcessingConsentView.nullable().describe("For a consent basis, its purpose and grant counts. Else null."),
+    recipients: z
+      .array(ProcessingRecipientView)
+      .describe("Who receives its data: Cloudflare always, then any binding or declared recipient."),
+    retention: ProcessingRetentionView.nullable().describe(
+      "How long its data is kept, from the Worker's resolved retention. Null when the Worker recorded none.",
+    ),
+    measures: z
+      .array(EvidenceControlId)
+      .describe("The evidence pack's controls that protect this activity's data, by id. `measures` states each."),
+    gaps: z.array(ProcessingGap).describe("What this activity is missing. Empty when nothing is."),
+  })
+  .describe("One processing activity, as GDPR Article 30 lists it.");
+export type ProcessingEntry = z.infer<typeof ProcessingEntry>;
+
+/** One security measure, as the evidence pack names it. */
+export const ProcessingMeasure = z
+  .object({
+    control: EvidenceControlId,
+    title: z.string().describe("What the control is."),
+    soc2: z.array(z.string()).describe("Its SOC 2 Trust Services Criteria references."),
+    iso27001: z.array(z.string()).describe("Its ISO/IEC 27001:2022 Annex A references."),
+    state: EvidenceState.nullable().describe(
+      "What the evidence pack says of it now. Null when the connection does not hold `evidence:read`.",
+    ),
+  })
+  .describe("A technical or organizational security measure, cited from the evidence pack.");
+export type ProcessingMeasure = z.infer<typeof ProcessingMeasure>;
+
+/**
+ * `GET /control-plane/processing` — the record of processing activities, behind `processing:read`. It describes
+ * the processing and changes none of it.
+ */
+export const ControlPlaneProcessingResponse = z
+  .object({
+    environment: z.string().describe("The environment this Worker serves."),
+    generatedAt: z.iso.datetime().describe("When the record was derived, ISO-8601."),
+    version: z.string().nullable().describe("The Cloudflare version id of the build answering, or null."),
+    activities: z
+      .array(ProcessingEntry)
+      .describe("Every activity: each capability's, in composition order, then the adopter's."),
+    recipients: z
+      .array(ProcessingRecipientView)
+      .describe("Every recipient across the record, once each: Cloudflare first, then by binding, then declared."),
+    measures: z.array(ProcessingMeasure).describe("Every security measure the activities cite."),
+    gaps: z
+      .array(ProcessingGap)
+      .describe("Gaps about no single activity: unclaimed classes, uncovered `phi`, purposes with no standing grant."),
+    notDerivable: z
+      .array(z.string())
+      .describe("What the record could not read, and why. Empty when it read everything it needs."),
+  })
+  .describe(
+    "The GDPR Article 30 record this Worker derives: each activity's purpose, data classes, legal basis, recipients, retention and measures, and every gap named.",
+  );
+export type ControlPlaneProcessingResponse = z.infer<typeof ControlPlaneProcessingResponse>;

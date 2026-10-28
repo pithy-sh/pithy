@@ -138,6 +138,35 @@
     flex: 1 1 auto;
   }
 
+  /* The consent screen. The redirect address is where the access goes and the one thing on the screen
+     an application cannot fake, so it is the emphasis; the application's own name never is. */
+  .consent__redirect {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    word-break: break-all;
+  }
+
+  .consent__capability {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  /* Connected applications: one row each, with its revoke beside it. */
+  .connected {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .connected__application {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
   :is(.screen, .auth) label {
     display: block;
     font-size: 0.875rem;

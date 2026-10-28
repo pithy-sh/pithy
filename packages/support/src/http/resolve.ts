@@ -7,10 +7,14 @@ import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { objectStore } from "@pithy-sh/storage/src/object/store";
+import type { VectorAi } from "@pithy-sh/vector/src/embed/embed";
+import type { VectorStore } from "@pithy-sh/vector/src/index/index";
 import type { Context } from "hono";
 import type { SupportWiring } from "../capability";
+import type { SupportConfig } from "../config/config";
 import { supportDatabase } from "../data/tables";
 import { SUPPORT_R2_SECRET } from "../secret/registry";
+import { SUPPORT_AI_BINDING, SUPPORT_VECTORIZE_BINDING, supportMessageIndex } from "../semantic/messageIndex";
 import { supportWorkflowRegistry, supportWorkflows } from "../workflows/specs";
 import type { HandlerDeps } from "./handlers";
 
@@ -78,6 +82,20 @@ export function resolveStore(env: SupportEnv): ReturnType<typeof objectStore> | 
   return objectStore({ bucket: env.SUPPORT_BUCKET, env, secretName: SUPPORT_R2_SECRET });
 }
 
+/**
+ * The semantic index and the two bindings it runs on, as this Worker has them.
+ *
+ * Absent rather than refused: a project that turned `search.semantic` on and has not provisioned yet still
+ * serves every route, and the search route names the backend it skipped.
+ */
+export function resolveSemantic(env: Record<string, unknown>, config: SupportConfig): HandlerDeps["semantic"] {
+  const index = supportMessageIndex(config.search);
+  if (!index) return {};
+  const ai = env[SUPPORT_AI_BINDING] as VectorAi | undefined;
+  const store = env[SUPPORT_VECTORIZE_BINDING] as VectorStore | undefined;
+  return { index, ...(ai ? { ai } : {}), ...(store ? { store } : {}) };
+}
+
 /** Build the per-request handler dependencies. */
 export function makeResolveDeps(wiring: SupportWiring): (c: Context<PithyHonoEnv>) => Promise<HandlerDeps> {
   return async (c) => {
@@ -92,6 +110,7 @@ export function makeResolveDeps(wiring: SupportWiring): (c: Context<PithyHonoEnv
       categories: wiring.categories,
       snippets: wiring.snippets,
       fts: wiring.config.search.fts,
+      semantic: resolveSemantic(env as unknown as Record<string, unknown>, wiring.config),
       bucket: env.SUPPORT_BUCKET,
       store: resolveStore(env),
       // Bound at compose time when `email()` is composed; undefined otherwise, which the reply

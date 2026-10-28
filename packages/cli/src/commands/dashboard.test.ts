@@ -139,7 +139,7 @@ describe("collectRepeatedFlag", () => {
 });
 
 /**
- * The trust's flag set (#722), run through the command itself: each refusal is an argument rule, so it lands
+ * The trust's flag set, run through the command itself: each refusal is an argument rule, so it lands
  * before a project is read, and a command that skipped it would fail on the missing project instead.
  */
 describe("connect refuses a partial or contradictory OIDC flag set", () => {
@@ -733,7 +733,7 @@ describe("formatStatusReport", () => {
       { json: false, connect: CONNECT },
     );
     expect(out).toContain("Nothing connected to staging.");
-    // The command the caller resolved, verbatim: a placeholder Worker would be refused where it is pasted (#711).
+    // The command the caller resolved, verbatim: a placeholder Worker would be refused where it is pasted.
     expect(out).toContain(`Run ${CONNECT} to register a management client.`);
   });
 
@@ -803,13 +803,14 @@ describe("the scope prompt", () => {
       "migrations:read",
       "privacy:read",
       "evidence:read",
+      "processing:read",
       "erasure:read",
       "retention:read",
       "retention:hold",
       "support:tickets:read",
       "support:tickets:close",
     ]);
-    expect(options[8]?.hint).toContain("support");
+    expect(options[9]?.hint).toContain("support");
   });
 
   test("preselects the default grant, which still leaves keys:rotate's peers to be chosen", async () => {
@@ -819,6 +820,7 @@ describe("the scope prompt", () => {
       "migrations:read",
       "privacy:read",
       "evidence:read",
+      "processing:read",
       "erasure:read",
       "retention:read",
       "support:tickets:read",
@@ -844,7 +846,7 @@ describe("the scope prompt", () => {
  * would pass. Nothing else in the tree decides a grant.
  */
 /**
- * Who authorized a connection is one seam's answer (#721), and `connect` asks it for every registration,
+ * Who authorized a connection is one seam's answer, and `connect` asks it for every registration,
  * on every path and in every environment. `connectDashboard` requires the seam outright — it is not
  * optional on its options — so what a scan can add is that the command hands it the real one, with no
  * environment deciding whether to.
@@ -1091,7 +1093,7 @@ describe("the offer to open the approval page", () => {
 });
 
 /**
- * **`--yes` answers the two confirmations, and a run that may not ask must pass it (#697).**
+ * **`--yes` answers the two confirmations, and a run that may not ask must pass it.**
  *
  * `disconnect` and `revoke-key` each confirm at a terminal, and each used to proceed in silence whenever no
  * terminal was attached — so `PITHY_NONINTERACTIVE=1`, the switch that means *do not ask me*, quietly
@@ -1182,7 +1184,7 @@ describe("the --yes confirmations", () => {
 
 /**
  * Every subcommand's `--json` line, written by the function each one writes it with, held to the schema
- * `pithy schema dashboard` publishes (#697). The device flow and the D1 registry are the other half of
+ * `pithy schema dashboard` publishes. The device flow and the D1 registry are the other half of
  * these commands and have their own suites; what is asserted here is the line an agent parses.
  */
 describe("pithy dashboard --json conforms to its published payloads", () => {

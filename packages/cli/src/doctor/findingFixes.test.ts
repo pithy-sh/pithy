@@ -218,6 +218,8 @@ describe("healthWithFixes", () => {
       gates: [{ capability: "ledger", scope: "ledger:admin", route: "POST /ledger/:currency/credit" }],
       denying: true,
     },
+    consent: { recorder: null, purposes: [], unrecorded: false },
+    agents: { composed: false, open: null, floor: null },
   } as WorkerHealth;
   const health: ProjectHealth = {
     ok: false,
@@ -305,6 +307,8 @@ describe("healthWithFixes, on the findings whose remedy is an edit or a decision
       entitlements: { ok: true, gap: { state: "read", gates: [] } },
       prerequisites: { ok: true, missing: [] },
       scopes: { resolver: null, gates: [], denying: false },
+      consent: { recorder: null, purposes: [], unrecorded: false },
+      agents: { composed: false, open: null, floor: null },
     }) as WorkerHealth;
   const healthOf = (workers: WorkerHealth[]): ProjectHealth => ({
     ok: false,

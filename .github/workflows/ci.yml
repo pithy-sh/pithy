@@ -541,8 +541,10 @@ jobs:
   # install resolves the newest version `packages/auth/package.json` admits. The two drifted apart once,
   # and every sign-in on a fresh install answered 500 while every suite here was green. Better Auth 1.7.3
   # stopped writing `pithy_auth_accounts.issuer` in a patch release, and the lockfile still held 1.7.1.
-  # This job moves `better-auth` and `@better-auth/i18n` to the top of the range and runs the auth suites
-  # there, so a release that breaks the kit turns this red with the version named.
+  # This job moves `better-auth` and the `@better-auth/*` plugins auth depends on to the top of their ranges and
+  # runs the auth suites there, so a release that breaks the kit turns this red with the version named. The
+  # plugins move with it because each one peers on `better-auth`: an adopter's install resolves them together,
+  # and a plugin left at the locked version would type against a second, older Better Auth that no adopter has.
   #
   # The nightly is where it matters most, since a new Better Auth needs no pull request here to break
   # anything. A pull request runs it when `plan` says auth is affected, which a lockfile change always does.
@@ -574,10 +576,11 @@ jobs:
           set -euo pipefail
           locked="$(jq -r .version node_modules/better-auth/package.json)"
           range="$(jq -r '.dependencies["better-auth"]' package.json)"
-          bun update better-auth @better-auth/i18n
+          bun update better-auth @better-auth/i18n @better-auth/oauth-provider
           newest="$(jq -r .version node_modules/better-auth/package.json)"
           i18n="$(jq -r .version node_modules/@better-auth/i18n/package.json)"
-          echo "better-auth ${range}: ${locked} locked, ${newest} newest. @better-auth/i18n ${i18n}."
+          provider="$(jq -r .version node_modules/@better-auth/oauth-provider/package.json)"
+          echo "better-auth ${range}: ${locked} locked, ${newest} newest. @better-auth/i18n ${i18n}. @better-auth/oauth-provider ${provider}."
           echo "### Auth at better-auth ${newest} (locked ${locked}, range ${range})" >> "$GITHUB_STEP_SUMMARY"
 
       # Through turbo, so the auth suites get the builds they depend on, exactly as the `Tests` job does.

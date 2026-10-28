@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import type { EmailJob } from "../data/emailJob";
+import { type EmailJob, personalAddress } from "../data/emailJob";
 import type { EmailSuppression } from "../data/emailSuppression";
 import { jobDetailView, jobListView, maskAddress, suppressionView } from "./view";
 
@@ -22,8 +22,8 @@ const NOW = new Date("2026-06-10T12:00:00.000Z");
 function job(overrides: Partial<EmailJob> = {}): EmailJob {
   return {
     id: "job-1",
-    toAddress: "ada.lovelace@example.com",
-    recipientKey: "ada.lovelace@example.com",
+    toAddress: personalAddress("ada.lovelace@example.com"),
+    recipientKey: personalAddress("ada.lovelace@example.com"),
     fromAddress: "noreply@pithy.sh",
     fromName: "Pithy",
     subject: "Your sign-in link",
@@ -157,7 +157,7 @@ describe("masking refuses to echo what it cannot parse", () => {
 describe("the suppression view", () => {
   const row = (overrides: Partial<EmailSuppression> = {}): EmailSuppression => ({
     id: 7,
-    email: "blocked@example.com",
+    email: personalAddress("blocked@example.com"),
     reason: "hard_bounce",
     jobId: "job-9",
     environment: "prod",

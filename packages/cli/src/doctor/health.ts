@@ -18,8 +18,10 @@ import {
 } from "../capabilities/reconcile";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { workerDirName } from "../project/workerIdentity";
+import { type AgentEndpointHealth, agentEndpointHealth } from "./agentEndpoint";
 import { type BindingScopeHealth, bindingScopeHealth } from "./bindingScope";
 import { type CapabilityReachHealth, type ComposedWorker, capabilityReachHealth } from "./capabilityReach";
+import { type ConsentHealth, consentHealth } from "./consent";
 import {
   type ComposeWorker,
   composeWorkerFor,
@@ -165,6 +167,17 @@ export interface WorkerChecks {
    * route the project never calls is not a fault anyone can clear. See `doctor/scopeGates.ts`.
    */
   scopes: ScopeGateHealth;
+  /**
+   * Its consent purposes against a consent record — `dev`'s composition, read the way `scopes` is. **Not one
+   * of the five and not in `ok`**, for the same reason: whether a law requires consent is the adopter's call. See
+   * `doctor/consent.ts`.
+   */
+  consent: ConsentHealth;
+  /**
+   * Its MCP endpoint's floor — `dev`'s composition, read the way `scopes` is. **Not in `ok`**: an endpoint
+   * open to every signed-in user is a decision, stated on every run. See `doctor/agentEndpoint.ts`.
+   */
+  agents: AgentEndpointHealth;
 }
 
 /**
@@ -420,6 +433,8 @@ function healthFromPlan(
   plan: ReconcilePlan,
   migrations: MigrationHealth,
   scopes: ScopeGateHealth,
+  consent: ConsentHealth = consentHealth([]),
+  agents: AgentEndpointHealth = agentEndpointHealth([]),
 ): WorkerHealth {
   const worker = target.name;
   const directory = workerDirName(target);
@@ -468,6 +483,8 @@ function healthFromPlan(
     entitlements,
     prerequisites,
     scopes,
+    consent,
+    agents,
   };
 }
 
@@ -585,20 +602,27 @@ export async function buildProjectHealth(options: ProjectHealthOptions): Promise
     // What `dev` composes, for the scope gates: the Worker as `pithy dev` runs it, like the rest of the
     // plan's checks. Only read when `dev` composed, which is also the only case with a plan to attach it to.
     let scopes: ScopeGateHealth = scopeGateHealth([]);
+    let consent: ConsentHealth = consentHealth([]);
+    let agents: AgentEndpointHealth = agentEndpointHealth([]);
     try {
       const local = await planFor(LOCAL_ENVIRONMENT);
       const deployed = new Map<string, ReconcilePlan | null>();
       // `dev` did not compose: nothing on this Worker's checks has a composition to be answered from.
       if (local !== null) for (const env of environments.slice(1)) deployed.set(env, await planFor(env));
       plan = local === null ? null : mergeEnvironmentPlans(local, deployed);
-      if (local !== null) scopes = scopeGateHealth((await composed(target, LOCAL_ENVIRONMENT)).capabilities);
+      if (local !== null) {
+        const { capabilities } = await composed(target, LOCAL_ENVIRONMENT);
+        scopes = scopeGateHealth(capabilities);
+        consent = consentHealth(capabilities);
+        agents = agentEndpointHealth(capabilities);
+      }
     } catch {
       plan = null;
     }
     workers.push(
       plan === null
         ? { state: "unavailable", worker: worker.name, directory: workerDirName(worker) }
-        : healthFromPlan(worker, plan, migrationHealth(answers), scopes),
+        : healthFromPlan(worker, plan, migrationHealth(answers), scopes, consent, agents),
     );
     const succeeded: WorkerComposition[] = [];
     for (const env of environments) {

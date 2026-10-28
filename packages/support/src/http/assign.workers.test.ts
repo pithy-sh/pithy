@@ -114,6 +114,7 @@ function deps(c: { var: { emit: HandlerDeps["emit"] } }): HandlerDeps {
     categories: resolveCategories({}),
     snippets: resolveReplies({}),
     fts: false,
+    semantic: {},
     peers: {},
     dispatchClassify: async () => false,
     emit: c.var.emit,
@@ -234,6 +235,7 @@ async function seedThread(id: string, lastMessageAt: number): Promise<void> {
 beforeEach(async () => {
   for (const table of [
     "pithy_support_search",
+    "pithy_support_embeddings",
     "pithy_support_assignments",
     "pithy_support_thread_flags",
     "pithy_support_classifications",

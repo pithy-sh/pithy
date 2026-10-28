@@ -38,6 +38,8 @@ beforeAll(async () => {
     auth: false,
     payments: false,
     organization: false,
+    consent: false,
+    mcp: false,
     packageManager: "bun",
   });
   AUTH = await loadStubFiles(reactStub, {
@@ -45,6 +47,8 @@ beforeAll(async () => {
     auth: true,
     payments: false,
     organization: false,
+    consent: false,
+    mcp: false,
     packageManager: "bun",
   });
   PAY = await loadStubFiles(reactStub, {
@@ -52,6 +56,8 @@ beforeAll(async () => {
     auth: false,
     payments: true,
     organization: false,
+    consent: false,
+    mcp: false,
     packageManager: "bun",
   });
   BOTH = await loadStubFiles(reactStub, {
@@ -59,6 +65,8 @@ beforeAll(async () => {
     auth: true,
     payments: true,
     organization: false,
+    consent: false,
+    mcp: false,
     packageManager: "bun",
   });
 });
@@ -77,6 +85,8 @@ describe("the React 19 stub", () => {
       auth: false,
       payments: false,
       organization: false,
+      consent: false,
+      mcp: false,
       packageManager: "bun",
     } as const;
     const once = reactStub.manifest(context);
@@ -92,6 +102,8 @@ describe("the React 19 stub", () => {
         auth,
         payments: false,
         organization: false,
+        consent: false,
+        mcp: false,
         packageManager: "bun",
       });
       for (const file of reactStub.manifest({
@@ -99,10 +111,35 @@ describe("the React 19 stub", () => {
         auth,
         payments: false,
         organization: false,
+        consent: false,
+        mcp: false,
         packageManager: "bun",
       })) {
         expect(files[file.target], file.source).toBeTypeOf("string");
       }
+    }
+  });
+
+  test("the agent screens are written with mcp beside auth, and not without it", async () => {
+    const screens = [
+      "src/routes/pithy/agent-consent.tsx",
+      "src/routes/pithy/agent-consent.test.tsx",
+      "src/routes/pithy/connected-applications.tsx",
+    ];
+    const context = {
+      worker: "api",
+      auth: true,
+      payments: false,
+      organization: false,
+      consent: false,
+      packageManager: "bun",
+    } as const;
+    const withMcp = await loadStubFiles(reactStub, { ...context, mcp: true });
+    const targets = reactStub.manifest({ ...context, mcp: true }).map((file) => file.target);
+    for (const screen of screens) {
+      expect(targets, screen).toContain(screen);
+      expect(withMcp[screen], screen).toBeTypeOf("string");
+      expect(AUTH[screen], screen).toBeUndefined();
     }
   });
 
@@ -112,6 +149,8 @@ describe("the React 19 stub", () => {
       auth: true,
       payments: false,
       organization: false,
+      consent: false,
+      mcp: false,
       packageManager: "bun",
     });
     expect(files["index.html"]).toContain("acme-api");
@@ -131,6 +170,8 @@ describe("the React 19 stub", () => {
       auth: false,
       payments: false,
       organization: false,
+      consent: false,
+      mcp: false,
       packageManager: "bun",
     });
     expect(files["vite.config.ts"]).toContain('["worker_my-api"]: {');
@@ -515,7 +556,11 @@ describe("the React 19 stub", () => {
     // from a response. The prop exists so a test can render the screen without a window, nothing more.
     // The path half is `callback.tsx`'s own export, not a literal of the same shape — #393. Two
     // strings that agree today is precisely what broke the round trip nobody signed in can test.
-    for (const callback of callbacks) expect(callback).toMatch(/callbackURL: `\$\{origin\}\$\{callbackPath\}`/);
+    // Each carries `resumeQuery()`, so a sign-in the consent screen asked for lands back on the authorization
+    // request it stopped at. It is a path on this same origin or nothing, read through `session.tsx`.
+    for (const callback of callbacks) {
+      expect(callback).toMatch(/^callbackURL: `\$\{origin\}\$\{callbackPath\}\$\{resumeQuery\(\)\}`$/);
+    }
     expect(signIn).toContain('import { path as callbackPath } from "./callback";');
     expect(signIn).toContain("props.origin ?? window.location.origin");
   });

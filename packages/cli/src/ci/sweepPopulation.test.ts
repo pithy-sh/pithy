@@ -71,6 +71,7 @@ const GUARDED = [
   "audit/src/schema-descriptions.test.ts",
   "auth/src/schema-descriptions.test.ts",
   "cloudflare/src/schema-descriptions.test.ts",
+  "consent/src/schema-descriptions.test.ts",
   "core/src/controlPlane/wire.test.ts",
   "core/src/logger/boundary.test.ts",
   "core/src/presence/durableObject.test.ts",

@@ -23,7 +23,7 @@ pithy vector reprocess [--env <environment>] [--worker <name>] [--index <name>] 
 | `--env <environment>` | all three | `dev` | The environment to act on: `dev`, `staging`, `prod`, or a custom one. `dev` is a real remote index here, not a local store |
 | `--worker <name>` | all three | the project's only Worker | The app Worker whose `vector(...)` registration declares the indexes, and whose `wrangler.jsonc` carries the per-environment `DB` binding, receives the `vectorize` and `workflows` bindings, and holds the `VECTOR_PROVISIONED` record. Required when a project has several |
 | `--confirm-reset <phrase>` | `reset` | — | Unlock a non-`dev` reset non-interactively. The exact, environment-named phrase: `yes, i really want to reset <env>` |
-| `--index <name>` | `reprocess` | every configured index | The index to re-embed, as named in `pithy.config.ts` |
+| `--index <name>` | `reprocess` | every index | The index to re-embed: a `vector()` index as named in `pithy.config.ts`, or one another capability owns, such as `support-messages` |
 | `--all` | `reprocess` | `false` | Re-embed every document, not only the ones whose model differs from config |
 | `--filter <json>` | `reprocess` | — | Narrow the run to matching documents, as a JSON metadata object: `'{"ownerId":"ada"}'`. Parsed here, so a malformed filter fails in this terminal rather than inside a running Workflow |
 | `--json` | all three | `false` | One line of machine-readable output |
@@ -39,6 +39,8 @@ The `VECTOR_PROVISIONED` var is what the Worker compares its declarations agains
 `reset` is the repair for the one failure Vectorize cannot repair in place: a metadata index added after vectors were written covers none of them, and there is no backfill. It deletes every configured index, rebuilds each through the ordinary provision path, and re-embeds the corpus from D1 with `all` set, since the rebuilt index holds nothing. **Destructive by definition** — only the D1 corpus survives, and only what it holds comes back. A non-`dev` reset is audited at `critical` severity, truthfully: recorded as `failure` when it dies partway, and the command still fails. A `dev` reset is not audited at all, because it changes nothing shared. The `VECTOR_PROVISIONED` record is rewritten afterwards, since a reset makes the old one stale by definition.
 
 `reprocess` runs the re-embed Workflow for one index or for every configured one, and waits for each. With no `--index` it covers them all, which is what "re-embed after a model change" usually means. Every named index is checked against the config before the first run starts, so a typo costs nothing.
+
+**It covers the indexes other capabilities own, too.** A capability that builds an index of its own declares it on its `Capability` (`vectorIndexes`), and `reprocess` reads those declarations off the Worker's composition beside `vector()`'s config — `@pithy-sh/support`'s semantic message index, `support-messages`, is one. Such an index is re-embedded by the owning capability's own reprocess Workflow, `<project>-<env>-<capability>-reprocess`, with the same `{ index, all }` every reprocess takes: the default pass re-embeds what its model stamp says drifted, and `--all` re-embeds everything. **It works in a project that never composes `vector()`.** Its vectors carry no metadata, so `--filter` with one is refused. An index in `vector()`'s config may not take a name a capability owns; the run is refused until one is renamed.
 
 ## `--json`
 
@@ -200,6 +202,14 @@ Re-embed after a model change, across every configured index.
 
 ```
 $ pithy vector reprocess --env staging --all
+```
+
+Re-embed support's message index after changing `search.semantic`'s model, in a project with no `vector()`.
+
+```
+$ pithy vector reprocess --env staging --index support-messages
+support-messages: 312 re-embedded of 312 scanned.
+Done.
 ```
 
 Re-embed one owner's documents only.

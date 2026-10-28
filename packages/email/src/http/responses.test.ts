@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "vitest";
 import type { z } from "zod";
-import type { EmailJob } from "../data/emailJob";
+import { type EmailJob, personalAddress } from "../data/emailJob";
 import type { EmailSuppression } from "../data/emailSuppression";
 import {
   EmailJobDetail,
@@ -33,8 +33,8 @@ const NOW = new Date("2026-06-10T12:00:00.000Z");
 
 const JOB: EmailJob = {
   id: "job-1",
-  toAddress: "ada@example.test",
-  recipientKey: "ada@example.test",
+  toAddress: personalAddress("ada@example.test"),
+  recipientKey: personalAddress("ada@example.test"),
   fromAddress: "hello@acme.test",
   fromName: "Acme",
   subject: "Your receipt for order 4471",
@@ -65,7 +65,7 @@ const JOB: EmailJob = {
 
 const SUPPRESSION: EmailSuppression = {
   id: 7,
-  email: "ada@example.test",
+  email: personalAddress("ada@example.test"),
   reason: "hard_bounce",
   jobId: "job-1",
   environment: "prod",
@@ -149,12 +149,12 @@ describe("email response schemas", () => {
 });
 
 /**
- * A Worker one release behind still renders its pane (#450).
+ * A Worker one release behind still renders its pane.
  *
  * **These schemas are read across a version boundary, which is what makes an additive field a break.**
  * A project talking to its own Worker ships both halves together and never notices; the dashboard reads
  * *other people's* Workers, each at whatever kit version it happens to be on, and validates every
- * response with the capability's own exported schema — the rule #113 established, and the right one.
+ * response with the capability's own exported schema.
  *
  * So a field that did not exist, added as a required key, fails `safeParse` on every Worker below that
  * release and takes the whole pane with it — on the day the *dashboard* deploys, rather than on any day

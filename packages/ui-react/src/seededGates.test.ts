@@ -149,6 +149,15 @@ const LEDGER: Record<string, Held> = {
     ungated:
       "The suspended screen's shape for the other state, held by the same two sweeps and reached by the same role lookup. It renders no date and no reason, so there is nothing in it a value from elsewhere could drift from.",
   },
+  "src/routes/pithy/agent-consent.tsx": {
+    gate: "src/routes/pithy/agent-consent.test.tsx",
+    expectation: "canary",
+    why: "The application's name is self-asserted and the redirect address is what identifies it. A restyle that promotes the name to the heading, or drops the address as clutter, turns the screen into a phishing page on the adopter's own domain — and every manual test uses the adopter's own application, so nothing looks wrong. The gate renders an invented name and address and asserts where each lands.",
+  },
+  "src/routes/pithy/connected-applications.tsx": {
+    ungated:
+      "A list and a revoke button over `@pithy-sh/auth/src/client/mcp`. What makes revocation real — the consent, its tokens and the endpoint refusing the next call — is the server's, and `packages/auth/src/mcp/flow.workers.test.ts` holds it; nothing on this screen is an invariant an edit can quietly break.",
+  },
   "src/routes/pithy/organization-suspended.tsx": {
     ungated:
       "Static copy and a link home, ahead of the organization state it describes (#623). Held by the same sweeps as the two account screens; the one value in it, `HOME`, is the adopter's to change and says so.",
@@ -174,6 +183,12 @@ const LEDGER: Record<string, Held> = {
   "src/routes/pithy/subscription.tsx": {
     ungated:
       "The paywall's shape again, and held by the same sweeps. It reaches the paywall through useScreenPath over a declared role rather than a path it writes down, which is the statement #393 made one — so an adopter renaming either screen moves one string and the other follows.",
+  },
+
+  // ── consent ─────────────────────────────────────────────────────────────────────────────────────
+  "src/routes/pithy/consent.tsx": {
+    ungated:
+      "Everything it could drift on is read rather than written: the purposes, their versions and their minimums come from the Worker at render, the requests and the answers go through `@pithy-sh/consent`'s own client and its response schemas, and a refusal is translated by its code. The one rule it carries — withdrawing is never harder than granting — is the server's to enforce, and `routes.workers.test.ts` in the consent package holds it there, where an edit to this file cannot loosen it.",
   },
 
   // ── the home screen, in both variants ────────────────────────────────────────────────────────────

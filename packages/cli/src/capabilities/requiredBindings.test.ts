@@ -86,6 +86,7 @@ const SHIPPED_MANIFESTS = [
   "artifacts",
   "audit",
   "auth",
+  "consent",
   "core",
   "email",
   "i18n",

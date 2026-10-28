@@ -55,6 +55,7 @@ const CONFIG_SCHEMAS: Record<string, { module: string; export: string } | { none
   audit: { module: "@pithy-sh/audit/src/capability", export: "AuditConfig" },
   auth: { module: "@pithy-sh/auth/src/capability", export: "AuthConfig" },
   cloudflare: { none: "Not a capability: no manifest of config options, only provisioning clients." },
+  consent: { module: "@pithy-sh/consent/src/config/config", export: "ConsentConfig" },
   core: { none: "The control-plane options are a TypeScript interface on createBackend, not a Zod object." },
   email: { module: "@pithy-sh/email/src/capability", export: "EmailConfig" },
   artifacts: { module: "@pithy-sh/artifacts/src/config/config", export: "ArtifactsConfig" },

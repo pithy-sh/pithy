@@ -44,6 +44,14 @@ function recorder(overrides: Partial<SupportProvisioner> = {}) {
       calls.push(`search:${env}`);
       return { created: true, dropped: false, repaired: false };
     },
+    ensureSemanticIndex: async (env) => {
+      calls.push(`semantic:${env}`);
+      return { indexName: `acme-${env}-support-messages`, created: false };
+    },
+    settleSemanticIndex: async (env, created) => {
+      calls.push(`settle:${env}:${created}`);
+      return { dropped: false, backfilled: created };
+    },
     ensureRoutingRule: async () => {
       calls.push("routing");
       return { created: true, skipped: false };
@@ -52,6 +60,39 @@ function recorder(overrides: Partial<SupportProvisioner> = {}) {
   };
   return { provisioner, calls };
 }
+
+describe("provisionSupport — the semantic message index", () => {
+  test("creates the index before the worker that binds it, and settles it after", async () => {
+    const { provisioner, calls } = recorder();
+    await provisionSupport(provisioner, DEFAULT_ENVIRONMENTS);
+    for (const env of managedEnvironments(DEFAULT_ENVIRONMENTS)) {
+      expect(calls.indexOf(`semantic:${env}`)).toBeLessThan(calls.indexOf(`worker:${env}`));
+      expect(calls.indexOf(`worker:${env}`)).toBeLessThan(calls.indexOf(`settle:${env}:false`));
+    }
+  });
+
+  test("an index this run created is backfilled once; one that already existed is never re-embedded", async () => {
+    const { provisioner, calls } = recorder({
+      ensureSemanticIndex: async (env) => ({ indexName: `acme-${env}-support-messages`, created: env === "prod" }),
+    });
+    const result = await provisionSupport(provisioner, DEFAULT_ENVIRONMENTS);
+    expect(calls).toContain("settle:prod:true");
+    expect(calls).toContain("settle:staging:false");
+    expect(result.semantic.find((entry) => entry.env === "prod")).toMatchObject({ created: true, backfilled: true });
+    expect(result.semantic.find((entry) => entry.env === "staging")).toMatchObject({
+      created: false,
+      backfilled: false,
+    });
+  });
+
+  test("reports a dropped index per environment", async () => {
+    const { provisioner } = recorder({
+      settleSemanticIndex: async () => ({ dropped: true, backfilled: false }),
+    });
+    const result = await provisionSupport(provisioner, DEFAULT_ENVIRONMENTS);
+    expect(result.semantic.every((entry) => entry.dropped)).toBe(true);
+  });
+});
 
 describe("provisionSupport", () => {
   test("preflights before creating anything", async () => {
@@ -152,7 +193,15 @@ describe("provisionSupport", () => {
     const { provisioner, calls } = recorder();
     const result = await provisionSupport(provisioner, ["staging"]);
 
-    expect(calls).toEqual(["preflight", "bucket", "worker:staging", "search:staging", "routing"]);
+    expect(calls).toEqual([
+      "preflight",
+      "bucket",
+      "semantic:staging",
+      "worker:staging",
+      "search:staging",
+      "settle:staging:false",
+      "routing",
+    ]);
     expect(result.environments).toEqual(["staging"]);
     expect(result.bucket.bucket).toBe("acme-global-support");
   });
@@ -207,8 +256,11 @@ function teardown(overrides: Partial<SupportDeprovisioner> = {}, workers: readon
 }
 
 describe("supportWorkflowNames", () => {
-  test("names the classification Workflow the host is deployed with, for one environment (#789)", () => {
-    expect(supportWorkflowNames("acme", "staging")).toEqual(["acme-staging-support-classify"]);
+  test("names the Workflows the host is deployed with, for one environment", () => {
+    expect(supportWorkflowNames("acme", "staging")).toEqual([
+      "acme-staging-support-classify",
+      "acme-staging-support-reprocess",
+    ]);
   });
 });
 

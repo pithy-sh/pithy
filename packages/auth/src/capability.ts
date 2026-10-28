@@ -17,22 +17,27 @@ import { z } from "zod";
 import { AuthAuditActions } from "./audit/actions";
 import type { AuthClientProjection } from "./client/projection";
 import { authTables } from "./data/tables";
+import { baseURLResolver } from "./http/baseUrl";
 import { publishSameOrigin } from "./http/csrf";
 import { registerDevLoginRoute } from "./http/devLoginRoute";
 import { authAdminRoutes } from "./http/guards";
 import { createSessionMiddleware } from "./http/middleware";
 import { createRateLimitMiddleware } from "./http/rateLimit";
+import { getAuthInstance } from "./http/resolve";
 import { createAuthRoutes } from "./http/routes";
 import type { GithubUserInfoResolver } from "./instance/githubUserInfo";
 import { AuthPlugin, assertAdditivePlugins } from "./instance/plugins";
 import { authSecretsRegistryFor, inapplicableProviderSecrets } from "./instance/secrets";
 import { authErasureRecords } from "./lifecycle/erasure";
 import type { UserLifecycleHooks } from "./lifecycle/hooks";
+import type { McpHost, McpWiring } from "./mcp/host";
+import { isMcpCapability } from "./mcp/marker";
 import { AUTH_MIGRATION_ORDER } from "./migrations/0001_init";
 import { authPluginPlan } from "./migrations/pluginTables";
 import { AUTH_MIGRATIONS } from "./migrations/set";
 import { type AuthPeer, authPeer } from "./peer";
-import { authPurgeContribution } from "./purge/contribution";
+import { AUTH_PROCESSING } from "./processing/activities";
+import { authAddressOf, authPurgeContribution } from "./purge/contribution";
 import { authWorkflows } from "./purge/specs";
 import { authDevSessionSeed } from "./seeds/devSession";
 import { authExampleSeed } from "./seeds/example";
@@ -223,11 +228,16 @@ export interface AuthWiring {
    */
   lifecycleHooks?: UserLifecycleHooks | undefined;
   /**
-   * Every composed capability's purge step for a user, auth's own among them, in composition order (#622). Filled
+   * Every composed capability's purge step for a user, auth's own among them, in composition order. Filled
    * by `compose`; the export route reads every capability's contribution from it, and the purge runs it.
    * Optional on the wiring for the reason `onSessionRevoked` is: a harness that builds this by hand composes none.
    */
   purgeSteps?: readonly PurgeStep[] | undefined;
+  /**
+   * The MCP capability's endpoint and consent screen, when one is composed beside this one. Set by
+   * `compose`; the instance then carries the OAuth provider that mints its tokens.
+   */
+  mcp?: McpWiring | undefined;
 }
 
 /** The session a {@link ScopeResolver} is asked about — the one Better Auth just resolved for this request. */
@@ -239,7 +249,7 @@ export interface ScopeResolverSession {
 }
 
 /**
- * Decide what this request's caller is, and answer the scopes that attests to (#560).
+ * Decide what this request's caller is, and answer the scopes that attests to.
  *
  * Called by the session middleware on every authenticated request, after Better Auth has resolved the
  * session and before any route runs. What it returns becomes `AuthContext.scopes`. It reads the **request**,
@@ -303,7 +313,7 @@ export type AuthOptions = AuthConfigInput &
      */
     onSessionRevoked?: SessionRevokedListener;
     /**
-     * Decide, per request, what this request's caller is — and so which scope gates it opens (#560).
+     * Decide, per request, what this request's caller is — and so which scope gates it opens.
      *
      * `leaderboard:submit`, `rating:record`, `leaderboard:admin` and `ledger:admin` are **attestations about
      * the caller, not permissions granted to the user**: each says *this write came from the adopter's own
@@ -328,25 +338,27 @@ export interface AuthCapability extends Capability {
   authConfig: AuthConfig;
   /**
    * The adopter's account-lifecycle hooks, as `auth()` was handed them. Read by whatever runs a transition
-   * outside a request this capability serves — the purge Workflow (#622) fires `onUserPurged` through it.
+   * outside a request this capability serves — the purge Workflow fires `onUserPurged` through it.
    */
   lifecycleHooks: UserLifecycleHooks;
   /**
-   * Every composed capability's purge step for a user, auth's own among them, in composition order (#622). Empty
+   * Every composed capability's purge step for a user, auth's own among them, in composition order. Empty
    * until `compose` has run. Read by the purge Workflow, which runs in the Worker that composed it.
    */
   purgeSteps: readonly PurgeStep[];
   /**
    * The audit recorder for code with no request, over one run's env — the composed audit capability's, or the
-   * no-op (#622). Read by the purge Workflow, which owes the trail its `auth/admin_user_purged`.
+   * no-op. Read by the purge Workflow, which owes the trail its `auth/admin_user_purged`.
    */
   auditFor: (env: Record<string, unknown>) => AuditEmit;
   /**
    * What a capability composed beside this one reads an account through — `matchmaking`, `support`,
    * `testers`. Found in their `compose` hooks, so none of them imports this package and a project without
-   * auth bundles them (#645). See `peer.ts`.
+   * auth bundles them. See `peer.ts`.
    */
   authPeer: AuthPeer;
+  /** What the MCP capability composed beside this one reads. See `mcp/host.ts`. */
+  mcpHost: McpHost;
 }
 
 /**
@@ -414,7 +426,7 @@ export function auth(options: AuthOptions): AuthCapability {
   // sign-in this product promises and what the control-plane seam verifies against, so a list naming one
   // of them is refused here by name rather than silently redefining a route at request time — and so is a
   // plugin that answers a refused social sign-in somewhere `http/providerRefusal` cannot collapse it,
-  // because composing that one would leave the guarantee stated and not held (#625).
+  // because composing that one would leave the guarantee stated and not held.
   assertAdditivePlugins(resolved.plugins);
   // And the tables those plugins imply, derived now so a collision is a config error at `auth()` rather
   // than a half-applied migration against a database with no transactional DDL.
@@ -445,18 +457,18 @@ export function auth(options: AuthOptions): AuthCapability {
     // The package this capability ships in and the version it ships at, both stamped by
     // `scripts/stampVersions.ts` — a Worker cannot read its own package.json. Reported per capability by
     // the control-plane manifest, and reported together: a release feed is keyed by package name, so the
-    // version alone leaves a client guessing the key (#626).
+    // version alone leaves a client guessing the key.
     version: PACKAGE_VERSION,
     package: PACKAGE_NAME,
     config: AuthConfig,
     dependsOn: ["secrets", "email"],
     // Whether anything will ever put a string in `AuthContext.scopes` — only when the adopter supplied a
-    // resolver. `pithy doctor` reads it against every composed capability's `scopeGates` (#560).
+    // resolver. `pithy doctor` reads it against every composed capability's `scopeGates`.
     providesScopes: resolveScopes !== undefined,
     // Built from the config, so the session secret's overlap is this composition's session lifetime and its
-    // period is the one the adopter asked for, if any (#602).
+    // period is the one the adopter asked for, if any.
     secretRegistry: authSecretsRegistryFor(resolved),
-    // And which of those four credentials this composition cannot reach (#541). A provider that is off
+    // And which of those four credentials this composition cannot reach. A provider that is off
     // has no code path that reads its pair, so `pithy doctor` listing it as outstanding re-raised a
     // settled question on every run. Declared rather than inferred: the config key and the secret name
     // are spelled alike by coincidence, and this is the only place that holds both.
@@ -488,13 +500,14 @@ export function auth(options: AuthOptions): AuthCapability {
         // one. A project that composes no plugins contributes exactly what it did before.
         // Every kit migration, from one definition — see `migrations/set.ts` for why it is not written
         // out here. Appended, never folded into `0001`: this capability has shipped, so that migration is
-        // history and re-shaping it would re-shape a database somebody is already running (#558).
+        // history and re-shaping it would re-shape a database somebody is already running.
         migrations: { ...AUTH_MIGRATIONS, ...pluginPlan.migrations },
       },
     },
-    // What erasing a person means for the `pithy_auth_*` tables, and what exporting them hands back (#622).
+    // What erasing a person means for the `pithy_auth_*` tables, and what exporting them hands back.
     purge: [authPurgeContribution(resolved.database, pluginPlan.userTables)],
-    // How a purge's record is read back for the control plane's erasure attestation (#823).
+    processing: AUTH_PROCESSING,
+    // How a purge's record is read back for the control plane's erasure attestation.
     erasureRecords: authErasureRecords(resolved.database),
     // The soft-delete window this config declares. A Worker's `retention` block may replace it.
     purgeWindow: { subject: "user", days: resolved.retention.purgeAfterDays },
@@ -504,6 +517,9 @@ export function auth(options: AuthOptions): AuthCapability {
       AuthAuditActions.adminUserReinstated,
       AuthAuditActions.adminUserRestored,
     ],
+    // An account's address, for a capability that keeps state by address, such as email suppressing an address when
+    // its owner withdraws marketing consent. Read on demand, never carried.
+    addressOf: authAddressOf(resolved.database),
     // The purge of one account, and the daily pass that starts every due one. Both hosted by the adopter's own
     // Worker, because a purge runs every composed capability's contribution — see `purge/specs.ts`.
     workflows: authWorkflows,
@@ -528,8 +544,10 @@ export function auth(options: AuthOptions): AuthCapability {
       // Refused at boot, naming both sides: the alternative is a `create table` that fails halfway
       // through `pithy migrate`, or two capabilities quietly reading and writing one table.
       assertPluginTablesUnclaimed(capabilities, resolved.database, pluginPlan.extensions);
-      // Every composed capability's purge step, auth's own among them, for the export route and the purge (#622).
+      // Every composed capability's purge step, auth's own among them, for the export route and the purge.
       steps.splice(0, steps.length, ...purgeSteps(capabilities, "user"));
+      // An agent surface, when one is composed: its authorization server lives in this instance.
+      wiring.mcp = capabilities.find(isMcpCapability)?.mcpWiring;
       composition = capabilities;
     },
     /**
@@ -561,7 +579,7 @@ export function auth(options: AuthOptions): AuthCapability {
         microsoft: resolved.microsoft.enabled,
       },
       // Per provider, beside the global one. A project may let email create accounts while a provider
-      // may not, and a screen with only `signUpEnabled` promises what that provider will refuse (#559).
+      // may not, and a screen with only `signUpEnabled` promises what that provider will refuse.
       providerSignUp: {
         google: resolved.google.allowSignUp,
         apple: resolved.apple.allowSignUp,
@@ -600,6 +618,12 @@ export function auth(options: AuthOptions): AuthCapability {
     lifecycleHooks,
     purgeSteps: steps,
     auditFor: (env: Record<string, unknown>) => composedAuditEmit(composition, env),
+    mcpHost: {
+      instance: (c) => getAuthInstance(c, wiring),
+      baseURL: (request) => baseURLResolver(resolved.baseURL)(request),
+      basePath: resolved.basePath,
+      database: resolved.database,
+    } satisfies McpHost,
   });
 }
 

@@ -8,7 +8,7 @@ import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyEr
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { attachmentKey, putAttachment, sha256Hex } from "../attachment/store";
 import { SupportAuditActions } from "../audit/actions";
-import type { SupportConfig } from "../config/config";
+import { type SupportConfig, supportSemantic } from "../config/config";
 import { SupportAttachment } from "../data/attachment";
 import { categoryEnum, type SupportCategories } from "../data/categories";
 import { SupportMessage, type SupportSubmissionContext } from "../data/message";
@@ -516,7 +516,8 @@ export async function submitFeedback(deps: SubmitDeps, input: SubmitInput): Prom
 
   // 6. Classification, last and allowed to fail — the same classifier, the same federated taxonomy.
   const classifying = deps.config.ai.enabled;
-  if (classifying) {
+  // The same Workflow embeds the message when semantic search is on.
+  if (classifying || supportSemantic(deps.config.search) !== undefined) {
     try {
       await deps.dispatchClassify(messageId);
     } catch (error) {

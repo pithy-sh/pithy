@@ -5,6 +5,7 @@ import type { SupportAssignment } from "../data/assignment";
 import type { SupportMessage } from "../data/message";
 import type { SupportThread } from "../data/thread";
 import type { SenderContext } from "../link/sender";
+import type { SearchOutcome, SearchResult } from "../store/hybrid";
 import type { ListedThread } from "../store/threads";
 import type {
   SenderContextView,
@@ -14,6 +15,8 @@ import type {
   SupportMessageView,
   SupportMyMessageView,
   SupportMyThreadView,
+  SupportSearchResponse,
+  SupportSearchResultView,
   SupportThreadView,
 } from "./responses";
 
@@ -92,6 +95,26 @@ export function assignmentView(assignment: SupportAssignment): SupportAssignment
 /** Project one thread for the inbox, carrying this viewer's own read and snooze state. */
 export function listedThreadView(thread: ListedThread): SupportListedThreadView {
   return { ...threadView(thread), read: thread.read, snoozedUntil: iso(thread.snoozedUntil) };
+}
+
+/** Project one search result: the thread as this viewer sees it, and its best message's raw scores. */
+export function searchResultView(result: SearchResult): SupportSearchResultView {
+  return {
+    thread: listedThreadView(result.thread),
+    messageId: result.messageId,
+    ...(result.bm25 !== undefined ? { bm25: result.bm25 } : {}),
+    ...(result.similarity !== undefined ? { similarity: result.similarity } : {}),
+  };
+}
+
+/** Project a whole search. */
+export function searchView(outcome: SearchOutcome): SupportSearchResponse {
+  return {
+    mode: outcome.mode,
+    backends: { ran: [...outcome.ran], skipped: outcome.skipped.map((skip) => ({ ...skip })) },
+    count: outcome.results.length,
+    results: outcome.results.map(searchResultView),
+  };
 }
 
 /**

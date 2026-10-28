@@ -1,9 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { pithyCommandOf } from "@pithy-sh/core/src/cli/command";
-import type { Logger } from "@pithy-sh/core/src/logger/logger";
-import { type SqlBool, sql } from "kysely";
+import type { DatabaseSchema } from "@pithy-sh/core/src/data/db";
+import type { SelectQueryBuilder } from "kysely";
 import { UNASSIGNED } from "../data/assignment";
 import { SupportAttachment } from "../data/attachment";
 import type { SupportChannel, SupportPriority, SupportSentiment } from "../data/enums";
@@ -12,14 +11,13 @@ import {
   SUPPORT_ATTACHMENTS_TABLE,
   SUPPORT_FLAGS_TABLE,
   SUPPORT_MESSAGES_TABLE,
-  SUPPORT_SEARCH_TABLE,
   SUPPORT_THREADS_TABLE,
   type SupportDatabase,
+  type SupportTables,
 } from "../data/tables";
 import { SupportThread } from "../data/thread";
 import { SupportNotFoundError } from "../error/errors";
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from "./paging";
-import { isSearchable, searchPredicate } from "./search";
 
 /**
  * The inbox query — the one read this whole data model was shaped around.
@@ -72,8 +70,12 @@ export function decodeCursor(value: string | undefined): ThreadCursor | undefine
   }
 }
 
-/** What a caller may filter the inbox by. */
-export interface ListThreadsQuery {
+/**
+ * What a caller may narrow threads by — the inbox listing and the search route alike. Search applies
+ * these in D1, after retrieval, never as Vectorize metadata: metadata would go stale the moment a thread is
+ * archived, reassigned or reclassified.
+ */
+export interface ThreadFilters {
   /** Open threads, done threads, or both. Defaults to open. */
   archived?: boolean;
   /** One category key from the effective taxonomy — what the classifier decided. */
@@ -90,8 +92,15 @@ export interface ListThreadsQuery {
   inbox?: string;
   /** Whose threads: one assignee's opaque ref, or {@link UNASSIGNED} for the threads nobody has. */
   assignee?: string;
-  /** Free text over subjects and bodies. */
-  q?: string;
+}
+
+/**
+ * What a caller may filter the inbox by, and where to resume.
+ *
+ * **No free text.** Listing lists; `GET {basePath}/threads/search` searches, ranked, with a limit and no
+ * cursor. A `q` here could say whether a thread matched, never how well.
+ */
+export interface ListThreadsQuery extends ThreadFilters {
   /** Where to resume from. */
   cursor?: string;
   /** How many to return. */
@@ -114,6 +123,70 @@ export interface ThreadPage {
   nextCursor: string | null;
 }
 
+type SupportSchema = DatabaseSchema<SupportTables>;
+type ThreadsAndFlags = typeof SUPPORT_THREADS_TABLE | typeof SUPPORT_FLAGS_TABLE;
+
+/**
+ * Threads joined to one viewer's own flags.
+ *
+ * Joined on the viewer as well as the thread, so one operator's snooze never hides a thread from anybody
+ * else — the whole reason these flags are per viewer rather than on the thread.
+ */
+export function viewerThreads(db: SupportDatabase, viewer: string) {
+  return db
+    .selectFrom(SUPPORT_THREADS_TABLE)
+    .leftJoin(SUPPORT_FLAGS_TABLE, (join) =>
+      join
+        .onRef(`${SUPPORT_FLAGS_TABLE}.threadId`, "=", `${SUPPORT_THREADS_TABLE}.id`)
+        .on(`${SUPPORT_FLAGS_TABLE}.viewer`, "=", viewer),
+    )
+    .selectAll(SUPPORT_THREADS_TABLE)
+    .select([`${SUPPORT_FLAGS_TABLE}.read as viewerRead`, `${SUPPORT_FLAGS_TABLE}.snoozedUntil as viewerSnoozedUntil`]);
+}
+
+/** A row out of {@link viewerThreads}, as the listing and the search both return it. */
+export function listedThreadOf(row: Record<string, unknown>): ListedThread {
+  return {
+    ...SupportThread.parse(row),
+    // A viewer with no flag row has read nothing and snoozed nothing, which is the common case and
+    // the right default — not an absence a caller has to interpret.
+    read: row.viewerRead === 1,
+    snoozedUntil: row.viewerSnoozedUntil == null ? null : new Date(Number(row.viewerSnoozedUntil)),
+  };
+}
+
+/** Narrow a {@link viewerThreads} query by every filter the caller set — one statement of them, for both routes. */
+export function applyThreadFilters<O>(
+  builder: SelectQueryBuilder<SupportSchema, ThreadsAndFlags, O>,
+  filters: ThreadFilters,
+): SelectQueryBuilder<SupportSchema, ThreadsAndFlags, O> {
+  // Archived is a filter with a default rather than an optional one: an inbox that showed resolved
+  // threads by default would be an inbox nobody trusts to be a work queue.
+  let filtered = builder.where(`${SUPPORT_THREADS_TABLE}.archived`, "=", filters.archived === true ? 1 : 0);
+  if (filters.category !== undefined)
+    filtered = filtered.where(`${SUPPORT_THREADS_TABLE}.category`, "=", filters.category);
+  // Its own predicate rather than an `OR` with the one above, because the two answer different
+  // questions and an operator asking both is asking for the threads where they agree — which is the
+  // one shape a single conflated filter could never express.
+  if (filters.declaredCategory !== undefined)
+    filtered = filtered.where(`${SUPPORT_THREADS_TABLE}.declaredCategory`, "=", filters.declaredCategory);
+  if (filters.priority !== undefined)
+    filtered = filtered.where(`${SUPPORT_THREADS_TABLE}.priority`, "=", filters.priority);
+  if (filters.sentiment !== undefined)
+    filtered = filtered.where(`${SUPPORT_THREADS_TABLE}.sentiment`, "=", filters.sentiment);
+  if (filters.channel !== undefined)
+    filtered = filtered.where(`${SUPPORT_THREADS_TABLE}.channel`, "=", filters.channel);
+  if (filters.inbox !== undefined)
+    filtered = filtered.where(`${SUPPORT_THREADS_TABLE}.inboxAddress`, "=", filters.inbox);
+  if (filters.assignee !== undefined) {
+    filtered =
+      filters.assignee === UNASSIGNED
+        ? filtered.where(`${SUPPORT_THREADS_TABLE}.assigneeRef`, "is", null)
+        : filtered.where(`${SUPPORT_THREADS_TABLE}.assigneeRef`, "=", filters.assignee);
+  }
+  return filtered;
+}
+
 /**
  * List threads, as one viewer sees them.
  *
@@ -125,97 +198,21 @@ export interface ThreadPage {
 export async function listThreads(
   db: SupportDatabase,
   query: ListThreadsQuery,
-  options: { fts: boolean; viewer: string; now: Date; log?: Logger },
-): Promise<ThreadPage> {
-  try {
-    return await runListThreads(db, query, options);
-  } catch (error) {
-    // **The index being configured on is not the same as the index existing.**
-    //
-    // `search.fts` is a config flag while the virtual table is a provisioned resource, and the two can disagree
-    // in both directions: a project that turned the flag on but has not migrated yet, a database
-    // restored from a snapshot taken before it, a Worker deployed ahead of `pithy migrate`. In every
-    // one of those the flag says FTS and the schema says no such table.
-    //
-    // Falling back to the `LIKE` scan makes that a slower search rather than a 500 on the inbox
-    // route. Narrow on purpose: only a missing-table error is caught, so a genuine query bug still
-    // surfaces instead of silently degrading forever.
-    if (options.fts && isMissingSearchTable(error)) {
-      options.log?.warn("support FTS index is configured but absent — falling back to a LIKE scan", {
-        action: `Run \`${pithyCommandOf("support provision", {}, { runtime: true })}\` to create and backfill it, or set \`search.fts: false\`.`,
-      });
-      return runListThreads(db, query, { ...options, fts: false });
-    }
-    throw error;
-  }
-}
-
-/** Whether an error is SQLite saying the full-text index does not exist. */
-function isMissingSearchTable(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes("no such table") && message.includes(SUPPORT_SEARCH_TABLE);
-}
-
-/** The listing itself, for one chosen search backend. */
-async function runListThreads(
-  db: SupportDatabase,
-  query: ListThreadsQuery,
-  options: { fts: boolean; viewer: string; now: Date },
+  options: { viewer: string; now: Date },
 ): Promise<ThreadPage> {
   const limit = Math.min(Math.max(query.limit ?? DEFAULT_PAGE_SIZE, 1), MAX_PAGE_SIZE);
   const cursor = decodeCursor(query.cursor);
 
-  let builder = db
-    .selectFrom(SUPPORT_THREADS_TABLE)
-    // Joined on the viewer as well as the thread, so one operator's snooze never hides a thread from
-    // anybody else — the whole reason these flags are per viewer rather than on the thread.
-    .leftJoin(SUPPORT_FLAGS_TABLE, (join) =>
-      join
-        .onRef(`${SUPPORT_FLAGS_TABLE}.threadId`, "=", `${SUPPORT_THREADS_TABLE}.id`)
-        .on(`${SUPPORT_FLAGS_TABLE}.viewer`, "=", options.viewer),
-    )
-    .selectAll(SUPPORT_THREADS_TABLE)
-    .select([`${SUPPORT_FLAGS_TABLE}.read as viewerRead`, `${SUPPORT_FLAGS_TABLE}.snoozedUntil as viewerSnoozedUntil`])
+  let builder = applyThreadFilters(viewerThreads(db, options.viewer), query)
     // A snooze that has not expired hides the thread from this viewer. Expiry is evaluated on read
-    // rather than swept, so nothing has to run for a snooze to end.
+    // rather than swept, so nothing has to run for a snooze to end. Listing only: a search finds a
+    // snoozed thread, because a snooze hides work for later and never hides an answer.
     .where((eb) =>
       eb.or([
         eb(`${SUPPORT_FLAGS_TABLE}.snoozedUntil`, "is", null),
         eb(`${SUPPORT_FLAGS_TABLE}.snoozedUntil`, "<=", options.now.getTime()),
       ]),
-    )
-    // Archived is a filter with a default rather than an optional one: an inbox that showed resolved
-    // threads by default would be an inbox nobody trusts to be a work queue.
-    .where(`${SUPPORT_THREADS_TABLE}.archived`, "=", query.archived === true ? 1 : 0);
-
-  if (query.category !== undefined) builder = builder.where(`${SUPPORT_THREADS_TABLE}.category`, "=", query.category);
-  // Its own predicate rather than an `OR` with the one above, because the two answer different
-  // questions and an operator asking both is asking for the threads where they agree — which is the
-  // one shape a single conflated filter could never express.
-  if (query.declaredCategory !== undefined)
-    builder = builder.where(`${SUPPORT_THREADS_TABLE}.declaredCategory`, "=", query.declaredCategory);
-  if (query.priority !== undefined) builder = builder.where(`${SUPPORT_THREADS_TABLE}.priority`, "=", query.priority);
-  if (query.sentiment !== undefined)
-    builder = builder.where(`${SUPPORT_THREADS_TABLE}.sentiment`, "=", query.sentiment);
-  if (query.channel !== undefined) builder = builder.where(`${SUPPORT_THREADS_TABLE}.channel`, "=", query.channel);
-  if (query.inbox !== undefined) builder = builder.where(`${SUPPORT_THREADS_TABLE}.inboxAddress`, "=", query.inbox);
-  if (query.assignee !== undefined) {
-    builder =
-      query.assignee === UNASSIGNED
-        ? builder.where(`${SUPPORT_THREADS_TABLE}.assigneeRef`, "is", null)
-        : builder.where(`${SUPPORT_THREADS_TABLE}.assigneeRef`, "=", query.assignee);
-  }
-  if (query.q !== undefined) {
-    if (isSearchable(query.q, options.fts)) {
-      builder = builder.where(searchPredicate(query.q, options));
-    } else {
-      // A term that tokenizes to nothing — `???`, `@@@` — asked a question with no answer, and the
-      // honest answer is none. Dropping the predicate instead would hand back the *entire* unfiltered
-      // inbox rendered as search results, which is the one direction a filter must never fail in:
-      // silently widening reads as "this is what matched" rather than as an error.
-      builder = builder.where(sql<SqlBool>`1 = 0`);
-    }
-  }
+    );
 
   if (cursor) {
     // Strictly after the cursor position in the descending order: an older timestamp, or the same
@@ -240,13 +237,7 @@ async function runListThreads(
     .limit(limit + 1)
     .execute();
 
-  const page: ListedThread[] = rows.slice(0, limit).map((row) => ({
-    ...SupportThread.parse(row),
-    // A viewer with no flag row has read nothing and snoozed nothing, which is the common case and
-    // the right default — not an absence a caller has to interpret.
-    read: row.viewerRead === 1,
-    snoozedUntil: row.viewerSnoozedUntil == null ? null : new Date(Number(row.viewerSnoozedUntil)),
-  }));
+  const page: ListedThread[] = rows.slice(0, limit).map(listedThreadOf);
   const last = page[page.length - 1];
   return {
     threads: page,

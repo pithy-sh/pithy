@@ -2,7 +2,7 @@ import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
 import { useEffect } from "react";
 import { navigate, routeTable, screenPath } from "../../router";
-import { getSession, refusedAccountScreen } from "../../session";
+import { getSession, refusedAccountScreen, resumeAfterSignIn } from "../../session";
 import "../../pithy-screens.css";
 
 export const path = "/callback";
@@ -34,6 +34,8 @@ export default function Callback() {
     void Promise.all([getSession(), routeTable()]).then(([current, table]) => {
       const refused = refusedAccountScreen(new URLSearchParams(window.location.search).get("error"));
       if (refused) return navigate(screenPath(table, refused));
+      // A sign-in an application's authorization sent somebody to resumes it.
+      if (current && resumeAfterSignIn()) return;
       navigate(current ? "/" : screenPath(table, "sign-in"));
     });
   }, []);

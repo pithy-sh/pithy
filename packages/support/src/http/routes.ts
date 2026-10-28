@@ -21,6 +21,7 @@ import {
   readMyThread,
   reclassifyConversation,
   replyToConversation,
+  searchInbox,
   submitFeedbackRequest,
   updateFlags,
 } from "./handlers";
@@ -33,6 +34,7 @@ import {
   SupportReclassifiedResponse,
   SupportRepliesResponse,
   SupportReplySentResponse,
+  SupportSearchResponse,
   SupportSubmissionResponse,
   SupportThreadResponse,
   SupportThreadsResponse,
@@ -45,6 +47,7 @@ import {
   MyThreadsQuery,
   RepliesQuery,
   ReplyInput,
+  SearchThreadsQuery,
   SubmitFeedbackInput,
   ThreadIdParam,
 } from "./schemas";
@@ -61,6 +64,7 @@ import {
  * The support routes, their verification strategies, and what each accepts:
  *
  *   GET  /support/threads               → the inbox     (control-plane: support:threads:read)       query: ListThreadsQuery
+ *   GET  /support/threads/search        → search        (control-plane: support:threads:read)       query: SearchThreadsQuery
  *   GET  /support/threads/:id           → one thread    (control-plane: support:threads:read)       param: ThreadIdParam
  *   POST /support/threads/:id/archive   → done/reopen   (control-plane: support:threads:archive)    param + json
  *   POST /support/threads/:id/assign    → who has it    (control-plane: support:threads:assign)     param + json
@@ -234,6 +238,20 @@ export function registerSupportRoutes(options: SupportRoutesOptions): (app: Hono
       async (c) => c.json(await listInbox(await resolve(c), c.req.valid("query"), viewer(c))),
     );
 
+    // Before `/threads/:id`, so `search` is never read as a thread id.
+    app.get(
+      `${base}/threads/search`,
+      describeRoute({
+        summary: "Search the inbox, by words and by meaning, ranked as one.",
+        verification: "control-plane",
+        scopes: [SUPPORT_THREADS_READ_SCOPE],
+        responses: { 200: SupportSearchResponse },
+      }),
+      requireControlPlane(SUPPORT_THREADS_READ_SCOPE),
+      validate("query", SearchThreadsQuery),
+      async (c) => c.json(await searchInbox(await resolve(c), c.req.valid("query"), viewer(c))),
+    );
+
     app.get(
       `${base}/replies`,
       describeRoute({
@@ -375,6 +393,8 @@ export function registerSupportRoutes(options: SupportRoutesOptions): (app: Hono
       `${base}/feedback`,
       describeRoute({
         summary: "Write in to support from the app.",
+        operation: "feedback.write",
+        tool: { effect: "sends" },
         verification: ["bearer", "session"],
         responses: { 201: SupportSubmissionResponse },
       }),
@@ -388,6 +408,8 @@ export function registerSupportRoutes(options: SupportRoutesOptions): (app: Hono
       `${base}/feedback`,
       describeRoute({
         summary: "List the caller's own support requests.",
+        operation: "feedback.list",
+        tool: true,
         verification: ["bearer", "session"],
         responses: { 200: SupportMyThreadsResponse },
       }),
@@ -400,6 +422,8 @@ export function registerSupportRoutes(options: SupportRoutesOptions): (app: Hono
       `${base}/feedback/:id`,
       describeRoute({
         summary: "Read one of the caller's own support requests.",
+        operation: "feedback.read",
+        tool: true,
         verification: ["bearer", "session"],
         responses: { 200: SupportMyThreadResponse },
       }),

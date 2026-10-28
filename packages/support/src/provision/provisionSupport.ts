@@ -114,6 +114,24 @@ export interface SupportProvisioner {
    */
   ensureSearchIndex(env: ManagedEnvironment): Promise<{ created: boolean; dropped: boolean; repaired: boolean }>;
   /**
+   * The semantic message index in this environment, **before** the worker that binds it is deployed:
+   * created when `search.semantic` is on and it does not exist yet, untouched otherwise. Before, because a
+   * deploy that binds an index nobody created fails. Idempotent — an index that exists is reused as-is, and
+   * one with a different shape is refused rather than silently queried in the wrong space.
+   */
+  ensureSemanticIndex(env: ManagedEnvironment): Promise<{ indexName: string; created: boolean }>;
+  /**
+   * The semantic message index in this environment, **after** the worker is deployed:
+   *
+   * - On, and holding nothing yet — `created` by this run, or holding no stamp while inbound mail exists, which
+   *   is what a run that failed after creating it leaves: backfill it once, by starting the reprocess Workflow
+   *   over every inbound message. An index holding any stamp is never re-embedded here — that is
+   *   `pithy vector reprocess`.
+   * - Off: drop the index if it exists, and the model stamps with it, since every stamp now names a vector
+   *   that is gone. After the deploy, because the worker that bound it no longer does.
+   */
+  settleSemanticIndex(env: ManagedEnvironment, created: boolean): Promise<{ dropped: boolean; backfilled: boolean }>;
+  /**
    * Ensure the inbound Email Routing rule that delivers the support address to the app worker.
    * Idempotent, keyed on the rule name. Returns `skipped: true` when no routing config was supplied.
    */
@@ -128,6 +146,14 @@ export interface SupportProvisionResult {
   environments: ManagedEnvironment[];
   /** What the full-text index did, per environment — created, dropped, repaired, or already correct. */
   search: Array<{ env: ManagedEnvironment; created: boolean; dropped: boolean; repaired: boolean }>;
+  /** What the semantic message index did, per environment — created and backfilled, dropped, or unchanged. */
+  semantic: Array<{
+    env: ManagedEnvironment;
+    indexName: string;
+    created: boolean;
+    dropped: boolean;
+    backfilled: boolean;
+  }>;
   /** Whether the inbound routing rule was created, already present, or skipped. */
   routing: { created: boolean; skipped: boolean };
 }
@@ -155,19 +181,25 @@ export async function provisionSupport(
   await provisioner.preflight();
   const bucket = await provisioner.ensureBucket();
   const search: SupportProvisionResult["search"] = [];
+  const semantic: SupportProvisionResult["semantic"] = [];
   const deployed = managedEnvironments(environments);
   for (const env of deployed) {
+    // The message index first: the worker about to be deployed binds it, and a binding to an index nobody
+    // created fails the deploy.
+    const index = await provisioner.ensureSemanticIndex(env);
     await provisioner.deployWorker(env);
     // Per environment, because each has its own app database — and after the worker, so a database
     // that gains the index always has something able to write to it.
     search.push({ env, ...(await provisioner.ensureSearchIndex(env)) });
+    // The backfill runs on the worker just deployed, and a drop waits until no worker binds the index.
+    semantic.push({ env, ...index, ...(await provisioner.settleSemanticIndex(env, index.created)) });
   }
   // Only when at least one classification host is up. The rule is what starts delivering real customer
   // mail, so making it over a run that deployed nothing is the same window the ordering above closes,
   // widened to the whole project.
   const routing =
     deployed.length > 0 ? await provisioner.ensureRoutingRule() : { created: false, skipped: true as const };
-  return { bucket, environments: deployed, routing, search };
+  return { bucket, environments: deployed, routing, search, semantic };
 }
 
 /** The teardown seam — the inverse of {@link SupportProvisioner}. Every step idempotent. */

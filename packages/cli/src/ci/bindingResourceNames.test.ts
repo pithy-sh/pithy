@@ -138,6 +138,14 @@ const DECLARED: readonly Declared[] = [
     why: "the shipping dead-letter queue (#824): named by the generic rule, which the consumer entry's `dead_letter_queue` is composed with too",
   },
   { capability: "auth", binding: "DB", kind: "d1", namer: null, why: "the app database" },
+  { capability: "consent", binding: "DB", kind: "d1", namer: null, why: "the app database" },
+  {
+    capability: "consent",
+    binding: "CONSENT_EVIDENCE",
+    kind: "r2",
+    namer: null,
+    why: "drawn signatures and providers' certificates, by hash — the generic rule is its only writer",
+  },
   { capability: "controlplane", binding: "DB", kind: "d1", namer: null, why: "the app database" },
   {
     capability: "controlplane",
