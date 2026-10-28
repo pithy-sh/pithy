@@ -173,6 +173,18 @@ describe("artifactsStore", () => {
     expect((await store().tokenRecords("r2")).map((record) => record.id)).toEqual(["other"]);
   });
 
+  test("names the recorded tokens on a repository that have not expired, and nobody else's", async () => {
+    await store().recordTokens([
+      token("expired", { expiresAt: new Date(at.getTime() - 1) }),
+      token("ending", { expiresAt: at }),
+      token("live"),
+      token("create", { source: "create", expiresAt: new Date(at.getTime() + 86_400_000) }),
+      token("other", { repo: "r2" }),
+    ]);
+    expect(await store().unexpiredTokenIds("r1", at)).toEqual(["create", "live"]);
+    expect(await store().unexpiredTokenIds("r3", at)).toEqual([]);
+  });
+
   test("pages every repository newest first by keyset, ties broken by name", async () => {
     await store().insertRepo(repo("a", { displayName: "a", createdAt: new Date(at.getTime() - 2000) }));
     await store().insertRepo(repo("b", { displayName: "b" }));

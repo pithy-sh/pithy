@@ -54,12 +54,26 @@ describe("plan-and-limits.md prices what the routes call", () => {
     expect(PLAN).toMatch(/A mint is three: open, the token, and the repository's remote\./);
   });
 
-  test("revoking every token counts a list per page and the list that confirms none is left", () => {
+  test("revoking every token counts a revoke per recorded token, then a list per page", () => {
+    const breakGlass = route("delete", "/repos/:name/credentials");
+    expect(breakGlass).toMatch(/unexpiredTokenIds\(/);
+    expect(breakGlass).toMatch(/revokeEveryToken\(repo, recorded\)/);
     expect(PLAN).toMatch(
-      /Revoking every token is open, then a list and a revoke for each live token it shows, repeated until a list shows none live or a round revokes none, because the list is one page with no cursor\./,
+      /Revoking every token is open, then one revoke for each token the kit recorded that has not yet expired, then a list and a revoke for each live token it still shows, repeated until a list shows none live or a round revokes none\./,
     );
     expect(PLAN).toMatch(
-      /While every live token fits on one page and every revoke lands, that is open, two lists and one call per token; with none live, it is open and the list\./,
+      /With every recorded token revoked and nothing else live, that is open, one call per recorded token and one list\./,
+    );
+    expect(PLAN).not.toMatch(/assumes the list/);
+  });
+
+  test("the page claims only what the live suite asserts: it records the page size and order, and fails on a working token", () => {
+    const suite = read("../binding/revokeAll.integration.test.ts");
+    expect(suite).toMatch(/await annotate\(record, "notice"\)/);
+    expect(suite).toMatch(/on the listing alone, reaches past the first page and leaves no token working/);
+    expect(PLAN).not.toMatch(/asserts this/);
+    expect(PLAN).toMatch(
+      /The live suite, `revokeAll\.integration\.test\.ts`, records the page size and order it sees, and asserts the part revoking depends on: it mints more live tokens than one page holds, revokes them on the list alone, and fails if git still accepts any of them\./,
     );
   });
 });

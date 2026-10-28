@@ -197,7 +197,7 @@ export const AdminTokenView = z
     minted: z
       .enum(["pithy", "outside", "unknown"])
       .describe(
-        "Who minted it: `pithy`, the kit, which recorded its holder; `outside`, something else, such as Cloudflare's dashboard or a script, so it has no holder; or `unknown`, created before the kit began recording or long expired, so the kit may have minted it with no record left.",
+        "Who minted it: `pithy`, the kit, which recorded its holder; `outside`, something else, such as Cloudflare's dashboard or a script, so it has no holder; or `unknown`, created before the kit began recording when `0002_tokens` ran, so the kit may have minted it with no record. A token expired longer ago than a record is kept also reads `unknown`, but Cloudflare's listing holds live tokens only, so it does not appear there.",
       ),
     holderId: z
       .string()

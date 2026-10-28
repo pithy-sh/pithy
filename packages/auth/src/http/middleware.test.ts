@@ -7,7 +7,7 @@ import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { noteRefusal } from "../lifecycle/enforce";
 import { lifecycleRefusal } from "../lifecycle/state";
-import { accountHolder, requireAccountHolder } from "./middleware";
+import { accountHolder, carriesCredential, requireAccountHolder } from "./middleware";
 
 /**
  * The one gate a suspended account passes (#622): deleting its own account. Every other route keeps
@@ -61,5 +61,17 @@ describe("requireAccountHolder and accountHolder", () => {
     const res = await app("anonymous").request("/account", { method: "DELETE" });
     expect(res.status).toBe(401);
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe("auth/invalid_token");
+  });
+});
+
+describe("carriesCredential", () => {
+  test.each([
+    [{ authorization: "Bearer t" }, true],
+    [{ cookie: "s=1" }, true],
+    [{ "x-api-key": "k" }, true],
+    [{ "x-other": "k" }, false],
+    [{}, false],
+  ])("%o is %s", (headers, expected) => {
+    expect(carriesCredential(new Headers(headers))).toBe(expected);
   });
 });

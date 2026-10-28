@@ -167,9 +167,9 @@ export function registerArtifactsAdminRoutes(app: Hono<PithyHonoEnv>, config: Ar
   app.get(
     `${base}/admin/repos/:name/tokens`,
     describeRoute({
-      summary: "List every token on one repository, with its holder where the kit minted it.",
+      summary: "List one page of live tokens on a repository, with the total and the holder where the kit minted one.",
       description:
-        "Every token Cloudflare lists, with its scope, state, creation and expiry. A token the kit did not mint is reported as minted outside Pithy and never given a holder. No value is ever returned.",
+        "One page of live tokens, as Cloudflare's listing answers it: up to 30, newest first, with no cursor, so a repository with more live tokens than that is not fully listed, and `total` is the count Cloudflare reports. Each has its scope, state, creation and expiry. A token the kit did not mint is reported as minted outside Pithy and never given a holder. No value is ever returned.",
       verification: "control-plane",
       scopes: [ARTIFACTS_REPOS_READ_SCOPE],
       responses: { 200: AdminTokenList },
@@ -196,7 +196,7 @@ export function registerArtifactsAdminRoutes(app: Hono<PithyHonoEnv>, config: Ar
     describeRoute({
       summary: "Revoke one token on a repository, with an idempotency key and a reason.",
       description:
-        "A git client holding it is refused on its next request. A replay under the same key answers what the first request did and revokes nothing. A token the repository does not hold is a 404 and spends no key.",
+        "A git client holding it is refused on its next request. A replay under the same key answers what the first request did and revokes nothing. A token the kit minted that is already revoked or expired answers `revoked: 0` while the kit keeps its record. Any other token that is not live is a 404, like one the repository never held, because Cloudflare lists live tokens only; a 404 spends no key.",
       verification: "control-plane",
       scopes: [ARTIFACTS_TOKENS_REVOKE_SCOPE],
       responses: { 200: AdminRevocation },
@@ -210,19 +210,22 @@ export function registerArtifactsAdminRoutes(app: Hono<PithyHonoEnv>, config: Ar
       const store = storeOf(c);
       const binding = artifactsBinding(c.env, config.binding);
       const view = await revocation(c, { kind: "token", name, tokenId }, body, async (repo) => {
+        const holder = (await store.tokenRecords(repo.name)).find((record) => record.id === tokenId);
         const revoked = await withRepo(binding, repo.name, async (handle) => {
           if (await handle.revokeToken(tokenId)) return 1;
-          // Revoked nothing: either it is already not live, which is the state asked for, or it was never here.
+          // Revoked nothing: either it is already not live, which is the state asked for, or it was never here. The
+          // listing holds live tokens only, so the kit's record is what knows a dead token it minted.
+          if (holder !== undefined) return 0;
           const listed = await handle.listTokens();
           if (!listed.tokens.some((token) => token.id === tokenId)) {
             throw new NotFoundError({
-              message: "That token does not exist on this repository.",
-              detail: `no token ${tokenId} on repository ${repo.name}`,
+              message:
+                "That token does not exist on this repository, or is no longer live and the kit holds no record of it.",
+              detail: `no live token or record ${tokenId} on repository ${repo.name}`,
             });
           }
           return 0;
         });
-        const holder = (await store.tokenRecords(repo.name)).find((record) => record.id === tokenId);
         return { revoked, facts: { tokenId, holderId: holder?.userId ?? null } };
       });
       return c.json(view satisfies AdminRevocation);
@@ -244,11 +247,15 @@ export function registerArtifactsAdminRoutes(app: Hono<PithyHonoEnv>, config: Ar
     validate("json", AdminRevokeBody),
     async (c) => {
       const { name } = c.req.valid("param");
+      const store = storeOf(c);
       const binding = artifactsBinding(c.env, config.binding);
-      const view = await revocation(c, { kind: "all", name, tokenId: null }, c.req.valid("json"), async (repo) => ({
-        revoked: await withRepo(binding, repo.name, revokeEveryToken),
-        facts: {},
-      }));
+      const view = await revocation(c, { kind: "all", name, tokenId: null }, c.req.valid("json"), async (repo) => {
+        const recorded = await store.unexpiredTokenIds(repo.name, new Date());
+        return {
+          revoked: await withRepo(binding, repo.name, (handle) => revokeEveryToken(handle, recorded)),
+          facts: {},
+        };
+      });
       return c.json(view satisfies AdminRevocation);
     },
   );

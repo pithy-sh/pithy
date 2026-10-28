@@ -64,8 +64,13 @@ interface FakeRepo {
   infoFails?: boolean;
 }
 
-/** The namespace, in memory, answering the way Cloudflare's binding documents. */
-function fakeNamespace() {
+/**
+ * The namespace, in memory. `listTokens` answers every token in every state, oldest first, one page of at most `page`
+ * with no cursor. The real binding lists active tokens only; by default this one keeps revoked ones on its page, the
+ * listing that would end a list-and-revoke loop at the first page, so revoking by record is held against the worse
+ * case. `activeOnly` lists as the real binding does.
+ */
+function fakeNamespace(page = Number.POSITIVE_INFINITY, { activeOnly = false } = {}) {
   const repos = new Map<string, FakeRepo>();
   let sequence = 0;
   const handle = (name: string, repo: FakeRepo): ArtifactsRepoHandle => ({
@@ -81,7 +86,13 @@ function fakeNamespace() {
       repo.tokens.set(token.id, token);
       return { id: token.id, plaintext: `art_v1_${"0".repeat(40)}`, scope, expiresAt: token.expiresAt };
     },
-    listTokens: async () => ({ tokens: [...repo.tokens.values()].map((t) => ({ ...t })), total: repo.tokens.size }),
+    listTokens: async () => ({
+      tokens: [...repo.tokens.values()]
+        .filter((t) => !activeOnly || t.state === "active")
+        .slice(0, page)
+        .map((t) => ({ ...t })),
+      total: repo.tokens.size,
+    }),
     revokeToken: async (id) => {
       const token = repo.tokens.get(id);
       if (token?.state !== "active") return false;
@@ -511,6 +522,34 @@ describe("revoking one token", () => {
     expect((await conforming(retried, AdminRevocation)).revoked).toBe(1);
   });
 
+  test("a token the kit minted that is no longer live revokes nothing, though the listing no longer shows it", async () => {
+    namespace = fakeNamespace(30, { activeOnly: true });
+    await seedRepo("r1");
+    const id = await mintFor("r1", "bob");
+    const app = makeApp();
+    const path = `/artifacts/admin/repos/r1/tokens/${id}/revoke`;
+    await conforming(await revoke(app, path, { idempotencyKey: "rev-1", reason: "Bob left." }), AdminRevocation);
+
+    const again = await conforming(
+      await revoke(app, path, { idempotencyKey: "rev-2", reason: "Again." }),
+      AdminRevocation,
+    );
+    expect(again).toMatchObject({ tokenId: id, revoked: 0, replayed: false });
+  });
+
+  test("a dead token the kit did not mint and the listing does not show is a 404", async () => {
+    namespace = fakeNamespace(30, { activeOnly: true });
+    await seedRepo("r1");
+    const id = await mintFor("r1", null);
+    await (await namespace.handle("r1")).revokeToken(id);
+    const res = await revoke(makeApp(), `/artifacts/admin/repos/r1/tokens/${id}/revoke`, {
+      idempotencyKey: "rev-1",
+      reason: "Rotate.",
+    });
+    expect(res.status).toBe(404);
+    expect(acts()).toEqual([]);
+  });
+
   test("a key spent on one revocation is refused for another", async () => {
     await seedRepo("r1");
     const first = await mintFor("r1", "bob");
@@ -549,6 +588,22 @@ describe("revoking every live token", () => {
     expect(again).toEqual({ ...first, replayed: true });
     expect(namespace.repos.get("r1")?.tokens.get(fresh)?.state).toBe("active");
     expect(acts()).toHaveLength(1);
+  });
+
+  test("reaches every token the kit minted when the listing keeps revoked ones on its one page", async () => {
+    namespace = fakeNamespace(2);
+    await seedRepo("r1");
+    const minted = [];
+    for (let i = 0; i < 5; i += 1) minted.push(await mintFor("r1", "bob"));
+    const body = { idempotencyKey: "all-paged", reason: "Suspected leak." };
+
+    const view = await conforming(
+      await revoke(makeApp(), "/artifacts/admin/repos/r1/tokens/revoke", body),
+      AdminRevocation,
+    );
+    expect(view.revoked).toBe(5);
+    const live = minted.filter((id) => namespace.repos.get("r1")?.tokens.get(id)?.state === "active");
+    expect(live).toEqual([]);
   });
 
   test("of two concurrent requests under one key, exactly one records and emits; the other replays it", async () => {
