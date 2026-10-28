@@ -8,28 +8,17 @@ import { describe, expect, test } from "vitest";
 import { readSource, sourcePaths } from "./sourceFiles";
 
 /**
- * The gate. **Nothing in this CLI builds the environment of a Cloudflare-capable child by hand.**
+ * **Nothing in this CLI builds the environment of a Cloudflare-capable child by hand.**
  *
- * #555: `pithy dev` spawned every `wrangler dev` with `process.env` copied wholesale, so wrangler
- * authenticated as whatever `CLOUDFLARE_API_TOKEN` the operator's shell held. On a machine with two
- * accounts, a magic link left through a tenant that does not own the sending domain — five attempts,
- * five failures, and a banner that had just said `Email: sending for real from noreply@pithy.sh.`
+ * A child that inherits `process.env` authenticates as whatever `CLOUDFLARE_API_TOKEN` the operator's shell
+ * holds, which on a machine with two accounts can be the account that does not own the resource.
+ * `cloudflare/childEnv.ts` is the one place a child's credentials are composed. A module that spawns a child
+ * which could reach the Cloudflare API gets that child's environment from the seam, and every module that
+ * spawns something else is listed below by name and reason. The list is checked in both directions, so an
+ * entry whose module no longer spawns anything fails.
  *
- * The rule was not missing. It was written at the call sites: `project/deploy.ts` and
- * `capabilities/hostDeploy.ts` each carried their own copy of "read the pair, set the two keys", and
- * `dev` carried none. Three sites, two correct — this repository's usual arithmetic for a rule kept at
- * call sites instead of at the thing being called, and the same arithmetic `CloudflareConfigOptions`
- * records for the account argument itself.
- *
- * So the rule moved into `cloudflare/childEnv.ts` and this is what keeps it there. A module that spawns
- * a child which could reach the Cloudflare API must get that child's environment from the seam, and
- * every module that spawns something else is written down below by name and reason — because an
- * exception list whose reasons have quietly stopped being true is itself the failure mode (#211), and a
- * gate that silently skipped the one module it was built for would be worse than no gate (#415).
- *
- * **It reads comment-blanked source.** Every docblock in this package discusses `CLOUDFLARE_API_TOKEN`
- * and `spawn` at length, this file most of all, so a scan over raw text would accuse the prose rather
- * than the code.
+ * **It reads comment-blanked source**, because the docblocks in this package discuss `CLOUDFLARE_API_TOKEN`
+ * and `spawn`, and a scan over raw text would accuse the prose rather than the code.
  */
 
 /** The repository root. This file lives at `packages/cli/src/ci/`; the anchor test below proves it. */
@@ -48,7 +37,7 @@ const SEAM = resolve(CLI_SRC, "cloudflare", "childEnv.ts");
  * reach `execFile` through `promisify(execFile)` and invoke the result under a local name — `run(…)`,
  * `execFileAsync(…)` — so a scan for `execFile(` finds nothing in exactly the modules that spawn the
  * most. The import is the one thing every spawner must write, and it cannot be aliased away.
- * The shared command spawner (#698) is the other spelling of the same fact: a module that calls
+ * The shared command spawner is the other spelling of the same fact: a module that calls
  * `spawnCommand`/`execCommand` starts a child at that call, so a call of either counts as a spawn.
  */
 const SPAWNS = /node:child_process|\b(?:spawnCommand|execCommand)\s*\(/;
@@ -57,8 +46,7 @@ const SPAWNS = /node:child_process|\b(?:spawnCommand|execCommand)\s*\(/;
  * The seam's two entry points, plus the two things built directly on them.
  *
  * `runWrangler` builds every one of its children through the seam, and `devCloudflareEnv` is the dev
- * session's single call to it — the value the preflight and the spawn both read, which is the whole
- * reason it is one call and not two (#555).
+ * session's single call to it, the one value the preflight and the spawn both read.
  *
  * The name rather than a call, because the orchestrator's is neither spelling: it reads
  * `(options.devCloudflareEnv ?? defaultDevCloudflareEnv)(…)`, so the seam arrives as a property and an
@@ -78,6 +66,7 @@ const CREDENTIAL_KEY = /CLOUDFLARE_(?:API_TOKEN|ACCOUNT_ID)/;
  * which authenticates to anything, and none of which would be made safer by a credential.
  */
 const NOT_CLOUDFLARE: Readonly<Record<string, string>> = {
+  "ci/commentHistory.ts": "runs `git ls-files` to list the tracked files the comment-history baseline covers.",
   "ci/distTypes.ts": "runs `tsc` against a packed tarball's types.",
   "ci/fileModes.ts": "runs `git ls-files` to read the index's mode bits.",
   "dev/ports.ts":
@@ -91,7 +80,7 @@ const NOT_CLOUDFLARE: Readonly<Record<string, string>> = {
   "platform/killTree.ts":
     "runs `taskkill` to end the process tree of a dev session's worker — no Cloudflare credentials in sight.",
   "platform/command.ts":
-    "runs the child its caller names — a package manager, a runner, wrangler — under the environment the caller passed. The caller's seam is what composes a credential; this module has none of its own (#698).",
+    "runs the child its caller names — a package manager, a runner, wrangler — under the environment the caller passed. The caller's seam is what composes a credential; this module has none of its own.",
   "platform/editor.ts": "runs the operator's `$EDITOR` on a config file.",
   "project/packageManager.ts":
     "runs a package manager to discover its version, and every install and uninstall the CLI makes (`runPackageManager`).",
@@ -148,9 +137,8 @@ describe("the credentialed-child seam", () => {
   });
 
   test("every exception still spawns something, so a stale entry cannot sit here unnoticed", () => {
-    // The other direction. #211's lesson: an exception list is only worth what its reasons are worth, so
-    // an entry for a module that no longer spawns anything — or no longer exists — fails the build rather
-    // than quietly excusing nothing.
+    // The other direction: an entry for a module that no longer spawns anything, or no longer exists,
+    // fails rather than excusing nothing.
     const spawners = new Set(
       cliModules()
         .filter((m) => SPAWNS.test(m.code))

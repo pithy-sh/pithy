@@ -142,6 +142,16 @@ bun scripts/license-headers.ts --fix     # fix it
 
 Two things it deliberately leaves alone. The copyright line is free-form — edit it and the gate won't argue, so naming an entity later costs one pass, not a rewrite of every file. And `templates/` trees are never stamped: those files are copied verbatim into the adopter's repo by `pithy init` and `pithy ui add`, where they become the adopter's code, under the adopter's copyright.
 
+## Comments
+
+A comment says what is true of the code now, and no more: no issue numbers, no names and dates, no account of what the code used to do. That history belongs in the commit and the issue. `CLAUDE.md` §Comments states the rule and what goes where instead.
+
+`packages/cli/src/ci/commentHistory.test.ts` holds it. It counts the issue references and attributions in each file's comments against `comment-history.jsonc`, and fails when a count rises or a file outside the baseline gains one. When you clean a file, lower the baseline to match; the command refuses to raise a count.
+
+```bash
+bun scripts/comment-history.ts   # lower every count that fell
+```
+
 ## Where the documentation goes
 
 `pithy.sh/docs` is canonical. A package README is a front door — what the package is, `pithy add <name>`, and the link. Prose goes on the site; it does not go in a README, and it does not come back.

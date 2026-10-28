@@ -28,7 +28,8 @@
     "!src/**/*.test.*",
     "!dist/**/*.test.*",
     "!src/openapi/kitDocument.ts",
-    "!src/openapi/writeKitDocument.ts"
+    "!src/openapi/writeKitDocument.ts",
+    "!src/ci/commentHistory.ts"
   ],
   "scripts": {
     "prepack": "bun scripts/vendorTemplate.ts",
