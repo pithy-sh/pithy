@@ -6,18 +6,22 @@ import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import { ConflictError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import { forgetRetention, recordRetention } from "@pithy-sh/core/src/retention/composed";
+import { resolveRetention } from "@pithy-sh/core/src/retention/policy";
 import { email } from "@pithy-sh/email/src/capability";
 import { email_0001_init } from "@pithy-sh/email/src/migrations/0001_init";
-import { beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { AuthConfig } from "../capability";
 import { authDatabase } from "../data/tables";
 import { UserLifecycleEvent } from "../data/userLifecycle";
 import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
 import { AUTH_MIGRATIONS } from "../migrations/set";
-import { purgeOps } from "../purge/run";
+import { deleteInactiveAccounts, purgeOps } from "../purge/run";
+import { inactivityOps } from "../purge/workflow";
 import { readLifecycleColumns, suspensionReason } from "./enforce";
 import { userErasureReader } from "./erasure";
 import type { UserLifecycleHookEvent, UserLifecycleHooks } from "./hooks";
+import { inactiveAccounts, recordActivity } from "./inactivity";
 import {
   completePurge,
   deleteUser,
@@ -31,6 +35,7 @@ import {
   requirePresent,
   restoreUser,
   suspendUser,
+  userPurgeWindowDays,
 } from "./transitions";
 
 /**
@@ -57,6 +62,8 @@ const TABLES = [
 
 const NOW = new Date("2026-10-20T12:00:00.000Z");
 const DAY = 86_400_000;
+/** No legal hold stands on anybody here; the hold cases are `../purge/run.test.ts`'s. */
+const NO_HOLDS = { held: async () => false };
 const OPERATOR = { type: "control-plane", id: "connection-1" } as const;
 
 /** Everything a test reads back after a transition. */
@@ -951,7 +958,7 @@ describe("which purges are due (#622)", () => {
 describe("the purge's operations over the transitions (#622)", () => {
   test("address reads the account's own address off its row, and null for an account that is not there (#814)", async () => {
     await seedUser();
-    const ops = purgeOps(harness().deps);
+    const ops = purgeOps(harness().deps, NO_HOLDS);
     expect(await ops.address("u1")).toBe("u1@test.com");
     expect(await ops.address("nobody")).toBeNull();
   });
@@ -959,7 +966,7 @@ describe("the purge's operations over the transitions (#622)", () => {
   test("due, mail, record and complete, each read off the account's own rows", async () => {
     await seedUser();
     const h = harness();
-    const ops = purgeOps(h.deps);
+    const ops = purgeOps(h.deps, NO_HOLDS);
     expect(await ops.due("u1")).toBe("not_due");
     // Not due, so nothing is mailed: the mail is only ever the last word on an erasure that is happening.
     expect(await ops.mailComplete("u1", undefined)).toBe(false);
@@ -982,7 +989,7 @@ describe("the purge's operations over the transitions (#622)", () => {
   test("a hard deletion's notify: false is written on its row, so a purge started with no parameter sends no mail", async () => {
     await seedUser();
     const h = harness();
-    const ops = purgeOps(h.deps);
+    const ops = purgeOps(h.deps, NO_HOLDS);
     await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x", mode: "hard", notify: false });
     expect((await history()).map((row) => [row.action, row.notify])).toEqual([["deleted", false]]);
     expect(await purgeSubject(h.deps, "u1")).toMatchObject({ state: "due", notify: false });
@@ -1006,7 +1013,7 @@ describe("the purge's operations over the transitions (#622)", () => {
     });
     const later = { ...h.deps, now: () => new Date(NOW.getTime() + 1) };
     expect(await purgeSubject(later, "u1")).toMatchObject({ state: "due", notify: false });
-    expect(await purgeOps(later).mailComplete("u1", undefined)).toBe(false);
+    expect(await purgeOps(later, NO_HOLDS).mailComplete("u1", undefined)).toBe(false);
   });
 
   test("two purges that finish at once record, audit and fire once between them", async () => {
@@ -1143,5 +1150,143 @@ describe("the erasure record (#823)", () => {
       new Date(NOW.getTime() + 10 * DAY),
     );
     expect(ids).toEqual(["legacy", "stuck"]);
+  });
+});
+
+describe("the inactivity pass", () => {
+  /** A step runner with no journal: each step runs once, in order. */
+  const step = {
+    do: async <T>(_name: string, configOrFn: unknown, maybeFn?: () => Promise<T>): Promise<T> =>
+      ((typeof configOrFn === "function" ? configOrFn : maybeFn) as () => Promise<T>)(),
+  };
+  class Terminal extends Error {}
+  const YEAR = 365 * DAY;
+
+  async function lastActive(id: string, at: Date | null): Promise<void> {
+    await env.DB.prepare("update pithy_auth_users set last_active_at = ? where id = ?")
+      .bind(at === null ? null : at.getTime(), id)
+      .run();
+  }
+
+  async function session(userId: string, updatedAt: Date): Promise<void> {
+    await env.DB.prepare(
+      "insert into pithy_auth_sessions (id, expires_at, token, created_at, updated_at, user_id) values (?, ?, ?, ?, ?, ?)",
+    )
+      .bind(
+        `s-${userId}`,
+        updatedAt.toISOString(),
+        `t-${userId}`,
+        updatedAt.toISOString(),
+        updatedAt.toISOString(),
+        userId,
+      )
+      .run();
+  }
+
+  test("an account never stamped counts from when it was created", async () => {
+    await seedUser("u-existing");
+    const row = await env.DB.prepare("select last_active_at from pithy_auth_users where id = 'u-existing'").first<{
+      last_active_at: number | null;
+    }>();
+    // Seeded after the migration ran, so the column is unstamped: the pass falls back to `created_at` for it.
+    expect(row?.last_active_at ?? null).toBeNull();
+    // Created before the cutoff and never stamped: inactive since it was made.
+    await seedUser("u-old-unstamped");
+    await env.DB.prepare("update pithy_auth_users set created_at = ? where id = 'u-old-unstamped'")
+      .bind(new Date(NOW.getTime() - 10 * DAY).toISOString())
+      .run();
+    const db = authDatabase(env.DB);
+    expect(await inactiveAccounts(db, new Date(NOW.getTime() - DAY), 10)).toEqual(["u-old-unstamped"]);
+    // Created after the cutoff and never stamped: too new to be inactive.
+    expect(await inactiveAccounts(db, new Date(NOW.getTime() - 20 * DAY), 10)).toEqual([]);
+  });
+
+  test("recordActivity moves the clock forward and never back", async () => {
+    await seedUser("u1");
+    const db = authDatabase(env.DB);
+    await recordActivity(db, "u1", new Date(NOW.getTime() - DAY));
+    await recordActivity(db, "u1", new Date(NOW.getTime() - 3 * DAY));
+    const row = await env.DB.prepare("select last_active_at from pithy_auth_users where id = 'u1'").first<{
+      last_active_at: number;
+    }>();
+    expect(row?.last_active_at).toBe(NOW.getTime() - DAY);
+  });
+
+  test("soft-deletes an account inactive past the class age, with its notice mail and window, and nobody else", async () => {
+    for (const id of ["u-idle", "u-recent", "u-refreshed", "u-held", "u-gone"]) await seedUser(id);
+    const long = new Date(NOW.getTime() - 4 * YEAR);
+    await lastActive("u-idle", long);
+    await lastActive("u-recent", new Date(NOW.getTime() - 30 * DAY));
+    await lastActive("u-refreshed", long);
+    await session("u-refreshed", new Date(NOW.getTime() - DAY));
+    await lastActive("u-held", long);
+    await lastActive("u-gone", long);
+    const h = harness();
+    await deleteUser(h.deps, { userId: "u-gone", actor: OPERATOR, reason: "Asked." });
+    const before = (await jobs()).length;
+
+    const holds = { held: async (_type: string, id: string | null) => id === "u-held" };
+    const result = await deleteInactiveAccounts(
+      inactivityOps(h.deps, holds, () => 3 * 365),
+      step,
+      Terminal,
+    );
+
+    expect(result).toEqual({ deleted: 1 });
+    const columns = await readLifecycleColumns(h.deps.db, "u-idle");
+    expect(columns?.deletedAt?.toISOString()).toBe(NOW.toISOString());
+    // The window this Worker deploys with, the same as any other soft deletion.
+    expect(columns?.purgeAfter?.getTime()).toBe(NOW.getTime() + 30 * DAY);
+    for (const id of ["u-recent", "u-refreshed", "u-held"]) {
+      expect((await readLifecycleColumns(h.deps.db, id))?.deletedAt ?? null).toBeNull();
+    }
+    const deletion = (await history("u-idle")).find((row) => row.action === "deleted");
+    expect(deletion?.actorType).toBe("system");
+    expect(deletion?.reason).toMatch(/Inactive for more than 1095 days/);
+    const mailed = (await jobs()).slice(before);
+    expect(mailed.map((job) => [job.template, job.to])).toEqual([["deletionScheduled", "u-idle@test.com"]]);
+  });
+
+  test("does nothing when no class age applies to what an account holds", async () => {
+    await seedUser("u-idle");
+    await lastActive("u-idle", new Date(NOW.getTime() - 10 * YEAR));
+    const h = harness();
+    expect(
+      await deleteInactiveAccounts(
+        inactivityOps(h.deps, NO_HOLDS, () => null),
+        step,
+        Terminal,
+      ),
+    ).toEqual({
+      deleted: 0,
+    });
+    expect((await readLifecycleColumns(h.deps.db, "u-idle"))?.deletedAt ?? null).toBeNull();
+  });
+});
+
+describe("the retention block's purge window", () => {
+  afterEach(() => forgetRetention());
+
+  test("a soft deletion waits the block's user window, not the capability's own", async () => {
+    await seedUser();
+    const h = harness();
+    recordRetention(resolveRetention({ purgeWindows: { user: "90d" } }, { purgeWindows: [], lifecycleActions: [] }));
+    // Over a composition that runs no user deletion the block governs nothing, and the capability's own stands.
+    expect(userPurgeWindowDays(h.deps.config)).toBe(30);
+    recordRetention(
+      resolveRetention(
+        { purgeWindows: { user: "90d" } },
+        { purgeWindows: [{ subject: "user", days: 30 }], lifecycleActions: [] },
+      ),
+    );
+    const deletion = await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: null });
+    expect(deletion.purgeAfter.getTime()).toBe(NOW.getTime() + 90 * DAY);
+  });
+
+  test("with no block recorded, the capability's own window", async () => {
+    await seedUser();
+    const h = harness({ config: { retention: { purgeAfterDays: 7 } } });
+    const deletion = await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: null });
+    expect(deletion.purgeAfter.getTime()).toBe(NOW.getTime() + 7 * DAY);
   });
 });

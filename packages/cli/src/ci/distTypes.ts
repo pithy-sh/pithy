@@ -225,7 +225,7 @@ export const SIDES: readonly Side[] = ["input", "output"];
  * Moved on 2026-10-27 (#820): `@pithy-sh/multiplayer` brings `pithy_multiplayer_sessions` and
  * `pithy_multiplayer_void_keys` — the index of sessions in flight, and every idempotency key spent voiding a result.
  */
-export const CENSUS = { tables: 74, packages: 18 };
+export const CENSUS = { tables: 75, packages: 18 };
 
 /**
  * Where the generated programs are written — **outside the checkout, and that is forced**.

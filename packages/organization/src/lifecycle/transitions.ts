@@ -5,6 +5,8 @@ import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types"
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
+import { composedRetention } from "@pithy-sh/core/src/retention/composed";
+import { purgeWindowDays } from "@pithy-sh/core/src/retention/policy";
 import { type CompiledQuery, sql } from "kysely";
 import type { OrganizationLifecycleAction, OrganizationLifecycleActorType } from "../data/organizationLifecycle";
 import { ACTING_TABLE, LIFECYCLE_TABLE, ORGANIZATIONS_TABLE, type OrganizationDatabase } from "../data/tables";
@@ -364,6 +366,15 @@ export async function reinstateOrganization(
     at,
   });
   return { changed: true };
+}
+
+/**
+ * How many days an organization's soft deletion stays restorable: the Worker's `retention.purgeWindows.organization`
+ * when its block names one, else `configured`, this capability's own `retention.purgeAfterDays`.
+ */
+export function organizationPurgeWindowDays(configured: number): number {
+  const retention = composedRetention();
+  return (retention && purgeWindowDays(retention, "organization")) ?? configured;
 }
 
 /** How a deletion runs: shut now and purged once the window closes, or purged now. */

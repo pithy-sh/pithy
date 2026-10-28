@@ -215,8 +215,8 @@ async function seedUser(id: string, address = `${id}@example.test`): Promise<voi
     .values(
       User.encode({
         id,
-        name: "Ada Lovelace",
-        email: address,
+        name: "Ada Lovelace" as User["name"],
+        email: address as User["email"],
         emailVerified: true,
         image: null,
         locale: null,

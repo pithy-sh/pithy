@@ -7,6 +7,7 @@ import { composedCapability } from "@pithy-sh/core/src/capability/composition";
 import { InternalError, messageOf } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { bindWorkflowContext, createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
+import { legalHolds } from "@pithy-sh/core/src/retention/holds";
 import { workflowBindingFor } from "@pithy-sh/core/src/workflow/dispatch";
 import type { TerminalErrorConstructor, WorkflowStepLike } from "@pithy-sh/core/src/workflow/faults";
 import { OrganizationAuditActions } from "../audit/actions";
@@ -155,7 +156,11 @@ export async function runOrganizationPurgeDue(
   const log = runLog(env, event, "organization:purge-due");
   const lifecycle = lifecycleFor(organization, env, log);
   return startDueOrganizationPurges(
-    { due: dueOrganizationPurgesOf(lifecycle), start: organizationPurgeStarter(env, log) },
+    {
+      due: dueOrganizationPurgesOf(lifecycle),
+      start: organizationPurgeStarter(env, log),
+      held: (organizationId) => legalHolds(env).held("organization", organizationId),
+    },
     step,
     terminalError,
     params,

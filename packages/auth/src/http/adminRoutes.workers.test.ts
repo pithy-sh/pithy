@@ -224,8 +224,8 @@ async function seedUser(id: string, email: string, ageMinutes: number): Promise<
     .values(
       User.encode({
         id,
-        name: "Ada Lovelace",
-        email,
+        name: "Ada Lovelace" as User["name"],
+        email: email as User["email"],
         emailVerified: true,
         image: null,
         locale: null,

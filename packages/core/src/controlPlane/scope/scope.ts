@@ -117,6 +117,22 @@ export const EVIDENCE_READ_SCOPE: ControlPlaneScope = "evidence:read";
 export const ERASURE_READ_SCOPE: ControlPlaneScope = "erasure:read";
 
 /**
+ * Place and release a legal hold on a user, an organization or a tenant's audit trail. A write — both routes
+ * behind it are `POST`s — and kind `writes`, so `pithy dashboard connect` offers it and never grants it by default.
+ *
+ * **It can only preserve.** A hold suspends purges, prunes and inactivity deletions; releasing one returns the subject
+ * to the policy the Worker deploys with. No route behind it, or anywhere, shortens a retention.
+ */
+export const RETENTION_HOLD_SCOPE: ControlPlaneScope = "retention:hold";
+
+/**
+ * Read the legal holds: every hold, standing or released, with who placed it and why. Read-only — the one
+ * route behind it is a `GET` — and kind `reads`. The manifest's count of standing holds sits behind it too:
+ * `activeHolds`, in the health of the `controlplane` entry.
+ */
+export const RETENTION_READ_SCOPE: ControlPlaneScope = "retention:read";
+
+/**
  * The seam's base grant — what `pithy dashboard connect` grants whatever the Worker composes. Ping is absent
  * because it is not grantable; see {@link ANY_VERIFIED_CALLER}.
  *

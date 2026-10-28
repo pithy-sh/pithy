@@ -134,6 +134,15 @@ describe("defaultGrant", () => {
     ]);
   });
 
+  test("offers retention:read preselected, and retention:hold offered but never granted by default", () => {
+    const scopes = grantableScopes([controlplane()]);
+    expect(scopes.find((entry) => entry.scope === "retention:read")).toMatchObject({ read: true, routes: 1 });
+    expect(scopes.find((entry) => entry.scope === "retention:hold")).toMatchObject({ read: false, routes: 2 });
+    expect(defaultGrant([controlplane()])).toContain("retention:read");
+    expect(defaultGrant([controlplane()])).not.toContain("retention:hold");
+    expect(resolveScopeRequest(readScopeRequest(["retention:hold"]), scopes)).toEqual(["retention:hold"]);
+  });
+
   test("offers erasure:read as a read, preselected and grantable on its own — both its routes are GETs (#823)", () => {
     const erasure = grantableScopes([controlplane()]).find((entry) => entry.scope === "erasure:read");
     expect(erasure?.read).toBe(true);
@@ -341,6 +350,8 @@ describe("--scope all resolves to the list the prompt renders", () => {
     "privacy:read",
     "evidence:read",
     "erasure:read",
+    "retention:read",
+    "retention:hold",
     "audit:events:read",
     "audit:events:read_detail",
     "support:tickets:read",
@@ -374,6 +385,8 @@ describe("--scope all resolves to the list the prompt renders", () => {
       "privacy:read",
       "evidence:read",
       "erasure:read",
+      "retention:read",
+      "retention:hold",
       "audit:events:read",
       "audit:events:read_detail",
       "support:tickets:read",
@@ -391,6 +404,8 @@ describe("--scope all resolves to the list the prompt renders", () => {
       "privacy:read",
       "evidence:read",
       "erasure:read",
+      "retention:read",
+      "retention:hold",
     ]);
   });
 
@@ -405,6 +420,7 @@ describe("--scope all resolves to the list the prompt renders", () => {
       "privacy:read",
       "evidence:read",
       "erasure:read",
+      "retention:read",
       "audit:events:read",
       "audit:events:read_detail",
       "support:tickets:read",
@@ -468,6 +484,8 @@ describe("decideGrant", () => {
       "privacy:read",
       "evidence:read",
       "erasure:read",
+      "retention:read",
+      "retention:hold",
       "audit:events:read",
       "audit:events:read_detail",
       "support:tickets:read",
@@ -519,6 +537,7 @@ describe("decideGrant", () => {
       "privacy:read",
       "evidence:read",
       "erasure:read",
+      "retention:read",
       "audit:events:read",
       "audit:events:read_detail",
       "support:tickets:read",
@@ -531,6 +550,8 @@ describe("decideGrant", () => {
       "privacy:read",
       "evidence:read",
       "erasure:read",
+      "retention:read",
+      "retention:hold",
       "audit:events:read",
       "audit:events:read_detail",
       "support:tickets:read",

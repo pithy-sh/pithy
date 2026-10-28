@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { isRetained, type PurgeContext, type PurgeStep } from "@pithy-sh/core/src/capability/purge";
+import type { LegalHolds } from "@pithy-sh/core/src/retention/holds";
 import {
   classifiedSteps,
   type TerminalErrorConstructor,
@@ -42,6 +43,15 @@ import { AUTH_CAPABILITY, type AuthPurgeDueParams, type AuthPurgeParams } from "
  *
  * Every step from 2 on records an audit event as well as its row (#823), which the erasure attestation cites.
  *
+ * ## A legal hold stops it
+ *
+ * Before `due` hands over, and again before every step after it, the purge asks whether a legal hold stands on the
+ * account — each ask its own step, `hold <next>`, so a replay serves the answer it got. A hold found ends the run as
+ * `held`, having erased nothing more: the steps that finished stay finished, the rest wait. Released, the account is
+ * still deleted and still due, so the next daily pass starts a fresh purge, whose idempotent steps find nothing to
+ * erase where the first one did and carry on from there. A hold that cannot be read fails its step, which retries:
+ * a purge never erases past a hold it could not see.
+ *
  * ## A purge that gives up says where (#823)
  *
  * A step that exhausts its retries fails the instance, and the daily pass starts a fresh one tomorrow. Until then the
@@ -72,10 +82,12 @@ export interface PurgeOps {
   complete(userId: string): Promise<boolean>;
   /** Record that the purge gave up at `step`, in the history and the trail (#823). */
   fail(userId: string, step: string): Promise<void>;
+  /** Whether a legal hold stands on the account. Throws when it cannot say. */
+  held(userId: string): Promise<boolean>;
 }
 
 /** The operations, over the lifecycle transitions. */
-export function purgeOps(deps: LifecycleDeps): PurgeOps {
+export function purgeOps(deps: LifecycleDeps, holds: LegalHolds): PurgeOps {
   return {
     due: async (userId) => (await purgeSubject(deps, userId)).state,
     recordStep: (userId, step, summary) => recordPurgeStep(deps, { userId, step, summary }),
@@ -92,6 +104,7 @@ export function purgeOps(deps: LifecycleDeps): PurgeOps {
     },
     complete: async (userId) => (await completePurge(deps, { userId })).changed,
     fail: (userId, step) => recordPurgeFailure(deps, { userId, step }),
+    held: (userId) => holds.held("user", userId),
   };
 }
 
@@ -99,8 +112,11 @@ export function purgeOps(deps: LifecycleDeps): PurgeOps {
 export interface PurgeOutcome {
   /** The account. */
   readonly userId: string;
-  /** `purged`, or why nothing was erased: `not_due` (restored, or inside its window) and `gone` (no account). */
-  readonly state: "purged" | "not_due" | "gone";
+  /**
+   * `purged`; or why nothing was erased: `not_due` (restored, or inside its window) and `gone` (no account); or
+   * `held`, a legal hold stopped it before the step it would have run next.
+   */
+  readonly state: "purged" | "not_due" | "gone" | "held";
   /** Every step that erased its rows, in the order it ran. Empty when nothing was erased. */
   readonly erased: readonly string[];
   /** Every step that kept its rows under a stated basis (#814), in the order it ran. */
@@ -130,6 +146,8 @@ export async function purgeUser(
   const userId = params.userId;
   const state = await own.do("due", () => run.ops.due(userId));
   if (state !== "due") return { userId, state, erased: [], retained: [], mailed: false };
+  // Asked before every step from here on, each its own step, so a hold placed mid-run stops the next one.
+  const stopped = (next: string) => own.do(`hold ${next}`, () => run.ops.held(userId));
 
   const context: PurgeContext = {
     subject: { type: "user", id: userId },
@@ -142,6 +160,7 @@ export async function purgeUser(
   const retained: string[] = [];
   // The step running now, so a failure records where it stopped.
   let current = "due";
+  const held = { userId, state: "held", erased, retained, mailed: false } as const;
   const runStep = async (each: PurgeStep) => {
     const { contribution } = each;
     current = each.step;
@@ -150,10 +169,17 @@ export async function purgeUser(
     else erased.push(await eraseStep(step, run.ops, each, context));
   };
   try {
-    for (const each of others) await runStep(each);
+    for (const each of others) {
+      if (await stopped(each.step)) return held;
+      await runStep(each);
+    }
     current = "mail";
+    if (await stopped("mail")) return held;
     const mailed = await own.do("mail", () => run.ops.mailComplete(userId, params.notify));
-    for (const each of auth) await runStep(each);
+    for (const each of auth) {
+      if (await stopped(each.step)) return { ...held, mailed };
+      await runStep(each);
+    }
     current = "complete";
     await own.do("complete", () => run.ops.complete(userId));
     return { userId, state: "purged", erased, retained, mailed };
@@ -224,6 +250,11 @@ export interface PurgeDueRun {
    * started, and the pass does not count it.
    */
   start(due: DuePurge): Promise<boolean>;
+  /**
+   * Whether a legal hold stands on the account. A held account is not started; absent, every due account is,
+   * and each purge's own hold check stops it before its first step.
+   */
+  held?(userId: string): Promise<boolean>;
 }
 
 /**
@@ -247,7 +278,10 @@ export async function startDuePurges(
       // Counted from what each start answered, never from the page's length: a purge the binding could not start
       // is not running, and `{ started }` is what an operator reads to learn whether they are.
       let running = 0;
-      for (const each of ids) if (await run.start(each)) running += 1;
+      for (const each of ids) {
+        if (run.held && (await run.held(each.userId))) continue;
+        if (await run.start(each)) running += 1;
+      }
       return running;
     });
   }
@@ -257,4 +291,58 @@ export async function startDuePurges(
 /** The daily pass's reads, over the lifecycle transitions. */
 export function duePurgesOf(deps: LifecycleDeps): PurgeDueRun["due"] {
   return (limit) => duePurges(deps, limit);
+}
+
+/** How many inactive accounts one pass soft-deletes, at most: a backlog drains over nights, never in one. */
+export const INACTIVE_DEFAULT_LIMIT = 200;
+
+/** What the inactivity pass reads and deletes through. */
+export interface InactivityRun {
+  /**
+   * The longest an account may sit inactive, in days — the strictest class age it holds — or null for no limit.
+   * Asked inside a step, so a replay serves the answer it got.
+   */
+  days(): Promise<number | null>;
+  /** Every account inactive since `cutoff`, oldest first, at most `limit`. */
+  inactive(cutoff: Date, limit: number): Promise<string[]>;
+  /** Whether a legal hold stands on the account. */
+  held(userId: string): Promise<boolean>;
+  /** Soft-delete one account through the lifecycle, with its notice mail and window. Says whether it was deleted. */
+  remove(userId: string, days: number): Promise<boolean>;
+  /** Now. */
+  now(): Date;
+}
+
+/**
+ * The inactivity pass: every account untouched for longer than the strictest class age it holds is
+ * soft-deleted through the lifecycle — its deletion-scheduled mail, its window, then the purge the daily pass starts
+ * once that window closes. A held account is skipped. With no class age that applies, the pass does nothing.
+ *
+ * Listed in one step, deleted in pages of steps, so a pass that dies part-way resumes after the page it finished.
+ * A deletion is no transition on an account already deleted, so a repeated page deletes nobody twice.
+ */
+export async function deleteInactiveAccounts(
+  run: InactivityRun,
+  step: WorkflowStepLike,
+  terminalError: TerminalErrorConstructor,
+  limit = INACTIVE_DEFAULT_LIMIT,
+): Promise<{ deleted: number }> {
+  const own = classifiedSteps(step, authWorkflowRetry, terminalError);
+  const days = await own.do("class age", () => run.days());
+  if (days === null) return { deleted: 0 };
+  // The cutoff is read inside the step, so a replay serves the same list rather than one drawn at a later instant.
+  const ids = await own.do("inactive", () => run.inactive(new Date(run.now().getTime() - days * 86_400_000), limit));
+  let deleted = 0;
+  for (let page = 0; page * PURGE_START_PAGE < ids.length; page += 1) {
+    const slice = ids.slice(page * PURGE_START_PAGE, (page + 1) * PURGE_START_PAGE);
+    deleted += await own.do(`inactive ${page + 1}`, async () => {
+      let count = 0;
+      for (const userId of slice) {
+        if (await run.held(userId)) continue;
+        if (await run.remove(userId, days)) count += 1;
+      }
+      return count;
+    });
+  }
+  return { deleted };
 }

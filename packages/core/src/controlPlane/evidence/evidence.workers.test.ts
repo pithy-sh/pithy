@@ -326,7 +326,7 @@ describe("GET /control-plane/evidence (#821)", () => {
     const history = control(body, "change-history");
     // Nothing is applied on a fresh database, so this build's own migrations are pending: a gap, named.
     expect(history.state).toBe("gap");
-    expect(history.facts).toContainEqual({ fact: "pending", subject: "app", value: 4, source: "migrationLedger" });
+    expect(history.facts).toContainEqual({ fact: "pending", subject: "app", value: 5, source: "migrationLedger" });
     const rotation = control(body, "key-rotation");
     expect(rotation.state).toBe("gap");
     expect(rotation.facts).toContainEqual({

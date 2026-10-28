@@ -135,7 +135,8 @@ describe("auth_0004_user_lifecycle", () => {
 
   test("down drops the table and the four columns, leaving everything before it intact", async () => {
     await runMigrations(env.DB, provider());
-    // `0007`, `0006` and `0005` sit above it in the chain, so they come down first.
+    // `0008`, `0007`, `0006` and `0005` sit above it in the chain, so they come down first.
+    await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());

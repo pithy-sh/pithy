@@ -4,6 +4,7 @@
 import { z } from "zod";
 import { PresenceRoomDescriptor } from "../../presence/http/responses";
 import { PrivacyPosture } from "../../privacy/posture";
+import { EffectiveRetention } from "../../retention/policy";
 import { ControlPlaneScope } from "../scope/scope";
 import { ManifestConfigKey, ManifestConfigValues } from "./configuration";
 import { CapabilityHealthReport, HealthSummary, HealthSummaryKey, healthReport, healthWire } from "./healthSummary";
@@ -302,6 +303,9 @@ export const ControlPlaneManifest = z
       ),
     privacy: PrivacyPosture.optional().describe(
       "What this project declares about privacy and what its running code holds: classes and counts, never field names (`GET /control-plane/privacy` has those, behind `privacy:read`). Present on every Worker from #132, `declared` explicitly empty when nothing was declared; absent from an older Worker.",
+    ),
+    retention: EffectiveRetention.optional().describe(
+      "How long this Worker keeps deleted accounts, the audit trail and each class of personal data, as its `retention` block takes effect: every window in days and where it came from. Absent from an older Worker.",
     ),
     capabilities: z
       .array(CapabilityDescriptor)

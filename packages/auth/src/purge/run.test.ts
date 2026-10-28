@@ -61,7 +61,7 @@ function contribution(name: string, log: string[], failures = 0): PurgeStep & { 
 }
 
 /** The account's records, recording what was asked of them in order. */
-function ops(log: string[], due: "due" | "not_due" | "gone" = "due"): PurgeOps {
+function ops(log: string[], due: "due" | "not_due" | "gone" = "due", held: () => boolean = () => false): PurgeOps {
   let completed = false;
   return {
     due: async () => due,
@@ -82,6 +82,7 @@ function ops(log: string[], due: "due" | "not_due" | "gone" = "due"): PurgeOps {
       return first;
     },
     fail: async (userId, step) => void log.push(`fail ${userId} at ${step}`),
+    held: async () => held(),
   };
 }
 
@@ -118,7 +119,15 @@ describe("purgeUser", () => {
       retained: ["payments"],
       mailed: true,
     });
-    expect(ran).toEqual(["due", "retain payments", "erase media", "mail", "erase auth", "complete"]);
+    // Every step after `due` follows its own hold check, which the hold cases below exercise.
+    expect(ran.filter((name) => !name.startsWith("hold "))).toEqual([
+      "due",
+      "retain payments",
+      "erase media",
+      "mail",
+      "erase auth",
+      "complete",
+    ]);
     expect(log).toContain("retained payments u1: Kept by payments.");
     expect(log).not.toContain("record payments u1: Keeps payments's rows.");
     expect(log.filter((line) => line.startsWith("export"))).toEqual([]);
@@ -161,7 +170,18 @@ describe("purgeUser", () => {
       retained: [],
       mailed: true,
     });
-    expect(ran).toEqual(["due", "erase media", "erase app", "mail", "erase auth", "complete"]);
+    expect(ran).toEqual([
+      "due",
+      "hold media",
+      "erase media",
+      "hold app",
+      "erase app",
+      "hold mail",
+      "mail",
+      "hold auth",
+      "erase auth",
+      "complete",
+    ]);
     expect(log).toEqual([
       "erase media u1",
       "record media u1: Erases media's rows.",
@@ -294,10 +314,94 @@ describe("purgeUser", () => {
   });
 });
 
+describe("purgeUser under a legal hold", () => {
+  test("a hold standing when the purge starts erases nothing, mails nothing and completes nothing", async () => {
+    const log: string[] = [];
+    const steps = [contribution("media", log), contribution("auth", log)];
+    const outcome = await purgeUser({ steps, env: {}, ops: ops(log, "due", () => true) }, workflow().step, Terminal, {
+      userId: "u1",
+    });
+    expect(outcome).toEqual({ userId: "u1", state: "held", erased: [], retained: [], mailed: false });
+    expect(log).toEqual([]);
+  });
+
+  test("a hold placed mid-run stops the purge at its next step, and a purge after release resumes it", async () => {
+    const log: string[] = [];
+    let hold = false;
+    const steps = [
+      {
+        step: "media",
+        contribution: {
+          subject: "user" as const,
+          summary: "Deletes media.",
+          erase: async () => {
+            log.push("erase media");
+            // Counsel calls while the first step runs.
+            hold = true;
+          },
+        },
+      },
+      contribution("storage", log),
+      contribution("auth", log),
+    ];
+    const first = await purgeUser({ steps, env: {}, ops: ops(log, "due", () => hold) }, workflow().step, Terminal, {
+      userId: "u1",
+    });
+    expect(first.state).toBe("held");
+    expect(first.erased).toEqual(["media"]);
+    expect(log.filter((line) => line.startsWith("erase"))).toEqual(["erase media"]);
+    expect(log.some((line) => line.startsWith("mail") || line.startsWith("complete"))).toBe(false);
+
+    // Released. The next daily pass starts a fresh instance, which re-runs the finished step idempotently.
+    hold = false;
+    log.length = 0;
+    const second = await purgeUser(
+      { steps: steps.slice(1), env: {}, ops: ops(log, "due", () => hold) },
+      workflow().step,
+      Terminal,
+      { userId: "u1" },
+    );
+    expect(second.state).toBe("purged");
+    expect(second.erased).toEqual(["storage", "auth"]);
+  });
+
+  test("each hold check is its own journaled step, named for the step it guards", async () => {
+    const { step, ran } = workflow();
+    await purgeUser(
+      { steps: [contribution("media", []), contribution("auth", [])], env: {}, ops: ops([]) },
+      step,
+      Terminal,
+      {
+        userId: "u1",
+      },
+    );
+    expect(ran.filter((name) => name.startsWith("hold"))).toEqual(["hold media", "hold mail", "hold auth"]);
+  });
+});
+
 /** Due accounts, each under a deletion of its own. */
 const dueOf = (ids: readonly string[]) => ids.map((userId, index) => ({ userId, deletedAt: 1_000 + index }));
 
 describe("startDuePurges", () => {
+  test("starts no purge for a held account", async () => {
+    const started: string[] = [];
+    const result = await startDuePurges(
+      {
+        due: async () => dueOf(["u1", "u2", "u3"]),
+        start: async ({ userId }) => {
+          started.push(userId);
+          return true;
+        },
+        held: async (userId) => userId === "u2",
+      },
+      workflow().step,
+      Terminal,
+      {},
+    );
+    expect(started).toEqual(["u1", "u3"]);
+    expect(result).toEqual({ started: 2 });
+  });
+
   test("starts a purge for every due account, in pages, under its deletion, and reports how many", async () => {
     const ids = Array.from({ length: PURGE_START_PAGE + 3 }, (_, index) => `u${index}`);
     const started: { userId: string; deletedAt: number }[] = [];

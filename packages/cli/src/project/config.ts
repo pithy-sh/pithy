@@ -299,6 +299,14 @@ export interface WorkerConfig {
   /** This Worker's own app capability, composed last. */
   app?: Capability;
   /**
+   * How long this Worker keeps deleted accounts, the audit trail and each class of personal data: purge windows,
+   * audit retention by action prefix, and class ages. `createEntrypoint` resolves it at assembly and refuses one
+   * that keeps a floored audit action under the kit's floor; `pithy doctor` reports what it resolves to.
+   *
+   * Typed `unknown` for the same reason {@link WorkerConfig.domains} is: core's `RetentionPolicy` validates it.
+   */
+  retention?: unknown;
+  /**
    * Where this Worker answers, per environment — the one declaration `routes`, `vars.BASE_URL`, and every
    * command that needs an address are derived from. Optional: a project without a domain yet is
    * legitimate, and adding one later is a config edit plus a deploy.

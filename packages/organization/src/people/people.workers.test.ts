@@ -3,6 +3,7 @@
 
 import { env } from "cloudflare:test";
 import { MAX_USER_LOOKUP } from "@pithy-sh/auth/src/admin/users";
+import type { User } from "@pithy-sh/auth/src/data/betterAuth";
 import { type AuthDatabase, authDatabase } from "@pithy-sh/auth/src/data/tables";
 import { AUTH_MIGRATION_ORDER, auth_0001_init } from "@pithy-sh/auth/src/migrations/0001_init";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
@@ -245,8 +246,8 @@ describe("the face a roster draws", () => {
     // things.
     const user = {
       id: "u-ada",
-      name: "Ada",
-      email: "ada@example.com",
+      name: "Ada" as User["name"],
+      email: "ada@example.com" as User["email"],
       emailVerified: true,
       image: RASTER,
       locale: null,

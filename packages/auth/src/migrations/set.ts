@@ -8,6 +8,7 @@ import { auth_0004_user_lifecycle } from "./0004_user_lifecycle";
 import { auth_0005_purge_once } from "./0005_purge_once";
 import { auth_0006_verification_outcomes } from "./0006_verification_outcomes";
 import { auth_0007_erasure_record } from "./0007_erasure_record";
+import { auth_0008_last_active } from "./0008_last_active";
 
 /**
  * Every migration `@pithy-sh/auth` ships, keyed as `pithy migrate` composes them.
@@ -30,4 +31,5 @@ export const AUTH_MIGRATIONS = {
   "0005_purge_once": auth_0005_purge_once,
   "0006_verification_outcomes": auth_0006_verification_outcomes,
   "0007_erasure_record": auth_0007_erasure_record,
+  "0008_last_active": auth_0008_last_active,
 } as const;

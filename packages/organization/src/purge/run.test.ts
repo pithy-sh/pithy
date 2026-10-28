@@ -101,7 +101,12 @@ describe("purgeOrganization", () => {
       organizationId: ACME,
     });
     expect(outcome).toEqual({ organizationId: ACME, state: "purged", erased: ["organization"], retained: ["books"] });
-    expect(ran).toEqual(["due", "retain books", "erase organization", "complete"]);
+    expect(ran.filter((name) => !name.startsWith("hold "))).toEqual([
+      "due",
+      "retain books",
+      "erase organization",
+      "complete",
+    ]);
     expect(log).toContain(`retained books ${ACME}: Kept for tax records.`);
   });
 
@@ -120,7 +125,13 @@ describe("purgeOrganization", () => {
       erased: ["media", "app", "organization"],
       retained: [],
     });
-    expect(ran).toEqual(["due", "erase media", "erase app", "erase organization", "complete"]);
+    expect(ran.filter((name) => !name.startsWith("hold "))).toEqual([
+      "due",
+      "erase media",
+      "erase app",
+      "erase organization",
+      "complete",
+    ]);
     expect(log).toEqual([
       `erase media organization:${ACME}`,
       `record media ${ACME}: Erases media's rows.`,
@@ -161,7 +172,11 @@ describe("purgeOrganization", () => {
     await purgeOrganization({ steps: [own, media, app], env: {}, ops: ops(log) }, replay.step, Terminal, {
       organizationId: ACME,
     });
-    expect(replay.ran).toEqual(["erase app", "erase organization", "complete"]);
+    expect(replay.ran.filter((name) => !name.startsWith("hold "))).toEqual([
+      "erase app",
+      "erase organization",
+      "complete",
+    ]);
     expect(media.erases()).toBe(1);
   });
 
@@ -206,7 +221,86 @@ describe("purgeOrganization", () => {
   });
 });
 
+describe("purgeOrganization under a legal hold", () => {
+  test("a hold standing before the first step erases nothing and completes nothing", async () => {
+    const log: string[] = [];
+    const { step } = workflow();
+    const outcome = await purgeOrganization(
+      {
+        steps: [contribution("media", log), contribution("organization", log)],
+        env: {},
+        ops: ops(log),
+        held: async () => true,
+      },
+      step,
+      Terminal,
+      { organizationId: ACME },
+    );
+    expect(outcome).toEqual({ organizationId: ACME, state: "held", erased: [], retained: [] });
+    expect(log).toEqual([]);
+  });
+
+  test("a hold placed mid-run stops at the next step, and the purge after release finishes it", async () => {
+    const log: string[] = [];
+    let hold = false;
+    let released = false;
+    const media = {
+      step: "media",
+      contribution: {
+        subject: "organization" as const,
+        summary: "Deletes media.",
+        erase: async () => {
+          log.push("erase media");
+          // Counsel calls while the first purge's first step runs, and only then.
+          if (!released) hold = true;
+        },
+      },
+    };
+    const steps = [media, contribution("organization", log)];
+    const first = await purgeOrganization(
+      { steps, env: {}, ops: ops(log), held: async () => hold },
+      workflow().step,
+      Terminal,
+      { organizationId: ACME },
+    );
+    expect(first).toMatchObject({ state: "held", erased: ["media"] });
+    expect(log.some((line) => line.includes("organization"))).toBe(false);
+
+    hold = false;
+    released = true;
+    const second = await purgeOrganization(
+      { steps, env: {}, ops: ops(log), held: async () => hold },
+      workflow().step,
+      Terminal,
+      { organizationId: ACME },
+    );
+    expect(second).toMatchObject({ state: "purged", erased: ["media", "organization"] });
+  });
+});
+
 describe("startDueOrganizationPurges", () => {
+  test("starts no purge for a held organization", async () => {
+    const started: string[] = [];
+    const result = await startDueOrganizationPurges(
+      {
+        due: async () => [
+          { organizationId: "a", deletedAt: 1 },
+          { organizationId: "b", deletedAt: 2 },
+        ],
+        start: async ({ organizationId }) => {
+          started.push(organizationId);
+          return true;
+        },
+        held: async (organizationId) => organizationId === "a",
+      },
+      workflow().step,
+      Terminal,
+      {},
+    );
+    expect(started).toEqual(["b"]);
+    expect(result).toEqual({ started: 1 });
+  });
+
   test("starts one purge per due organization, a page per step, and counts only what started", async () => {
     const due = Array.from({ length: ORGANIZATION_PURGE_START_PAGE + 2 }, (_, index) => ({
       organizationId: `org-${index}`,

@@ -161,6 +161,7 @@ describe("the migration chain against what Better Auth writes", () => {
       "pithy_auth_users.suspended_until: missing",
       "pithy_auth_users.deleted_at: missing",
       "pithy_auth_users.purge_after: missing",
+      "pithy_auth_users.last_active_at: missing",
       "pithy_auth_accounts.issuer: required, and Better Auth never writes it",
     ]);
   });

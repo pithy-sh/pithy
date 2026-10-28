@@ -124,6 +124,31 @@ export const AuditCheckpoint = z
   .describe("A tenant chain's length and head, written to append-only object storage on a schedule.");
 export type AuditCheckpoint = z.infer<typeof AuditCheckpoint>;
 
+/** The format string of a tombstone object. */
+export const AUDIT_TOMBSTONE_FORMAT = "pithy-audit-tombstone/1";
+
+/**
+ * A pruned run of one chain: which positions the retention prune removed, the link before them, and the hashes at
+ * either end. Written to the checkpoint bucket before the rows are deleted, never overwritten, so a verify bridges
+ * the gap from the event before it to the event after it and reads the chain as whole across it.
+ */
+export const AuditTombstone = z
+  .object({
+    format: z.literal(AUDIT_TOMBSTONE_FORMAT).describe("The tombstone format."),
+    tenant: z.string().nullable().describe("The tenant whose chain was pruned, or null for the untenanted chain."),
+    fromSeq: z.number().int().min(1).describe("The first position the prune removed."),
+    throughSeq: z.number().int().min(1).describe("The last position the prune removed."),
+    count: z.number().int().min(1).describe("How many events the prune removed: every position from first to last."),
+    prior: Sha256Hex.nullable().describe(
+      "The hash of the event before the first one removed, or null when the run began the chain.",
+    ),
+    first: Sha256Hex.describe("The hash of the first event removed."),
+    last: Sha256Hex.describe("The hash of the last event removed, which the event after the gap names as its link."),
+    prunedAt: z.iso.datetime().describe("When the run was pruned, ISO-8601."),
+  })
+  .describe("A run of a tenant chain the retention prune removed, written to append-only object storage.");
+export type AuditTombstone = z.infer<typeof AuditTombstone>;
+
 /** The format string of an export document. */
 export const AUDIT_EXPORT_FORMAT = "pithy-audit-export/1";
 
@@ -142,6 +167,12 @@ export const AuditChainExport = z
     prior: ChainLink.nullable().describe("The link before the first event, or null when the range starts the chain."),
     events: z.array(ChainedEvent).describe("The range's chained events, in chain order."),
     checkpoints: z.array(AuditCheckpoint).describe("Every checkpoint covering the range, and the latest one after it."),
+    tombstones: z
+      .array(AuditTombstone)
+      .optional()
+      .describe(
+        "Every pruned run of the chain, so a verify bridges each gap the retention prune left. Absent from a Worker that has never pruned one.",
+      ),
     complete: z
       .boolean()
       .describe("Whether the events run to the chain's head, so a checkpoint past the last event is a truncation."),
@@ -275,6 +306,8 @@ export interface ChainVerifierOptions {
   prior: ChainLink | null;
   /** Checkpoints to hold the walk to. Another tenant's are ignored. */
   checkpoints: readonly AuditCheckpoint[];
+  /** The chain's pruned runs, each bridged where the walk reaches it. Another tenant's are ignored. */
+  tombstones?: readonly AuditTombstone[];
   /**
    * Whether every event must carry its personal values and their salt, so every commitment is checked: an export
    * taken with the detail says it does. Omitted, an event without them is one whose commitments stand unopened.
@@ -294,6 +327,8 @@ export interface ChainVerifier {
   readonly checked: number;
   /** How many of the tenant's checkpoints applied. */
   readonly checkpoints: number;
+  /** How many events the walk crossed as pruned, bridged by a tombstone rather than checked. */
+  readonly pruned: number;
 }
 
 /**
@@ -305,8 +340,45 @@ export function chainVerifier(options: ChainVerifierOptions): ChainVerifier {
   const own = options.checkpoints.filter((checkpoint) => checkpoint.tenant === options.tenant);
   const byCount = new Map<number, AuditCheckpoint>();
   for (const checkpoint of own) byCount.set(checkpoint.count, checkpoint);
+  const tombstones = (options.tombstones ?? []).filter((tombstone) => tombstone.tenant === options.tenant);
   let head = options.prior;
   let checked = 0;
+  let pruned = 0;
+
+  /**
+   * Cross every pruned run that starts where the walk stands and links to its head, before the event at `seq`. A
+   * tombstone that does not link, or that a checkpoint at either end disagrees with, bridges nothing.
+   */
+  const bridge = (seq: number): ChainBreak | null => {
+    for (;;) {
+      const expected = (head?.seq ?? 0) + 1;
+      if (seq <= expected) return null;
+      const run = tombstones.find(
+        (tombstone) =>
+          tombstone.fromSeq === expected &&
+          tombstone.throughSeq < seq &&
+          tombstone.count === tombstone.throughSeq - tombstone.fromSeq + 1 &&
+          tombstone.prior === (head?.hash ?? null),
+      );
+      if (!run) return null;
+      for (const [position, hash] of [
+        [run.fromSeq, run.first],
+        [run.throughSeq, run.last],
+      ] as const) {
+        const checkpoint = byCount.get(position);
+        if (checkpoint && checkpoint.head !== hash) {
+          return {
+            eventId: null,
+            position,
+            reason: "checkpoint",
+            detail: `The pruned run ${run.fromSeq} to ${run.throughSeq} differs from the checkpoint taken at ${checkpoint.takenAt}.`,
+          };
+        }
+      }
+      head = { seq: run.throughSeq, hash: run.last };
+      pruned += run.count;
+    }
+  };
 
   return {
     get head() {
@@ -318,7 +390,14 @@ export function chainVerifier(options: ChainVerifierOptions): ChainVerifier {
     get checkpoints() {
       return own.length;
     },
+    get pruned() {
+      return pruned;
+    },
     async push(event) {
+      if (event.tenant === options.tenant) {
+        const bridged = bridge(event.seq);
+        if (bridged) return bridged;
+      }
       const expected = (head?.seq ?? 0) + 1;
       if (event.tenant !== options.tenant) {
         return {
@@ -434,6 +513,8 @@ export interface ChainVerification {
   checked: number;
   /** How many of the tenant's checkpoints the export carried. */
   checkpoints: number;
+  /** How many events the walk crossed as pruned, each run bridged by its tombstone. */
+  pruned: number;
   /** The first break, or null. */
   break: ChainBreak | null;
 }
@@ -444,17 +525,27 @@ export async function verifyChainExport(document: AuditChainExport): Promise<Cha
     tenant: document.tenant,
     prior: document.prior,
     checkpoints: document.checkpoints,
+    tombstones: document.tombstones ?? [],
     values: document.detail,
   });
   for (const event of document.events) {
     const found = await verifier.push(event);
-    if (found) return { intact: false, checked: verifier.checked, checkpoints: verifier.checkpoints, break: found };
+    if (found) {
+      return {
+        intact: false,
+        checked: verifier.checked,
+        checkpoints: verifier.checkpoints,
+        pruned: verifier.pruned,
+        break: found,
+      };
+    }
   }
   const truncated = verifier.finish(document.complete);
   return {
     intact: truncated === null,
     checked: verifier.checked,
     checkpoints: verifier.checkpoints,
+    pruned: verifier.pruned,
     break: truncated,
   };
 }

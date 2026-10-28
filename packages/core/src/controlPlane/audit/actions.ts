@@ -52,6 +52,8 @@ export const ControlPlaneAuditActions = {
   connectionUpdated: "controlplane/connection_updated",
   /** A connection was removed. The seam returns to its shipped state: connected to nothing, denying everything. */
   connectionRemoved: "controlplane/connection_removed",
+  holdPlaced: "controlplane/hold_placed",
+  holdReleased: "controlplane/hold_released",
 } as const;
 
 /** One of the control-plane audit action codes. */
