@@ -107,8 +107,16 @@ function consentEveryTime(): BetterAuthPlugin {
   };
 }
 
-/** The provider plugin and the kit's consent hook, for one Worker's MCP endpoint. */
-export function mcpAuthorizationServer(settings: McpProviderSettings) {
+/**
+ * The provider plugin and the kit's consent hook, for one Worker's MCP endpoint.
+ *
+ * Typed as plain `BetterAuthPlugin`s, the way the kit's translator and sign-in gate are. Every reader takes them as
+ * that already: the instance's plugin list is the adopter's `BetterAuthPlugin[]` with these appended, and the
+ * migration plan reads a `BetterAuthPlugin[]`. So the widening erases nothing a caller sees, and it keeps the
+ * provider's inferred type out of the shipped declaration, which would otherwise name `better-call` internals a
+ * declaration cannot reach.
+ */
+export function mcpAuthorizationServer(settings: McpProviderSettings): McpProviderPlugins {
   return [
     oauthProvider({
       loginPage: settings.consentPage,
@@ -129,8 +137,8 @@ export function mcpAuthorizationServer(settings: McpProviderSettings) {
       ) as never,
     }),
     consentEveryTime(),
-  ] as const;
+  ];
 }
 
-/** The plugins {@link mcpAuthorizationServer} composes, as a list. */
-export type McpProviderPlugins = ReturnType<typeof mcpAuthorizationServer>;
+/** The plugins {@link mcpAuthorizationServer} composes: the provider, then the consent hook. */
+export type McpProviderPlugins = readonly [provider: BetterAuthPlugin, consent: BetterAuthPlugin];
