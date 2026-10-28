@@ -64,7 +64,7 @@ export const AuditEventRow = z
     actorKind: ControlPlaneActorKind.nullable()
       .default(null)
       .describe(
-        "For a `control-plane` actor, what kind of management client acted: `agent`, `dashboard` or `script`, from the connection it called through (#721). Null for every other actor, for a connection registered before the kind was recorded, and on rows written before this column existed (`audit_0002_actor_kind`).",
+        "What kind of client acted: `agent`, `dashboard` or `script`. For a `control-plane` actor, the connection it called through; for a `user` actor, `agent` when an MCP client acted as them. Null for every other row, for a connection registered before the kind was recorded, and on rows written before this column existed (`audit_0002_actor_kind`).",
       ),
     sessionId: z
       .string()
@@ -117,7 +117,7 @@ export const AuditEventRow = z
       .describe(
         "Whose action it was — the id of the tenant it was taken *for*, indexed with `occurredAt` for the (tenant, time) read this column exists to serve. **Supplied by the emitter, not stamped by the recorder** — the opposite of the four columns above it, and deliberately: `project`, `environment` and `worker` are properties of the writer, constant across every row a multi-tenant Worker writes, and no Worker var can know which customer an action belonged to. So this one is exactly as trustworthy as the call site that sets it, and it cannot be defaulted or verified here. Null means *not tenant-scoped* — a single-tenant app, a CLI-originated action, a fleet-wide operator action — and on rows written before this column existed. Never derived from a membership table afterwards: the tenant of an action is a fact at the time of the action, membership is a fact now.",
       ),
-    // The hash chain (#822, `audit_0005_chain`). All four null on a row written before the chain, which is its mark.
+    // The hash chain (`audit_0005_chain`). All four null on a row written before the chain, which is its mark.
     chainSeq: z
       .number()
       .int()

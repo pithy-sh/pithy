@@ -77,7 +77,7 @@ export const ListAuditEventsQuery = z
     ),
     actorId: FilterValue.optional().describe("Filter to one principal — a user id, a service name, a token subject."),
     actorKind: ControlPlaneActorKind.optional().describe(
-      "Filter to one kind of management client: `agent`, `dashboard` or `script`. What `actorType=control-plane` cannot say on its own.",
+      "Filter to one kind of client: `agent`, `dashboard` or `script`. `agent` finds a management agent's rows and every row a user's MCP client wrote, on both paths.",
     ),
     action: AuditAction.max(MAX_FILTER_LENGTH)
       .optional()
@@ -115,7 +115,7 @@ export const ListAuditEventsQuery = z
 export type ListAuditEventsQuery = z.infer<typeof ListAuditEventsQuery>;
 
 /**
- * The access-history query (#831): over what window, and where to resume.
+ * The access-history query: over what window, and where to resume.
  *
  * `since` is required, so an unbounded replay of the whole trail is a 400 before any query runs; `until` defaults to
  * now in the handler, the one value a schema cannot compute for a request. A window that ends before it starts is
@@ -149,7 +149,7 @@ export type AccessHistoryQuery = z.infer<typeof AccessHistoryQuery>;
 const RouteValue = z.string().min(1).max(512).startsWith("/");
 
 /**
- * The reach query (#828): whose calls to read, over what window, and whether to expand one route into its subjects.
+ * The reach query: whose calls to read, over what window, and whether to expand one route into its subjects.
  *
  * `connectionId` and `since` are required, so a missing one is a 400 before any query runs: an unbounded read over
  * every credential is not a question this route answers. `until` defaults to now in the handler, which is the one
@@ -189,7 +189,7 @@ export const ControlPlaneReachQuery = z
 export type ControlPlaneReachQuery = z.infer<typeof ControlPlaneReachQuery>;
 
 /**
- * The usage query (#812): whose calls to count, and over what window.
+ * The usage query: whose calls to count, and over what window.
  *
  * `connectionId` and `since` are required, so a missing one is a 400 before any query runs — an unbounded window over
  * every connection is not a question this route answers. `until` defaults to now in the handler, which is the one
@@ -212,14 +212,14 @@ export const ControlPlaneUsageQuery = z
 export type ControlPlaneUsageQuery = z.infer<typeof ControlPlaneUsageQuery>;
 
 /**
- * The tenant whose chain to read (#822). **Required**, because there is no "every chain": a chain is one tenant's.
+ * The tenant whose chain to read. **Required**, because there is no "every chain": a chain is one tenant's.
  * Send it empty (`?tenant=`) for the untenanted chain — the same encoding the listing's filter uses.
  */
 const ChainTenant = TenantFilter.describe(
   "The tenant whose chain to read. Send it empty (`?tenant=`) for the chain of events that belong to no tenant. Required: a chain is one tenant's.",
 );
 
-/** The chain verify query (#822): whose chain, and over what window. */
+/** The chain verify query: whose chain, and over what window. */
 export const ChainVerifyQuery = z
   .object({
     tenant: ChainTenant,
@@ -240,7 +240,7 @@ export type ChainVerifyQuery = z.infer<typeof ChainVerifyQuery>;
 /** The most events one export page carries. */
 export const MAX_EXPORT_PAGE = 1000;
 
-/** The chain export query (#822): whose chain, over what window, and where to resume. */
+/** The chain export query: whose chain, over what window, and where to resume. */
 export const ChainExportQuery = z
   .object({
     tenant: ChainTenant,

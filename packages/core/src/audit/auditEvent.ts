@@ -97,7 +97,7 @@ export const AuditEvent = z
       .nullish()
       .describe("The acting principal's stable id (user id, service/token name); null for `system`/`anonymous`."),
     actorKind: ControlPlaneActorKind.nullish().describe(
-      "For a `control-plane` actor, what kind of management client acted — `agent`, `dashboard` or `script` — from the connection it called through (#721). `actorType` names all three alike; this is what tells them apart. Stamped by `requireControlPlane`, so an emit site does not set it; null for every other actor type, and for a connection registered before the kind was recorded.",
+      "What kind of client acted — `agent`, `dashboard` or `script`. On a `control-plane` row it is the connection's kind, which `actorType` cannot tell apart, stamped by `requireControlPlane` so an emit site does not set it; null for a connection registered before the kind was recorded. On a `user` row it is `agent` when an MCP client acted as that user, so one filter finds every agent row on both paths. Null otherwise.",
     ),
     sessionId: z
       .string()
