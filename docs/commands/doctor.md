@@ -208,7 +208,7 @@ Project health:
 
 It **fails the exit**, on the same standard the `manifests:` section below is held to: a check that did not run established nothing, and calling a project healthy around a hole is the under-report both exist to prevent. In `--json` the entry carries `"state":"unavailable"` and its `worker`, and nothing else — there is no `ok` on it to read as `true`.
 
-The block opens with a **`manifests:`** section when an installed `@pithy-sh/*` package ships a `pithy.manifest.json` that will not parse or will not validate. It sits above the Workers, and outside all of them, because that is where the fault is: manifests resolve once from the project root, so no Worker owns one — and a capability nobody can read contributes no drift to any check underneath it. Without this section a project full of unreadable manifests read as healthy and said nothing at all. It names the package and the reason, it **fails the exit** like every other check here, and it is the one finding in the block `pithy upgrade` cannot act on: the file belongs to someone else's package, so the fix is a reinstall or a word with its maintainer.
+The block opens with a **`manifests:`** section when an installed `@pithy-sh/*` package ships a manifest — its `pithy.manifest.json`, or a companion such as `pithy.mcp.manifest.json` — that will not parse or will not validate. It sits above the Workers, and outside all of them, because that is where the fault is: manifests resolve once from the project root, so no Worker owns one — and a capability nobody can read contributes no drift to any check underneath it. Without this section a project full of unreadable manifests read as healthy and said nothing at all. It names the package, the manifest file and the reason, it **fails the exit** like every other check here, and it is the one finding in the block `pithy upgrade` cannot act on: the file belongs to someone else's package, so the fix is a reinstall or a word with its maintainer.
 
 ```
 Project health:
@@ -709,6 +709,7 @@ A Worker that composes a capability processing **under consent** — `email`, wh
 ```
 
 **It reports and does not fail the exit.** Whether a law requires consent for that processing is your call, and the kit records and gates without deciding which law applies. A Worker that processes nothing under consent prints no line. In `--json` it rides under `project.health.workers[].consent`, and each purpose's `fix` is the `pithy add consent` that records it.
+
 A Worker that composes the **`mcp`** capability gets an **`agents`** line (#724, `docs/AGENT-ACCESS.md` §4). Composing it means choosing a floor — a power, an entitlement, or `"signed-in"` — and an endpoint that lets any signed-in user drive an agent against the application is a decision worth seeing on every run:
 
 ```

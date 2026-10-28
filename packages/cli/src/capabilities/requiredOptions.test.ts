@@ -3,6 +3,7 @@
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
+import { optionForm } from "./optionForms";
 import { isRequired, requiredOptionRefusal, unsettledOptions } from "./requiredOptions";
 
 const BILLING = { key: "billingSubject", choices: ["user", "organization"] } as const;
@@ -71,5 +72,48 @@ describe("requiredOptionRefusal", () => {
   test("the detail is the throw site's — it says why there is nothing to render", () => {
     const error = requiredOptionRefusal({ capability: "payments", missing: [BILLING] });
     expect(error.payload.detail).toContain("no default");
+  });
+});
+
+describe("requiredOptionRefusal for an option with its own flag", () => {
+  const FLOOR = { key: "floor" } as const;
+  const floor = optionForm("mcp", "floor");
+  if (floor === undefined) throw new Error("mcp's floor has its own flag");
+  const admits = floor.spellings.map((one) => `${one.spelling}: ${one.admits}`).join(" ");
+
+  test("names the option's flag and its spellings, never --set", () => {
+    const error = requiredOptionRefusal({ capability: "mcp", missing: [FLOOR] });
+    if (error.payload.code !== "input/required") throw new Error("narrowing failed");
+    expect(error.payload.flag).toBe("--floor");
+    expect(error.payload.choices).toEqual(["signed-in", "power:<name>", "entitlement:<name>"]);
+    expect(error.payload.action).toBe(
+      `Pass --floor signed-in, --floor power:<name> or --floor entitlement:<name>. ${admits}`,
+    );
+  });
+
+  test("beside a second missing option, joins the two with and, and still says what each spelling admits", () => {
+    const error = requiredOptionRefusal({ capability: "mcp", missing: [FLOOR, OPEN] });
+    expect(error.message).toContain("floor and region");
+    expect(error.payload.action).toBe(
+      `Pass --floor signed-in, --floor power:<name> or --floor entitlement:<name>, and --set region=<value>. ${admits}`,
+    );
+  });
+
+  test("says what each spelling admits when the option with its own flag is not the first missing", () => {
+    const error = requiredOptionRefusal({ capability: "mcp", missing: [OPEN, FLOOR] });
+    if (error.payload.code !== "input/required") throw new Error("narrowing failed");
+    expect(error.payload.flag).toBe("--set");
+    expect(error.payload.action).toBe(
+      `Pass --set region=<value>, and --floor signed-in, --floor power:<name> or --floor entitlement:<name>. ${admits}`,
+    );
+  });
+
+  test("lists one, two and three values the way a sentence does", () => {
+    const one = requiredOptionRefusal({ capability: "payments", missing: [{ key: "mode", choices: ["live"] }] });
+    expect(one.payload.action).toBe("Pass --set mode=live.");
+    const two = requiredOptionRefusal({ capability: "payments", missing: [BILLING] });
+    expect(two.payload.action).toBe("Pass --set billingSubject=user or --set billingSubject=organization.");
+    const three = requiredOptionRefusal({ capability: "mcp", missing: [FLOOR] });
+    expect(three.payload.action).toContain("--floor signed-in, --floor power:<name> or --floor entitlement:<name>.");
   });
 });

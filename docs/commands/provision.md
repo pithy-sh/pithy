@@ -121,7 +121,7 @@ Plain lines, printed once, never redrawn — so the history survives in your scr
 
 ## A manifest it could not read
 
-An installed `@pithy-sh/*` package whose `pithy.manifest.json` is present and will not parse is named — above the plan, and again on stderr when the run finishes:
+An installed `@pithy-sh/*` package whose manifest — its `pithy.manifest.json`, or a companion such as `pithy.mcp.manifest.json` — is present and will not parse is named, with the file — above the plan, and again on stderr when the run finishes:
 
 ```
 Provisioning staging for dash.
@@ -290,8 +290,9 @@ $ pithy provision --feature --json
 | `declined[].declines[].capability` | `string` | The composed capability that declares it. Absent on `unrecognized` |
 | `declined[].declines[].reason` | `string` | Your own reason, verbatim |
 | `declined[].declines[].wantedBy` | `string[]` | `honored` only: other Workers that declare the same binding and did not decline it. **Non-empty means the resource was created anyway** — provisioning is per binding name, and that is how two Workers share a database. Only this Worker's stanza leaves it out |
-| `manifestFaults` | array | Installed packages shipping a `pithy.manifest.json` that is present and unusable. Project-wide, not per Worker. Empty on a healthy install |
+| `manifestFaults` | array | Installed packages shipping a manifest that is present and unusable. Project-wide, not per Worker. Empty on a healthy install |
 | `manifestFaults[].package` | string | The package the manifest was read from, as an adopter names it: `@pithy-sh/audit` |
+| `manifestFaults[].file` | string | The manifest file within that package: `pithy.manifest.json`, or a companion such as `pithy.mcp.manifest.json` |
 | `manifestFaults[].reason` | string | Why it could not be used — the schema's refusal text, or the errno where the file would not open |
 | `configs` | `object[]` | Where the ids were written, one entry per Worker |
 | `configs[].worker` | `string` | The Worker's own deploy name |

@@ -22,7 +22,7 @@ import { type DoctorFailure, DoctorFailures, doctorFailures } from "./failures";
 import type { ProjectHealth } from "./health";
 
 /**
- * **Every failing `pithy doctor` check carries `fix` (#697).**
+ * **Every failing `pithy doctor` check carries `fix`.**
  *
  * The list is the exit gate — `doctorExitCode` is whether it is empty — so "every failing check" is a set
  * this suite can enumerate rather than one it has to trust: one report per gating state — every branch of
@@ -473,7 +473,7 @@ describe("project health, one entry per failing check", () => {
     expect(failuresOf(report).map((failure) => failure.fix)).toEqual([null]);
   });
 
-  // #711: the example it offers runs as written in a project with several Workers, as the text report's does.
+  // The example it offers runs as written in a project with several Workers, as the text report's does.
   test("a gated route's example provider is the one the text report names, for this Worker", async () => {
     const report = await healthyWith({
       buildPlan: planStub(plan({ entitlements: { state: "read", gates: ["src/routes/pro.ts"] } })),
@@ -507,7 +507,10 @@ describe("project health, the branches a plan does not reach", () => {
 
   test("a manifest nobody can use is someone else's package, so no command is named", async () => {
     const report = withHealth(await healthyWith(), {
-      manifests: { ok: false, faults: [{ package: "@pithy-sh/audit", reason: "Unexpected token." }] },
+      manifests: {
+        ok: false,
+        faults: [{ package: "@pithy-sh/audit", file: "pithy.manifest.json", reason: "Unexpected token." }],
+      },
     });
     expect(failuresOf(report)).toEqual([
       {
@@ -870,7 +873,7 @@ describe("every finding in every block carries fix", () => {
         }),
       ),
       readLedger: ledgerStubPer({ api: { staging: { state: "read", pending: 3, undeclared: [] } } }),
-      // A gate nothing opens (#560): ledger composed beside an auth with no `resolveScopes`.
+      // A gate nothing opens: ledger composed beside an auth with no `resolveScopes`.
       resolveWorkersFor: async () =>
         workerSet("api").map((worker) =>
           Object.assign(worker, {
@@ -1112,7 +1115,10 @@ describe("every finding in every block carries fix", () => {
     if (health === undefined) throw new Error("planted: the harness report has no project");
     return withHealth(report, {
       ...health,
-      manifests: { ok: false, faults: [{ package: "@pithy-sh/audit", reason: "Unexpected token." }] },
+      manifests: {
+        ok: false,
+        faults: [{ package: "@pithy-sh/audit", file: "pithy.manifest.json", reason: "Unexpected token." }],
+      },
       bindingScope: {
         ok: false,
         partial: false,
@@ -1172,7 +1178,7 @@ describe("every finding in every block carries fix", () => {
     const payload = renderDoctorJson(await everywhere());
     const fixesAt = (path: string) => (at(payload, path) as { fix: string | null }[]).map((entry) => entry.fix);
     expect(fixesAt("secretBindings.missing")).toEqual([
-      // A value the kit composes is minted by a provision of every environment, production included: no fix (#711).
+      // A value the kit composes is minted by a provision of every environment, production included: no fix.
       null,
       "pithy secrets create STRIPE_KEY --env staging",
     ]);
@@ -1264,7 +1270,7 @@ describe("the finding-list audit", () => {
 });
 
 /**
- * **A field-key version still live at the next rotation is a `pithy doctor` error (#390)** — the one rotation
+ * **A field-key version still live at the next rotation is a `pithy doctor` error** — the one rotation
  * finding that gates. Every other failed rotation, the field key's own unconfirmed write included, reports only.
  */
 describe("the field key's overdue retirement", () => {

@@ -11,6 +11,7 @@
     "dist",
     "src",
     "pithy.manifest.json",
+    "pithy.mcp.manifest.json",
     "docs",
     "!src/**/*.test.*",
     "!dist/**/*.test.*"

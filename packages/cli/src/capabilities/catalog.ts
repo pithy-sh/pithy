@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { commandName } from "@pithy-sh/core/src/cli/command";
+import { kitAddFacts } from "./kitAddFacts";
 
 /**
  * The built-in discovery catalog — the capabilities `pithy add --list` shows
@@ -24,6 +26,12 @@ export interface CatalogEntry {
    * cannot drift.
    */
   package: string;
+  /**
+   * The manifest's file name inside the package, for a capability that shares its package with another.
+   * Absent means {@link MANIFEST_FILE}. `mcp` ships inside `@pithy-sh/auth` beside `auth`, as
+   * `pithy.mcp.manifest.json`.
+   */
+  manifest?: string;
   /** One-line rationale — why a project would enable this. */
   whenToEnable: string;
 }
@@ -54,12 +62,37 @@ export function capabilityPackageDir(name: string): string {
 /** The file that makes a package a capability. */
 export const MANIFEST_FILE = "pithy.manifest.json";
 
+/** A further capability's manifest in a package that ships more than one: `pithy.<name>.manifest.json`. */
+const COMPANION_MANIFEST = /^pithy\.[A-Za-z_$][A-Za-z0-9_$]*\.manifest\.json$/;
+
+/** Every manifest file among a package directory's entries: its own first, then each companion, sorted. */
+export function manifestFiles(entries: readonly string[]): string[] {
+  const companions = entries.filter((entry) => COMPANION_MANIFEST.test(entry)).sort();
+  return [...(entries.includes(MANIFEST_FILE) ? [MANIFEST_FILE] : []), ...companions];
+}
+
+/** The path of every manifest a package directory holds, in {@link manifestFiles} order. Empty when it holds none. */
+export function packageManifestPaths(packageDir: string): string[] {
+  let entries: string[];
+  try {
+    entries = readdirSync(packageDir);
+  } catch {
+    return [];
+  }
+  return manifestFiles(entries).map((file) => join(packageDir, file));
+}
+
+/** The manifest file a capability's package holds it in. */
+export function capabilityManifestFile(name: string): string {
+  return CATALOG.find((candidate) => candidate.name === name)?.manifest ?? MANIFEST_FILE;
+}
+
 /**
  * Where a capability's manifest sits in a project, installed or not. The directory comes from the catalog's
  * `package`, not from the name: `controlplane` ships inside `@pithy-sh/core`.
  */
 export function installedManifestPath(projectDir: string, name: string): string {
-  return join(projectDir, "node_modules", CAPABILITY_SCOPE, capabilityPackageDir(name), MANIFEST_FILE);
+  return join(projectDir, "node_modules", CAPABILITY_SCOPE, capabilityPackageDir(name), capabilityManifestFile(name));
 }
 
 /**
@@ -75,6 +108,13 @@ export function isSharedCapabilityPackage(pkg: string): boolean {
 
 export const CATALOG: readonly CatalogEntry[] = [
   { name: "auth", package: "@pithy-sh/auth", whenToEnable: "Authentication and session management." },
+  {
+    name: "mcp",
+    package: "@pithy-sh/auth",
+    manifest: "pithy.mcp.manifest.json",
+    whenToEnable:
+      "Let your users' agents use your app as them. It mounts an MCP endpoint and composes an OAuth 2.1 authorization server into auth: an agent registers itself, its user signs in and approves on your own consent screen, and the token it gets is bound to that endpoint and that user. A route is a tool only when its describeRoute says so, and every call runs through that route's own gates, so an agent does what its user can and nothing more. Off until composed, and composing it means choosing a floor with --floor: every signed-in user, a power, or an entitlement. Needs auth.",
+  },
   {
     name: "secrets",
     package: "@pithy-sh/secrets",
@@ -193,12 +233,17 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
 ];
 
-/** A catalog entry tagged with whether the project already has it installed. */
-export interface CatalogListing extends CatalogEntry {
+/** A catalog entry tagged with what it requires and whether the project already has it installed. */
+export interface CatalogListing extends Omit<CatalogEntry, "manifest"> {
+  requires: string[];
   installed: boolean;
 }
 
-/** Tag every catalog entry with its installed state, in catalog order. */
+/** Tag every catalog entry with its prerequisites and its installed state, in catalog order. */
 export function buildCatalogListing(installed: ReadonlySet<string>): CatalogListing[] {
-  return CATALOG.map((entry) => ({ ...entry, installed: installed.has(entry.name) }));
+  return CATALOG.map(({ manifest: _file, ...entry }) => ({
+    ...entry,
+    requires: [...(kitAddFacts(entry.name)?.peerCapabilities ?? [])],
+    installed: installed.has(entry.name),
+  }));
 }

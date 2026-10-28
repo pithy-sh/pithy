@@ -14,7 +14,7 @@ import { expectConforms } from "../test-utils/payloadContract";
 import { provisionProgress, runProvision, writeReport } from "./provision";
 
 /**
- * **The gate for #251's other half: exactly one of `--env` and `--feature`, refused at the flag.**
+ * **Exactly one of `--env` and `--feature`, refused at the flag.**
  *
  * The invariant is one sentence — **a provisioning run that named no environment, or two, is refused
  * before anything is read or built.** Not "before a Cloudflare client", which is a list of one forbidden
@@ -97,7 +97,7 @@ describe("pithy provision names exactly one environment", () => {
 });
 
 /**
- * **What the run says about a decline (#514).**
+ * **What the run says about a decline.**
  *
  * A decline is the one input to `pithy provision` that removes work, and removed work leaves no trace: the
  * summary lists what was made, so a decline honored and a decline dropped on the floor printed the same
@@ -248,11 +248,10 @@ describe("pithy provision reports what it left out", () => {
 });
 
 /**
- * **What a run says while it is running, and what it must never say (#515).**
+ * **What a run says while it is running, and what it must never say.**
  *
- * `pithy provision` printed nothing until every Cloudflare resource had settled, so a slow account and a
- * hung command looked the same — which is how an operator comes to interrupt work that was fine. The
- * lines it now streams were already written; they only arrived too late to be of use.
+ * A run that printed nothing until every Cloudflare resource had settled would make a slow account and a
+ * hung command look the same, which is how an operator comes to interrupt work that was fine.
  *
  * The constraint riding alongside is the one that cannot bend: **every command is agent-drivable**, so
  * `--json` is exactly one line and nothing else reaches stdout.
@@ -316,7 +315,7 @@ describe("pithy provision narrates the run it is doing", () => {
     '"committed":true',
     '"pendingSecrets":[]',
     '"pendingSecretsRemedy":null',
-    // #697: every run says whether it was a dry run, so a parser never has to infer it from the plan.
+    // Every run says whether it was a dry run, so a parser never has to infer it from the plan.
     '"dryRun":false}',
   ].join(",")}\n`;
 
@@ -334,7 +333,7 @@ describe("pithy provision narrates the run it is doing", () => {
   });
 
   /**
-   * **`next` is the deploy a Worker it names still needs, and no key otherwise (#697).** The condition is
+   * **`next` is the deploy a Worker it names still needs, and no key otherwise.** The condition is
    * `terminal/nextSteps.test.ts`'s and the account's answer `provision/undeployed.test.ts`'s; this holds the
    * line to carrying what it is handed, last, and to the published payload.
    */
@@ -357,7 +356,7 @@ describe("pithy provision narrates the run it is doing", () => {
     );
   });
 
-  /** Held to the schema `pithy schema provision` publishes (#697): a declared run, and a feature's extras. */
+  /** Held to the schema `pithy schema provision` publishes: a declared run, and a feature's extras. */
   test("--json conforms to its published payload", async () => {
     const decision =
       "`pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix.";
@@ -395,18 +394,22 @@ describe("pithy provision narrates the run it is doing", () => {
   });
 
   /**
-   * **A manifest that is installed and will not parse, said in the run that provisioned around it
-   * (#184, #513 review).**
+   * **A manifest that is installed and will not parse, said in the run that provisioned around it.**
    *
-   * `provisionTargets` discarded the `faults` half of `composedManifests`, so this was in no line of any
-   * report. The resource is still created — the bindings come from the composed capability — but the
+   * The resource is still created — the bindings come from the composed capability — but the
    * `scope` and `resource` that decide what it is *called* live in the file nobody could read, so a
    * project-global database is created per environment and the run reports success.
    */
   describe("a manifest it could not read", () => {
     const broken: ProvisionReport = {
       ...full,
-      manifestFaults: [{ package: "@pithy-sh/email", reason: "requiredBindings[1].scope: not a known scope" }],
+      manifestFaults: [
+        {
+          package: "@pithy-sh/email",
+          file: "pithy.manifest.json",
+          reason: "requiredBindings[1].scope: not a known scope",
+        },
+      ],
     };
     const options = { seeded: false, pending: { names: [], remedy: null, sentence: null }, registry: {} };
 
@@ -445,7 +448,11 @@ describe("pithy provision narrates the run it is doing", () => {
 
       expect(line.trimEnd().split("\n")).toHaveLength(1);
       expect(JSON.parse(line).manifestFaults).toEqual([
-        { package: "@pithy-sh/email", reason: "requiredBindings[1].scope: not a known scope" },
+        {
+          package: "@pithy-sh/email",
+          file: "pithy.manifest.json",
+          reason: "requiredBindings[1].scope: not a known scope",
+        },
       ]);
     });
 
@@ -472,8 +479,8 @@ describe("pithy provision narrates the run it is doing", () => {
 
   /**
    * **A step line per resource, before that resource's result.** Both halves are asserted: the step is
-   * what says the run has reached this resource, and the result is the line the summary used to hold
-   * until the very end.
+   * what says the run has reached this resource, and the result is that resource's line, not held
+   * for the summary.
    */
   test("a step opens each resource, and its result closes it", () => {
     const progress = provisionProgress({ json: false });

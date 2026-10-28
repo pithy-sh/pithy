@@ -6,7 +6,15 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { describe, expect, test } from "vitest";
-import { buildCatalogListing, CAPABILITY_SCOPE, CATALOG, capabilityPackageDir } from "./catalog";
+import {
+  buildCatalogListing,
+  CAPABILITY_SCOPE,
+  CATALOG,
+  capabilityManifestFile,
+  capabilityPackageDir,
+  installedManifestPath,
+  manifestFiles,
+} from "./catalog";
 import { capabilityImportSpecifier } from "./configImports";
 
 /**
@@ -15,7 +23,7 @@ import { capabilityImportSpecifier } from "./configImports";
  * Listing them here rather than loosening the assertion is the point: a capability whose package stops
  * matching its name breaks `pithy add`'s manifest lookup, so a new one has to be added on purpose.
  */
-const SHIPS_INSIDE: Record<string, string> = { controlplane: "@pithy-sh/core" };
+const SHIPS_INSIDE: Record<string, string> = { controlplane: "@pithy-sh/core", mcp: "@pithy-sh/auth" };
 
 describe("CATALOG", () => {
   test("every entry is a @pithy-sh package with a one-line rationale", () => {
@@ -29,6 +37,33 @@ describe("CATALOG", () => {
   test("no two entries claim the same capability name", () => {
     const names = CATALOG.map((entry) => entry.name);
     expect([...new Set(names)]).toEqual(names);
+  });
+});
+
+describe("manifest files", () => {
+  test("a package's own manifest comes first, then each companion, and nothing else", () => {
+    expect(
+      manifestFiles(["package.json", "pithy.mcp.manifest.json", "pithy.manifest.json", "pithy.a.manifest.json"]),
+    ).toEqual(["pithy.manifest.json", "pithy.a.manifest.json", "pithy.mcp.manifest.json"]);
+    expect(manifestFiles(["pithy.manifest.jsonc", "pithy..manifest.json", "pithy.a-b.manifest.json"])).toEqual([]);
+  });
+
+  test("a companion capability's manifest is its own file in the package it shares", () => {
+    expect(capabilityManifestFile("auth")).toBe("pithy.manifest.json");
+    expect(capabilityManifestFile("mcp")).toBe("pithy.mcp.manifest.json");
+    expect(installedManifestPath("/p", "mcp")).toBe(
+      join("/p", "node_modules", "@pithy-sh", "auth", "pithy.mcp.manifest.json"),
+    );
+  });
+
+  test("every catalog entry's manifest is a file its package ships", () => {
+    for (const entry of CATALOG) {
+      const pkgDir = join(PACKAGES, capabilityPackageDir(entry.name));
+      const pkg = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8")) as { files?: string[] };
+      const file = capabilityManifestFile(entry.name);
+      expect(existsSync(join(pkgDir, file)), `${entry.package} has no ${file}`).toBe(true);
+      expect(pkg.files, `${entry.package} does not publish ${file}`).toContain(file);
+    }
   });
 });
 
@@ -60,9 +95,7 @@ const EXPORT_DECLARATION = /^export\s+(?:async\s+)?(?:function|const|let|var|cla
  * because a capability factory is a value and a type-only export would not satisfy the import.
  *
  * **Source text, not a module load.** No factory runs without config — `migrations/orders.test.ts` reads
- * source across the packages for the same reason. This used to cite `cloudflare:workers` too, and that
- * half is dead: `configEntrypoints.test.ts` now imports every capability entry point in a node process
- * and fails the build if one drags a runtime-only import in (#172). The TypeScript API is not an
+ * source across the packages for the same reason. The TypeScript API is not an
  * alternative either — TS 7 ships no string-to-tree parser, only the project-scoped `unstable/sync`.
  * What the text cannot see — whether the module a clause re-exports from really has the name —
  * `bun run typecheck` already fails on.
@@ -150,6 +183,13 @@ describe("buildCatalogListing", () => {
     expect(storage?.installed).toBe(false);
   });
 
+  test("says what each requires, from the kit's own manifests", () => {
+    const listing = buildCatalogListing(new Set());
+    expect(listing.find((e) => e.name === "mcp")).toMatchObject({ package: "@pithy-sh/auth", requires: ["auth"] });
+    expect(listing.find((e) => e.name === "auth")?.requires).toEqual(["secrets", "email"]);
+    expect(listing.find((e) => e.name === "audit")?.requires).toEqual([]);
+  });
+
   test("returns one row per catalog entry, in catalog order", () => {
     const listing = buildCatalogListing(new Set());
     expect(listing.map((e) => e.name)).toEqual(CATALOG.map((e) => e.name));
@@ -161,10 +201,8 @@ describe("buildCatalogListing", () => {
  * The catalog and the manifests must agree about what a name and a package are.
  *
  * `pithy add --list` marks a catalog entry installed by matching its `name` against a *manifest's* name,
- * and `capabilityPackageName` hands its `package` to the installer. #183 narrowed both fields at the
- * manifest; a catalog entry the manifest schema would refuse could never be matched, and the capability
- * would read as not installed forever. Checked here rather than assumed, because the catalog is
- * hand-maintained.
+ * and `capabilityPackageName` hands its `package` to the installer. A catalog entry the manifest schema
+ * would refuse could never be matched, and the capability would read as not installed forever.
  */
 describe("every catalog entry states a name and a package a manifest could state", () => {
   for (const entry of CATALOG) {

@@ -14,7 +14,7 @@ import { removeTempDir } from "../test-utils/tempRepo";
 import { checkProject } from "./check";
 
 /**
- * **`pithy setup` checks the project before it writes anything after the install (#764).** The config parses,
+ * **`pithy setup` checks the project before it writes anything after the install.** The config parses,
  * every capability a Worker composes is installed, every Worker composes. A failure is the end of the run,
  * named, because nothing after it can work.
  */
@@ -139,7 +139,10 @@ describe("checkProject", () => {
       checkProject({
         projectDir: dir,
         resolve: async () => resolution(dir, []),
-        manifests: async () => ({ manifests: [], faults: [{ package: "@pithy-sh/audit", reason: "not JSON" }] }),
+        manifests: async () => ({
+          manifests: [],
+          faults: [{ package: "@pithy-sh/audit", file: "pithy.manifest.json", reason: "not JSON" }],
+        }),
       }),
     );
 

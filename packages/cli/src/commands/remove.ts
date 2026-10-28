@@ -18,7 +18,7 @@ import { buildAudit, targetWorker } from "./add";
 /**
  * `remove` is the deliberate exception to the agent-drivable / `--json` convention: it is destructive,
  * so it is human-only. `--json` fast-fails here — before anything is read or changed — as
- * `core/person_required`, exit 5 (#697): no other call would be right, so an agent should stop and ask.
+ * `core/person_required`, exit 5: no other call would be right, so an agent should stop and ask.
  */
 export function rejectJson(json: boolean): void {
   if (json) {
@@ -31,7 +31,7 @@ export function rejectJson(json: boolean): void {
 
 /**
  * Refuse a run that said outright nobody is at the keyboard — `--no-input` or `PITHY_NONINTERACTIVE=1` —
- * before anything is read or changed (#697). `remove` belongs to a person, so the switch is answered the
+ * before anything is read or changed. `remove` belongs to a person, so the switch is answered the
  * way `--json` is: `core/person_required`, exit 5. A run that merely has no terminal is not the switch,
  * and still unwires.
  */
@@ -62,7 +62,7 @@ export function dropConfirm(capability: string, env: string): () => Promise<bool
 }
 
 /**
- * Refuse a `--drop` that nobody can be asked to confirm, before anything is read or changed (#697).
+ * Refuse a `--drop` that nobody can be asked to confirm, before anything is read or changed.
  *
  * There is no bypass flag: the only answer is a person at a terminal, so it is `core/person_required`,
  * exit 5. Without this, a run under `--no-input` or with no terminal reached {@link dropConfirm}'s prompt
@@ -112,7 +112,7 @@ export default withContract(
 
         // Which Worker to unwire. `remove` is human-only, so the prompt is available whenever one may be drawn.
         //
-        // Composed for the environment the removal is about (#595): `--drop`'s, whose database the reversed
+        // Composed for the environment the removal is about: `--drop`'s, whose database the reversed
         // migrations are read off this composition for, and dev otherwise, which is what the audit below names.
         // What the unwiring keeps for the other capabilities is read off the same composition, so a binding
         // only another environment's composition needs is not held back by it.
@@ -132,7 +132,7 @@ export default withContract(
         const project = requireProjectName(await loadProject(projectDir));
         const destroyRetained = parseDestroyRetained(args["destroy-retained"]);
         // Resolved once, at the command edge, and used for both the drop and the audit. A `--drop --env
-        // staging` reverses migrations against a live database; the account is what says whose (#234).
+        // staging` reverses migrations against a live database; the account is what says whose.
         const account = await projectCloudflareAccount(projectDir);
 
         const result = await removeCapability({
@@ -178,17 +178,19 @@ export default withContract(
             `Deleted ${relative(projectDir, join(target.dir, "capabilities", args.capability))}/.\n`,
           );
         } else if (result.packageManager) {
-          process.stdout.write(`Uninstalled @pithy-sh/${args.capability}.\n`);
+          process.stdout.write(`Uninstalled ${result.package}.\n`);
+        } else if (result.keptHere) {
+          process.stdout.write(`Kept ${result.package} installed — ${target.name} still imports it.\n`);
         } else if (result.keptLinked) {
           // Nothing declared the package, so there is nothing to uninstall — and npm, asked anyway, prunes
           // every linked sibling with it. Say what was left, so the link in node_modules is never a surprise.
-          process.stdout.write(`Kept @pithy-sh/${args.capability} — a linked checkout provides it.\n`);
+          process.stdout.write(`Kept ${result.package} — a linked checkout provides it.\n`);
         } else if (result.keptFor.length > 0) {
           // The wiring is gone from this Worker, but the package is one shared install — say so plainly,
           // and name who still holds it, so the leftover dependency is never a surprise.
           const holders = result.keptFor.join(", ");
           const verb = result.keptFor.length === 1 ? "still wires it" : "still wire it";
-          process.stdout.write(`Kept @pithy-sh/${args.capability} installed — ${holders} ${verb}.\n`);
+          process.stdout.write(`Kept ${result.package} installed — ${holders} ${verb}.\n`);
         }
         if (result.tablesRemain) {
           // The down code is gone now, so there's no post-removal pithy command to reverse them — name

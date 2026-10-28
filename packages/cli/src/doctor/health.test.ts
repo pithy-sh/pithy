@@ -136,8 +136,8 @@ describe("buildProjectHealth", () => {
 
   test("bindings check fails on a Durable Object class the entry does not export", async () => {
     // The other half of a `durable_objects.bindings` entry, and the half `wrangler.jsonc` cannot show. A
-    // project wired before the CLI wrote that line has the binding and not the class, so every other
-    // check passes and the deploy is still refused — `doctor` calling it healthy is #428 one level up.
+    // project can have the binding and not the class, so every other check passes and the deploy is
+    // still refused.
     const plan: ReconcilePlan = {
       ...clean("api"),
       perCapability: [
@@ -178,7 +178,7 @@ describe("buildProjectHealth", () => {
   });
 
   test("migrations check fails on an applied migration nothing declares, with nothing pending", async () => {
-    // The state that used to pass: the subtraction finds nothing missing, and migrate refuses anyway.
+    // The subtraction finds nothing missing, and migrate refuses anyway.
     const undeclared = [{ database: "app", binding: "DB", name: "0250_audit_0002_tenant" }];
     const health = await buildProjectHealth({
       account: null,
@@ -336,7 +336,7 @@ describe("buildProjectHealth", () => {
 });
 
 /**
- * **A declared environment's stanza is checked against that environment's composition (#586).**
+ * **A declared environment's stanza is checked against that environment's composition.**
  *
  * The plan reports, for every stanza in `wrangler.jsonc`, the bindings a composed capability needs and the
  * stanza lacks. It was built once, from a composition for no environment, so which bindings `prod` needed
@@ -531,7 +531,7 @@ describe("buildProjectHealth — per Worker", () => {
   });
 
   /**
-   * The #371 gate. One Worker's plan throws; every sibling Worker keeps all five of its checks.
+   * One Worker's plan throws; every sibling Worker keeps all five of its checks.
    *
    * Both directions, asserted on the value rather than through the renderer: the sibling's lines are
    * still there, and the sick Worker does not read as a Worker that passed — `unavailable` carries no
@@ -589,7 +589,7 @@ describe("buildProjectHealth — per Worker", () => {
  *
  * A manifest that is present and invalid was skipped by `availableManifests` without a word, so the
  * capability contributed no drift to any Worker and `doctor` reported the project healthy around the hole.
- * `doctor` is one of the three commands an adopter runs when something has gone missing (#184).
+ * `doctor` is one of the three commands an adopter runs when something has gone missing.
  */
 describe("buildProjectHealth — manifests", () => {
   test("a healthy install reports no manifest faults and stays ok", async () => {
@@ -606,7 +606,11 @@ describe("buildProjectHealth — manifests", () => {
   });
 
   test("a manifest that is present and invalid fails the project, naming the package and why", async () => {
-    const fault = { package: "@pithy-sh/audit", reason: "configOptions[0].key — not a bare identifier" };
+    const fault = {
+      package: "@pithy-sh/audit",
+      file: "pithy.manifest.json",
+      reason: "configOptions[0].key — not a bare identifier",
+    };
     const health = await buildProjectHealth({
       account: null,
       projectDir: "/p",
@@ -622,7 +626,7 @@ describe("buildProjectHealth — manifests", () => {
   });
 
   test("the fault is reported once, not once per Worker — manifests resolve at the project", async () => {
-    const fault = { package: "@pithy-sh/audit", reason: "why" };
+    const fault = { package: "@pithy-sh/audit", file: "pithy.manifest.json", reason: "why" };
     const scan = vi.fn(async () => ({ manifests: [], faults: [fault] }));
     const health = await buildProjectHealth({
       account: null,
@@ -706,12 +710,12 @@ describe("buildProjectHealth — project-global bindings", () => {
 });
 
 /**
- * The check that says why a `pithy <capability>` command just refused (#533's follow-on).
+ * The check that says why a `pithy <capability>` command just refused.
  *
  * A composition that loaded is not a capability the CLI can reach: the Worker's config was imported by
  * path and resolved its own imports, and the package behind it may be installed nowhere the project keeps
  * packages. Nothing else in the report notices — a capability with no manifest contributes no drift to any
- * check — so the adopter learned it one refusal at a time until this section.
+ * check — so without this section the adopter learns it one refusal at a time.
  */
 describe("buildProjectHealth — capability resolution", () => {
   /** A finding, shaped the way `capabilityReachHealth` returns one. */
@@ -775,9 +779,9 @@ describe("buildProjectHealth — capability resolution", () => {
 });
 
 /**
- * **A binding the app declares and nothing supplies is doctor's finding, before it is the Worker's refusal to boot
- * (#662).** The app has no manifest, and the plan walked manifests, so `pithy doctor` was silent about exactly the
- * binding `validateBindings` would throw on at the first request.
+ * **A binding the app declares and nothing supplies is doctor's finding, before it is the Worker's refusal to boot.**
+ * The app has no manifest, so a check that walks only manifests misses exactly the binding `validateBindings`
+ * throws on at the first request.
  */
 describe("buildProjectHealth — the Worker's own app", () => {
   let projectDir: string;

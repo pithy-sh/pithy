@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { availableManifests, loadManifest } from "./manifests";
+import { availableManifests, composedManifests, loadManifest } from "./manifests";
 
 /** Drop a `pithy.manifest.json` into `<dir>/node_modules/@pithy-sh/<name>`. */
 async function installManifest(dir: string, name: string, manifest: Record<string, unknown>): Promise<void> {
@@ -37,7 +37,7 @@ afterEach(async () => {
  * it fails the moment it is written.
  *
  * `billingSubject` is the first **required** option the kit ships — no default, a closed set of two — and
- * it is the whole reason a manifest can express one (#412). Asserted here as well as in the repo-wide
+ * it is the whole reason a manifest can express one. Asserted here as well as in the repo-wide
  * parse, because "it still validates" and "it is still required" are different claims and only the second
  * one is the feature.
  */
@@ -82,13 +82,13 @@ describe("loadManifest", () => {
     const error = await loadManifest("auth", dir).catch((thrown: unknown) => thrown);
     expect(error).toBeInstanceOf(PithyError);
     expect((error as PithyError).message).toContain("auth");
-    // The kit's own manifest says auth brings prerequisites, and the Worker is named by directory (#711).
+    // The kit's own manifest says auth brings prerequisites, and the Worker is named by directory.
     expect((error as PithyError).payload.action).toBe(
       "Run `pithy add auth --worker api --with-prerequisites` to install it.",
     );
   });
 
-  // With no Worker to add it to, no `pithy add` runs: the line says what comes first (#711).
+  // With no Worker to add it to, no `pithy add` runs: the line says what comes first.
   test("an uninstalled capability in a project with no Worker says to create one first", async () => {
     const error = (await loadManifest("auth", dir).catch((thrown: unknown) => thrown)) as PithyError;
     expect(error.payload.action).toBe(
@@ -97,13 +97,12 @@ describe("loadManifest", () => {
   });
 
   /**
-   * Installed and not a capability is a third answer, and it used to be given the first one's words.
+   * Installed and not a capability is a third answer, with words of its own.
    *
    * `runAdd` installs the package and *then* reads the manifest, so the branch a missing manifest lands
    * in is reached with the package sitting in `node_modules`. Answering "no capability named rating is
    * installed — run pithy add rating to install it" sends the adopter to the command that has just run,
-   * and it is not a message they can act on twice. `@pithy-sh/matchmaking` and `@pithy-sh/rating` shipped
-   * complete and unaddable behind exactly that sentence (#415).
+   * and it is not a message they can act on twice.
    */
   test("an installed package that ships no manifest says so, and does not name the command that just ran", async () => {
     const pkgDir = join(dir, "node_modules", "@pithy-sh", "rating");
@@ -120,7 +119,7 @@ describe("loadManifest", () => {
   /**
    * **Both absences keep `core/not_found`, which is the code they already shared.**
    *
-   * What was wrong was the sentence, not the classification, and only the sentence moved. A package that
+   * The two differ in the sentence, not the classification. A package that
    * is installed and is not a capability is an adopter naming the wrong thing — `pithy add cloudflare` is
    * a real `@pithy-sh` package that ships no manifest — so a 500 would tell them to read *our* logs for an
    * answer that is not in them (CLAUDE.md §Errors). It would also make an ordinary mistake
@@ -147,7 +146,7 @@ describe("loadManifest", () => {
     expect(error.payload.action).toContain("pithy add storage --worker api");
   });
 
-  // A project with several Workers refuses a bare `pithy add`, so the sentence names one command per Worker (#711).
+  // A project with several Workers refuses a bare `pithy add`, so the sentence names one command per Worker.
   test("an uninstalled capability in a two-Worker project names one runnable add per Worker", async () => {
     for (const worker of ["web", "api"]) {
       await mkdir(join(dir, "apps", worker), { recursive: true });
@@ -167,7 +166,7 @@ describe("loadManifest", () => {
 
   /**
    * A manifest is third-party data, read out of `node_modules`, and its option keys and rationales are
-   * interpolated into the TypeScript `pithy add` writes. #174 narrowed both at the schema; this is the
+   * interpolated into the TypeScript `pithy add` writes. The schema narrows both; this is the
    * refusal an adopter actually sees, and it has to say which manifest and which option — a capability
    * with a dozen options and one bad key is otherwise a "malformed manifest" and nothing more.
    */
@@ -230,12 +229,53 @@ describe("availableManifests", () => {
   });
 });
 
+describe("availableManifests reads every manifest a package ships", () => {
+  const mcpManifest = { name: "mcp", package: "@pithy-sh/auth", requiredBindings: [] };
+  const authDir = () => join(dir, "node_modules", "@pithy-sh", "auth");
+
+  test("a package with its own manifest and a companion yields both", async () => {
+    await installManifest(dir, "auth", authManifest);
+    await writeFile(join(authDir(), "pithy.mcp.manifest.json"), JSON.stringify(mcpManifest));
+
+    const { manifests, faults } = await availableManifests(dir);
+    expect(manifests.map((m) => m.name).sort()).toEqual(["auth", "mcp"]);
+    expect(faults).toEqual([]);
+  });
+
+  test("a broken companion is reported by its file, and the package's own manifest is still returned", async () => {
+    await installManifest(dir, "auth", authManifest);
+    await writeFile(join(authDir(), "pithy.mcp.manifest.json"), "{ not json");
+
+    const { manifests, faults } = await availableManifests(dir);
+    expect(manifests.map((m) => m.name)).toEqual(["auth"]);
+    expect(faults).toHaveLength(1);
+    expect(faults[0]).toMatchObject({ package: "@pithy-sh/auth", file: "pithy.mcp.manifest.json" });
+    expect(faults[0]?.reason).toMatch(/JSON/i);
+  });
+
+  test("a Worker's broken companion is reported beside the root's broken manifest of the same package", async () => {
+    await mkdir(authDir(), { recursive: true });
+    await writeFile(join(authDir(), "pithy.manifest.json"), "{ not json");
+    const workerDir = join(dir, "apps", "api");
+    const workerAuth = join(workerDir, "node_modules", "@pithy-sh", "auth");
+    await mkdir(workerAuth, { recursive: true });
+    await writeFile(join(workerAuth, "pithy.manifest.json"), JSON.stringify(authManifest));
+    await writeFile(join(workerAuth, "pithy.mcp.manifest.json"), "{ not json");
+
+    const { faults } = await composedManifests(dir, workerDir);
+    expect(faults.map((fault) => [fault.package, fault.file])).toEqual([
+      ["@pithy-sh/auth", "pithy.manifest.json"],
+      ["@pithy-sh/auth", "pithy.mcp.manifest.json"],
+    ]);
+  });
+});
+
 /**
  * Missing and invalid are different answers, and this code gave them the same one.
  *
  * One `catch` covered both, so a manifest the schema refused made its capability vanish from
  * `pithy add --list`, `pithy upgrade` and `pithy doctor` with no message anywhere — the three commands an
- * adopter runs *because* something is missing were the three that stayed silent (#184). The four cases
+ * adopter runs *because* something is missing were the three that stayed silent. The four cases
  * are separated here because they were one case in the code.
  *
  * Third instance of the shape: `readDevVarsSource` and `readDevJson` (`../devSecrets/`) each read every

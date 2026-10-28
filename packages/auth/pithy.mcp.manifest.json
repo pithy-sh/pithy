@@ -1,0 +1,36 @@
+{
+  "name": "mcp",
+  "package": "@pithy-sh/auth",
+  "requiredBindings": [{ "type": "d1", "name": "DB" }],
+  "peerCapabilities": ["auth"],
+  "optionalCapabilities": ["audit"],
+  "migrationNamespace": "mcp",
+  "scaffold": [
+    "Choose who may connect an agent at all: `pithy add mcp --floor signed-in`, `--floor power:<name>` or `--floor entitlement:<name>`. There is no default. `pithy doctor` prints the floor in force.",
+    "Run `pithy ui add` for the two screens an agent's user needs: `agent-consent.tsx`, where they sign in and approve, and `connected-applications.tsx`, where they see and revoke what they approved.",
+    "Make a route a tool with `describeRoute({ operation, tool })`: `tool: true` on a `GET`, `tool: { effect }` on anything else, with the effect one of `writes`, `sends`, `charges` or `deletes`. A route that declares no `tool` is never offered.",
+    "Run `pithy migrate` to create the `pithy_mcp_*` tables beside auth's."
+  ],
+  "configOptions": [
+    {
+      "key": "path",
+      "default": "/mcp",
+      "describe": "Where the MCP endpoint mounts. An agent is pointed at <origin><path>."
+    },
+    {
+      "key": "floor",
+      "describe": "Who may connect an agent at all: \"signed-in\", { power } or { entitlement }. Every tool is still gated by its own route."
+    },
+    {
+      "key": "consentPath",
+      "default": "/agent-consent",
+      "describe": "The consent screen's path in this Worker's front end. pithy ui add writes it there."
+    },
+    {
+      "key": "database",
+      "default": "DB",
+      "describe": "The D1 binding auth uses. The provider's tables live beside auth's."
+    }
+  ],
+  "whenToEnable": "Let your users' agents use your app as them. Composing it mounts an MCP endpoint at /mcp and an OAuth 2.1 authorization server in auth: an agent registers itself, its user signs in and approves on your own consent screen, and it gets a token bound to this endpoint and to that user. Every tool is a route that opted in with describeRoute, and each call runs through that route's own gates, so an agent can do what its user can and nothing more. Off until composed, and composing it means choosing a floor: every signed-in user, a power, or an entitlement. Needs auth."
+}

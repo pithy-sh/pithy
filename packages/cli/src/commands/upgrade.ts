@@ -49,7 +49,7 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
 /**
  * `pithy upgrade [--env] [--worker <name>] [--dry-run] [--migrate] [--packages [--latest]]` — reconcile every
  * Worker with the capability manifests installed in the project, and with `--packages`, move the project's
- * `@pithy-sh/*` dependencies first (#634).
+ * `@pithy-sh/*` dependencies first.
  *
  * Capabilities are per Worker, so the reconcile engine is too: `upgrade` fans out over `apps/*`, building and
  * applying one plan per Worker against that Worker's own `pithy.config.ts` and `wrangler.jsonc`. Output is
@@ -84,7 +84,7 @@ export interface UpgradeRunOptions {
   env: string;
   /**
    * The Cloudflare account this project belongs to, from `projectCloudflareAccount(projectDir)`, or
-   * `null` when it names none. Required (#234): `--migrate --env staging` applies migrations to a live
+   * `null` when it names none. Required: `--migrate --env staging` applies migrations to a live
    * schema, which is the write this must never make under credentials the project did not claim.
    */
   account: CloudflareAccountSelection | null;
@@ -95,7 +95,7 @@ export interface UpgradeRunOptions {
   /** Run each Worker's pending migrations after reconciling it. */
   migrate: boolean;
   /**
-   * The caller's own `pithy upgrade` (#711), the one input a line naming this run again is built from, so it carries
+   * The caller's own `pithy upgrade`, the one input a line naming this run again is built from, so it carries
    * every flag the caller gave — `--json` among them. The command passes its parsed arguments; absent, it is
    * {@link upgradeCallerOf} these options, for a caller with no command line behind it.
    */
@@ -103,14 +103,14 @@ export interface UpgradeRunOptions {
   /**
    * Worker-set resolver seam; defaults to {@link resolveWorkersFor} for `env`. The Workers are composed for
    * the environment the plan counts migrations in and `--migrate` applies them to — composed for none, a
-   * config whose migrations differ by environment planned against the wrong set (#595).
+   * config whose migrations differ by environment planned against the wrong set.
    */
   resolveWorkers?: (options: { projectDir: string; worker?: string }) => Promise<UpgradeWorker[]>;
   /** Test seam: read the migration ledger without a real Miniflare/D1 run. */
   readLedger?: ReadLedger;
   /**
    * The project's `seed.productionEnvironments`. Read from the root config after the package step when omitted, so a
-   * refusal naming a provision says one of them as a person's decision (#711).
+   * refusal naming a provision says one of them as a person's decision.
    */
   productionEnvironments?: readonly string[];
   /** Test seam: run migrations without a real Miniflare/D1 run. */
@@ -120,7 +120,7 @@ export interface UpgradeRunOptions {
   /**
    * `--packages`: move every `@pithy-sh/*` dependency to the newest version its range admits — or, with
    * `latest`, to `latest` — and reinstall, **before** anything reads a Worker's config. Absent, the run is
-   * exactly what it was before #634: no registry request, no write, no spawn.
+   * only the reconcile: no registry request, no write, no spawn.
    */
   packages?: { latest: boolean };
   /** Test seam: the registry `--packages` reads. Defaults to the global `fetch`. */
@@ -132,14 +132,12 @@ export interface UpgradeRunOptions {
 }
 
 /**
- * One Worker's outcome — **three states, and the plan lives behind the one that has it** (#380).
+ * One Worker's outcome — **three states, and the plan lives behind the one that has it**.
  *
  * A plan reads that Worker's own `pithy.config.ts` and `wrangler.jsonc` and, through the ledger, its
  * databases; an apply *writes* those files and, with `--migrate`, runs that Worker's migrations. All of
- * it can fail for reasons belonging to one Worker, and the throw used to propagate out of the fan-out —
- * so a five-Worker project lost four Workers' reports to the fifth's broken config, and, worse than its
- * twin in `buildProjectHealth`, lost them *after* some of those Workers' files had already been
- * rewritten.
+ * it can fail for reasons belonging to one Worker, and a throw out of the fan-out would lose every other
+ * Worker's report — *after* some of those Workers' files had already been rewritten.
  *
  * `unplanned` and `unapplied` are kept apart because the difference is whether anything was written.
  * Nothing was read about an `unplanned` Worker and nothing was changed. An `unapplied` Worker had a plan
@@ -176,7 +174,7 @@ export type UpgradeWorkerResult =
       plan: ReconcilePlan;
       /**
        * This run, for this Worker, as the line names it to run again: its environment, its `--migrate`, and the
-       * Worker by its `apps/` directory (#711) — never the deployed name `worker` carries.
+       * Worker by its `apps/` directory — never the deployed name `worker` carries.
        */
       again: Command;
     }
@@ -200,8 +198,7 @@ export type UpgradeWorkerResult =
  *
  * The faults are project-wide, not per Worker — manifests install once under the root's
  * `node_modules/@pithy-sh` and every Worker shares them — so they are reported once, above the Workers.
- * They used to be reported nowhere at all: a manifest the schema refused made its capability vanish from
- * every plan, and the run reconciled happily around the hole (#184).
+ * A manifest the schema refused is in no plan, so nothing else would report it.
  */
 export interface UpgradeRun {
   /** One entry per Worker in scope, in discovery order. */
@@ -211,11 +208,11 @@ export interface UpgradeRun {
   /** What `--packages` did. Absent without the flag, so a run without it is the run it always was. */
   packages?: PackagesReport;
   /**
-   * The Pithy block in `AGENTS.md` (#697). Absent only when `--packages` moved `@pithy-sh/cli` and the
+   * The Pithy block in `AGENTS.md`. Absent only when `--packages` moved `@pithy-sh/cli` and the
    * reconcile was left to the new one — which writes its own block, not this binary's.
    */
   agents?: InstructionsFile;
-  /** What a `--dry-run` would write, in the one plan shape every dry run shares (#697). Only under `dryRun`. */
+  /** What a `--dry-run` would write, in the one plan shape every dry run shares. Only under `dryRun`. */
   plan?: Plan;
 }
 
@@ -304,7 +301,7 @@ function stanzaName(env: string): string {
 }
 
 /**
- * **A dry run's report, as the one plan every `--dry-run` shares (#697).** Read off what the run already
+ * **A dry run's report, as the one plan every `--dry-run` shares.** Read off what the run already
  * built — the package moves, the Pithy block, each reconciled Worker's plan — so it adds no second reading
  * of the project, only a second spelling of the first.
  *
@@ -388,7 +385,7 @@ export async function planUpgrade(projectDir: string, run: UpgradeRun, migrate: 
   return plan;
 }
 
-/** The reconcile, every Worker in scope — the whole of `pithy upgrade` before #634. */
+/** The reconcile, every Worker in scope: the whole of `pithy upgrade` without `--packages`. */
 async function reconcileWorkers(options: UpgradeRunOptions): Promise<UpgradeRun> {
   const resolve = options.resolveWorkers ?? ((scope) => resolveWorkersFor(options.env, scope));
   const scan = options.readManifests ?? availableManifests;
@@ -405,7 +402,7 @@ async function reconcileWorkers(options: UpgradeRunOptions): Promise<UpgradeRun>
   for (const worker of workers) {
     // Guarded per Worker, and `try`/`catch` rather than `.catch()`: a plan that throws before it returns
     // a promise — a `pithy.config.ts` that will not import, a `wrangler.jsonc` the parser refuses — is
-    // not a rejected promise, and a `.catch()` would not see it (#371).
+    // not a rejected promise, and a `.catch()` would not see it.
     //
     // The guards take no binding. The Worker's name is what an operator acts on, and what a config load
     // or a D1 read throws names a path, an id, or a query.
@@ -432,7 +429,7 @@ async function reconcileWorkers(options: UpgradeRunOptions): Promise<UpgradeRun>
     // exited 0 where the real run exits 1 is the one report that must never disagree with the run it
     // describes. Nothing is written on either path, so refusing costs the dry run nothing.
     // Every environment the Worker provisions for: an undeclinable binding is created by a provision, and one
-    // that acts on a single environment is named once for each (#711).
+    // that acts on a single environment is named once for each.
     const refusal = declineRefusal(plan, await workerEnvironments(worker.dir), productionEnvironments);
     if (refusal) {
       results.push({ state: "refused", worker: worker.name, plan, refusal: refusal.payload });
@@ -453,7 +450,7 @@ async function reconcileWorkers(options: UpgradeRunOptions): Promise<UpgradeRun>
         account: options.account,
         ...(project === undefined ? {} : { project }),
         capabilities: worker.capabilities,
-        // The Worker's own app, whose bindings the plan reported with no manifest behind them (#662).
+        // The Worker's own app, whose bindings the plan reported with no manifest behind them.
         ...(worker.config?.app ? { app: worker.config.app } : {}),
         ...(options.runMigrate ? { runMigrate: options.runMigrate } : {}),
         productionEnvironments,
@@ -461,7 +458,7 @@ async function reconcileWorkers(options: UpgradeRunOptions): Promise<UpgradeRun>
     } catch {
       // Its own entry, and a different one from `unplanned`: this Worker's files have been opened for
       // writing. What landed of the plan is exactly what this run cannot say.
-      // The caller's own run, from its context, narrowed to this Worker (#711).
+      // The caller's own run, from its context, narrowed to this Worker.
       const again = rerunCommand(options.caller ?? upgradeCallerOf(options), {
         flags: { "--worker": workerDirName(worker), "--packages": undefined, "--latest": undefined },
       });
@@ -474,20 +471,14 @@ async function reconcileWorkers(options: UpgradeRunOptions): Promise<UpgradeRun>
 }
 
 /**
- * Whether any Worker in the run went unreconciled — the run's exit gate (#380).
+ * Whether any Worker in the run went unreconciled — the run's exit gate.
  *
- * A guard that let `pithy upgrade` exit 0 around a Worker it could not read would be a weaker gate than
- * the throw it replaced, and this command runs headlessly in CI. So the failure still ends the run
- * non-zero; it just stops taking every other Worker's report with it.
+ * This command runs headlessly in CI, so a Worker it could not read still ends the run non-zero; it just
+ * does not take every other Worker's report with it.
  *
- * **A degraded contributor counts, and that is what merging `#371` into `#380` turned up.** `#380` wrote
- * this as `state !== "reconciled"`, which was complete on its own branch: a ledger that would not read
- * threw, the per-Worker guard caught it, and the Worker came back `unplanned`. `#371` then made every
- * contributor degrade instead of throw — the better design, and it left this reading `reconciled` for a
- * Worker whose ledger nobody could read, so the run exited 0 on a check that never happened.
- *
- * Neither branch was wrong; the composition was. So the gate asks the question it always meant to ask —
- * **was every Worker fully checked** — rather than the proxy for it that happened to be true before.
+ * **A degraded contributor counts.** A contributor that cannot read degrades rather than throws, so a
+ * Worker whose ledger nobody could read comes back `reconciled`; asking `state !== "reconciled"` alone
+ * would exit 0 on a check that never happened. The gate asks **was every Worker fully checked**.
  * `partial` counts alongside `unavailable`: a short sum is not a whole one.
  */
 export function upgradeIncomplete(run: UpgradeRun): boolean {
@@ -535,19 +526,18 @@ function parts(bindings: number, keys: number, verb: string): string | null {
  * The warning lines for a manifest that is installed and unusable.
  *
  * A capability with a fault here is in no other line of the report: its manifest could not be read, so it
- * contributes no drift, no bindings, and no config keys, and the run reconciles happily around the hole.
- * That silence is what #184 was reported about — `upgrade` is one of the three commands an adopter runs
- * when a capability has gone missing, and it was one of the three that said nothing.
+ * contributes no drift, no bindings, and no config keys, and the run would otherwise reconcile around the
+ * hole in silence.
  */
 function faultLines(faults: readonly ManifestFault[]): string[] {
   return faults.flatMap((fault) => [
-    `${fault.package}: malformed pithy.manifest.json. Not reconciled.`,
+    `${fault.package}: malformed ${fault.file}. Not reconciled.`,
     ...fault.reason.split("\n").map((line) => `  ${line}`),
   ]);
 }
 
 /**
- * What the plan's ledger says, in every state it can be in (#371).
+ * What the plan's ledger says, in every state it can be in.
  *
  * A database that could not be read gets its own line rather than being absorbed into a pending count of
  * zero. `upgrade --migrate` would run against exactly that database, so "nothing pending" about one
@@ -610,7 +600,7 @@ function planLines(plan: ReconcilePlan): string[] {
   for (const name of plan.ejectedSkipped) lines.push(`${name}: ejected. Skipped.`);
   // The Worker's entry, in the same words the applied lines use one tense over. A Durable Object is one
   // binding written in two files, and the plan reported only the file that is config — so a project with
-  // the binding and no export read as "Nothing to upgrade." while the deploy was refused (#428).
+  // the binding and no export read as "Nothing to upgrade." while the deploy was refused.
   const exports = [...new Set(plan.perCapability.flatMap((cap) => cap.missingEntryExports))];
   if (exports.length > 0) lines.push(`Worker entry: export ${exports.join(", ")}.`);
   if (plan.missingVersionMetadata) lines.push("version_metadata: add CF_VERSION_METADATA.");
@@ -627,9 +617,8 @@ function planLines(plan: ReconcilePlan): string[] {
  * The human-readable lines for one Worker's applied upgrade.
  *
  * A skipped binding gets a line of its own, named, under the capability that needed it. **Counted, it
- * would be invisible** — and being invisible is exactly what #318 was: the count came from the plan, so
- * five bindings the writer declined were reported as added and the adopter's next command, `pithy
- * doctor`, contradicted this one about a file it had just written.
+ * would be invisible**: a count taken from the plan reports bindings the writer declined as added, and
+ * `pithy doctor` would then contradict this report about a file it had just written.
  */
 function appliedLines(applied: ReconcileApplied, plan: ReconcilePlan): string[] {
   const lines: string[] = [];
@@ -678,7 +667,7 @@ function renderUpgrade(run: UpgradeRun): string[] {
 }
 
 /**
- * One Worker's lines, in each of the three states it can be in (#380).
+ * One Worker's lines, in each of the three states it can be in.
  *
  * Neither failure state prints "Nothing to upgrade." That sentence is a finding — the run looked and
  * found nothing — and it is the one thing an unread Worker must never say.
@@ -809,7 +798,7 @@ function sectionLines(section: TemplateSection, noted: boolean): string[] {
 }
 
 /**
- * **`pithy upgrade` as a run with no command line behind it names itself (#711)** — a test, or a caller that drives
+ * **`pithy upgrade` as a run with no command line behind it names itself** — a test, or a caller that drives
  * {@link runUpgrade} directly: its environment, its Worker, `--migrate` and a dry run. The command passes its own
  * parsed arguments instead, so every flag the caller gave carries.
  */
@@ -829,7 +818,7 @@ export function upgradeCallerOf(options: {
 
 /**
  * The project's own CLI's `upgrade`, through its package manager — a bare `pithy` may be the old, global one — and
- * the caller's own run (#711): its `--env`, `--worker` and `--migrate` each change what the reconcile acts on.
+ * the caller's own run: its `--env`, `--worker` and `--migrate` each change what the reconcile acts on.
  * Less `--packages` and `--latest`, which did their work in this run, and would move the packages again.
  */
 function reconcileCommand(packages: PackagesReport, caller: Caller<"upgrade">): string {
@@ -867,7 +856,7 @@ export function upgradeText(
 }
 
 /**
- * What this run left required, as `next` (#697): the project's own CLI, when `--packages` moved it and the
+ * What this run left required, as `next`: the project's own CLI, when `--packages` moved it and the
  * reconcile was left to the new one, or `pithy migrate` for the migrations it counted and did not run.
  *
  * **The count is only ever whole.** A Worker that is not `reconciled`, or whose ledger read in part or not at
@@ -996,7 +985,7 @@ export default withContract(
         });
         const dryRun = args["dry-run"];
         const projectDir = process.cwd();
-        // The caller's own run, the one input every line naming it again is built from (#711).
+        // The caller's own run, the one input every line naming it again is built from.
         const caller = callerOf("upgrade", args);
         const run = await runUpgrade({
           projectDir,
@@ -1023,7 +1012,7 @@ export default withContract(
   }),
   {
     output: "document",
-    // 2: `plan.resources[].kind` takes `queue`, the fourth kind provisioning creates (#662).
+    // 2: `plan.resources[].kind` takes `queue`, the fourth kind provisioning creates.
     schemaVersion: 2,
     payload: UpgradePayload,
     mutates: true,

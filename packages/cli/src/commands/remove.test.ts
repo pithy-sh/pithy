@@ -7,12 +7,15 @@ import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { collectMigrationSets } from "@pithy-sh/core/src/migrations/capabilitySets";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { RemoveCapabilityOptions } from "../capabilities/remove";
+import type { RemoveCapabilityOptions, RemoveResult } from "../capabilities/remove";
 import { latchInputMode } from "../terminal/inputMode";
 import remove, { rejectJson, rejectNoInput, requireDropConfirmable } from "./remove";
 
 /** What `pithy remove` handed the removal: the drop's environment, and the composition it reverses from. */
-const seen = vi.hoisted(() => ({ calls: [] as { drop: string | undefined; migrations: string[] }[] }));
+const seen = vi.hoisted(() => ({
+  calls: [] as { drop: string | undefined; migrations: string[] }[],
+  result: undefined as Partial<RemoveResult> | undefined,
+}));
 
 vi.mock("../capabilities/remove", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../capabilities/remove")>()),
@@ -29,6 +32,7 @@ vi.mock("../capabilities/remove", async (importOriginal) => ({
       removedBindings: [],
       keptFor: [],
       tablesRemain: false,
+      ...seen.result,
     };
   },
 }));
@@ -54,7 +58,7 @@ describe("rejectJson", () => {
     })();
     expect(failure).toBeInstanceOf(PithyError);
     expect((failure as PithyError).payload.message).toMatch(/manual command/i);
-    // Exit 5: no call an agent could make instead is the right one (#697).
+    // Exit 5: no call an agent could make instead is the right one.
     expect((failure as PithyError).payload.code).toBe("core/person_required");
   });
 
@@ -64,7 +68,7 @@ describe("rejectJson", () => {
 });
 
 /**
- * **Under the explicit switch, `remove` is refused, exit 5 (#697).** `--no-input` and
+ * **Under the explicit switch, `remove` is refused, exit 5.** `--no-input` and
  * `PITHY_NONINTERACTIVE=1` say outright that nobody is at the keyboard, and `remove` belongs to a person,
  * as `docs/CLI.md` §3.8 and the `AGENTS.md` block both say. A run that merely has no terminal is not the
  * switch, and keeps unwiring as it always has.
@@ -121,7 +125,7 @@ describe("remove under the switch", () => {
 });
 
 /**
- * **`pithy remove --drop --env staging` reverses the migrations of the composition for staging (#595).**
+ * **`pithy remove --drop --env staging` reverses the migrations of the composition for staging.**
  *
  * The Worker it unwires was picked by `commands/add.ts`'s `targetWorker`, which composed with no environment
  * stamped, and the drop reversed the migrations of that composition. A config that composes a migration for
@@ -130,7 +134,7 @@ describe("remove under the switch", () => {
  */
 /**
  * `--drop` asks a person, and there is no flag that answers for one. A run that may not prompt is refused
- * before anything is read — it used to reach the clack prompt whatever the terminal state (#697).
+ * before anything is read, rather than reaching the clack prompt whatever the terminal state.
  */
 describe("requireDropConfirmable", () => {
   test("a run that may prompt, or one not dropping, passes", () => {
@@ -160,6 +164,7 @@ describe("remove --drop composes for the environment it drops", () => {
 
   beforeEach(async () => {
     seen.calls.length = 0;
+    seen.result = undefined;
     dir = await mkdtemp(join(tmpdir(), "pithy-remove-env-"));
     await writeFile(join(dir, "pithy.config.ts"), 'export default { name: "acme", environments: ["staging"] };\n');
     const workerDir = join(dir, "apps", "api");
@@ -183,9 +188,13 @@ describe("remove --drop composes for the environment it drops", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  async function run(args: Record<string, unknown>): Promise<void> {
+  async function run(args: Record<string, unknown>): Promise<string> {
     const cwd = vi.spyOn(process, "cwd").mockReturnValue(dir);
-    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const written: string[] = [];
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      written.push(String(chunk));
+      return true;
+    });
     // A person at a terminal: `--drop` is refused before anything is read when nobody may be asked
     // (`requireDropConfirmable`), and this suite is about what a drop composes, not who confirms it.
     const tty = { stdin: process.stdin.isTTY, stdout: process.stdout.isTTY };
@@ -202,6 +211,7 @@ describe("remove --drop composes for the environment it drops", () => {
       cwd.mockRestore();
       stdout.mockRestore();
     }
+    return written.join("");
   }
 
   test("a drop for staging reverses staging's migrations, and a plain unwiring reads dev's", async () => {
@@ -213,8 +223,19 @@ describe("remove --drop composes for the environment it drops", () => {
     ]);
   });
 
+  test("names the package mcp ships in, kept while this Worker still imports it and uninstalled once nothing does", async () => {
+    seen.result = { capability: "mcp", package: "@pithy-sh/auth", present: true, keptHere: true };
+    const kept = await run({ capability: "mcp" });
+    expect(kept).toContain("Kept @pithy-sh/auth installed — api still imports it.");
+
+    seen.result = { capability: "mcp", package: "@pithy-sh/auth", present: true, packageManager: "bun" };
+    const uninstalled = await run({ capability: "mcp" });
+    expect(uninstalled).toContain("Uninstalled @pithy-sh/auth.");
+    expect(`${kept}${uninstalled}`).not.toContain("@pithy-sh/mcp");
+  });
+
   /**
-   * **Another account's credentials stop only the run that would use them (#739).** An unwiring and a
+   * **Another account's credentials stop only the run that would use them.** An unwiring and a
    * `--drop --env dev` touch this machine alone, so the audit they get is inert and reads nothing. A drop
    * against staging reaches a live database, and refuses before anything is removed.
    */

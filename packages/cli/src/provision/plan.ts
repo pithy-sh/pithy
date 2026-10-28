@@ -10,16 +10,15 @@ import { type ProvisionWorker, provisionTargets } from "./environment";
 import { boundSecretNames, scopeHoldsSecret, workerSecretRegistry } from "./secretBindings";
 
 /**
- * **What a provisioning run is about to do, said before it does any of it (#515).**
+ * **What a provisioning run is about to do, said before it does any of it.**
  *
- * `pithy provision` reached an account, resolved every Worker, minted secrets and created databases
- * without printing a character until all of it had settled. The silence that prompted this was mostly
- * *before* the work loop — loading config, resolving Workers, reaching the account — which is exactly the
- * stretch where an operator's instinct to interrupt arrives. Streaming the loop alone leaves it quiet.
+ * Much of a run's time is *before* the work loop — loading config, resolving Workers, reaching the account —
+ * which is exactly the stretch where an operator's instinct to interrupt arrives. Streaming the loop alone
+ * leaves it quiet.
  *
  * So the plan comes first, and it comes **before the confirmation**: `assertProvisionConfirmed` is the
- * moment an operator is asked to agree to real Cloudflare resources, and it asked without saying what they
- * were. Everything below is already computed by then — nothing is created to produce it.
+ * moment an operator is asked to agree to real Cloudflare resources, so it says what they are. Everything below
+ * is already computed by then — nothing is created to produce it.
  *
  * **It is the run's own input, not a second guess at it.** {@link provisionTargets} is the single answer
  * to *what will this touch*, and the work loop takes the same value from the same call. A plan built from
@@ -58,10 +57,10 @@ export interface ProvisionPlan {
    * **Installed packages whose `pithy.manifest.json` is present and unusable — the reason a row above may
    * be wrong.**
    *
-   * A plan is a promise, and one of these makes it a promise about the wrong resource: since #513 a
+   * A plan is a promise, and one of these makes it a promise about the wrong resource: a
    * binding's `scope` and `resource` come out of these files, so a manifest that will not parse is a
-   * project-global database planned — and created — under a per-environment name, with nothing said
-   * (#184). Named *here* as well as in the report because this is printed **before** the confirmation,
+   * project-global database planned — and created — under a per-environment name, with nothing said.
+   * Named *here* as well as in the report because this is printed **before** the confirmation,
    * which is the one moment an operator can decline a run rather than undo one.
    */
   manifestFaults: ManifestFault[];
@@ -87,7 +86,7 @@ export async function provisionPlan(options: {
     manifestFaults,
     // The names come from the targets rather than being composed again here. A plan that recomputed them
     // would be a second read of `node_modules` and therefore a second answer to what a binding is called
-    // — the split #513 is about, reintroduced between the plan and the run it describes.
+    // that could disagree with the run it describes.
     resources: bindings.map(({ binding, kind, name }) => ({ kind, binding, name })),
     workers: options.workers.map((worker) => worker.name),
     secrets: plannedSecrets(options.workers, options.scope),
@@ -170,7 +169,7 @@ function renderRows(rows: { label: string; items: string[] }[]): string {
 
 /**
  * The lines for a manifest that is installed and unusable — `pithy upgrade`'s two lines, in `provision`'s
- * words (#184).
+ * words.
  *
  * A capability with one of these appears nowhere else in a plan or a report, and the run still provisions
  * for it: its bindings come from the **composed instance**, which is fine, while its `scope`, its
@@ -180,7 +179,7 @@ function renderRows(rows: { label: string; items: string[] }[]): string {
  */
 export function manifestFaultLines(faults: readonly ManifestFault[]): string[] {
   return faults.flatMap((fault) => [
-    `${fault.package}: malformed pithy.manifest.json. Its resource naming and declines went unread.`,
+    `${fault.package}: malformed ${fault.file}. Its resource naming and declines went unread.`,
     ...fault.reason.split("\n").map((line) => `  ${line}`),
   ]);
 }

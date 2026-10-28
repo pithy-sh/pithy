@@ -8,7 +8,6 @@ import { undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi
 import { describe, expect, test } from "vitest";
 import { CATALOG } from "../capabilities/catalog";
 import {
-  KIT_COMPANIONS,
   KIT_COMPOSITION,
   KIT_CONTRACT_PATH,
   KIT_SOCKET_CONTRACT_PATH,
@@ -20,7 +19,7 @@ import {
 import { operationCount, renderDocument } from "./workerContract";
 
 /**
- * **The kit's published document covers the whole kit, describes all of it, and is current (#719).**
+ * **The kit's published document covers the whole kit, describes all of it, and is current.**
  *
  * Composed once for the file: assembling twenty capabilities is the expensive part, and every assertion
  * here reads the same assembly.
@@ -88,11 +87,7 @@ describe("the kit's OpenAPI document", () => {
   test("the document is not vacuous: it holds the kit's routes, under every capability's tag", () => {
     // A floor rather than the count, which moves with every route a capability adds. 174 when written.
     expect(operationCount(document)).toBeGreaterThanOrEqual(170);
-    const expected = [
-      "core",
-      ...Object.keys(KIT_COMPOSITION).filter((name) => !(name in ROUTELESS)),
-      ...Object.keys(KIT_COMPANIONS),
-    ].sort();
+    const expected = ["core", ...Object.keys(KIT_COMPOSITION).filter((name) => !(name in ROUTELESS))].sort();
     expect(document.tags.map((tag) => tag.name).sort()).toEqual(expected);
     for (const name of Object.keys(ROUTELESS)) {
       expect(groups.find((group) => group.tag === name)?.routes, name).toEqual([]);
@@ -101,7 +96,7 @@ describe("the kit's OpenAPI document", () => {
 });
 
 /**
- * **And its socket document (#718).** The same three properties over the sockets: the kit's two socket
+ * **And its socket document.** The same three properties over the sockets: the kit's two socket
  * capabilities are in it, every frame field is described, and the committed file is current.
  */
 describe("the kit's AsyncAPI document", () => {
@@ -109,7 +104,7 @@ describe("the kit's AsyncAPI document", () => {
     const tags = Object.values(sockets.channels).flatMap((channel) =>
       (channel.tags as { name: string }[]).map((tag) => tag.name),
     );
-    // Support's socket is the presence room its `support.thread` kind declares (#816).
+    // Support's socket is the presence room its `support.thread` kind declares.
     expect([...new Set(tags)].sort()).toEqual(["matchmaking", "multiplayer", "support"]);
     const schemas = Object.keys(sockets.components.schemas);
     // Keyed by the configured game, not its model: an adopter may run one model under two keys.
