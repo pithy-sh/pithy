@@ -310,6 +310,77 @@ export const SupportThreadsResponse = z
   .describe("A page of the inbox, as one viewer sees it.");
 export type SupportThreadsResponse = z.output<typeof SupportThreadsResponse>;
 
+/** A search backend, by name. */
+const SupportSearchBackend = z
+  .enum(["fts", "like", "semantic"])
+  .describe("A search backend: `fts` (the FTS5 index), `like` (the keyword scan), or `semantic` (the message index).");
+
+/** One search result. */
+export const SupportSearchResultView = z
+  .object({
+    thread: SupportListedThreadView.describe("The thread, carrying the calling viewer's own read and snooze state."),
+    messageId: z
+      .string()
+      .describe(
+        "The message in the thread that matched best — the one the scores below belong to. Open the thread at it.",
+      ),
+    bm25: z
+      .number()
+      .optional()
+      .describe(
+        "That message's FTS5 `bm25`, raw: lower is better, and comparable only within one search. Absent when FTS5 did not run or did not match it — including on the `LIKE` scan, which has no score.",
+      ),
+    similarity: z
+      .number()
+      .optional()
+      .describe(
+        "That message's similarity to the query in the semantic index, raw: higher is closer. Absent when semantic search did not run or did not match it. Never normalized against `bm25` — the two are reported as they are.",
+      ),
+  })
+  .describe("One thread a search found, named by its best-matching message, with that message's raw scores.");
+export type SupportSearchResultView = z.output<typeof SupportSearchResultView>;
+
+/** `GET {base}/threads/search`. */
+export const SupportSearchResponse = z
+  .object({
+    mode: z
+      .enum(["keyword", "semantic", "hybrid"])
+      .describe("The mode that ran: the one asked for, or `hybrid` when none was."),
+    backends: z
+      .object({
+        ran: z.array(SupportSearchBackend).describe("The backends that answered."),
+        skipped: z
+          .array(
+            z
+              .object({
+                backend: SupportSearchBackend,
+                reason: z
+                  .enum(["unprovisioned", "failed"])
+                  .describe(
+                    "`unprovisioned` — on in config, and its index or binding is not there until `pithy support provision` runs. `failed` — it was there and did not answer.",
+                  ),
+              })
+              .describe("A backend that was on and did not answer."),
+          )
+          .describe(
+            "The backends that were on and did not answer. Empty when every one did. A skip degrades the search, never fails it.",
+          ),
+      })
+      .describe("Which backends ran, and which were skipped."),
+    count: z
+      .number()
+      .int()
+      .min(0)
+      .describe(
+        "How many results came back. Under the limit when the filters left fewer — that is the true count, not a page.",
+      ),
+    results: z
+      .array(SupportSearchResultView)
+      .describe("The threads, best first: fused by rank, newest first on a tie."),
+  })
+  .describe("A ranked search over the inbox. No cursor: a ranked list has a top, not pages.");
+export type SupportSearchResponse = z.output<typeof SupportSearchResponse>;
+
 /** One change of a thread's assignee, as its history shows it. */
 export const SupportAssignmentView = z
   .object({
@@ -473,6 +544,10 @@ export type SupportMessageViewAsRead = z.output<typeof SupportMessageViewAsRead>
 /** `GET {base}/threads`, as a client that does not control the Worker must read it. */
 export const SupportThreadsResponseAsRead = asRead(SupportThreadsResponse);
 export type SupportThreadsResponseAsRead = z.output<typeof SupportThreadsResponseAsRead>;
+
+/** `GET {base}/threads/search`, as a client that does not control the Worker must read it. */
+export const SupportSearchResponseAsRead = asRead(SupportSearchResponse);
+export type SupportSearchResponseAsRead = z.output<typeof SupportSearchResponseAsRead>;
 
 /** `GET {base}/threads/:id`, as a client that does not control the Worker must read it. */
 export const SupportThreadResponseAsRead = asRead(SupportThreadResponse);

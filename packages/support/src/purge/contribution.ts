@@ -9,6 +9,7 @@ import {
   type PurgeContext,
   purgeBinding,
 } from "@pithy-sh/core/src/capability/purge";
+import { deleteVectors, type VectorStore } from "@pithy-sh/vector/src/index/index";
 import { type Expression, type ExpressionBuilder, type Kysely, type SqlBool, sql } from "kysely";
 import { SupportAssignment } from "../data/assignment";
 import { SupportAttachment } from "../data/attachment";
@@ -17,6 +18,7 @@ import {
   SUPPORT_ASSIGNMENTS_TABLE,
   SUPPORT_ATTACHMENTS_TABLE,
   SUPPORT_CLASSIFICATIONS_TABLE,
+  SUPPORT_EMBEDDINGS_TABLE,
   SUPPORT_FLAGS_TABLE,
   SUPPORT_MESSAGES_TABLE,
   SUPPORT_THREADS_TABLE,
@@ -25,6 +27,7 @@ import {
 } from "../data/tables";
 import { SupportThread } from "../data/thread";
 import { SUPPORT_BUCKET_BINDING } from "../secret/registry";
+import { SUPPORT_VECTORIZE_BINDING } from "../semantic/messageIndex";
 
 /**
  * What erasing one person means for `@pithy-sh/support` (#814): every thread they opened — linked to their account,
@@ -41,7 +44,8 @@ import { SUPPORT_BUCKET_BINDING } from "../secret/registry";
  * **The bytes go first, then the rows.** An attachment's row and a message's `rawKey` are the only things that name
  * their objects, so a row deleted ahead of its object would leave bytes nothing can find. An R2 delete of a key
  * already gone succeeds, so a retried step is **idempotent**, and a person with no threads finds nothing. Deleting
- * a message drops it from the full-text index through the index's own triggers.
+ * a message drops it from the full-text index through the index's own triggers. Its vector in the semantic index
+ * is deleted by the message's id, stamped or not, before the message row that names it.
  *
  * **Who had a thread goes with the thread; who handed it over is the operator's.** The assignment history is a
  * thread's own record — each change names the thread, who had it before and after, and the assigner's note about
@@ -73,6 +77,9 @@ const PAGE = 50;
 
 /** R2's ceiling on the keys one `delete` takes. */
 const R2_DELETE_KEYS = 1000;
+
+/** Vector ids one `deleteByIds` call takes — Vectorize's own write batch, the same ceiling an upsert has. */
+const VECTOR_DELETE_IDS = 1000;
 
 /** The person's threads, as a predicate: linked to the account, or sent from its address and linked to none. */
 type Theirs = (
@@ -122,8 +129,13 @@ async function threadIds(db: SupportDatabase, predicate: Theirs, limit: number):
   return rows.map((row) => row.id);
 }
 
+/** How the purge is composed. `semantic` is whether `search.semantic` is on, so the index must be reachable. */
+export interface SupportPurgeOptions {
+  semantic?: boolean;
+}
+
 /** The user contribution `support()` declares. */
-export function supportUserPurge(database = "DB"): ErasingPurgeContribution {
+export function supportUserPurge(database = "DB", options: SupportPurgeOptions = {}): ErasingPurgeContribution {
   const open = (env: Record<string, unknown>) => {
     const d1 = purgeBinding<D1Database>(env, database, "support");
     return { d1, db: supportDatabase(d1) };
@@ -162,12 +174,13 @@ export function supportUserPurge(database = "DB"): ErasingPurgeContribution {
       ];
       await d1.batch(anonymize.map((compiled) => d1.prepare(compiled.sql).bind(...(compiled.parameters as unknown[]))));
       let bucket: R2Bucket | undefined;
+      let vectors: VectorStore | undefined;
       for (;;) {
         const ids = await threadIds(db, predicate, PAGE);
         if (ids.length === 0) return;
         const [attachments, messages] = await Promise.all([
           db.selectFrom(SUPPORT_ATTACHMENTS_TABLE).select("storageKey").where("threadId", "in", ids).execute(),
-          db.selectFrom(SUPPORT_MESSAGES_TABLE).select("rawKey").where("threadId", "in", ids).execute(),
+          db.selectFrom(SUPPORT_MESSAGES_TABLE).select(["id", "rawKey"]).where("threadId", "in", ids).execute(),
         ]);
         const keys = [
           ...attachments.map((row) => row.storageKey),
@@ -181,8 +194,41 @@ export function supportUserPurge(database = "DB"): ErasingPurgeContribution {
             await bucket.delete(keys.slice(start, start + R2_DELETE_KEYS));
           }
         }
+        // Their messages' vectors, before the rows that name them: a vector is derived from their words. Deleted by
+        // every message id in the page, not only the stamped ones, because a vector can outlive a failed stamp
+        // write, and deleting an id the index does not hold is harmless. The index is required when semantic
+        // search is on or a stamp says a vector exists; otherwise it is used when bound, so a project with
+        // semantic search off needs none.
+        if (vectors === undefined && context.env[SUPPORT_VECTORIZE_BINDING] === undefined) {
+          const required =
+            options.semantic === true ||
+            (await db
+              .selectFrom(SUPPORT_EMBEDDINGS_TABLE)
+              .select("messageId")
+              .where("messageId", "in", (eb) =>
+                eb.selectFrom(SUPPORT_MESSAGES_TABLE).select("id").where("threadId", "in", ids),
+              )
+              .executeTakeFirst()) !== undefined;
+          if (required) {
+            vectors = purgeBinding<VectorStore>(context.env, SUPPORT_VECTORIZE_BINDING, "support", "Vectorize index");
+          }
+        } else {
+          vectors ??= purgeBinding<VectorStore>(context.env, SUPPORT_VECTORIZE_BINDING, "support", "Vectorize index");
+        }
+        if (vectors) {
+          const vectorIds = messages.map((row) => row.id);
+          for (let start = 0; start < vectorIds.length; start += VECTOR_DELETE_IDS) {
+            await deleteVectors(vectors, vectorIds.slice(start, start + VECTOR_DELETE_IDS));
+          }
+        }
         // One batch, children first, so a failure leaves the page whole and the retry erases it again.
         const statements = [
+          db
+            .deleteFrom(SUPPORT_EMBEDDINGS_TABLE)
+            .where("messageId", "in", (eb) =>
+              eb.selectFrom(SUPPORT_MESSAGES_TABLE).select("id").where("threadId", "in", ids),
+            )
+            .compile(),
           db.deleteFrom(SUPPORT_ATTACHMENTS_TABLE).where("threadId", "in", ids).compile(),
           db.deleteFrom(SUPPORT_ASSIGNMENTS_TABLE).where("threadId", "in", ids).compile(),
           db.deleteFrom(SUPPORT_CLASSIFICATIONS_TABLE).where("threadId", "in", ids).compile(),

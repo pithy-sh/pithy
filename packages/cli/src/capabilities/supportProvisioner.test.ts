@@ -4,6 +4,7 @@
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { cloudflareRequest } from "@pithy-sh/cloudflare/src/client/errors";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { SupportConfig, type SupportConfigInput } from "@pithy-sh/support/src/config/config";
@@ -244,6 +245,7 @@ describe("the committed classification worker template", () => {
     // template's block — the template's name cannot be suffixed into a project-scoped one.
     expect(resolved.workflows).toEqual([
       { binding: "SUPPORT_CLASSIFY", name: "acme-prod-support-classify", class_name: "SupportClassifyWorkflow" },
+      { binding: "SUPPORT_REPROCESS", name: "acme-prod-support-reprocess", class_name: "SupportReprocessWorkflow" },
     ]);
     // Workers AI has no local emulation and a Workflow host always runs locally in `wrangler dev`.
     expect(resolved.ai).toEqual({ binding: "AI", remote: true });
@@ -503,5 +505,188 @@ describe("pithy support deprovision deletes its Workflows", () => {
       deprovisionSupport(deprovisioner, { environment: "staging", declared: DEFAULT_ENVIRONMENTS }),
     ).resolves.toBeDefined();
     expect(events).toEqual([]);
+  });
+});
+
+describe("the semantic message index", () => {
+  function vectorCf(
+    existing: { dimensions: number; metric: string } | null,
+    stored: { messages: number; stamps: number } = { messages: 1, stamps: 1 },
+  ) {
+    const findIndexByName = vi.fn().mockResolvedValue(existing ? { name: "x", config: existing } : null);
+    const createIndex = vi.fn().mockResolvedValue({ name: "x" });
+    const deleteIndex = vi.fn().mockResolvedValue(undefined);
+    const run = vi.fn().mockResolvedValue({});
+    const first = vi.fn().mockResolvedValue(stored);
+    const cf = {
+      vectorizeProvisioner: () => ({ findIndexByName, createIndex, deleteIndex }),
+      d1: () => ({ prepare: () => ({ run, first }) }),
+    } as unknown as CloudflareClients;
+    return { cf, findIndexByName, createIndex, deleteIndex, run };
+  }
+
+  test("the binding the CLI writes is the one support reads", async () => {
+    const { SUPPORT_VECTORIZE_BINDING: ours } = await import("./supportProvisioner");
+    const { SUPPORT_VECTORIZE_BINDING: theirs } = await import("@pithy-sh/support/src/semantic/messageIndex");
+    expect(ours).toBe(theirs);
+  });
+
+  test("off: creates nothing, and names the index it would have", async () => {
+    const { cf, createIndex } = vectorCf(null);
+    expect(await provisioner(cf, []).ensureSemanticIndex("staging")).toEqual({
+      indexName: "acme-staging-support-messages",
+      created: false,
+    });
+    expect(createIndex).not.toHaveBeenCalled();
+  });
+
+  test("on: creates the index at bge-m3's 1024 components, cosine, under the facade's name, and audits it", async () => {
+    const { cf, createIndex } = vectorCf(null);
+    const events: CliAuditEvent[] = [];
+    const result = await provisioner(cf, events, { supportConfig: { search: { semantic: true } } }).ensureSemanticIndex(
+      "staging",
+    );
+    expect(result).toEqual({ indexName: "acme-staging-support-messages", created: true });
+    expect(createIndex).toHaveBeenCalledWith("acme-staging-support-messages", { dimensions: 1024, metric: "cosine" });
+    expect(events.map((event) => event.action)).toEqual(["support/semantic_index_created"]);
+  });
+
+  test("on and present: reuses it, and refuses one created at another shape", async () => {
+    const same = vectorCf({ dimensions: 1024, metric: "cosine" });
+    expect(
+      await provisioner(same.cf, [], { supportConfig: { search: { semantic: true } } }).ensureSemanticIndex("prod"),
+    ).toEqual({ indexName: "acme-prod-support-messages", created: false });
+    expect(same.createIndex).not.toHaveBeenCalled();
+    const other = vectorCf({ dimensions: 768, metric: "cosine" });
+    await expect(
+      provisioner(other.cf, [], { supportConfig: { search: { semantic: true } } }).ensureSemanticIndex("prod"),
+    ).rejects.toThrow(/different shape/);
+  });
+
+  test("a created index is backfilled once, through the reprocess Workflow, with every message", async () => {
+    const { cf } = vectorCf(null);
+    const createInstance = vi.fn().mockResolvedValue("instance-1");
+    const live = new CloudflareSupportProvisioner({
+      projectDir: KIT_ROOT,
+      cf,
+      project: PROJECT,
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      apiToken: "tok",
+      supportConfig: SupportConfig.parse({ search: { semantic: true } }),
+      resolveEnv: async () => ({ appDatabaseId: "app-db" }),
+      workflows: { createInstance },
+    });
+    expect(await live.settleSemanticIndex("staging", true)).toEqual({ dropped: false, backfilled: true });
+    expect(createInstance).toHaveBeenCalledWith("acme-staging-support-reprocess", {
+      index: "support-messages",
+      all: true,
+    });
+    // An index that already existed is never re-embedded by provisioning.
+    createInstance.mockClear();
+    expect(await live.settleSemanticIndex("staging", false)).toEqual({ dropped: false, backfilled: false });
+    expect(createInstance).not.toHaveBeenCalled();
+  });
+
+  test("an index a failed run created holds no stamps, so the next run backfills it", async () => {
+    const createInstance = vi.fn().mockResolvedValue("instance-1");
+    const live = (stored: { messages: number; stamps: number }) =>
+      new CloudflareSupportProvisioner({
+        projectDir: KIT_ROOT,
+        cf: vectorCf({ dimensions: 1024, metric: "cosine" }, stored).cf,
+        project: PROJECT,
+        account: { accountId: "acct-1", confirmation: "pinned" },
+        apiToken: "tok",
+        supportConfig: SupportConfig.parse({ search: { semantic: true } }),
+        resolveEnv: async () => ({ appDatabaseId: "app-db" }),
+        workflows: { createInstance },
+      });
+    expect(await live({ messages: 3, stamps: 0 }).settleSemanticIndex("prod", false)).toEqual({
+      dropped: false,
+      backfilled: true,
+    });
+    expect(createInstance).toHaveBeenCalledWith("acme-prod-support-reprocess", {
+      index: "support-messages",
+      all: true,
+    });
+    // An empty inbox has nothing to backfill.
+    createInstance.mockClear();
+    expect(await live({ messages: 0, stamps: 0 }).settleSemanticIndex("prod", false)).toEqual({
+      dropped: false,
+      backfilled: false,
+    });
+    expect(createInstance).not.toHaveBeenCalled();
+  });
+
+  test("off and present: drops the index and the stamps that named its vectors", async () => {
+    const { cf, deleteIndex, run } = vectorCf({ dimensions: 1024, metric: "cosine" });
+    const events: CliAuditEvent[] = [];
+    expect(await provisioner(cf, events).settleSemanticIndex("prod", false)).toEqual({
+      dropped: true,
+      backfilled: false,
+    });
+    expect(deleteIndex).toHaveBeenCalledWith("acme-prod-support-messages");
+    expect(run).toHaveBeenCalled();
+    expect(events.map((event) => event.action)).toEqual(["support/semantic_index_dropped"]);
+  });
+
+  test("off, on a token or plan that cannot reach Vectorize: nothing to drop, and provisioning goes on", async () => {
+    const { cf, findIndexByName, deleteIndex } = vectorCf(null);
+    for (const status of [401, 403]) {
+      const refusal = await cloudflareRequest("find Vectorize index acme-prod-support-messages", async () => {
+        throw Object.assign(new Error("Authentication error"), { status });
+      }).catch((error: unknown) => error);
+      findIndexByName.mockRejectedValueOnce(refusal);
+      expect(await provisioner(cf, []).settleSemanticIndex("prod", false)).toEqual({
+        dropped: false,
+        backfilled: false,
+      });
+    }
+    expect(deleteIndex).not.toHaveBeenCalled();
+  });
+
+  test("off: any other failure of the drop probe still stops the run", async () => {
+    const { cf, findIndexByName } = vectorCf(null);
+    const outage = await cloudflareRequest("find Vectorize index acme-prod-support-messages", async () => {
+      throw Object.assign(new Error("Internal error"), { status: 500 });
+    }).catch((error: unknown) => error);
+    findIndexByName.mockRejectedValueOnce(outage);
+    await expect(provisioner(cf, []).settleSemanticIndex("prod", false)).rejects.toBe(outage);
+  });
+
+  test("on: a token that cannot reach Vectorize still refuses", async () => {
+    const { cf, findIndexByName } = vectorCf(null);
+    const refusal = await cloudflareRequest("find Vectorize index acme-prod-support-messages", async () => {
+      throw Object.assign(new Error("Authentication error"), { status: 403 });
+    }).catch((error: unknown) => error);
+    findIndexByName.mockRejectedValueOnce(refusal);
+    await expect(
+      provisioner(cf, [], { supportConfig: { search: { semantic: true } } }).ensureSemanticIndex("prod"),
+    ).rejects.toBe(refusal);
+  });
+
+  test("off and absent: nothing to do", async () => {
+    const { cf, deleteIndex } = vectorCf(null);
+    expect(await provisioner(cf, []).settleSemanticIndex("prod", false)).toEqual({ dropped: false, backfilled: false });
+    expect(deleteIndex).not.toHaveBeenCalled();
+  });
+
+  test("the classification host binds the index only when semantic search is on", async () => {
+    const template = await committedTemplate();
+    const off = resolveSupportConfig(template, {
+      project: PROJECT,
+      env: "prod",
+      appDatabaseId: "db",
+      supportConfig: SupportConfig.parse({}),
+    });
+    expect(off.vectorize ?? []).toEqual([]);
+    const on = resolveSupportConfig(template, {
+      project: PROJECT,
+      env: "prod",
+      appDatabaseId: "db",
+      supportConfig: SupportConfig.parse({ search: { semantic: true } }),
+    });
+    expect(on.vectorize).toEqual([
+      { binding: "SUPPORT_VECTORIZE", index_name: "acme-prod-support-messages", remote: true },
+    ]);
   });
 });

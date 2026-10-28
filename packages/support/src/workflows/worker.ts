@@ -4,15 +4,23 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import type { D1Database } from "@cloudflare/workers-types";
+import { pithyCommandOf } from "@pithy-sh/core/src/cli/command";
+import { createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
 import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import { workflowHostEntry } from "@pithy-sh/core/src/workflow/hostEntry";
+import type { VectorAi } from "@pithy-sh/vector/src/embed/embed";
+import type { VectorStore } from "@pithy-sh/vector/src/index/index";
+import { type ReprocessReport, reprocessIndex } from "@pithy-sh/vector/src/workflows/reprocess";
 import type { SupportAi } from "../ai/classify";
 import { SupportConfig } from "../config/config";
 import { resolveCategories } from "../data/categories";
 import { supportDatabase } from "../data/tables";
+import { supportMessageDocuments } from "../semantic/documents";
+import { runEmbedding } from "../semantic/embed";
+import { supportMessageIndex } from "../semantic/messageIndex";
 import { runClassification } from "./classify";
 import { supportWorkflowRetry } from "./retryPolicy";
-import { SUPPORT_CAPABILITY } from "./specs";
+import { SUPPORT_CAPABILITY, SupportReprocessParams } from "./specs";
 
 /**
  * The prebuilt support worker. `pithy support provision` deploys one per environment; the adopter
@@ -35,20 +43,27 @@ import { SUPPORT_CAPABILITY } from "./specs";
  * `@pithy-sh/core/src/workflow/hostEntry`.
  */
 
-/** The support worker's env: the app database, the AI binding, and the serialized config. */
+/** The support worker's env: the app database, the AI binding, the message index, and the serialized config. */
 export interface SupportWorkerEnv {
   /** The app database the support tables live in. */
   DB: D1Database;
-  /** The Workers AI binding. */
+  /** The Workers AI binding — classification and embedding both run on it. */
   AI: SupportAi;
+  /** The semantic message index. Bound only when `search.semantic` is on. */
+  SUPPORT_VECTORIZE?: VectorStore;
   /** The resolved support config as a JSON string, filled at provision. */
   SUPPORT_CONFIG?: string;
+}
+
+/** Parse the config this worker was deployed with. Absent falls back to the defaults. */
+function workerConfig(env: SupportWorkerEnv): SupportConfig {
+  return SupportConfig.parse(env.SUPPORT_CONFIG ? JSON.parse(env.SUPPORT_CONFIG) : {});
 }
 
 /** Classify one stored message and write the result. */
 export class SupportClassifyWorkflow extends WorkflowEntrypoint<SupportWorkerEnv, { messageId: string }> {
   override async run(event: WorkflowEvent<{ messageId: string }>, step: WorkflowStep): Promise<void> {
-    const config = SupportConfig.parse(this.env.SUPPORT_CONFIG ? JSON.parse(this.env.SUPPORT_CONFIG) : {});
+    const config = workerConfig(this.env);
     const deps = {
       db: supportDatabase(this.env.DB),
       ai: this.env.AI,
@@ -65,10 +80,71 @@ export class SupportClassifyWorkflow extends WorkflowEntrypoint<SupportWorkerEnv
     // Under `supportWorkflowRetry`: a model that could not be reached re-drives, and everything else
     // fails at once. `classifyMessage` already refuses to throw on a bad *answer*, so the only fault
     // that reaches this classifier as retryable is the binding not answering. See `retryPolicy.ts`.
-    await classifiedSteps(step, supportWorkflowRetry, NonRetryableError).do(
-      `classify-${event.payload.messageId}`,
-      async () => {
-        await runClassification(deps, event.payload.messageId);
+    if (config.ai.enabled) {
+      await classifiedSteps(step, supportWorkflowRetry, NonRetryableError).do(
+        `classify-${event.payload.messageId}`,
+        async () => {
+          await runClassification(deps, event.payload.messageId);
+        },
+      );
+    }
+
+    // Then the message index, when semantic search is on. Its own step, after the classification, and
+    // never fatal: `runEmbedding` reports a failure rather than throwing it, so the message stays stored and
+    // classified and is missing from semantic results only, until a reprocess picks it up.
+    const index = supportMessageIndex(config.search);
+    if (index) {
+      // Through the classifier like every step, though `runEmbedding` reports a failure rather than throwing one.
+      await classifiedSteps(step, supportWorkflowRetry, NonRetryableError).do(`embed-${event.payload.messageId}`, () =>
+        runEmbedding(
+          {
+            db: deps.db,
+            ai: this.env.AI as unknown as VectorAi,
+            store: this.env.SUPPORT_VECTORIZE,
+            index,
+            now: () => new Date(),
+            log: createWorkerLogger({ name: `${SUPPORT_CAPABILITY}:embed` }),
+          },
+          event.payload.messageId,
+        ),
+      );
+    }
+  }
+}
+
+/**
+ * Re-embed the semantic message index — `@pithy-sh/vector`'s own reprocess orchestration, over support's
+ * `DocumentStore`, one journalled page per step. `pithy vector reprocess --index support-messages` starts it,
+ * and so does `pithy support provision` once, to backfill an index it just created.
+ */
+export class SupportReprocessWorkflow extends WorkflowEntrypoint<SupportWorkerEnv, SupportReprocessParams> {
+  override async run(event: WorkflowEvent<SupportReprocessParams>, step: WorkflowStep): Promise<ReprocessReport> {
+    const params = SupportReprocessParams.parse(event.payload);
+    const index = supportMessageIndex(workerConfig(this.env).search);
+    if (!index) {
+      throw new NonRetryableError(
+        "support/reprocess: search.semantic is off in this worker's config, so there is no message index to re-embed",
+      );
+    }
+    const store = this.env.SUPPORT_VECTORIZE;
+    if (!store) {
+      throw new NonRetryableError(
+        `support/reprocess: the SUPPORT_VECTORIZE binding is absent; run \`${pithyCommandOf("support provision", {}, { runtime: true })}\` to bind the index`,
+      );
+    }
+    return reprocessIndex(
+      {
+        documents: supportMessageDocuments(supportDatabase(this.env.DB), { store }),
+        store,
+        ai: this.env.AI as unknown as VectorAi,
+        index,
+        indexName: params.index,
+        now: () => new Date(),
+      },
+      classifiedSteps(step, supportWorkflowRetry, NonRetryableError),
+      {
+        ...(params.all !== undefined ? { all: params.all } : {}),
+        ...(params.pageSize !== undefined ? { pageSize: params.pageSize } : {}),
       },
     );
   }

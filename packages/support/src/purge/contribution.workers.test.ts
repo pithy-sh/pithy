@@ -9,6 +9,7 @@ import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { support } from "../capability";
 import { SUPPORT_MIGRATIONS } from "../migrations/set";
+import { fakeVectorStore } from "../test-utils/semantic";
 import { ERASED_ASSIGNER, SUPPORT_PURGE_SUMMARY, supportUserPurge } from "./contribution";
 
 /**
@@ -18,6 +19,7 @@ import { ERASED_ASSIGNER, SUPPORT_PURGE_SUMMARY, supportUserPurge } from "./cont
  */
 
 const TABLES = [
+  "pithy_support_embeddings",
   "pithy_support_assignments",
   "pithy_support_attachments",
   "pithy_support_classifications",
@@ -197,7 +199,10 @@ describe("the support user purge", () => {
     for (const table of TABLES) {
       const left = await env.DB.prepare(`SELECT count(*) AS n FROM ${table}`).first<{ n: number }>();
       // Bob's one thread is left, with its one row in each table — and its two handovers.
-      expect(left?.n, table).toBe(table === "pithy_support_assignments" ? 2 : 1);
+      // No message here was ever embedded, so the stamp table holds none of anybody's.
+      expect(left?.n, table).toBe(
+        table === "pithy_support_assignments" ? 2 : table === "pithy_support_embeddings" ? 0 : 1,
+      );
     }
     const history = await env.DB.prepare("SELECT thread_id FROM pithy_support_assignments").all<{
       thread_id: string;
@@ -331,6 +336,53 @@ describe("the support user purge", () => {
     expect(rows.results).toHaveLength(7);
     expect((await exportOf(context("staff-1", "staff@example.test"))).handovers).toEqual([]);
     await expect(purge.erase(context("staff-1", "staff@example.test"))).resolves.toBeUndefined();
+  });
+
+  test("deletes the vectors of their messages from the semantic index, and the stamps that name them", async () => {
+    const store = fakeVectorStore();
+    for (const id of ["m-linked", "m-before-signup", "m-bobs"]) {
+      await store.upsert([{ id, values: [1] }]);
+      await env.DB.prepare("INSERT INTO pithy_support_embeddings (message_id, model, embedded_at) VALUES (?, 'm', ?)")
+        .bind(id, T)
+        .run();
+    }
+    await purge.erase({ ...context("ada", "ada@example.test"), env: { ...capped(), SUPPORT_VECTORIZE: store } });
+    expect([...store.vectors.keys()]).toEqual(["m-bobs"]);
+    const { results } = await env.DB.prepare("SELECT message_id FROM pithy_support_embeddings").all();
+    expect(results).toEqual([{ message_id: "m-bobs" }]);
+  });
+
+  test("deletes a vector its stamp never reached, by the ids of every message in their threads", async () => {
+    const store = fakeVectorStore();
+    // The upsert landed and the stamp write after it failed, so no stamp names this vector.
+    await store.upsert([{ id: "m-linked", values: [1] }]);
+    await store.upsert([{ id: "m-bobs", values: [1] }]);
+    await purge.erase({ ...context("ada", "ada@example.test"), env: { ...capped(), SUPPORT_VECTORIZE: store } });
+    expect([...store.vectors.keys()]).toEqual(["m-bobs"]);
+  });
+
+  test("refuses with semantic search on and the index unbound, even when no stamp names a vector", async () => {
+    const semanticPurge = supportUserPurge("DB", { semantic: true });
+    await expect(semanticPurge.erase(context("ada", "ada@example.test"))).rejects.toThrow(/Vectorize index/);
+  });
+
+  test("the composed capability's purge refuses the same way with semantic search on, and erases with it off", async () => {
+    const eraseOf = (composed: ReturnType<typeof support>) => {
+      const erase = composed.purge?.[0]?.erase;
+      if (!erase) throw new Error("support() must declare a purge with an erase");
+      return erase;
+    };
+    const on = eraseOf(support({ search: { semantic: true } }));
+    await expect(on(context("ada", "ada@example.test"))).rejects.toThrow(/Vectorize index/);
+    const off = eraseOf(support());
+    await expect(off(context("ada", "ada@example.test"))).resolves.toBeUndefined();
+  });
+
+  test("refuses rather than leaving vectors behind when the index is not bound to the purging Worker", async () => {
+    await env.DB.prepare(
+      "INSERT INTO pithy_support_embeddings (message_id, model, embedded_at) VALUES ('m-linked', 'm', 1)",
+    ).run();
+    await expect(purge.erase(context("ada", "ada@example.test"))).rejects.toThrow(/Vectorize index/);
   });
 
   test("is idempotent: a second erase finds nothing and succeeds", async () => {

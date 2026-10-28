@@ -4,10 +4,14 @@
 import { describe, expect, test } from "vitest";
 import {
   DEFAULT_CLASSIFY_MODEL,
+  DEFAULT_EMBEDDING_DIMENSIONS,
+  DEFAULT_EMBEDDING_MODEL,
   MAX_SUBMISSION_BODY_CHARS,
   MAX_SUBMISSION_SUBJECT_CHARS,
   SupportConfig,
+  SupportSearchConfig,
   supportNeedsBucket,
+  supportSemantic,
 } from "./config";
 
 describe("SupportConfig defaults", () => {
@@ -86,6 +90,48 @@ describe("SupportConfig defaults", () => {
     // is what makes every inbound message a no-op rather than mail stored from an unconfigured inbox.
     expect(SupportConfig.parse({}).inboundAddresses).toEqual([]);
     expect(SupportConfig.parse({}).categories).toEqual({});
+  });
+});
+
+describe("search.semantic", () => {
+  test("is off by default — every message would cost a second inference on the adopter's bill", () => {
+    const search = SupportConfig.parse({}).search;
+    expect(search.semantic).toBe(false);
+    expect(supportSemantic(search)).toBeUndefined();
+  });
+
+  test("`true` is the kit's multilingual default, bge-m3 at 1024 components", () => {
+    expect(DEFAULT_EMBEDDING_MODEL).toBe("@cf/baai/bge-m3");
+    expect(supportSemantic(SupportConfig.parse({ search: { semantic: true } }).search)).toEqual({
+      model: "@cf/baai/bge-m3",
+      dimensions: DEFAULT_EMBEDDING_DIMENSIONS,
+    });
+    expect(DEFAULT_EMBEDDING_DIMENSIONS).toBe(1024);
+  });
+
+  test("`{ model }` overrides the model and keeps the default width unless it is stated", () => {
+    const own = SupportConfig.parse({ search: { semantic: { model: "@cf/baai/bge-large-en-v1.5" } } }).search;
+    expect(supportSemantic(own)).toEqual({ model: "@cf/baai/bge-large-en-v1.5", dimensions: 1024 });
+    const narrow = SupportConfig.parse({
+      search: { semantic: { model: "@cf/baai/bge-base-en-v1.5", dimensions: 768 } },
+    }).search;
+    expect(supportSemantic(narrow)).toEqual({ model: "@cf/baai/bge-base-en-v1.5", dimensions: 768 });
+  });
+
+  test("anything else is refused", () => {
+    expect(SupportConfig.safeParse({ search: { semantic: "yes" } }).success).toBe(false);
+    expect(SupportConfig.safeParse({ search: { semantic: { model: "" } } }).success).toBe(false);
+  });
+
+  test("its description states the per-message inference cost before anyone turns it on", () => {
+    const described = SupportSearchConfig.shape.semantic.description ?? "";
+    expect(described).toContain("second inference per message");
+    expect(described).toContain("your own Workers AI binding");
+  });
+
+  test("the resolved config survives JSON, which is how it reaches the classification worker", () => {
+    const config = SupportConfig.parse({ search: { semantic: { model: "@cf/x" } } });
+    expect(supportSemantic(SupportConfig.parse(JSON.parse(JSON.stringify(config))).search)?.model).toBe("@cf/x");
   });
 });
 

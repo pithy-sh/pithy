@@ -20,3 +20,17 @@ export const DEFAULT_PAGE_SIZE = 25;
 
 /** The most a caller may ask for in one page. */
 export const MAX_PAGE_SIZE = 100;
+
+/**
+ * The search route's bounds. Here rather than in `store/hybrid.ts` for the reason the page bounds are:
+ * `http/schemas.ts` is a client's business and reaches no Kysely.
+ */
+
+/** How many threads a search returns by default. */
+export const DEFAULT_SEARCH_LIMIT = 20;
+
+/** The most a search returns. A ranked list's tail is noise; fifty is past where anyone reads. */
+export const MAX_SEARCH_LIMIT = 50;
+
+/** The longest search term accepted — it becomes a scan predicate and a model input. */
+export const MAX_SEARCH_TERM = 200;

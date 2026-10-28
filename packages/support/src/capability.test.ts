@@ -19,7 +19,7 @@ function composed(options: Parameters<typeof support>[0] = {}) {
 }
 
 describe("support capability", () => {
-  test("contributes its six tables to the app database on the DB binding", () => {
+  test("contributes its seven tables to the app database on the DB binding", () => {
     const db = composed().databases?.app;
     expect(db?.binding).toBe("DB");
     expect(Object.keys(db?.tables ?? {})).toEqual([
@@ -29,6 +29,7 @@ describe("support capability", () => {
       "pithySupportClassifications",
       "pithySupportThreadFlags",
       "pithySupportAssignments",
+      "pithySupportEmbeddings",
     ]);
   });
 
@@ -51,7 +52,11 @@ describe("support capability", () => {
     // An FTS5 virtual table anywhere in a D1 database makes `wrangler d1 export` refuse to dump the
     // whole database. Shipping it by default would cost an adopter their backups for tables that
     // have nothing to do with support, so the chain holds the tables and nothing else.
-    expect(Object.keys(composed().databases?.app?.migrations ?? {})).toEqual(["0001_threads", "0002_assignment"]);
+    expect(Object.keys(composed().databases?.app?.migrations ?? {})).toEqual([
+      "0001_threads",
+      "0002_assignment",
+      "0003_embeddings",
+    ]);
   });
 
   test("the migration set is the same whether search.fts is on or off", () => {
@@ -61,7 +66,7 @@ describe("support capability", () => {
     // database, which is a whole-database outage from one capability's setting.
     const off = Object.keys(support({ search: { fts: false } }).databases?.app?.migrations ?? {});
     const on = Object.keys(support({ search: { fts: true } }).databases?.app?.migrations ?? {});
-    expect(off).toEqual(["0001_threads", "0002_assignment"]);
+    expect(off).toEqual(["0001_threads", "0002_assignment", "0003_embeddings"]);
     expect(on).toEqual(off);
   });
 
@@ -77,6 +82,29 @@ describe("support capability", () => {
     expect(bindings.SUPPORT_CLASSIFY).toMatchObject({ type: "workflow", optional: true });
   });
 
+  test("declares the message index and the AI binding only when search.semantic is on", () => {
+    const names = (options: Parameters<typeof support>[0]) =>
+      support({ inboundAddresses: INBOUND, ...options }).requiredBindings.map((binding) => binding.name);
+    expect(names({})).not.toContain("SUPPORT_VECTORIZE");
+    expect(names({})).not.toContain("AI");
+    const on = Object.fromEntries(
+      support({ inboundAddresses: INBOUND, search: { semantic: true } }).requiredBindings.map((binding) => [
+        binding.name,
+        binding,
+      ]),
+    );
+    // Optional: until `pithy support provision` creates the index, the Worker boots and the search skips it.
+    expect(on.SUPPORT_VECTORIZE).toMatchObject({ type: "vectorize", optional: true, remote: true });
+    expect(on.AI).toMatchObject({ type: "ai", remote: true });
+  });
+
+  test("declares its message index for `pithy vector reprocess` only when there is one", () => {
+    expect(support({ inboundAddresses: INBOUND }).vectorIndexes).toBeUndefined();
+    expect(support({ inboundAddresses: INBOUND, search: { semantic: true } }).vectorIndexes).toEqual([
+      { name: "support-messages", reprocessJob: "reprocess" },
+    ]);
+  });
+
   test("declares no bucket when nothing this Worker composes would write to one", () => {
     // The manifest cannot vary with config, so `SUPPORT_BUCKET` is declared `optional` there; the
     // composed instance is what says whether this Worker needs it, and `effectiveBindings` in the CLI
@@ -90,7 +118,12 @@ describe("support capability", () => {
     }).requiredBindings;
     expect(bindings.map((binding) => binding.name)).not.toContain("SUPPORT_BUCKET");
     // DB, the workflow and the presence room are untouched by the bucket question.
-    expect(bindings.map((binding) => binding.name)).toEqual(["DB", "SUPPORT_CLASSIFY", "PRESENCE_ROOMS"]);
+    expect(bindings.map((binding) => binding.name)).toEqual([
+      "DB",
+      "SUPPORT_CLASSIFY",
+      "SUPPORT_REPROCESS",
+      "PRESENCE_ROOMS",
+    ]);
   });
 
   test("any one of the three writers is enough to declare it", () => {
@@ -154,6 +187,7 @@ describe("the admin surface support advertises", () => {
     expect(capability.basePath).toBe("/inbox");
     expect((capability.adminRoutes ?? []).map((route) => route.path)).toEqual([
       "/inbox/threads",
+      "/inbox/threads/search",
       "/inbox/threads/:id",
       "/inbox/threads/:id/archive",
       "/inbox/threads/:id/assign",

@@ -77,6 +77,7 @@ const SHIPPED_WORKFLOWS = [
   "packages/secrets/src/manager/worker.ts#SecretsWriteWorkflow",
   "packages/storage/src/workflows/worker.ts#StorageSweepWorkflow",
   "packages/support/src/workflows/worker.ts#SupportClassifyWorkflow",
+  "packages/support/src/workflows/worker.ts#SupportReprocessWorkflow",
   "packages/testers/src/workflows/worker.ts#TestersDailyWorkflow",
   "packages/vector/src/workflows/worker.ts#VectorReprocessWorkflow",
 ];

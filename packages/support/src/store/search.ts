@@ -1,28 +1,23 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { type Expression, type SqlBool, sql } from "kysely";
+import { type SqlBool, sql } from "kysely";
 import { SUPPORT_MESSAGES_TABLE, type SupportDatabase } from "../data/tables";
 
 /**
- * Text search over the inbox — two backends behind one predicate.
+ * Keyword retrieval over the inbox — two backends behind one call.
  *
- * **FTS5 is the default and `LIKE` is the fallback** (#848). The index lives in a virtual table that
+ * **FTS5 is the default and `LIKE` is the fallback.** The index lives in a virtual table that
  * `pithy support provision` creates beside its triggers, so a project that has not provisioned it — or
  * that set `search.fts: false` — searches with an unindexed `LIKE` scan, which is adequate for an inbox
- * measured in thousands of messages. It was the other way round while an FTS5 table made
- * `wrangler d1 export` refuse the whole database; `pithy backup` leaves the index out and `pithy restore`
- * rebuilds it, so that cost is gone.
+ * measured in thousands of messages. `pithy backup` leaves the index out and `pithy restore` rebuilds it.
  *
- * Both paths return a **predicate over `pithy_support_threads`**, not a list of ids, so search
- * composes with the category/archived filters and — crucially — with cursor pagination. Returning
- * ids would mean either capping the match set (silent truncation, which reads as "that is all there
- * is") or paginating twice over.
+ * **Both return messages, ranked, not threads.** A thread is scored by its best-matching message, and the
+ * keyword half is fused with the semantic half by rank position in `store/hybrid.ts`. FTS5 ranks by `bm25`,
+ * which is reported raw. `LIKE` has no score, so its matches rank by recency, newest first.
  *
- * Either way this is keyword search, deliberately. People search a support inbox for a word they
- * remember — an order number, an error string, a surname — not for a concept. `@pithy-sh/vector` is
- * there for anyone who wants meaning-matching, and it is the nicer demo and the wrong default: it
- * cannot find `ORD-40912`.
+ * Keyword search is first-class beside semantic search: people search a support inbox for a word they
+ * remember — an order number, an error string, a surname — and semantic search cannot find `ORD-40912`.
  */
 
 /** The longest search term accepted. Bounded because it becomes a scan predicate. */
@@ -53,35 +48,61 @@ export function ftsQuery(term: string): string {
   return tokens.map((token) => `"${token.replace(/"/g, '""')}"`).join(" AND ");
 }
 
-/** Whether a term has anything searchable left after tokenizing. */
-export function isSearchable(term: string, fts: boolean): boolean {
-  return fts ? ftsQuery(term).length > 0 : term.trim().length > 0;
+/** One message a backend matched, in rank order. */
+export interface MessageHit {
+  /** The message. */
+  messageId: string;
+  /** Its thread. */
+  threadId: string;
+  /** The backend's own score for it, raw — `bm25` for FTS5, similarity for Vectorize, none for `LIKE`. */
+  score?: number;
 }
 
+/** Which keyword backend answered. */
+export type KeywordBackend = "fts" | "like";
+
 /**
- * A predicate matching threads whose messages contain `term`.
+ * The messages matching `term`, best first, at most `limit` of them.
  *
- * Correlated on the thread id so it drops into a `where` beside every other filter. The subquery is
- * `exists`, so it stops at the first matching message rather than counting them.
+ * A term that tokenizes to nothing — `???`, `@@@` — asked a question with no answer, and the honest answer
+ * is none: never the whole inbox rendered as search results.
  */
-export function searchPredicate(term: string, options: { fts: boolean }): Expression<SqlBool> {
-  if (options.fts) {
+export async function keywordHits(
+  db: SupportDatabase,
+  term: string,
+  options: { backend: KeywordBackend; limit: number },
+): Promise<MessageHit[]> {
+  if (options.backend === "fts") {
+    const match = ftsQuery(term);
+    if (match.length === 0) return [];
     // `<table> MATCH ?` naming the table in full is the documented FTS5 form, and the only one that
-    // works: the hidden match column keeps the table's own name, so aliasing the table to `s` and
-    // writing `s match ?` is `no such column: s`. `thread_id` is UNINDEXED, so the correlation is a
-    // filter over the match set rather than part of the match.
-    return sql<SqlBool>`exists (
-      select 1 from pithy_support_search
-      where pithy_support_search.thread_id = pithy_support_threads.id
-        and pithy_support_search match ${ftsQuery(term)}
-    )`;
+    // works: the hidden match column keeps the table's own name. `bm25()` is lower-is-better, so the
+    // ascending order is best first.
+    const { rows } = await sql<{ messageId: string; threadId: string; score: number }>`
+      select message_id as "messageId", thread_id as "threadId", bm25(pithy_support_search) as "score"
+      from pithy_support_search
+      where pithy_support_search match ${match}
+      order by "score" asc
+      limit ${options.limit}
+    `.execute(db);
+    return rows.map((row) => ({ messageId: row.messageId, threadId: row.threadId, score: Number(row.score) }));
   }
+  if (term.trim().length === 0) return [];
   const pattern = `%${escapeLike(term.slice(0, MAX_TERM))}%`;
-  return sql<SqlBool>`exists (
-    select 1 from pithy_support_messages m
-    where m.thread_id = pithy_support_threads.id
-      and (m.subject like ${pattern} escape '\\' or m.text_body like ${pattern} escape '\\')
-  )`;
+  const rows = await db
+    .selectFrom(SUPPORT_MESSAGES_TABLE)
+    .select(["id", "threadId"])
+    .where((eb) =>
+      eb.or([
+        sql<SqlBool>`${eb.ref("subject")} like ${pattern} escape '\\'`,
+        sql<SqlBool>`${eb.ref("textBody")} like ${pattern} escape '\\'`,
+      ]),
+    )
+    .orderBy("receivedAt", "desc")
+    .orderBy("id", "desc")
+    .limit(options.limit)
+    .execute();
+  return rows.map((row) => ({ messageId: row.id, threadId: row.threadId }));
 }
 
 /**

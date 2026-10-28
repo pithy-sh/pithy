@@ -325,13 +325,58 @@ export const SupportReplyConfig = z
 export type SupportReplyConfig = z.output<typeof SupportReplyConfig>;
 
 /**
+ * The default embedding model for semantic search — the kit's own default (`DEFAULT_EMBEDDING_MODEL` in
+ * `@pithy-sh/cloudflare/src/ai/aiManager.ts`), restated rather than imported because a Worker cannot reach
+ * the REST client package and should not.
+ *
+ * **Multilingual, and that is why.** An inbox takes mail in whatever language the customer writes, and an
+ * English-only model would embed a Spanish complaint into the wrong neighborhood with no error.
+ */
+export const DEFAULT_EMBEDDING_MODEL = "@cf/baai/bge-m3";
+
+/**
+ * How many components `bge-m3` produces. It is not a Vectorize preset, so the index states its own shape;
+ * a model override that produces another width states its `dimensions` beside it.
+ */
+export const DEFAULT_EMBEDDING_DIMENSIONS = 1024;
+
+/** The `{ model }` form of `search.semantic`: semantic search on, with a model of your choosing. */
+export const SupportSemanticConfig = z
+  .object({
+    model: z
+      .string()
+      .min(1)
+      .default(DEFAULT_EMBEDDING_MODEL)
+      .describe(
+        "The Workers AI embedding model the message index is built and queried with. Pinned: change it and `pithy vector reprocess --index support-messages` re-embeds what the old one wrote.",
+      ),
+    dimensions: z
+      .number()
+      .int()
+      .min(1)
+      .max(1536)
+      .default(DEFAULT_EMBEDDING_DIMENSIONS)
+      .describe(
+        "How many components the model produces — 1024 for `bge-m3`, 768 for `bge-base-en-v1.5`. Fixed when the index is created, so a model of another width needs the index dropped and recreated.",
+      ),
+  })
+  .describe("Semantic search with a chosen embedding model.");
+export type SupportSemanticConfig = z.output<typeof SupportSemanticConfig>;
+
+/**
  * How text search is answered.
  *
- * FTS5 by default since `pithy backup` and `pithy restore` handle the index (#848). It stays a setting
- * because the `LIKE` scan is still the right answer for a project that wants no virtual table at all.
+ * FTS5 by default, with the `LIKE` scan kept for a project that wants no virtual table at all. Semantic
+ * search is off by default because it costs a second inference per inbound message.
  */
 export const SupportSearchConfig = z
   .object({
+    semantic: z
+      .union([z.boolean(), SupportSemanticConfig])
+      .default(false)
+      .describe(
+        "Search by meaning as well as by words: `true` for the default model (`@cf/baai/bge-m3`), or `{ model }` for your own. **Off by default, and the reason is cost.** Every inbound message is embedded once, on your own Workers AI binding, in the classification Workflow — a second inference per message on top of classification, which roughly doubles this capability's per-message AI cost. The volume guard bounds messages, not spend. On, `pithy support provision` creates a Vectorize index and backfills it once; off, it drops the index. Vectors carry message ids and nothing else.",
+      ),
     fts: z
       .boolean()
       .default(true)
@@ -339,8 +384,22 @@ export const SupportSearchConfig = z
         "Build a SQLite FTS5 index over message subjects and bodies — a ranked word search instead of an unindexed `LIKE` scan. **On by default.** A plain `wrangler d1 export` of a database holding an FTS5 table fails outright, so `pithy backup` leaves the index and its triggers out and `pithy restore` rebuilds them from `pithy_support_messages`; the bare `wrangler` route has to skip it by hand. The index is derived rather than migrated, so `pithy support provision` creates or drops it to match this flag, and until a project re-provisions, search falls back to the `LIKE` scan and `pithy doctor` names the environment.",
       ),
   })
-  .describe("Text search settings — FTS5 by default, the `LIKE` scan when it is off or not yet provisioned.");
+  .describe(
+    "Search settings — FTS5 by default, the `LIKE` scan when it is off or not yet provisioned, and semantic search an opt-in priced in resources you own.",
+  );
 export type SupportSearchConfig = z.output<typeof SupportSearchConfig>;
+
+/**
+ * The semantic model and width this configuration asks for, or `undefined` when semantic search is off.
+ *
+ * The one reading of the three-shaped flag — `false`, `true`, `{ model }` — so the capability's bindings,
+ * the search route, the classification Workflow and provisioning cannot each decide what `true` means.
+ */
+export function supportSemantic(search: SupportSearchConfig): SupportSemanticConfig | undefined {
+  if (search.semantic === false) return undefined;
+  if (search.semantic === true) return { model: DEFAULT_EMBEDDING_MODEL, dimensions: DEFAULT_EMBEDDING_DIMENSIONS };
+  return search.semantic;
+}
 
 /** The full support configuration. */
 /**

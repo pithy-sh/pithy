@@ -682,6 +682,14 @@ describe("ingestInbound, classification", () => {
     expect(classified).toEqual([]);
   });
 
+  test("ai.enabled false with search.semantic on still dispatches the Workflow, which embeds it", async () => {
+    const { deps, classified } = harness({ ai: { enabled: false }, search: { semantic: true } });
+    const outcome = stored(await ingest(deps, plain({ messageId: "one@example.com" })));
+
+    expect(outcome.classifying).toBe(false);
+    expect(classified).toEqual([outcome.messageId]);
+  });
+
   test("an ordinary message dispatches classification for the row that was just written", async () => {
     const { deps, classified } = harness();
     const outcome = stored(await ingest(deps, plain({ messageId: "one@example.com" })));

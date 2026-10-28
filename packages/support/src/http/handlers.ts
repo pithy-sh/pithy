@@ -7,6 +7,9 @@ import { pithyCommandOf } from "@pithy-sh/core/src/cli/command";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import type { ObjectStore } from "@pithy-sh/storage/src/object/store";
+import type { VectorIndexConfig } from "@pithy-sh/vector/src/config/config";
+import type { VectorAi } from "@pithy-sh/vector/src/embed/embed";
+import type { VectorStore } from "@pithy-sh/vector/src/index/index";
 import { attachmentUrl } from "../attachment/store";
 import { SupportAuditActions } from "../audit/actions";
 import type { SupportConfig } from "../config/config";
@@ -25,6 +28,7 @@ import { sendReply } from "../reply/send";
 import type { SupportReplySnippets } from "../reply/snippets";
 import { repliesForCategory } from "../reply/snippets";
 import { assignThread, listAssignments } from "../store/assignment";
+import { searchThreads } from "../store/hybrid";
 import { listOwnThreads, listThreads, readOwnThread, readThread, setArchived, setFlags } from "../store/threads";
 import { decodeBase64 } from "../submission/encoding";
 import { submitFeedback } from "../submission/submit";
@@ -38,6 +42,7 @@ import type {
   SupportReclassifiedResponse,
   SupportReplySentResponse,
   SupportReplyView,
+  SupportSearchResponse,
   SupportSubmissionResponse,
   SupportThreadResponse,
   SupportThreadsResponse,
@@ -51,6 +56,7 @@ import type {
   MyThreadsQuery,
   RepliesQuery,
   ReplyInput,
+  SearchThreadsQuery,
   SubmitFeedbackInput,
 } from "./schemas";
 import {
@@ -59,6 +65,7 @@ import {
   messageView,
   myMessageView,
   myThreadView,
+  searchView,
   senderView,
   threadView,
 } from "./views";
@@ -85,6 +92,11 @@ export interface HandlerDeps {
   snippets: SupportReplySnippets;
   /** Whether the FTS5 index is composed. */
   fts: boolean;
+  /**
+   * The semantic message index and the bindings it runs on. `index` is absent when `search.semantic` is
+   * off; `ai` and `store` are absent when this Worker was not given them — until `pithy support provision`.
+   */
+  semantic: { index?: VectorIndexConfig; ai?: VectorAi; store?: VectorStore };
   /** The attachment bucket, when one is bound. */
   bucket?: R2Bucket;
   /** The object store attachment URLs are signed through, when credentials are available. */
@@ -122,13 +134,48 @@ export async function listInbox(
       channel: query.channel,
       inbox: query.inbox,
       assignee: query.assignee,
-      q: query.q,
       cursor: query.cursor,
       limit: query.limit,
     },
-    { fts: deps.fts, viewer, now: deps.now(), log: deps.log },
+    { viewer, now: deps.now() },
   );
   return { threads: page.threads.map(listedThreadView), nextCursor: page.nextCursor };
+}
+
+/**
+ * Search the inbox: keyword and semantic, ranked as one. The semantic seams are whatever this Worker
+ * was given — absent bindings skip that backend and say so, rather than failing the search.
+ */
+export async function searchInbox(
+  deps: HandlerDeps,
+  query: SearchThreadsQuery,
+  viewer: string,
+): Promise<SupportSearchResponse> {
+  const outcome = await searchThreads(
+    {
+      db: deps.db,
+      fts: deps.fts,
+      ...(deps.semantic.index ? { index: deps.semantic.index } : {}),
+      ...(deps.semantic.ai ? { ai: deps.semantic.ai } : {}),
+      ...(deps.semantic.store ? { store: deps.semantic.store } : {}),
+      viewer,
+      log: deps.log,
+    },
+    {
+      q: query.q,
+      ...(query.mode !== undefined ? { mode: query.mode } : {}),
+      ...(query.limit !== undefined ? { limit: query.limit } : {}),
+      archived: query.archived === "true",
+      category: query.category,
+      declaredCategory: query.declaredCategory,
+      priority: query.priority,
+      sentiment: query.sentiment,
+      channel: query.channel,
+      inbox: query.inbox,
+      assignee: query.assignee,
+    },
+  );
+  return searchView(outcome);
 }
 
 /**
@@ -302,6 +349,15 @@ export async function reclassifyConversation(
   threadId: string,
   viewer: string,
 ): Promise<SupportReclassifiedResponse> {
+  // The worker classifies only with `ai.enabled` on. Dispatching anyway would start a run that classifies
+  // nothing, and the 200 and the audit event below would both say it had.
+  if (!deps.config.ai.enabled) {
+    throw new SupportClassificationError({
+      message: "Classification is off for this project.",
+      action: `Turn on \`ai.enabled\` in the support config, run \`${pithyCommandOf("support provision", {}, { runtime: true })}\`, then retry.`,
+      detail: `ai.enabled is false, so no instance was started for thread ${threadId}`,
+    });
+  }
   const messageId = await latestInboundMessageId(deps.db, threadId);
   if (!messageId) {
     throw new SupportNotFoundError({

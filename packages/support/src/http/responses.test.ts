@@ -24,6 +24,8 @@ import {
   SupportMyThreadView,
   SupportRepliesResponse,
   SupportReplySentResponse,
+  SupportSearchResponse,
+  SupportSearchResultView,
   SupportSubmissionResponse,
   SupportThreadResponse,
   SupportThreadsResponse,
@@ -36,6 +38,8 @@ import {
   messageView,
   myMessageView,
   myThreadView,
+  searchResultView,
+  searchView,
   senderView,
   threadView,
 } from "./views";
@@ -319,6 +323,25 @@ describe("support response schemas", () => {
     });
   });
 
+  test("a search result is exactly what its schema declares, with each score present only when it was", () => {
+    const both = searchResultView({ thread: LISTED, messageId: "m-1", bm25: -2.5, similarity: 0.81 });
+    accepts(SupportSearchResultView, both);
+    const like = searchResultView({ thread: LISTED, messageId: "m-1" });
+    accepts(SupportSearchResultView, like);
+    // Absent, never null and never zero: a backend that did not run has no score to report.
+    expect(Object.keys(like).sort()).toEqual(["messageId", "thread"]);
+    const outcome = searchView({
+      mode: "hybrid",
+      ran: ["like"],
+      skipped: [{ backend: "semantic", reason: "unprovisioned" }],
+      results: [{ thread: LISTED, messageId: "m-1", similarity: 0.4 }],
+    });
+    accepts(SupportSearchResponse, outcome);
+    // The count is the number of results, and there is no cursor to page with.
+    expect(outcome.count).toBe(1);
+    expect(outcome).not.toHaveProperty("nextCursor");
+  });
+
   test("a reply response has to say how it was delivered, and only one arm has a job", () => {
     // "Sent by email" and "waiting in the app" are different promises about when somebody reads the
     // answer, so the shape makes a client branch to read either one. Without the discriminant there is
@@ -349,6 +372,7 @@ const READERS_CONTRACTS: readonly string[] = [
   "SupportAssignResponseAsRead",
   "SupportListedThreadViewAsRead",
   "SupportMessageViewAsRead",
+  "SupportSearchResponseAsRead",
   "SupportThreadResponseAsRead",
   "SupportThreadViewAsRead",
   "SupportThreadsResponseAsRead",

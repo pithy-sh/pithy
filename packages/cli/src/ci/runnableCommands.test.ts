@@ -133,7 +133,8 @@ const RUNTIME_LINES: Readonly<Record<string, string>> = {
   "email/src/workflows/hostEnv.ts": "the email host's boot log; doctor's settings check names the Worker",
   "payments/src/workflows/workerConfig.ts": "the reconcile host's refusal of its own projected config",
   "support/src/http/handlers.ts": "the support route's answer to the inbox UI",
-  "support/src/store/threads.ts": "a warning in the app Worker's log",
+  "support/src/store/hybrid.ts": "a search's warning in the app Worker's log, and its refusal of a semantic mode",
+  "support/src/workflows/worker.ts": "the support host's refusal of a reprocess run it has no index for",
   "turnstile/src/analytics/source.ts": "the widget read's answer to a management client over HTTP",
   "turnstile/src/analytics/widgets.ts":
     "a misconfigured widget's line in the widget read, to a management client over HTTP",

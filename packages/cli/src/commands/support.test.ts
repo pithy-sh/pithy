@@ -95,3 +95,17 @@ describe("pithy support", () => {
     expect(error.action).toBe("Use `prod`.");
   });
 });
+
+describe("the message index phrase on each environment's line", () => {
+  test("names a backfill of an index that already existed, not only of one this run created", async () => {
+    const { messageIndexOutcome } = await import("./support");
+    const at = (created: boolean, dropped: boolean, backfilled: boolean) =>
+      messageIndexOutcome({ created, dropped, backfilled });
+    expect(at(true, false, true)).toBe(", message index created and backfilling");
+    expect(at(true, false, false)).toBe(", message index created");
+    expect(at(false, false, true)).toBe(", message index backfilling");
+    expect(at(false, true, false)).toBe(", message index dropped");
+    expect(at(false, false, false)).toBe("");
+    expect(messageIndexOutcome(undefined)).toBe("");
+  });
+});

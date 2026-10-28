@@ -544,8 +544,7 @@ describe("the opt-in FTS5 index — a provisioned resource, not a migration", ()
     // this capability already paid for once. Nothing between `up` and `down` creates one.
     await runMigrations(env.DB, provider(ALL));
     expect(await triggers()).toEqual([]);
-    await rollbackMigration(env.DB, provider(ALL));
-    await rollbackMigration(env.DB, provider(ALL));
+    for (const _ of Object.keys(ALL)) await rollbackMigration(env.DB, provider(ALL));
     expect(await tables()).toEqual([]);
     expect(await triggers()).toEqual([]);
   });

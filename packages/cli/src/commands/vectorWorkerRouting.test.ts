@@ -5,6 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { cp, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { support } from "@pithy-sh/support/src/capability";
 import { vector as vectorCapability } from "@pithy-sh/vector/src/capability";
 import type { CommandDef } from "citty";
 import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
@@ -47,7 +48,10 @@ const fixture = vi.hoisted(() => ({ dir: "", workerDir: "" }));
 
 /** The Workers the command resolves, and what the stubbed provisioner was asked to do. */
 const scope = vi.hoisted(() => ({ workers: [] as unknown[] }));
-const recorded = vi.hoisted(() => ({ envs: [] as string[] }));
+const recorded = vi.hoisted(() => ({
+  envs: [] as string[],
+  dispatched: [] as { name: string; params: unknown }[],
+}));
 
 // `reset` audits; nothing here is about auditing, and the emitter reaches Cloudflare once credentials resolve.
 vi.mock("../audit/cliAudit", () => ({ createRemoteCliAudit: async () => async () => {} }));
@@ -55,7 +59,13 @@ vi.mock("../audit/cliAudit", () => ({ createRemoteCliAudit: async () => async ()
 // No client is constructed against a real account. The provisioner that would use them is stubbed below.
 vi.mock("../cloudflare/clients", () => ({
   cloudflareClients: async () => ({}),
-  cloudflareWorkflows: async () => ({}),
+  // A capability's own reprocess Workflow is dispatched straight through this client; recorded, never sent.
+  cloudflareWorkflows: async () => ({
+    dispatchAndPoll: async (name: string, params: unknown) => {
+      recorded.dispatched.push({ name, params });
+      return { indexName: "support-messages", pages: 1, scanned: 3, reembedded: 3, skipped: 0 };
+    },
+  }),
 }));
 
 // Capabilities are per Worker and there is no `apps/` under the test runner's cwd, so the set is supplied.
@@ -358,5 +368,87 @@ describe("pithy vector provision --worker names a Worker that composes no vector
     expect(recorded.envs).toEqual([]);
     expect(readFileSync(join(fixture.workerDir, "wrangler.jsonc"), "utf8")).toBe(api);
     expect(readFileSync(join(webDir, "wrangler.jsonc"), "utf8")).toBe(web);
+  });
+});
+
+/**
+ * **`pithy vector reprocess` re-embeds the indexes other capabilities own** — support's message index, read
+ * off the Worker's composition through `Capability.vectorIndexes` and dispatched to support's own reprocess
+ * Workflow under the name it was deployed by.
+ */
+describe("pithy vector reprocess reaches an index another capability declares", () => {
+  const supportCapability = () => support({ inboundAddresses: ["help@acme.test"], search: { semantic: true } });
+
+  beforeAll(async () => {
+    const built = await scaffoldedProject("pithy-vector-contributed-");
+    await provisionEnvironment(built.workerDir, "staging", "db-staging");
+    fixture.dir = built.dir;
+    fixture.workerDir = built.workerDir;
+  });
+
+  beforeEach(() => {
+    recorded.dispatched = [];
+    stubCredentials();
+  });
+
+  test("--index support-messages dispatches support's reprocess Workflow, in a project with no vector()", async () => {
+    scope.workers = [
+      { name: WORKER, dir: fixture.workerDir, config: {}, capabilities: [supportCapability()], target: {} },
+    ];
+    const run = await runSubcommand("reprocess", { env: "staging", index: "support-messages", all: false, json: true });
+    expect(run.exitCode).toBeUndefined();
+    expect(recorded.dispatched).toEqual([
+      { name: `${PROJECT}-staging-support-reprocess`, params: { index: "support-messages", all: false } },
+    ]);
+    await expectConforms("vector reprocess", run.stdout);
+  });
+
+  test("--all re-embeds every message", async () => {
+    scope.workers = [
+      { name: WORKER, dir: fixture.workerDir, config: {}, capabilities: [supportCapability()], target: {} },
+    ];
+    await runSubcommand("reprocess", { env: "staging", index: "support-messages", all: true, json: true });
+    expect(recorded.dispatched[0]?.params).toEqual({ index: "support-messages", all: true });
+  });
+
+  test("with no --index, support's index is covered along with every vector() index", async () => {
+    const [worker] = vectorWorkers(fixture.workerDir) as [{ capabilities: unknown[] }];
+    worker.capabilities.push(supportCapability());
+    scope.workers = [worker];
+    const run = await runSubcommand("reprocess", { env: "staging", all: false, json: true });
+    expect(run.exitCode).toBeUndefined();
+    const runs = (JSON.parse(run.stdout) as { runs: { index: string }[] }).runs.map((entry) => entry.index);
+    expect(runs).toEqual(["docs", "support-messages"]);
+    expect(recorded.dispatched.map((entry) => entry.name)).toEqual([`${PROJECT}-staging-support-reprocess`]);
+  });
+
+  test("a --filter on an index with no metadata is refused before anything runs", async () => {
+    scope.workers = [
+      { name: WORKER, dir: fixture.workerDir, config: {}, capabilities: [supportCapability()], target: {} },
+    ];
+    const run = await runSubcommand("reprocess", {
+      env: "staging",
+      index: "support-messages",
+      filter: '{"a":1}',
+      all: false,
+      json: true,
+    });
+    expect(run.exitCode).toBe(EXIT.usage);
+    expect(recorded.dispatched).toEqual([]);
+  });
+
+  test("support with semantic search off declares nothing, and the old refusal stands", async () => {
+    scope.workers = [
+      {
+        name: WORKER,
+        dir: fixture.workerDir,
+        config: {},
+        capabilities: [support({ inboundAddresses: ["help@acme.test"] })],
+        target: {},
+      },
+    ];
+    const run = await runSubcommand("reprocess", { env: "staging", all: false, json: true });
+    expect(run.exitCode).not.toBeUndefined();
+    expect(recorded.dispatched).toEqual([]);
   });
 });
