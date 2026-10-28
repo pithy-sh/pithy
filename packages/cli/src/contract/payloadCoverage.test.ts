@@ -13,7 +13,7 @@ import { contractOf } from "./commandContract";
 import { type TreeNode, walkTree } from "./describe";
 
 /**
- * **Every command's `--json` payload is a Zod schema, and a test parses its real output against it (#697).**
+ * **Every command's `--json` payload is a Zod schema, and a test parses its real output against it.**
  *
  * The contract is only as good as the set it covers, so this asks it of the whole tree at once — the same
  * shape as the docs gate, the migration orders and the stamped versions, and for the same reason: the
@@ -86,10 +86,12 @@ function undeclaredKeys(schema: unknown, at = "$"): string[] {
  * below, and so does typing one without taking it off.
  */
 const OPEN_SUBTREES = [
-  // An OIDC trust's claims (#722): typed, every value a string, and keyed by claim names that are the identity
+  // An OIDC trust's claims: typed, every value a string, and keyed by claim names that are the identity
   // provider's vocabulary rather than ours — a customized subject template carries claims no schema here can name,
   // and refusing one is exactly what a trust must never do. The keys are data, not an undeclared shape.
   "dashboard connect: $.trust.claims",
+  "dashboard connections: $.byEnvironment[].connections[].trusts[].claims",
+  "dashboard connections: $.byEnvironment[].unattributed[].trusts[].claims",
   "dashboard revoke-key: $.connection|0.trusts[].claims",
   "dashboard status: $.trusts[].claims",
   "dev: $|0.workers",
@@ -234,7 +236,7 @@ describe("every command declares what it promises", () => {
       const publishes = contractOf(node.cmd)?.output !== "none";
       if (takesJson !== publishes) mismatched.push(pathOf(node));
     }
-    // `remove`, and `secrets retire-version`, which only a person at a terminal may run (#390).
+    // `remove`, and `secrets retire-version`, which only a person at a terminal may run.
     expect(mismatched).toEqual(["remove", "secrets retire-version"]);
   });
 

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import type { AdminRouteDeclaration } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 
 /**
@@ -26,12 +26,13 @@ export const CONSENT_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [CONSE
  * default, so an adopter who mounted consent elsewhere gets a manifest naming where it is. Everything sits under
  * `control-plane/`, which the person's own routes never use.
  */
-export function consentAdminRoutes(basePath: string): AdminRoute[] {
+export function consentAdminRoutes(basePath: string): AdminRouteDeclaration[] {
   return [
     {
       method: "GET",
       path: `${basePath}/control-plane/purposes`,
       scope: CONSENT_READ_SCOPE,
+      kind: "reads",
       operation: "purposes.read",
       summary: "Every consent purpose, with counts of current grants and withdrawals per notice version.",
     },
@@ -39,6 +40,7 @@ export function consentAdminRoutes(basePath: string): AdminRoute[] {
       method: "GET",
       path: `${basePath}/control-plane/subjects/:kind/:subjectId`,
       scope: CONSENT_READ_SCOPE,
+      kind: "reads",
       operation: "subjects.read",
       summary: "One subject's consent record: where they stand, every row, and the merges behind it.",
     },
@@ -46,6 +48,7 @@ export function consentAdminRoutes(basePath: string): AdminRoute[] {
       method: "GET",
       path: `${basePath}/control-plane/documents/:hash`,
       scope: CONSENT_READ_SCOPE,
+      kind: "reads",
       operation: "documents.read",
       summary: "A signed document, byte for byte, by its content hash.",
     },
@@ -53,6 +56,7 @@ export function consentAdminRoutes(basePath: string): AdminRoute[] {
       method: "GET",
       path: `${basePath}/control-plane/evidence/:hash`,
       scope: CONSENT_READ_SCOPE,
+      kind: "reads",
       operation: "evidence.read",
       summary: "A drawn signature or a provider's certificate, by its content hash.",
     },

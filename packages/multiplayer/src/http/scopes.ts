@@ -1,20 +1,19 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import type { AdminRouteDeclaration } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 
 /**
- * Multiplayer's control-plane scopes, and the admin surface a manifest advertises (#820).
+ * Multiplayer's control-plane scopes, and the admin surface a manifest advertises.
  *
- * **This module imports types and nothing else** (#315). A management client names these in a browser program,
+ * **This module imports types and nothing else**. A management client names these in a browser program,
  * and `tooling/browser-scopes` compiles every scope the kit declares against the DOM lib alone.
  *
  * ## Two scopes: one to look, one to act
  *
  * `multiplayer:sessions:read` is what is in play and how it ended: the sessions in flight, one session read from
- * its Durable Object, and the results. A read, so `pithy dashboard connect` grants it by default. Its kind is
- * `reads` (#725 classifies it when it lands).
+ * its Durable Object, and the results. A read, so `pithy dashboard connect` grants it by default.
  *
  * `multiplayer:sessions:moderate` is the two acts: close a session in flight, void a result. Every route requiring
  * it is a `POST`, so it never enters a default grant. Its kind is `writes`. `scopeCovers` matches exactly, so
@@ -42,13 +41,14 @@ export const MULTIPLAYER_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  * Everything sits under an `admin/` segment, so no management path can collide with a player route: the player
  * surface owns `games/:game` and `sessions/:id/...` beneath the same base.
  */
-export function multiplayerAdminRoutes(basePath: string): AdminRoute[] {
+export function multiplayerAdminRoutes(basePath: string): AdminRouteDeclaration[] {
   return [
     {
       method: "GET",
       operation: "sessions.list",
       path: `${basePath}/admin/sessions`,
       scope: MULTIPLAYER_SESSIONS_READ_SCOPE,
+      kind: "reads",
       summary: "Sessions in flight, newest first: game, phase, players and age.",
     },
     {
@@ -56,6 +56,7 @@ export function multiplayerAdminRoutes(basePath: string): AdminRoute[] {
       operation: "sessions.read",
       path: `${basePath}/admin/sessions/:id`,
       scope: MULTIPLAYER_SESSIONS_READ_SCOPE,
+      kind: "reads",
       summary: "One session, read from its Durable Object: players, phase, deadline and who is connected.",
     },
     {
@@ -63,6 +64,7 @@ export function multiplayerAdminRoutes(basePath: string): AdminRoute[] {
       operation: "sessions.close",
       path: `${basePath}/admin/sessions/:id/close`,
       scope: MULTIPLAYER_SESSIONS_MODERATE_SCOPE,
+      kind: "writes",
       summary: "Close a session in flight, with a reason its players are told. It records no result.",
     },
     {
@@ -70,6 +72,7 @@ export function multiplayerAdminRoutes(basePath: string): AdminRoute[] {
       operation: "results.list",
       path: `${basePath}/admin/results`,
       scope: MULTIPLAYER_SESSIONS_READ_SCOPE,
+      kind: "reads",
       summary: "Results, most recently ended first: status, players, scores, winner or draw, and any void.",
     },
     {
@@ -77,6 +80,7 @@ export function multiplayerAdminRoutes(basePath: string): AdminRoute[] {
       operation: "results.void",
       path: `${basePath}/admin/results/:id/void`,
       scope: MULTIPLAYER_SESSIONS_MODERATE_SCOPE,
+      kind: "writes",
       summary: "Void a result, with a reason. The leaderboard and rating take it back, each reported.",
     },
   ];

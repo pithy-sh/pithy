@@ -118,6 +118,7 @@ const inventory = defineCapability({
       method: "GET",
       path: "/inventory/admin/things",
       scope: INVENTORY_READ_SCOPE,
+      kind: "reads",
       summary: "Every pending thing, in full.",
     },
   ],
@@ -164,7 +165,13 @@ const vault = defineCapability({
   name: "vault",
   requiredBindings: [],
   adminRoutes: [
-    { method: "GET", path: "/vault/admin/secrets", scope: VAULT_READ_SCOPE, summary: "Every secret, in full." },
+    {
+      method: "GET",
+      path: "/vault/admin/secrets",
+      scope: VAULT_READ_SCOPE,
+      kind: "reads",
+      summary: "Every secret, in full.",
+    },
   ],
   health: defineCapabilityHealth({
     keys: [
@@ -555,6 +562,7 @@ describe("GET /control-plane/manifest", () => {
     const seam = json.capabilities.find((capability) => capability.name === "controlplane");
 
     expect(seam?.adminRoutes.map((route) => `${route.method} ${route.path}`).sort()).toEqual([
+      "GET /control-plane/connections",
       "GET /control-plane/erasure",
       "GET /control-plane/erasure/:subjectType/:subjectId",
       "GET /control-plane/evidence",
@@ -565,6 +573,7 @@ describe("GET /control-plane/manifest", () => {
       "GET /control-plane/ping",
       "GET /control-plane/privacy",
       "GET /control-plane/processing",
+      "POST /control-plane/connections/:connectionId/revoke",
       "POST /control-plane/holds",
       "POST /control-plane/holds/:holdId/release",
       "POST /control-plane/keys",
@@ -578,6 +587,24 @@ describe("GET /control-plane/manifest", () => {
       KEYS_ROTATE_SCOPE,
     );
     for (const route of seam?.adminRoutes ?? []) expect(route.summary.length).toBeGreaterThan(0);
+  });
+
+  test("carries each scoped route's kind, and none on a route with no scope", async () => {
+    await connect([registered(alice)]);
+    const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
+    const json = ControlPlaneManifest.parse(await body<unknown>(response));
+    const seam = json.capabilities.find((capability) => capability.name === "controlplane");
+    const kindOf = (method: string, suffix: string) =>
+      seam?.adminRoutes.find((entry) => entry.method === method && entry.path.endsWith(suffix))?.kind;
+    expect(kindOf("GET", "/manifest")).toBe("reads");
+    expect(kindOf("POST", "/keys")).toBe("credentials");
+    expect(kindOf("GET", "/keys")).toBe("credentials");
+    expect(kindOf("POST", "/holds")).toBe("writes");
+    expect(kindOf("POST", "/connections/:connectionId/revoke")).toBe("credentials");
+    expect(kindOf("GET", "/ping")).toBeUndefined();
+    for (const route of seam?.adminRoutes ?? []) {
+      if (route.scope !== null) expect(route.kind, `${route.method} ${route.path}`).toBeDefined();
+    }
   });
 
   test("names each route's operation and carries its input, generated from the validators it runs (#723)", async () => {
@@ -1711,6 +1738,7 @@ describe("privacy over the control plane (#132)", () => {
     expect(seam?.adminRoutes.find((route) => route.path === "/control-plane/privacy")).toMatchObject({
       method: "GET",
       scope: PRIVACY_READ_SCOPE,
+      kind: "reads",
     });
   });
 

@@ -10,7 +10,7 @@ import type { AuditEmit } from "../audit/recorder";
 import { type ConsentPurpose, parseConsentPurposes } from "../consent/purpose";
 import type { ConsentGrantedListener, ConsentReader, ConsentWithdrawnListener } from "../consent/reader";
 import type { ControlPlaneContext } from "../controlPlane/context";
-import type { AdminRoute } from "../controlPlane/discovery/adminRoute";
+import type { AdminRouteDeclaration } from "../controlPlane/discovery/adminRoute";
 import type { CapabilityManifestConfig } from "../controlPlane/discovery/configuration";
 import type { CapabilityHealth } from "../controlPlane/discovery/health";
 import type { ControlPlaneVerifier } from "../controlPlane/http/guard";
@@ -445,7 +445,7 @@ export interface Capability<
    * the router that actually mounted; a stale declaration is worse than none, because a client
    * believes it.
    */
-  adminRoutes?: readonly AdminRoute[];
+  adminRoutes?: readonly AdminRouteDeclaration[];
   /**
    * The bounded health summary this capability contributes to its own manifest entry — a small, fixed
    * set of scalars a management client can render beside a rail without a second round trip.

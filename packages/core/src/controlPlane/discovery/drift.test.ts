@@ -6,11 +6,11 @@ import { describe, expect, test } from "vitest";
 import type { Capability, PithyHonoEnv } from "../../capability/capability";
 import { defineCapability } from "../../capability/capability";
 import { requireControlPlane } from "../http/guard";
-import type { AdminRoute } from "./adminRoute";
+import type { AdminRouteDeclaration } from "./adminRoute";
 import { missingAdminRoutes, undeclaredAdminRoutes } from "./drift";
 
 /** A capability that declares `adminRoutes` and registers whatever `mounts` says. */
-function capability(name: string, declared: AdminRoute[], mounts: AdminRoute[]): Capability {
+function capability(name: string, declared: AdminRouteDeclaration[], mounts: AdminRouteDeclaration[]): Capability {
   return defineCapability({
     name,
     requiredBindings: [],
@@ -24,8 +24,8 @@ function capability(name: string, declared: AdminRoute[], mounts: AdminRoute[]):
   }) as Capability;
 }
 
-function route(method: AdminRoute["method"], path: string): AdminRoute {
-  return { method, path, scope: "admin:do", summary: "…" };
+function route(method: AdminRouteDeclaration["method"], path: string): AdminRouteDeclaration {
+  return { method, path, scope: "admin:do", kind: "writes", summary: "…" };
 }
 
 /** Compose the capabilities into one app, the way `createBackend` does. */
@@ -94,7 +94,7 @@ describe("missingAdminRoutes", () => {
 
 describe("undeclaredAdminRoutes", () => {
   /** A capability that guards what it mounts, and declares only what `declared` says. */
-  function guarded(name: string, declared: AdminRoute[], mounts: AdminRoute[]): Capability {
+  function guarded(name: string, declared: AdminRouteDeclaration[], mounts: AdminRouteDeclaration[]): Capability {
     return defineCapability({
       name,
       requiredBindings: [],
@@ -116,7 +116,7 @@ describe("undeclaredAdminRoutes", () => {
   });
 
   test("it bites — a guarded route nobody declared is named", () => {
-    // The failure it exists for: since #468, an undeclared admin route also gets no CORS registration,
+    // The failure it exists for: an undeclared admin route also gets no CORS registration,
     // so its preflight 404s and no browser can reach it — while the capability's own suite stays green.
     const declared = [route("GET", "/vault/admin/secrets")];
     const mounted = [...declared, route("POST", "/vault/admin/rotate")];

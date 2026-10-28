@@ -240,6 +240,21 @@
       ]
     },
     {
+      "path": "dashboard connections",
+      "flags": [
+        "--principal",
+        "--env",
+        "--worker",
+        "--revoke",
+        "--no-revoke",
+        "--reason",
+        "--yes",
+        "--no-yes",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
       "path": "dashboard disconnect",
       "flags": [
         "--env",

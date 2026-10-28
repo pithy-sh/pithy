@@ -248,6 +248,20 @@ organization({
 
 With no email composed nothing is sent and nothing is refused: the change has already happened, and the audit event records `mailed: null`.
 
+**Your code hears every role change and every departure.** Two membership hooks, passed to `organization()` beside the lifecycle hooks, fire after the change is written and recorded, once per member it changed, through every route that makes one — a member's own, an ownership transfer accepted or forced, and an operator's:
+
+```ts
+organization({
+  roles,
+  // A role changed. `powersLost` is what the old role held and the new one does not, from the catalog's nesting; empty for a promotion.
+  onMemberRoleChanged: async ({ organizationId, userId, previousRole, role, powersLost, actor, at }, d1) => {},
+  // A membership ended: removed, left (`left: true`), removed by an operator, or removed by a forced transfer.
+  onMemberRemoved: async ({ organizationId, userId, role, left, actor, at }, d1) => {},
+});
+```
+
+`actor` is `{ type: "member", userId }` or `{ type: "control-plane", connectionId }`. A hook that throws is logged and swallowed, and the change stands. They exist so a management client can re-check what a demoted member's agents were granted and revoke what a departed one authorized ([`docs/AGENT-ACCESS.md` §8](../../docs/AGENT-ACCESS.md)).
+
 **`ORGANIZATION_ROUTES` in `src/http/routes.ts` is the registry this table mirrors**, and `routeContract.test.ts` compares that registry against what Hono actually mounted, in both directions, then calls every route with no credential and asserts which gate answered. A route added without an entry is a route whose verification nobody declared; an entry naming a route nobody mounts is a promise to a client that 404s.
 
 ## Suspending and deleting an organization

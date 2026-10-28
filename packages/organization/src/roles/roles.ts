@@ -397,3 +397,15 @@ export function requireComposedPowers<Power extends string, Role extends string>
     }
   }
 }
+
+/**
+ * The powers a member holds in `from` and not in `to`, in the order the catalog declares them — what a role change
+ * took away. Empty for a promotion, and for a move between roles that hold the same powers.
+ */
+export function powersLost<Power extends string, Role extends string>(
+  catalog: RoleCatalog<Power, Role>,
+  from: Role,
+  to: Role,
+): (KitPower | Power)[] {
+  return catalog.powersOf(from).filter((power) => !catalog.roleAllows(to, power));
+}

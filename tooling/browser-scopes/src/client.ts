@@ -20,6 +20,8 @@ import {
 } from "@pithy-sh/auth/src/http/guards";
 import { CONSENT_READ_SCOPE } from "@pithy-sh/consent/src/http/scopes";
 import {
+  CONNECTIONS_READ_SCOPE,
+  CONNECTIONS_REVOKE_SCOPE,
   ERASURE_READ_SCOPE,
   EVIDENCE_READ_SCOPE,
   KEYS_ROTATE_SCOPE,
@@ -126,6 +128,8 @@ import { VECTOR_INDEXES_READ_SCOPE } from "@pithy-sh/vector/src/http/scopes";
  */
 export const EVERY_CONTROL_PLANE_SCOPE: readonly string[] = [
   MANIFEST_READ_SCOPE,
+  CONNECTIONS_READ_SCOPE,
+  CONNECTIONS_REVOKE_SCOPE,
   KEYS_ROTATE_SCOPE,
   MIGRATIONS_READ_SCOPE,
   PRIVACY_READ_SCOPE,

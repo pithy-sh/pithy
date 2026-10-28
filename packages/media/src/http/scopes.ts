@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import type { AdminRouteDeclaration } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 
 /**
@@ -21,7 +21,7 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
 export const MEDIA_USAGE_READ_SCOPE: ControlPlaneScope = "media:usage:read";
 
 /**
- * **Read what this environment's media was served (#728).** Images delivered and minutes of video
+ * **Read what this environment's media was served.** Images delivered and minutes of video
  * watched, per asset, from Cloudflare's analytics. `scopeCovers` matches exactly, so this confers nothing
  * else and nothing else confers it. Every route requiring it is a `GET`, so `pithy dashboard connect`
  * grants it by default and an adopter can withhold it by naming the rest.
@@ -39,13 +39,14 @@ export const MEDIA_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  * mount path, never the default — an adopter who mounts media at `/files` gets a manifest naming
  * `/files/admin/usage`.
  */
-export function mediaAdminRoutes(basePath: string): AdminRoute[] {
+export function mediaAdminRoutes(basePath: string): AdminRouteDeclaration[] {
   return [
     {
       method: "GET",
       operation: "usage.read",
       path: `${basePath}/admin/usage`,
       scope: MEDIA_USAGE_READ_SCOPE,
+      kind: "reads",
       summary:
         "Records and bytes held, per organization or per owner within one organization. Never across organizations.",
     },
@@ -54,6 +55,7 @@ export function mediaAdminRoutes(basePath: string): AdminRoute[] {
       operation: "delivery.read",
       path: `${basePath}/admin/delivery`,
       scope: MEDIA_DELIVERY_READ_SCOPE,
+      kind: "reads",
       summary:
         "What this environment's media was served in a window — minutes of video and image requests, per asset, from Cloudflare's analytics.",
     },

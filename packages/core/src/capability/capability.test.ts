@@ -39,7 +39,13 @@ describe("defineCapability with presence rooms (#815)", () => {
   };
   // The read its room kind joins with: a room's scope is one the capability already gates a GET with.
   const adminRoutes = [
-    { method: "GET" as const, path: "/support/threads", scope: "support:threads:read", summary: "List threads." },
+    {
+      method: "GET" as const,
+      path: "/support/threads",
+      scope: "support:threads:read",
+      kind: "reads" as const,
+      summary: "List threads.",
+    },
   ];
 
   test("a capability that declares room kinds requires the room's binding and serves the room's socket", () => {

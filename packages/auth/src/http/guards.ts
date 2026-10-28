@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import type { AdminRouteDeclaration } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 
 /**
@@ -93,31 +93,30 @@ export const AUTH_USERS_LOGOUT_SCOPE: ControlPlaneScope = "auth:users:logout";
 export const AUTH_DEVICES_REVOKE_SCOPE: ControlPlaneScope = "auth:devices:revoke";
 
 /**
- * Suspend an account and reinstate it (#620): `POST {base}/admin/users/:userId/suspend` and `/reinstate` (#621). Ending somebody's access is an availability
+ * Suspend an account and reinstate it: `POST {base}/admin/users/:userId/suspend` and `/reinstate`. Ending somebody's access is an availability
  * operation on one person, and reversible — which is what separates it from deleting them, and why it is
  * granted apart from both reading them and erasing them.
  */
 export const AUTH_USERS_SUSPEND_SCOPE: ControlPlaneScope = "auth:users:suspend";
 
 /**
- * Delete an account, restore one inside its purge window, and start a purge (#620):
- * `DELETE {base}/admin/users/:userId` and `POST …/restore` (#622). The
+ * Delete an account, restore one inside its purge window, and start a purge:
+ * `DELETE {base}/admin/users/:userId` and `POST …/restore`. The
  * one scope on this surface whose worst case cannot be undone: once the window closes, the person's rows are
  * gone from every capability that held them.
  */
 export const AUTH_USERS_DELETE_SCOPE: ControlPlaneScope = "auth:users:delete";
 
 /**
- * Export everything the kit holds about one account — the answer to an access request (#620):
- * `GET {base}/admin/users/:userId/export` (#622). A disclosure, and a far larger one than reading the user: it carries every capability's rows about
+ * Export everything the kit holds about one account — the answer to an access request:
+ * `GET {base}/admin/users/:userId/export`. A disclosure, and a far larger one than reading the user: it carries every capability's rows about
  * them, so it is granted on its own and audited as one.
  */
 export const AUTH_USERS_EXPORT_SCOPE: ControlPlaneScope = "auth:users:export";
 
 /**
- * Read the verification ledger (#829): every sign-in link and code issued over a window, whether it was used,
- * expired or is still waiting, and the mail that carried it. A read (kind `reads`, per #725, which classifies it
- * when it lands), and apart from `auth:users:read` because the question is the fleet's deliverability rather than
+ * Read the verification ledger: every sign-in link and code issued over a window, whether it was used,
+ * expired or is still waiting, and the mail that carried it. A read, and apart from `auth:users:read` because the question is the fleet's deliverability rather than
  * who one person is — the rows name accounts by id and never by address.
  */
 export const AUTH_VERIFICATIONS_READ_SCOPE: ControlPlaneScope = "auth:verifications:read";
@@ -126,9 +125,7 @@ export const AUTH_VERIFICATIONS_READ_SCOPE: ControlPlaneScope = "auth:verificati
  * Every control-plane scope auth defines — what `pithy dashboard connect` offers for this capability,
  * and the list a manifest or a doc quotes rather than re-typing.
  *
- * **The lifecycle scopes were declared before the routes that require them** (#620): suspend and reinstate
- * landed in #621, delete, restore and export in #622. Declaring the vocabulary here, once, is what let those
- * issues build on one name each rather than each choosing its own.
+ * Declaring the vocabulary here, once, gives every route that requires one of these the same name.
  */
 export const AUTH_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
   AUTH_USERS_READ_SCOPE,
@@ -154,13 +151,14 @@ export const AUTH_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  * The summaries say what the operation is *for*. A client renders these next to a button somebody is
  * about to press on a real person's account.
  */
-export function authAdminRoutes(basePath: string): AdminRoute[] {
+export function authAdminRoutes(basePath: string): AdminRouteDeclaration[] {
   return [
     {
       method: "GET",
       operation: "users.list",
       path: `${basePath}/admin/users`,
       scope: AUTH_USERS_READ_SCOPE,
+      kind: "reads",
       summary: "Find a user. Lists everyone newest first, or searches email and display name.",
     },
     {
@@ -168,6 +166,7 @@ export function authAdminRoutes(basePath: string): AdminRoute[] {
       operation: "users.read",
       path: `${basePath}/admin/users/:userId`,
       scope: AUTH_USERS_READ_SCOPE,
+      kind: "reads",
       summary: "One user, with where they are signed in and what they sign in with.",
     },
     {
@@ -175,6 +174,7 @@ export function authAdminRoutes(basePath: string): AdminRoute[] {
       operation: "devices.list",
       path: `${basePath}/admin/devices`,
       scope: AUTH_DEVICES_READ_SCOPE,
+      kind: "reads",
       summary: "The device registry across users, most-recently-seen first.",
     },
     {
@@ -182,6 +182,7 @@ export function authAdminRoutes(basePath: string): AdminRoute[] {
       operation: "sessions.revoke",
       path: `${basePath}/admin/sessions/revoke`,
       scope: AUTH_SESSIONS_REVOKE_SCOPE,
+      kind: "credentials",
       summary: "Kill one session. The rest of that person's sign-ins keep working.",
     },
     {
@@ -189,6 +190,7 @@ export function authAdminRoutes(basePath: string): AdminRoute[] {
       operation: "users.sessions.revoke",
       path: `${basePath}/admin/users/:userId/sessions/revoke`,
       scope: AUTH_USERS_LOGOUT_SCOPE,
+      kind: "credentials",
       summary: "Sign a user out everywhere, on every device, immediately.",
     },
     {
@@ -196,6 +198,7 @@ export function authAdminRoutes(basePath: string): AdminRoute[] {
       operation: "users.devices.revoke",
       path: `${basePath}/admin/users/:userId/devices/revoke`,
       scope: AUTH_DEVICES_REVOKE_SCOPE,
+      kind: "credentials",
       summary: "Sign one device out and forget it — for a phone reported lost.",
     },
     {
@@ -203,6 +206,7 @@ export function authAdminRoutes(basePath: string): AdminRoute[] {
       operation: "users.suspend",
       path: `${basePath}/admin/users/:userId/suspend`,
       scope: AUTH_USERS_SUSPEND_SCOPE,
+      kind: "writes",
       summary: "Suspend a user, with a reason. Their sessions end and every sign-in is refused.",
     },
     {
@@ -210,6 +214,7 @@ export function authAdminRoutes(basePath: string): AdminRoute[] {
       operation: "users.reinstate",
       path: `${basePath}/admin/users/:userId/reinstate`,
       scope: AUTH_USERS_SUSPEND_SCOPE,
+      kind: "writes",
       summary: "Lift a suspension, with a reason. They sign in again; no session comes back.",
     },
     {
@@ -217,6 +222,7 @@ export function authAdminRoutes(basePath: string): AdminRoute[] {
       operation: "users.delete",
       path: `${basePath}/admin/users/:userId`,
       scope: AUTH_USERS_DELETE_SCOPE,
+      kind: "deletes",
       summary:
         "Delete a user, with a reason. Soft by default: restorable until the purge window closes. Hard, when named: erased now.",
     },
@@ -225,6 +231,7 @@ export function authAdminRoutes(basePath: string): AdminRoute[] {
       operation: "users.restore",
       path: `${basePath}/admin/users/:userId/restore`,
       scope: AUTH_USERS_DELETE_SCOPE,
+      kind: "deletes",
       summary: "Restore a deleted user inside the purge window, with a reason. They sign in again.",
     },
     {
@@ -232,6 +239,7 @@ export function authAdminRoutes(basePath: string): AdminRoute[] {
       operation: "verifications.list",
       path: `${basePath}/admin/verifications`,
       scope: AUTH_VERIFICATIONS_READ_SCOPE,
+      kind: "reads",
       summary:
         "Every sign-in link and code sent over a window: used, expired or still waiting, and the mail that carried it.",
     },
@@ -240,6 +248,7 @@ export function authAdminRoutes(basePath: string): AdminRoute[] {
       operation: "users.export",
       path: `${basePath}/admin/users/:userId/export`,
       scope: AUTH_USERS_EXPORT_SCOPE,
+      kind: "reads",
       summary: "Everything the kit holds about one user, from every capability — the answer to an access request.",
     },
   ];

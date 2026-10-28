@@ -9,6 +9,7 @@ import { auditDatabase } from "@pithy-sh/audit/src/data/tables";
 import { audit_0001_init } from "@pithy-sh/audit/src/migrations/0001_init";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneConnection, RegisteredKey } from "@pithy-sh/core/src/controlPlane/data/connection";
+import { listConnections, revokeConnection } from "@pithy-sh/core/src/controlPlane/data/connections";
 import { activeKeys, findVerifyingKey } from "@pithy-sh/core/src/controlPlane/data/keyLifecycle";
 import type { OidcTrust } from "@pithy-sh/core/src/controlPlane/data/oidcTrust";
 import { controlPlaneDatabase } from "@pithy-sh/core/src/controlPlane/data/tables";
@@ -16,7 +17,8 @@ import { controlplane_0001_init } from "@pithy-sh/core/src/controlPlane/migratio
 import { controlplane_0002_management_origin } from "@pithy-sh/core/src/controlPlane/migrations/0002_management_origin";
 import { controlplane_0003_connection_principal } from "@pithy-sh/core/src/controlPlane/migrations/0003_connection_principal";
 import { controlplane_0004_connection_trusts } from "@pithy-sh/core/src/controlPlane/migrations/0004_connection_trusts";
-import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { writeAfterRead } from "@pithy-sh/core/src/test-utils/interleave";
 import type { Kysely } from "kysely";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -74,7 +76,7 @@ function connection(overrides: Partial<ControlPlaneConnection> = {}): ControlPla
   };
 }
 
-/** One OIDC trust (#722), live and uncalled. */
+/** One OIDC trust, live and uncalled. */
 function trust(trustId: string, overrides: Partial<OidcTrust> = {}): OidcTrust {
   return {
     trustId,
@@ -273,11 +275,10 @@ describe("connectionRegistry", () => {
 });
 
 /**
- * #294 — a write to the connections table records itself in the adopter's own trail.
+ * A write to the connections table records itself in the adopter's own trail.
  *
- * The three connection-lifecycle codes were declared from the day the seam shipped and emitted by
- * nothing, because those writes never reach the adopter's Worker and no route is in a position to
- * record them. These assert the registry does it instead, at the write, so no call site can forget.
+ * These writes never reach the adopter's Worker, so no route is in a position to record them. These assert
+ * the registry does it instead, at the write, so no call site can forget.
  */
 describe("a write records itself", () => {
   /** Collect what the registry recorded, in order. */
@@ -343,7 +344,7 @@ describe("a write records itself", () => {
       changed: ["purpose"],
       purpose: { from: "Support triage, reading threads and replying.", to: "Support triage, read-only." },
     });
-    // The grant before and after, and what did not move, on every update (#831): the access history replays a
+    // The grant before and after, and what did not move, on every update: the access history replays a
     // connection from its events alone, and an update that changed no scope still says what the scopes were.
     expect(metadata(events, 1)).toMatchObject({
       scopesBefore: ["keys:rotate", "manifest:read"],
@@ -445,7 +446,7 @@ describe("a write records itself", () => {
     await registry.save(connection());
     await registry.save(connection({ id: "9a0b1c2d-3e4f-4a5b-8c9d-0e1f2a3b4c5d", scopes: ["manifest:read"] }));
 
-    // The old connection's grant ended here, so the trail says so in its own row (#831): a reader replaying who
+    // The old connection's grant ended here, so the trail says so in its own row: a reader replaying who
     // held what would otherwise keep the old connection's scopes live for ever.
     expect(events.map((event) => [event.action, event.resourceId])).toEqual([
       ["controlplane/connection_registered", "5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31"],
@@ -522,7 +523,7 @@ describe("a write records itself", () => {
       issuer: "https://app.pithy.sh",
       workerUrl: "https://api.example.com",
       removedKeyIds: ["key_1"],
-      // What the connection was, as the access history reads a removal (#831).
+      // What the connection was, as the access history reads a removal.
       scopes: ["manifest:read", "keys:rotate"],
       authorizedBy: "ada@example.com",
       actorKind: "agent",
@@ -582,6 +583,56 @@ describe("a write records itself", () => {
     });
   });
 
+  test("a connection revoked by id has every live credential revoked, and records the reason and principal", async () => {
+    const { events, record } = recorder();
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
+    const at = new Date("2026-07-02T00:00:00.000Z");
+    const saved = connection({ trusts: [trust("t-1")] });
+    await registry.save(saved);
+    const revoked = await registry.revokeConnection(saved.id, "Ada left.", at);
+
+    expect(revoked?.revokedKeyIds).toEqual(["key_1"]);
+    expect(revoked?.revokedTrustIds).toEqual(["t-1"]);
+    expect((await registry.read())?.keys[0]?.revokedAt).toEqual(at);
+    expect((await registry.read())?.trusts?.[0]?.revokedAt).toEqual(at);
+    expect(events[1]?.action).toBe("controlplane/connection_revoked");
+    expect(metadata(events, 1)).toMatchObject({
+      connectionId: saved.id,
+      authorizedBy: "ada@example.com",
+      reason: "Ada left.",
+      revokedKeyIds: ["key_1"],
+      revokedTrustIds: ["t-1"],
+    });
+  });
+
+  test("a connection in another environment is not revoked from this one", async () => {
+    await connectionRegistry(controlPlaneDatabase(d1), "staging").save(connection({ environment: "staging" }));
+    const prod = connectionRegistry(controlPlaneDatabase(d1), "prod");
+    expect(await prod.revokeConnection(connection().id, "No.", new Date())).toBeNull();
+  });
+
+  test("lists through the one function the Worker's GET /control-plane/connections reads with", async () => {
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
+    await registry.save(connection());
+    await connectionRegistry(controlPlaneDatabase(d1), "staging").save(
+      connection({ id: "7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f", environment: "staging" }),
+    );
+    expect(await registry.list("ada@example.com")).toEqual(
+      await listConnections(controlPlaneDatabase(d1), { principal: "ada@example.com", environment: "prod" }),
+    );
+  });
+
+  test("lists this environment's connections by principal, the unattributed apart", async () => {
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
+    await registry.save(connection());
+    expect((await registry.list("ADA@example.com")).connections.map((row) => row.id)).toEqual([connection().id]);
+    expect((await registry.list("grace@example.com")).connections).toEqual([]);
+    await registry.save(connection({ authorizedBy: null }));
+    const listing = await registry.list("ada@example.com");
+    expect(listing.connections).toEqual([]);
+    expect(listing.unattributed.map((row) => row.id)).toEqual([connection().id]);
+  });
+
   test("a trust revocation that matched nothing records nothing", async () => {
     const { events, record } = recorder();
     const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
@@ -615,7 +666,7 @@ describe("a write records itself", () => {
     const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
     const at = new Date("2026-07-01T00:00:00.000Z");
     await registry.save(connection());
-    // #287's gate: a key cannot be added while something live could sign for one at the seam.
+    // The key invariant: a key cannot be added while something live could sign for one at the seam.
     await expect(registry.appendKey(key("key_2", at), at)).rejects.toBeInstanceOf(PithyError);
 
     // The row is written first and the event follows. A connect that recorded a registration it did not
@@ -643,9 +694,90 @@ describe("a write records itself", () => {
   });
 });
 
+describe("a revocation over the seam that lands between a CLI read and its write holds", () => {
+  const REGISTERED = new Date("2026-07-01T00:00:00.000Z");
+  const SEAM = new Date("2026-07-02T00:00:00.000Z");
+  const CLI = new Date("2026-07-03T00:00:00.000Z");
+
+  /** The registry over a database where the seam revokes the connection right after the CLI's first read. */
+  function racedRegistry(): ReturnType<typeof connectionRegistry> {
+    const seam = async () => {
+      await revokeConnection(controlPlaneDatabase(d1), connection().id, SEAM);
+    };
+    return connectionRegistry(writeAfterRead(controlPlaneDatabase(d1), seam, 1), "prod");
+  }
+
+  /** Whether anything on the stored connection can still verify a call. */
+  async function liveAfter(): Promise<{ keys: string[]; trusts: string[] }> {
+    const stored = await connectionRegistry(controlPlaneDatabase(d1), "prod").read();
+    return {
+      keys: (stored?.keys ?? []).filter((k) => k.revokedAt === null).map((k) => k.keyId),
+      trusts: (stored?.trusts ?? []).filter((t) => t.revokedAt === null).map((t) => t.trustId),
+    };
+  }
+
+  test("revokeKey reads again and leaves every other key and trust revoked", async () => {
+    await connectionRegistry(controlPlaneDatabase(d1), "prod").save(
+      connection({ keys: [key("key_1", REGISTERED), key("key_2", REGISTERED)], trusts: [trust("t-1")] }),
+    );
+    await racedRegistry().revokeKey("key_1", CLI);
+    expect(await liveAfter()).toEqual({ keys: [], trusts: [] });
+    const stored = await connectionRegistry(controlPlaneDatabase(d1), "prod").read();
+    expect(stored?.keys.map((k) => k.revokedAt)).toEqual([SEAM, SEAM]);
+  });
+
+  test("revokeTrust reads again and leaves every key and other trust revoked", async () => {
+    await connectionRegistry(controlPlaneDatabase(d1), "prod").save(
+      connection({ trusts: [trust("t-1"), trust("t-2")] }),
+    );
+    await racedRegistry().revokeTrust("t-1", CLI);
+    expect(await liveAfter()).toEqual({ keys: [], trusts: [] });
+  });
+
+  test("appendTrust is refused, and the connection stays revoked", async () => {
+    await connectionRegistry(controlPlaneDatabase(d1), "prod").save(connection());
+    const error = await racedRegistry()
+      .appendTrust(trust("t-9"), CLI)
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ConflictError);
+    expect(await liveAfter()).toEqual({ keys: [], trusts: [] });
+  });
+
+  test("appendKey on a connection holding only a trust is refused, and the trust stays revoked", async () => {
+    await connectionRegistry(controlPlaneDatabase(d1), "prod").save(connection({ keys: [], trusts: [trust("t-1")] }));
+    const error = await racedRegistry()
+      .appendKey(key("key_9", CLI), CLI)
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ConflictError);
+    expect(await liveAfter()).toEqual({ keys: [], trusts: [] });
+  });
+
+  test("save from a read taken before the revocation is refused, and writes nothing", async () => {
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
+    await registry.save(connection({ trusts: [trust("t-1")] }));
+    const read = await registry.read();
+    if (read === null) throw new Error("saved connection missing");
+    await revokeConnection(controlPlaneDatabase(d1), read.id, SEAM);
+
+    const error = await registry
+      .save({ ...read, workerUrl: "https://moved.example.com", updatedAt: CLI })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ConflictError);
+    expect(await liveAfter()).toEqual({ keys: [], trusts: [] });
+    expect((await registry.read())?.workerUrl).toBe("https://api.example.com");
+  });
+
+  test("save that lands after a revocation never writes the credential columns", async () => {
+    await connectionRegistry(controlPlaneDatabase(d1), "prod").save(connection({ trusts: [trust("t-1")] }));
+    await racedRegistry().save(connection({ trusts: [trust("t-1")], workerUrl: "https://moved.example.com" }));
+    expect(await liveAfter()).toEqual({ keys: [], trusts: [] });
+  });
+});
+
 describe("the one door onto the connections table", () => {
   /**
-   * The other half of #287's gate. {@link connectionRegistry} refuses a key write while something live
+   * The other half of the key invariant. {@link connectionRegistry} refuses a key write while something live
    * could have signed for one at the seam — which is worth exactly as much as the guarantee that
    * nothing else in the CLI opens that table.
    *
@@ -677,7 +809,7 @@ describe("openConnectionRegistry", () => {
 
   beforeEach(async () => {
     projectDir = await mkdtemp(join(tmpdir(), "pithy-dashboard-"));
-    // `createCliAudit` resolves `@pithy-sh/audit` from the project since #533, so a fixture composing
+    // `createCliAudit` resolves `@pithy-sh/audit` from the project, so a fixture composing
     // audit has to have it installed — which is what an adopter's project has.
     await linkKitPackages(projectDir, ["audit"]);
     await mkdir(join(projectDir, "apps", "api"), { recursive: true });
@@ -718,7 +850,7 @@ describe("openConnectionRegistry", () => {
   });
 
   test("the recorder is built over the database the row was written through", async () => {
-    // #294, end to end and against real D1: the audit table lives in the adopter's app database, the same
+    // End to end and against real D1: the audit table lives in the adopter's app database, the same
     // one the connection row does, and `openConnectionRegistry` is what resolves it. So the recorder is a
     // factory taking that handle rather than an emitter passed in ready-made — a database id looked up a
     // second time is a different store on `dev`, and the record of a change would land where the change
@@ -783,16 +915,14 @@ describe("openConnectionRegistry", () => {
   });
 
   /**
-   * #236's two whole-project failures, each proven to arrive as one.
+   * The two whole-project failures, each proven to arrive as one.
    *
    * A per-item collector will swallow a whole-run refusal, because the whole-run failure arrives wearing a
-   * per-item costume: the account is settled before any Worker is considered, but it was only *consulted*
-   * inside the loop, so the mismatch landed in `refusals` and the adopter read "No worker resolves the DB
-   * binding for this environment" — a sentence about their `wrangler.jsonc`, which was fine.
+   * per-item costume: a mismatch collected in `refusals` would read "No worker resolves the DB binding for
+   * this environment", a sentence about a `wrangler.jsonc` that is fine.
    *
-   * The credentials are supplied from the environment rather than a file, which is both the CI shape and
-   * the shape that produced the report: `PITHY_CONFIG_DIR` at a scratch directory, `CLOUDFLARE_*` exported
-   * in the shell hours earlier.
+   * The credentials are supplied from the environment rather than a file, which is the CI shape:
+   * `PITHY_CONFIG_DIR` at a scratch directory, `CLOUDFLARE_*` exported in the shell.
    */
   describe("a whole-project failure is reported as one, not as a per-worker skip (#236)", () => {
     let configDir: string;
@@ -901,7 +1031,7 @@ describe("openConnectionRegistry", () => {
 });
 
 /**
- * **No Worker answering for the app database is the project's state, not the call's (#697).** The call named an
+ * **No Worker answering for the app database is the project's state, not the call's.** The call named an
  * environment and was right to; what it depends on — a `DB` binding some Worker resolves — is missing. So it
  * exits 3, the class that says "set something up first", never 2.
  */

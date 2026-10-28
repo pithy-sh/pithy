@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import type { AdminRouteDeclaration } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 
 /**
@@ -112,13 +112,14 @@ export const EMAIL_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  * The summaries say what the operation is *for*. A client renders these next to a button somebody is
  * about to press on a real person's mail.
  */
-export function emailAdminRoutes(basePath: string): AdminRoute[] {
+export function emailAdminRoutes(basePath: string): AdminRouteDeclaration[] {
   return [
     {
       method: "GET",
       operation: "jobs.list",
       path: `${basePath}/jobs`,
       scope: EMAIL_JOBS_READ_SCOPE,
+      kind: "reads",
       summary: "The send log, newest first, filtered by status. Recipients are masked in the list.",
     },
     {
@@ -126,6 +127,7 @@ export function emailAdminRoutes(basePath: string): AdminRoute[] {
       operation: "jobs.read",
       path: `${basePath}/jobs/:id`,
       scope: EMAIL_JOBS_READ_SCOPE,
+      kind: "reads",
       summary: "One job in full — the recipient, the subject, and why it failed. Never the template variables.",
     },
     {
@@ -133,6 +135,7 @@ export function emailAdminRoutes(basePath: string): AdminRoute[] {
       operation: "jobs.retry",
       path: `${basePath}/jobs/:id/retry`,
       scope: EMAIL_JOBS_RETRY_SCOPE,
+      kind: "sends",
       summary: "Queue a failed job again with a fresh attempt budget. Sends real mail.",
     },
     {
@@ -140,6 +143,7 @@ export function emailAdminRoutes(basePath: string): AdminRoute[] {
       operation: "suppressions.list",
       path: `${basePath}/suppressions`,
       scope: EMAIL_SUPPRESSIONS_READ_SCOPE,
+      kind: "reads",
       summary: "Addresses this project will not send to, and why. Global — every environment shares it.",
     },
     {
@@ -147,6 +151,7 @@ export function emailAdminRoutes(basePath: string): AdminRoute[] {
       operation: "suppressions.add",
       path: `${basePath}/suppressions`,
       scope: EMAIL_SUPPRESSIONS_WRITE_SCOPE,
+      kind: "writes",
       summary: "Block an address by hand, permanently or until a date. Recorded as a manual block.",
     },
     {
@@ -154,6 +159,7 @@ export function emailAdminRoutes(basePath: string): AdminRoute[] {
       operation: "suppressions.remove",
       path: `${basePath}/suppressions/remove`,
       scope: EMAIL_SUPPRESSIONS_DELETE_SCOPE,
+      kind: "deletes",
       summary: "Unblock an address. Re-opens sending to somebody who bounced, complained, or opted out.",
     },
   ];

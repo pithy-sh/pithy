@@ -17,7 +17,7 @@ import { removeFromEntry, removeFromWrangler } from "./remove";
 
 /**
  * **A composed capability that declares a room kind gets the room's binding, class tag and entry export; a
- * Worker where none does gets them taken out** (#815) — over a real scaffolded project, through the real
+ * Worker where none does gets them taken out** — over a real scaffolded project, through the real
  * writers `pithy add`, `pithy upgrade` and `pithy remove` run.
  */
 
@@ -42,7 +42,9 @@ function appWithRooms(): Capability {
   return defineCapability({
     name: "app",
     requiredBindings: [],
-    adminRoutes: [{ method: "GET", path: "/app/orders/:id", scope: "app:orders:read", summary: "Read one order." }],
+    adminRoutes: [
+      { method: "GET", path: "/app/orders/:id", scope: "app:orders:read", kind: "reads", summary: "Read one order." },
+    ],
     presence: {
       basePath: "/app",
       ticketKey: "k",

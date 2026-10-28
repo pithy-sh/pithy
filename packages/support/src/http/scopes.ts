@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import type { AdminRouteDeclaration } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 
 /**
  * Support's control-plane scopes, and the admin surface a manifest advertises.
  *
- * **Separate from `guards.ts` because a scope name is a client's business** (#315). A management
+ * **Separate from `guards.ts` because a scope name is a client's business**. A management
  * client reads these to render what a connection may do, and `pithy-sh/dashboard`'s scope builder
  * writes the `pithy dashboard connect --scope …` command from exactly these constants — in a browser
  * program, with the DOM lib and no Workers types. While they sat beside the Hono middleware, naming
@@ -47,7 +47,7 @@ export const SUPPORT_THREADS_RECLASSIFY_SCOPE: ControlPlaneScope = "support:thre
 export const SUPPORT_THREADS_FLAG_SCOPE: ControlPlaneScope = "support:threads:flag";
 
 /**
- * Say who has a thread, or that nobody does (#816). Shared state like archive, and its own scope like
+ * Say who has a thread, or that nobody does. Shared state like archive, and its own scope like
  * archive, because deciding who answers a customer is not the same permission as marking them done.
  */
 export const SUPPORT_THREADS_ASSIGN_SCOPE: ControlPlaneScope = "support:threads:assign";
@@ -76,13 +76,14 @@ export const SUPPORT_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  * The summaries say what the operation is *for*. A client renders these next to a button somebody is
  * about to press on a real customer's conversation.
  */
-export function supportAdminRoutes(basePath: string): AdminRoute[] {
+export function supportAdminRoutes(basePath: string): AdminRouteDeclaration[] {
   return [
     {
       method: "GET",
       operation: "threads.list",
       path: `${basePath}/threads`,
       scope: SUPPORT_THREADS_READ_SCOPE,
+      kind: "reads",
       summary: "List the inbox, newest first, filtered by category, priority, assignee, and archived.",
     },
     {
@@ -90,6 +91,7 @@ export function supportAdminRoutes(basePath: string): AdminRoute[] {
       operation: "threads.search",
       path: `${basePath}/threads/search`,
       scope: SUPPORT_THREADS_READ_SCOPE,
+      kind: "reads",
       summary: "Search the inbox by words and by meaning, ranked as one, with the same filters as the list.",
     },
     {
@@ -97,6 +99,7 @@ export function supportAdminRoutes(basePath: string): AdminRoute[] {
       operation: "threads.read",
       path: `${basePath}/threads/:id`,
       scope: SUPPORT_THREADS_READ_SCOPE,
+      kind: "reads",
       summary: "Read one conversation, with the sender's linked account and what they bought.",
     },
     {
@@ -104,6 +107,7 @@ export function supportAdminRoutes(basePath: string): AdminRoute[] {
       operation: "threads.archive",
       path: `${basePath}/threads/:id/archive`,
       scope: SUPPORT_THREADS_ARCHIVE_SCOPE,
+      kind: "writes",
       summary: "Mark a conversation done, or reopen one.",
     },
     {
@@ -111,6 +115,7 @@ export function supportAdminRoutes(basePath: string): AdminRoute[] {
       operation: "threads.assign",
       path: `${basePath}/threads/:id/assign`,
       scope: SUPPORT_THREADS_ASSIGN_SCOPE,
+      kind: "writes",
       summary: "Give a conversation to somebody, hand it on, or give it up.",
     },
     {
@@ -118,6 +123,7 @@ export function supportAdminRoutes(basePath: string): AdminRoute[] {
       operation: "threads.reply",
       path: `${basePath}/threads/:id/reply`,
       scope: SUPPORT_THREADS_REPLY_SCOPE,
+      kind: "sends",
       summary: "Answer the customer, threaded so their mail client keeps one conversation.",
     },
     {
@@ -125,6 +131,7 @@ export function supportAdminRoutes(basePath: string): AdminRoute[] {
       operation: "threads.reclassify",
       path: `${basePath}/threads/:id/reclassify`,
       scope: SUPPORT_THREADS_RECLASSIFY_SCOPE,
+      kind: "writes",
       summary: "Re-run the classifier over this conversation's latest inbound message.",
     },
     {
@@ -132,6 +139,7 @@ export function supportAdminRoutes(basePath: string): AdminRoute[] {
       operation: "threads.flags",
       path: `${basePath}/threads/:id/flags`,
       scope: SUPPORT_THREADS_FLAG_SCOPE,
+      kind: "writes",
       summary: "Set your own read and snooze state for a conversation. Private to you.",
     },
     {
@@ -139,6 +147,7 @@ export function supportAdminRoutes(basePath: string): AdminRoute[] {
       operation: "replies.list",
       path: `${basePath}/replies`,
       scope: SUPPORT_THREADS_READ_SCOPE,
+      kind: "reads",
       summary: "The canned reply catalog — starting points to pick from, ordered for a thread's category.",
     },
   ];

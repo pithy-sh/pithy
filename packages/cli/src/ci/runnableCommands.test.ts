@@ -18,16 +18,9 @@ import { runCaptured } from "../test-utils/payloadContract";
 import { isShippedModule, readSource, sourcePaths } from "./sourceFiles";
 
 /**
- * **No line spells a `pithy` command by hand (#711).**
+ * **No line spells a `pithy` command by hand.**
  *
- * #697 held every `fix` to one rule: it runs as written. The sentences beside it were held to nothing, and three
- * review rounds of #711 each found new ones that a two-Worker project refuses — an `action` that dropped the
- * caller's `--worker`, a skip reason naming `vector provision` with no `--env` so it provisioned `dev`, a doctor
- * line with no `--with-prerequisites`, a placeholder pasted verbatim, `pithy feature destroy` offered for one
- * mis-shaped index. Each round fixed the lines it found and the gate read only the shapes it had been taught,
- * so the next round found more. The fault was never one line: it was that a line could spell a command at all.
- *
- * So every command a line names is built by `@pithy-sh/core/src/cli/command.ts`, which knows the command tree
+ * Every command a line names is built by `@pithy-sh/core/src/cli/command.ts`, which knows the command tree
  * and refuses a command that does not exist, a flag it does not declare, a flag it needs left off, a placeholder,
  * a `--worker` that is not an `apps/` directory, and anything that destroys more than a remedy may. A `pithy add`
  * is built by `capabilities/addCommand.ts`, on top of it, from the capability's manifest.
@@ -126,6 +119,8 @@ const RUNTIME_LINES: Readonly<Record<string, string>> = {
   "core/src/createBackend.ts": "the Worker's refusal of its own assembly, at boot",
   "core/src/controlPlane/error/errors.ts":
     "a control-plane refusal's default, answered to a management client over HTTP",
+  "core/src/controlPlane/http/connections.ts":
+    "a connection's refusal to revoke itself, answered to a management client over HTTP",
   "core/src/controlPlane/http/guard.ts": "the control-plane seam's answer to a management client over HTTP",
   "core/src/presence/declaration.ts": "a presence ticket route's refusal when the Worker holds no ticket key",
   "core/src/presence/http/routes.ts": "a presence socket's refusal when the Worker binds no room",
@@ -147,8 +142,8 @@ const RUNTIME_LINES: Readonly<Record<string, string>> = {
 
 /**
  * **The functions that make a caller's context from something other than a command's parsed `args`**, by file and
- * name, and why (#711). Every other `callerOf` in shipped source is handed a run's own `args`, so a rerun cannot be
- * built from flags a site picked: each review round of #711 found one that dropped what the caller gave.
+ * name, and why. Every other `callerOf` in shipped source is handed a run's own `args`, so a rerun cannot be
+ * built from flags a site picked and drop what the caller gave.
  */
 const CALLER_CONSTRUCTORS: Readonly<Record<string, string>> = {
   "cli/src/capabilities/addCommand.ts addCallerOf":
@@ -162,8 +157,8 @@ const CALLER_CONSTRUCTORS: Readonly<Record<string, string>> = {
 
 /**
  * **The files that may name `pithy init`, and why**: each is a line for a directory that is no Pithy project yet
- * (#711). Inside a project `init` is refused — it collides on the files it would write — so a remedy reached there
- * that named it sent the reader to move the project's own files aside.
+ * Inside a project `init` is refused — it collides on the files it would write — so a remedy reached there that
+ * named it would send the reader to move the project's own files aside.
  */
 const INIT_LINES: Readonly<Record<string, string>> = {
   "cli/src/project/config.ts": "the refusal for a directory with no root pithy.config.ts",
@@ -348,9 +343,9 @@ function arrayClose(code: string, from: number): number {
 }
 
 /**
- * **Every command assembled from pieces** (#711): a literal that is `pithy`, or ends in it, put into a line by
- * `+`, as an element of an array that is joined, as an interpolation of its own, or handed to `execArgs` — the
- * argv a spawn takes, which `upgrade.ts` once joined into a sentence. No literal holds `pithy` and a command word
+ * **Every command assembled from pieces**: a literal that is `pithy`, or ends in it, put into a line by `+`, as an
+ * element of an array that is joined, as an interpolation of its own, or handed to `execArgs`, the argv a spawn
+ * takes. No literal holds `pithy` and a command word
  * together, so {@link citationsIn} reads nothing; the surroundings say what it is.
  */
 function assembledIn(read: ReadLiterals): { text: string; how: string }[] {
@@ -389,7 +384,7 @@ const OPENS_WITH_FLAG = /^\s*--?[a-zA-Z]/;
 
 /**
  * What comes before a literal joined onto a command named in prose: the call itself, or a template that ends in it,
- * then a `+` or the `,` of an array (#711).
+ * then a `+` or the `,` of an array.
  */
 const AFTER_NAMED = /commandName(?:Of|OfPath)?\s*\((?:[^()]|\([^()]*\))*\)\s*(?:\}?\s*`\s*)?(?:\+(?!\+)|,)\s*$/;
 
@@ -425,7 +420,7 @@ function closeOf(code: string, open: number): number {
 }
 
 /**
- * **Every command finished by hand around the builder** (#711): a flag written straight after `commandName`'s output,
+ * **Every command finished by hand around the builder**: a flag written straight after `commandName`'s output,
  * which the builder never saw; a `<placeholder>` or a blank spelled as a literal into a builder's parts, which the
  * builder quotes as the caller's value it takes every value to be; and a name a `"pithy"` was bound to — in any file,
  * `bound` is every shipped file's {@link boundPithy} — with words put after it, by a template or a `+`.
@@ -487,7 +482,7 @@ function finishedByHand(read: ReadLiterals, bound: ReadonlySet<string>): { text:
 }
 
 /**
- * **Every caller's context made from something other than a run's own `args`** (#711): a `callerOf` — the builder's,
+ * **Every caller's context made from something other than a run's own `args`**: a `callerOf` — the builder's,
  * imported — handed anything else, outside {@link CALLER_CONSTRUCTORS}; and a cast to a `Caller`, which skips
  * `callerOf` altogether.
  */
@@ -642,8 +637,8 @@ describe("the scan reads a command wherever a line names one", () => {
     ]);
   });
 
-  // `pithy ${path}` names a command nothing can read: the version a line once interpolated there is said by the
-  // builder's `cliAtVersion`, so whatever follows `pithy` as an interpolation is a command (#711).
+  // `pithy ${path}` names a command nothing can read. A version is said by the builder's `cliAtVersion`, so
+  // whatever follows `pithy` as an interpolation is a command.
   test("and a command whose path is wholly interpolated, whatever it interpolates", () => {
     expect(words("Run pithy <x> now.")).toEqual(["<x> now"]);
     expect(words("pithy <x> (installed via <x>)")).toEqual(["<x>"]);
@@ -727,7 +722,7 @@ describe("the scan reads a command assembled from pieces", () => {
   const assembled = (source: string) => assembledIn(readLiterals(source, false));
 
   test("joined from an array", () => {
-    // `declaredFlags.ts`'s own line, before #711 gave it the builder: the array inside an interpolation.
+    // The array inside an interpolation.
     // biome-ignore lint/suspicious/noTemplateCurlyInString: the interpolation is the fixture, and has to arrive here uninterpolated.
     expect(assembled('const c = `\\`${["pithy", ...found.path].join(" ")}\\``;')).toEqual([
       { text: "pithy", how: "joined from an array" },
@@ -766,7 +761,7 @@ describe("the scan reads a command assembled from pieces", () => {
 });
 
 /**
- * **A command finished by hand around the builder (#711).** The builder checks what it is handed, so a line that
+ * **A command finished by hand around the builder.** The builder checks what it is handed, so a line that
  * writes flags after `commandName`'s output, hands a builder a `<placeholder>` it spelled, or keeps `"pithy"` in a
  * name to put a command after, spells a command the builder never saw. None holds `pithy` and a command word in one
  * literal, so {@link citationsIn} reads nothing; each is read off the code around it.
@@ -815,7 +810,6 @@ describe("the scan reads a command finished by hand around the builder", () => {
     ]);
   });
 
-  // #711's last review: each of these got past the gate, each in a category it claimed to cover.
   test("a flag joined after a command named in prose, by + or by an array, or after its code span", () => {
     expect(
       // biome-ignore lint/suspicious/noTemplateCurlyInString: the interpolation is the fixture, and has to arrive here uninterpolated.
@@ -945,7 +939,7 @@ describe("every command a line names is built, never spelled", () => {
   });
 
   /**
-   * **A rerun is built from the caller's own context (#711).** `rerunCommand`, `rerunRemedy` and `addAgain` take a
+   * **A rerun is built from the caller's own context.** `rerunCommand`, `rerunRemedy` and `addAgain` take a
    * `Caller` and nothing else, and a `Caller` is made by `callerOf` — so this holds the two ways around that: a cast
    * to one, and a `callerOf` handed anything but a run's own `args` outside {@link CALLER_CONSTRUCTORS}.
    */

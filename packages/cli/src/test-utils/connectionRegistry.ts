@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { ControlPlaneConnection, RegisteredKey } from "@pithy-sh/core/src/controlPlane/data/connection";
+import { authorizedByPrincipal, revokeCredentials } from "@pithy-sh/core/src/controlPlane/data/connections";
 import { activeKeys } from "@pithy-sh/core/src/controlPlane/data/keyLifecycle";
 import { ControlPlaneKeyConflictError } from "@pithy-sh/core/src/controlPlane/error/errors";
 import type { ConnectionRegistry } from "../dashboard/registry";
@@ -9,7 +10,7 @@ import type { ConnectionRegistry } from "../dashboard/registry";
 /**
  * An in-memory registry — the D1 half is proven in registry.test.ts against a real database.
  *
- * It mirrors the real gate (#287): a key may be added only while nothing live could have signed for one
+ * It mirrors the real key invariant: a key may be added only while nothing live could have signed for one
  * at the seam. A permissive fake would let this file prove behavior the actual registry refuses.
  *
  * `seamRegister` is the *worker's* write, not the CLI's — what `POST {basePath}/keys` does to this row
@@ -66,6 +67,18 @@ export function fakeConnectionRegistry(initial: ControlPlaneConnection | null = 
         updatedAt: now,
       };
       return row;
+    },
+    list: async (principal) => {
+      if (!row) return { connections: [], unattributed: [] };
+      if (row.authorizedBy === null) return { connections: [], unattributed: [row] };
+      const matches = principal === undefined || authorizedByPrincipal(row, principal);
+      return { connections: matches ? [row] : [], unattributed: [] };
+    },
+    revokeConnection: async (id, _reason, now) => {
+      if (!row || row.id !== id) return null;
+      const revoked = revokeCredentials(row, now);
+      row = revoked.connection;
+      return revoked;
     },
     remove: async () => {
       const had = row !== null;

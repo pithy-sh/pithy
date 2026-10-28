@@ -14,6 +14,7 @@ pithy dashboard revoke-key --key-id <id> [--env <environment>] [--worker <name>]
 pithy dashboard revoke-trust --trust-id <id> [--env <environment>] [--worker <name>] [--yes] [--origin <url>] [--json]
 pithy dashboard disconnect [--env <environment>] [--worker <name>] [--yes] [--local] [--origin <url>] [--no-open] [--json]
 pithy dashboard status [--env <environment>] [--worker <name>] [--verify] [--origin <url>] [--no-open] [--json]
+pithy dashboard connections --principal <email> [--env <environment>] [--worker <name>] [--revoke --reason <text> [--yes]] [--json]
 ```
 
 **You run these, against your own project.** They are the CLI half of the control-plane seam (`docs/CONTROL-PLANE.md`): the commands by which you grant a management client — the hosted dashboard at `app.pithy.sh`, or one you wrote yourself — the right to call your Worker's administrative routes, and by which you take that right back. Every registration is a row in *your* D1. Your Worker is the authority; the management client is a client.
@@ -28,9 +29,9 @@ pithy dashboard status [--env <environment>] [--worker <name>] [--verify] [--ori
 
 | Flag | Applies to | Default | Purpose |
 |---|---|---|---|
-| `--env <environment>` | all six | `dev` | The environment whose registration is being read or written |
-| `--worker <name>` | all six | resolved | Which Worker resolves the app database (`apps/<name>`). On `connect` it also names the Worker that composes the admin surface, and is required when the project has several |
-| `--origin <url>` | all six | the connection's own, else `https://app.pithy.sh` | The management client's origin. Re-points every call at a self-hosted one, and records the move |
+| `--env <environment>` | all but `connections` | `dev` | The environment whose registration is being read or written |
+| `--worker <name>` | all seven | resolved | Which Worker resolves the app database (`apps/<name>`). On `connect` it also names the Worker that composes the admin surface, and is required when the project has several |
+| `--origin <url>` | all but `connections` | the connection's own, else `https://app.pithy.sh` | The management client's origin. Re-points every call at a self-hosted one, and records the move |
 | `--worker-url <url>` | `connect` | resolved | Override the resolved Worker URL for this environment. The only way to say so when a proxy fronts your Worker |
 | `--scope <scope>` | `connect` | the seam's own, plus every declared read | Grant one scope, narrowing the default. Repeatable — the raw argv is read, so several survive. `--scope all` grants every scope the Worker composes |
 | `--purpose <text>` | `connect` | asked at a terminal | What this client is for, in one line of plain text, 200 characters at most. Required to register a connection, and refused when absent without a terminal. With `--update`, replaces the stored one |
@@ -48,8 +49,13 @@ pithy dashboard status [--env <environment>] [--worker <name>] [--verify] [--ori
 | `--yes` | `revoke-key`, `revoke-trust`, `disconnect` | `false` | Answer the confirmation. How CI runs the same command, and required wherever nothing can be asked: without it, `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1` or a run with no terminal fails `input/required` rather than going ahead |
 | `--local` | `disconnect` | `false` | Delete the row without telling the management client |
 | `--verify` | `status` | `false` | Prove the connection with a signed ping |
-| `--no-open` | all six, acting on the four that sign in | offers | Never offer to open the approval page. `PITHY_NO_OPEN`, at any value, does the same |
-| `--json` | all six | `false` | One line of machine-readable output. Implies non-interactive: no prompt is ever shown. `--no-input` and `PITHY_NONINTERACTIVE=1` do the same without `--json`, and the `o` key is not offered |
+| `--principal <email>` | `connections` | required | The email whose connections to list, matched without regard to case |
+| `--env <environment>` | `connections` | every environment `pithy.config.ts` declares | Read one environment instead of all of them |
+| `--revoke` | `connections` | `false` | Revoke every key and trust not yet revoked on each connection the principal authorized, after showing them. Destructive: a line that needs it is a person's decision, never a fix |
+| `--reason <text>` | `connections` | — | Why they are revoked. Required with `--revoke`, and recorded on every revocation |
+| `--yes` | `connections` | `false` | Answer `--revoke`'s confirmation, as for `revoke-key` |
+| `--no-open` | all but `connections`, acting on the four that sign in | offers | Never offer to open the approval page. `PITHY_NO_OPEN`, at any value, does the same |
+| `--json` | all seven | `false` | One line of machine-readable output. Implies non-interactive: no prompt is ever shown. `--no-input` and `PITHY_NONINTERACTIVE=1` do the same without `--json`, and the `o` key is not offered |
 
 Every subcommand writes its machine output to stdout and its diagnostics — the device code, the waiting line — to stderr, so a `--json` consumer parses one clean line.
 
@@ -166,6 +172,8 @@ A connection records the origin it was registered against, and `status --verify`
 A connection registered before that column existed records nothing, and falls back to its `issuer`. That is near enough to ask and not the same fact: the issuer is what a management client *signs as*, and nothing says its API answers there. The next `connect` records the real answer.
 
 Nothing registered at all means the hosted dashboard, which is where a first `connect` goes.
+
+**`connections`** lists everything one person authorized, across every environment the project declares: each connection's kind, purpose, credential kind, scopes, every trust's subject constraint, when it was registered, and whether anything on it is still live. It reads the same function `GET /control-plane/connections` does, so the two never list different things. The match is on the email the connection recorded, without regard to case. A connection registered before principals were recorded is listed apart, for you to read, and is never revoked by a principal match. **`--revoke`** shows what it will end, asks, then revokes every key and trust on each one not yet revoked, including one whose window has not opened, and records `controlplane/connection_revoked` with your `--reason` on that environment's trail. A token already minted under a revoked trust stays usable until it expires.
 
 **`status`** reports what is registered: the connection, its scopes, who authorized it, its kind and its purpose, every key with its age and whether it is live, and every trust with its issuer, the claims it admits and whether it is awaiting a first call. Looking is free; proving costs a browser sign-in, so the probe is opt-in behind `--verify` and its absence is reported as `unverified` rather than guessed at.
 
@@ -318,6 +326,21 @@ $ pithy dashboard status --env prod --json
 | `trusts[].revokedAt` | `string \| null` | ISO-8601, or `null` |
 | `status` | `"connected" \| "needs_reconnect" \| "unreachable" \| "unverified"` | `unverified` unless `--verify` was passed. `unreachable` is nothing answering at all, which says nothing about the connection. Status never claims a round-trip it did not make |
 | `detail` | `string` | Operator-facing context from the probe. Absent otherwise |
+
+```
+$ pithy dashboard connections --principal ada@example.com --json
+{"command":"dashboard.connections","principal":"ada@example.com","byEnvironment":[{"environment":"prod","connections":[{"id":"b6a1f0c2-…","environment":"prod","actorKind":"agent","purpose":"Nightly audit summarizer.","authorizedBy":"ada@example.com","credentialKind":"key","scopes":["manifest:read"],"trusts":[],"live":true,"registeredAt":"2026-10-01T00:00:00.000Z","revokedAt":null}],"unattributed":[]}]}
+```
+
+| key | type | meaning |
+|---|---|---|
+| `command` | `"dashboard.connections"` | The subcommand that produced the line |
+| `principal` | `string` | The email the connections were matched on |
+| `byEnvironment` | `object[]` | Every environment read, in order |
+| `byEnvironment[].environment` | `string` | The environment |
+| `byEnvironment[].connections` | `object[]` | The connections the principal authorized there, in the shape `GET /control-plane/connections` answers: `id`, `environment`, `actorKind`, `purpose`, `authorizedBy`, `credentialKind`, `scopes`, `trusts`, `live`, `registeredAt`, `revokedAt` |
+| `byEnvironment[].unattributed` | `object[]` | Connections registered before principals were recorded, in the same shape. Never revoked by a principal |
+| `revocations` | `object[]` | With `--revoke`: each connection ended, as `environment`, `connectionId`, `revokedKeyIds` and `revokedTrustIds`. Absent otherwise |
 
 ## Errors
 

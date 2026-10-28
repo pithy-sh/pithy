@@ -9,6 +9,7 @@ import {
   KIT_POWERS,
   type KitPower,
   ORGANIZATION_POWERS,
+  powersLost,
   requireComposedPowers,
 } from "./roles";
 
@@ -350,5 +351,19 @@ describe("a role name that is also a property of Object.prototype", () => {
     expect(dashboard.administers("admin")).toBe(true);
     expect(dashboard.administers("member")).toBe(false);
     expect(dashboard.roleAllows("member", "organization:read")).toBe(true);
+  });
+});
+
+describe("powersLost", () => {
+  test("a demotion loses the powers the old role held and the new one does not", () => {
+    expect(powersLost(dashboard, "admin", "member")).toEqual(["connections:manage", "organization:manage"]);
+  });
+
+  test("a promotion loses nothing", () => {
+    expect(powersLost(dashboard, "member", "admin")).toEqual([]);
+  });
+
+  test("a move between parallel roles loses what the new one lacks", () => {
+    expect(powersLost(academy, "coach", "student")).toEqual(["sessions:read", "sessions:accept", "students:block"]);
   });
 });

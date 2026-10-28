@@ -70,7 +70,7 @@ export const ExpireKeyRequest = z
   );
 export type ExpireKeyRequest = z.infer<typeof ExpireKeyRequest>;
 
-/** `GET /control-plane/erasure/:subjectType/:subjectId` — which subject (#823). */
+/** `GET /control-plane/erasure/:subjectType/:subjectId` — which subject. */
 export const ErasureSubjectParams = z
   .object({
     subjectType: z.enum(["user", "organization"]).describe("The kind of subject: `user` or `organization`."),
@@ -79,7 +79,7 @@ export const ErasureSubjectParams = z
   .describe("The subject whose erasure to attest.");
 export type ErasureSubjectParams = z.infer<typeof ErasureSubjectParams>;
 
-/** `GET /control-plane/erasure?since&until` — the period (#823). */
+/** `GET /control-plane/erasure?since&until` — the period. */
 export const ErasurePeriodQuery = z
   .object({
     since: z.iso
@@ -160,3 +160,37 @@ export const HoldListQuery = z
   })
   .describe("Which legal holds to list.");
 export type HoldListQuery = z.infer<typeof HoldListQuery>;
+
+/** Which connections to list. */
+export const ConnectionListQuery = z
+  .object({
+    principal: z
+      .email()
+      .max(254)
+      .optional()
+      .describe(
+        "Only connections this email authorized, compared without regard to case. Connections with no recorded principal are listed apart either way and never match.",
+      ),
+  })
+  .describe("Which connections to list.");
+export type ConnectionListQuery = z.infer<typeof ConnectionListQuery>;
+
+/** The path parameter of the revoke route. */
+export const ConnectionParams = z
+  .object({ connectionId: z.uuid().describe("The connection's id, as the listing reports it.") })
+  .describe("The connection to revoke.");
+export type ConnectionParams = z.infer<typeof ConnectionParams>;
+
+/** Revoke a connection, with a reason. */
+export const RevokeConnectionRequest = z
+  .object({
+    reason: z
+      .string()
+      .trim()
+      .min(1)
+      .max(500)
+      .describe("Why the connection is revoked. Required, and recorded on the revocation's audit event."),
+  })
+  .strict()
+  .describe("A connection's revocation: why it ends.");
+export type RevokeConnectionRequest = z.infer<typeof RevokeConnectionRequest>;

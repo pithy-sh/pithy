@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import type { AdminRouteDeclaration } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 
 /**
- * Vector's control-plane scope, and the admin surface a manifest advertises (#730).
+ * Vector's control-plane scope, and the admin surface a manifest advertises.
  *
  * **This module imports types and nothing else**, because a management client in a browser reads the scope
  * names to render what a connection may do, and `tooling/browser-scopes` compiles every scope the kit
@@ -37,13 +37,14 @@ export function vectorIndexesPath(basePath: string): string {
  * the same `basePath` the routes register under, so an adopter who moved the mount point is reflected rather
  * than silently 404ing a client.
  */
-export function vectorAdminRoutes(basePath: string): AdminRoute[] {
+export function vectorAdminRoutes(basePath: string): AdminRouteDeclaration[] {
   return [
     {
       method: "GET",
       operation: "indexes.list",
       path: vectorIndexesPath(basePath),
       scope: VECTOR_INDEXES_READ_SCOPE,
+      kind: "reads",
       summary:
         "Every declared index: what config declares, what Vectorize holds, how the corpus splits by embedding model, and whether it was provisioned.",
     },

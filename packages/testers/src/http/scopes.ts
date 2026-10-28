@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import type { AdminRouteDeclaration } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 
 /**
  * Testers' control-plane scopes, and the admin surface a manifest advertises.
  *
- * **Separate from `guards.ts` because a scope name is a client's business** (#315). A management
+ * **Separate from `guards.ts` because a scope name is a client's business**. A management
  * client reads these to render what a connection may do, and `pithy-sh/dashboard`'s scope builder
  * writes the `pithy dashboard connect --scope …` command from exactly these constants — in a browser
  * program, with the DOM lib and no Workers types. While they sat beside the Hono middleware, naming
@@ -43,13 +43,14 @@ export const TESTERS_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  * point of the manifest is that a management client composes its calls from the Worker rather than from
  * a route table it shipped with.
  */
-export function testersAdminRoutes(basePath: string): AdminRoute[] {
+export function testersAdminRoutes(basePath: string): AdminRouteDeclaration[] {
   return [
     {
       method: "GET",
       operation: "cohorts.list",
       path: `${basePath}/cohorts`,
       scope: TESTERS_ROSTER_READ_SCOPE,
+      kind: "reads",
       summary: "Cohort state, roster, per-tester activity, the forecast, and the trend series.",
     },
     {
@@ -57,6 +58,7 @@ export function testersAdminRoutes(basePath: string): AdminRoute[] {
       operation: "testers.invite",
       path: `${basePath}/invite`,
       scope: TESTERS_ROSTER_WRITE_SCOPE,
+      kind: "writes",
       summary: "Invite an address onto a cohort and send its confirmation link.",
     },
     {
@@ -64,6 +66,7 @@ export function testersAdminRoutes(basePath: string): AdminRoute[] {
       operation: "testers.resend",
       path: `${basePath}/resend`,
       scope: TESTERS_ROSTER_WRITE_SCOPE,
+      kind: "writes",
       summary: "Send another invitation, preserving the tester's existing history.",
     },
     {
@@ -71,6 +74,7 @@ export function testersAdminRoutes(basePath: string): AdminRoute[] {
       operation: "testers.remove",
       path: `${basePath}/remove`,
       scope: TESTERS_ROSTER_WRITE_SCOPE,
+      kind: "writes",
       summary: "Take a tester off a cohort's roster.",
     },
     {
@@ -78,6 +82,7 @@ export function testersAdminRoutes(basePath: string): AdminRoute[] {
       operation: "testers.nudge",
       path: `${basePath}/nudge`,
       scope: TESTERS_NUDGE_SEND_SCOPE,
+      kind: "sends",
       summary: "Nudge selected testers. Copy may be overridden as text; the cooldown is enforced here.",
     },
   ];

@@ -3,7 +3,7 @@
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneConnection, RegisteredKey } from "@pithy-sh/core/src/controlPlane/data/connection";
-import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import type { AdminRouteDeclaration } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import { SEAM_SCOPES } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { PithyError, PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test, vi } from "vitest";
@@ -494,7 +494,7 @@ describe("connectDashboard — connecting produces a working read surface", () =
   // each refusal is. So the default grant is read off what this Worker actually composes.
 
   /** A capability that declares nothing but an admin surface — enough for the derivation to read. */
-  const capabilityWith = (name: string, adminRoutes: AdminRoute[]): Capability => ({
+  const capabilityWith = (name: string, adminRoutes: AdminRouteDeclaration[]): Capability => ({
     name,
     requiredBindings: [],
     adminRoutes,
@@ -502,12 +502,24 @@ describe("connectDashboard — connecting produces a working read surface", () =
 
   const reading = [
     capabilityWith("audit", [
-      { method: "GET", path: "/audit/events", scope: "audit:events:read", summary: "Page the trail." },
-      { method: "GET", path: "/audit/events/:id", scope: "audit:events:read_detail", summary: "One event in full." },
+      { method: "GET", path: "/audit/events", scope: "audit:events:read", kind: "reads", summary: "Page the trail." },
+      {
+        method: "GET",
+        path: "/audit/events/:id",
+        scope: "audit:events:read_detail",
+        kind: "reads",
+        summary: "One event in full.",
+      },
     ]),
     capabilityWith("email", [
-      { method: "GET", path: "/email/jobs", scope: "email:jobs:read", summary: "The send log." },
-      { method: "POST", path: "/email/jobs/:id/retry", scope: "email:jobs:retry", summary: "Send it again." },
+      { method: "GET", path: "/email/jobs", scope: "email:jobs:read", kind: "reads", summary: "The send log." },
+      {
+        method: "POST",
+        path: "/email/jobs/:id/retry",
+        scope: "email:jobs:retry",
+        kind: "sends",
+        summary: "Send it again.",
+      },
     ]),
   ];
 
@@ -658,7 +670,7 @@ describe("connectDashboard — the offline path", () => {
 
     expect((error as PithyError).payload.code).toBe("core/conflict");
     expect(registry.current()?.keys[0]?.publicKey.x).toBe(JWK.x);
-    // #711: revoking is destructive, and `revoke-key` defaults to dev, so the remedy is a person's decision that names
+    // Revoking is destructive, and `revoke-key` defaults to dev, so the remedy is a person's decision that names
     // the environment this run was about and the key it collided on — never a bare command to run.
     expect((error as PithyError).payload.action).toBe(
       `Register the new key under a new id, or revoke this one first: \`pithy dashboard revoke-key --env ${base.environment} --key-id key_1\` deletes a signing key the dashboard holds. That is a person's decision, not a fix.`,
@@ -944,7 +956,7 @@ describe("dashboardStatus", () => {
 });
 
 /**
- * Who sanctioned a connection, what kind of client it is, and what it is for (#721).
+ * Who sanctioned a connection, what kind of client it is, and what it is for.
  */
 describe("connectDashboard — the principal, the kind and the purpose", () => {
   /** Thrown by a principal seam with no session — the shape `requireRegisteringPrincipal` refuses in. */

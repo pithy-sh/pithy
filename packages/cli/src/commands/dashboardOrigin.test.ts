@@ -8,10 +8,10 @@ import type { ConnectionRegistry } from "../dashboard/registry";
 import { clientFor } from "./dashboard";
 
 /**
- * Which dashboard a command calls, and what happens to the row when a flag says somewhere else — `#614`.
+ * Which dashboard a command calls, and what happens to the row when a flag says somewhere else.
  *
- * The bug Jim hit: `status --verify` with no `--origin` asked the hosted dashboard about a connection
- * registered against a self-hosted one, and reported the connection as needing reconnection.
+ * `status --verify` with no `--origin` must ask the dashboard a connection was registered against, never the
+ * hosted one by default, and never report the connection as needing reconnection for asking the wrong one.
  */
 
 const NOW = new Date("2026-09-16T12:00:00.000Z");
@@ -39,6 +39,8 @@ function registryOf(connection: ControlPlaneConnection | null) {
     revokeKey: async () => connection,
     appendTrust: async () => connection as ControlPlaneConnection,
     revokeTrust: async () => connection,
+    list: async () => ({ connections: [], unattributed: [] }),
+    revokeConnection: async () => null,
     remove: async () => true,
     dispose: async () => {},
   };
