@@ -36,8 +36,7 @@ async function filtersFor(changed: readonly string[]): Promise<string[]> {
  * The record. **This is a list, and it is meant to be.**
  *
  * Everything else about this mechanism is derived — the script re-reads the test files on every CI
- * run, so a cross-package read added tomorrow is planned tomorrow with nothing to remember. That is
- * what stops #148 and #173 from recurring. But "derived" and "unnoticed" are the same thing unless
+ * run, so a cross-package read added tomorrow is planned tomorrow with nothing to remember. But "derived" and "unnoticed" are the same thing unless
  * something says out loud what the derivation currently finds, so this is the tripwire: a path no
  * test read across a boundary before fails here, and gets added by a human who meant to.
  *
@@ -65,6 +64,8 @@ const RECORD: Record<string, string> = {
     "Every package's shipped files, read from the source tree rather than `node_modules`: the manifest-width sweep (#173), the migration-order scan, the capability catalog, and the stamped versions.",
   "packages/auth/src/capability.ts":
     "`@pithy-sh/organization`'s `capability.test.ts` reads the extension vocabulary auth *emits* — the literal `kind: \"better-auth-plugin\"`. Tenancy refuses to compose alongside Better Auth's `organization()` plugin by matching that string and the plugin's id, and `CapabilityExtension.kind` and `.id` are free text by design, so nothing in the type system ties the two packages together. The failure mode is silent and serious: auth renames its kind, the refusal stops firing, and a Worker with two membership models boots and serves. So the string is pinned against the file that writes it, and renaming it has to re-run the suite that depends on it.",
+  "packages/auth/pithy.mcp.manifest.json":
+    "`capabilities/mcpAdd.test.ts` installs this manifest as it ships, beside a stub of auth's, and runs `pithy add mcp` against it: the floor it requires, the database it takes from auth and the notes it prints are what the test pins, so editing the manifest has to re-run the CLI's suite.",
   "packages/organization/pithy.manifest.json":
     "`capabilities/organizationSeam.test.ts` names this one manifest rather than sweeping them all, because it carries the first **manifest-level** `seams` entry the kit ships — a seam with no choice to hang off, since a tenancy capability has no answer to *who may do what* that is not the adopter's. The repo-wide sweep proves every manifest parses; this proves `pithy add organization` still scaffolds a role catalog and still refuses to overwrite one, which is the feature.",
   "packages/payments/pithy.manifest.json":
@@ -94,15 +95,15 @@ describe("the cross-package reads CI plans from", () => {
     // nothing else. A package appearing here is one whose suite that model cannot reach.
     //
     // `@pithy-sh/browser-scopes` is the second, and it is here for the same reason the CLI is: its gates
-    // read every capability's source to find every control-plane scope the kit declares (#315) and every
-    // response schema it ships (#419), so either landing in a package this one does not depend on is a
+    // read every capability's source to find every control-plane scope the kit declares and every
+    // response schema it ships, so either landing in a package this one does not depend on is a
     // change its suite must re-check.
     //
     // `@pithy-sh/cloudflare` is the third, and it reads exactly one thing: `docs/FIXTURES.md`, the
     // document every live-fixture skip message cites. The gate is that the cited section exists, and a
-    // gate on a document is worthless unless editing the document runs it (#106).
+    // gate on a document is worthless unless editing the document runs it.
     //
-    // `@pithy-sh/ui-react` is the fourth, and it is #391's ledger. `seededGates.test.ts` records, for
+    // `@pithy-sh/ui-react` is the fourth, and it is the seeded-gates ledger. `seededGates.test.ts` records, for
     // every seeded file, the gate that holds it — and for the ones the kit keeps, the path of that gate
     // in another package. A ledger entry pointing at a renamed file rots into a subject that reads as
     // held, so the entry resolves the path; and resolving it is worth nothing unless renaming the gate
@@ -113,7 +114,7 @@ describe("the cross-package reads CI plans from", () => {
     // plans it through the dependency edge as well as through this list. It is listed because the read
     // is real and this assertion is derived from the tree rather than curated — and because the edge is
     // not what makes the read correct. The fixture pins one copy of Vite per major in the published peer
-    // range and compiles `pithy()`'s return against each (#414); the day someone moves that range into a
+    // range and compiles `pithy()`'s return against each; the day someone moves that range into a
     // file the edge does not carry, this is the line that keeps the read planned.
     //
     // `@pithy-sh/release` is the sixth, and it reads more of the tree than any of them: every
@@ -165,19 +166,10 @@ describe("what CI plans for a change", () => {
       // `--affected` anyway; asserting them as a batch would hide the ones that are not.
       expect(await filtersFor([manifest])).toContain("--filter=@pithy-sh/cli");
     }
-    // **A hang ceiling, from the #361 population sweep — this was the next case due to go red.**
-    // Every `filtersFor` spawns `scripts/planShards.ts` afresh, so this case is one full bun start and
-    // one full tree walk *per manifest*, twenty-odd of them in a row. Measured: 8,692ms at load average
-    // 16, against the config's 30,000ms default — a 3.45x margin, already inside the band that
-    // `dashboard#63` measured for this machine. Under `bun run test --force` at load 66 this file went
-    // from 13,278ms to 40,165ms (3.0x), which puts this case around 26s. It passed by about 13%.
-    //
-    // 120_000 matches the other spawn-heavy cases in this package and is ~14x the measured cost, so it
-    // catches a hang and nothing else. **The real fix is upstream of the budget and is not done here:**
-    // the twenty-odd spawns ask the same script the same kind of question and re-walk the same
-    // unchanged tree every time, which is `dashboard#63`'s doubled work exactly. A `--filters` mode that
-    // answered many change-sets from one walk would take this case to a single spawn. That is a change
-    // to a CI script rather than to a test, so it belongs in its own issue with its own review.
+    // **A hang ceiling.** Every `filtersFor` spawns `scripts/planShards.ts` afresh, so this case is one
+    // full bun start and one full tree walk *per manifest*, twenty-odd of them in a row, and its time
+    // scales with machine load. 120_000 matches the other spawn-heavy cases in this package: it catches a
+    // hang and nothing else.
   }, 120_000);
 
   test("editing the starter template still plans the CLI (#148, kept)", async () => {
@@ -191,7 +183,7 @@ describe("what CI plans for a change", () => {
   test("editing the fixture document plans the package whose gate cites it (#106)", async () => {
     // The citation gate lives in `@pithy-sh/cloudflare` and the document lives in `docs/`, which no
     // dependency edge connects. Without this, deleting a section leaves every skip message pointing at
-    // nothing and CI has no reason to notice — #52's defect class, and the reason the gate exists.
+    // nothing and CI has no reason to notice, which is the reason the gate exists.
     expect(await filtersFor(["docs/FIXTURES.md"])).toContain("--filter=@pithy-sh/cloudflare");
   });
 

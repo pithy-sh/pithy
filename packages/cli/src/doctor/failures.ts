@@ -26,11 +26,10 @@ import { describeSupportSearchTriggers, supportSearchFix } from "./supportSearch
 import { describeReservedWorkerName, describeWorkerName } from "./workerName";
 
 /**
- * **Every check that fails `pithy doctor`, with the command that rights it (#697).**
+ * **Every check that fails `pithy doctor`, with the command that rights it.**
  *
- * `doctor` finds what is wrong and, until this, left an agent to read the docs for the command that fixes it.
- * The text report names a remedy in prose beside most findings; an agent reading `--json` had the finding and
- * no command. So each failing check is one entry here — the block it sits in, its sentence, and its `fix`.
+ * The text report names a remedy in prose beside most findings; an agent reading `--json` needs the command.
+ * So each failing check is one entry here — the block it sits in, its sentence, and its `fix`.
  *
  * **This list is the exit gate.** `doctorExitCode` is "is this list empty", so a check cannot fail the exit
  * without an entry here, and an entry cannot exist for something that does not fail it. Findings that report
@@ -49,7 +48,7 @@ import { describeReservedWorkerName, describeWorkerName } from "./workerName";
  * honest answer in three cases, and `detail` says which one it is:
  *
  * - **The remedy is an edit.** A stanza to add, a name to change, a line to delete. No command writes it, and
- *   naming one that does something adjacent is the defect #517 took four rounds to remove.
+ *   naming one that does something adjacent sends a person to the wrong command.
  * - **The remedy is a person's.** Provisioning a production environment needs its `--confirm` phrase, so it
  *   names none, as `provision/provisionFix.ts` decides for the error line.
  * - **The command exists and running it blind would lose data.** Repointing a project-global binding before
@@ -156,7 +155,7 @@ function workerFailures(
   }
   failures.push(...devMigrationFailures(worker, checks, setUp));
   // Which capability resolves an entitlement is the adopter's decision, so no `fix` is named for it. The example
-  // the sentence offers is the text report's, from the same builder, so it runs as written (#711).
+  // the sentence offers is the text report's, from the same builder, so it runs as written.
   const gap = checks.entitlements.gap;
   if (gap.state === "unavailable") {
     add("its source would not scan for entitlement gates, so none was checked", null);
@@ -183,7 +182,7 @@ function devMigrationFailures(worker: string, checks: WorkerChecks, setUp: boole
     return failures;
   }
   const counted = local.ledger.state === "read" ? local.ledger : local.ledger.counted;
-  // A checkout nothing has set up is `pithy setup`'s, which migrates along with the rest it lacks (#764).
+  // A checkout nothing has set up is `pithy setup`'s, which migrates along with the rest it lacks.
   if (counted.pending > 0) add(`${counted.pending} pending in dev`, localMigrationFix(local, [], setUp));
   // Wiping the local store is the remedy, and an agent does not delete a developer's local data unasked.
   if (counted.undeclared.length > 0) add(`dev: ${describeUndeclared(counted.undeclared)}`, null);
@@ -202,7 +201,7 @@ function healthFailures(health: ProjectHealth, setUp: boolean): DoctorFailure[] 
 
   // Someone else's package: reinstalling it is the remedy, and that is the package manager's.
   for (const fault of health.manifests.faults)
-    add(`${fault.package} has a pithy.manifest.json that cannot be used: ${fault.reason}`, null);
+    add(`${fault.package} has a ${fault.file} that cannot be used: ${fault.reason}`, null);
   // `pithy add` is the one state it is for: composed, and installed nowhere. Re-running it is safe on the
   // half already done — a registration already in the config is left as written.
   for (const entry of health.capabilityReach.unreachable) {
@@ -262,8 +261,8 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
   // Configured-but-broken credentials are drift worth gating CI on. Absent ones are not: a project that has not
   // been provisioned yet is a legitimate state, and failing it would make `doctor` useless before setup.
   // `not_checked` is the same standard once more and the clearest case of it — the check did not run, so it
-  // established nothing, and a caller who asked for no network did not ask for a red exit (#218). `probe_failed`
-  // joins them on the same standard (#371): the probe threw, so it established nothing — and a credentials file
+  // established nothing, and a caller who asked for no network did not ask for a red exit. `probe_failed`
+  // joins them on the same standard: the probe threw, so it established nothing — and a credentials file
   // that will not parse is not a credential this project has been shown to lack.
   // No command fixes one: a token is minted in the dashboard, and an account id is an edit.
   const cloudflare = report.cloudflare.state;
@@ -280,12 +279,11 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
   // establishes may gate CI. `unconfigured` (no name yet) and `could-not-check` (the wiring would not read)
   // establish nothing, and failing on either would break every run in an unprovisioned project. `invalid` meets
   // the same standard the other two do — the name is set, and no Cloudflare namespace can carry it, which is why
-  // every other command already hard-fails on it. `drifted` and `orphaned` now meet it too, which they did not
-  // always: `drifted` used to fire on any one declared name that merely had Pithy's shape, so an adopter's
-  // pre-existing `myapp-prod-db` — the ordinary Cloudflare convention — turned a green CI red on the adoption
-  // path. Both are evidence-backed now. `drifted` is a wholesale contradiction between this repo's own config
+  // every other command already hard-fails on it. `drifted` and `orphaned` meet it too, because both are
+  // evidence-backed: an adopter's pre-existing `myapp-prod-db` — the ordinary Cloudflare convention — merely
+  // has Pithy's shape. `drifted` is a wholesale contradiction between this repo's own config
   // and its own wiring, checkable from files alone; `orphaned` is Pithy's own `pithy_migrations_owner` stamp
-  // naming another project. A name that only *looks* like ours establishes nothing and no longer reaches either.
+  // naming another project. A name that only *looks* like ours establishes nothing and reaches neither.
   // A `null` check is the same standard once more: no readable config means nothing was established about any
   // name, and `doctor` outside a project — to read the CLI version, the shell, the alias — must exit 0.
   // Each is a decision about a name that is stable forever once anything is provisioned, so none has a command.
@@ -296,7 +294,7 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
 
   // Same standard once more, and it is met from local files alone: a Worker's directory and its own
   // wrangler.jsonc contradict each other about which Worker this is, or a stanza names a script a capability's
-  // own host Worker already deploys under (#580) — `drifted` covers both. Nothing is inferred about the account,
+  // own host Worker already deploys under — `drifted` covers both. Nothing is inferred about the account,
   // and `could-not-check` establishes nothing, so only `drifted` gates. The convention note this check also
   // carries is deliberately not here: a Worker's name is the adopter's, so being on wrangler's suffix is a
   // report line, never a reason to exit 1.
@@ -326,7 +324,7 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
     }
   }
 
-  // A service binding that cannot land (#617): a loop, a target that is no Worker, a kit Worker nothing composes.
+  // A service binding that cannot land: a loop, a target that is no Worker, a kit Worker nothing composes.
   // Each is established by the project's own configs. A binding to nothing is unbound; the other two are choices.
   if (report.serviceBindings?.state === "faulty") {
     for (const fault of report.serviceBindings.faults) {
@@ -334,7 +332,7 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
     }
   }
 
-  // A namespace in the feature range is one `provision` and `deploy` refuse, established by the files (#643).
+  // A namespace in the feature range is one `provision` and `deploy` refuse, established by the files.
   // The id is the adopter's to choose below the range, so no command is named.
   if (report.featureRatelimitIds?.state === "reserved") {
     for (const finding of report.featureRatelimitIds.findings) add("featureRatelimitIds", finding, null);
@@ -352,7 +350,7 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
     }
   }
 
-  // And the same standard applied to the same declaration one level deeper (#548): a Worker's `pithy.config.ts`
+  // And the same standard applied to the same declaration one level deeper: a Worker's `pithy.config.ts`
   // throws when it is composed for a declared environment. Established from the checkout's own files, with no
   // account reached and nothing inferred — and there is no day-one state here to spare, because a freshly
   // scaffolded project composes in every environment it declares. Every command that composes that environment
@@ -366,8 +364,7 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
   // origin its own config does not name, established from that config alone — and it is the security half: on
   // that origin the CSRF gate refuses the requests that establish who you are, and nothing bound to the hostname
   // applies. `unserved-origin` is the mirror image and the harder failure: the config names an origin and
-  // nothing in it serves that host, so the Worker answers nowhere — which is the state this command's own
-  // `workers_dev` remedy used to produce, then report as healthy (#264). Both are established from the project's
+  // nothing in it serves that host, so the Worker answers nowhere. Both are established from the project's
   // own files. `no-origin` is the state every freshly scaffolded project is in before it has a domain, which is
   // legitimate and universal; failing it would turn `pithy doctor` red on day one for everyone and teach them to
   // stop reading it. It is reported, loudly, and `pithy deploy` is what refuses it — the moment it stops being
@@ -380,13 +377,13 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
   // The same standard, and **both** faults meet it — there is no day-one state here to spare. A project that
   // declares no Workflows has no drift to report; one that declares them and has not synced is a contradiction
   // between its own two files, checkable offline, and the only fault in this report whose consequence is nothing
-  // happening at all: the cron never fires and nothing anywhere says so (#267). An unwritable declaration is the
+  // happening at all: the cron never fires and nothing anywhere says so. An unwritable declaration is the
   // same standard once more — the declaration itself is what no command can act on. `could-not-check`
   // establishes nothing and carries no drift, so it never reaches here.
   for (const drift of report.workflows?.drift ?? [])
     add("workflows", describeWorkflowDrift(drift), workflowDriftFix(drift));
 
-  // The same standard, met the way `Settings:` meets it rather than the way the file checks do (#678): the fault
+  // The same standard, met the way `Settings:` meets it rather than the way the file checks do: the fault
   // is established by a **database that answered**, so it is the finding that gates and never the state. A
   // provisioned `pithy_support_search` with no triggers is the only fault in this report whose symptom is that
   // search silently under-returns — every message stored, none indexed, nothing logged — and the remedy is the
@@ -405,7 +402,7 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
       add("supportSearchTriggers", `Support search has findings. Run ${pithyCommand("doctor")} for the lines`, null);
   }
 
-  // A field-key version the retirement guard has held for a whole period (#390), read off the environment's own
+  // A field-key version the retirement guard has held for a whole period, read off the environment's own
   // ledger, which answered. Every other failed rotation reports and never gates, because its remedy is the next tick
   // or a human at an issuer; this one is the rotator saying it cannot clear itself. The remedy is a person's: fix
   // what the guard names, or retire past it at a terminal, so there is no `fix` to run.
@@ -424,7 +421,7 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
     add("devPreferences", `dev.json: ${describeDevPreferences(preferences)}`, null);
   }
 
-  // The same standard as everything above it, and **both tiers meet it** (#411). A local finding is established
+  // The same standard as everything above it, and **both tiers meet it**. A local finding is established
   // from the project's own config through the capability's own schema. An account finding is established from an
   // account that answered — which is exactly why the list is what gates and the tier's state is not: an account
   // nobody reached contributes no findings, so a run that skipped it cannot fail here. `could-not-check` and

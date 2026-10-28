@@ -30,6 +30,11 @@ export const COMMANDS = {
         "required": false,
         "repeatable": true
       },
+      "--floor": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
       "--eject": {
         "type": "boolean",
         "required": false,

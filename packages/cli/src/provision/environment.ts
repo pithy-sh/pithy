@@ -12,7 +12,7 @@ import type { BindingNaming, ProvisionScope, ProvisionWorkerNames } from "@pithy
 import { workflowHostName } from "@pithy-sh/core/src/workflow/naming";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { hostWorkerFor } from "../capabilities/hostRegistry";
-import { composedManifests, type ManifestFault } from "../capabilities/manifests";
+import { composedManifests, type ManifestFault, manifestFaultKey } from "../capabilities/manifests";
 import type { MintedSecret } from "../capabilities/mintSecrets";
 import { type BindingDecline, type BindingDeclines, honoredNames, workerDeclines } from "../capabilities/reconcile";
 import { type ProvisionableBinding, provisionableBindings, serviceBindings } from "../feature/bindings";
@@ -40,8 +40,8 @@ import { applyProvisionedEnv, type ServiceEntry } from "./wranglerEnv";
  * **Standing up one environment's own Cloudflare resources — for any environment a project has.**
  *
  * This was written for ephemeral feature environments and was never generalized, which is the single
- * cause of three reported defects: a declared `staging` got no resources at all (#240), a feature got
- * every resource except its secrets (#239), and a deployed Worker got no Secrets Store bindings (#238).
+ * cause of three reported defects: a declared `staging` got no resources at all, a feature got
+ * every resource except its secrets, and a deployed Worker got no Secrets Store bindings.
  * The machinery was always general — it resolves the Worker set, provisions one resource per binding
  * name, writes ids into each Worker's own config, then migrates and seeds. Only the *namer* was
  * feature-shaped, and only the command surface was missing.
@@ -58,7 +58,7 @@ import { applyProvisionedEnv, type ServiceEntry } from "./wranglerEnv";
 /**
  * A migrate/seed seam so provisioning's orchestration is testable without a live backend.
  *
- * `mintedThisRun` reaches the seed alone (#660): a migration has no fixtures and asks for nothing. It is
+ * `mintedThisRun` reaches the seed alone: a migration has no fixtures and asks for nothing. It is
  * what this run created a few steps earlier and is about to lose — see {@link MintedThisRun} — and it is
  * on the arguments rather than closed over so that a caller substituting the seam is handed it too.
  */
@@ -70,7 +70,7 @@ export type BackendRunner = (args: { env: string; projectDir: string; mintedThis
 export const defaultMigrate: BackendRunner = async ({ env, projectDir }) => {
   // One config load, two facts, both from the project's own root config: the project the brand-new D1 is
   // stamped for, and the account it is created and migrated in. A provisioned environment is remote by
-  // definition, so this is the account that decides *whose tenant* the schema lands in (#234).
+  // definition, so this is the account that decides *whose tenant* the schema lands in.
   const config = await loadProject(projectDir);
   await migrateProject({
     env,
@@ -92,7 +92,7 @@ const defaultSeed: BackendRunner = async ({ env, projectDir, mintedThisRun }) =>
     account: loadProjectCloudflare(config) ?? null,
     yes: true,
     json: true,
-    // What this run minted, handed to every prepared set as `context.mintedThisRun` (#660). Absent when
+    // What this run minted, handed to every prepared set as `context.mintedThisRun`. Absent when
     // nothing was minted, which is a re-run and every caller that provisions no secrets.
     ...(mintedThisRun ? { mintedThisRun } : {}),
   });
@@ -117,7 +117,7 @@ export interface ProvisionRecord {
 /**
  * What a {@link ProvisionRecord} holds: the resources a run created, and the Worker scripts it named.
  *
- * **Scripts beside resources, because teardown deletes what the record lists (#592).** A script was the
+ * **Scripts beside resources, because teardown deletes what the record lists.** A script was the
  * one thing a feature put on the account that the record had no field for, so nothing ever deleted one:
  * every `pithy feature destroy` left its Workers deployed, bound to databases it had just removed.
  * Provisioning does not upload a script, but it writes the name the deploy uploads under, so the name is
@@ -141,7 +141,7 @@ export interface ProvisionRecorded {
  * parse is neither "declines nothing" nor a crash. The distinction is load-bearing here rather than
  * merely tidy — an unreadable block resolves to an empty set, so **every declined resource is created**,
  * and a run that printed no decline line for it would be indistinguishable from a project that declines
- * nothing. One typo is enough (#514).
+ * nothing. One typo is enough.
  */
 export type ProvisionedDeclines =
   /** The declaration parsed, and carries at least one entry. */
@@ -152,10 +152,8 @@ export type ProvisionedDeclines =
 /**
  * One `declinedBindings` entry, as this run resolved it — the same four states {@link BindingDecline} has.
  *
- * **Every entry, not the honored ones alone.** The honored-only version shipped first, on the argument
- * that a refused or stale decline "changes nothing about what this run provisioned, and a command reports
- * what it did". That argument is the one #514 rejected for the `invalid` state, and it is no better here:
- * the likeliest typo in a decline is in the **binding name**, which resolves `unrecognized`, and a run
+ * **Every entry, not the honored ones alone.** The likeliest typo in a decline is in the **binding name**, which
+ * resolves `unrecognized`, and a run
  * that says nothing about it is byte-identical to a project that declines nothing — the exact failure the
  * report exists to remove, reached by a shorter path than a malformed block. So all four states come out.
  * Only `honored` is a skip; the other three say, in the run that read them, that nothing was left out.
@@ -205,13 +203,11 @@ export type ProvisionedDecline =
     };
 
 /**
- * **One resource reaching, then leaving, the work loop — the run narrating itself (#515).**
+ * **One resource reaching, then leaving, the work loop — the run narrating itself.**
  *
- * Provisioning creates real account resources over a network, one find-or-create per binding, and until
- * this it said nothing until every one of them had settled. A run against a slow account was
- * indistinguishable from a hung one, which is how an operator comes to interrupt a command that was
- * working — and `provision` is idempotent, so the cost was never a broken account, only a run nobody
- * trusted enough to leave alone.
+ * Provisioning creates real account resources over a network, one find-or-create per binding. A silent
+ * run against a slow account is indistinguishable from a hung one, which is how an operator comes to
+ * interrupt a command that was working.
  *
  * Two phases rather than one, because the pair is what an interrupted run is read back from: the last
  * `start` with no `settled` after it names the resource that was in flight.
@@ -246,7 +242,7 @@ export interface ProvisionedResource extends FeatureResource {
 /**
  * The structured outcome of a provisioning run — the `--json` payload and the human summary source.
  *
- * **No `migrated`/`seeded` pair, for the reason `CreateReport` states (#231).** Both were literal `true`s
+ * **No `migrated`/`seeded` pair, for the reason `CreateReport` states.** Both were literal `true`s
  * beside the two `await`s that ran the steps, and both steps throw, so the report's own existence already
  * carried the fact. A constant is not a field.
  */
@@ -264,10 +260,9 @@ export interface ProvisionReport {
   /**
    * **What each Worker's `declinedBindings` cost it — one entry per Worker with something to say.**
    *
-   * A decline is the one input to this command that removes work, and it was the one thing the run said
-   * nothing about (#514). A resource that was not created leaves no trace: the report listed what it made,
-   * so a decline read correctly and a decline dropped on the floor produced byte-identical output, and
-   * the only way to tell them apart was to go and look at the account. Reporting the skip is what makes
+   * A decline is the one input to this command that removes work, and a resource that was not created
+   * leaves no trace: a report listing only what it made says the same about a decline read correctly and
+   * one dropped on the floor. Reporting the skip is what makes
    * the declaration observable from the run that honored it.
    *
    * Empty for a project that declines nothing, which is most of them.
@@ -277,7 +272,7 @@ export interface ProvisionReport {
    * **Installed packages whose `pithy.manifest.json` is present and unusable.**
    *
    * The same fact `pithy add --list`, `pithy upgrade` and `pithy doctor` each report, in the one command
-   * that creates infrastructure and the one where it had never been said (#184). What it costs here is
+   * that creates infrastructure and the one where it had never been said. What it costs here is
    * not a missing resource but a wrong one: a manifest nobody could read declares no `scope` and no
    * `resource`, so a project-global database is created under a per-environment name and the run reports
    * success — see {@link ProvisionTargets.manifestFaults} for both halves of that.
@@ -303,25 +298,25 @@ export interface ProvisionReport {
    */
   committed: boolean;
   /**
-   * **A feature's own `d1` secrets, created by the feature's own secrets manager (#643)** — the same
+   * **A feature's own `d1` secrets, created by the feature's own secrets manager** — the same
    * `mintDeclaredSecrets` pass `pithy secrets provision` runs for a declared environment, against the manager
    * provisioning just deployed for the feature. Present only on a feature run that minted through one. Names,
    * never a value.
    */
   featureSecrets?: MintedSecret[];
   /**
-   * **The kit Workers a feature run stood up for itself (#643)** — every host its capabilities own, one row each,
+   * **The kit Workers a feature run stood up for itself** — every host its capabilities own, one row each,
    * as `pithy deploy` reports them. Present only on a feature run that deployed hosts.
    */
   hosts?: KitWorkerDeploy[];
   /**
-   * **Route patterns a feature's stanzas gave up (#643)** — declared under a tracked `env.feature`, or inherited
+   * **Route patterns a feature's stanzas gave up** — declared under a tracked `env.feature`, or inherited
    * from the top level. A feature answers on its own `workers.dev` address only, so they are stripped, and said
    * so. One entry per Worker that had any; absent on a run that stripped nothing.
    */
   routesDropped?: { worker: string; routes: string[] }[];
   /**
-   * **Bindings a feature's stanza gave up (#650 review)** — a `durable_objects` or `services` entry naming a
+   * **Bindings a feature's stanza gave up** — a `durable_objects` or `services` entry naming a
    * script this project does not own. A feature has no copy of that Worker to point at, and writing the entry
    * verbatim would bind a stranger's live namespace, so it is stripped exactly as a route is and the run says
    * so. One entry per Worker that had any; absent on a run that stripped none.
@@ -343,7 +338,7 @@ export interface ProvisionedConfig {
 export interface ProvisionedSecret {
   /** The secret's registry key — what `pithy secrets create` and the registry are keyed by. */
   secret: string;
-  /** The Worker binding it is read through: the key in SCREAMING_SNAKE_CASE (#603). */
+  /** The Worker binding it is read through: the key in SCREAMING_SNAKE_CASE. */
   binding: string;
   /** The store entry it resolves to in this environment. */
   entry: string;
@@ -354,7 +349,7 @@ export interface ProvisionedSecret {
    */
   bound: boolean;
   /**
-   * True when **this run** created the value, because the registry declared it may be minted (#321).
+   * True when **this run** created the value, because the registry declared it may be minted.
    *
    * Reported for the same reason a created resource is distinguished from an adopted one: a run that
    * generated a key-encryption key did something an operator needs to be able to see in the log, and a
@@ -378,7 +373,7 @@ export interface ProvisionWorker {
   /**
    * That Worker's own `pithy.config.ts`. Two fields are read from it: `declinedBindings` — a binding this
    * Worker declines gets no resource created for it, because the decline said the resource is not wanted —
-   * and `app`, the capability whose Workflows a feature's stanza is derived from (#650). Optional: the
+   * and `app`, the capability whose Workflows a feature's stanza is derived from. Optional: the
    * resolver is a seam, and a caller with no config to give is a Worker declining nothing and declaring no
    * jobs.
    */
@@ -428,7 +423,7 @@ export interface ProvisionEnvironmentOptions {
   /** Seed runner seam (default: `seedProject`). */
   seed?: BackendRunner;
   /**
-   * What this run minted, forwarded to the seed step and to nothing else (#660).
+   * What this run minted, forwarded to the seed step and to nothing else.
    *
    * The caller owns it because the caller builds `secretBindings`, and the minter inside it is what
    * fills it. Two things read the same record and neither derives it: the minter writes, the seed reads.
@@ -439,7 +434,7 @@ export interface ProvisionEnvironmentOptions {
   /**
    * Look up the account's `workers.dev` subdomain — the seam over `CloudflareWorkersManager.accountSubdomain()`.
    * Asked at most once a run, and only for a scope whose config is generated (a feature): its answer is how a
-   * feature's stanza gets the `vars.BASE_URL` its Worker reads (#643). Omitted, nothing is stamped.
+   * feature's stanza gets the `vars.BASE_URL` its Worker reads. Omitted, nothing is stamped.
    */
   workersSubdomain?: () => Promise<string | null>;
   /**
@@ -475,10 +470,9 @@ export interface ProvisionEnvironmentOptions {
  * name — read off the resolved Worker **once, here, for every writer.**
  *
  * Two computations need them: the service targets and report below ({@link scopedWorkerNames}) and the
- * stanza `name` the deploy reads (`applyProvisionedEnv`). Each used to be handed `worker.name` on its own,
- * which is how a feature Worker came to carry the project twice (#587) — and a fix at either one alone
- * would have split the address a sibling calls from the address the Worker deploys under. Both reach the
- * scope through this function, so they cannot be handed different names.
+ * stanza `name` the deploy reads (`applyProvisionedEnv`). Handed `worker.name` separately, the two could
+ * split the address a sibling calls from the address the Worker deploys under. Both reach the scope
+ * through this function, so they cannot be handed different names.
  */
 export function provisionWorkerNames(worker: Pick<ProvisionWorker, "name" | "dir">): ProvisionWorkerNames {
   return { app: basename(worker.dir), script: worker.name };
@@ -487,7 +481,7 @@ export function provisionWorkerNames(worker: Pick<ProvisionWorker, "name" | "dir
 /**
  * The real worker resolver: every Worker under `apps/`, each with its own capabilities loaded from its
  * `apps/<name>/pithy.config.ts` — composed for the environment being provisioned, which is the one whose
- * resources, bindings and migrations this run writes (#595).
+ * resources, bindings and migrations this run writes.
  */
 export const defaultResolveWorkers = async (projectDir: string, environment: string): Promise<ProvisionWorker[]> =>
   (await resolveWorkersFor(environment, { projectDir })).map((worker) => ({
@@ -500,7 +494,7 @@ export const defaultResolveWorkers = async (projectDir: string, environment: str
 /**
  * **The Worker of this project that deploys under this script name**, or `undefined` when no Worker does.
  *
- * **By deploy name only, and that is the whole of it (#650 review).** A `durable_objects` `script_name` and a
+ * **By deploy name only, and that is the whole of it.** A `durable_objects` `script_name` and a
  * hand-written `services` `service` are both *script* names — what wrangler uploads under — never an
  * `apps/<name>` directory. Matching a directory here read `script_name: "realtime"`, another team's live Worker,
  * as this project's `apps/realtime`, and silently retargeted a branch at it; and a single pass over a match that
@@ -555,7 +549,7 @@ function resolveServiceTarget(workers: readonly ProvisionWorker[], target: strin
  * The script name each Worker deploys under **in this scope**, keyed by the name the Worker set reports.
  *
  * Built once per run, from each Worker's own `wrangler.jsonc`, because a service binding has to name the
- * script the callee actually deploys under and since #580 a scaffolded Worker declares that name itself
+ * script the callee actually deploys under, and a scaffolded Worker declares that name itself
  * (`env.<name>.name`, `<project>-<env>-<worker>`). Composing wrangler's `<name>-<env>` suffix for a
  * callee that declares something else writes a binding pointing at a script nobody deploys: RPC through
  * it fails at runtime while provisioning reports success — the same class of silent miss
@@ -565,8 +559,7 @@ function resolveServiceTarget(workers: readonly ProvisionWorker[], target: strin
  * scope ignores it, because a feature's name is recomputed on teardown.
  *
  * Never throws. A Worker whose config will not parse — or a test double pointing at a directory with no
- * config at all — falls back to the scope's composed name, which is exactly what this returned before the
- * declared name existed.
+ * config at all — falls back to the scope's composed name.
  */
 async function scopedWorkerNames(
   workers: readonly ProvisionWorker[],
@@ -601,7 +594,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   const workers = await (options.resolveWorkers
     ? options.resolveWorkers(options.projectDir)
     : defaultResolveWorkers(options.projectDir, scope.stanza));
-  // **No Worker may declare a rate-limit namespace in the feature range, for any environment (#643)** — checked
+  // **No Worker may declare a rate-limit namespace in the feature range, for any environment** — checked
   // before a resource is created. A feature of any project in the account can be allocated one.
   assertNoDeclaredFeatureIds(await Promise.all(workers.map(readWorkerRatelimits)));
   // Before a resource is created, too: a field key nothing rotates is refused, never minted.
@@ -613,21 +606,21 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
     scope,
   });
   // Where each Worker lands in this scope, resolved once. Every `service` binding below and the report's
-  // own worker list read it, so the three can never disagree about one Worker's address (#580).
+  // own worker list read it, so the three can never disagree about one Worker's address.
   const scopedNames = await scopedWorkerNames(workers, scope);
   const scopedName = (worker: string): string => {
     const name = scopedNames.get(worker);
     if (name !== undefined) return name;
     // Unreachable while every caller passes a name out of `workers`, which is the set the map was built
     // from. Composing a name here instead would be a third computation of the address — with only one of
-    // the two names a scope needs, which is the shape #587 removed.
+    // the two names a scope needs.
     throw new InternalError({
       message: "A Worker's scoped name could not be resolved.",
       detail: `scopedName was asked for "${worker}", which is not one of this run's resolved Workers: ${[...scopedNames.keys()].join(", ")}.`,
     });
   };
   // A service target is an `apps/` Worker, at this scope's copy of it, or a kit Worker, at the host this scope
-  // deploys (#617). An app Worker cannot take a host's name (`assertWorkerName`), so the two never collide.
+  // deploys. An app Worker cannot take a host's name (`assertWorkerName`), so the two never collide.
   const serviceScript = (target: string): string =>
     hostWorkerFor(target)
       ? workflowHostName({ ...scope.workflowHost, capability: target })
@@ -640,7 +633,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   const recorded: ProvisionRecorded = options.record ? await options.record.load() : { resources: [], scripts: [] };
   const byBinding = new Map(recorded.resources.map((resource) => [`${resource.kind}:${resource.binding}`, resource]));
   // Every script this run names, over every script an earlier run named: a Worker removed from the branch
-  // since may still be deployed, and the record is the only place teardown can learn its name (#592).
+  // since may still be deployed, and the record is the only place teardown can learn its name.
   const byScript = new Map(recorded.scripts.map((script) => [script.name, script]));
   for (const worker of workers) {
     const name = scopedName(worker.name);
@@ -685,7 +678,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   }
 
   // The script names, recorded before the first config that carries one is written. A run with no
-  // resource to create has saved nothing yet, and a deployable name must never exist unrecorded (#592).
+  // resource to create has saved nothing yet, and a deployable name must never exist unrecorded.
   await persist();
 
   // Write the ids, the scoped script name, and the service targets into **each Worker's own**
@@ -748,14 +741,14 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
       // out of the `name` it writes in the same edit — see `applyProvisionedEnv` for why it is not one
       // more thing composed here.
       administersItself: options.administersItself,
-      // **This Worker's own app capability, so a feature's stanza binds the Workflows it declares (#650).**
+      // **This Worker's own app capability, so a feature's stanza binds the Workflows it declares.**
       // Off the Worker's own `pithy.config.ts`, never inferred from the capability list: `allCapabilities`
       // appends the app to the libraries and the array cannot say which one it was, so a guess here would
       // name somebody else's jobs. A Worker declaring no `app` passes nothing and writes nothing.
       ...(worker.config?.app ? { app: worker.config.app } : {}),
       ...(subdomain !== undefined ? { subdomain } : {}),
       // Deploy name to this scope's script name, handed to the writer so a `durable_objects` or hand-written
-      // `services` entry naming a sibling Worker reaches this scope's copy of it (#650 review).
+      // `services` entry naming a sibling Worker reaches this scope's copy of it.
       scopedScript: (script) => {
         const found = findWorkerByScript(workers, script);
         return found ? scopedName(found.name) : undefined;
@@ -769,7 +762,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
       })),
     });
     // The path the writer wrote, taken from the writer — never recomputed here. A report that names one
-    // file while another was edited is the failure the report exists to prevent (#251).
+    // file while another was edited is the failure the report exists to prevent.
     configs.push({ worker: worker.name, path: relative(options.projectDir, destination), ids: written.length });
   }
 
@@ -779,7 +772,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   // this run just wrote the environment's binding ids into.
   await migrate({ env: scope.stanza, projectDir: options.projectDir });
   if (options.seedData) {
-    // **The one arrangement in which a fixture can seal (#660).** The bindings above minted each absent
+    // **The one arrangement in which a fixture can seal.** The bindings above minted each absent
     // `cf-secrets-store` secret and wrote it into a store nothing can read back; this seed runs in the
     // same process, holding what that write created. Nothing is passed when nothing was created.
     await seed({
@@ -809,11 +802,9 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
 /**
  * One resource this run will find-or-create: the binding it backs, and what it is called here.
  *
- * **The name is composed once, by {@link provisionTargets}, and read by everyone else.** It used to be
- * composed twice — once for the plan the operator agrees to and once in the loop that does the work —
- * from one pure function, which was safe only for as long as the name depended on nothing but the
- * binding. #513 ends that: a name now depends on what the *manifest* says about the resource, which is a
- * read of `node_modules`, and two reads are two chances to see different files.
+ * **The name is composed once, by {@link provisionTargets}, and read by everyone else** — the plan the
+ * operator agrees to and the loop that does the work alike. A name depends on what the *manifest* says
+ * about the resource, which is a read of `node_modules`, and two reads are two chances to see different files.
  */
 export interface ProvisionTarget extends ProvisionableBinding {
   /** The Cloudflare name, composed from the scope and the binding's declared naming. */
@@ -838,20 +829,19 @@ export interface ProvisionTargets {
   wantedPerWorker: Map<string, Set<string>>;
   /**
    * **Installed packages whose `pithy.manifest.json` is present and unusable — carried, because a run
-   * shaped by manifests must say which ones it could not read (#184, #513 review).**
+   * shaped by manifests must say which ones it could not read.**
    *
-   * This read `composedManifests` for the manifests and dropped the faults on the floor, and the run
-   * carried on around the hole rather than failing at it — which is worse than a missing resource,
-   * because both things a manifest decides here go **silently wrong** rather than absent:
+   * A run that dropped them would carry on around the hole, and both things a manifest decides here would
+   * go **silently wrong** rather than absent:
    *
-   * - **The name.** Since #513, `scope` and `resource` come out of these files. A manifest nobody could
-   *   read declares neither, so a project-global resource is composed `<project>-<env>-<binding>` — the
-   *   split #513 exists to remove, reintroduced by a file that would not parse, with the run reporting
-   *   success. The disagreement refusals below cannot see it either: a declaration nobody read collides
+   * - **The name.** `scope` and `resource` come out of these files. A manifest nobody could read declares
+   *   neither, so a project-global resource would be composed `<project>-<env>-<binding>`, per environment,
+   *   with the run reporting success. The disagreement refusals below cannot see it either: a declaration nobody
+   * read collides
    *   with nothing.
    * - **The declines.** `workerDeclines` resolves a `declinedBindings` entry against these manifests, so
    *   one that will not parse turns an honored decline into `unrecognized` — the resource is created and
-   *   the binding written back into the file the adopter removed it from (#440, #514).
+   *   the binding written back into the file the adopter removed it from.
    *
    * Reported rather than refused, on `availableManifests`' own standard: one broken package must not take
    * the other fifteen capabilities' provisioning with it. Empty on a healthy install.
@@ -860,7 +850,7 @@ export interface ProvisionTargets {
 }
 
 /**
- * **The one answer to "what will this run touch", for the run and for the plan it prints (#515).**
+ * **The one answer to "what will this run touch", for the run and for the plan it prints.**
  *
  * `pithy provision` prints a plan before it asks an operator to agree to real Cloudflare resources, and a
  * plan is only worth printing if it cannot drift from the work: a plan computed from
@@ -884,13 +874,12 @@ export async function provisionTargets(options: {
   // provisions one resource per binding *name* — that is how two Workers share a database — so a binding
   // is skipped only when every Worker that declares it declines it. Resolved through the reconcile
   // engine's own rule so `pithy upgrade` and `pithy provision` cannot come to mean two different things
-  // by "declined" (#440).
+  // by "declined".
   //
-  // **Per Worker, from that Worker's own `node_modules` as well as the root's (#507).** This read the root
-  // alone, which is where the fix for #440 stopped short: a capability declared only on the Worker
-  // composing it — the shape the kit tells adopters to adopt — installs under `apps/<name>/node_modules`,
-  // so the root scan found no manifest, the decline resolved as `unrecognized`, and provisioning created
-  // the resource and wrote the binding back into a file the adopter had removed it from (#514). The two
+  // **Per Worker, from that Worker's own `node_modules` as well as the root's.** A capability declared
+  // only on the Worker composing it — the shape the kit tells adopters to adopt — installs under
+  // `apps/<name>/node_modules`, where a root-only scan finds no manifest and resolves the decline as
+  // `unrecognized`, creating the resource the adopter declined. The two
   // manifest sets are not merged into one list: two Workers may pin a capability differently, and
   // resolving each Worker against what *it* loads is the point.
   //
@@ -900,8 +889,8 @@ export async function provisionTargets(options: {
   // does the opposite: it decides what to create from the **composed instances**, and a fork is composed,
   // so its `r2 SUPPORT_BUCKET` is created and written into the stanza like any other binding. Dropping the
   // fork's manifest from this resolution resolves the decline as `unrecognized`, creates the bucket, and
-  // writes the binding back into the file the adopter had removed it from — #440 again, for the one
-  // capability whose code the adopter owns, and silently, because an unrecognized decline is not a skip.
+  // writes the binding back into the file the adopter had removed it from, silently, because an
+  // unrecognized decline is not a skip.
   //
   // A fork that has drifted from its manifest is already covered without it: `resolveDeclines` refuses a
   // decline the composed *instance* declares non-optionally, so a fork that made the binding required
@@ -911,20 +900,23 @@ export async function provisionTargets(options: {
   // Every Worker's manifests, kept rather than dropped: they are also where a binding's `scope` and
   // `resource` are declared, and re-reading `node_modules` a second time to ask is a second answer.
   const declared: BindingDeclaration[] = [];
-  // Deduped by package, because manifests resolve per Worker from two directories and every Worker in a
-  // project sees the root's copy: a project with three Workers and one broken package must say it once.
+  // Deduped by package and file, because manifests resolve per Worker from two directories and every Worker in a
+  // project sees the root's copy: a project with three Workers and one broken manifest must say it once.
   const faults = new Map<string, ManifestFault>();
   for (const worker of workers) {
     const { manifests, faults: workerFaults } = await composedManifests(options.projectDir, worker.dir);
     declared.push(...manifests);
-    // **And the Worker's own app, which declares bindings and ships no manifest (#662).** Its composed instance
+    // **And the Worker's own app, which declares bindings and ships no manifest.** Its composed instance
     // is the declaration, so a `scope: "global"` or `resource:` on an app binding names the resource exactly as
     // it would on a capability's. A manifest of the same name is the capability's, and wins.
     const app = worker.config?.app;
     if (app !== undefined && !manifests.some((manifest) => manifest.name === app.name)) {
       declared.push({ name: app.name, requiredBindings: app.requiredBindings });
     }
-    for (const fault of workerFaults) if (!faults.has(fault.package)) faults.set(fault.package, fault);
+    for (const fault of workerFaults) {
+      const key = manifestFaultKey(fault);
+      if (!faults.has(key)) faults.set(key, fault);
+    }
     const resolved = workerDeclines({ manifests, capabilities: worker.capabilities, workerConfig: worker.config });
     declines.push({ worker, resolved });
     declinedPerWorker.set(worker.name, honoredNames(resolved));
@@ -957,7 +949,7 @@ export async function provisionTargets(options: {
   const bindings = wanted.map(({ binding, kind }) => {
     // A binding nothing declares keeps the generic name it has always had: a fork whose manifest was removed.
     // That is not a missing declaration; it is "nothing to say", which is `{}`. The app's own bindings are
-    // declared — by its composed instance, above (#662).
+    // declared — by its composed instance, above.
     const declared = namings.get(binding);
     const declaredNaming = declared?.naming ?? {};
     return {
@@ -975,7 +967,7 @@ export async function provisionTargets(options: {
   return { bindings, declines, wantedPerWorker, manifestFaults: [...faults.values()] };
 }
 
-/** Who declares a set of bindings: a capability's manifest, or a Worker's own app, which has none (#662). */
+/** Who declares a set of bindings: a capability's manifest, or a Worker's own app, which has none. */
 type BindingDeclaration = Pick<CapabilityManifest, "name" | "requiredBindings">;
 
 /** One binding's declared naming, and who declared it — everything a refusal below needs to name. */
@@ -990,14 +982,14 @@ interface DeclaredNaming {
 
 /**
  * **What each binding's resource is called, from the manifests — and the two things that must be true
- * before a run creates anything (#513).**
+ * before a run creates anything.**
  *
  * An environment provisions **one resource per binding name**: that is how two Workers share a database,
  * and it is what makes the binding name the resource's identity. `scope` and `resource` are the first
  * fields that can break that identity from either end, so both ends are checked here, once, before the
  * first Cloudflare call — a refusal after the third resource is created is a half-provisioned account.
  *
- * The manifests are the source — and the Worker's own app, whose composed instance is its declaration (#662) —
+ * The manifests are the source — and the Worker's own app, whose composed instance is its declaration —
  * and only for capabilities this environment actually composes.
  * Something installed under `node_modules` that no Worker composes declares nothing about this run, and a
  * binding no Worker will provision cannot collide with one that will — so a project is never refused for
@@ -1114,7 +1106,7 @@ function reportedDecline(
     //
     // `stillPresentIn` is deliberately not mirrored here: `resolveDeclines` fills it from stanzas, and
     // this call passes none. What an earlier run left behind is a separate fact, and the human line says
-    // "not created by this run" rather than pretending to know the account (#514 review).
+    // "not created by this run" rather than pretending to know the account.
     wantedBy: [...wantedPerWorker].filter(([other, wanted]) => other !== worker && wanted.has(name)).map(([o]) => o),
   };
 }

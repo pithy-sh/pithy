@@ -47,16 +47,12 @@ import { buildDoctorReport, type DoctorReportOptions, renderDoctorJson, renderDo
  * reason: the suite that says what the renderer prints and the pin that says the doc prints the same thing
  * must start from one report builder, or the pin drifts from the behavior it is quoting.
  *
- * The page was `docs/CLI.md` §5.6 until #223 split the reference one page per command. Nothing about the
- * pins changed with it: they were always scoped to one section's fenced blocks, and a page is a section
- * with a file around it.
+ * The pins are scoped to one page's fenced blocks.
  *
  * ## Why pinning the transcripts is not enough on its own
  *
  * A transcript pin holds the examples that exist. It says nothing about a block, or a `--json` field, that
- * no example happens to show — so `doctor`'s `manifests:` block and `add`/`upgrade`'s `manifestFaults`
- * field both landed undocumented with every pin green, within a week of each other (#184, #186). The pins
- * were never wrong; they were answering a narrower question than the one anyone was asking of them.
+ * no example happens to show: a whole block or field can land undocumented with every pin green.
  *
  * So the gates below ask the wider one, each derived from the code rather than from a list kept here:
  *
@@ -67,14 +63,12 @@ import { buildDoctorReport, type DoctorReportOptions, renderDoctorJson, renderDo
  *   whole contract, and a new field fails the comparison.
  * - **A command page that specifies `--json` specifies it completely.** One page per command, one command
  *   module per page: the page's name picks the source, and the source decides the keys.
- * - **Every command has a page.** The ratchet #186 could not express, closed by #223.
+ * - **Every command has a page.**
  *
- * **Enrollment is what triggers the third one, and that is deliberate.** #186 enrolled a section by having it
- * mention a command; #223 enrolls a command by giving it a page, which is the same property with a filename
- * instead of a sentence. A page that half-describes a payload is how an adopter learns three fields of five
+ * **Enrollment is what triggers the third one, and that is deliberate.** A command is enrolled by having a
+ * page. A page that half-describes a payload is how an adopter learns three fields of five
  * and discovers the rest from a stack trace, so partial is the state worth failing — while a command with no
- * page at all is not failed by this gate, and was not, right up until the last page landed. The backlog
- * shrank as pages did.
+ * page at all is the fourth gate's to fail.
  *
  * ## What the scan cannot read, named rather than implied
  *
@@ -118,7 +112,7 @@ const WHAT_IT_DOES = section(PAGE, "## What it does", WHERE);
 const JSON_SECTION = section(PAGE, "## `--json`", WHERE);
 const EXAMPLES = section(PAGE, "## Examples", WHERE);
 /**
- * The section the `shared:` remedy sends an operator to by name (#513 review).
+ * The section the `shared:` remedy sends an operator to by name.
  *
  * The terminal prints the URL this page renders at instead of a `wrangler` pair, because the pair it used
  * to print defaulted to the local database and, with `--remote`, aborted having copied nothing. A pointer
@@ -198,7 +192,7 @@ function docOptions(options: DoctorReportOptions): DoctorReportOptions {
     }),
     // Its neighbor, and stubbed for the same reason: the doc transcript pins one path, and the real
     // check resolves it from a `pithy.config.ts` this harness has none of. Present, because the line
-    // prints on every run whether or not there is a file — that is the whole point of it (#156).
+    // prints on every run whether or not there is a file — that is the whole point of it.
     checkDevSecretsFile: async () => ({
       path: join(harness.dir, ".config", "pithy", "acme", "secrets.jsonc"),
       present: true,
@@ -209,7 +203,7 @@ function docOptions(options: DoctorReportOptions): DoctorReportOptions {
     // own registry, which would put whichever checkouts the suite happens to run beside into the document.
     //
     // Five rows, because the page has to show all five kinds: two of this checkout's own, unqualified; one
-    // of its own that no worktree holds any more, which `pithy feature prune` frees (#637); a second
+    // of its own that no worktree holds any more, which `pithy feature prune` frees; a second
     // checkout named by path, which is the answer to who took the ports you cannot have; and a root the
     // registry still holds that is gone from disk.
     checkPortsRegistry: async () => ({
@@ -280,20 +274,11 @@ describe("docs/commands/doctor.md", () => {
     // An unclassified block, a fourth transcript, or a second sample would be an unpinned example. The
     // page total counts the synopsis too, so a worked example added anywhere lands in one of these.
     //
-    // Sixteen since #513 added the `shared:` fragment — a project-global resource its Workers do not all
-    // point at, which is the first finding here that belongs to no single Worker but the manifest read.
-    // Seventeen since its review split that section's two shapes apart: a stale *name* and two live *ids*
-    // are two different jobs, and the second's remedy was a line naming one string as both its source and
-    // its destination. Each shape prints its own block, so each has to be pinned against its own report.
-    // Eighteen since #533's follow-on added the `capabilities:` fragment — a capability the project
-    // composes that the CLI cannot resolve, which is the third finding here belonging to no single Worker.
-    // It sits between the other two because that is where it prints, and because it explains them: a
-    // capability the root cannot resolve has no manifest in the root scan and contributes no drift below.
-    // Nineteen since #539 gave that same section its second finding — one capability two Workers hold at
-    // two versions, which is `shared:`'s sentence about a package rather than about a resource, and the
-    // first finding on this page that prints while the exit stays 0.
-    // Twenty since #560 added the `scopes` fragment — a gate no resolver can open, the second finding that
-    // prints while the exit stays 0.
+    // The `shared:` section's two shapes — a stale *name* and two live *ids* — print their own blocks, so
+    // each is pinned against its own report. The `capabilities:` section's two findings likewise: a
+    // capability the project composes that the CLI cannot resolve, and one capability two Workers hold at
+    // two versions, the first finding on this page that prints while the exit stays 0. The `scopes`
+    // fragment, a gate no resolver can open, is the second that prints while the exit stays 0.
     // The `consent` fragment — processing under consent with no consent record — is the third finding that
     // prints while the exit stays 0.
     // The `agents` fragment, an MCP endpoint open to every signed-in user, is the fourth, and the last block of
@@ -302,9 +287,9 @@ describe("docs/commands/doctor.md", () => {
     expect(EXAMPLE_BLOCKS).toHaveLength(2);
     expect(JSON_SAMPLES).toHaveLength(1);
     // The carry-over sequence is prose and shell rather than a rendered report, so it is its own class:
-    // nothing in the CLI prints it, and a pin against the renderer would be a pin against nothing. Four
-    // since #513's third round: the statement rewrite and the `wrangler` commands around it, plus what
-    // wrangler answers when two databases share one name and the `-e <env>` sequence that reaches them.
+    // nothing in the CLI prints it, and a pin against the renderer would be a pin against nothing. Four:
+    // the statement rewrite and the `wrangler` commands around it, plus what wrangler answers when two databases
+    // share one name and the `-e <env>` sequence that reaches them.
     expect(CARRY_BLOCKS).toHaveLength(4);
     expect(fencedBlocks(PAGE)).toHaveLength(
       WHAT_BLOCKS.length + EXAMPLE_BLOCKS.length + JSON_SAMPLES.length + CARRY_BLOCKS.length + 1,
@@ -405,7 +390,7 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
-   * The `migrations` fragment (#282), pinned against a Worker whose ledger records a migration nothing
+   * The `migrations` fragment, pinned against a Worker whose ledger records a migration nothing
    * declares.
    *
    * The half of that check a pending count is blind to, and the reason the page has to show it: an
@@ -436,7 +421,7 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
-   * The unreadable-database fragment (#371), pinned against a Worker one of whose databases would not
+   * The unreadable-database fragment, pinned against a Worker one of whose databases would not
    * answer.
    *
    * The page has to show it because it is the one thing a count cannot say. Before this, an unreachable D1
@@ -467,7 +452,7 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
-   * The entry-export fragment (#428), pinned against a Worker binding a Durable Object whose class its
+   * The entry-export fragment, pinned against a Worker binding a Durable Object whose class its
    * entry does not export.
    *
    * The half of a binding that lives in the adopter's code. `wrangler.jsonc` carries the `class_name` and
@@ -500,7 +485,7 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
-   * The honored-decline fragment (#440), pinned against a Worker declining an optional binding.
+   * The honored-decline fragment, pinned against a Worker declining an optional binding.
    *
    * **The only block on this page produced by a project where every check passes.** That is what makes
    * it worth pasting and what makes it fragile: two gates in the renderer have to hold for it to appear
@@ -538,7 +523,7 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
-   * The stale-decline fragment (#440), pinned against a decline naming a binding nothing composes.
+   * The stale-decline fragment, pinned against a decline naming a binding nothing composes.
    *
    * Pasted because it is the one bad state that stays green, and an adopter meeting it needs to know
    * that: `pithy remove <capability>` produces it, so failing on it would create a red no command could
@@ -565,7 +550,7 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
-   * The generated-value fragment (#499), pinned against a Worker holding a rate limiter the kit would
+   * The generated-value fragment, pinned against a Worker holding a rate limiter the kit would
    * derive differently today.
    *
    * The second block on this page produced by a project where every check passes, and it needs the same
@@ -605,7 +590,7 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
-   * The prereqs fragment (#273), pinned against a Worker composing `auth` with neither peer beside it.
+   * The prereqs fragment, pinned against a Worker composing `auth` with neither peer beside it.
    *
    * The one check in the block that is not drift: `createBackend` refuses to assemble that composition, so
    * the Worker does not start. It is pasted because it is the line that would have caught the defect
@@ -632,7 +617,7 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
-   * The unchecked-Worker fragment (#371), pinned against a project whose `api` plan would not build.
+   * The unchecked-Worker fragment, pinned against a project whose `api` plan would not build.
    *
    * One line and no checks, beside a sibling reporting in full — which is the whole finding. Set on the
    * health structure rather than through a throwing `buildPlan`, for the reason the manifests fragment
@@ -688,7 +673,13 @@ describe("docs/commands/doctor.md", () => {
       capabilityReach: { ok: true, reachable: [], unreachable: [], split: [] },
       manifests: {
         ok: false,
-        faults: [{ package: "@pithy-sh/leaderboard", reason: "configOptions[0].key: not a bare identifier" }],
+        faults: [
+          {
+            package: "@pithy-sh/leaderboard",
+            file: "pithy.manifest.json",
+            reason: "configOptions[0].key: not a bare identifier",
+          },
+        ],
       },
       bindingScope: { ok: true, split: [], divergent: [], partial: false },
     };
@@ -698,7 +689,7 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
-   * The `capabilities:` fragment (#533's follow-on), pinned against a project that composes `payments`
+   * The `capabilities:` fragment, pinned against a project that composes `payments`
    * and keeps `@pithy-sh/payments` under `apps/api/node_modules` alone.
    *
    * Set on the report rather than on disk for the reason the two fragments either side of it are: the
@@ -732,7 +723,7 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
-   * The `capabilities:` section's **second** finding (#539): one capability its Workers hold at two
+   * The `capabilities:` section's **second** finding: one capability its Workers hold at two
    * versions, pinned against a project where `api` and `admin` each keep their own `@pithy-sh/payments`.
    *
    * It is a second block rather than a second reading of the first because it is a different fault with a
@@ -779,7 +770,7 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
-   * The `shared:` fragment (#513), pinned against a project whose stanzas name three different suppression
+   * The `shared:` fragment, pinned against a project whose stanzas name three different suppression
    * databases where `@pithy-sh/email` creates one.
    *
    * Set on the report rather than on disk for the reason the manifest fragment is: `bindingScopeHealth`
@@ -830,7 +821,7 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
-   * The `shared:` section's **other** shape (#513 review), pinned against two stanzas that already carry
+   * The `shared:` section's **other** shape, pinned against two stanzas that already carry
    * the project's name and are bound to two different `database_id`s.
    *
    * It is a second block rather than a second reading of the first because it is a different job. In a
@@ -883,13 +874,10 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
-   * **The pointer resolves, and it is a URL rather than a repository path (#513 review, rounds two and
-   * three).**
+   * **The pointer resolves, and it is a URL rather than a repository path.**
    *
-   * The D1 carry-over prints a link where it used to print a `wrangler` pair, because the pair defaulted
-   * to the local database and, with `--remote`, aborted having copied nothing. Round two made it
-   * `docs/commands/doctor.md §Carrying the data across`, and for everyone who installed the CLI that
-   * pointed at nothing: `packages/cli/package.json` `files` ships `dist`, `src`, `scripts` and
+   * The D1 carry-over prints a link rather than a `wrangler` pair. A repository path would point at
+   * nothing for everyone who installed the CLI: `packages/cli/package.json` `files` ships `dist`, `src`, `scripts` and
    * `templates`, so an `npm pack` carries no `docs/` at all. A path into a directory the adopter does not
    * have is the same defect as a command that does not run, one indirection along — which is why the
    * assertion below reads the manifest rather than trusting the sentence.
@@ -999,7 +987,7 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
-   * The `Alias: unknown` fragment (#210), pinned against a report whose rc file would not open.
+   * The `Alias: unknown` fragment, pinned against a report whose rc file would not open.
    *
    * The third alias state is a sentence about a file, and the document is where an adopter meets it
    * before their machine does. Pinned like every other example here, so it cannot be reworded into a
@@ -1025,7 +1013,7 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
-   * The offline fragment (#218), pinned against a report that refused the network.
+   * The offline fragment, pinned against a report that refused the network.
    *
    * Three of this report's lines change wording in that mode and none of them is reachable by a fixture
    * that merely fails a fetch — "skipped" and "unreachable" are different sentences about different
@@ -1051,7 +1039,7 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
-   * The settings fragment (#411), pinned against a project whose email settings do not work.
+   * The settings fragment, pinned against a project whose email settings do not work.
    *
    * One finding from each tier, because the two are what the block exists to hold apart: the local one is
    * established from the project's own config through the capability's own schema, the account one only
@@ -1123,7 +1111,7 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
-   * The scopes fragment (#560), pinned against a Worker composing a leaderboard and a ledger whose auth has
+   * The scopes fragment, pinned against a Worker composing a leaderboard and a ledger whose auth has
    * no `resolveScopes`.
    *
    * The gates are the real capabilities' own `scopeGates`, never a hand stub. A stub of one gate each passed
@@ -1239,7 +1227,7 @@ describe("docs/commands/doctor.md", () => {
  * A label is a literal opening a line of the report: an optional indent, words, a colon, then a space or
  * the end of the string — `Project health:`, `  manifests:`, `Cloudflare: `. Comments are blanked first,
  * through the shared walk, so prose about a line never passes for the line and no `//` inside a string
- * takes the rest of its line with it (#439). Template literals contribute the chunk before their
+ * takes the rest of its line with it. Template literals contribute the chunk before their
  * first `${`, which is exactly where a fixed label sits and where a computed one does not.
  *
  * Read statically rather than rendered, deliberately: a block only prints in the state that earns it, so
@@ -1271,7 +1259,7 @@ function rendererBlockLabels(source: string): string[] {
  * that treated an empty one as a clean pass would be reporting on a file it could not read.
  *
  * A `provision --json` report is written through `writeProvisionReport({ … }, readiness, rerun)` rather than
- * `formatJsonLine`, so it writes one outcome (#711). Its first argument is the payload literal, and it is a
+ * `formatJsonLine`, so it writes one outcome. Its first argument is the payload literal, and it is a
  * site like any other: moving a report behind the helper must not take its page out of this gate.
  */
 function payloadKeys(source: string): { keys: string[]; spreadSites: number; unparsedSites: number } {
@@ -1308,7 +1296,7 @@ const sourceFor = (command: string): string => readFileSync(join(HERE, `${comman
  * uncovered by that — the sample-versus-payload gate above is stricter than the key scan could ever be.
  *
  * `alias` was here too, for the same reason as `doctor`: it prepared a payload and passed the variable. It
- * writes `formatJsonLine({ command, action, ...payload })` now (#231), so its two leading keys are readable
+ * writes `formatJsonLine({ command, action, ...payload })` now, so its two leading keys are readable
  * and its page is gated on them. The list shrinks as the blind spots do; that is what makes it a ratchet.
  */
 const NO_READABLE_PAYLOAD = ["doctor", "remove"];
@@ -1349,8 +1337,8 @@ const FILE_SUFFIXES = new Set(["json", "jsonc", "ts", "tsx", "md", "toml", "sh",
 
 describe("the docs say what the code emits", () => {
   /**
-   * The gate #184's `manifests:` block walked straight past: three transcripts pinned, all three green,
-   * and a whole block of the report named nowhere in the document that specifies the command.
+   * Transcript pins can all be green with a whole block of the report named nowhere in the document that
+   * specifies the command.
    */
   test("doctor.md names every block label the renderer can print", () => {
     const labels = rendererBlockLabels(readFileSync(join(HERE, "doctor.ts"), "utf8"));
@@ -1369,7 +1357,7 @@ describe("the docs say what the code emits", () => {
     const block = JSON_SAMPLES[0];
     if (block === undefined) throw new Error(`${WHERE} no longer pastes a \`pithy doctor --json\` sample.`);
     const sample: unknown = JSON.parse(block.split("\n").slice(1).join("\n"));
-    // The line as the command writes it, `schemaVersion` included (#697).
+    // The line as the command writes it, `schemaVersion` included.
     const line = await asCommand("doctor", async () => formatJsonLine(renderDoctorJson(report)));
     expect(Object.keys(sample as Record<string, unknown>).sort()).toEqual(
       Object.keys(JSON.parse(line) as Record<string, unknown>).sort(),
@@ -1377,7 +1365,7 @@ describe("the docs say what the code emits", () => {
   });
 
   /**
-   * The payload, held to the schema `pithy schema doctor` publishes (#697): a real report from the harness,
+   * The payload, held to the schema `pithy schema doctor` publishes: a real report from the harness,
    * one from outside any project, and the sample this page pastes — so the published schema, the code and
    * the documented example are one shape.
    */
@@ -1392,7 +1380,7 @@ describe("the docs say what the code emits", () => {
   });
 
   /**
-   * **A field the page documents inside a block is a field the payload still emits** (#517).
+   * **A field the page documents inside a block is a field the payload still emits**.
    *
    * The gate above compares the sample's **top-level** keys, which is where every previous hole in this
    * area was. It says nothing about a key nested inside one — and `devSecrets.bootstrapUnmintable` could
@@ -1453,12 +1441,11 @@ describe("the docs say what the code emits", () => {
   });
 
   /**
-   * The ratchet #186 named and could not close: it enrolled a *section* by having it mention a command, so
-   * a command nobody had written about was free. One page per command makes the enrollment a filename, and a
-   * filename can be required. Every command module has a page, and this is what says so.
+   * One page per command makes the enrollment a filename, and a filename can be required. Every command module
+   * has a page, and this is what says so.
    *
    * A new command therefore lands with its page or fails here, which is the point: the reference is
-   * published, and "we will document it later" is the state that produced #184 and #186 in one week.
+   * published, and "we will document it later" ships undocumented commands.
    */
   test("every command has a page", () => {
     expect(COMMANDS.filter((command) => !existsSync(pageFor(command)))).toEqual([]);
@@ -1477,23 +1464,14 @@ describe("the docs say what the code emits", () => {
     );
     expect(scanned.filter(([, read]) => read.spreadSites > 0).map(([command]) => command)).toEqual(SPREAD_BUILT);
     expect(scanned.filter(([, read]) => read.unparsedSites > 0).map(([command]) => command)).toEqual(UNPARSED_SITES);
-    // 31 since #251: provisioning is one command with two modes, so the two payload spreads that built
-    // one report each are now the one spread `pithy provision` builds for both.
-    // 32 since #380: `pithy feature destroy` builds a second spread for the teardown that failed
-    // partway, which reports what it destroyed before the failure rather than nothing at all.
-    // 33 since #697: `pithy schema` spreads the document it describes the CLI with behind its `command`.
-    // 34 since #697's `--dry-run`: `pithy add` spreads its planned result beside `dryRun: true`, a second
-    // spread next to the add's own, because the plan is the add's result plus the plan rather than a third
-    // payload shape.
-    // 35 since #762: `pithy token forget` spreads the engine's result behind its `command`, as `mint` does.
-    // 36 since #765: `pithy completion` spreads each payload behind its `command` and `action`, as `alias` does.
-    // 37 since #722: `pithy dashboard revoke-trust` spreads its report behind its `command`, as `revoke-key` does.
-    // 40 since #723: `pithy mcp` spreads its connect, update and disconnect reports behind their `command`.
+    // Every spread site the scan finds. `pithy provision` builds one spread for both its modes;
+    // `pithy feature destroy` a second for a teardown that failed partway; `pithy add` spreads its planned
+    // result beside `dryRun: true`, because the plan is the add's result plus the plan rather than a third payload shape.
     expect(scanned.reduce((total, [, read]) => total + read.spreadSites, 0)).toBe(40);
   });
 
   /**
-   * The gate #184's `manifestFaults` walked past, now asked of every page at once.
+   * Every `--json` key, asked of every page at once.
    *
    * The page's name picks the command module; the module decides the keys. So a field added to a payload
    * fails until its page names it, and a page that specifies a payload specifies all of it. Nothing in this
@@ -1520,9 +1498,9 @@ describe("the docs say what the code emits", () => {
 
   /**
    * §5.7 stays in `docs/CLI.md`: it specifies the *distinction* between a CLI update and a capability
-   * update, which is one command's business no more than the flag conventions are. It keeps #186's own
-   * enrollment rule — the section names its own commands, every `pithy <name> … --json` it puts in backticks
-   * — so a payload it half-describes fails here exactly as it did before the split.
+   * update, which is one command's business no more than the flag conventions are. It enrolls by naming:
+   * the section names its own commands, every `pithy <name> … --json` it puts in backticks — so a payload it
+   * half-describes fails here.
    */
   test("docs/CLI.md §5.7 names every --json field of every command it specifies", () => {
     const body = section(CLI_MD, "### 5.7 Project capability updates", "docs/CLI.md");
@@ -1557,8 +1535,8 @@ describe("the docs say what the code emits", () => {
  * the pages that document it, and the declaration is asserted equal to the scan in both directions. A
  * shared name therefore cannot appear silently: it fails until someone writes it down beside the command
  * that already uses it, and that is exactly the moment the comparison nobody was making has to be made.
- * `#231`'s own diagnosis is that *"nobody writes the key list, so nobody compares two"* — this is the key
- * list, kept by the build rather than by anybody's diligence.
+ * Nobody writes a key list, so nobody compares two — this is the key list, kept by the build rather than by
+ * anybody's diligence.
  *
  * What it does not claim: that the meanings agree. It cannot read meaning. It can only make a collision
  * impossible to create without a human reading both — which is the difference between the drift that
@@ -1567,7 +1545,7 @@ describe("the docs say what the code emits", () => {
  * Scoped to **top-level** keys. A nested key is qualified by the object that holds it, so `workers[].name`
  * and `resources[].name` are two fields of two different objects rather than one name with two meanings.
  * The pages are the source, not the sources: a page names every key its command emits, spread-built ones
- * included, and #186's gate above is what holds the pages to the code.
+ * included, and the page gate above is what holds the pages to the code.
  */
 
 /** One markdown table row, split on unescaped pipes, with the leading and trailing empties dropped. */
@@ -1592,7 +1570,7 @@ interface DocumentedKey {
  * return value straight out under `report`, and both pages spell out what that object holds today. Its
  * fields are named bare there — `pages`, `scanned`, `skipped` — because within that table they need no
  * qualification, and reading them as the command's own keys is how `skipped` came to be recorded as a
- * shared name meaning `number` on `payments` and `vector` and `string[]` on `ui` (#235). It never was: the
+ * shared name meaning `number` on `payments` and `vector` and `string[]` on `ui`. It never was: the
  * CLI has exactly one top-level `skipped`, and the other two are fields of an object it does not own and
  * does not validate. The header is what tells the two tables apart, so the scan reads it.
  */
@@ -1622,7 +1600,7 @@ function documentedKeys(markdown: string, where: string): DocumentedKey[] {
  * The type column is written for a reader, so it varies where a reader would not care: `` `boolean` ``
  * and `boolean`, `number | null` and `integer`, `object or null` and `object | null`. Every one of those
  * differences is presentation, and a comparison that tripped on them would be the prose-equality check
- * `#231` refused to build. So the cell is reduced to one of seven words, and **only that word is
+ * this deliberately is not. So the cell is reduced to one of seven words, and **only that word is
  * compared**:
  *
  * - a union of string literals — `"install" | "remove"`, `"npm" | "pnpm"` — is `string`, because a
@@ -1696,16 +1674,16 @@ function sharedKeys(pages: Record<string, string[]>): Record<string, string[]> {
  */
 const SHARED_JSON_KEYS: Record<string, string[]> = {
   // `alias` and `completion` install, remove and report one rc-file block the same way, so the keys that say
-  // which path ran and what it found or changed mean the same thing in both (#765).
+  // which path ran and what it found or changed mean the same thing in both.
   action: ["alias", "completion"],
-  // The Pithy block in `AGENTS.md`: `init` writes it and `upgrade` refreshes it, through one merge (#697).
+  // The Pithy block in `AGENTS.md`: `init` writes it and `upgrade` refreshes it, through one merge.
   agents: ["init", "upgrade"],
   alreadyInstalled: ["alias", "completion"],
   branch: ["dev", "feature"],
   alias: ["alias", "doctor"],
   changed: ["secrets", "ui", "worker"],
   // Every database a data command touched, one entry each: `add` migrates them, `backup` dumps them, `restore`
-  // loads them (#848).
+  // loads them.
   databases: ["add", "backup", "restore"],
   command: [
     "add",
@@ -1746,8 +1724,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   deployedAs: ["add", "ui", "upgrade", "worker"],
   devSecrets: ["doctor", "seed"],
   domains: ["init", "worker"],
-  // The same question on every command that takes `--dry-run`: was anything written. `feature prune` joined in
-  // #637, and #697 put it on every one of them, beside the plan.
+  // The same question on every command that takes `--dry-run`: was anything written. Beside the plan.
   dryRun: [
     "add",
     "deploy",
@@ -1780,32 +1757,32 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "upgrade",
     "vector",
   ],
-  // The one environment a run acted for: `dashboard`'s connection, `contract`'s composition (#719).
+  // The one environment a run acted for: `dashboard`'s connection, `contract`'s composition.
   environment: ["contract", "dashboard"],
   environments: ["doctor", "email", "init", "media", "payments", "secrets", "storage", "support"],
-  // The status a `provision --json` report's run exits with, on the one outcome that run writes (#711).
+  // The status a `provision --json` report's run exits with, on the one outcome that run writes.
   exitCode: ["email", "media", "payments", "storage", "support", "testers"],
   from: ["email", "worker"],
   installed: ["alias", "completion"],
   installedIn: ["alias", "completion"],
   // Three commands whose work is a fan-out with no transaction across it: a run that failed part-way
-  // says what it wrote, and this is the flag that says the report beside it is truncated (#324, #380).
+  // says what it wrote, and this is the flag that says the report beside it is truncated.
   interrupted: ["feature", "migrate", "secrets"],
   manifestFaults: ["add", "provision", "upgrade"],
   manual: ["alias", "completion"],
   name: ["secrets", "token"],
-  // The follow-up a run left required, as `[{ command, why }]`, and absent otherwise — never empty (#697,
-  // `terminal/nextSteps.ts`). One shape on every command that can carry it.
+  // The follow-up a run left required, as `[{ command, why }]`, and absent otherwise — never empty
+  // (`terminal/nextSteps.ts`). One shape on every command that can carry it.
   next: ["add", "deploy", "provision", "setup", "ui", "upgrade"],
   // What a run had to say beyond its result, one sentence each: what `add` finished off-config, what each
-  // `setup` step reported (#764), what `cloudflare connect`'s store id lookup found (#788). All a
+  // `setup` step reported, what `cloudflare connect`'s store id lookup found. All a
   // `string[]`, in order.
   notes: ["add", "cloudflare", "setup"],
   packageManager: ["add", "ui"],
   // A file path in `secrets edit`, and the command path `pithy schema <command>` was asked about. Both a
   // string, and both where the answer is: the file to open, the command the document describes.
   path: ["schema", "secrets"],
-  // What `--dry-run` would change, in the one shape every planning command shares (#697, `plan/plan.ts`).
+  // What `--dry-run` would change, in the one shape every planning command shares.
   plan: [
     "add",
     "deploy",
@@ -1832,7 +1809,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   revoked: ["cloudflare", "dashboard"],
   routing: ["email", "support"],
   runs: ["vector", "worker"],
-  // On every payload, `doctor`'s included: the version of the payload's shape, stamped by the formatter (#697).
+  // On every payload, `doctor`'s included: the version of the payload's shape, stamped by the formatter.
   schemaVersion: [
     "add",
     "alias",
@@ -1876,13 +1853,13 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   secretBindings: ["doctor", "provision"],
   shell: ["alias", "completion", "doctor"],
   // The environments a capability provisioning run created nothing for, each with why and the command
-  // that resolves it. Six commands, one meaning, because it is one helper (#512). Deliberately not
+  // that resolves it. Six commands, one meaning, because it is one helper. Deliberately not
   // `skipped`: `pithy ui add` already emits that name for a `string[]` of files it left alone, and a
-  // shared name carrying two types is the defect #235 is about.
+  // shared name must not carry two types.
   skippedEnvironments: ["email", "media", "payments", "storage", "support", "testers"],
   staleAutostart: ["dev", "worker"],
   // A credential's or a connection's state, one word each: `dashboard`'s connection (`connected`, …) and the
-  // minted token's lifecycle as Cloudflare reports it (`active`, …), published since #697.
+  // minted token's lifecycle as Cloudflare reports it (`active`, …).
   status: ["dashboard", "token"],
   storageDeleted: ["media", "storage", "support"],
   to: ["email", "worker"],
@@ -1897,7 +1874,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
  * The paragraph above is right that meaning cannot be read. **Type can**, for most of these rows, and a
  * type collision is the half of the problem that fails silently: `if (result.removed)` was true for
  * `alias`'s `boolean` and for `feature sync`'s non-empty `string[]`, and a consumer that guessed wrong got
- * a wrong answer rather than an error (#235). Five names each carried two types when the enrollment record
+ * a wrong answer rather than an error. Five names each carried two types when the enrollment record
  * was first populated. Four of them were real and were renamed on the outlier's side — `feature.create`'s
  * `created` → `worktreeCreated`, `feature.sync`'s `added`/`removed` → `addedWorkers`/`removedWorkers`,
  * `feature.destroy`'s `deleted` → `deletedResources`, `token revoke`'s `revoked` → `revokedCount`. The
@@ -1963,9 +1940,8 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
  * The shared names whose pages still disagree about the type, with the types they disagree on.
  *
  * **Named rather than muted, and asserted exactly, so the list can only shrink.** Every one of these is a
- * real defect of the same kind #235 fixed; none of them was fixed *by* #235, because each needs a rename
- * in a command that issue did not touch, and a gate that failed the build on work nobody had been asked to
- * do would have been turned off within the day.
+ * real defect: a shared name carrying two types. Each needs a rename in its own command, so the list is
+ * asserted rather than failed.
  *
  * - **`alias`** — `pithy alias` emits the alias line itself, a `string`. `pithy doctor` emits a block:
  *   `{state, rcPath, reason}`.
@@ -1975,10 +1951,10 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
  *   workers, and only one answers to `.length`.
  * - **`environments`** — a `string[]` of environment names in `email`, `payments`, `support`, `secrets`'
  *   write payloads and `init`, an `object[]` of per-environment records in `secrets status`, an `object`
- *   block in `doctor` (#241), and `array` on `media` and `storage`, which is why those two do not decide
+ *   block in `doctor`, and `array` on `media` and `storage`, which is why those two do not decide
  *   it either way.
  * - **`secretBindings`** — an `object[]` of what `pithy provision` wrote for an environment, and an
- *   `object` block in `doctor` reporting which declared environments still bind none (#238). One subject
+ *   `object` block in `doctor` reporting which declared environments still bind none. One subject
  *   asked in two directions, and the same report-versus-result shape as the four above.
  *
  * The first four share one shape: **`doctor`'s and `dev`'s payloads are reports, and a report's blocks

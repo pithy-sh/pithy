@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { InputRequiredError } from "@pithy-sh/core/src/error/pithyError";
+import { optionForm } from "./optionForms";
 
 /**
  * **An option a manifest states no `default` for is a required option.** That is the whole model.
@@ -15,7 +16,7 @@ import { InputRequiredError } from "@pithy-sh/core/src/error/pithyError";
  * non-TTY run attached no prompt at all and fell straight through to the manifest's value. `pithy add
  * payments --json` picked a billing model: whether an entitlement is held by a person or a company, into
  * a column and a UNIQUE index, reported as `Done.` A project that meant `organization` found out when it
- * had subscriptions (#412).
+ * had subscriptions.
  *
  * So the rule lives here, once, and both writers ask it — `pithy add`'s flow before it wires anything,
  * and `pithy upgrade`'s reconcile before it splices a key into a registration it did not write.
@@ -31,11 +32,8 @@ export interface RequiredOption {
    * Choices `pithy add` must refuse, mapped to what to do instead — see the manifest's
    * `configOptions[].choicesNeedingCode`.
    *
-   * Read here so a refusal never offers a value the next refusal rejects. #483 made
-   * `billingSubject=organization` unwritable, and this sentence went on naming it: `pithy add payments
-   * --json` answered "Pass --set billingSubject=user or --set billingSubject=organization", and passing
-   * the second was refused. An action line that names a dead end is worse than a shorter one, because a
-   * caller with no human attached follows it exactly.
+   * Read here so a refusal never offers a value the next refusal rejects. An action line that names a dead
+   * end is worse than a shorter one, because a caller with no human attached follows it exactly.
    */
   readonly choicesNeedingCode?: Readonly<Record<string, string>> | undefined;
   /** The manifest's default. `undefined` is the declaration that this option is required. */
@@ -75,11 +73,17 @@ export interface RequiredOptionRefusalOptions {
  * A choice needing code is not offered: it is a value `--set` refuses, so naming it here would answer
  * "you must pass one of these" with something that cannot be passed.
  */
-function flagsFor(option: RequiredOption): string {
+function flagsFor(capability: string, option: RequiredOption): string {
+  const form = optionForm(capability, option.key);
+  if (form !== undefined) return orList(form.spellings.map((one) => `${form.flag} ${one.spelling}`));
   const choices = setChoices(option);
   if (choices === undefined) return `--set ${option.key}=<value>`;
-  const flags = choices.map((choice) => `--set ${choice}`);
-  if (flags.length === 1) return flags[0] as string;
+  return orList(choices.map((choice) => `--set ${choice}`));
+}
+
+/** `a`, `a or b`, `a, b or c`. */
+function orList(flags: readonly string[]): string {
+  if (flags.length <= 1) return flags.join("");
   return `${flags.slice(0, -1).join(", ")} or ${flags[flags.length - 1]}`;
 }
 
@@ -114,12 +118,18 @@ export function requiredOptionRefusal(options: RequiredOptionRefusalOptions): In
   // `choices` describes the first unanswered option; the action line names every one. A field is one
   // flag's answer set, and several options are several flags that share a spelling.
   const [first] = missing;
-  const choices = first === undefined ? undefined : setChoices(first);
+  const form = first === undefined ? undefined : optionForm(capability, first.key);
+  const choices = form !== undefined ? form.spellings.map((one) => one.spelling) : first && setChoices(first);
+  // What each spelling admits, for every missing option that has its own flag, wherever it falls in the list.
+  const admits = missing
+    .flatMap((option) => optionForm(capability, option.key)?.spellings ?? [])
+    .map((one) => ` ${one.spelling}: ${one.admits}`)
+    .join("");
   return new InputRequiredError({
-    flag: "--set",
+    flag: form?.flag ?? "--set",
     ...(choices === undefined ? {} : { choices }),
     message: `${capability} needs a value for ${andList(keys)}, and nothing in this run names one.`,
-    action: `Pass ${missing.map(flagsFor).join(", and ")}.`,
+    action: `Pass ${missing.map((option) => flagsFor(capability, option)).join(", and ")}.${admits}`,
     detail: `${capability}'s manifest declares ${JSON.stringify(keys)} with no default, which is how a capability says the answer is the adopter's. There is nothing to render and nothing to accept by pressing enter.`,
   });
 }

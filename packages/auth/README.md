@@ -68,6 +68,26 @@ An account can be suspended or deleted, and the kit refuses it at every door. An
 
 Every sign-in link and code auth sends is recorded in `pithy_auth_verification_outcomes`: its type (`magic_link` or `otp`), the verification row that carries it, the account it signs in to, the `pithy_email_jobs` id of the mail that carried it, and when it was issued, expires and was used. Never the token, never the address. Better Auth deletes a verification on its first use, so without this a used link leaves nothing behind and an unused one looks like one still waiting. A sign-up has no account when its link is sent: its row joins to its mail by the job id, and gains the account when the link is used. The row is written when the email seam answers, so a withheld mail is recorded with its suppressed job and a failed one with none, and it is stamped when the link or code creates a session. A wrong code moves the row with it, so the right one entered next still stamps it. A management client reads it through `GET /auth/admin/verifications`, under `auth:verifications:read`: over `since`/`until` (the last 30 days by default), the counts by type of issued, used, expired unused and still pending, and the rows, newest first and paged, narrowed by `type` or `state` if asked. Join `emailJobId` to `email:jobs:read` and `email:suppressions:read` to see which sign-ins failed because the mail did not land. The purge erases an account's rows with the rest of it, and the export carries them.
 
+## Agents: `mcp({ floor })`
+
+`mcp` ships in this package beside `auth`, and lets your users' agents use your app as them. Composing it mounts an MCP endpoint at `POST /mcp` with the discovery an MCP client starts from, and composes an OAuth 2.1 authorization server into the auth instance: an agent registers itself, its user signs in and approves on your own consent screen, and the token it gets is bound to that endpoint and that user. A route is a tool only when its `describeRoute({ operation, tool })` says so, and every call runs through that route's own gates, so an agent does what its user can and nothing more.
+
+```sh
+pithy add mcp --floor power:agents:use
+```
+
+```ts
+mcp({ floor: { power: "agents:use" } }),
+```
+
+**`floor` is required, and has no default.** `"signed-in"` admits every signed-in user, `{ power }` only a caller whose role holds it, `{ entitlement }` only a caller holding it. `pithy doctor` prints the floor in force. `database` must be the D1 binding `auth({ database })` uses; `pithy add mcp` writes it from auth's registration.
+
+**Two screens.** `pithy ui add` writes `agent-consent.tsx`, where an agent's user signs in and approves, and `connected-applications.tsx`, where they see and revoke what they approved.
+
+**Four tables**, `pithy_mcp_clients`, `pithy_mcp_consents`, `pithy_mcp_access_tokens` and `pithy_mcp_refresh_tokens`, in auth's database under the `mcp` migration namespace. `pithy migrate` creates them.
+
+A Worker whose `auth({ plugins })` already composes an OAuth provider is refused: `mcp` composes the one its endpoint uses. [`docs/AGENT-ACCESS.md` §4](../../docs/AGENT-ACCESS.md#4-the-using-path) has the design.
+
 ## Server-authoritative writes
 
 The leaderboard, rating and ledger gates open only for a caller your `resolveScopes` vouches for. A scope is an attestation about the caller, not a permission granted to the user. [`docs/server-authoritative.md`](docs/server-authoritative.md) ranks the three ways to prove it: a service binding, mTLS, and a short-lived token bound to this origin.

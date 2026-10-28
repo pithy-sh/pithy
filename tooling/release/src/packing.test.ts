@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "vitest";
-import { type PackedPackage, packFaults } from "./packing";
+import { CAPABILITY_MANIFEST, type PackedPackage, packFaults } from "./packing";
 
 /** A published source module: under `src`, TypeScript, not a declaration, not a test. */
 const PUBLISHED = /^src\/(?!.*\.d\.ts$)(?!.*\.test\.).*\.tsx?$/;
@@ -28,11 +28,28 @@ function packed(over: Partial<PackedPackage> = {}): PackedPackage {
   const entries = over.entries ?? ["package.json", "README.md", "src/capability.ts", "pithy.manifest.json"];
   return {
     name: "@pithy-sh/auth",
-    expectsManifest: true,
+    capabilityManifests: ["pithy.manifest.json"],
     ...over,
     entries: [...entries, ...built(entries)],
   };
 }
+
+describe("CAPABILITY_MANIFEST", () => {
+  it("names the primary manifest and its companions, and nothing else at the root", () => {
+    const names = [
+      "pithy.manifest.json",
+      "pithy.mcp.manifest.json",
+      "package.json",
+      "pithy.config.ts",
+      "manifest.json",
+    ];
+
+    expect(names.filter((name) => CAPABILITY_MANIFEST.test(name))).toEqual([
+      "pithy.manifest.json",
+      "pithy.mcp.manifest.json",
+    ]);
+  });
+});
 
 describe("packFaults", () => {
   it("finds nothing wrong with a clean tarball", () => {
@@ -45,7 +62,7 @@ describe("packFaults", () => {
     const faults = packFaults(
       packed({
         entries: ["src/capability.ts", "src/capability.test.ts", "src/http/routes.test.ts"],
-        expectsManifest: false,
+        capabilityManifests: [],
       }),
     );
 
@@ -61,7 +78,7 @@ describe("packFaults", () => {
   // did not cover.
   it("reports a TSX test file, not only a TS one", () => {
     const faults = packFaults(
-      packed({ entries: ["src/otp.tsx", "src/otp.test.tsx", "src/router.test.ts"], expectsManifest: false }),
+      packed({ entries: ["src/otp.tsx", "src/otp.test.tsx", "src/router.test.ts"], capabilityManifests: [] }),
     );
 
     expect(faults).toHaveLength(1);
@@ -74,7 +91,7 @@ describe("packFaults", () => {
       packFaults(
         packed({
           entries: ["src/main.ts", "templates/starter/apps/api/src/bindings.workers.test.ts"],
-          expectsManifest: false,
+          capabilityManifests: [],
         }),
       ),
     ).toEqual([]);
@@ -89,12 +106,26 @@ describe("packFaults", () => {
     expect(faults[0]).toMatch(/pithy\.manifest\.json/);
   });
 
+  // A companion manifest is read from the same `node_modules` path as the primary one, so its absence
+  // costs the adopter the catalog entry it carries.
+  it("reports a companion manifest that did not make it in, beside a primary one that did", () => {
+    const faults = packFaults(
+      packed({
+        entries: ["src/capability.ts", "pithy.manifest.json"],
+        capabilityManifests: ["pithy.manifest.json", "pithy.mcp.manifest.json"],
+      }),
+    );
+
+    expect(faults).toHaveLength(1);
+    expect(faults[0]).toMatch(/ships no pithy\.mcp\.manifest\.json/);
+  });
+
   it("does not ask for a manifest from a package that has none", () => {
-    expect(packFaults(packed({ entries: ["src/index.ts"], expectsManifest: false }))).toEqual([]);
+    expect(packFaults(packed({ entries: ["src/index.ts"], capabilityManifests: [] }))).toEqual([]);
   });
 
   it("reports a tarball with no source at all, and no build either", () => {
-    const faults = packFaults(packed({ entries: ["package.json", "README.md"], expectsManifest: false }));
+    const faults = packFaults(packed({ entries: ["package.json", "README.md"], capabilityManifests: [] }));
 
     // Both, because both are true and they are different failures: `dist` is what `exports` resolves
     // onto, and `src` is where the maps beside it point back to.
@@ -109,7 +140,7 @@ describe("packFaults", () => {
     const faults = packFaults({
       name: "@pithy-sh/auth",
       entries: ["package.json", "src/capability.ts"],
-      expectsManifest: false,
+      capabilityManifests: [],
     });
 
     expect(faults).toEqual([expect.stringMatching(/no dist/i), expect.stringMatching(/missing a half/)]);
@@ -126,7 +157,7 @@ describe("packFaults", () => {
         "dist/capability.d.ts",
         "dist/http/routes.js",
       ],
-      expectsManifest: false,
+      capabilityManifests: [],
     });
 
     // The declaration is the missing half here, which is the quieter direction: the module imports and
@@ -148,7 +179,7 @@ describe("packFaults", () => {
           "src/cloudflare-test.d.ts",
           "templates/starter/apps/api/src/worker.ts",
         ],
-        expectsManifest: false,
+        capabilityManifests: [],
       }),
     ).toEqual([]);
   });
@@ -159,7 +190,7 @@ describe("packFaults", () => {
     const faults = packFaults(
       packed({
         entries: ["src/index.ts", "tsconfig.json", "vitest.config.ts", "tsconfig.tsbuildinfo"],
-        expectsManifest: false,
+        capabilityManifests: [],
       }),
     );
 
@@ -174,7 +205,7 @@ describe("packFaults", () => {
     const faults = packFaults(
       packed({
         entries: ["src/index.ts"],
-        expectsManifest: false,
+        capabilityManifests: [],
         declared: ["src", "dist/paddle-prices.iife.js", "!src/**/*.test.*"],
       }),
     );
@@ -184,12 +215,12 @@ describe("packFaults", () => {
   });
 
   it("counts a declared directory as reached when anything under it landed", () => {
-    expect(packFaults(packed({ entries: ["src/a/b.ts"], expectsManifest: false, declared: ["src"] }))).toEqual([]);
+    expect(packFaults(packed({ entries: ["src/a/b.ts"], capabilityManifests: [], declared: ["src"] }))).toEqual([]);
   });
 
   it("ignores negations when checking what a declaration reached", () => {
     expect(
-      packFaults(packed({ entries: ["src/a.ts"], expectsManifest: false, declared: ["src", "!src/**/*.test.*"] })),
+      packFaults(packed({ entries: ["src/a.ts"], capabilityManifests: [], declared: ["src", "!src/**/*.test.*"] })),
     ).toEqual([]);
   });
 
@@ -201,7 +232,7 @@ describe("packFaults", () => {
     const faults = packFaults(
       packed({
         entries: ["src/index.ts"],
-        expectsManifest: false,
+        capabilityManifests: [],
         manifest: { dependencies: { "@pithy-sh/core": "workspace:*", zod: "^4.0.0" } },
       }),
     );
@@ -215,7 +246,7 @@ describe("packFaults", () => {
     const faults = packFaults(
       packed({
         entries: ["src/index.ts"],
-        expectsManifest: false,
+        capabilityManifests: [],
         manifest: { peerDependencies: { "@pithy-sh/vite": "workspace:^" } },
       }),
     );
@@ -231,7 +262,7 @@ describe("packFaults", () => {
       packFaults(
         packed({
           entries: ["src/index.ts"],
-          expectsManifest: false,
+          capabilityManifests: [],
           manifest: { devDependencies: { "@pithy-sh/tsconfig": "workspace:*" } },
         }),
       ),
@@ -243,7 +274,7 @@ describe("packFaults", () => {
       packFaults(
         packed({
           entries: ["src/index.ts"],
-          expectsManifest: false,
+          capabilityManifests: [],
           manifest: { dependencies: { "@pithy-sh/core": "^0.1.2" } },
         }),
       ),
@@ -256,7 +287,7 @@ describe("packFaults", () => {
   // outside `node_modules` and the shebang never runs at all.
   it("reports a bin that is TypeScript rather than a built file", () => {
     const faults = packFaults(
-      packed({ entries: ["package.json", "src/bin.ts"], expectsManifest: false, manifest: { bin: "./src/bin.ts" } }),
+      packed({ entries: ["package.json", "src/bin.ts"], capabilityManifests: [], manifest: { bin: "./src/bin.ts" } }),
     );
 
     expect(faults).toHaveLength(1);
@@ -268,7 +299,7 @@ describe("packFaults", () => {
     const faults = packFaults({
       name: "@pithy-sh/cli",
       entries: ["package.json", "src/main.ts", "dist/main.js", "dist/main.d.ts"],
-      expectsManifest: false,
+      capabilityManifests: [],
       manifest: { bin: { pithy: "./dist/bin.js" } },
     });
 
@@ -282,7 +313,7 @@ describe("packFaults", () => {
         packFaults({
           name: "@pithy-sh/cli",
           entries: ["package.json", "src/bin.ts", "dist/bin.js", "dist/bin.d.ts"],
-          expectsManifest: false,
+          capabilityManifests: [],
           manifest: { bin },
         }),
       ).toEqual([]);
@@ -290,7 +321,7 @@ describe("packFaults", () => {
   });
 
   it("asks nothing of a package that declares no bin, which is twenty-one of them", () => {
-    expect(packFaults(packed({ expectsManifest: true }))).toEqual([]);
+    expect(packFaults(packed({ capabilityManifests: ["pithy.manifest.json"] }))).toEqual([]);
   });
 
   // ---- the stamp, which is the only thing a tarball can say about how old its build is ----
@@ -310,7 +341,7 @@ describe("packFaults", () => {
   });
 
   it("names the package in every fault it reports", () => {
-    const faults = packFaults(packed({ name: "@pithy-sh/core", entries: ["src/a.test.ts"], expectsManifest: false }));
+    const faults = packFaults(packed({ name: "@pithy-sh/core", entries: ["src/a.test.ts"], capabilityManifests: [] }));
 
     for (const fault of faults) expect(fault).toContain("@pithy-sh/core");
   });

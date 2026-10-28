@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { CAPABILITY_MANIFEST } from "./packing";
 import { publishedPackages } from "./workspace";
 
 /**
@@ -150,10 +151,11 @@ describe("published manifests", () => {
 
   // The CLI resolves every capability manifest from the adopter's `node_modules/@pithy-sh/*`
   // (`capabilities/reconcile.ts`), so a capability that ships without one is invisible to `pithy add`.
-  it("each ships the capability manifest the CLI reads from node_modules", () => {
+  it("each ships every capability manifest the CLI reads from node_modules, companions included", () => {
     for (const { dir, manifest } of manifests) {
-      if (!existsSync(join(ROOT, dir, "pithy.manifest.json"))) continue;
-      expect(manifest.files, `${dir} files`).toContain("pithy.manifest.json");
+      for (const file of readdirSync(join(ROOT, dir)).filter((name) => CAPABILITY_MANIFEST.test(name))) {
+        expect(manifest.files, `${dir} files`).toContain(file);
+      }
     }
   });
 

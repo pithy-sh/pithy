@@ -31,6 +31,9 @@
  * without one is a capability `pithy add` cannot see — and it exits 0.
  */
 
+/** A file name the CLI reads as a capability manifest: `pithy.manifest.json` or a companion such as `pithy.mcp.manifest.json`. */
+export const CAPABILITY_MANIFEST = /^pithy\.(?:[a-z0-9-]+\.)?manifest\.json$/;
+
 /** A packed package, as `npm pack --dry-run --json` describes it. */
 export interface PackedPackage {
   /**
@@ -44,8 +47,11 @@ export interface PackedPackage {
   name: string;
   /** Every path in the tarball, relative to the package root. */
   entries: string[];
-  /** Whether this package has a `pithy.manifest.json` that must reach the adopter. */
-  expectsManifest: boolean;
+  /**
+   * The capability manifests at the package root that must reach the adopter: `pithy.manifest.json`
+   * and every companion beside it, such as `pithy.mcp.manifest.json`.
+   */
+  capabilityManifests: string[];
   /**
    * The package's own `files` field, if it declares one.
    *
@@ -168,9 +174,10 @@ export function packFaults(packed: PackedPackage): string[] {
     faults.push(`${packed.name} ships build leftovers: ${list(leftovers)}. Declare a files field.`);
   }
 
-  if (packed.expectsManifest && !packed.entries.includes("pithy.manifest.json")) {
+  for (const file of packed.capabilityManifests) {
+    if (packed.entries.includes(file)) continue;
     faults.push(
-      `${packed.name} ships no pithy.manifest.json. The CLI resolves capability manifests from the adopter's node_modules, so pithy add cannot see this capability without it.`,
+      `${packed.name} ships no ${file}. The CLI resolves capability manifests from the adopter's node_modules, so pithy add cannot see what it declares without it.`,
     );
   }
 

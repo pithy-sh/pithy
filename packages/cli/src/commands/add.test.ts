@@ -22,14 +22,17 @@ import add, { addPlanText, addPrompts, buildAudit, targetWorker } from "./add";
  * The add flow itself — install, wire, migrate — is `capabilities/flow.test.ts`'s. Here it is replaced
  * with what it returned, so the command's own body runs: the Worker it resolves, the payload it writes.
  */
-const flow = vi.hoisted(() => ({ result: undefined as unknown }));
+const flow = vi.hoisted(() => ({ result: undefined as unknown, setFlags: [] as (readonly string[] | undefined)[] }));
 vi.mock("../capabilities/flow", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../capabilities/flow")>()),
-  runAdd: async () => flow.result,
+  runAdd: async (options: { setFlags?: readonly string[] }) => {
+    flow.setFlags.push(options.setFlags);
+    return flow.result;
+  },
 }));
 
 /**
- * What the command handed the follow-up read (#697), recorded rather than performed: which environments it
+ * What the command handed the follow-up read, recorded rather than performed: which environments it
  * read as ready, and whether it read the add as having brought a migration. The reads themselves are
  * `capabilities/addFollowUp.test.ts`'s; a ready environment the stub names stands in for a provisioned one.
  */
@@ -76,6 +79,7 @@ describe("add command", () => {
       "list",
       "worker",
       "set",
+      "floor",
       "eject",
       "force",
       "with-prerequisites",
@@ -98,7 +102,7 @@ describe("buildAudit", () => {
     // project root. Passing the Worker's own directory finds no `apps/` beneath it, and every add/remove
     // event is silently dropped — the Worker is named through `worker`, which is what narrows the lookup.
     const projectDir = await mkdtemp(join(tmpdir(), "pithy-add-audit-"));
-    // Through the environment: the credentials are account-scoped since #182, so a `.dev.vars` in the
+    // Through the environment: the credentials are account-scoped, so a `.dev.vars` in the
     // project supplies nothing. The overlay is what CI uses and needs no config directory here.
     vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "acct");
     vi.stubEnv("CLOUDFLARE_API_TOKEN", "tok");
@@ -150,7 +154,7 @@ describe("buildAudit", () => {
   });
 
   /**
-   * **A local env reads no credentials, so another account's cannot refuse it (#739).** `add` always passes
+   * **A local env reads no credentials, so another account's cannot refuse it.** `add` always passes
    * `dev`, and so does a `remove` without `--drop`: the emitter they get is inert whatever the shell holds,
    * and the mismatch guard used to fire on the way to building it. A remote env still refuses.
    */
@@ -266,7 +270,7 @@ describe("targetWorker", () => {
 });
 
 /**
- * **The two prompts `pithy add` hands its flow, and when (#697).** The flow asks only through what it is
+ * **The two prompts `pithy add` hands its flow, and when.** The flow asks only through what it is
  * handed, so this is the whole gate: both prompts when the run may ask, neither when it may not, and the
  * flow's own refusals — `input/required`, naming `--set` or `--with-prerequisites` — do the rest.
  */
@@ -289,7 +293,7 @@ describe("addPrompts", () => {
   });
 });
 
-/** Held to the schema `pithy schema add` publishes, from a real run in a scaffolded project (#697). */
+/** Held to the schema `pithy schema add` publishes, from a real run in a scaffolded project. */
 describe("pithy add --json conforms to its published payload", () => {
   let dir: string;
   afterEach(async () => {
@@ -307,6 +311,25 @@ describe("pithy add --json conforms to its published payload", () => {
   test("--list", async () => {
     await project();
     await expectConforms("add", await runCaptured("add", ["--list", "--json"]));
+  });
+
+  test("--list --json carries mcp's package and its prerequisite", async () => {
+    await project();
+    const payload = JSON.parse((await runCaptured("add", ["--list", "--json"])).join("")) as {
+      capabilities: { name: string; package: string; requires: string[] }[];
+    };
+    const row = (name: string) => payload.capabilities.find((entry) => entry.name === name);
+    expect(row("mcp")).toMatchObject({ package: "@pithy-sh/auth", requires: ["auth"] });
+    expect(row("audit")?.requires).toEqual([]);
+  });
+
+  test("--list names a prerequisite on its row, and only where there is one", async () => {
+    await project();
+    const lines = (await runCaptured("add", ["--list"])).join("").split("\n");
+    const row = (name: string) => lines.find((line) => line.startsWith(`${name} `)) ?? "";
+    expect(row("mcp")).toContain("Requires auth.");
+    expect(row("audit")).not.toBe("");
+    expect(row("audit")).not.toContain("Requires");
   });
 
   test("an add, ejected, with a shared database and a proposed KV title", async () => {
@@ -334,7 +357,7 @@ describe("pithy add --json conforms to its published payload", () => {
   });
 
   /**
-   * **`next` names the migrate an add left a provisioned environment, and nothing when it brought none (#697).**
+   * **`next` names the migrate an add left a provisioned environment, and nothing when it brought none.**
    * Read off the add's own `dev` run: a migration it applied there is one a deployed environment lacks.
    */
   test("next carries migrate when the add brought migrations, and no key when it brought none", async () => {
@@ -373,6 +396,25 @@ describe("pithy add --json conforms to its published payload", () => {
     ]);
   });
 
+  test("--floor reaches the flow as the floor option, beside every --set", async () => {
+    await project();
+    flow.result = {
+      capability: "mcp",
+      worker: "api",
+      deployedAs: "acme-api",
+      package: "@pithy-sh/auth",
+      packageManager: "bun",
+      databases: [],
+      kvNamespaces: [],
+      notes: [],
+      prerequisites: [],
+    } satisfies AddResult;
+    flow.setFlags.length = 0;
+    await runCaptured("add", ["mcp", "--floor", "power:agents", "--json"]);
+    await runCaptured("add", ["mcp", "--floor", "power:agents", "--set", "path=/agents", "--json"]);
+    expect(flow.setFlags).toEqual([["floor=power:agents"], ["path=/agents", "floor=power:agents"]]);
+  });
+
   /** A production environment's provision stops at a person's phrase, so the follow-up must know which are. */
   test("hands the follow-up the project's own production environments", async () => {
     await project();
@@ -396,7 +438,7 @@ describe("pithy add --json conforms to its published payload", () => {
     expect(followUp.asked).toEqual([{ ready: ["staging"], brought: false, productionEnvironments: ["live"] }]);
   });
 
-  /** Wiring is local, so a shell holding another account's credentials does not stop it (#739). */
+  /** Wiring is local, so a shell holding another account's credentials does not stop it. */
   test("wires under credentials for an account the project does not pin", async () => {
     await project();
     await writeFile(

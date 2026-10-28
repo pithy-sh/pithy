@@ -16,10 +16,11 @@ import { readOptionalFile } from "../project/readOptionalFile";
 import { removeScaffoldPath } from "../project/scaffold";
 import { discoverWorkers } from "../project/workers";
 import { readWranglerConfig, workerEntryPath, writeWranglerConfig } from "../project/wrangler";
-import { capabilityPackageName, isSharedCapabilityPackage } from "./catalog";
+import { CAPABILITY_SCOPE, capabilityPackageName, isSharedCapabilityPackage } from "./catalog";
 import { exportsName, findNamedImport, isCapabilityImport, withoutBinding } from "./configImports";
 import { EJECT_DIR, ejectImportPath, ejectSpecifierFromDir, isEjected } from "./eject";
 import { durableObjectExports, withoutDurableObjectExports } from "./entryExports";
+import { locateRegistration } from "./reconcile";
 
 /** The subset of a manifest/capability the binding helpers read — both shapes carry it. */
 type HasBindings = { requiredBindings: readonly BindingSpec[] };
@@ -168,7 +169,7 @@ function stripDurableObjectMigrations(config: WranglerBindings, bindings: Bindin
   const classes = new Set(
     bindings.filter((b) => b.type === "durable_object" && b.className).map((b) => b.className as string),
   );
-  // Core's presence room is retired, never spliced (#815): it stores nothing, so a `deleted_classes` step
+  // Core's presence room is retired, never spliced: it stores nothing, so a `deleted_classes` step
   // costs no data, and a Worker that deployed with it holds its creation tag and has instances that depend
   // on it, so splicing the tag out would make the next deploy fail.
   if (classes.delete(PRESENCE_ROOM_CLASS)) appendDeletedClassMigration(config as WranglerStanza, [PRESENCE_ROOM_CLASS]);
@@ -215,7 +216,7 @@ export async function removeFromWrangler(
 
 /**
  * Take the capability's Durable Object exports out of the Worker's entry — the inverse of the half of a
- * DO binding that lives in the adopter's code (#428).
+ * DO binding that lives in the adopter's code.
  *
  * Necessary rather than tidy: the export names a module this command is about to delete — the package it
  * uninstalls, or the `capabilities/<cap>` fork it removes whole — so leaving it behind is a Worker that no
@@ -251,7 +252,7 @@ export async function removeFromEntry(
   // in, where `pithy.config.ts` says `./capabilities/<cap>`. `--eject` writes each file its own spelling,
   // so a predicate built from the Worker's directory would read the ejected line as somebody else's and
   // leave a re-export of a directory this command is about to delete.
-  // Core's presence room is the one class a capability binds without shipping (#815): its export points at
+  // Core's presence room is the one class a capability binds without shipping: its export points at
   // core, and it is this capability's to take out when no other capability left in the Worker declares rooms
   // — which `removableBindings` has already decided.
   const written = withoutDurableObjectExports(
@@ -291,14 +292,28 @@ export function importsPackage(source: string, pkg: string): boolean {
  * "is the package still needed?" would be both slower and fragile.
  */
 async function workersUsingPackage(projectDir: string, workerDir: string, pkg: string): Promise<string[]> {
+  return siblingWorkersWhere(projectDir, workerDir, (source) => importsPackage(source, pkg));
+}
+
+/** The sibling Workers whose `pithy.config.ts` registers `capability` — a `<capability>(` call, not an import. */
+async function workersRegistering(projectDir: string, workerDir: string, capability: string): Promise<string[]> {
+  return siblingWorkersWhere(projectDir, workerDir, (source) => locateRegistration(source, capability) !== null);
+}
+
+/** The Workers other than `workerDir` whose config text satisfies `test`, read as text and never imported. */
+async function siblingWorkersWhere(
+  projectDir: string,
+  workerDir: string,
+  test: (source: string) => boolean,
+): Promise<string[]> {
   const workers = await discoverWorkers(projectDir).catch(() => []);
-  const using: string[] = [];
+  const matching: string[] = [];
   for (const worker of workers) {
     if (resolve(worker.dir) === resolve(workerDir)) continue;
     const source = await readFile(join(worker.dir, "pithy.config.ts"), "utf8").catch(() => "");
-    if (importsPackage(source, pkg)) using.push(worker.name);
+    if (test(source)) matching.push(worker.name);
   }
-  return using;
+  return matching;
 }
 
 /** True if a path exists. */
@@ -335,12 +350,8 @@ export interface RemoveSteps {
   /**
    * Delete an ejected capability's local source tree — `apps/<worker>/capabilities/<cap>`, four segments
    * composed out of names (default: `removeScaffoldPath`, which refuses a symlink at any component and a
-   * path resolving outside the project, then does the `rm` itself).
-   *
-   * The default said "recursive `fs.rm`" until #158, and that is what it was: a link at `apps` carried the
-   * delete onto whatever it pointed at, outside the project, with nothing to recover. A docstring
-   * advertising the ungated version is how the next producer of that bug gets written — a step handed in
-   * here is held to the same gate.
+   * path resolving outside the project, then does the `rm` itself). A step handed in here is held to the
+   * same gate: a plain recursive delete follows a link at `apps` outside the project.
    */
   deleteSource: (dir: string) => Promise<void>;
   /** Whether `@pithy-sh/<cap>` is installed (default: a `node_modules` stat). */
@@ -350,6 +361,12 @@ export interface RemoveSteps {
    * project-wide dependency (default: a scan of `apps/*`). Empty means the package is free to go.
    */
   workersUsingPackage: (pkg: string) => Promise<string[]>;
+  /**
+   * The **other** Workers whose config registers the capability itself (default: a scan of `apps/*`). The
+   * `--drop` guard for a capability that shares its package with others, where importing the package does
+   * not mean wiring this capability.
+   */
+  workersRegistering: (capability: string) => Promise<string[]>;
 }
 
 /** What {@link defaultRemoveSteps} needs: the two directories a removal spans, and the wired set. */
@@ -369,14 +386,14 @@ export interface DefaultRemoveStepsOptions {
   project: string;
   /**
    * The Cloudflare account this project belongs to, from `projectCloudflareAccount(projectDir)`, or
-   * `null` when it names none. Required (#234): `--drop --env staging` reverses migrations against a
+   * `null` when it names none. Required: `--drop --env staging` reverses migrations against a
    * live database, and `dropCapabilityTables`'s account was optional and omitted here, so it reversed
    * them in whichever account `<config>/cloudflare.json` happened to hold credentials for.
    */
   account: CloudflareAccountSelection | null;
   /**
    * `--destroy-retained <n>`: the exact rows in retained tables a `--drop` agrees to destroy. Dropping the
-   * secrets or email capability's tables refuses while they hold rows, unless this equals them (#588). The
+   * secrets or email capability's tables refuses while they hold rows, unless this equals them. The
    * typed `drop <cap> from <env>` phrase agrees to the drop; it does not agree to losing the vault.
    */
   destroyRetained?: number;
@@ -394,7 +411,7 @@ export function defaultRemoveSteps(options: DefaultRemoveStepsOptions): RemoveSt
     loadCapabilities: options.loadCapabilities,
     // The composition from the same loader the orchestration reads, never from the call site: the retained
     // count is taken over everything the Worker wires, and a caller handing over the capability alone would
-    // count what it declares — nothing, beside a vault (#588).
+    // count what it declares — nothing, beside a vault.
     dropTables: async (capability, env) =>
       dropCapabilityTables({
         capability,
@@ -407,7 +424,7 @@ export function defaultRemoveSteps(options: DefaultRemoveStepsOptions): RemoveSt
         ...(options.destroyRetained !== undefined ? { destroyRetained: options.destroyRetained } : {}),
       }),
     uninstall: (pkg) => uninstallPackage({ projectDir, pkg }),
-    // Gated (#158). This is `apps/<worker>/capabilities/<cap>` — four segments Pithy composed out of
+    // Gated. This is `apps/<worker>/capabilities/<cap>` — four segments Pithy composed out of
     // names — handed to a recursive delete. A symlink at any of them carried the delete onto whatever
     // the link pointed at, outside the project, with nothing to recover afterwards. `removeScaffoldPath`
     // refuses a link at every component and refuses a path that resolves outside `projectDir`, then does
@@ -415,6 +432,7 @@ export function defaultRemoveSteps(options: DefaultRemoveStepsOptions): RemoveSt
     deleteSource: (dir) => removeScaffoldPath(projectDir, dir),
     packageInstalled: (pkg) => exists(join(projectDir, "node_modules", pkg)),
     workersUsingPackage: (pkg) => workersUsingPackage(projectDir, workerDir, pkg),
+    workersRegistering: (capability) => workersRegistering(projectDir, workerDir, capability),
   };
 }
 
@@ -439,6 +457,8 @@ export interface RemoveCapabilityOptions {
 /** What `remove` did — surfaced to the user (this command has no `--json`). */
 export interface RemoveResult {
   capability: string;
+  /** The npm package the capability ships in, from the catalog. */
+  package: string;
   /** False when nothing was wired or installed — a no-op. */
   present: boolean;
   ejected: boolean;
@@ -456,6 +476,8 @@ export interface RemoveResult {
    * {@link RemoveResult.keptFor}, which is another Worker still needing a package that *is* declared.
    */
   keptLinked?: boolean;
+  /** True when the package stayed because this Worker still imports it for another capability it ships. */
+  keptHere?: boolean;
   /** True when the capability's D1 tables were left in place (no `--drop`). */
   tablesRemain: boolean;
   /** True when a `--drop` confirmation was declined — nothing was changed. */
@@ -470,8 +492,9 @@ export interface RemoveResult {
  * (ejected). Never destroys data unless `drop` is set. Idempotent: an absent capability is a no-op.
  * Refuses when another capability wired into the same Worker depends on this one.
  *
- * The package is the one project-wide part of a removal, so it is uninstalled only when **no other
- * Worker still imports it** — those Workers come back in {@link RemoveResult.keptFor}.
+ * The package is the one project-wide part of a removal, so it is uninstalled only when **no Worker
+ * still imports it**, this one included. Other Workers holding it come back in {@link RemoveResult.keptFor};
+ * this Worker holding it for another capability the package ships sets {@link RemoveResult.keptHere}.
  */
 export async function removeCapability(options: RemoveCapabilityOptions): Promise<RemoveResult> {
   const { workerDir, capability, steps } = options;
@@ -491,7 +514,15 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
   const installed = await steps.packageInstalled(pkg);
 
   if (!target && !ejected && !installed) {
-    return { capability, present: false, ejected: false, removedBindings: [], keptFor: [], tablesRemain: false };
+    return {
+      capability,
+      package: pkg,
+      present: false,
+      ejected: false,
+      removedBindings: [],
+      keptFor: [],
+      tablesRemain: false,
+    };
   }
 
   const dependents = capabilities
@@ -517,9 +548,13 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
   // tables, so reversing its migrations for one Worker would delete data the other is still serving.
   // An ejected capability is that Worker's own forked copy, so no sibling can be relying on the package.
   const keptFor = ejected ? [] : await steps.workersUsingPackage(pkg);
+  // A package that ships more than this capability is imported by Workers that never wire it, so the drop
+  // is held only by a sibling that registers the capability itself.
+  const sharesPackage = pkg !== `${CAPABILITY_SCOPE}/${capability}`;
+  const wiredBy = !options.drop || ejected ? [] : sharesPackage ? await steps.workersRegistering(capability) : keptFor;
 
-  if (options.drop && keptFor.length > 0) {
-    const plural = keptFor.length === 1 ? "s" : "";
+  if (options.drop && wiredBy.length > 0) {
+    const plural = wiredBy.length === 1 ? "s" : "";
     await audit({
       environment: options.drop.env,
       action: "capability/tables_dropped",
@@ -527,11 +562,11 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
       severity: "warning",
       resourceType: "capability",
       resourceId: capability,
-      metadata: { reason: "shared_with_workers", keptFor },
+      metadata: { reason: "shared_with_workers", keptFor: wiredBy },
     });
     throw new ConflictError({
-      message: `Can't drop ${capability}'s tables — ${keptFor.join(", ")} still wire${plural} it.`,
-      action: `Remove ${capability} from ${keptFor.join(", ")} first, or re-run without --drop to unwire this worker and keep the data.`,
+      message: `Can't drop ${capability}'s tables — ${wiredBy.join(", ")} still wire${plural} it.`,
+      action: `Remove ${capability} from ${wiredBy.join(", ")} first, or re-run without --drop to unwire this worker and keep the data.`,
     });
   }
 
@@ -551,6 +586,7 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
       });
       return {
         capability,
+        package: pkg,
         present: true,
         ejected,
         removedBindings: [],
@@ -579,9 +615,11 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
 
   let packageManager: string | undefined;
   let keptLinked = false;
+  // `mcp` ships inside `@pithy-sh/auth`: unwiring it leaves this Worker importing the package for `auth`.
+  const keptHere = !ejected && importsPackage(await readFile(join(workerDir, "pithy.config.ts"), "utf8"), pkg);
   if (ejected) {
     await steps.deleteSource(join(workerDir, EJECT_DIR, capability));
-  } else if (installed && keptFor.length === 0 && !isSharedCapabilityPackage(pkg)) {
+  } else if (installed && keptFor.length === 0 && !keptHere && !isSharedCapabilityPackage(pkg)) {
     // One install at the root, shared by every Worker. Uninstalling it while a sibling Worker still
     // imports it would break that Worker's pithy.config.ts — and every command that loads it. So the
     // wiring goes and the package stays, which a later `pithy remove` from the last Worker cleans up.
@@ -604,11 +642,12 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
     severity: "info",
     resourceType: "capability",
     resourceId: capability,
-    metadata: { ejected, packageManager: packageManager ?? null, removedBindings, keptFor, keptLinked },
+    metadata: { ejected, packageManager: packageManager ?? null, removedBindings, keptFor, keptLinked, keptHere },
   });
 
   return {
     capability,
+    package: pkg,
     present: true,
     ejected,
     packageManager,
@@ -616,6 +655,7 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
     removedBindings,
     keptFor,
     keptLinked,
+    keptHere,
     tablesRemain: tablesRemain(target, dropped),
   };
 }
