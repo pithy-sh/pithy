@@ -2381,6 +2381,553 @@
         ]
       }
     },
+    "/control-plane/processing": {
+      "get": {
+        "tags": [
+          "controlplane"
+        ],
+        "operationId": "getControlPlaneProcessing",
+        "summary": "Report the record of processing activities.",
+        "description": "Every processing activity the composed capabilities and the `processing` block declare: its purpose, the data classes it uses cross-checked against the privacy inventory, its legal basis or a gap, a consent basis's purpose and grant counts, its recipients with what each receives, its effective retention, and the evidence pack's controls. Every gap is named and none is filled in. It describes the processing and changes none of it. Read-only.",
+        "responses": {
+          "200": {
+            "description": "The GDPR Article 30 record this Worker derives: each activity's purpose, data classes, legal basis, recipients, retention and measures, and every gap named.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "environment": {
+                      "type": "string",
+                      "description": "The environment this Worker serves."
+                    },
+                    "generatedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the record was derived, ISO-8601."
+                    },
+                    "version": {
+                      "description": "The Cloudflare version id of the build answering, or null.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "activities": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The activity id, `<domain>.<name>`."
+                          },
+                          "purpose": {
+                            "type": "string",
+                            "description": "Why the data is processed."
+                          },
+                          "declaredBy": {
+                            "type": "string",
+                            "description": "The capability that declared it, or `config` for the adopter's own."
+                          },
+                          "classes": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "The data classes it uses."
+                          },
+                          "legalBasis": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "consent",
+                                  "contract",
+                                  "legal-obligation",
+                                  "vital-interests",
+                                  "public-task",
+                                  "legitimate-interests"
+                                ],
+                                "description": "The lawful basis of GDPR Article 6(1): `consent` (a), `contract` (b), `legal-obligation` (c), `vital-interests` (d), `public-task` (e) or `legitimate-interests` (f). A `consent` basis names the consent purpose it rests on."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Its legal basis, or null: a gap the record names."
+                          },
+                          "basisSource": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "capability",
+                                  "config"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Where the basis came from: the declaring `capability`, or the `config` block. Null with no basis."
+                          },
+                          "consent": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "purpose": {
+                                    "type": "string",
+                                    "description": "The consent purpose id the activity rests on."
+                                  },
+                                  "noticeVersion": {
+                                    "anyOf": [
+                                      {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "The purpose's current notice version. Null when no composed catalog declares the purpose."
+                                  },
+                                  "explicit": {
+                                    "description": "Whether the purpose needs explicit consent. Null when undeclared.",
+                                    "type": [
+                                      "boolean",
+                                      "null"
+                                    ]
+                                  },
+                                  "grants": {
+                                    "anyOf": [
+                                      {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "Subjects whose latest choice is a grant. Null when the consent record could not be read."
+                                  },
+                                  "withdrawals": {
+                                    "anyOf": [
+                                      {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "Subjects whose latest choice is a withdrawal. Null when the consent record could not be read."
+                                  },
+                                  "standing": {
+                                    "anyOf": [
+                                      {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "Subjects whose grant stands now: current notice, at the minimum method, unexpired. Null when the consent record could not be read."
+                                  }
+                                },
+                                "required": [
+                                  "purpose",
+                                  "noticeVersion",
+                                  "explicit",
+                                  "grants",
+                                  "withdrawals",
+                                  "standing"
+                                ],
+                                "description": "The consent purpose a consent-based activity rests on, and its grant counts."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "For a consent basis, its purpose and grant counts. Else null."
+                          },
+                          "recipients": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "name": {
+                                  "type": "string",
+                                  "description": "Who receives the data."
+                                },
+                                "receives": {
+                                  "type": "string",
+                                  "description": "What they receive."
+                                },
+                                "classes": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "description": "The data classes in what they receive."
+                                },
+                                "source": {
+                                  "type": "string",
+                                  "enum": [
+                                    "platform",
+                                    "binding",
+                                    "declared"
+                                  ],
+                                  "description": "Where the recipient came from: `platform`, Cloudflare, which runs every Worker; `binding`, a binding this Worker has, such as Workers AI; `declared`, an activity's own declaration, built from the resolved config."
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "receives",
+                                "classes",
+                                "source"
+                              ],
+                              "description": "One recipient: who, what it receives, the classes in it, and where the record learned of it."
+                            },
+                            "description": "Who receives its data: Cloudflare always, then any binding or declared recipient."
+                          },
+                          "retention": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "classAges": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "class": {
+                                          "type": "string",
+                                          "description": "The privacy class."
+                                        },
+                                        "days": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991,
+                                          "description": "The longest an account holding it may sit inactive, in days."
+                                        }
+                                      },
+                                      "required": [
+                                        "class",
+                                        "days"
+                                      ],
+                                      "description": "One class age."
+                                    },
+                                    "description": "The retention block's class ages for the classes this activity uses, strictest first."
+                                  },
+                                  "purgeWindows": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "subject": {
+                                          "type": "string",
+                                          "enum": [
+                                            "user",
+                                            "organization"
+                                          ],
+                                          "description": "Whose deletion the window governs."
+                                        },
+                                        "days": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991,
+                                          "description": "How many days a deletion stays restorable before its purge."
+                                        },
+                                        "source": {
+                                          "type": "string",
+                                          "enum": [
+                                            "policy",
+                                            "capability",
+                                            "floor"
+                                          ],
+                                          "description": "Where the value came from."
+                                        }
+                                      },
+                                      "required": [
+                                        "subject",
+                                        "days",
+                                        "source"
+                                      ],
+                                      "description": "One soft-delete window."
+                                    },
+                                    "description": "Every soft-delete window the Worker runs, as it takes effect."
+                                  }
+                                },
+                                "required": [
+                                  "classAges",
+                                  "purgeWindows"
+                                ],
+                                "description": "The effective retention behind an activity: its classes' ages and the purge windows."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "How long its data is kept, from the Worker's resolved retention. Null when the Worker recorded none."
+                          },
+                          "measures": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "audit-logging",
+                                "route-verification",
+                                "management-access",
+                                "key-rotation",
+                                "change-history",
+                                "data-protection",
+                                "csrf"
+                              ],
+                              "description": "The control this entry reports on, as a stable id. Keyed on by clients; the title may be reworded."
+                            },
+                            "description": "The evidence pack's controls that protect this activity's data, by id. `measures` states each."
+                          },
+                          "gaps": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no-legal-basis",
+                                    "no-consent-purpose",
+                                    "class-not-stored",
+                                    "class-unclaimed",
+                                    "phi-not-covered",
+                                    "no-standing-grant"
+                                  ],
+                                  "description": "What is missing: `no-legal-basis` (an activity states none), `no-consent-purpose` (a consent basis names no purpose the catalog holds), `class-not-stored` (an activity claims a class nothing stores), `class-unclaimed` (a capability stores a class no activity claims), `phi-not-covered` (a stored `phi` field no consent purpose covers), or `no-standing-grant` (a purpose covering a class holds no standing grant)."
+                                },
+                                "subject": {
+                                  "type": "string",
+                                  "description": "What the gap is about: an activity id, a capability name, a consent purpose id, or a stored field as `<capability>/<table>.<path>`. A stored field is named only to a connection that also holds `privacy:read`; without it, the gap names the capability."
+                                },
+                                "detail": {
+                                  "type": "string",
+                                  "description": "What is missing, in one sentence."
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "subject",
+                                "detail"
+                              ],
+                              "description": "Something the record needs and the Worker does not declare. Named, never filled in."
+                            },
+                            "description": "What this activity is missing. Empty when nothing is."
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "purpose",
+                          "declaredBy",
+                          "classes",
+                          "legalBasis",
+                          "basisSource",
+                          "consent",
+                          "recipients",
+                          "retention",
+                          "measures",
+                          "gaps"
+                        ],
+                        "description": "One processing activity, as GDPR Article 30 lists it."
+                      },
+                      "description": "Every activity: each capability's, in composition order, then the adopter's."
+                    },
+                    "recipients": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "description": "Who receives the data."
+                          },
+                          "receives": {
+                            "type": "string",
+                            "description": "What they receive."
+                          },
+                          "classes": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "The data classes in what they receive."
+                          },
+                          "source": {
+                            "type": "string",
+                            "enum": [
+                              "platform",
+                              "binding",
+                              "declared"
+                            ],
+                            "description": "Where the recipient came from: `platform`, Cloudflare, which runs every Worker; `binding`, a binding this Worker has, such as Workers AI; `declared`, an activity's own declaration, built from the resolved config."
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "receives",
+                          "classes",
+                          "source"
+                        ],
+                        "description": "One recipient: who, what it receives, the classes in it, and where the record learned of it."
+                      },
+                      "description": "Every recipient across the record, once each: Cloudflare first, then by binding, then declared."
+                    },
+                    "measures": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "control": {
+                            "type": "string",
+                            "enum": [
+                              "audit-logging",
+                              "route-verification",
+                              "management-access",
+                              "key-rotation",
+                              "change-history",
+                              "data-protection",
+                              "csrf"
+                            ],
+                            "description": "The control this entry reports on, as a stable id. Keyed on by clients; the title may be reworded."
+                          },
+                          "title": {
+                            "type": "string",
+                            "description": "What the control is."
+                          },
+                          "soc2": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Its SOC 2 Trust Services Criteria references."
+                          },
+                          "iso27001": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Its ISO/IEC 27001:2022 Annex A references."
+                          },
+                          "state": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "evidenced",
+                                  "gap",
+                                  "not-derivable"
+                                ],
+                                "description": "What the Worker could say about this control: `evidenced` when the facts are present, `gap` when something is missing and the entry names what, `not-derivable` when the Worker cannot say and the entry names why. Evidence for an auditor, never a judgment."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "What the evidence pack says of it now. Null when the connection does not hold `evidence:read`."
+                          }
+                        },
+                        "required": [
+                          "control",
+                          "title",
+                          "soc2",
+                          "iso27001",
+                          "state"
+                        ],
+                        "description": "A technical or organizational security measure, cited from the evidence pack."
+                      },
+                      "description": "Every security measure the activities cite."
+                    },
+                    "gaps": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "no-legal-basis",
+                              "no-consent-purpose",
+                              "class-not-stored",
+                              "class-unclaimed",
+                              "phi-not-covered",
+                              "no-standing-grant"
+                            ],
+                            "description": "What is missing: `no-legal-basis` (an activity states none), `no-consent-purpose` (a consent basis names no purpose the catalog holds), `class-not-stored` (an activity claims a class nothing stores), `class-unclaimed` (a capability stores a class no activity claims), `phi-not-covered` (a stored `phi` field no consent purpose covers), or `no-standing-grant` (a purpose covering a class holds no standing grant)."
+                          },
+                          "subject": {
+                            "type": "string",
+                            "description": "What the gap is about: an activity id, a capability name, a consent purpose id, or a stored field as `<capability>/<table>.<path>`. A stored field is named only to a connection that also holds `privacy:read`; without it, the gap names the capability."
+                          },
+                          "detail": {
+                            "type": "string",
+                            "description": "What is missing, in one sentence."
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "subject",
+                          "detail"
+                        ],
+                        "description": "Something the record needs and the Worker does not declare. Named, never filled in."
+                      },
+                      "description": "Gaps about no single activity: unclaimed classes, uncovered `phi`, purposes with no standing grant."
+                    },
+                    "notDerivable": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "What the record could not read, and why. Empty when it read everything it needs."
+                    }
+                  },
+                  "required": [
+                    "environment",
+                    "generatedAt",
+                    "version",
+                    "activities",
+                    "recipients",
+                    "measures",
+                    "gaps",
+                    "notDerivable"
+                  ],
+                  "description": "The GDPR Article 30 record this Worker derives: each activity's purpose, data classes, legal basis, recipients, retention and measures, and every gap named."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "processing:read"
+        ]
+      }
+    },
     "/control-plane/erasure": {
       "get": {
         "tags": [

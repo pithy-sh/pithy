@@ -32,6 +32,33 @@ export interface ConsentReader {
    * merged into it granted. A purpose the catalog does not know answers no.
    */
   hasConsent(subject: ConsentSubject, purpose: string): Promise<boolean>;
+  /**
+   * Every purpose in the composed catalog, the adopter's included, with how many subjects stand where on it now. What
+   * the processing record cites for a consent-based activity. Optional on the seam: a reader without it leaves the
+   * counts unknown, never zero.
+   */
+  standings?(): Promise<readonly ConsentPurposeStanding[]>;
+  /**
+   * Every purpose in the composed catalog, the adopter's included, read from memory and never from the record. What
+   * the processing record checks a consent basis against when `standings` cannot answer. Optional on the seam: a
+   * reader without it leaves the catalog unknown, and the record then reports no gap that rests on the catalog.
+   */
+  purposes?(): readonly ConsentPurpose[];
+}
+
+/** One purpose in the catalog, and where its subjects stand on it now. */
+export interface ConsentPurposeStanding {
+  /** The purpose as the catalog composed it. */
+  readonly purpose: ConsentPurpose;
+  /** Subjects whose latest choice is a grant, under any notice version, expired or not. */
+  readonly grants: number;
+  /** Subjects whose latest choice is a withdrawal. */
+  readonly withdrawals: number;
+  /**
+   * Subjects `hasConsent` answers yes for now: a grant under the current notice version, at or above the purpose's
+   * minimum method, unexpired, and for a visitor not merged into an account, inside the visitor window.
+   */
+  readonly standing: number;
 }
 
 /** One withdrawal, as a capability that keeps its own state in step with consent is told of it. */

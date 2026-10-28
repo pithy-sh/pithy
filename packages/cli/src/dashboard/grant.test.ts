@@ -125,12 +125,21 @@ describe("defaultGrant", () => {
     ]);
   });
 
-  test("offers evidence:read as a read, preselected and grantable on its own — its one route is a GET (#821)", () => {
+  test("offers evidence:read as a read, preselected and grantable on its own — its one route is a GET", () => {
     const evidence = grantableScopes([controlplane()]).find((entry) => entry.scope === "evidence:read");
     expect(evidence?.read).toBe(true);
     expect(defaultGrant([controlplane()])).toContain("evidence:read");
     expect(resolveScopeRequest(readScopeRequest(["evidence:read"]), grantableScopes([controlplane()]))).toEqual([
       "evidence:read",
+    ]);
+  });
+
+  test("offers processing:read as a read, preselected and grantable on its own", () => {
+    const processing = grantableScopes([controlplane()]).find((entry) => entry.scope === "processing:read");
+    expect(processing).toMatchObject({ read: true, routes: 1 });
+    expect(defaultGrant([controlplane()])).toContain("processing:read");
+    expect(resolveScopeRequest(readScopeRequest(["processing:read"]), grantableScopes([controlplane()]))).toEqual([
+      "processing:read",
     ]);
   });
 
@@ -349,6 +358,7 @@ describe("--scope all resolves to the list the prompt renders", () => {
     "migrations:read",
     "privacy:read",
     "evidence:read",
+    "processing:read",
     "erasure:read",
     "retention:read",
     "retention:hold",
@@ -384,6 +394,7 @@ describe("--scope all resolves to the list the prompt renders", () => {
       "migrations:read",
       "privacy:read",
       "evidence:read",
+      "processing:read",
       "erasure:read",
       "retention:read",
       "retention:hold",
@@ -403,6 +414,7 @@ describe("--scope all resolves to the list the prompt renders", () => {
       "migrations:read",
       "privacy:read",
       "evidence:read",
+      "processing:read",
       "erasure:read",
       "retention:read",
       "retention:hold",
@@ -419,6 +431,7 @@ describe("--scope all resolves to the list the prompt renders", () => {
       "migrations:read",
       "privacy:read",
       "evidence:read",
+      "processing:read",
       "erasure:read",
       "retention:read",
       "audit:events:read",
@@ -483,6 +496,7 @@ describe("decideGrant", () => {
       "migrations:read",
       "privacy:read",
       "evidence:read",
+      "processing:read",
       "erasure:read",
       "retention:read",
       "retention:hold",
@@ -536,6 +550,7 @@ describe("decideGrant", () => {
       "migrations:read",
       "privacy:read",
       "evidence:read",
+      "processing:read",
       "erasure:read",
       "retention:read",
       "audit:events:read",
@@ -549,6 +564,7 @@ describe("decideGrant", () => {
       "migrations:read",
       "privacy:read",
       "evidence:read",
+      "processing:read",
       "erasure:read",
       "retention:read",
       "retention:hold",

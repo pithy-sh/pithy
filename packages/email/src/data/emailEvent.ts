@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
+import { pii } from "@pithy-sh/core/src/privacy/classes";
 import { z } from "zod";
 import { EmailEventType } from "./enums";
 
@@ -14,7 +15,7 @@ export const EmailEvent = z
   .object({
     id: z.number().int().describe("Surrogate primary key, autoincremented by SQLite."),
     jobId: z.string().describe("The `pithy_email_jobs.id` this event belongs to."),
-    recipient: z.string().describe("The recipient address the event is about."),
+    recipient: pii(z.string().describe("The recipient address the event is about.")),
     type: EmailEventType.describe(
       "What happened: sent, open, click, bounce, complaint, unsubscribe, suppressed, or failed.",
     ),

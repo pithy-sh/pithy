@@ -31,6 +31,11 @@ import {
   PRESENCE_ROOMS_BINDING_SPEC,
   type PresenceDeclaration,
 } from "../presence/declaration";
+import {
+  type ProcessingActivity,
+  type ProcessingActivityInput,
+  parseProcessingActivities,
+} from "../processing/activity";
 import type { CapabilityQueueHandler } from "../queue/consumer";
 import type { PurgeWindowDefault } from "../retention/policy";
 import type { SeedSet } from "../seed/seed";
@@ -192,7 +197,7 @@ export interface SecretRegistryEntrySeam {
   readonly devValue?: string;
   /**
    * The Worker binding this value exists to reach, or absent when it reaches none — the constant half
-   * of *can this composition use this secret* (#541).
+   * of *can this composition use this secret*.
    *
    * Read here and never interpreted, exactly like {@link devValue}: the CLI joins it against a Worker's
    * `declinedBindings` so a credential whose bucket the project declined stops being listed as
@@ -218,7 +223,7 @@ export type SecretRegistrySeam = Record<string, SecretRegistryEntrySeam>;
  * **It is declared, not matched by name.** `PaymentsRailToggles.paddle` and
  * `PaymentsProviderCredentials.paddle` happen to be spelled the same today, and a CLI that keyed off
  * that would be right by coincidence: nothing makes a config flag and a schema key the same thing, and
- * two of them one line apart cannot be told apart by convention (#513). The capability already knows
+ * two of them one line apart cannot be told apart by convention. The capability already knows
  * the answer at construction — it has both halves in hand — so it states it, and the CLI reads a fact
  * instead of inferring one.
  *
@@ -240,8 +245,8 @@ export type SecretBranchSeam = Record<string, readonly string[]>;
  * The neighbor of {@link SecretBranchSeam}, one level up. That one says which *blocks* of a bundle
  * apply when the bundle itself does; this says that a whole secret does not. `@pithy-sh/auth` declares
  * one credential per OAuth provider, so a project running Google and GitHub has two secrets that no
- * code path will ever read — and until #541 `pithy doctor` listed both as outstanding work under
- * *"fine to leave until you need it"*, which is not true of a credential the configuration has refused.
+ * code path will ever read, and `pithy doctor` does not list them as outstanding work: the configuration
+ * has refused them.
  *
  * **Declared, never inferred**, for {@link SecretBranchSeam}'s reason: `auth-apple-credentials` and
  * `providers.apple` are spelled alike today and nothing makes a secret name and a config key the same
@@ -319,7 +324,7 @@ export interface CapabilityComposeContext {
  * message (an untouched message is dropped by the runtime).
  *
  * **`ForwardableEmailMessage` and `ExecutionContext` are imported rather than assumed ambient**, and
- * that is the whole of #315's second half. This module is reachable from a client: a browser program
+ * that is deliberate. This module is reachable from a client: a browser program
  * that names a control-plane scope through a capability's guards lands here, and a browser program
  * has no Workers globals. Read off the global scope, the two names resolved only for a consumer that
  * had `@cloudflare/workers-types` in its `types` — so an adopter's DOM program failed on two errors
@@ -412,7 +417,7 @@ export interface Capability<
    * The CF permissions this capability's **deployed Workers** call Cloudflare with, as short catalog keys
    * (`secrets:write`, `images:write`, `analytics:read`). The runtime counterpart of {@link ciPermissions}.
    *
-   * **A deployed application holds one Cloudflare API token, and this is the only way into it (#728).**
+   * **A deployed application holds one Cloudflare API token, and this is the only way into it.**
    * Every composed capability's keys union into the project-level `runtime` profile, minted per
    * environment into the Secrets Store and read by every Worker of that environment through one binding,
    * the way every capability's `ciPermissions` union into the one `ci-system` token. A capability cannot
@@ -442,7 +447,7 @@ export interface Capability<
   adminRoutes?: readonly AdminRoute[];
   /**
    * The bounded health summary this capability contributes to its own manifest entry — a small, fixed
-   * set of scalars a management client can render beside a rail without a second round trip (#317).
+   * set of scalars a management client can render beside a rail without a second round trip.
    * Omit it when a capability has nothing to say, which is the normal case.
    *
    * **Declared alongside the routes, and only through `defineCapabilityHealth`.** The type is branded,
@@ -458,7 +463,7 @@ export interface Capability<
   health?: CapabilityHealth;
   /**
    * The configured facts this capability states into its own manifest entry — the decisions an adopter
-   * already made that a management client has to respect to call anything (#422). Omit it when nothing
+   * already made that a management client has to respect to call anything. Omit it when nothing
    * this capability is configured with changes how a client calls it, which is the normal case.
    *
    * **A third field, because the two obvious names are taken and neither is this.**
@@ -479,7 +484,7 @@ export interface Capability<
   manifestConfig?: CapabilityManifestConfig;
   /**
    * How this capability checks that its own **settings work**, as opposed to being merely present — the
-   * seam `pithy doctor` runs for every capability every Worker composes (#411). Omit it when a capability
+   * seam `pithy doctor` runs for every capability every Worker composes. Omit it when a capability
    * has nothing worth checking, which is the normal case and is silent rather than a fault.
    *
    * Declared here, on the instance, and **never keyed off `pithy.manifest.json`**: `@pithy-sh/matchmaking`
@@ -517,7 +522,7 @@ export interface Capability<
    * The npm **package** that supplies this capability, or `null` where there is none.
    *
    * The join key {@link Capability.version} is useless without. A version joins against a release feed
-   * by package name, and this manifest reported the version alone until #626 — so a client had to guess
+   * by package name, and without this a client has to guess
    * `@pithy-sh/${name}`, which is right for most capabilities and wrong for the one that matters:
    * `controlplane` ships inside `@pithy-sh/core`, so the guess reaches a package that has never been
    * published and the join comes back empty, which is indistinguishable from "up to date".
@@ -556,7 +561,7 @@ export interface Capability<
    * *load*, because the adopter's own toolchain has to keep working on the project while they fix it.
    * `@pithy-sh/payments` is the case it exists for: `pithy add` scaffolds an unimplemented
    * `resolveSubject`, every CLI command keeps loading that config, and the Worker refuses to boot until
-   * the adopter has written it (#500). A check that can be made at composition still belongs at
+   * the adopter has written it. A check that can be made at composition still belongs at
    * composition — earlier is better, and a refusal the CLI can raise is a refusal an adopter sees sooner.
    */
   boot?: (context: CapabilityComposeContext) => void;
@@ -618,7 +623,7 @@ export interface Capability<
   /**
    * Whether this capability fills `AuthContext.scopes` — whether anything will ever put a string in the
    * array the scope gates read. `@pithy-sh/auth` declares it when an adopter supplies `resolveScopes`, and
-   * not otherwise (#560).
+   * not otherwise.
    *
    * The same reason {@link providesEntitlements} exists, one seam over. Every scope gate fails closed, so a
    * Worker composing `leaderboard` with no resolver is not broken: it refuses every caller on the gated
@@ -658,7 +663,7 @@ export interface Capability<
    */
   email?: CapabilityEmailHandler;
   /**
-   * Queue consumer (#824). The entrypoint (`createEntrypoint`) exposes the Worker's one `queue` export when any
+   * Queue consumer. The entrypoint (`createEntrypoint`) exposes the Worker's one `queue` export when any
    * capability declares one, and hands each the messages of a batch whose body names it — see
    * `../queue/consumer.ts` for why the body, not the queue name, decides. The queue itself is declared as a
    * `queue` binding with a `consumer`, which is what writes the `queues.consumers` entry that delivers here.
@@ -666,7 +671,7 @@ export interface Capability<
   queue?: CapabilityQueueHandler;
   /**
    * The audit recorder this capability provides **for code that has no request** — a Workflow step, which the
-   * runtime constructs with `env` and nothing else (#622). `@pithy-sh/audit` declares it; nothing else does.
+   * runtime constructs with `env` and nothing else. `@pithy-sh/audit` declares it; nothing else does.
    *
    * A route records through `c.var.emit`, which the same capability's middleware fills, and keeps doing that.
    * This is the other door, for the purge that erases a deleted account: it runs in a Workflow and still owes
@@ -676,7 +681,7 @@ export interface Capability<
    */
   auditRecorder?: (env: Record<string, unknown>) => AuditEmit;
   /**
-   * The trail's citation reader (#823): which recorded events name a resource, and where each sits in its chain.
+   * The trail's citation reader: which recorded events name a resource, and where each sits in its chain.
    * `@pithy-sh/audit` declares it; nothing else does. The erasure attestation cites a purge's events through it,
    * found among the composed capabilities by `../audit/citations.ts`, so the control plane imports no audit package.
    */
@@ -690,6 +695,14 @@ export interface Capability<
    * `hasConsent` answers from, and `pithy doctor` names a composition that declares purposes and records no consent.
    */
   consentPurposes?: readonly ConsentPurpose[];
+  /**
+   * The processing activities this capability performs on personal data — `@pithy-sh/auth` declares `auth.account`.
+   * Each names a purpose, the data classes it uses and, where the capability can say, a default legal basis. Only
+   * under this capability's own `name`, as `<name>.<activity>`. `GET /control-plane/processing` derives the GDPR
+   * Article 30 record from them; see `../processing/activity.ts`. Build it from the resolved config, so a recipient
+   * that is switched off is not named.
+   */
+  processing?: readonly ProcessingActivity[];
   /**
    * The consent seam's provider: a reader built over this run's env. `@pithy-sh/consent` declares it;
    * nothing else does. A capability asks it through `composedConsent` in `../consent/reader.ts`, never by
@@ -752,7 +765,7 @@ export interface Capability<
    */
   purge?: readonly PurgeContribution[];
   /**
-   * How this capability's record of a purge is read back (#823) — declared by the capability that owns a purge
+   * How this capability's record of a purge is read back — declared by the capability that owns a purge
    * subject and runs its purge: `@pithy-sh/auth` for a user, `@pithy-sh/organization` for an organization. The
    * control plane's erasure attestation reads it. See `./erasure.ts`.
    */
@@ -790,8 +803,9 @@ export type CapabilityInput<
   Namespaces extends KvNamespaceSpecMap = Record<never, never>,
   Name extends string = string,
   Workflows extends WorkflowSpecMap = Record<never, never>,
-> = Omit<Capability<Databases, Namespaces, Name, Workflows>, "requiredBindings"> & {
+> = Omit<Capability<Databases, Namespaces, Name, Workflows>, "requiredBindings" | "processing"> & {
   requiredBindings: BindingSpecInput[];
+  processing?: readonly ProcessingActivityInput[];
 };
 
 /**
@@ -807,7 +821,7 @@ export function defineCapability<
   const Workflows extends WorkflowSpecMap = Record<never, never>,
 >(input: CapabilityInput<Databases, Namespaces, Name, Workflows>): Capability<Databases, Namespaces, Name, Workflows> {
   // A retained table is declared on the `down`s that could drop it the moment the capability exists, so a
-  // migration the runner is handed carries it however its provider was built (#588).
+  // migration the runner is handed carries it however its provider was built.
   for (const spec of Object.values(input.databases ?? {})) {
     if (spec.migrations && spec.retained) declareRetained(spec.migrations, spec.retained);
   }
@@ -818,6 +832,7 @@ export function defineCapability<
   const consentPurposes = input.consentPurposes
     ? parseConsentPurposes(input.name, input.consentPurposes, input.name)
     : undefined;
+  const processing = input.processing ? parseProcessingActivities(input.name, input.processing, input.name) : undefined;
   // A capability that declares room kinds needs the room's binding and serves the room's socket, so both are
   // added here, once, rather than spelled by every capability that declares one and drifting from it.
   const presence = input.presence && input.presence.rooms.length > 0 ? input.presence : undefined;
@@ -826,9 +841,11 @@ export function defineCapability<
     presence && !input.requiredBindings.some((binding) => binding.name === PRESENCE_ROOMS_BINDING_SPEC.name)
       ? [...input.requiredBindings, PRESENCE_ROOMS_BINDING_SPEC]
       : input.requiredBindings;
+  const { processing: _declared, ...declared } = input;
   return {
-    ...input,
+    ...declared,
     ...(consentPurposes ? { consentPurposes } : {}),
+    ...(processing ? { processing } : {}),
     ...(presence ? { sockets: [...(input.sockets ?? []), presenceRoomsSocket(input.name, presence)] } : {}),
     requiredBindings: requiredBindings.map((binding) => BindingSpec.parse(binding)),
   };

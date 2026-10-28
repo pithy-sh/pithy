@@ -272,6 +272,7 @@ Denials are audited too. `denied` is a first-class outcome, and this is the surf
 | `GET /control-plane/migrations` | `migrations:read` | Where each database this Worker binds stands: applied, pending, undeclared, and the run that last moved it |
 | `GET /control-plane/privacy` | `privacy:read` | Every stored schema holding a privacy-marked field: each field's path, its class, and where it lives |
 | `GET /control-plane/evidence` | `evidence:read` | SOC 2 and ISO 27001 evidence derived from what this Worker composes and records: per control, the facts, their sources, and what could be said |
+| `GET /control-plane/processing` | `processing:read` | The record of processing activities, GDPR Article 30: each activity's purpose, data classes, legal basis, recipients, retention and measures, and every gap named |
 | `GET /control-plane/erasure` | `erasure:read` | Every purge in a period: counts of complete, in progress and failed, and each failed or overdue one with the step it stopped at |
 | `GET /control-plane/erasure/:subjectType/:subjectId` | `erasure:read` | One user's or organization's erasure, attested: the deletion, every step erased or kept with its reason, the state, and the audit events that record each |
 | `GET /control-plane/holds` | `retention:read` | Every legal hold, standing first: its subject, who placed it and why, and when, by whom and why it was released, with the count standing |
@@ -345,6 +346,41 @@ Nothing in the pack says whether a framework is met. An auditor decides that. A 
 **It names no person beyond what a connection records.** A principal is the email the connection holds. No audit row's actor is copied in.
 
 **It proves controls present and performs nothing.** Rotating a key, applying a migration and revoking a connection stay where they are, on their own scopes. `evidence:read` is a read, so `pithy dashboard connect` preselects it. `pithy-sh/dashboard#156` will render the pack; until it does, read the route directly. No CLI command reads it. [`COMPLIANCE.md`](COMPLIANCE.md) is the adopter's page.
+
+### Processing
+
+`GET /control-plane/processing` is the record of processing activities that GDPR Article 30 asks a controller to keep. The Worker derives it from what it composes, declares and records, so it does not drift from the code the day it is written.
+
+**Capabilities declare; the adopter completes.** Each capability declares the activities it performs on `Capability.processing`: an id under its own name, a purpose, the data classes it uses, a default legal basis where it can state one, and the recipients its resolved config names. The kit declares `auth.account` (contract), `consent.record` (legal obligation), `email.delivery` (contract), `email.marketing` and `email.tracking` (consent, each citing its consent purpose) and `payments.purchases` (contract, naming each rail the config turns on). A Worker's `pithy.config.ts` adds its own in a `processing` block and may replace a capability's basis:
+
+```ts
+const config = {
+  capabilities: [auth({ baseURL }), consent(), email({ fromAddress, baseUrl })],
+  app,
+  processing: {
+    activities: [
+      { id: "clinic.intake", purpose: "Take a patient's history.", classes: ["phi"], legalBasis: "consent", consentPurpose: "clinic.records" },
+    ],
+    overrides: { "auth.account": { legalBasis: "legitimate-interests" } },
+  },
+};
+```
+
+The block is parsed when the Worker assembles. An activity under a composed capability's name, one declared twice, an override naming an activity nothing composes, and a consent purpose under a basis that is not `consent` each refuse to deploy.
+
+**An activity with no legal basis is a gap, never a guess.** Each entry carries `id`, `purpose`, `declaredBy` (the capability, or `config`), `classes`, `legalBasis` or null, `basisSource`, and:
+
+- `consent` — for a consent basis, the purpose it rests on with its notice version, whether it is explicit, and how many subjects hold a grant, have withdrawn, and hold a grant that stands now: current notice, at the minimum method, unexpired. The counts come from `@pithy-sh/consent` through the consent seam.
+- `recipients` — Cloudflare always, with what it receives; Workers AI for a capability whose `ai` binding is bound; and each recipient the activity declares: Cloudflare Email Service for email, the payment rails for payments.
+- `retention` — the effective retention: the class ages for the classes it uses, and every purge window, from the Worker's resolved `retention` block.
+- `measures` — the evidence pack's controls that protect stored personal data, by id. The record's `measures` lists each with its references, and with its current state when the connection also holds `evidence:read`.
+- `gaps` — what this activity is missing.
+
+**Every gap is named.** On an activity: `no-legal-basis`, `no-consent-purpose` (a consent basis with no purpose, or one no catalog declares), and `class-not-stored` (a class it claims that nothing stores). On the record: `class-unclaimed` (a class a capability stores that no activity of its own, and none of the adopter's, claims), `phi-not-covered` (a stored `phi` field no consent purpose covers: field by field for a connection that also holds `privacy:read`, and once per capability without it), and `no-standing-grant` (a consent purpose covering a class with no grant standing now, or with no consent capability composed to record one). The classes are cross-checked against the privacy inventory, the same walk `GET /privacy` reports.
+
+**The shape** is `ControlPlaneProcessingResponse`, exported from `@pithy-sh/core/src/controlPlane/http/responses`: `environment`, `generatedAt`, `version`, `activities[]`, `recipients[]` across the record, `measures[]`, `gaps[]` and `notDerivable[]`. What the Worker could not read on this call — the privacy inventory, the consent record, the consent catalog — is named in `notDerivable`, and a gap it would have found is not reported as absent. A consent record it could not read still checks each consent basis against the catalog, which the reader lists from memory.
+
+**It describes the processing and changes none of it.** `processing:read` is a read, so `pithy dashboard connect` preselects it. It never widens another scope: the measures' states need `evidence:read`, and field names stay `GET /privacy`'s. Without `privacy:read`, a gap names the capability and the class, never a table or a field. `pithy-sh/dashboard#156` will render the record; until it does, read the route directly. [`COMPLIANCE.md`](COMPLIANCE.md#the-record-of-processing) is the adopter's page.
 
 ### Erasure
 

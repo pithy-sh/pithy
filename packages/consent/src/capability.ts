@@ -6,7 +6,7 @@ import { type Capability, defineCapability } from "@pithy-sh/core/src/capability
 import { type ConsentPurpose, parseConsentPurposes } from "@pithy-sh/core/src/consent/purpose";
 import { type ConsentReader, composedConsentPurposes } from "@pithy-sh/core/src/consent/reader";
 import type { FieldKeys } from "@pithy-sh/core/src/crypto/fieldKeys";
-import { fromZodError } from "@pithy-sh/core/src/error/pithyError";
+import { fromZodError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { ConsentConfig, type ConsentConfigInput } from "./config/config";
 import { consentDatabase, consentRetainedTables, consentTables } from "./data/tables";
 import { CONSENT_EVIDENCE_BINDING } from "./evidence/evidence";
@@ -14,7 +14,9 @@ import { mergeOnSignIn } from "./http/merge";
 import { type ConsentRoutesOptions, registerConsentRoutes } from "./http/routes";
 import { consentAdminRoutes } from "./http/scopes";
 import { consent_0001_init } from "./migrations/0001_init";
+import { CONSENT_PROCESSING } from "./processing/activities";
 import { consentUserPurge } from "./purge/contribution";
+import { consentStandings } from "./record/standings";
 import { consentStore } from "./record/store";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
@@ -77,6 +79,17 @@ export function consent(config: ConsentConfigInput = {}): ConsentCapability {
           newId: () => crypto.randomUUID(),
         }).hasConsent(subject, purpose);
       },
+      standings: async () => {
+        // An empty answer would read as a catalog with no purposes; a throw reads as a record that could not be read.
+        if (!d1) {
+          throw new InternalError({
+            message: "The consent record needs the DB binding, and it is not bound.",
+            action: "Bind DB in this Worker's wrangler.jsonc, then redeploy.",
+          });
+        }
+        return consentStandings(consentDatabase(d1), catalog, new Date(), visitorWindowMs);
+      },
+      purposes: () => [...catalog.values()],
     };
   };
 
@@ -124,6 +137,7 @@ export function consent(config: ConsentConfigInput = {}): ConsentCapability {
     // The record is the proof processing was allowed and that it stopped: kept through a purge, with its basis, and
     // exported on an access request.
     purge: [consentUserPurge(visitorWindowMs)],
+    processing: CONSENT_PROCESSING,
   });
 
   return Object.assign(capability, { consentConfig: resolved, consentCatalog: () => catalog });

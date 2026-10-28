@@ -7,7 +7,7 @@ import type { MeterCharge, MeterSubject } from "@pithy-sh/core/src/entitlement/m
 import { isLocale } from "@pithy-sh/core/src/i18n/locale";
 import { consentGate } from "../consent/consent";
 import type { EmailJob } from "../data/emailJob";
-import { EmailJob as EmailJobSchema } from "../data/emailJob";
+import { EmailJob as EmailJobSchema, personalAddress } from "../data/emailJob";
 import type { EmailJobStatus, SendMode, SuppressionReason } from "../data/enums";
 import type { EmailDatabase, EmailSuppressionDatabase } from "../data/tables";
 import { EmailInvalidPayloadError } from "../error/errors";
@@ -25,7 +25,7 @@ import { blockingSuppression } from "./suppression";
  * `scheduled` and `timezone` jobs are left for the every-minute scheduler to pick up. The payload is
  * validated against the template schema here, so a bad call fails at enqueue, not mid-send.
  *
- * **Suppression is consulted here too, and no caller asks for it** (pithy-sh/pithy#355). A blocked
+ * **Suppression is consulted here too, and no caller asks for it**. A blocked
  * recipient never becomes a queued send: the row is born `suppressed`, no Workflow is started, and the
  * reason comes back on the result. The point is not a second gate — `runSend` is and stays the
  * authority, because whether an address is blocked is a question about the instant of sending and a
@@ -44,7 +44,7 @@ import { blockingSuppression } from "./suppression";
  * The Workflow binding used to start a send (Cloudflare `Workflow.create`). At enqueue it sends a batch
  * of one; the scheduler's fan-out starts one instance per batch through the same binding.
  *
- * `id` names the instance being created, and **every dispatcher passes one** (pithy-sh/pithy#342): the
+ * `id` names the instance being created, and **every dispatcher passes one**: the
  * scheduler passes its batch's, an enqueue passes the one it just stamped on the row, and a retry passes
  * the one it minted to replace the failed batch's. It is optional here only because the platform allows
  * omitting it, and omitting it is what made an immediate send unattributable to any instance — so the
@@ -90,7 +90,7 @@ export interface EnqueueInput {
   /**
    * What this message is *about*, when the template id does not say it on its own.
    *
-   * The discriminator for a template that carries more than one kind of message (pithy-sh/pithy#382).
+   * The discriminator for a template that carries more than one kind of message.
    * `sentSince` matches on it, so a caller deciding whether to send — or whether to send a *correction* —
    * can tell two messages apart that share a template and a recipient. Opaque: nothing here parses it,
    * renders it, or puts it on a header or a link.
@@ -184,8 +184,7 @@ export interface EnqueueDeps {
   /** Generate a job id (a UUID in production). */
   newId: () => string;
   /**
-   * Mint the id of the batch this enqueue dispatches — **the send Workflow instance's id**
-   * (pithy-sh/pithy#342). Defaults to {@link mintBatchId}; injected only so a test can name it.
+   * Mint the id of the batch this enqueue dispatches — **the send Workflow instance's id**. Defaults to {@link mintBatchId}; injected only so a test can name it.
    */
   newBatchId?: () => string;
 }
@@ -198,7 +197,7 @@ export interface EnqueueResult {
    *
    * `pending` and `scheduled` both mean a send is on its way. `suppressed` means the address is
    * blocked. **`undispatched` means this composition binds no send Workflow**, so nothing was started
-   * and nothing is coming while it stays that way (pithy-sh/pithy#410): a caller that renders "check
+   * and nothing is coming while it stays that way: a caller that renders "check
    * your inbox" off it is reporting a delivery that cannot happen. It is the one status here that
    * describes the *deployment* rather than the message — and the scheduler drains those rows once a
    * host exists, so it is not the end of the job.
@@ -221,7 +220,7 @@ export interface EnqueueResult {
   consentWithheld?: string;
   /**
    * The **enqueue-time** render — the sentence this call wrote to `pithy_email_jobs.subject`, in the
-   * recipient's language, and the value the row is born with (pithy-sh/pithy#443).
+   * recipient's language, and the value the row is born with.
    *
    * **For the caller that has to say what it queued.** Enqueuing is what a surface does; auditing it is
    * what a surface with an administrative trail also does. Without this, that caller had to render the
@@ -316,7 +315,7 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
   // else is left for the scheduler to claim.
   const sender = !blocked && mode === "immediate" ? deps.sender : undefined;
   /**
-   * An immediate job with nothing to dispatch it on (pithy-sh/pithy#410).
+   * An immediate job with nothing to dispatch it on.
    *
    * A missing binding is a **configuration fact known at compose time**, not a transient failure, and
    * the two used to be recorded identically: both left the row `pending` and told the caller "on its
@@ -339,7 +338,7 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
   const status: EmailJobStatus = blocked ? "suppressed" : undispatchable ? "undispatched" : scheduled;
   /**
    * The batch this enqueue is about to start — named here, before the row exists, because the row has to
-   * carry it (pithy-sh/pithy#342).
+   * carry it.
    *
    * Without it the row is born naming nobody, and a row naming nobody is stranded by definition: the
    * scheduler's safety net claims any `pending` job older than `graceMs` and starts a *second* send
@@ -369,8 +368,8 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
 
   const job: EmailJob = {
     id: deps.newId(),
-    toAddress: input.to,
-    recipientKey: recipient,
+    toAddress: personalAddress(input.to),
+    recipientKey: personalAddress(recipient),
     fromAddress: deps.fromAddress,
     fromName: deps.fromName,
     subject,
