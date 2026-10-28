@@ -1105,6 +1105,7 @@ describe("a client identified by its metadata document", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   test("the authorization server's metadata says it takes a metadata document as a client id", async () => {
@@ -1264,15 +1265,50 @@ describe("a client identified by its metadata document", () => {
     expect(res.headers.get("location") ?? "").not.toContain("attacker.example.net");
   });
 
-  test("a document is fetched once while its caching headers say it is fresh", async () => {
+  /** Move the clock the metadata cache reads forward by `ms`, from wherever it stands now. */
+  function advanceClock(ms: number): void {
+    const now = Date.now() + ms;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+  }
+
+  /** Authorize `attempts` times on one composed app, and expect each to reach the consent screen. */
+  async function authorizeRepeatedly(app: App, session: string, label: string, attempts = 1): Promise<void> {
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      const res = await startAuthorization(app, DOCUMENT_URL, session, `v-${label}-${attempt}-${"x".repeat(48)}`);
+      expect(res.headers.get("location") ?? "", `${label}, attempt ${attempt}`).toContain("/agent-consent?");
+    }
+  }
+
+  test("a document is fetched once while its max-age says it is fresh, and again once it has passed", async () => {
     serve(documentFor(DOCUMENT_URL), { "cache-control": "max-age=300" });
     const app = buildApp();
     const { token: session } = await signInScoped(env.DB, "cimd@test.com");
-    for (const attempt of [1, 2]) {
-      const res = await startAuthorization(app, DOCUMENT_URL, session, `v-${attempt}-${"x".repeat(48)}`);
-      expect(res.headers.get("location") ?? "", `attempt ${attempt}`).toContain("/agent-consent?");
-    }
+    await authorizeRepeatedly(app, session, "fresh", 2);
     expect(fetched).toEqual([DOCUMENT_URL]);
+    advanceClock(301_000);
+    await authorizeRepeatedly(app, session, "stale");
+    expect(fetched).toEqual([DOCUMENT_URL, DOCUMENT_URL]);
+  });
+
+  test("a document served no-store is fetched on every authorization", async () => {
+    serve(documentFor(DOCUMENT_URL), { "cache-control": "no-store" });
+    const app = buildApp();
+    const { token: session } = await signInScoped(env.DB, "cimd@test.com");
+    await authorizeRepeatedly(app, session, "no-store", 2);
+    expect(fetched).toEqual([DOCUMENT_URL, DOCUMENT_URL]);
+  });
+
+  test("a document is fetched again after 60 minutes, however long its caching headers say it is fresh", async () => {
+    serve(documentFor(DOCUMENT_URL), { "cache-control": "max-age=86400" });
+    const app = buildApp();
+    const { token: session } = await signInScoped(env.DB, "cimd@test.com");
+    await authorizeRepeatedly(app, session, "first");
+    advanceClock(59 * 60_000);
+    await authorizeRepeatedly(app, session, "within the ceiling");
+    expect(fetched).toEqual([DOCUMENT_URL]);
+    advanceClock(2 * 60_000);
+    await authorizeRepeatedly(app, session, "past the ceiling");
+    expect(fetched).toEqual([DOCUMENT_URL, DOCUMENT_URL]);
   });
 
   test("dynamic registration still works beside it, and its client is never shown as verified", async () => {
