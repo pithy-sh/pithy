@@ -1031,7 +1031,6 @@ describe("erasure and export", () => {
 
 describe("a client identified by its metadata document", () => {
   const DOCUMENT_URL = "https://client.example.com/oauth/client.json";
-  /** Every request the stubbed network saw. */
   const fetched: string[] = [];
 
   /** The document a well-behaved client serves at its own id. */
@@ -1055,7 +1054,6 @@ describe("a client identified by its metadata document", () => {
     });
   }
 
-  /** Serve one document at {@link DOCUMENT_URL}. */
   function serve(body: unknown, headers: Record<string, string> = {}) {
     network(
       () =>
@@ -1265,13 +1263,11 @@ describe("a client identified by its metadata document", () => {
     expect(res.headers.get("location") ?? "").not.toContain("attacker.example.net");
   });
 
-  /** Move the clock the metadata cache reads forward by `ms`, from wherever it stands now. */
   function advanceClock(ms: number): void {
     const now = Date.now() + ms;
     vi.spyOn(Date, "now").mockReturnValue(now);
   }
 
-  /** Authorize `attempts` times on one composed app, and expect each to reach the consent screen. */
   async function authorizeRepeatedly(app: App, session: string, label: string, attempts = 1): Promise<void> {
     for (let attempt = 1; attempt <= attempts; attempt++) {
       const res = await startAuthorization(app, DOCUMENT_URL, session, `v-${label}-${attempt}-${"x".repeat(48)}`);

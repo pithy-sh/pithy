@@ -13,7 +13,6 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** Stub the platform fetch, recording each call. */
 function stubFetch(answer: () => Response = () => new Response("{}", { status: 200 })) {
   const calls: { url: string; init: RequestInit | undefined }[] = [];
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
