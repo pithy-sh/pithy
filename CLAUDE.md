@@ -29,6 +29,23 @@ Pithy is an open-source, **Cloudflare-native backend kit for mobile *and* web ap
 - **No `namespace`, no `const enum`, no type-position decorators** — not TS-7-compatible.
 - Strict mode on. No `any` in committed code; use `unknown` + narrowing.
 
+## Comments (what is true of the code now)
+
+- **A comment says only what is true of the code now, and only what the code, a type, a test or a lint rule cannot say.** No issue references, no attributions, no history. Agents copy the code around them, so a paragraph defending a workaround teaches the next one to write the workaround and the paragraph again. And a comment is a second source of truth that nothing updates. The history already lives in the commit, `git blame` and the issue, where it stays accurate.
+
+  | What the comment holds | Where it goes instead |
+  |---|---|
+  | History: who, when, which issue, what it used to do | The commit message and the issue |
+  | A rule: never do X here | A lint rule or a type |
+  | A bug that must not come back | A test named for the behavior |
+  | What the code does | Nowhere; the code says it |
+  | A current constraint the code cannot show | One short comment, kept |
+  | Exported API | TSDoc, kept |
+
+- **Adopter-facing comments stay, held to the same rule.** The comment-documented JSONC configs, the comments the CLI writes into a generated `pithy.config.ts`, and the scaffolded templates teach the adopter who copies them, so they describe the code as it is now.
+- **A history marker is an issue reference** (`#123`, `owner/repo#123`, a github.com issue or pull URL) **or an attribution** (a name, a comma, an ISO date). A date alone is not one: a compatibility date is a contract. `packages/cli/src/ci/commentHistory.test.ts` counts the markers in every comment under `packages/`, `scripts/` and `plugins/` (`.ts`, `.tsx`, `.grit`, `.jsonc`) and in `biome.jsonc`, and holds each file's count to `comment-history.jsonc`. It fails when a count rises, when a file outside the baseline gains a marker, and when a count falls and the baseline was not lowered. `bun scripts/comment-history.ts` lowers the baseline and refuses to raise it. Never raise a count by hand.
+- **A change that touches a file in the baseline cleans that file and drops it from the baseline.** Cleaning is not deleting. Read each history comment for what it protects: a rule it states becomes a lint rule or a type, a regression it describes becomes a test if none pins it, and a current constraint survives as one short comment. The rest goes. This is a convention and a review check, not a gate: a one-line fix in a file with 200 history lines is not failed for them.
+
 ## Zod (all data objects)
 
 - **Zod 4.** Codec API: `z.codec`, `.encode()`, `z.input` / `z.output`.

@@ -13,5 +13,11 @@
     "outDir": "dist"
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"],
-  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/openapi/kitDocument.ts", "src/openapi/writeKitDocument.ts"]
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/openapi/kitDocument.ts",
+    "src/openapi/writeKitDocument.ts",
+    "src/ci/commentHistory.ts"
+  ]
 }
