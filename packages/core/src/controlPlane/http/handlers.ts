@@ -10,6 +10,7 @@ import type { PresenceDeclaration } from "../../presence/declaration";
 import { privacyAttestation, privacyPosture } from "../../privacy/posture";
 import type { PrivacyInventory } from "../../privacy/report";
 import type { RetirementVerdict } from "../../privacy/retirement";
+import type { EffectiveRetention } from "../../retention/policy";
 import { workerVersionMetadata } from "../../worker/identity";
 import { ControlPlaneAuditActions, safeEmit } from "../audit/actions";
 import type { ControlPlaneConfig } from "../config/config";
@@ -122,12 +123,17 @@ export interface ControlPlaneHandlerDeps {
    * not assemble. Read per call, after every capability's routes have mounted, so the evidence pack sees them all.
    */
   routeGroups: () => readonly RouteGroup[] | undefined;
+  /**
+   * The retention block as this Worker resolved it at assembly, or null when no backend recorded one. The
+   * manifest reports it.
+   */
+  retention?: () => EffectiveRetention | null;
   /** The clock, injected so a test can stand at any instant. */
   now: () => Date;
 }
 
 /** The verified caller. Never null here — `requireControlPlane` ran first, or this code is unreachable. */
-function caller(c: Context<PithyHonoEnv>): ControlPlaneContext {
+export function caller(c: Context<PithyHonoEnv>): ControlPlaneContext {
   const context = c.var.controlPlane;
   if (!context) {
     // Defense in depth against a route line assembled without the gate. It cannot happen through
@@ -303,8 +309,16 @@ export function manifestHandler(deps: ControlPlaneHandlerDeps) {
       },
       capabilities,
       grantedScopes: [...context.grantedScopes],
+      // How long this Worker keeps what it holds, as it takes effect: policy, not data, so on every manifest.
+      ...retentionOf(deps),
     } satisfies ControlPlaneManifestWire);
   };
+}
+
+/** The resolved retention for the manifest, or nothing where this Worker recorded none. */
+function retentionOf(deps: ControlPlaneHandlerDeps): { retention?: EffectiveRetention } {
+  const retention = deps.retention?.() ?? null;
+  return retention === null ? {} : { retention };
 }
 
 /**

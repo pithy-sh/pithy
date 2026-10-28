@@ -6,6 +6,7 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { resolveClientProjection } from "@pithy-sh/core/src/capability/client";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { effectiveRetention, subjectClasses } from "@pithy-sh/core/src/retention/composed";
 import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import type { BetterAuthPlugin } from "better-auth";
 // The barrel, for this one only: `better-auth` publishes no `./plugins/oauth-popup` export entry.
@@ -61,6 +62,7 @@ describe("auth capability", () => {
       "0005_purge_once",
       "0006_verification_outcomes",
       "0007_erasure_record",
+      "0008_last_active",
     ]);
     // A second migration never gets a second order. Renumbering would rename `0300_auth_0001_init`, and
     // Kysely would then read every applied auth migration as unapplied and run it again.
@@ -159,6 +161,7 @@ describe("additional Better Auth plugins", () => {
       "0005_purge_once",
       "0006_verification_outcomes",
       "0007_erasure_record",
+      "0008_last_active",
     ]);
     expect(cap.extensions).toEqual([]);
   });
@@ -173,6 +176,7 @@ describe("additional Better Auth plugins", () => {
       "0005_purge_once",
       "0006_verification_outcomes",
       "0007_erasure_record",
+      "0008_last_active",
       "0002_plugin_organization",
     ]);
   });
@@ -543,5 +547,28 @@ describe("the deletion lifecycle on the capability (#622)", () => {
     } as unknown as Capability;
     cap.compose?.({ capabilities: [email, cap, media] });
     expect(cap.purgeSteps.map((step) => step.step)).toEqual(["auth", "media"]);
+  });
+});
+
+describe("the classes a user's rows hold", () => {
+  test("auth's own tables mark the account's name and email pii, so a pii class age reaches every account", () => {
+    expect(subjectClasses([auth({ baseURL: "https://api.example.com" })], "user")).toContain("pii");
+  });
+});
+
+describe("the retention floor over auth's lifecycle", () => {
+  test("refuses a short window on suspensions, reinstatements and restores, not only on the erasure", () => {
+    const caps = [auth({ baseURL: "https://api.example.com" })];
+    expect(() => effectiveRetention({ audit: { prefixes: { "auth/admin_user_re": "30d" } } }, caps)).toThrow(
+      /floor of 365/,
+    );
+    const floored = effectiveRetention({ audit: { default: "30d" } }, caps).audit.floored;
+    expect(floored).toEqual(
+      expect.arrayContaining([
+        AuthAuditActions.adminUserSuspended,
+        AuthAuditActions.adminUserReinstated,
+        AuthAuditActions.adminUserRestored,
+      ]),
+    );
   });
 });

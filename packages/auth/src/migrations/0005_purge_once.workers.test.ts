@@ -91,6 +91,7 @@ describe("auth_0005_purge_once", () => {
     await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());
+    await rollbackMigration(env.DB, provider());
     expect(await lifecycleColumns()).not.toContain("notify");
     expect(await indexNames()).not.toContain("pithy_auth_user_lifecycle_purged_once_idx");
     const left = await env.DB.prepare("select count(*) as n from pithy_auth_user_lifecycle").first<{ n: number }>();

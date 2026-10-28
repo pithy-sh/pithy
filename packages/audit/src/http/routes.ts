@@ -513,6 +513,7 @@ export function registerAuditRoutes(options: AuditRoutesOptions): (app: Hono<Pit
             intact: found.intact,
             checked: found.checked,
             checkpoints: found.checkpoints,
+            pruned: found.pruned,
             checkpointStore: bucket ? "bound" : "absent",
             beforeChain: found.beforeChain,
             outsideChain: found.outsideChain,

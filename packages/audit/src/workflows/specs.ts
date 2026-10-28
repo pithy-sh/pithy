@@ -43,7 +43,47 @@ export const auditWorkflows = {
   },
 } as const satisfies WorkflowSpecMap;
 
-/** Audit's jobs as a dispatch registry, keyed `audit/<job>`, with core's key format. */
+/** The binding the retention prune runs on, in the adopter's own Worker. */
+export const AUDIT_PRUNE_BINDING = "AUDIT_PRUNE";
+
+/** The prune's parameters. Every field optional, because a cron passes none. */
+export const AuditPruneParams = z
+  .object({
+    pages: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .optional()
+      .describe("How many pages of 500 rows one chain is pruned in this pass, at most. Defaults to 20."),
+  })
+  .describe("One retention prune pass over every chain. A cron passes no field.");
+export type AuditPruneParams = z.infer<typeof AuditPruneParams>;
+
+/**
+ * The job audit runs in the adopter's own Worker: the retention prune. Not in the checkpoint host, because the prune
+ * reads the Worker's `retention` block, which exists only where `createEntrypoint` resolved it. No `className`: the
+ * class is the adopter's, five lines calling `runAuditPrune` in `./prune.ts`.
+ *
+ * **Daily, at 02:00 UTC**, the trigger auth's and organization's purge passes share, so a Worker composing all three
+ * spends one cron. Windows are counted in days, so a daily pass prunes nothing later than an hourly one would.
+ *
+ * `optional: true`, so a Worker composing audit boots before the adopter has bound it. Until then nothing is pruned
+ * and the trail is kept, which is what a Worker with no `retention` block does anyway.
+ */
+export const auditAppWorkflows = {
+  prune: {
+    binding: AUDIT_PRUNE_BINDING,
+    params: AuditPruneParams,
+    schedule: "0 2 * * *",
+    optional: true,
+  },
+} as const satisfies WorkflowSpecMap;
+
+/**
+ * The checkpoint host's jobs as a dispatch registry, keyed `audit/<job>`, with core's key format. The prune is not
+ * in it: the host resolver derives the host's Workflows from this registry, and the prune is hosted elsewhere.
+ */
 export const auditWorkflowRegistry: WorkflowRegistry = Object.fromEntries(
   Object.entries(auditWorkflows).map(([job, spec]) => {
     const key = workflowKey(AUDIT_CAPABILITY, job);

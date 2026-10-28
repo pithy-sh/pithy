@@ -21,15 +21,44 @@ _Everything else is on the site. `pithy.sh/docs` is canonical — new prose goes
 **Verify it in the Worker, or without it.** Both reads need `audit:events:export`:
 
 - `GET /audit/control-plane/verify?tenant=…&since=…&until=…` walks the range and answers intact, or the first break with its event id, its position and why: edited, missing, inserted, unlinked, against a checkpoint, or truncated before one.
-- `GET /audit/control-plane/export?tenant=…` hands over the range in canonical form, each event with its hash, the link before it and every checkpoint covering it. IP, user-agent and metadata values come out only when the connection also holds `audit:events:read_detail`; otherwise their commitments do.
+- `GET /audit/control-plane/export?tenant=…` hands over the range in canonical form, each event with its hash, the link before it, every checkpoint covering it, and every tombstone of the chain. IP, user-agent and metadata values come out only when the connection also holds `audit:events:read_detail`; otherwise their commitments do.
 
 `pithy audit verify <file>` recomputes an export's chain offline and checks it against its checkpoints, so an auditor trusts neither the Worker nor us. Nothing is signed, so nothing needs a key.
 
 **Events from before the upgrade are marked, not chained.** Their chain columns stay null, the listing shows `chainSeq: null`, and verify counts them as `beforeChain`. Nothing back-fills them: a chain asserted over rows nobody checked would be a claim, not evidence. A row with no chain written *after* the chain began is counted as `outsideChain`, beside `beforeChain`, and is not a break: Workers redeploy one at a time, old and new versions serve side by side while one rolls out, and a rollback or an older CLI writes the same way, so an older recorder writing into a chained trail is a normal upgrade, not tampering. `intact` speaks for the chain itself. A row inserted with a chain position is the walk's, and is a break.
 
-This proves the trail is whole. It adds no way to change it.
+This proves the trail is whole. It adds no way to change it. The one way an event leaves is the retention prune, below, and it leaves a tombstone the verify reads across.
 
 **The erasure attestation cites it.** `@pithy-sh/audit` declares `auditCitations`, the seam through which `GET /control-plane/erasure/:subjectType/:subjectId` points at the events a purge recorded: each by event id, tenant, chain position and hash, never its IP, user-agent or metadata. Hand an auditor the attestation and an export of that chain, and `pithy audit verify` checks the events it cites. Without this capability composed, the attestation says its trail is `absent`. [`docs/CONTROL-PLANE.md` §12](../../docs/CONTROL-PLANE.md#erasure) has the shape.
+
+## Retention
+
+**The trail is kept forever unless the Worker says otherwise.** The `retention` block in its `pithy.config.ts` sets how long events are kept, by action prefix, with a default, and the kit holds `controlplane/*` and every lifecycle action at a year at least. The block, its floor and legal holds are [`docs/CONTROL-PLANE.md` §12](../../docs/CONTROL-PLANE.md#retention-and-legal-holds).
+
+**The prune runs in your own Worker**, because it reads the block only that Worker resolves. Export the class beside `createEntrypoint`:
+
+```ts
+// apps/api/src/index.ts
+import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
+import { NonRetryableError } from "cloudflare:workflows";
+import { runAuditPrune } from "@pithy-sh/audit/src/workflows/prune";
+
+export class AuditPruneWorkflow extends WorkflowEntrypoint<Record<string, unknown>> {
+  override run(event: WorkflowEvent<unknown>, step: WorkflowStep) {
+    return runAuditPrune(this.env, event, step, NonRetryableError);
+  }
+}
+```
+
+Then bind it as `AUDIT_PRUNE` in that Worker's `workflows`, beside the `0 2 * * *` cron auth's and organization's purge passes already use. The binding is optional: until it is bound, nothing is pruned.
+
+**A pruned run leaves a tombstone, so the chain still verifies.** Before deleting a row, the prune writes one object per run to the `AUDIT_CHECKPOINTS` bucket, under the chain's checkpoint prefix, where the object lock covers it: the run's positions, the link before it, and the hashes at either end. `GET /audit/control-plane/verify` and `pithy audit verify` bridge the gap with it and answer intact. The Worker's verify also counts the events it crossed, as `pruned`; the CLI's report does not. Without the bucket bound in that Worker, nothing chained is pruned.
+
+- **A run that does not verify stays.** The prune never removes the evidence of a break.
+- **The head is never pruned.** The next append links to it.
+- **An event kept longer stays where it is.** Windows differ by action, so each run of consecutive events past their windows is pruned on its own.
+- **Rows from before the chain** are removed on their own window, with nothing to tombstone.
+- **A legal hold on a tenant's trail stops it** at the next page, and the chain stays whole until the hold is released.
 
 ## Shipping the trail
 

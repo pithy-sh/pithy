@@ -160,14 +160,16 @@ const DECLARED_ONLY: Record<string, string> = {
  * Backup and restore (#848) moved `cli` by four: `backup/backup.ts`, `backup/inspect.ts`, `backup/owned.ts` and
  * `backup/restore.ts`, which read and write a D1 through the binding or the REST client alike; and `support` by one:
  * `store/provisionIndex.ts`, the index step `pithy support provision` and `pithy restore` share.
+ * In `audit`, `chain/prune.ts`, `chain/tombstone.ts` and `workflows/prune.ts` read and write the checkpoint bucket and
+ * the trail. In `core`, `retention/holds.ts` reads the legal holds over the env's own D1.
  */
 const IMPORTERS: Record<string, number> = {
   "packages/artifacts": 3,
-  "packages/audit": 8,
+  "packages/audit": 11,
   "packages/auth": 10,
   "packages/cli": 19,
   "packages/cloudflare": 2,
-  "packages/core": 20,
+  "packages/core": 21,
   "packages/email": 10,
   "packages/leaderboard": 12,
   "packages/ledger": 4,

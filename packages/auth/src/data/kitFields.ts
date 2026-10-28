@@ -53,6 +53,8 @@ const LIFECYCLE_FIELDS = {
   suspendedUntil: { type: "number", required: false, input: false },
   deletedAt: { type: "number", required: false, input: false },
   purgeAfter: { type: "number", required: false, input: false },
+  // When the account last opened a session, stamped by `session.create.after`, never by a caller.
+  lastActiveAt: { type: "number", required: false, input: false },
 } as const;
 
 /**

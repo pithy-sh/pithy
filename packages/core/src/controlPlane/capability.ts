@@ -13,6 +13,9 @@ import type { PresenceDeclaration } from "../presence/declaration";
 import { describePresenceRooms } from "../presence/http/routes";
 import { readRetirement } from "../privacy/fieldRotation";
 import { lazyPrivacyInventory } from "../privacy/inventory";
+import { composedRetention } from "../retention/composed";
+import { standingHolds } from "../retention/holds";
+import { holdsUserPurge } from "../retention/holdsPurge";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "../version.generated";
 import { ENVIRONMENT_VAR } from "../worker/identity";
 import { ControlPlaneConfig, type ControlPlaneConfigInput } from "./config/config";
@@ -33,6 +36,7 @@ import { controlplane_0001_init } from "./migrations/0001_init";
 import { controlplane_0002_management_origin } from "./migrations/0002_management_origin";
 import { controlplane_0003_connection_principal } from "./migrations/0003_connection_principal";
 import { controlplane_0004_connection_trusts } from "./migrations/0004_connection_trusts";
+import { controlplane_0005_holds } from "./migrations/0005_holds";
 import { d1ReplayGuard } from "./replay/d1Guard";
 import type { ReplayGuard } from "./replay/guard";
 import {
@@ -41,6 +45,7 @@ import {
   controlPlaneKvNamespaces,
   kvReplayGuard,
 } from "./replay/kvGuard";
+import { RETENTION_READ_SCOPE } from "./scope/scope";
 
 /**
  * Where the control-plane registration sorts in the app database. Composed key:
@@ -55,6 +60,17 @@ import {
 export const CONTROLPLANE_MIGRATION_ORDER = 1100;
 
 export type ControlPlaneOptions = ControlPlaneConfigInput;
+
+/** The standing legal holds, on the seam's own manifest entry. Behind the scope the holds listing requires. */
+export const ACTIVE_HOLDS_HEALTH_KEY = {
+  key: "activeHolds",
+  kind: "count",
+  states: null,
+  scope: RETENTION_READ_SCOPE,
+  cost: "indexed",
+  summary: "Legal holds standing. While one stands, no purge, prune or inactivity deletion touches its subject.",
+  nominal: null,
+} as const;
 
 /** The control-plane capability, with its resolved config attached. */
 export interface ControlPlaneCapability extends Capability<DatabaseSpecMap, KvNamespaceSpecMap, "controlplane"> {
@@ -96,6 +112,7 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
     "0002_management_origin": controlplane_0002_management_origin,
     "0003_connection_principal": controlplane_0003_connection_principal,
     "0004_connection_trusts": controlplane_0004_connection_trusts,
+    "0005_holds": controlplane_0005_holds,
   };
   const requiredBindings: BindingSpecInput[] = [
     // The app database — the connections table lives here, beside auth's and audit's. Not the secrets
@@ -203,13 +220,23 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
     // The seam describes itself too. Built from the same resolved `basePath` the routes mount on, so a
     // moved mount point is reported rather than becoming a lie a client believes.
     adminRoutes: controlPlaneRouteDescriptors(config.basePath),
+    // A legal hold names the user it preserves, and outlives the purge it allowed: kept, and exported on request.
+    purge: [holdsUserPurge()],
     // Two counts on the seam's own manifest entry, so a client sees *this environment is behind* on the read
     // it already makes and calls the route only to see what. Behind `migrations:read`, which the route above
     // requires — a connection without it gets no number rather than a zero. A database that cannot be read
     // fails the producer, and the seam reports the summary unavailable rather than a partial total.
+    // And the count of standing legal holds, behind `retention:read`, which the holds listing requires.
     health: defineCapabilityHealth({
-      keys: MIGRATION_HEALTH_KEYS,
-      read: (c) => readMigrationHealth(c.env as Record<string, unknown>, migrationDatabases),
+      keys: [...MIGRATION_HEALTH_KEYS, ACTIVE_HOLDS_HEALTH_KEY],
+      read: async (c) => {
+        const env = c.env as Record<string, unknown>;
+        const [migrations, activeHolds] = await Promise.all([
+          readMigrationHealth(env, migrationDatabases),
+          standingHolds(env),
+        ]);
+        return { ...migrations, activeHolds };
+      },
     }),
     compose: ({ capabilities }) => {
       // Every capability, including those exposing nothing. A client rendering a capability it cannot
@@ -313,6 +340,8 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
         // The app these routes mount on is the one `createBackend` records its route table against, once every
         // capability has mounted — so the evidence pack, reading it per call, sees every route (#821).
         routeGroups: () => routeGroupsOf(app),
+        // The retention block as this Worker resolved it at assembly, for the manifest.
+        retention: composedRetention,
         now,
       });
     },

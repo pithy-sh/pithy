@@ -397,6 +397,152 @@
                         "sources"
                       ]
                     },
+                    "retention": {
+                      "description": "How long this Worker keeps deleted accounts, the audit trail and each class of personal data, as its `retention` block takes effect: every window in days and where it came from. Absent from an older Worker.",
+                      "type": "object",
+                      "properties": {
+                        "purgeWindows": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "subject": {
+                                "type": "string",
+                                "enum": [
+                                  "user",
+                                  "organization"
+                                ],
+                                "description": "Whose deletion the window governs."
+                              },
+                              "days": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991,
+                                "description": "How many days a deletion stays restorable before its purge."
+                              },
+                              "source": {
+                                "type": "string",
+                                "enum": [
+                                  "policy",
+                                  "capability",
+                                  "floor"
+                                ],
+                                "description": "Where the value came from: `policy`, the `retention` block; `capability`, the capability's own config, because the block names none; `floor`, the kit's minimum for the audit trail."
+                              }
+                            },
+                            "required": [
+                              "subject",
+                              "days",
+                              "source"
+                            ],
+                            "description": "One soft-delete window as it takes effect."
+                          },
+                          "description": "Every soft-delete window a composed capability runs, in composition order."
+                        },
+                        "audit": {
+                          "type": "object",
+                          "properties": {
+                            "defaultDays": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "How long an event no rule names is kept, in days. Null keeps it forever."
+                            },
+                            "floorDays": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991,
+                              "description": "The least the kit keeps `controlplane/*` and every lifecycle action, in days."
+                            },
+                            "rules": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "prefix": {
+                                    "type": "string",
+                                    "description": "The action prefix, or a floored action in full."
+                                  },
+                                  "days": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 9007199254740991,
+                                    "description": "How long matching events are kept, in days."
+                                  },
+                                  "source": {
+                                    "type": "string",
+                                    "enum": [
+                                      "policy",
+                                      "capability",
+                                      "floor"
+                                    ],
+                                    "description": "Where the value came from: `policy`, the `retention` block; `capability`, the capability's own config, because the block names none; `floor`, the kit's minimum for the audit trail."
+                                  }
+                                },
+                                "required": [
+                                  "prefix",
+                                  "days",
+                                  "source"
+                                ],
+                                "description": "One audit rule as it takes effect."
+                              },
+                              "description": "Every rule, longest prefix first. A `floor` rule is the kit holding a floored action at the floor under a shorter default."
+                            },
+                            "floored": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Every prefix and action the floor covers: `controlplane/` and each composed lifecycle action."
+                            }
+                          },
+                          "required": [
+                            "defaultDays",
+                            "floorDays",
+                            "rules",
+                            "floored"
+                          ],
+                          "description": "How long the audit trail is kept."
+                        },
+                        "classAges": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "class": {
+                                "type": "string",
+                                "pattern": "^[a-z][a-z0-9_]*$",
+                                "description": "The privacy class."
+                              },
+                              "days": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 9007199254740991,
+                                "description": "The longest an account holding it may sit inactive, in days."
+                              }
+                            },
+                            "required": [
+                              "class",
+                              "days"
+                            ],
+                            "description": "One class age."
+                          },
+                          "description": "Every class age the block declares, strictest first."
+                        }
+                      },
+                      "required": [
+                        "purgeWindows",
+                        "audit",
+                        "classAges"
+                      ]
+                    },
                     "capabilities": {
                       "type": "array",
                       "items": {
@@ -3063,6 +3209,513 @@
         ],
         "x-pithy-scopes": [
           "erasure:read"
+        ]
+      }
+    },
+    "/control-plane/holds": {
+      "get": {
+        "tags": [
+          "controlplane"
+        ],
+        "operationId": "getControlPlaneHolds",
+        "summary": "List the legal holds.",
+        "description": "Every hold, standing first and newest first within each: the subject, who placed it and why, and when, by whom and why it was released. `active` counts the holds standing. Read-only.",
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "description": "Only holds in this state. Absent lists both, standing first.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "active",
+                "released"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many holds to list, at most 500. Defaults to 100.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "This Worker's legal holds.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "active": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "How many holds stand, whatever the listing was narrowed to."
+                    },
+                    "holds": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The hold's id. Name it to release the hold."
+                          },
+                          "subjectType": {
+                            "type": "string",
+                            "enum": [
+                              "user",
+                              "organization",
+                              "audit"
+                            ],
+                            "description": "What the hold preserves: a user, an organization, or a tenant's audit trail."
+                          },
+                          "subjectId": {
+                            "description": "The held user's or organization's id, or the tenant whose trail is held. Null for the untenanted trail.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "reason": {
+                            "type": "string",
+                            "description": "Why it was placed."
+                          },
+                          "placedBy": {
+                            "type": "string",
+                            "description": "The management client's user id that placed it."
+                          },
+                          "placedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When it was placed, ISO-8601."
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "active",
+                              "released"
+                            ],
+                            "description": "`active` while it stands; `released` once lifted."
+                          },
+                          "releasedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "When it was released, ISO-8601, or null while it stands."
+                          },
+                          "releasedBy": {
+                            "description": "Who released it, or null while it stands.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "releaseReason": {
+                            "description": "Why it was released, or null while it stands.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "subjectType",
+                          "subjectId",
+                          "reason",
+                          "placedBy",
+                          "placedAt",
+                          "state",
+                          "releasedAt",
+                          "releasedBy",
+                          "releaseReason"
+                        ],
+                        "description": "A legal hold on one user, one organization or one tenant's audit trail."
+                      },
+                      "description": "The holds, standing first, newest first within each."
+                    }
+                  },
+                  "required": [
+                    "active",
+                    "holds"
+                  ],
+                  "description": "This Worker's legal holds."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "retention:read"
+        ]
+      },
+      "post": {
+        "tags": [
+          "controlplane"
+        ],
+        "operationId": "postControlPlaneHolds",
+        "summary": "Place a legal hold.",
+        "description": "Holds one user, one organization, or one tenant's audit trail, with a reason. While it stands no purge, prune or inactivity deletion touches the subject, and a purge already running stops at its next step. Audited. A hold can only preserve: nothing here shortens a retention.",
+        "requestBody": {
+          "required": true,
+          "description": "A legal hold to place: the subject, and why.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "subjectType": {
+                    "type": "string",
+                    "enum": [
+                      "user",
+                      "organization",
+                      "audit"
+                    ],
+                    "description": "What the hold preserves: `user`, one account and everything its purge would erase; `organization`, one tenant and everything its purge would erase; `audit`, one tenant's audit trail, which the prune then leaves whole."
+                  },
+                  "subjectId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 255
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "The user's or organization's id, or the tenant whose audit trail to hold. Null only for `audit`, which then holds the untenanted trail."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why the hold is placed, in one or two sentences. Required, and recorded with the hold and its audit event."
+                  }
+                },
+                "required": [
+                  "subjectType",
+                  "subjectId",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "A legal hold to place: the subject, and why."
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "One legal hold, as the call left it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "hold": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "The hold's id. Name it to release the hold."
+                        },
+                        "subjectType": {
+                          "type": "string",
+                          "enum": [
+                            "user",
+                            "organization",
+                            "audit"
+                          ],
+                          "description": "What the hold preserves: a user, an organization, or a tenant's audit trail."
+                        },
+                        "subjectId": {
+                          "description": "The held user's or organization's id, or the tenant whose trail is held. Null for the untenanted trail.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "reason": {
+                          "type": "string",
+                          "description": "Why it was placed."
+                        },
+                        "placedBy": {
+                          "type": "string",
+                          "description": "The management client's user id that placed it."
+                        },
+                        "placedAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When it was placed, ISO-8601."
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "active",
+                            "released"
+                          ],
+                          "description": "`active` while it stands; `released` once lifted."
+                        },
+                        "releasedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When it was released, ISO-8601, or null while it stands."
+                        },
+                        "releasedBy": {
+                          "description": "Who released it, or null while it stands.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "releaseReason": {
+                          "description": "Why it was released, or null while it stands.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "subjectType",
+                        "subjectId",
+                        "reason",
+                        "placedBy",
+                        "placedAt",
+                        "state",
+                        "releasedAt",
+                        "releasedBy",
+                        "releaseReason"
+                      ],
+                      "description": "A legal hold on one user, one organization or one tenant's audit trail."
+                    }
+                  },
+                  "required": [
+                    "hold"
+                  ],
+                  "description": "One legal hold, as the call left it."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "retention:hold"
+        ]
+      }
+    },
+    "/control-plane/holds/{holdId}/release": {
+      "post": {
+        "tags": [
+          "controlplane"
+        ],
+        "operationId": "postControlPlaneHoldsByHoldIdRelease",
+        "summary": "Release a legal hold.",
+        "description": "Ends one standing hold, with a reason, and keeps it as a record. The subject returns to the Worker's retention; a purge it stopped resumes on the next daily pass. Audited.",
+        "parameters": [
+          {
+            "name": "holdId",
+            "in": "path",
+            "required": true,
+            "description": "The hold's id, as placing it returned.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A legal hold's release: why it ends.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why the hold is released. Required, and recorded with the release and its audit event."
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "A legal hold's release: why it ends."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "One legal hold, as the call left it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "hold": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "The hold's id. Name it to release the hold."
+                        },
+                        "subjectType": {
+                          "type": "string",
+                          "enum": [
+                            "user",
+                            "organization",
+                            "audit"
+                          ],
+                          "description": "What the hold preserves: a user, an organization, or a tenant's audit trail."
+                        },
+                        "subjectId": {
+                          "description": "The held user's or organization's id, or the tenant whose trail is held. Null for the untenanted trail.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "reason": {
+                          "type": "string",
+                          "description": "Why it was placed."
+                        },
+                        "placedBy": {
+                          "type": "string",
+                          "description": "The management client's user id that placed it."
+                        },
+                        "placedAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When it was placed, ISO-8601."
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "active",
+                            "released"
+                          ],
+                          "description": "`active` while it stands; `released` once lifted."
+                        },
+                        "releasedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When it was released, ISO-8601, or null while it stands."
+                        },
+                        "releasedBy": {
+                          "description": "Who released it, or null while it stands.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "releaseReason": {
+                          "description": "Why it was released, or null while it stands.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "subjectType",
+                        "subjectId",
+                        "reason",
+                        "placedBy",
+                        "placedAt",
+                        "state",
+                        "releasedAt",
+                        "releasedBy",
+                        "releaseReason"
+                      ],
+                      "description": "A legal hold on one user, one organization or one tenant's audit trail."
+                    }
+                  },
+                  "required": [
+                    "hold"
+                  ],
+                  "description": "One legal hold, as the call left it."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "retention:hold"
         ]
       }
     },
@@ -9847,6 +10500,12 @@
                       "maximum": 9007199254740991,
                       "description": "How many checkpoints the walk was held to."
                     },
+                    "pruned": {
+                      "description": "How many events the walk crossed as pruned by the retention policy, each run bridged by the tombstone written before it was deleted. Absent from a Worker that cannot prune.",
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
                     "checkpointStore": {
                       "type": "string",
                       "enum": [
@@ -10414,6 +11073,86 @@
                         "description": "A tenant chain's length and head, written to append-only object storage on a schedule."
                       },
                       "description": "Every checkpoint covering the range, and the latest one after it."
+                    },
+                    "tombstones": {
+                      "description": "Every pruned run of the chain, so a verify bridges each gap the retention prune left. Absent from a Worker that has never pruned one.",
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "format": {
+                            "type": "string",
+                            "const": "pithy-audit-tombstone/1",
+                            "description": "The tombstone format."
+                          },
+                          "tenant": {
+                            "description": "The tenant whose chain was pruned, or null for the untenanted chain.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "fromSeq": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740991,
+                            "description": "The first position the prune removed."
+                          },
+                          "throughSeq": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740991,
+                            "description": "The last position the prune removed."
+                          },
+                          "count": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740991,
+                            "description": "How many events the prune removed: every position from first to last."
+                          },
+                          "prior": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^[0-9a-f]{64}$",
+                                "description": "A SHA-256 digest, 64 lowercase hex characters."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The hash of the event before the first one removed, or null when the run began the chain."
+                          },
+                          "first": {
+                            "type": "string",
+                            "pattern": "^[0-9a-f]{64}$",
+                            "description": "The hash of the first event removed."
+                          },
+                          "last": {
+                            "type": "string",
+                            "pattern": "^[0-9a-f]{64}$",
+                            "description": "The hash of the last event removed, which the event after the gap names as its link."
+                          },
+                          "prunedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the run was pruned, ISO-8601."
+                          }
+                        },
+                        "required": [
+                          "format",
+                          "tenant",
+                          "fromSeq",
+                          "throughSeq",
+                          "count",
+                          "prior",
+                          "first",
+                          "last",
+                          "prunedAt"
+                        ],
+                        "description": "A run of a tenant chain the retention prune removed, written to append-only object storage."
+                      }
                     },
                     "complete": {
                       "type": "boolean",

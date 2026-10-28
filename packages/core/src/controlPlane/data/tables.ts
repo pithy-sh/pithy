@@ -6,6 +6,7 @@ import type { Kysely } from "kysely";
 import type { z } from "zod";
 import { createDatabase, type DatabaseSchema } from "../../data/db";
 import { ControlPlaneConnection } from "./connection";
+import { LegalHold } from "./hold";
 import { ControlPlaneReplay } from "./replay";
 
 /**
@@ -23,6 +24,9 @@ export const CONTROL_PLANE_CONNECTIONS_TABLE = "pithyControlplaneConnections";
  */
 export const CONTROL_PLANE_REPLAYS_TABLE = "pithyControlplaneReplays";
 
+/** Legal holds, kept after release as the record that one stood. */
+export const CONTROL_PLANE_HOLDS_TABLE = "pithyControlplaneHolds";
+
 /**
  * The control-plane tables map. Both are always present: a Worker that composes the seam and has never
  * been connected still needs somewhere for the answer "nobody is connected" to come from, and the
@@ -32,6 +36,7 @@ export function controlPlaneTables(): Record<string, z.ZodObject> {
   return {
     [CONTROL_PLANE_CONNECTIONS_TABLE]: ControlPlaneConnection,
     [CONTROL_PLANE_REPLAYS_TABLE]: ControlPlaneReplay,
+    [CONTROL_PLANE_HOLDS_TABLE]: LegalHold,
   };
 }
 
@@ -39,6 +44,7 @@ export function controlPlaneTables(): Record<string, z.ZodObject> {
 export type ControlPlaneTables = {
   [CONTROL_PLANE_CONNECTIONS_TABLE]: typeof ControlPlaneConnection;
   [CONTROL_PLANE_REPLAYS_TABLE]: typeof ControlPlaneReplay;
+  [CONTROL_PLANE_HOLDS_TABLE]: typeof LegalHold;
 };
 export type ControlPlaneDatabase = Kysely<DatabaseSchema<ControlPlaneTables>>;
 
@@ -47,5 +53,6 @@ export function controlPlaneDatabase(d1: D1Database): ControlPlaneDatabase {
   return createDatabase(d1, {
     [CONTROL_PLANE_CONNECTIONS_TABLE]: ControlPlaneConnection,
     [CONTROL_PLANE_REPLAYS_TABLE]: ControlPlaneReplay,
+    [CONTROL_PLANE_HOLDS_TABLE]: LegalHold,
   }) as unknown as ControlPlaneDatabase;
 }

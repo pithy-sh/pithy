@@ -35,8 +35,8 @@ async function seedUser(id: string, email: string): Promise<void> {
     .values(
       User.encode({
         id,
-        name: "",
-        email,
+        name: "" as User["name"],
+        email: email as User["email"],
         emailVerified: true,
         image: null,
         locale: null,

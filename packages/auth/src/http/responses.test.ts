@@ -51,8 +51,8 @@ function accepts<T>(schema: z.ZodType<T>, value: unknown): void {
 
 const USER: User = {
   id: "u-1",
-  email: "ada@example.test",
-  name: "Ada",
+  email: "ada@example.test" as User["email"],
+  name: "Ada" as User["name"],
   emailVerified: true,
   image: "https://cdn.example/ada.png",
   locale: "es-AR",

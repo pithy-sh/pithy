@@ -19,6 +19,7 @@ import { parseDeviceMeta, registerDevice } from "../device/registry";
 import { PROVIDER_CHANGE_FRESH_AGE_SECONDS } from "../http/providerFreshness";
 import { verificationLedger } from "../ledger/record";
 import { admitsDeletionSignIn, lifecycleRefusalFor } from "../lifecycle/enforce";
+import { recordActivity } from "../lifecycle/inactivity";
 import { refuseUnsafeProfile, sanitizeProfile } from "../profile/profile";
 import { defaultGithubUserInfo, type GithubUserInfoResolver } from "./githubUserInfo";
 import { microsoftProfileToUser } from "./microsoftEmail";
@@ -578,6 +579,21 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
            */
           after: async (session, ctx) => {
             await ledger.signedIn((ctx as { context?: unknown } | null | undefined)?.context, session.userId);
+            // The account's activity clock, which the retention policy's class ages count from. After, so a
+            // refused sign-in stamps nothing; swallowed, because the session it records already exists.
+            await recordActivity(deps.db, session.userId, new Date()).catch(() => undefined);
+          },
+        },
+        update: {
+          /**
+           * The activity clock again, for a session that stays open. Better Auth slides a session forward in place
+           * once `updateAge` has passed, and that refresh is an update, never a create, so the hook above never
+           * sees it. Without this, signing out after weeks of use on one session would read as weeks idle.
+           */
+          after: async (session) => {
+            const userId = (session as { userId?: unknown } | null)?.userId;
+            if (typeof userId !== "string") return;
+            await recordActivity(deps.db, userId, new Date()).catch(() => undefined);
           },
         },
         /**

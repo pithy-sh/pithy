@@ -119,13 +119,13 @@ describe("every kit capability that holds rows about a person answers for them",
     expect(gaps, JSON.stringify(gaps, null, 2)).toEqual([]);
   });
 
-  test("the ones that keep them are the three the law or the record needs, and each says why", () => {
+  test("the ones that keep them are the four the law or the record needs, and each says why", () => {
     const kept = capabilities.flatMap((capability) =>
       (capability.purge ?? [])
         .filter((contribution) => contribution.subject === "user" && isRetained(contribution))
         .map((contribution) => [capability.name, contribution.retain?.basis.length ?? 0] as const),
     );
-    expect(kept.map(([name]) => name).sort()).toEqual(["audit", "email", "payments"]);
+    expect(kept.map(([name]) => name).sort()).toEqual(["audit", "controlplane", "email", "payments"]);
     for (const [, basis] of kept) expect(basis).toBeGreaterThan(0);
   });
 });
@@ -182,7 +182,7 @@ describe("a project composing the whole kit answers an export from every one of 
     expect(entries.map((entry) => entry.capability).sort()).toEqual([...holding].sort());
     expect(entries.filter((entry) => entry.state !== "exported")).toEqual([]);
     const kept = entries.filter((entry) => entry.disposition === "retain").map((entry) => entry.capability);
-    expect(kept.sort()).toEqual(["audit", "email", "payments"]);
+    expect(kept.sort()).toEqual(["audit", "controlplane", "email", "payments"]);
   });
 
   test("and every step that erases runs against the composed tables", async () => {

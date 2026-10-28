@@ -8,7 +8,15 @@ import { pathParams, uncoveredParamRoutes } from "../../http/routeContract";
 import { openApiDocument, undescribedFields, undescribedRoutes } from "../../openapi/document";
 import { type ControlPlaneOptions, controlplane } from "../capability";
 import { missingAdminRoutes, undeclaredAdminRoutes } from "../discovery/drift";
-import { ERASURE_READ_SCOPE, EVIDENCE_READ_SCOPE, MIGRATIONS_READ_SCOPE, PRIVACY_READ_SCOPE } from "../scope/scope";
+import {
+  ERASURE_READ_SCOPE,
+  EVIDENCE_READ_SCOPE,
+  MIGRATIONS_READ_SCOPE,
+  PRIVACY_READ_SCOPE,
+  RETENTION_HOLD_SCOPE,
+  RETENTION_READ_SCOPE,
+} from "../scope/scope";
+import { PlaceHoldRequest, ReleaseHoldRequest } from "./schemas";
 
 /**
  * The control-plane seam's half of gate 2 of the route request contract. A handler can reach a path
@@ -56,6 +64,8 @@ describe("control-plane route contract", () => {
       "/control-plane/erasure",
       "/control-plane/erasure/:subjectType/:subjectId",
       "/control-plane/evidence",
+      "/control-plane/holds",
+      "/control-plane/holds/:holdId/release",
       "/control-plane/keys",
       "/control-plane/keys/:keyId/expire",
       "/control-plane/manifest",
@@ -68,6 +78,7 @@ describe("control-plane route contract", () => {
     // that declared no params at all, which proves nothing.
     expect(paramPaths(app)).toEqual([
       "/control-plane/erasure/:subjectType/:subjectId",
+      "/control-plane/holds/:holdId/release",
       "/control-plane/keys/:keyId/expire",
     ]);
   });
@@ -79,7 +90,11 @@ describe("control-plane route contract", () => {
     expect([...new Set(app.routes.map((route) => route.path))].every((path) => path.startsWith("/admin/cp/"))).toBe(
       true,
     );
-    expect(paramPaths(app)).toEqual(["/admin/cp/erasure/:subjectType/:subjectId", "/admin/cp/keys/:keyId/expire"]);
+    expect(paramPaths(app)).toEqual([
+      "/admin/cp/erasure/:subjectType/:subjectId",
+      "/admin/cp/holds/:holdId/release",
+      "/admin/cp/keys/:keyId/expire",
+    ]);
   });
 
   test("every route carries at least one guard ahead of its handler", () => {
@@ -91,7 +106,7 @@ describe("control-plane route contract", () => {
       const key = `${route.method} ${route.path}`;
       handlerCounts.set(key, (handlerCounts.get(key) ?? 0) + 1);
     }
-    expect(handlerCounts.size).toBe(11);
+    expect(handlerCounts.size).toBe(14);
     for (const [route, count] of handlerCounts) expect(count, `${route} has no guard`).toBeGreaterThan(1);
   });
 
@@ -103,7 +118,7 @@ describe("control-plane route contract", () => {
     const app = new Hono<PithyHonoEnv>();
     capability.routes?.(app);
 
-    expect(capability.adminRoutes).toHaveLength(11);
+    expect(capability.adminRoutes).toHaveLength(14);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
     // And the other direction. Since #468 the CORS surface derives from `adminRoutes`, so a guarded
     // route nobody declared gets no preflight and no browser reaches it, with this suite still green.
@@ -175,12 +190,37 @@ describe("control-plane route contract", () => {
     expect(migrations?.summary).toMatch(/relative to this Worker/);
   });
 
-  test("the seam's health keys are both behind migrations:read, and only the pending one is graded", () => {
+  test("the seam's migration keys are behind migrations:read, its hold count behind retention:read, and only pending is graded", () => {
     const keys = controlplane().health?.keys ?? [];
     expect(keys.map((key) => [key.key, key.scope, key.nominal])).toEqual([
       ["pendingMigrations", MIGRATIONS_READ_SCOPE, { atMost: 0 }],
       ["undeclaredMigrations", MIGRATIONS_READ_SCOPE, null],
+      ["activeHolds", RETENTION_READ_SCOPE, null],
     ]);
+  });
+
+  test("retention:read guards only GETs, so connect offers it as a read; retention:hold only POSTs", () => {
+    const advertised = controlplane().adminRoutes ?? [];
+    expect(
+      advertised
+        .filter((route) => route.scope === RETENTION_READ_SCOPE)
+        .map((route) => `${route.method} ${route.path}`),
+    ).toEqual(["GET /control-plane/holds"]);
+    expect(
+      advertised
+        .filter((route) => route.scope === RETENTION_HOLD_SCOPE)
+        .map((route) => `${route.method} ${route.path}`),
+    ).toEqual(["POST /control-plane/holds", "POST /control-plane/holds/:holdId/release"]);
+  });
+
+  test("no route shortens a retention: none takes a window, a duration or a deletion of a hold", () => {
+    const app = makeApp();
+    // Holds are the only retention surface, and they can only add a preservation or end one with a reason.
+    expect(app.routes.some((route) => route.method === "DELETE")).toBe(false);
+    for (const schema of [PlaceHoldRequest, ReleaseHoldRequest]) {
+      const keys = Object.keys(schema.shape);
+      expect(keys.filter((key) => /days|window|age|retention|purge|prune|after/i.test(key))).toEqual([]);
+    }
   });
 });
 

@@ -6,6 +6,7 @@ import {
   AUDIT_CHAIN_FORMAT,
   AuditChainExport,
   type AuditCheckpoint,
+  type AuditTombstone,
   type ChainedEvent,
   type ChainedEventFields,
   canonicalEvent,
@@ -85,6 +86,7 @@ function exportOf(
     prior: null,
     events,
     checkpoints,
+    tombstones: [],
     complete: true,
     beforeChain: 0,
     outsideChain: 0,
@@ -331,5 +333,92 @@ describe("chainVerifier, fed page by page", () => {
     expect(verifier.finish(true)).toBeNull();
     expect(verifier.head).toEqual({ seq: 6, hash: (events[5] as ChainedEvent).hash });
     expect(verifier.checked).toBe(6);
+  });
+});
+
+/** The tombstone the prune writes for positions `from` to `through` of a chain. */
+function tombstone(
+  events: ChainedEvent[],
+  from: number,
+  through: number,
+  tenant: string | null = "acme",
+): AuditTombstone {
+  const first = events[from - 1] as ChainedEvent;
+  const last = events[through - 1] as ChainedEvent;
+  return {
+    format: "pithy-audit-tombstone/1",
+    tenant,
+    fromSeq: from,
+    throughSeq: through,
+    count: through - from + 1,
+    prior: first.prev,
+    first: first.hash,
+    last: last.hash,
+    prunedAt: "2026-06-10T12:00:00.000Z",
+  };
+}
+
+describe("a pruned run, bridged by its tombstone", () => {
+  test("a chain pruned from its start verifies as intact, and says how many it crossed", async () => {
+    const events = await chain(6);
+    const result = await verifyChainExport(
+      exportOf(events.slice(3), [checkpoint(events[5] as ChainedEvent)], { tombstones: [tombstone(events, 1, 3)] }),
+    );
+    expect(result).toMatchObject({ intact: true, checked: 3, pruned: 3, break: null });
+  });
+
+  test("a gap in the middle is bridged, and so are two runs back to back", async () => {
+    const events = await chain(8);
+    const kept = [events[0], events[1], events[6], events[7]] as ChainedEvent[];
+    const result = await verifyChainExport(
+      exportOf(kept, [], { tombstones: [tombstone(events, 3, 4), tombstone(events, 5, 6)] }),
+    );
+    expect(result).toMatchObject({ intact: true, checked: 4, pruned: 4 });
+  });
+
+  test("a gap no tombstone covers is still a missing break", async () => {
+    const events = await chain(6);
+    const result = await verifyChainExport(exportOf(events.slice(3), [], { tombstones: [tombstone(events, 1, 2)] }));
+    expect(result.break).toMatchObject({ reason: "missing", position: 3 });
+  });
+
+  test("a tombstone whose link does not match the event before it bridges nothing", async () => {
+    const events = await chain(6);
+    const forged = { ...tombstone(events, 3, 4), prior: (events[0] as ChainedEvent).hash };
+    const result = await verifyChainExport(
+      exportOf([events[0], events[1], events[4], events[5]] as ChainedEvent[], [], { tombstones: [forged] }),
+    );
+    expect(result.break).toMatchObject({ reason: "missing", position: 3 });
+  });
+
+  test("a tombstone whose last hash the next event does not name is an unlinked break", async () => {
+    const events = await chain(6);
+    const forged = { ...tombstone(events, 1, 3), last: (events[0] as ChainedEvent).hash };
+    const result = await verifyChainExport(exportOf(events.slice(3), [], { tombstones: [forged] }));
+    expect(result.break).toMatchObject({ reason: "unlinked", position: 4 });
+  });
+
+  test("a checkpoint at the end of a pruned run is held to the tombstone", async () => {
+    const events = await chain(6);
+    const other = await chain(6, "beta");
+    const wrong = { ...checkpoint(events[2] as ChainedEvent), head: (other[2] as ChainedEvent).hash };
+    const result = await verifyChainExport(
+      exportOf(events.slice(3), [wrong], { tombstones: [tombstone(events, 1, 3)] }),
+    );
+    expect(result.break).toMatchObject({ reason: "checkpoint", position: 3, eventId: null });
+  });
+
+  test("another tenant's tombstone is ignored", async () => {
+    const events = await chain(6);
+    const result = await verifyChainExport(
+      exportOf(events.slice(3), [], { tombstones: [tombstone(events, 1, 3, "beta")] }),
+    );
+    expect(result.break).toMatchObject({ reason: "missing" });
+  });
+
+  test("an export from before tombstones existed parses, and verifies, with none", async () => {
+    const { tombstones: _none, ...older } = exportOf(await chain(2));
+    expect((await verifyChainExport(older)).intact).toBe(true);
+    expect(AuditChainExport.parse(older).tombstones).toBeUndefined();
   });
 });

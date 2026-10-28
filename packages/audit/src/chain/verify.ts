@@ -7,6 +7,7 @@ import {
   AUDIT_EXPORT_FORMAT,
   type AuditChainExport,
   type AuditCheckpoint,
+  type AuditTombstone,
   type ChainBreak,
   type ChainLink,
   chainVerifier,
@@ -15,6 +16,7 @@ import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import type { AuditDatabase } from "../data/tables";
 import { listCheckpoints, readCheckpoints } from "./checkpoint";
 import { chainedEventOf, readChainHead, readChainLink, readChainRows, whereChain } from "./rows";
+import { readTombstones, tombstoneEndingAt } from "./tombstone";
 
 /**
  * **The verify and export reads over one tenant's chain (#822).**
@@ -162,10 +164,28 @@ export interface ChainRangeVerification {
   beforeChain: number;
   /** How many rows in the range carry no chain though written after it began: an older recorder's, not a break. */
   outsideChain: number;
+  /** How many events the walk crossed as pruned, each run bridged by its tombstone. */
+  pruned: number;
   /** The first break, or null. */
   break: ChainBreak | null;
   /** The last position the walk reached intact, or null when it reached none. */
   head: ChainLink | null;
+}
+
+/**
+ * The link before position `seq`: the stored event there, or, where the retention prune removed it, the last hash its
+ * tombstone recorded. Null when neither holds it.
+ */
+async function linkBefore(
+  db: AuditDatabase,
+  tenant: string | null,
+  seq: number,
+  tombstones: readonly AuditTombstone[],
+): Promise<ChainLink | null> {
+  const stored = await readChainLink(db, tenant, seq);
+  if (stored) return stored;
+  const run = tombstoneEndingAt(tombstones, seq);
+  return run ? { seq: run.throughSeq, hash: run.last } : null;
 }
 
 /**
@@ -178,14 +198,28 @@ export async function verifyChainRange(
   query: ChainRangeQuery,
   options: { pageSize?: number } = {},
 ): Promise<ChainRangeVerification> {
+  const first = await walkRange(db, bucket, query, options);
+  // A prune that ran during the walk wrote its tombstone after the listing and deleted rows the walk then missed. A
+  // second walk lists the tombstone; a gap that is still a gap is one.
+  if (bucket && first.break?.reason === "missing") return walkRange(db, bucket, query, options);
+  return first;
+}
+
+async function walkRange(
+  db: AuditDatabase,
+  bucket: R2Bucket | null,
+  query: ChainRangeQuery,
+  options: { pageSize?: number },
+): Promise<ChainRangeVerification> {
   const pageSize = options.pageSize ?? WALK_PAGE;
   // Checkpoints first: one written after the head is read would count past it, and read as a truncation.
   const listing = bucket ? await listCheckpoints(bucket, query.tenant) : null;
+  const tombstones = bucket ? await readTombstones(bucket, query.tenant) : [];
   const range = await resolveRange(db, query);
   const startId = await chainStartId(db, query.tenant);
   const beforeChain = await countBeforeChain(db, query, startId);
   const outsideChain = await countOutsideChain(db, query.tenant, range, startId);
-  const prior = range.fromSeq > 1 ? await readChainLink(db, query.tenant, range.fromSeq - 1) : null;
+  const prior = range.fromSeq > 1 ? await linkBefore(db, query.tenant, range.fromSeq - 1, tombstones) : null;
   const checkpoints =
     bucket && listing
       ? await readCheckpoints(
@@ -195,10 +229,11 @@ export async function verifyChainRange(
           listing,
         )
       : [];
-  const result = (found: ChainBreak | null, checked: number, head: ChainLink | null, held: number) => ({
+  const result = (found: ChainBreak | null, checked: number, head: ChainLink | null, held: number, pruned = 0) => ({
     intact: found === null,
     checked,
     checkpoints: held,
+    pruned,
     beforeChain,
     outsideChain,
     break: found,
@@ -218,7 +253,7 @@ export async function verifyChainRange(
     );
   }
 
-  const verifier = chainVerifier({ tenant: query.tenant, prior, checkpoints });
+  const verifier = chainVerifier({ tenant: query.tenant, prior, checkpoints, tombstones });
   let found: ChainBreak | null = null;
   // Resumed by position and id together, so a second row at the position a page ended on is the next page's first.
   let after: { seq: number; id?: number } = { seq: range.fromSeq - 1 };
@@ -239,7 +274,7 @@ export async function verifyChainRange(
     after = { seq: last.chainSeq ?? range.throughSeq, id: last.id };
   }
   found ??= verifier.finish(range.toHead);
-  return result(found, verifier.checked, verifier.head, verifier.checkpoints);
+  return result(found, verifier.checked, verifier.head, verifier.checkpoints, verifier.pruned);
 }
 
 /** One page of an export. */
@@ -267,6 +302,7 @@ export async function exportChainRange(
 ): Promise<AuditChainExport> {
   // Checkpoints first, as in the verify: one written after the rows are read would count past the last of them.
   const listing = bucket ? await listCheckpoints(bucket, query.tenant) : null;
+  const tombstones = bucket ? await readTombstones(bucket, query.tenant) : [];
   const range = await resolveRange(db, query);
   const startId = await chainStartId(db, query.tenant);
   const resumed = parseExportCursor(options.cursor);
@@ -289,7 +325,7 @@ export async function exportChainRange(
   const events = await Promise.all(rows.map((row) => chainedEventOf(row, { detail: options.detail })));
   const lastSeq = events.at(-1)?.seq ?? afterSeq;
   const lastRow = rows.at(-1);
-  const prior = afterSeq > 0 ? await readChainLink(db, query.tenant, afterSeq) : null;
+  const prior = afterSeq > 0 ? await linkBefore(db, query.tenant, afterSeq, tombstones) : null;
   const complete = range.toHead && !more;
   const checkpoints: AuditCheckpoint[] =
     bucket && listing
@@ -308,6 +344,8 @@ export async function exportChainRange(
     // The latest checkpoint rides along with every page, and only the last page of a range that runs to the head
     // may be held to it: a checkpoint past an earlier page's end is the next page's, not a truncation.
     checkpoints,
+    // Every pruned run, so each page bridges a gap it meets, on its own as it verifies from its own prior.
+    ...(tombstones.length > 0 ? { tombstones } : {}),
     complete,
     beforeChain: await countBeforeChain(db, query, startId),
     outsideChain: await countOutsideChain(db, query.tenant, range, startId),

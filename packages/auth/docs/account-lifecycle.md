@@ -87,7 +87,9 @@ GET    /auth/admin/users/:userId/export?reason=…
 
 `reason` is required on all three, on the same terms as a suspension's. A request without one is `validation/invalid_input`.
 
-**Two modes, and soft is the default.** `mode: "soft"`, or no mode at all, stamps `deleted_at` and `purge_after` — now plus `retention.purgeAfterDays`, 30 unless you set it — and revokes every session the account holds. Signing in again answers `auth/account_deleted`. The deletion-scheduled mail goes out with the purge date and, when you configure one, the restore path. `onUserDeleted` fires. The account can be restored until `purge_after`. `mode: "hard"` closes the window now: `purge_after` is the moment of the deletion, nothing can restore it, and the purge starts in the same call. You name it on purpose. A typo — `"Hard"`, `"hrad"` — is a 400, never either mode. A hard deletion of an account already deleted softly brings its purge forward to now.
+**Two modes, and soft is the default.** `mode: "soft"`, or no mode at all, stamps `deleted_at` and `purge_after` — now plus the purge window — and revokes every session the account holds. Signing in again answers `auth/account_deleted`. The deletion-scheduled mail goes out with the purge date and, when you configure one, the restore path. `onUserDeleted` fires. The account can be restored until `purge_after`. `mode: "hard"` closes the window now: `purge_after` is the moment of the deletion, nothing can restore it, and the purge starts in the same call. You name it on purpose. A typo — `"Hard"`, `"hrad"` — is a 400, never either mode. A hard deletion of an account already deleted softly brings its purge forward to now.
+
+**The purge window** is `retention.purgeWindows.user` from the Worker's `retention` block in `pithy.config.ts` when it names one, and otherwise auth's own `retention.purgeAfterDays`, 30 unless you set it. The block, and everything else it governs, is [`docs/CONTROL-PLANE.md`](../../../docs/CONTROL-PLANE.md#retention-and-legal-holds).
 
 The response says what happened: `outcome` is `deleted`, `brought_forward`, or `unchanged` for an account already deleted. `purge` is `scheduled` for a soft deletion, `started` when this call started the purge, and `pending` when the account is due and this Worker binds no purge Workflow to start. `notify: false` silences the mail this call sends: the deletion-scheduled notice for soft, the deletion-complete notice for hard.
 
@@ -121,9 +123,13 @@ A purge erases one deleted account from every capability that holds rows about i
 4. Auth's own: the user row, its sessions, linked providers, devices, refresh-token ledger, pending sign-in codes and its rows in the verification ledger, and its rows in every table a composed Better Auth plugin created with a `userId` column — a two-factor secret and its backup codes, a passkey, an API key. Its history stays — the one `pithy_auth_*` row left.
 5. The `purged` record, `auth/admin_user_purged`, and `onUserPurged`, once — even when two purges of one account overlap.
 
+**A legal hold stops it.** Before the first step, and again before every step after it, the purge asks whether a hold stands on the account, each ask its own step. A hold found ends the run as `held`: the steps that finished stay finished, and nothing more is erased. Released, the account is still deleted and still due, so the next daily pass starts a fresh purge, whose steps find nothing to erase where the first one did and carry on from there. A hold that cannot be read fails its step, which retries, so a purge never erases past a hold it could not see. The daily pass does not start a purge for a held account at all. Holds are placed over the control plane: [`docs/CONTROL-PLANE.md`](../../../docs/CONTROL-PLANE.md#retention-and-legal-holds).
+
 Every step from 2 on also records an audit event, `auth/admin_user_purge_step`, with the step's name and whether it erased or retained in its metadata, and never the summary. A step that runs out of retries fails the instance, and before it does the purge records where: a `purge_failed` row naming the step, and `auth/admin_user_purge_failed`. The failure's message is never written. The `deleted` row keeps the deletion's mode and when its purge comes due, because the purge erases the account's own columns. Together they are what [the erasure attestation](../../../docs/CONTROL-PLANE.md#erasure) reads: `GET /control-plane/erasure/user/:userId`, under `erasure:read`.
 
 A daily cron at 02:00 UTC starts the purge for every account past its `purge_after`, and for none before it. A hard deletion starts its own. Either way the instance is named for the deletion and the UTC day, so a hard deletion repeated, or one the daily pass also finds due, is one purge, and a purge that failed is started again by the next day's pass. A hard deletion's `notify: false` is saved with the deletion, so it holds when the daily pass is the one that starts its purge.
+
+**Inactivity deletes an account, through this same lifecycle.** When the Worker's `retention` block declares class ages (`classAges: { pii: "3y" }`), the same daily pass soft-deletes every account untouched for longer than the strictest class age it holds: no sign-in, no token refresh, and no session refreshed since. Auth marks an account's `name` and `email` as `pii`, so a `pii` age reaches every account. The clock is `lastActiveAt` on the account, stamped each time it opens a session or refreshes one, and stamped on every existing account when the column arrived. The deletion is an ordinary soft one by a `system` actor, with the reason *Inactive for more than N days, the retention policy's limit for the personal data it holds*: the deletion-scheduled mail, the purge window, then the purge. Which classes an account holds is read off the composed schemas that hold rows about a user. A held account is skipped. A pass deletes at most 200 accounts, so a backlog drains over several nights. With no class age that applies, the pass does nothing.
 
 The `scheduled` handler starts only the jobs whose `schedule` is the cron that fired, so the daily pass runs once a day even in a Worker whose other jobs run hourly.
 
@@ -198,7 +204,7 @@ Three screens ship with auth and are yours after `pithy ui add react`: account s
 
 ## What each capability does with a person's rows
 
-Every kit capability that holds rows about a person declares a `user` contribution, and every one exports what it holds. Most erase. Three keep their rows, because the law or the record needs them, and say why.
+Every kit capability that holds rows about a person declares a `user` contribution, and every one exports what it holds. Most erase. Four keep their rows, because the law or the record needs them, and say why.
 
 | Capability | Disposition | What |
 |---|---|---|
@@ -217,6 +223,7 @@ Every kit capability that holds rows about a person declares a `user` contributi
 | `payments` | retain | Purchases, entitlements, provider accounts, overrides, meter counters and usage reports of a user subject. *Kept for tax and accounting records, which the law requires a business to hold after an account is closed.* |
 | `email` | retain | The address on the suppression list, and the log of mail sent to it. *Kept so your unsubscribe holds: the address stays on the list of addresses not to mail, with the record of what was sent to it.* |
 | `audit` | retain | Every audit event where the person is the actor. *Kept as the record of who did what, which a security review or a dispute is read against.* |
+| `controlplane` | retain | Every legal hold placed on the person, standing or released. *Kept as the record that a legal hold stood, when it was placed and why it ended.* The export says when each was placed and released, never who placed it or why. |
 
 `packages/cli/src/capabilities/personRows.test.ts` holds the kit to it. It constructs every capability package, walks its schema, and fails the build when a table names a person — `userId`, `ownerId`, `subjectId`, `actorId`, any `…UserId`, either side of an invite or a friendship, or an address — in a capability that declares no `user` contribution, or one without an export. `isPersonColumn` and `personRowGaps` in `@pithy-sh/core/src/capability/personColumns` are the rule, if you want to hold your own capabilities to it.
 

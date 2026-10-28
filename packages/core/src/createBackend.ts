@@ -34,6 +34,7 @@ import type { RouteGroup } from "./openapi/document";
 import { recordRouteGroups } from "./openapi/routeGroups";
 import { registerPresenceRoutes } from "./presence/http/routes";
 import { refuseEncryptedKvStores } from "./privacy/encryptedColumns";
+import { effectiveRetention, recordRetention } from "./retention/composed";
 import { HEALTH_PATH } from "./worker/health";
 import { workerVersion } from "./worker/identity";
 import { registeredWorkflowBinding } from "./workflow/bindings";
@@ -63,6 +64,13 @@ export interface CreateBackendOptions<Caps extends readonly Capability[], App ex
    * absent — e.g. a non-provisioned local run. Falls through to `unknown` when neither is present.
    */
   env?: string;
+  /**
+   * How long this Worker keeps deleted accounts, the audit trail and each class of personal data — the
+   * `retention` block of the Worker's `pithy.config.ts`, which `createEntrypoint(config)` hands through. Parsed and
+   * resolved here, at assembly, so a block that does not parse, or keeps a floored audit action under the floor,
+   * refuses to deploy. See `retention/policy.ts`.
+   */
+  retention?: unknown;
 }
 
 /** The Hono env `createBackend` returns — `db`/`kv`/`workflows` typed precisely from the merged capabilities. */
@@ -171,6 +179,9 @@ export function createBackend<
   // the only way back to a composed seam from a Workflow step, which the runtime constructs with `env`
   // and nothing else — see `capability/composition.ts` (pithy-sh/pithy#356).
   recordComposition(all);
+  // The retention block, resolved over what this Worker composes and recorded beside it, so a purge, a prune and
+  // the inactivity pass read the policy the routes report. A block under the audit floor throws here.
+  recordRetention(effectiveRetention(options.retention, all));
 
   const databases = composeDatabases(all);
   // Every composed capability's English, merged under the domain rule. Built once at assembly rather

@@ -54,6 +54,22 @@ The evidence pack proves controls present. The erasure attestation proves that a
 
 **It proves, and deletes nothing.** Deleting stays where it is, on its own scope. The attestation is behind `erasure:read`, a read, so `pithy dashboard connect` preselects it. The routes and their shape are [`CONTROL-PLANE.md` §12](CONTROL-PLANE.md#erasure).
 
+## Retention and legal hold
+
+An auditor asks how long you keep things, and counsel asks you to stop deleting them. Both are answered from the Worker.
+
+**How long everything is kept is one block in `pithy.config.ts`.** `retention` declares the purge window for deleted users and organizations, how long audit events are kept by action prefix, and the longest an account may sit inactive while it holds a privacy class (`classAges: { pii: "3y" }`). It is reviewed and deployed like code, and no route changes it. The manifest reports it as it takes effect, every value in days and where it came from, and `pithy doctor` prints it.
+
+**The kit keeps the record of who managed the Worker for at least a year.** A rule that would keep `controlplane/*`, or a deletion, purge, suspension, reinstatement or restore, for less than 365 days refuses to deploy. A shorter default leaves those actions at a year.
+
+**Pruning the trail leaves it verifiable.** The prune writes a tombstone for every run it removes to the checkpoint bucket before deleting a row, and `pithy audit verify` reads the chain as intact across the gap. A run that does not verify is left where it is: the prune never removes the evidence of a break.
+
+**An inactive account is deleted the way any account is.** Past its class age it is soft-deleted, mailed, given its purge window and then purged, and the [erasure attestation](#erasure-attestation) proves it like any other. Its reason says it was inactivity.
+
+**A legal hold stops every purge, prune and inactivity deletion touching its subject until it is released.** A hold names a user, an organization or a tenant's audit trail, with a required reason, and placing and releasing it are both audited. A purge already running stops at its next step. Releasing a hold returns the subject to the policy you deployed; nothing shortens it. A hold on a person is kept after release, as the record that it stood, and an access request's export says when it was placed and released.
+
+`POST /control-plane/holds` places one and `POST /control-plane/holds/:holdId/release` releases it, behind `retention:hold`, a write that `pithy dashboard connect` offers and never grants by default. `GET /control-plane/holds` lists them behind `retention:read`, a read it preselects, and the manifest counts the standing ones. The block, the floor and the routes are [`CONTROL-PLANE.md` §12](CONTROL-PLANE.md#retention-and-legal-holds).
+
 ## Shipping the trail
 
 A security team watches its SIEM, not each vendor's console. `@pithy-sh/audit` ships the trail to sinks declared in `pithy.config.ts` — Splunk HEC, Datadog Logs, or any HTTPS endpoint — as each event is written, through a Cloudflare Queue, at least once. The setup and the formats are [`@pithy-sh/audit`'s README](../packages/audit/README.md#shipping-the-trail).
