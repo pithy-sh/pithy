@@ -111,6 +111,17 @@ describe("dispatchRequest", () => {
     ).toThrow(PithyError);
   });
 
+  test("carries the correlation it is handed, so the route's own rows share the tool call's request id", () => {
+    const request = dispatchRequest("https://app.test", tool("GET", "/notes"), {}, auth, {
+      "cf-ray": "ray-1",
+      "cf-connecting-ip": "203.0.113.9",
+      "user-agent": "agent/1.0",
+    });
+    expect(request.headers.get("cf-ray")).toBe("ray-1");
+    expect(request.headers.get("cf-connecting-ip")).toBe("203.0.113.9");
+    expect(request.headers.get("user-agent")).toBe("agent/1.0");
+  });
+
   test("a GET sends no body even when one was passed", () => {
     const request = dispatchRequest("https://app.test", tool("GET", "/notes"), { body: { x: 1 } }, auth);
     expect(request.body).toBeNull();
@@ -119,10 +130,18 @@ describe("dispatchRequest", () => {
 
 describe("dispatchedOutcome", () => {
   test("parses a JSON body and keeps any other as text", async () => {
-    expect(await dispatchedOutcome(Response.json({ ok: true }, { status: 201 }))).toEqual({
+    expect(await dispatchedOutcome(Response.json({ ok: true }, { status: 201 }))).toMatchObject({
       status: 201,
       body: { ok: true },
     });
-    expect(await dispatchedOutcome(new Response("plain", { status: 200 }))).toEqual({ status: 200, body: "plain" });
+    expect(await dispatchedOutcome(new Response("plain", { status: 200 }))).toMatchObject({
+      status: 200,
+      body: "plain",
+    });
+  });
+
+  test("measures the route's response in bytes, not characters", async () => {
+    expect((await dispatchedOutcome(new Response("héllo", { status: 200 }))).bytes).toBe(6);
+    expect((await dispatchedOutcome(new Response(null, { status: 204 }))).bytes).toBe(0);
   });
 });

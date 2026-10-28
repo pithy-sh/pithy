@@ -21,6 +21,7 @@ const tool: AppTool = {
 };
 
 const calls: { name: string; args: Record<string, unknown> }[] = [];
+const refusals: unknown[] = [];
 const handlers: RpcHandlers = {
   server: { name: "pithy", version: "1.0.0" },
   tools: async () => [tool],
@@ -28,6 +29,7 @@ const handlers: RpcHandlers = {
     calls.push({ name: called.name, args });
     return { status: 200, body: { text: "hello" } };
   },
+  refused: async (name) => void refusals.push(name),
 };
 
 describe("answer", () => {
@@ -71,6 +73,13 @@ describe("answer", () => {
       handlers,
     );
     expect(reply?.error).toEqual({ code: RPC_ERRORS.invalidParams, message: "Unknown tool: notes_notes_delete." });
+    expect(refusals.at(-1)).toBe("notes_notes_delete");
+  });
+
+  test("a call that is answered is not reported as refused", async () => {
+    refusals.length = 0;
+    await answer({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: tool.name } }, handlers);
+    expect(refusals).toEqual([]);
   });
 
   test("an unknown method is method-not-found", async () => {

@@ -26,7 +26,7 @@ import { z } from "zod";
  * **A field added here later is `.optional()`, not merely `.nullable()`.** This module is read across a
  * version boundary — a management client validates a response with this schema against a customer's
  * Worker at whatever kit version it is on — so an additive required key fails `safeParse` for everyone
- * below that release and takes the whole pane with it (#450). Absent then means *this Worker cannot
+ * below that release and takes the whole pane with it. Absent then means *this Worker cannot
  * say*, which is a different fact from `null`.
  */
 
@@ -51,11 +51,10 @@ export const AuditEventView = z
     severity: AuditSeverity.describe("How serious it is, orthogonal to the outcome."),
     actorType: AuditActorType.describe("The kind of principal that acted."),
     actorId: z.string().nullable().describe("The acting principal's stable id, or null."),
-    // Added (#721), so `.optional()` too: a client reading an older Worker receives no such field.
     actorKind: ControlPlaneActorKind.nullable()
       .optional()
       .describe(
-        "For a `control-plane` actor, which kind of management client acted — `agent`, `dashboard` or `script` — or null. Absent from a Worker older than the field.",
+        "Which kind of client acted — `agent`, `dashboard` or `script` — or null. A `control-plane` actor's connection kind, or `agent` on a `user` row an MCP client wrote. Absent from a Worker older than the field.",
       ),
     sessionId: z.string().nullable().describe("The session the action belongs to — a row id, never a token — or null."),
     resourceType: z.string().nullable().describe("The kind of thing acted on, or null."),
@@ -69,7 +68,6 @@ export const AuditEventView = z
       .string()
       .nullable()
       .describe("The tenant the action was taken for, or null when it was not tenant-scoped."),
-    // Added (#822), so `.optional()` too: a client reading an older Worker receives no such field.
     chainSeq: z
       .number()
       .int()
@@ -118,7 +116,7 @@ export const AuditEventResponse = z
 export type AuditEventResponse = z.output<typeof AuditEventResponse>;
 
 /**
- * Whether a change's event carried its before and after (#831).
+ * Whether a change's event carried its before and after.
  *
  * `not_recorded` is an event written before its emitter recorded the detail — a role change from before
  * `previousRole`, an update that moved no scope from before every update carried the grant. Its unknown values are
@@ -138,7 +136,7 @@ const AccessChangeBase = z.object({
   actorType: AuditActorType.describe("The kind of principal that made the change."),
   actorId: z.string().nullable().describe("The principal that made the change, or null."),
   actorKind: ControlPlaneActorKind.nullable().describe(
-    "For a `control-plane` actor, which kind of management client made the change, or null.",
+    "Which kind of client made the change — a `control-plane` actor's connection kind, or `agent` for a user's MCP client — or null.",
   ),
   detail: ChangeDetail,
 });
@@ -218,7 +216,7 @@ export const AccessHistoryResponse = z
 export type AccessHistoryResponse = z.output<typeof AccessHistoryResponse>;
 
 /**
- * One tenant, action, method, route and outcome a control-plane credential reached (#828).
+ * One tenant, action, method, route and outcome a control-plane credential reached.
  *
  * Counts, two instants, and the route. No IP, no user-agent, no metadata key beyond what the route and scope already
  * say: this is the credential's own footprint, which is why it sits behind the listing scope.
@@ -266,7 +264,7 @@ export const ControlPlaneReachView = z
   .describe("One tenant, action, method, route and outcome one control-plane credential reached in a window.");
 export type ControlPlaneReachView = z.output<typeof ControlPlaneReachView>;
 
-/** One path a route was called with, and the subject ids it names (#828). */
+/** One path a route was called with, and the subject ids it names. */
 export const ControlPlaneReachSubjectView = z
   .object({
     tenant: z.string().nullable().describe("The tenant the calls reached, or null when their handler named none."),
@@ -317,7 +315,7 @@ export const ControlPlaneReachResponse = z
 export type ControlPlaneReachResponse = z.output<typeof ControlPlaneReachResponse>;
 
 /**
- * One `(scope, keyId)` a control-plane connection exercised (#812).
+ * One `(scope, keyId)` a control-plane connection exercised.
  *
  * Counts, two instants, and the method and path of the last allowed call. No IP, no user-agent, no other metadata key:
  * this is the management client's own footprint, which is why it sits behind the listing scope.
@@ -368,7 +366,7 @@ export const ControlPlaneUsageResponse = z
   .describe("Which scopes one control-plane connection exercised and was refused, by key, over a window.");
 export type ControlPlaneUsageResponse = z.output<typeof ControlPlaneUsageResponse>;
 
-/** `GET {base}/control-plane/verify` (#822). */
+/** `GET {base}/control-plane/verify`. */
 export const ChainVerifyResponse = z
   .object({
     tenant: z.string().nullable().describe("The tenant whose chain was walked, or null for the untenanted chain."),
@@ -416,7 +414,7 @@ export const ChainVerifyResponse = z
 export type ChainVerifyResponse = z.output<typeof ChainVerifyResponse>;
 
 /**
- * `GET {base}/control-plane/export` (#822). Core's export document, which `pithy audit verify` reads offline —
+ * `GET {base}/control-plane/export`. Core's export document, which `pithy audit verify` reads offline —
  * one schema, so what the Worker writes and what the verifier accepts cannot drift.
  */
 export const ChainExportResponse = AuditChainExport.describe(

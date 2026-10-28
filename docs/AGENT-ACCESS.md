@@ -341,7 +341,14 @@ Three fields, on the **connection** rather than the credential, so they hold for
 
 **Every control-plane row says which kind of client acted.** The guard stamps the connection's `actorKind` — `agent`, `dashboard` or `script` — onto each `control-plane` event the call writes, its own and every handler's, and `@pithy-sh/audit` stores it in `actor_kind` and filters on it. A connection registered before kinds were recorded writes rows with none.
 
-**An in-Worker MCP tool call is not a control-plane call and emits none of that.** Left alone this produces an asymmetry in which an agent administering the system is fully audited and an agent using the application is invisible. Every tool call wants a row: who, which tool, which class of argument, and what it cost.
+**An in-Worker MCP tool call is not a control-plane call and emits none of that, so the endpoint writes its own row.** Otherwise an agent administering the system would be fully audited and an agent using the application invisible. Every `tools/call` from a caller the endpoint has verified writes one `mcp/tool_call` event (`packages/auth/src/mcp/toolAudit.ts`): who, which tool, which class of argument, and what it cost. A request refused at verification — no bearer, a token that does not verify, a consent no longer on record, an ended session, a user below the floor — is answered with the `401` challenge or a `403` and writes no tool-call row, because there is no verified user for it to name.
+
+- **Who acted.** `actorType: "user"` with the user's id and the session the token was minted under, because the call ran under that user's authority, and `actorKind: "agent"`, the field control-plane rows carry, so one `actorKind` filter finds every agent row on both paths. `metadata` names the OAuth client by `clientId` and by `clientReportedName`, the name the client gave itself at registration, which nothing has verified. A row never reads as the person acting alone. `tenant` is the organization the user acted for, or null.
+- **The outcome.** `success`; `failure` when the route answered any other error; `denied` when the dispatched route answered `401` or `403`, or when the call named a tool the caller was not offered — `metadata.refused` is then `withheld` for a tool this app has that the caller's role was not offered, or `unknown` for no such tool, and the call was never dispatched. A refusal is written at `warning`, the rest at `info`.
+- **What it cost.** `metadata` carries `tool`, the route's `status`, `durationMs` from receiving the call to answering it, and `responseBytes`, the size of the route's response. A refused call was never answered by a route, so its `status` and `responseBytes` are null. CPU time is not readable per request in a Worker, so the row does not claim it.
+- **What the arguments leave behind** (`argumentClass.ts`). A tool's arguments may carry a customer's own data, and a trail that copied them would be a second place that data lives. So `metadata.arguments` keeps the route's path parameters verbatim, because they are the resource ids the route already records, and of the query and the body only their JSON type and the top-level key names, sorted, each with its value's JSON type. No value, no length, no nested key. A row is bounded whatever an agent sends: at most 64 keys per query or body, the rest counted as `omitted`, and every key name, path value, tool name and client name cut at 128 characters; a cut key carries `truncated: true`, and a cut path value is named in `truncatedPath`.
+- **It joins what the route did.** The dispatched request carries the tool call's request id as `cf-ray`, with the caller's address and user agent, so the route's own events in the same request share the tool call's `requestId`.
+- **It cannot fail the call.** The row is evidence of what happened, never part of making it happen, so a failed write or client lookup is swallowed. With no audit capability composed, nothing is built and nothing is written.
 
 ---
 
@@ -349,5 +356,4 @@ Three fields, on the **connection** rather than the credential, so they hold for
 
 Stated so a reader can tell a decision from a gap.
 
-- An in-Worker tool call is not yet audited (§9); `pithy-sh/pithy#726` is it. The grants and revocations around it are.
 - The data-defined tools of §4.2 presuppose an analytical capability that is not built.

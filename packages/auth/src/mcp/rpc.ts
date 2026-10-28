@@ -62,6 +62,8 @@ export interface RpcHandlers {
   readonly tools: () => Promise<readonly AppTool[]>;
   /** Call one, as the caller. */
   readonly call: (tool: AppTool, args: Record<string, unknown>) => Promise<CallOutcome>;
+  /** Told of a `tools/call` naming a tool the caller was not offered, before it is answered as unknown. */
+  readonly refused: (name: unknown) => Promise<void>;
 }
 
 /** A JSON-RPC answer, or `null` for a notification. */
@@ -121,7 +123,10 @@ export async function answer(message: RpcMessage, handlers: RpcHandlers): Promis
       // A tool the caller may not call is answered exactly as one that does not exist: the list it was offered
       // never named it, so saying anything more would disclose it (§4.1).
       const tool = (await handlers.tools()).find((entry) => entry.name === name);
-      if (tool === undefined) return fail(RPC_ERRORS.invalidParams, `Unknown tool: ${String(name)}.`);
+      if (tool === undefined) {
+        await handlers.refused(name);
+        return fail(RPC_ERRORS.invalidParams, `Unknown tool: ${String(name)}.`);
+      }
       return ok(toolResult(await handlers.call(tool, record(message.params?.arguments))));
     }
     default:
