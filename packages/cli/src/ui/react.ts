@@ -3,6 +3,7 @@
 
 import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { HOME_SCREEN, TEMPLATE_DIR, TEMPLATE_GROUPS, WORKER_TOKEN } from "@pithy-sh/ui-react/src/templates";
+import { UI_REACT_VERSION } from "@pithy-sh/ui-react/src/version";
 import { kitRange } from "../project/scaffold";
 import { CLOUDFLARE_VITE_PLUGIN, WRANGLER_RANGE } from "../project/workerScaffold";
 import type { UiStub, UiStubContext, UiStubFile } from "./stubs";
@@ -61,17 +62,19 @@ export const reactStub: UiStub = {
     // written only when their capability is composed, and their package arrives with `pithy add auth`.
     // `src/pithy-locale.tsx`, `src/router.tsx` and the home screen all reach it — all `base`, all
     // written on every scaffold — so a project that never composes `i18n` still imports the package, and
-    // before this line `vite build` could not resolve it. The alternative was to un-translate the base
-    // screens, which is the feature.
+    // `vite build` cannot resolve it without this line.
     //
     // A dependency rather than a devDependency, for the reason `react` is one: it is bundled into what
     // the browser downloads. And core's `PACKAGE_VERSION` for the reason `@pithy-sh/vite` uses it —
     // the release train below is what makes that honest, and `react.test.ts` holds both halves.
     "@pithy-sh/i18n": kitRange(PACKAGE_VERSION),
+    // The screens read and redirect through `useRead`, `useAction` and `<Redirect>` from here, on every scaffold.
+    // Its own version rather than core's: the CLI depends on this package, so it can read it honestly.
+    "@pithy-sh/ui-react": kitRange(UI_REACT_VERSION),
   },
   devDependencies: {
     // Exact, and the release that pins the wrangler below: a caret resolves the plugin's next release,
-    // whose wrangler peer the exact pin no longer satisfies (#738).
+    // whose wrangler peer the exact pin no longer satisfies.
     "@cloudflare/vite-plugin": CLOUDFLARE_VITE_PLUGIN.version,
     // Derived, never a literal: `"^0.0.0"` 404'd the adopter's next install, and no release would ever
     // have moved it. `kitRange` answers `null` while nothing under the scope is published, which drops
@@ -89,13 +92,12 @@ export const reactStub: UiStub = {
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.0.4",
     // A DOM for the seeded gate, and for every client test the adopter writes after it. The starter's
-    // node project already collects `.tsx` co-located tests (#245) but runs them in `environment:
-    // "node"`, where `document` does not exist — so `src/turnstile.test.tsx` names its own environment
-    // in a docblock, and this is the package that has to be installed for that name to resolve (#383).
+    // node project collects `.tsx` co-located tests but runs them in `environment: "node"`, where
+    // `document` does not exist — so `src/turnstile.test.tsx` names its own environment in a docblock,
+    // and this is the package that has to be installed for that name to resolve.
     "happy-dom": "^20.11.2",
     vite: "^8.2.1",
-    // The Worker's own pin, imported from the producer that writes it — this was a third copy of a
-    // literal that `scaffoldParity.test.ts` held between only the other two.
+    // The Worker's own pin, imported from the producer that writes it, so there is one statement of it.
     wrangler: WRANGLER_RANGE,
   },
   // `--configLoader runner` is load-bearing, not a preference. Vite's default config loader bundles

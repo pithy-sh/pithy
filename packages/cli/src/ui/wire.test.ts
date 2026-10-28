@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
+import { UI_REACT_VERSION } from "@pithy-sh/ui-react/src/version";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { WorkerConfig } from "../project/config";
@@ -111,10 +112,9 @@ describe("wire", () => {
   });
 
   test("wireAssets writes the list it is handed and composes nothing itself", async () => {
-    // The seam that lets `pithy ui add` compose before it writes. While this function derived the
-    // allowlist itself, the step most likely to throw — assembling every capability's routes, in every
-    // environment — sat *inside* the writer, and therefore after the whole template had landed (#259).
-    // A list no derivation would ever produce is what proves nothing here derives.
+    // The seam that lets `pithy ui add` compose before it writes: the step most likely to throw —
+    // assembling every capability's routes, in every environment — stays outside the writer, ahead of the
+    // template landing. A list no derivation would ever produce is what proves nothing here derives.
     const change = await wireAssets(dir, ["/handed", "/handed/*"]);
     expect(change.after).toEqual(["/handed", "/handed/*"]);
     const config = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as {
@@ -162,8 +162,7 @@ describe("wire", () => {
       dev: { autostart?: boolean; readySignal: string; command: string[] };
       ui: { stub: string; build: string[] };
     };
-    // `wire` used to force `autostart: true` back on, which was its way of undoing a stale opt-out.
-    // There is nothing to undo now: the key does not decide anything, so wire leaves it alone (#548).
+    // The key decides nothing, so wire leaves it alone.
     expect(manifest.dev.autostart).toBeUndefined();
     expect(manifest.dev.readySignal).toBe("ready in \\d+");
     expect(manifest.dev.command).toEqual([
@@ -210,14 +209,16 @@ describe("wire", () => {
     // react was already pinned ahead of the stub's version; it keeps the adopter's pin.
     expect(pkg.dependencies.react).toBe("^19.9.9");
 
-    // **The rule, not today's answer.** The stub declares `@pithy-sh/i18n` at `kitRange(PACKAGE_VERSION)`,
-    // which is `null` while nothing under the scope is published and a real range once something is — so
-    // the package joins this list on the day of the first release and never leaves it. Written as the
-    // literal `["react-dom"]`, this test passed for as long as the kit was unpublished and then failed
-    // the release that made `kitRange` do the thing it was written to do (`0.1.0`, 2026-09-05).
-    const kit = kitRange(PACKAGE_VERSION) === null ? [] : ["@pithy-sh/i18n"];
+    // **The rule, not today's answer.** The stub declares each kit package at `kitRange` of its version,
+    // which is `null` while that version is unpublished and a real range once it is, so the list is derived
+    // from the same ranges rather than written as a literal.
+    const kit = [
+      ...(kitRange(PACKAGE_VERSION) === null ? [] : ["@pithy-sh/i18n"]),
+      ...(kitRange(UI_REACT_VERSION) === null ? [] : ["@pithy-sh/ui-react"]),
+    ];
     expect(change.dependencies).toEqual(["react-dom", ...kit]);
     expect(pkg.dependencies["@pithy-sh/i18n"]).toBe(kitRange(PACKAGE_VERSION) ?? undefined);
+    expect(pkg.dependencies["@pithy-sh/ui-react"]).toBe(kitRange(UI_REACT_VERSION) ?? undefined);
     expect(pkg.dependencies["react-dom"]).toBe("^19.2.8");
     expect(pkg.devDependencies.vite).toBe("^8.2.1");
     // Every existing key survives.
@@ -289,9 +290,8 @@ describe("wire", () => {
   });
 
   test("wirePackage writes no range the registry cannot resolve, whatever the project looks like", async () => {
-    // The adopter this regressed for: a plain project, nothing under `@pithy-sh` linked in, so
-    // `withoutProvided` keeps every stub package — and `pithy ui add react` said Done while planting
-    // `"@pithy-sh/vite": "^0.0.0"`. The 404 landed on the next `bun install`, on an unrelated command.
+    // A plain project, nothing under `@pithy-sh` linked in, so `withoutProvided` keeps every stub
+    // package. A range the registry cannot resolve says Done here and 404s on the next `bun install`.
     // Asserting an absence, so it stays true after the scope publishes. The worker starts with empty
     // dependency maps: whatever an adopter already declared is theirs and is never rewritten, so only
     // what this call adds is on trial here.
@@ -380,7 +380,7 @@ describe("wire", () => {
 });
 
 /**
- * A `package.json` that is missing and one that is malformed are different faults (#217).
+ * A `package.json` that is missing and one that is malformed are different faults.
  *
  * One `try` wrapped the read and the parse, and answered both with *pithy worker add creates one*. For a
  * worker whose `package.json` is there and holds a stray comma, that command will not run — it refuses

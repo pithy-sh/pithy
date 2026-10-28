@@ -2,7 +2,7 @@ import type { Translator } from "@pithy-sh/core/src/i18n/translator";
 import { getEntitlements, type PaymentsFailure } from "@pithy-sh/payments/src/client/api";
 import type { PriceVisitor } from "@pithy-sh/payments/src/pricing/location";
 import { fetchPriceVisitor, type PriceVisitorOptions } from "@pithy-sh/payments/src/pricing/visitor";
-import { useEffect, useState } from "react";
+import { useRead } from "@pithy-sh/ui-react/src/read";
 import { paymentsConfig } from "./pithy-config";
 
 /**
@@ -37,7 +37,7 @@ export const paymentsClient = { basePath: paymentsConfig.basePath };
  * of this string, and the class is the one thing about it you are meant to act on — `.pithy-checkout` is
  * an adopter hook, deliberately styled by no stylesheet Pithy ships, so that the frame lands where your
  * layout wants it. A styling instruction against two names that agree today is one that styles half your
- * checkouts the day somebody renames one (#391, item E).
+ * checkouts the day somebody renames one.
  *
  * That is also why the unstyled report never mentions it: it has no rule anywhere on purpose, and a
  * class read out of an identifier is not a literal that report can see. Both facts are intended.
@@ -60,11 +60,10 @@ export const paddleSetup = paymentsConfig.paddle;
 /**
  * What a refusal from the store reads as, in the reader's language.
  *
- * **A `PaymentsFailure` carries a namespaced `code`, and the code is the catalog key.** Every screen
- * here used to render `failure.message` — the sentence the server put on the wire, which is English and
- * is only ever English, because `message` is written at the throw site in the one language a throw site
- * has. So a reader on an otherwise-Spanish page met English the moment anything went wrong, which is
- * the moment copy matters most and the moment nobody tests.
+ * **A `PaymentsFailure` carries a namespaced `code`, and the code is the catalog key.** `failure.message`
+ * is the sentence the server put on the wire, written at the throw site in the one language a throw site
+ * has, so rendering it directly shows English on an otherwise-Spanish page at the moment anything goes
+ * wrong.
  *
  * This is the contract `docs/I18N.md` § *Errors* states, and the reason it is `maybe` rather than `t`:
  * `t` is total, so a code no catalog covers would render as the code itself — `payments/product_not_found`
@@ -129,19 +128,8 @@ export async function holdsEntitlement(key: string): Promise<boolean> {
  * failed read answers null, which quotes from the IP and says so.
  */
 export function usePriceVisitor(ask: boolean, options?: PriceVisitorOptions): PriceVisitor | null {
-  const [visitor, setVisitor] = useState<PriceVisitor | null>(null);
-
-  useEffect(() => {
-    if (!ask || !paymentsConfig.enabled) return;
-    let live = true;
-    void fetchPriceVisitor(options).then((answer) => {
-      if (live) setVisitor(answer);
-    });
-    return () => {
-      live = false;
-    };
-    // `options` is `paymentsClient`, a module constant, so this asks once per session resolution.
-  }, [ask, options]);
-
-  return visitor;
+  // `options` is `paymentsClient`, a module constant, so this asks once per session resolution.
+  return (
+    useRead("price-visitor", () => fetchPriceVisitor(options), { skip: !ask || !paymentsConfig.enabled }).value ?? null
+  );
 }

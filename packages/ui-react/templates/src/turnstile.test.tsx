@@ -70,24 +70,60 @@ vi.mock("./pithy-config", () => ({
 /** The options the component handed `turnstile.render`, or null if it never rendered a widget. */
 let rendered: { sitekey: string; action: string } | null = null;
 
+/** Every call into the widget API, in order. */
+let calls: string[] = [];
+
+/** Whether the stubbed script load fails. */
+let scriptFails = false;
+
 beforeEach(() => {
   rendered = null;
+  calls = [];
+  scriptFails = false;
+  // The module remembers its one script load, so each case imports a fresh copy.
+  vi.resetModules();
   // The component loads Cloudflare's script by appending it to `<head>` and awaiting `onload`. Nothing
   // in a test environment can serve it, so the append is intercepted: no element is added, no request
   // is made, and the handler the component just assigned is called as if the script had arrived.
   vi.spyOn(document.head, "appendChild").mockImplementation(<T extends Node>(node: T): T => {
     queueMicrotask(() => {
-      (node as unknown as HTMLScriptElement).onload?.(new Event("load"));
+      const element = node as unknown as HTMLScriptElement;
+      if (scriptFails) element.onerror?.(new Event("error"));
+      else element.onload?.(new Event("load"));
     });
     return node;
   });
+  let widgets = 0;
   window.turnstile = {
     render: (_element, options) => {
       rendered = { sitekey: options.sitekey, action: options.action };
-      return "widget-id";
+      widgets += 1;
+      calls.push(`render widget-${widgets}`);
+      return `widget-${widgets}`;
+    },
+    remove: (widget) => {
+      calls.push(`remove ${widget}`);
     },
   };
 });
+
+/** Mount the widget with `onToken` and let the script promise settle. */
+async function mountWidget(onToken: (value: string | null) => void) {
+  const { Turnstile } = await import("./turnstile");
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  const render = async (next: (value: string | null) => void) => {
+    await act(async () => {
+      root.render(<Turnstile onToken={next} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+  };
+  await render(onToken);
+  return { root, render };
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -116,4 +152,30 @@ test("the widget is solved for the action the projection carries, not one of its
   expect(rendered, "the widget never rendered — the config mock or the script stub did not take").not.toBeNull();
   expect(rendered?.sitekey).toBe(CANARY_SITEKEY);
   expect(rendered?.action).toBe(CANARY_ACTION);
+});
+
+test("unmounting the widget removes the one it rendered", async () => {
+  const { root } = await mountWidget(() => {});
+  expect(calls).toEqual(["render widget-1"]);
+  await act(async () => root.unmount());
+  expect(calls).toEqual(["render widget-1", "remove widget-1"]);
+});
+
+test("a new onToken removes the old widget before it renders the next", async () => {
+  const { root, render } = await mountWidget(() => {});
+  await render(() => {});
+  expect(calls).toEqual(["render widget-1", "remove widget-1", "render widget-2"]);
+  await act(async () => root.unmount());
+});
+
+test("a script that fails to load answers null and renders no widget", async () => {
+  scriptFails = true;
+  const onToken = vi.fn();
+  const { root } = await mountWidget(onToken);
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(onToken).toHaveBeenCalledWith(null);
+  expect(calls).toEqual([]);
+  await act(async () => root.unmount());
 });

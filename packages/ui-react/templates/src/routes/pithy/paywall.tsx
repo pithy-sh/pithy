@@ -4,9 +4,11 @@ import {
   PAYMENTS_HOSTED_RAILS,
   type PaymentsHostedRail,
   returnedCheckoutSession,
+  submitPurchase,
 } from "@pithy-sh/payments/src/client/api";
-import { useCheckout, usePaddleCheckout, usePurchase } from "@pithy-sh/payments/src/client/hooks";
-import { useEffect, useState } from "react";
+import { useCheckout, usePaddleCheckout } from "@pithy-sh/payments/src/client/hooks";
+import { useRead } from "@pithy-sh/ui-react/src/read";
+import { useState } from "react";
 // `CHECKOUT_FRAME` is imported rather than declared here: the two screens that sell share one class, and
 // `.pithy-checkout` is a hook you are meant to style. Two copies is one styled checkout and one bare one.
 import { CHECKOUT_FRAME, failureText, paymentsClient } from "../../payments";
@@ -17,7 +19,7 @@ import "../../pithy-screens.css";
 export const path = "/paywall";
 
 // The screen the router's entitlement guard sends people to. Rename `path` above and the guard follows,
-// because it reads this claim rather than holding a copy of the string (#393).
+// because it reads this claim rather than holding a copy of the string.
 export const role = "paywall";
 
 // Buying attaches a purchase to an account, so there has to be one.
@@ -32,10 +34,9 @@ export const session = "required";
 /**
  * What a product can do on the web: any enabled hosted rail this product is actually listed on.
  *
- * The list is `PAYMENTS_HOSTED_RAILS`, from the package. It used to be three names written out here,
- * which is the shape #336 was about — correct on the day, one rail short a release later, and frozen
- * the moment this file was copied into a repo. Imported, a rail added to Pithy reaches a paywall
- * scaffolded a year ago. Apple and Google are not on it: those purchases happen inside a store SDK,
+ * The list is `PAYMENTS_HOSTED_RAILS`, from the package, rather than names written out here: a list
+ * copied into this file would be frozen the moment it was copied into a repo. Imported, a rail added to
+ * Pithy reaches a paywall scaffolded a year ago. Apple and Google are not on it: those purchases happen inside a store SDK,
  * and a web page can say a product exists and nothing more.
  */
 function purchasable(product: { skus: Record<PaymentsHostedRail, string | null> }): boolean {
@@ -67,28 +68,30 @@ const EN = {
 export default function Paywall() {
   const t = useTranslator(EN);
   // Read before the early returns, because it is a hook — and read at all, rather than written out as
-  // `/subscription`, because the subscription screen declares its own path (#393).
+  // `/subscription`, because the subscription screen declares its own path.
   const subscriptionPath = useScreenPath("subscription");
   const checkout = useCheckout(paymentsClient);
   // Paddle's overlay and inline modes never leave this page, so the handoff has to be opened here. Every
   // other hosted rail has already navigated away by the time `start` resolves and this reads null.
   const opened = usePaddleCheckout(checkout.handoff, { frameTarget: CHECKOUT_FRAME });
-  const purchase = usePurchase(paymentsClient);
   const [returned] = useState(() => returnedCheckoutSession());
 
   // Coming back from hosted Checkout, the success URL carries the session id. Posting it projects the
   // purchase at once, so the entitlement shows now rather than whenever the webhook lands. The webhook is
   // still authoritative and still arrives; dropping this call would only cost the buyer a few seconds.
+  // Once per return, StrictMode included.
   //
   // Stripe only, and by construction rather than by a check: no other rail substitutes a session id into
   // the return URL, so `returned` is null coming back from one. A Lemon Squeezy buyer waits for the
   // webhook — that rail has no receipt a client could submit, because its order ids are sequential
   // integers and any authenticated caller could claim an order by counting.
-  useEffect(() => {
-    if (returned) void purchase.submit("stripe", returned);
-    // The session id is read once, into state, so this runs once per return rather than once per render —
-    // and `submit` is a stable callback, so listing it costs nothing and keeps the list honest.
-  }, [returned, purchase.submit]);
+  const submitted = useRead(
+    `checkout-return:${returned ?? ""}`,
+    async () => (returned === null ? null : submitPurchase({ rail: "stripe", receipt: returned }, paymentsClient)),
+    { skip: returned === null, once: true },
+  ).value;
+  const purchased = submitted?.ok ? submitted.value.purchase : null;
+  const refused = submitted?.ok === false ? submitted.failure : null;
 
   if (!paymentsConfig.enabled) {
     return (
@@ -101,7 +104,7 @@ export default function Paywall() {
     );
   }
 
-  if (returned && purchase.purchase) {
+  if (returned && purchased) {
     return (
       <main className="screen">
         <h1>{t.t("payments/paywall.done.title")}</h1>
@@ -118,7 +121,7 @@ export default function Paywall() {
       <h1>{t.t("payments/paywall.title")}</h1>
       <p className="muted">{t.t("payments/paywall.body")}</p>
 
-      {purchase.failure && <p className="muted">{failureText(t, purchase.failure)}</p>}
+      {refused && <p className="muted">{failureText(t, refused)}</p>}
       {checkout.failure && <p className="muted">{failureText(t, checkout.failure)}</p>}
       {opened.failure && <p className="muted">{failureText(t, opened.failure)}</p>}
 

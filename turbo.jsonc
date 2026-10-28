@@ -42,6 +42,12 @@
     // Removing it launched every package's vitest at once — each `@cloudflare/vitest-plugin` suite
     // spawning workerd — and timed out `beforeAll` hooks on an 8-core machine. The root `test` script
     // answers that explicitly with `--concurrency=50%`; keep it there if you touch these deps.
+    // `@pithy-sh/ui-react`'s published source imports only React (`src/leaf.test.ts`), while payments and i18n import its hooks and its
+    // templates import them. A `^build` here would close that loop.
+    "@pithy-sh/ui-react#build": {
+      "dependsOn": [],
+      "outputs": ["dist/**"]
+    },
     // `@pithy-sh/vite#build` writes one file outside its own package: `templates/client-env.d.ts` in
     // `@pithy-sh/ui-react`, generated from the four declared client projections (#398). Both halves are
     // named here or the cache lies about it — an output turbo does not know it produced is not restored

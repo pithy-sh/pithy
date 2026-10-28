@@ -3,7 +3,8 @@ import type { LocaleContext } from "@pithy-sh/core/src/i18n/locale";
 import { applyProjectedLocale } from "@pithy-sh/i18n/src/browser/document";
 import { loadKitCatalog } from "@pithy-sh/i18n/src/catalogs/browser";
 import { TranslatorProvider } from "@pithy-sh/i18n/src/react/translator";
-import { type ReactNode, useEffect, useState } from "react";
+import { useRead } from "@pithy-sh/ui-react/src/read";
+import type { ReactNode } from "react";
 import { i18nConfig } from "./pithy-config";
 
 /**
@@ -12,16 +13,13 @@ import { i18nConfig } from "./pithy-config";
  *
  * ## Why this file exists at all
  *
- * `client.tsx` used to call `applyProjectedLocale` and stop there. That negotiates a locale and writes
- * `lang` and `dir` onto the document, and nothing mounted a translator behind it — so a project that
- * composed `i18n` and met a Spanish reader served `<html lang="es">` over a page rendering the English
- * every screen bakes. That is **worse than never having negotiated at all**: a screen reader believes
- * the attribute, switches voice, and pronounces English words with Spanish phonetics. The page is
- * unreadable to the one reader the attribute exists for.
+ * `applyProjectedLocale` alone writes `lang` and `dir` onto the document and mounts no translator, so
+ * the page would declare `<html lang="es">` over English copy. That is **worse than never negotiating**:
+ * a screen reader believes the attribute and pronounces English words with Spanish phonetics.
  *
- * The fix is the shape rather than an extra call. {@link locale} is resolved once, and the same value
- * both goes on the document and selects the catalog this provider mounts. There is no second statement
- * of what language the page is in, so the two cannot disagree.
+ * So {@link locale} is resolved once, and the same value both goes on the document and selects the
+ * catalog this provider mounts. There is no second statement of what language the page is in, so the
+ * two cannot disagree.
  *
  * ## What it does when nothing is composed
  *
@@ -89,28 +87,17 @@ export interface PithyLocaleProps {
  * no session involved. Landing somewhere else is the whole reason to run the hook at all.
  */
 export function PithyLocale({ children, messages }: PithyLocaleProps): ReactNode {
-  const [kit, setKit] = useState<MessageCatalog | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    if (locale !== null) {
-      void loadKitCatalog(locale.catalogLocale)
-        .then((catalog) => {
-          if (live) setKit(catalog);
-        })
-        // A per-locale chunk that will not load — a 404 after a deploy, an offline tab — must not leave
-        // the provider unmounted forever with `lang` already changed on the document. That is the
-        // "declares a language it does not speak" failure by another road: a screen reader believes the
-        // attribute and mispronounces English. An empty catalog mounts the provider, so every screen
-        // falls through to the English it was scaffolded with, which is what is actually on screen.
-        .catch(() => {
-          if (live) setKit({});
-        });
-    }
-    return () => {
-      live = false;
-    };
-  }, []);
+  // A per-locale chunk that will not load — a 404 after a deploy, an offline tab — must not leave the provider
+  // unmounted with `lang` already changed on the document: a screen reader believes the attribute and mispronounces
+  // English. An empty catalog mounts the provider, so every screen falls through to the English it was scaffolded
+  // with, which is what is actually on screen.
+  const kit =
+    useRead(
+      `catalog:${locale?.catalogLocale ?? ""}`,
+      async (): Promise<MessageCatalog> =>
+        locale === null ? {} : loadKitCatalog(locale.catalogLocale).catch((): MessageCatalog => ({})),
+      { skip: locale === null },
+    ).value ?? null;
 
   if (locale === null || kit === null) return children;
   return (

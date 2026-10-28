@@ -29,8 +29,8 @@ const { readConsent, decideConsent, getSession, navigate } = vi.hoisted(() => ({
 
 vi.mock("@pithy-sh/auth/src/client/mcp", () => ({ readConsent, decideConsent }));
 vi.mock("../../session", () => ({ getSession, RESUME_PARAM: "resume" }));
-vi.mock("../../router", () => ({
-  navigate,
+vi.mock("../../router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../router")>()),
   routeTable: async () => ({ byRole: new Map() }),
   screenPath: () => "/sign-in",
 }));
@@ -42,6 +42,9 @@ beforeEach(() => {
   document.body.append(host);
   readConsent.mockReset();
   navigate.mockReset();
+  // The screen leaves through the router's `<Redirect>`, whose navigation is the router's own, so the history
+  // write is what is watched.
+  vi.spyOn(window.history, "pushState").mockImplementation((_state, _title, url) => navigate(String(url)));
   getSession.mockReset();
   getSession.mockResolvedValue({ user: { id: "u1" } });
   readConsent.mockResolvedValue({
@@ -78,6 +81,7 @@ beforeEach(() => {
 
 afterEach(() => {
   host.remove();
+  vi.restoreAllMocks();
   window.history.replaceState(null, "", "/");
 });
 

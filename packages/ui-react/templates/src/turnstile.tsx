@@ -1,4 +1,5 @@
-import { type ReactNode, useEffect, useRef } from "react";
+import { useRead } from "@pithy-sh/ui-react/src/read";
+import { type ReactNode, type RefObject, useEffect, useRef } from "react";
 import { turnstileConfig } from "./pithy-config";
 
 const SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
@@ -23,6 +24,8 @@ interface TurnstileApi {
       "expired-callback": () => void;
     },
   ) => string;
+  /** Take a rendered widget off the page. */
+  remove?: (widget: string) => void;
 }
 
 declare global {
@@ -63,43 +66,52 @@ export function turnstilePending(value: string | null): boolean {
   return turnstileConfig.enabled && !value;
 }
 
+/**
+ * Render Cloudflare's widget into `host` once its script has loaded, handing each token, and each expiry as `null`,
+ * to `onToken`, and remove it again on unmount. The widget is Cloudflare's iframe, outside React, and this is what
+ * keeps it in step. A script that failed to load answers `null`, so a form waiting on a token says so.
+ */
+function useTurnstileWidget(
+  host: RefObject<HTMLDivElement | null>,
+  script: "loading" | "loaded" | "failed",
+  onToken: (value: string | null) => void,
+): void {
+  useEffect(() => {
+    if (!turnstileConfig.enabled) return;
+    if (script === "failed") {
+      onToken(null);
+      return;
+    }
+    if (script === "loading" || !host.current || !window.turnstile) return;
+    const turnstile = window.turnstile;
+    const widget = turnstile.render(host.current, {
+      sitekey: turnstileConfig.sitekey,
+      // The action comes from the projection, and writing it out here again would be a bug nothing
+      // short of production could see: the server asserts this exact string against the token, and
+      // dev and staging run Cloudflare test keys, whose answer carries no action to compare. A
+      // drifted copy is silent everywhere until it refuses every sign-in in prod.
+      action: turnstileConfig.action,
+      appearance: turnstileConfig.mode === "invisible" ? "execute" : "always",
+      // `auto` is Turnstile's own name for `prefers-color-scheme`, which is what `pithy-screens.css`
+      // answers too. The widget is a cross-origin iframe, so this argument is the only lever — and
+      // it resolves the same question from the same source, with nothing to keep in step.
+      theme: "auto",
+      // Fill the column, so the check matches the field and the button above and below it. The host
+      // element supplies the width; see `.auth__check` in pithy-screens.css. Both halves are
+      // required — either one alone leaves a ragged edge beside a full-width input.
+      size: "flexible",
+      callback: (value) => onToken(value),
+      "expired-callback": () => onToken(null),
+    });
+    return () => turnstile.remove?.(widget);
+  }, [host, script, onToken]);
+}
+
 /** The widget. Renders nothing at all when the capability is not composed. */
 export function Turnstile(props: { onToken: (value: string | null) => void }): ReactNode {
   const host = useRef<HTMLDivElement>(null);
-  const onToken = props.onToken;
-
-  useEffect(() => {
-    if (!turnstileConfig.enabled) return;
-    let live = true;
-    void loadScript()
-      .then(() => {
-        if (!live || !host.current || !window.turnstile) return;
-        window.turnstile.render(host.current, {
-          sitekey: turnstileConfig.sitekey,
-          // The action comes from the projection, and writing it out here again would be a bug nothing
-          // short of production could see: the server asserts this exact string against the token, and
-          // dev and staging run Cloudflare test keys, whose answer carries no action to compare. A
-          // drifted copy is silent everywhere until it refuses every sign-in in prod. #377.
-          action: turnstileConfig.action,
-          appearance: turnstileConfig.mode === "invisible" ? "execute" : "always",
-          // `auto` is Turnstile's own name for `prefers-color-scheme`, which is what `pithy-screens.css`
-          // answers too. The widget is a cross-origin iframe, so this argument is the only lever — and
-          // it resolves the same question from the same source, with nothing to keep in step.
-          theme: "auto",
-          // Fill the column, so the check matches the field and the button above and below it. The host
-          // element supplies the width; see `.auth__check` in pithy-screens.css. Both halves are
-          // required — either one alone leaves a ragged edge beside a full-width input.
-          size: "flexible",
-          callback: (value) => onToken(value),
-          "expired-callback": () => onToken(null),
-        });
-      })
-      .catch(() => onToken(null));
-    return () => {
-      live = false;
-    };
-  }, [onToken]);
-
+  const script = useRead("turnstile-script", loadScript, { skip: !turnstileConfig.enabled });
+  useTurnstileWidget(host, script.failure ? "failed" : script.loading ? "loading" : "loaded", props.onToken);
   if (!turnstileConfig.enabled) return null;
   return <div ref={host} />;
 }

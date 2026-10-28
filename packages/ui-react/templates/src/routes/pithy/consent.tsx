@@ -3,7 +3,8 @@ import type { MyConsentResponse } from "@pithy-sh/consent/src/http/responses";
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import type { Translator } from "@pithy-sh/core/src/i18n/translator";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
-import { type PointerEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { useRead } from "@pithy-sh/ui-react/src/read";
+import { type PointerEvent, type ReactNode, useRef, useState } from "react";
 import "../../pithy-screens.css";
 
 export const path = "/consent";
@@ -158,30 +159,30 @@ export interface ConsentScreenProps {
  * The consent settings screen: every purpose and where the reader stands. A click-level purpose is granted here; a
  * grant is withdrawn here the way it was given, except one signed with a provider, which is withdrawn there.
  */
+/** A refusal carried as the read's failure, so the last answer survives it. */
+class Refused extends Error {
+  constructor(readonly refusal: { code: string; message: string }) {
+    super(refusal.code);
+  }
+}
+
 export function ConsentScreen({ client: options, t: given }: ConsentScreenProps): ReactNode {
   const baked = useTranslator(EN);
   const t = given ?? baked;
   const [client] = useState<ConsentClient>(() => consentClient(options));
-  const [me, setMe] = useState<MyConsentResponse | null>(null);
-  const [failure, setFailure] = useState<{ code: string; message: string } | null>(null);
+  const read = useRead("consent", async (): Promise<MyConsentResponse> => {
+    const result = await client.me();
+    if (result.ok) return result.value;
+    throw new Refused(result);
+  });
+  const me = read.value ?? null;
+  const [refusal, setRefusal] = useState<{ code: string; message: string } | null>(null);
+  // `client.me()` answers a refusal rather than throwing, so a refusal is the only failure the read carries.
+  const failure = refusal ?? (read.failure instanceof Refused ? read.failure.refusal : null);
   const [busy, setBusy] = useState<string | null>(null);
   const [names, setNames] = useState<Record<string, string>>({});
   const [drawings, setDrawings] = useState<Record<string, string | null>>({});
   const [saved, setSaved] = useState(false);
-
-  const load = useCallback(async () => {
-    const result = await client.me();
-    if (result.ok) {
-      setMe(result.value);
-      setFailure(null);
-    } else {
-      setFailure(result);
-    }
-  }, [client]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
 
   const choose = async (row: Row, grant: boolean) => {
     setBusy(row.purpose.id);
@@ -212,9 +213,10 @@ export function ConsentScreen({ client: options, t: given }: ConsentScreenProps)
     setBusy(null);
     if (result.ok) {
       setSaved(true);
-      await load();
+      setRefusal(null);
+      read.refresh();
     } else {
-      setFailure(result);
+      setRefusal(result);
     }
   };
 

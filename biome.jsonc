@@ -56,9 +56,9 @@
       "path": "plugins/no-process-io.grit",
       "includes": ["**/packages/*/src/**", "!**/packages/cli/**", "!**/*.test.ts", "!**/test-utils/**"]
     },
-    // `no-z-config.grit` refuses Zod's global error map. It is the widest scope of the four and takes
-    // no exclusion at all — not even for tests — because the failure it prevents is a Worker isolate
-    // outliving one request and carrying that request's locale into the next one's parse (#441). A test
+    // `no-z-config.grit` refuses Zod's global error map. It takes no exclusion at all — not even for
+    // tests — because the failure it prevents is a Worker isolate outliving one request and carrying that
+    // request's locale into the next one's parse. A test
     // that sets the global poisons every file sharing its worker, which is the same defect wearing a
     // flake's clothes. Note the shape the two entries above live with: `"!**/*.test.ts"` does not
     // exclude a `.tsx`, so an exclusion list here would have been a hole rather than a scope.
@@ -66,7 +66,7 @@
       "path": "plugins/no-z-config.grit",
       "includes": ["**/packages/*/src/**"]
     },
-    // `no-bare-zvalidator.grit` keeps every request schema readable by the OpenAPI contract (#719).
+    // `no-bare-zvalidator.grit` keeps every request schema readable by the OpenAPI contract.
     // `validation.ts` defines `validate` on top of `zValidator`, and its own test pins the difference
     // between the two, so both are the exceptions and nothing else is.
     {
@@ -75,6 +75,31 @@
         "**/packages/*/src/**",
         "!**/packages/core/src/http/validation.ts",
         "!**/packages/core/src/http/validation.test.ts"
+      ]
+    },
+    // `no-raw-use-effect.grit` keeps effects to the hooks that sync with something outside React. Each exclusion
+    // below is one of them, named for the system it syncs with; tests are outside the rule.
+    {
+      "path": "plugins/no-raw-use-effect.grit",
+      "includes": [
+        "**/packages/*/src/**",
+        "**/packages/ui-react/templates/**",
+        "!**/*.test.ts",
+        "!**/*.test.tsx",
+        // The superseded or unmounted read's AbortController, and its deadline timer.
+        "!**/packages/ui-react/src/read.ts",
+        // The unmounted component's in-flight call, aborted.
+        "!**/packages/ui-react/src/action.ts",
+        // The browser's history, written once after the render that asked for it.
+        "!**/packages/ui-react/src/redirect.ts",
+        // Cloudflare's Turnstile script and its widget iframe.
+        "!**/packages/ui-react/templates/src/turnstile.tsx",
+        // The document's `lang` and `dir`.
+        "!**/packages/i18n/src/react/useDocumentLocale.ts",
+        // The terminal's resize events.
+        "!**/packages/cli/src/dev/tui/resize.ts",
+        // The spinner's interval timer.
+        "!**/packages/cli/src/dev/tui/useSpinnerClock.ts"
       ]
     }
   ],
