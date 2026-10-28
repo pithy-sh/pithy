@@ -124,8 +124,13 @@ describe("appTools", () => {
 });
 
 describe("toolAnnotations", () => {
-  test("a read is read-only and not destructive", () => {
-    expect(toolAnnotations(null)).toEqual({ readOnlyHint: true, destructiveHint: false, openWorldHint: false });
+  test("a read is read-only, not destructive, and idempotent", () => {
+    expect(toolAnnotations(null)).toEqual({
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    });
   });
 
   test("a write is neither read-only nor destructive", () => {

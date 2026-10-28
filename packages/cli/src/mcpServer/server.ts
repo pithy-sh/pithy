@@ -9,7 +9,7 @@ import type { ControlPlaneCaller } from "./caller";
 import { type ControlPlaneTool, callArguments, offeredTools } from "./tools";
 
 /**
- * The control-plane MCP server (#723, `docs/AGENT-ACCESS.md` §3): one connection's Worker, as MCP tools.
+ * The control-plane MCP server (`docs/AGENT-ACCESS.md` §3): one connection's Worker, as MCP tools.
  *
  * **Tools come from the live manifest, every time they are listed.** Environments run different versions, so this
  * server serves exactly what its one Worker declares now — a deploy that adds a route adds a tool at the next
@@ -72,6 +72,7 @@ export function controlPlaneMcpServer(options: ControlPlaneMcpServerOptions): Mc
       name: tool.name,
       description: tool.description,
       inputSchema: tool.inputSchema as { type: "object" },
+      annotations: tool.annotations,
     })),
   }));
 

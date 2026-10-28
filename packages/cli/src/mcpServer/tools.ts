@@ -3,11 +3,13 @@
 
 import type { AdminRoute, ControlPlaneManifest } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import { controlPlaneToolName } from "@pithy-sh/core/src/controlPlane/discovery/toolName";
+import { MOST_RESTRICTIVE_SCOPE_KIND, type ScopeKind, scopeKindOf } from "@pithy-sh/core/src/controlPlane/scope/kind";
 import { MANIFEST_READ_SCOPE } from "@pithy-sh/core/src/controlPlane/scope/scope";
+import { KIND_SENTENCES, kindAnnotations, type ToolAnnotations } from "@pithy-sh/core/src/mcp/annotations";
 import type { CallArguments, CallableRoute } from "./caller";
 
 /**
- * The tools one connection offers, derived from its Worker's live manifest (#723, `docs/AGENT-ACCESS.md` §3, §5).
+ * The tools one connection offers, derived from its Worker's live manifest (`docs/AGENT-ACCESS.md` §3, §5).
  *
  * **Offered only when it can be called.** The server asks the three questions a dashboard pane asks — does this
  * Worker compose the capability, does it declare this route, and was this connection granted its scope — and a
@@ -21,15 +23,24 @@ import type { CallArguments, CallableRoute } from "./caller";
  *
  * **A route with no scope** needs only a verified caller. It is offered when it takes no input — `ping` — and not
  * otherwise, because a scopeless route that takes input is one whose body decides the scope (the presence ticket
- * route), which a tool cannot know ahead of the call.
+ * route), which a tool cannot know ahead of the call. It signs as the manifest read. A scopeless `GET` is a read;
+ * any other method declares no kind and may change anything, so it is treated as the most restrictive.
+ *
+ * **A tool says what kind of thing it does.** Its route's scope kind sets its MCP annotations and leads its
+ * description, so a client that ignores annotations still shows a charge as a charge. A scoped route from a Worker
+ * too old to state a kind is treated as the most restrictive.
  */
 
 /** One tool, and the route it calls. */
 export interface ControlPlaneTool {
   /** `<capability>_<operation>`, normalized in `controlPlaneToolName`. */
   readonly name: string;
-  /** The route's own summary, in its capability's words — the whole basis on which an agent chooses it. */
+  /** The tool's kind in plain words, then the route's own summary in its capability's words. */
   readonly description: string;
+  /** What kind of thing a call does: its route's scope kind. */
+  readonly kind: ScopeKind;
+  /** The MCP annotations its kind sets. */
+  readonly annotations: ToolAnnotations;
   /** The route's input, as the manifest published it. */
   readonly inputSchema: Record<string, unknown>;
   /** The call to make. */
@@ -42,13 +53,15 @@ function takesNothing(input: Record<string, unknown>): boolean {
   return typeof properties !== "object" || properties === null || Object.keys(properties).length === 0;
 }
 
-/** The scope a call to this route names, or `null` when it is not one a tool may call. */
-function callScope(route: AdminRoute, granted: ReadonlySet<string>): string | null {
+/** The scope a call to this route names and the kind it grants, or `null` when it is not one a tool may call. */
+function callScope(route: AdminRoute, granted: ReadonlySet<string>): { scope: string; kind: ScopeKind } | null {
   if (route.scope === null) {
     // Any verified caller may call it, so the token names the scope the manifest itself was read under.
-    return route.input !== undefined && takesNothing(route.input) ? MANIFEST_READ_SCOPE : null;
+    if (route.input === undefined || !takesNothing(route.input)) return null;
+    return { scope: MANIFEST_READ_SCOPE, kind: route.method === "GET" ? "reads" : MOST_RESTRICTIVE_SCOPE_KIND };
   }
-  return granted.has(route.scope) ? route.scope : null;
+  const kind = scopeKindOf(route);
+  return granted.has(route.scope) && kind !== null ? { scope: route.scope, kind } : null;
 }
 
 /** Every tool this manifest offers this connection, in manifest order. */
@@ -58,13 +71,15 @@ export function offeredTools(manifest: ControlPlaneManifest): ControlPlaneTool[]
   for (const capability of manifest.capabilities) {
     for (const route of capability.adminRoutes) {
       if (route.operation === undefined || route.input === undefined) continue;
-      const scope = callScope(route, granted);
-      if (scope === null) continue;
+      const call = callScope(route, granted);
+      if (call === null) continue;
       tools.push({
         name: controlPlaneToolName(capability.name, route.operation),
-        description: route.summary,
+        description: `${KIND_SENTENCES[call.kind]} ${route.summary}`,
+        kind: call.kind,
+        annotations: kindAnnotations(call.kind),
         inputSchema: route.input,
-        route: { method: route.method, path: route.path, scope },
+        route: { method: route.method, path: route.path, scope: call.scope },
       });
     }
   }

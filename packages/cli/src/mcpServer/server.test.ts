@@ -27,6 +27,7 @@ const MANIFEST = {
           method: "GET",
           path: "/support/threads",
           scope: "support:threads:read",
+          kind: "reads",
           summary: "List the inbox.",
           operation: "threads.list",
           input: input({ query: { type: "object", properties: { q: { type: "string" } } } }),
@@ -35,6 +36,7 @@ const MANIFEST = {
           method: "POST",
           path: "/support/threads/:id/reply",
           scope: "support:threads:reply",
+          kind: "sends",
           summary: "Answer the customer.",
           operation: "threads.reply",
           input: input({ path: { type: "object" }, body: { type: "object" } }),
@@ -77,8 +79,20 @@ describe("the control-plane MCP server", () => {
     const client = await connected(worker.caller);
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name)).toEqual(["support_threads_list"]);
-    expect(tools[0]?.description).toBe("List the inbox.");
+    expect(tools[0]?.description).toBe("Reads data and changes nothing. List the inbox.");
     expect(tools[0]?.inputSchema).toMatchObject({ type: "object", properties: { query: { type: "object" } } });
+  });
+
+  test("a client reads each tool's kind from its annotations", async () => {
+    const worker = fakeWorker();
+    const client = await connected(worker.caller);
+    const { tools } = await client.listTools();
+    expect(tools[0]?.annotations).toEqual({
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    });
   });
 
   test("learning a tool is withheld costs one manifest read and no call to its route", async () => {
