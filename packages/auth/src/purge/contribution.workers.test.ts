@@ -12,7 +12,7 @@ import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
 import { authPluginPlan } from "../migrations/pluginTables";
 import { AUTH_MIGRATIONS } from "../migrations/set";
 import { footprintCounts, seedAccountFootprint } from "../test-utils/accountFootprint";
-import { AUTH_PURGE_SUMMARY, authPurgeContribution } from "./contribution";
+import { AUTH_PURGE_SUMMARY, authAddressOf, authPurgeContribution } from "./contribution";
 
 /**
  * Auth's own purge contribution against real D1 (#622): every `pithy_auth_*` row keyed to the account goes,
@@ -125,6 +125,15 @@ describe("auth's purge contribution", () => {
 
   test("an account that is not there exports nothing", async () => {
     expect(await contribution.export?.({ subject: { type: "user", id: "never" }, env: ENV })).toEqual({});
+  });
+});
+
+describe("auth's address seam", () => {
+  test("answers an account's address by user id, and null for one that is not there", async () => {
+    await seedAccountFootprint(env.DB, "u1");
+    const address = await authAddressOf("DB")(ENV, "u1");
+    expect(address).toMatch(/@/);
+    expect(await authAddressOf("DB")(ENV, "nobody")).toBeNull();
   });
 });
 

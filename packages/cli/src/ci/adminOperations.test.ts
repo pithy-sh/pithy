@@ -182,6 +182,12 @@ const PUBLISHED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
     "tokens.revoke": "POST /artifacts/admin/repos/:name/tokens/:tokenId/revoke",
     "tokens.revoke_all": "POST /artifacts/admin/repos/:name/tokens/revoke",
   },
+  consent: {
+    "purposes.read": "GET /consent/control-plane/purposes",
+    "subjects.read": "GET /consent/control-plane/subjects/:kind/:subjectId",
+    "documents.read": "GET /consent/control-plane/documents/:hash",
+    "evidence.read": "GET /consent/control-plane/evidence/:hash",
+  },
 };
 
 /** The kit's composed admin surface, as each capability declares it. */

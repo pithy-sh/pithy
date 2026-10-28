@@ -981,6 +981,96 @@ const RatingRecordForbiddenPublic = z
   })
   .describe("The caller lacks the scope to record a rated outcome (403).");
 
+// --- @pithy-sh/consent: purposes, grants and withdrawals ---
+
+const ConsentUnknownPurposePublic = z
+  .object({
+    code: z
+      .literal("consent/unknown_purpose")
+      .describe("No consent purpose with that id is declared by a composed capability or in `consent({ purposes })`."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("A consent purpose that is not declared (404).");
+
+const ConsentStaleNoticePublic = z
+  .object({
+    code: z
+      .literal("consent/stale_notice")
+      .describe(
+        "The grant names a notice version that is not the purpose's current one. A person agrees to the notice in force, so the screen showing an older one has to be reloaded.",
+      ),
+    status: z.literal(409).describe("Conflict — the notice has moved on."),
+    ...publicFields,
+  })
+  .describe("A grant against a notice version that is not current (409).");
+
+const ConsentMethodBelowMinimumPublic = z
+  .object({
+    code: z
+      .literal("consent/method_below_minimum")
+      .describe(
+        "The grant was given by a method below the purpose's minimum — a click where the purpose needs a typed name, a drawn signature or a provider's envelope.",
+      ),
+    status: z.literal(400).describe("Bad Request — the method is below the purpose's minimum."),
+    ...publicFields,
+  })
+  .describe("A grant below the purpose's minimum method (400).");
+
+const ConsentWithdrawalBelowGrantPublic = z
+  .object({
+    code: z
+      .literal("consent/withdrawal_below_grant")
+      .describe(
+        "The purpose requires a withdrawal at least at the grade of the grant it withdraws, as a HIPAA revocation must be in writing, and this one is below it.",
+      ),
+    status: z.literal(400).describe("Bad Request — the withdrawal is below the grant's method."),
+    ...publicFields,
+  })
+  .describe("A withdrawal below the grade its purpose requires (400).");
+
+const ConsentEvidenceMissingPublic = z
+  .object({
+    code: z
+      .literal("consent/evidence_missing")
+      .describe(
+        "The method names evidence the request did not carry: a typed name for `typed`, a drawn image for `drawn`, a provider and envelope for `provider`, or the document a signed grant is given against.",
+      ),
+    status: z.literal(400).describe("Bad Request — the evidence for the method is missing."),
+    ...publicFields,
+  })
+  .describe("A grant or withdrawal missing the evidence its method needs (400).");
+
+const ConsentExpiryPassedPublic = z
+  .object({
+    code: z
+      .literal("consent/expiry_passed")
+      .describe("The grant's expiry is not in the future, so it would answer no from the moment it was recorded."),
+    status: z.literal(400).describe("Bad Request — the expiry has already passed."),
+    ...publicFields,
+  })
+  .describe("A grant whose expiry has already passed (400).");
+
+const ConsentDocumentNotFoundPublic = z
+  .object({
+    code: z.literal("consent/document_not_found").describe("No signed document with that content hash is kept."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("A signed document that is not kept (404).");
+
+const ConsentEvidenceStoreMissingPublic = z
+  .object({
+    code: z
+      .literal("consent/evidence_store_missing")
+      .describe(
+        "A drawn signature or a provider's certificate is stored in R2, and the Worker has no `CONSENT_EVIDENCE` bucket bound. A binding we never got, so the answer is in this Worker's wiring.",
+      ),
+    status: z.literal(500).describe("Internal Server Error — the evidence bucket is not bound."),
+    ...publicFields,
+  })
+  .describe("The evidence bucket is not bound (500).");
+
 // --- @pithy-sh/matchmaking: pairing + presence capability codes ---
 
 const MatchmakingRoomNotFoundPublic = z
@@ -1969,6 +2059,14 @@ export const KitPublicErrorPayload = z
     RatingGameNotFoundPublic,
     RatingPoolNotFoundPublic,
     RatingRecordForbiddenPublic,
+    ConsentUnknownPurposePublic,
+    ConsentStaleNoticePublic,
+    ConsentMethodBelowMinimumPublic,
+    ConsentWithdrawalBelowGrantPublic,
+    ConsentEvidenceMissingPublic,
+    ConsentExpiryPassedPublic,
+    ConsentDocumentNotFoundPublic,
+    ConsentEvidenceStoreMissingPublic,
     MatchmakingRoomNotFoundPublic,
     MatchmakingRoomFullPublic,
     MatchmakingInvalidCodePublic,
@@ -2247,6 +2345,30 @@ const RatingPoolNotFound = RatingPoolNotFoundPublic.extend(internalFields).descr
 );
 const RatingRecordForbidden = RatingRecordForbiddenPublic.extend(internalFields).describe(
   RatingRecordForbiddenPublic.description ?? "",
+);
+const ConsentUnknownPurpose = ConsentUnknownPurposePublic.extend(internalFields).describe(
+  ConsentUnknownPurposePublic.description ?? "",
+);
+const ConsentStaleNotice = ConsentStaleNoticePublic.extend(internalFields).describe(
+  ConsentStaleNoticePublic.description ?? "",
+);
+const ConsentMethodBelowMinimum = ConsentMethodBelowMinimumPublic.extend(internalFields).describe(
+  ConsentMethodBelowMinimumPublic.description ?? "",
+);
+const ConsentWithdrawalBelowGrant = ConsentWithdrawalBelowGrantPublic.extend(internalFields).describe(
+  ConsentWithdrawalBelowGrantPublic.description ?? "",
+);
+const ConsentEvidenceMissing = ConsentEvidenceMissingPublic.extend(internalFields).describe(
+  ConsentEvidenceMissingPublic.description ?? "",
+);
+const ConsentExpiryPassed = ConsentExpiryPassedPublic.extend(internalFields).describe(
+  ConsentExpiryPassedPublic.description ?? "",
+);
+const ConsentDocumentNotFound = ConsentDocumentNotFoundPublic.extend(internalFields).describe(
+  ConsentDocumentNotFoundPublic.description ?? "",
+);
+const ConsentEvidenceStoreMissing = ConsentEvidenceStoreMissingPublic.extend(internalFields).describe(
+  ConsentEvidenceStoreMissingPublic.description ?? "",
 );
 const MatchmakingRoomNotFound = MatchmakingRoomNotFoundPublic.extend(internalFields).describe(
   MatchmakingRoomNotFoundPublic.description ?? "",
@@ -2566,6 +2688,14 @@ export const KitErrorPayload = z
     RatingGameNotFound,
     RatingPoolNotFound,
     RatingRecordForbidden,
+    ConsentUnknownPurpose,
+    ConsentStaleNotice,
+    ConsentMethodBelowMinimum,
+    ConsentWithdrawalBelowGrant,
+    ConsentEvidenceMissing,
+    ConsentExpiryPassed,
+    ConsentDocumentNotFound,
+    ConsentEvidenceStoreMissing,
     MatchmakingRoomNotFound,
     MatchmakingRoomFull,
     MatchmakingInvalidCode,

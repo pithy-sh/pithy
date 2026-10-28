@@ -41,6 +41,7 @@ import {
 import { type BindingScopeHealth, repointableIds, type SplitGlobalBinding } from "../doctor/bindingScope";
 import type { CapabilityReachHealth } from "../doctor/capabilityReach";
 import { type CloudflareAccess, checkCloudflareAccess, describeCloudflareAccess } from "../doctor/cloudflare";
+import { ConsentHealth, ConsentPurposeFinding } from "../doctor/consent";
 import { checkDevPreferences, type DevPreferencesCheck, describeDevPreferences } from "../doctor/devPreferences";
 import {
   checkDevSecrets,
@@ -2217,6 +2218,7 @@ function workerHealthLines(
   }
 
   lines.push(...scopeLines(health));
+  lines.push(...consentLines(health));
 
   return lines;
 }
@@ -2244,9 +2246,33 @@ function scopeLines(health: WorkerChecks): string[] {
   ];
 }
 
-/** Whether a Worker has a scope gate nothing can open — reported on a passing Worker, never collapsed (#560). */
+/**
+ * The `consent` lines: this Worker's consent purposes against a consent record. Nothing at all for a Worker
+ * that processes nothing under consent. One that does, with no record composed, names each purpose and says it is
+ * reported and not failed: whether a law requires consent is the adopter's call.
+ */
+function consentLines(health: WorkerChecks): string[] {
+  const { purposes, recorder, unrecorded } = health.consent;
+  if (purposes.length === 0) return [];
+  if (!unrecorded) {
+    const count = purposes.length === 1 ? "1 purpose" : `${purposes.length} purposes`;
+    return [healthLine("consent", `${count}, recorded by ${recorder ?? "nothing"} ✓`)];
+  }
+  return [
+    healthLine("consent", "processing under consent, with no consent record."),
+    ...purposes.map(
+      (entry) => `${HEALTH_CONT}${entry.capability}: ${entry.purpose} runs with no consent record behind it`,
+    ),
+    `${HEALTH_CONT}Add consent to record and honor it. Reported, not failed.`,
+  ];
+}
+
+/**
+ * Whether a Worker has a scope gate nothing can open, or processes under consent with no record — reported on a
+ * passing Worker, never collapsed.
+ */
 function hasScopeNotes(worker: WorkerChecks): boolean {
-  return worker.scopes.denying;
+  return worker.scopes.denying || worker.consent.unrecorded;
 }
 
 /**
@@ -4109,6 +4135,11 @@ const WorkerHealthPayload = z
         scopes: ScopeGateHealth.extend({
           gates: HealthFinding("route gated on an `AuthContext` scope", ScopeGateFinding.shape),
         }).describe(ScopeGateHealth.description ?? ""),
+        consent: ConsentHealth.extend({
+          purposes: HealthFinding("purpose processed under consent", ConsentPurposeFinding.shape),
+        })
+          .optional()
+          .describe("Its consent purposes against a consent record. Absent from a CLI older than consent."),
       })
       .describe("A Worker whose checks ran."),
     z

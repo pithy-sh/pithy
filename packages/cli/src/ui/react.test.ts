@@ -38,6 +38,7 @@ beforeAll(async () => {
     auth: false,
     payments: false,
     organization: false,
+    consent: false,
     packageManager: "bun",
   });
   AUTH = await loadStubFiles(reactStub, {
@@ -45,6 +46,7 @@ beforeAll(async () => {
     auth: true,
     payments: false,
     organization: false,
+    consent: false,
     packageManager: "bun",
   });
   PAY = await loadStubFiles(reactStub, {
@@ -52,6 +54,7 @@ beforeAll(async () => {
     auth: false,
     payments: true,
     organization: false,
+    consent: false,
     packageManager: "bun",
   });
   BOTH = await loadStubFiles(reactStub, {
@@ -59,6 +62,7 @@ beforeAll(async () => {
     auth: true,
     payments: true,
     organization: false,
+    consent: false,
     packageManager: "bun",
   });
 });
@@ -77,6 +81,7 @@ describe("the React 19 stub", () => {
       auth: false,
       payments: false,
       organization: false,
+      consent: false,
       packageManager: "bun",
     } as const;
     const once = reactStub.manifest(context);
@@ -92,6 +97,7 @@ describe("the React 19 stub", () => {
         auth,
         payments: false,
         organization: false,
+        consent: false,
         packageManager: "bun",
       });
       for (const file of reactStub.manifest({
@@ -99,6 +105,7 @@ describe("the React 19 stub", () => {
         auth,
         payments: false,
         organization: false,
+        consent: false,
         packageManager: "bun",
       })) {
         expect(files[file.target], file.source).toBeTypeOf("string");
@@ -112,6 +119,7 @@ describe("the React 19 stub", () => {
       auth: true,
       payments: false,
       organization: false,
+      consent: false,
       packageManager: "bun",
     });
     expect(files["index.html"]).toContain("acme-api");
@@ -131,6 +139,7 @@ describe("the React 19 stub", () => {
       auth: false,
       payments: false,
       organization: false,
+      consent: false,
       packageManager: "bun",
     });
     expect(files["vite.config.ts"]).toContain('["worker_my-api"]: {');

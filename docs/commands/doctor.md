@@ -699,6 +699,17 @@ A Worker that composes a **scope-gated** capability — `leaderboard`, `rating` 
 
 **It reports and does not fail the exit.** A project can compose `ledger` for its players' balances and never move one from a backend, and a red over a route nobody calls is a red nobody can clear. It is never collapsed into `healthy ✓` either, because this line is the only place the state is said. Once auth has a resolver the line reads `5 gated routes, resolved by auth's resolveScopes ✓`. A Worker that composes no gate prints no line. In `--json` it rides under `project.health.workers[].scopes`, and every gate carries `fix: null`: which caller to trust is your decision. `@pithy-sh/auth`'s `docs/server-authoritative.md` ranks the three ways to make it.
 
+A Worker that composes a capability processing **under consent** — `email`, which tracks opens and clicks and sends marketing mail — gets a **`consent`** line. With `@pithy-sh/consent` composed, email asks before either, and the line reads `2 purposes, recorded by consent ✓`. Without it, email behaves as it always has, and doctor says so:
+
+```
+    consent      processing under consent, with no consent record.
+                 email: email.marketing runs with no consent record behind it
+                 email: email.tracking runs with no consent record behind it
+                 Add consent to record and honor it. Reported, not failed.
+```
+
+**It reports and does not fail the exit.** Whether a law requires consent for that processing is your call, and the kit records and gates without deciding which law applies. A Worker that processes nothing under consent prints no line. In `--json` it rides under `project.health.workers[].consent`, and each purpose's `fix` is the `pithy add consent` that records it.
+
 ## Carrying the data across
 
 **The `shared:` section names this page rather than printing a pair of `wrangler` commands, because the obvious pair does not work and one half of it is destructive.** It used to print `wrangler d1 export each old database, then wrangler d1 execute it against <expected>`. Run exactly as printed, that reports success and copies nothing:

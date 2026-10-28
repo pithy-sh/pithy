@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { artifacts } from "@pithy-sh/artifacts/src/index";
 import { audit } from "@pithy-sh/audit/src/index";
 import { auth } from "@pithy-sh/auth/src/index";
+import { consent } from "@pithy-sh/consent/src/index";
 import {
   type AsyncApiDocument,
   asyncApiDocument,
@@ -118,6 +119,7 @@ export const KIT_COMPOSITION: Readonly<Record<string, () => Capability>> = {
   // Contributes a gate on other capabilities' routes, and no route of its own.
   turnstile: () => turnstile(),
   audit: () => audit(),
+  consent: () => consent(),
   // The share-link route mounts at its own path (`/s` by default) beside the object routes.
   storage: () => storage(),
   media: () => media(),

@@ -1266,6 +1266,67 @@ describe("renderDoctorText", () => {
     });
   });
 
+  describe("consent", () => {
+    const purpose = (id: string) => ({
+      id,
+      summary: "x",
+      noticeVersion: 1,
+      classes: [],
+      explicit: false,
+      minimumMethod: "click",
+      writtenWithdrawal: false,
+    });
+    /** One Worker composing email's consent purposes, with or without the consent capability. */
+    const withEmail = (recorded: boolean) =>
+      healthyOptions({
+        resolveWorkersFor: async () =>
+          [
+            {
+              name: "api",
+              dir: "/p/apps/api",
+              capabilities: [
+                {
+                  name: "email",
+                  requiredBindings: [],
+                  consentPurposes: [purpose("email.marketing"), purpose("email.tracking")],
+                },
+                ...(recorded
+                  ? [
+                      {
+                        name: "consent",
+                        requiredBindings: [],
+                        consentReader: () => ({ hasConsent: async () => false }),
+                      },
+                    ]
+                  : []),
+              ],
+            },
+          ] as unknown as Awaited<ReturnType<NonNullable<DoctorReportOptions["resolveWorkersFor"]>>>,
+        readCapabilityReach: async () => ({ ok: true, reachable: ["email"], unreachable: [], split: [] }),
+      });
+
+    test("says tracking runs with no consent record behind it, and does not fail the exit", async () => {
+      const report = await buildDoctorReport(withEmail(false));
+      expect(renderDoctorText(report, "/home/u")).toContain(
+        [
+          "    consent      processing under consent, with no consent record.",
+          "                 email: email.marketing runs with no consent record behind it",
+          "                 email: email.tracking runs with no consent record behind it",
+          "                 Add consent to record and honor it. Reported, not failed.",
+        ].join("\n"),
+      );
+      expect(doctorExitCode(report)).toBe(0);
+    });
+
+    test("names the recorder once consent is composed", async () => {
+      const report = await buildDoctorReport(withEmail(true));
+      const worker = report.project?.health?.workers[0];
+      if (worker?.state !== "checked") throw new Error("the Worker is checked");
+      expect(worker.consent).toMatchObject({ recorder: "consent", unrecorded: false });
+      expect(renderDoctorText(report, "/home/u")).not.toContain("no consent record");
+    });
+  });
+
   test("up-to-date layout is terser and omits the config/health blocks", async () => {
     const report = await buildDoctorReport(healthyOptions());
     expect(renderDoctorText(report, "/home/u")).toBe(

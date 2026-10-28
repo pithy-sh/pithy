@@ -32,7 +32,7 @@ import { AUTH_MIGRATION_ORDER } from "./migrations/0001_init";
 import { authPluginPlan } from "./migrations/pluginTables";
 import { AUTH_MIGRATIONS } from "./migrations/set";
 import { type AuthPeer, authPeer } from "./peer";
-import { authPurgeContribution } from "./purge/contribution";
+import { authAddressOf, authPurgeContribution } from "./purge/contribution";
 import { authWorkflows } from "./purge/specs";
 import { authDevSessionSeed } from "./seeds/devSession";
 import { authExampleSeed } from "./seeds/example";
@@ -504,6 +504,9 @@ export function auth(options: AuthOptions): AuthCapability {
       AuthAuditActions.adminUserReinstated,
       AuthAuditActions.adminUserRestored,
     ],
+    // An account's address, for a capability that keeps state by address, such as email suppressing an address when
+    // its owner withdraws marketing consent. Read on demand, never carried.
+    addressOf: authAddressOf(resolved.database),
     // The purge of one account, and the daily pass that starts every due one. Both hosted by the adopter's own
     // Worker, because a purge runs every composed capability's contribution — see `purge/specs.ts`.
     workflows: authWorkflows,

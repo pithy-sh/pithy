@@ -12,6 +12,7 @@ import { UserLifecycleEvent } from "../data/userLifecycle";
 import { VerificationOutcome } from "../data/verificationOutcome";
 import type { AuthUserExport } from "../http/responses";
 import { authUserExportView } from "../http/views";
+import { purgeAddress } from "../lifecycle/transitions";
 
 /**
  * Auth's own purge contribution (#622): what erasing one person means for the `pithy_auth_*` tables, and what
@@ -187,6 +188,16 @@ async function pluginRows(db: AuthDatabase, table: string, userId: string): Prom
  * The contribution `auth()` declares, over the D1 binding its config names. The export of an account that is
  * not there is an empty object, which the route never reaches: it answers 404 before it reads any capability.
  */
+/**
+ * An account's address by user id, over the env's auth database — what auth answers through core's `addressOf`
+ * seam, so a capability holding state by address (email's suppression list) finds it without importing auth.
+ * `null` for an account that has none, or no longer exists.
+ */
+export function authAddressOf(database: string) {
+  return (env: Record<string, unknown>, userId: string): Promise<string | null> =>
+    purgeAddress(authDatabase(bindingOf(env, database)), userId);
+}
+
 export function authPurgeContribution(
   database: string,
   pluginTables: readonly string[] = [],

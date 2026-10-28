@@ -31,6 +31,7 @@ const SCREEN_QUESTIONS: Record<UiScreenSet, string> = {
   auth: "Scaffold the passwordless sign-in screens?",
   payments: "Scaffold the paywall and subscription screens?",
   organization: "Scaffold the account chooser?",
+  consent: "Scaffold the consent settings screen?",
 };
 
 /** Ask whether to scaffold one capability's screens. Attached only when a human can answer. */
@@ -57,6 +58,7 @@ const UiAddPayload = z
     auth: z.boolean().describe("Whether the sign-in screens were included."),
     payments: z.boolean().describe("Whether the paywall screens were included."),
     organization: z.boolean().describe("Whether the account chooser was included."),
+    consent: z.boolean().describe("Whether the consent settings screen was included."),
     created: Names("Worker-relative paths created by this run, sorted."),
     skipped: Names("Worker-relative paths that already existed and were left byte-identical, sorted."),
     unstyled: Names("Class names the screens render that nothing in this Worker's stylesheets defines."),
@@ -125,6 +127,10 @@ const add = withContract(
         type: "boolean",
         description: "Include the account chooser (--no-organization to skip)",
       },
+      consent: {
+        type: "boolean",
+        description: "Include the consent settings screen (--no-consent to skip)",
+      },
       "dry-run": DRY_RUN_ARG,
       json: { type: "boolean", default: false, description: "Machine-readable output" },
     },
@@ -149,6 +155,7 @@ const add = withContract(
           ...(args.auth === undefined ? {} : { auth: args.auth }),
           ...(args.payments === undefined ? {} : { payments: args.payments }),
           ...(args.organization === undefined ? {} : { organization: args.organization }),
+          ...(args.consent === undefined ? {} : { consent: args.consent }),
           ...(interactive ? { prompt: promptScreens } : {}),
           dryRun,
         });
@@ -175,6 +182,7 @@ const add = withContract(
           report.auth ? "sign-in" : null,
           report.payments ? "paywall" : null,
           report.organization ? "choose-organization" : null,
+          report.consent ? "consent" : null,
         ].filter((name) => name !== null);
         const template = screens.length === 0 ? "Bare template." : `Screens included: ${screens.join(", ")}.`;
         process.stdout.write(`Scaffolded a ${report.framework} front end into ${report.worker}. ${template}\n`);

@@ -14,6 +14,10 @@
       "package": "@pithy-sh/auth"
     },
     {
+      "name": "consent",
+      "package": "@pithy-sh/consent"
+    },
+    {
       "name": "controlplane",
       "package": "@pithy-sh/core"
     },
@@ -1125,6 +1129,8 @@
         "--no-payments",
         "--organization",
         "--no-organization",
+        "--consent",
+        "--no-consent",
         "--dry-run",
         "--dryRun",
         "--no-dry-run",
@@ -1415,6 +1421,70 @@
       "exit": 3,
       "retryable": false,
       "remedy": "Run the `fix` command"
+    },
+    {
+      "code": "consent/document_not_found",
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
+    },
+    {
+      "code": "consent/evidence_missing",
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
+    },
+    {
+      "code": "consent/evidence_store_missing",
+      "status": 500,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
+    },
+    {
+      "code": "consent/expiry_passed",
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
+    },
+    {
+      "code": "consent/method_below_minimum",
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
+    },
+    {
+      "code": "consent/stale_notice",
+      "status": 409,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
+    },
+    {
+      "code": "consent/unknown_purpose",
+      "status": 404,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
+    },
+    {
+      "code": "consent/withdrawal_below_grant",
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "controlplane/insufficient_scope",

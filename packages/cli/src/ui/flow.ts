@@ -36,9 +36,14 @@ const PAYMENTS_CAPABILITY = "payments";
 
 /** The capability the account chooser is written against. */
 const ORGANIZATION_CAPABILITY = "organization";
+const CONSENT_CAPABILITY = "consent";
 
 /** Which capability-gated screen set a decision is about. */
-export type UiScreenSet = typeof AUTH_CAPABILITY | typeof PAYMENTS_CAPABILITY | typeof ORGANIZATION_CAPABILITY;
+export type UiScreenSet =
+  | typeof AUTH_CAPABILITY
+  | typeof PAYMENTS_CAPABILITY
+  | typeof ORGANIZATION_CAPABILITY
+  | typeof CONSENT_CAPABILITY;
 
 /**
  * Ask whether to scaffold one capability's screens.
@@ -97,6 +102,8 @@ export interface UiAddOptions {
   payments?: boolean;
   /** `--organization` / `--no-organization`. Undefined means "decide", the same way. */
   organization?: boolean;
+  /** `--consent` / `--no-consent`. Undefined means "decide", the same way. */
+  consent?: boolean;
   /**
    * Ask whether to scaffold a capability's screens. Supplied only when a human is attached; without it
    * every decision falls to whether that capability is composed, so no invocation can ever block.
@@ -120,6 +127,8 @@ export interface UiAddReport {
   payments: boolean;
   /** Whether the account chooser was included. */
   organization: boolean;
+  /** Whether the consent settings screen was included. */
+  consent: boolean;
   /** Worker-relative paths created by this run, sorted. */
   created: string[];
   /** Worker-relative paths that already existed and were left byte-identical, sorted. */
@@ -200,7 +209,7 @@ function composes(config: WorkerConfig, capability: string): boolean {
 async function planFiles(
   options: UiAddOptions,
   stub: UiStub,
-  screens: { auth: boolean; payments: boolean; organization: boolean },
+  screens: { auth: boolean; payments: boolean; organization: boolean; consent: boolean },
 ): Promise<{ files: Record<string, string>; strict: boolean }> {
   const current = await readWorkerUi(options.workerDir);
   const worker = workerName(options.workerDir);
@@ -322,7 +331,13 @@ export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
     options.organization,
     composes(options.config, ORGANIZATION_CAPABILITY),
   );
-  const plan = await planFiles({ ...options, packageManager }, stub, { auth, payments, organization });
+  const consent = await resolveScreens(
+    options,
+    CONSENT_CAPABILITY,
+    options.consent,
+    composes(options.config, CONSENT_CAPABILITY),
+  );
+  const plan = await planFiles({ ...options, packageManager }, stub, { auth, payments, organization, consent });
   // Compose first. `deriveWorkerFirst` assembles every capability's routes, once per environment, and
   // reads nothing this run is about to write — which is what makes moving it ahead of the write legal.
   const patterns = deriveWorkerFirst(options.config, await projectEnvironments(options.projectDir));
@@ -367,6 +382,7 @@ export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
     auth,
     payments,
     organization,
+    consent,
     created: result.written.written,
     skipped: result.written.skipped,
     unstyled: result.unstyled,

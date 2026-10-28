@@ -173,6 +173,7 @@ describe("pithy ui", () => {
       { screens: "auth", suggestion: true },
       { screens: "payments", suggestion: true },
       { screens: "organization", suggestion: false },
+      { screens: "consent", suggestion: false },
     ]);
     expect(report.auth).toBe(false);
     expect(report.payments).toBe(false);

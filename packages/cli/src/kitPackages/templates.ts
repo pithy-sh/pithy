@@ -81,7 +81,7 @@ export interface TemplateSection {
 
 /** A scaffold context with every screen set on, for asking the stub what it would write and how. */
 function everything(worker: string, auth: boolean): UiStubContext {
-  return { worker, auth, payments: true, organization: true, packageManager: "npm" };
+  return { worker, auth, payments: true, organization: true, consent: true, packageManager: "npm" };
 }
 
 /**

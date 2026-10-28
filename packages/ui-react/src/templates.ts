@@ -147,6 +147,10 @@ export const TEMPLATE_GROUPS = {
     "src/routes/pithy/pricing.tsx",
     "src/routes/pithy/subscription.tsx",
   ],
+  consent: [
+    // One screen: every purpose and where the reader stands, and a withdrawal never harder than its grant. It rides on the Worker composing `consent`, and serves visitors and accounts alike.
+    "src/routes/pithy/consent.tsx",
+  ],
 } as const satisfies Record<string, readonly string[]>;
 
 /** A group name this library offers. */

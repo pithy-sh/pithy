@@ -4,11 +4,13 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { pithyCommandOf } from "@pithy-sh/core/src/cli/command";
+import { composedConsent } from "@pithy-sh/core/src/consent/reader";
 import { composedUsageMeter, type MeterCharge, type UsageMeter } from "@pithy-sh/core/src/entitlement/meter";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
 import { z } from "zod";
 import { createBounceHandler } from "./bounce/handler";
+import { EMAIL_CONSENT_PURPOSES, emailConsentGranted, emailConsentWithdrawn } from "./consent/consent";
 import { emailSigningRegistry } from "./crypto/signingKey";
 import {
   type EmailSuppressionDatabase,
@@ -202,6 +204,11 @@ export function email(config: EmailConfigInput): EmailCapability {
    * exactly as it always was: nothing is counted and nothing is refused.
    */
   let meter: UsageMeter | undefined;
+  /**
+   * Every composed capability, kept by `compose` so an enqueue can find the consent reader over its own env.
+   * Empty until then, which is a composition with no consent: nothing is gated.
+   */
+  let composition: readonly Capability[] = [];
   const capability = defineCapability({
     name: "email",
     // The package this capability ships in and the version it ships at, both stamped by
@@ -244,6 +251,7 @@ export function email(config: EmailConfigInput): EmailCapability {
      */
     compose: ({ capabilities }) => {
       meter = composedUsageMeter(capabilities);
+      composition = capabilities;
       for (const composed of capabilities) {
         if (composed.name !== "i18n") continue;
         const candidate = (composed as { layersFor?: unknown }).layersFor;
@@ -285,6 +293,16 @@ export function email(config: EmailConfigInput): EmailCapability {
     // A person's suppression and the log of mail sent to them are kept through their purge, so an unsubscribe holds,
     // and exported on an access request with the basis that keeps them (#814).
     purge: [emailUserPurge()],
+    /**
+     * What email processes under consent: marketing mail and open and click tracking. With
+     * `@pithy-sh/consent` composed, an enqueue asks before either; without it, nothing is gated and `pithy doctor`
+     * says tracking runs with no consent record behind it.
+     */
+    consentPurposes: EMAIL_CONSENT_PURPOSES,
+    // A withdrawal from marketing suppresses the address for marketing; one from tracking stops tracking mail
+    // already queued. The suppression list and the consent record never disagree.
+    consentWithdrawn: emailConsentWithdrawn,
+    consentGranted: emailConsentGranted,
     /**
      * The two durable jobs email owns. Both classes live in the prebuilt email worker
      * (`workflows/worker.ts`), never in the app worker — the app only ever dispatches into `send`.
@@ -386,6 +404,8 @@ export function email(config: EmailConfigInput): EmailCapability {
         suppressionDb: env.EMAIL_SUPPRESSIONS ? emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS) : undefined,
         // Read through the closure for the reason `layersFor` is: `compose` fills it after this is defined.
         meter: chargeFor(env),
+        // Read through the closure for the same reason: `compose` fills the composition after this is defined.
+        consent: composedConsent(composition, env as unknown as Record<string, unknown>),
         now: new Date(),
         newId: () => crypto.randomUUID(),
       },

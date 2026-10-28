@@ -4,6 +4,7 @@
 import * as artifacts from "@pithy-sh/artifacts/src/http/responses";
 import * as audit from "@pithy-sh/audit/src/http/responses";
 import * as auth from "@pithy-sh/auth/src/http/responses";
+import * as consent from "@pithy-sh/consent/src/http/responses";
 import * as email from "@pithy-sh/email/src/http/responses";
 import * as leaderboard from "@pithy-sh/leaderboard/src/http/responses";
 import * as ledger from "@pithy-sh/ledger/src/http/responses";
@@ -61,6 +62,7 @@ export const EVERY_RESPONSE_MODULE: readonly object[] = [
   artifacts,
   audit,
   auth,
+  consent,
   email,
   leaderboard,
   ledger,

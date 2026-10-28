@@ -7,6 +7,8 @@ import type { z } from "zod";
 import type { ActingOrganizationResolver } from "../access/acting";
 import type { AuditCitationReader } from "../audit/citations";
 import type { AuditEmit } from "../audit/recorder";
+import { type ConsentPurpose, parseConsentPurposes } from "../consent/purpose";
+import type { ConsentGrantedListener, ConsentReader, ConsentWithdrawnListener } from "../consent/reader";
 import type { ControlPlaneContext } from "../controlPlane/context";
 import type { AdminRoute } from "../controlPlane/discovery/adminRoute";
 import type { CapabilityManifestConfig } from "../controlPlane/discovery/configuration";
@@ -680,6 +682,39 @@ export interface Capability<
    */
   auditCitations?: (env: Record<string, unknown>) => AuditCitationReader;
   /**
+   * The purposes this capability processes under consent — `@pithy-sh/email` declares `email.marketing`
+   * and `email.tracking`. Omit it when nothing here needs consent, which is the ordinary case.
+   *
+   * **Only under this capability's own `name`**, as `<name>.<purpose>`: `defineCapability` refuses anything else,
+   * the rule tables and error codes follow. The consent capability composes every declaration into the catalog its
+   * `hasConsent` answers from, and `pithy doctor` names a composition that declares purposes and records no consent.
+   */
+  consentPurposes?: readonly ConsentPurpose[];
+  /**
+   * The consent seam's provider: a reader built over this run's env. `@pithy-sh/consent` declares it;
+   * nothing else does. A capability asks it through `composedConsent` in `../consent/reader.ts`, never by
+   * importing the consent package.
+   */
+  consentReader?: (env: Record<string, unknown>) => ConsentReader;
+  /**
+   * Hear of a withdrawal from one of this capability's own purposes, to keep its own state in step — email
+   * suppresses an address for marketing when `email.marketing` is withdrawn. The consent capability calls
+   * it after the withdrawal is recorded, only for purposes under this capability's name.
+   */
+  consentWithdrawn?: ConsentWithdrawnListener;
+  /**
+   * Hear of a grant to one of this capability's own purposes once it stands — the other half of
+   * {@link Capability.consentWithdrawn}. Email lifts the marketing suppression a withdrawal wrote when
+   * `email.marketing` is granted again, so the suppression list and the record never disagree either way.
+   */
+  consentGranted?: ConsentGrantedListener;
+  /**
+   * An account's email address, by user id, or `null` when it has none — the capability that owns accounts
+   * declares it (`@pithy-sh/auth`), so a capability holding state by address finds one without importing auth.
+   * Read on demand, never carried.
+   */
+  addressOf?: (env: Record<string, unknown>, userId: string) => Promise<string | null>;
+  /**
    * Named D1 databases this capability contributes tables to (database name → {@link DatabaseSpec}).
    * `createBackend` merges every capability's slices per database (via `composeDatabases`) and serves
    * one typed `Kysely` per database on `c.var.db.<name>`. Multiple databases (app, analytics, …)
@@ -779,6 +814,10 @@ export function defineCapability<
   // A purge contribution no purge could run — a subject the kit does not know, or two for one — is refused
   // where it is written, naming the capability, rather than on the day somebody is erased.
   if (input.purge) assertPurgeContributions(input.name, input.purge);
+  // A consent purpose outside the capability's own domain, or declared twice, is refused where it is written.
+  const consentPurposes = input.consentPurposes
+    ? parseConsentPurposes(input.name, input.consentPurposes, input.name)
+    : undefined;
   // A capability that declares room kinds needs the room's binding and serves the room's socket, so both are
   // added here, once, rather than spelled by every capability that declares one and drifting from it.
   const presence = input.presence && input.presence.rooms.length > 0 ? input.presence : undefined;
@@ -789,6 +828,7 @@ export function defineCapability<
       : input.requiredBindings;
   return {
     ...input,
+    ...(consentPurposes ? { consentPurposes } : {}),
     ...(presence ? { sockets: [...(input.sockets ?? []), presenceRoomsSocket(input.name, presence)] } : {}),
     requiredBindings: requiredBindings.map((binding) => BindingSpec.parse(binding)),
   };

@@ -7,6 +7,7 @@ import type { D1Database } from "@cloudflare/workers-types";
 import { artifacts } from "@pithy-sh/artifacts/src/capability";
 import { audit } from "@pithy-sh/audit/src/capability";
 import { auth } from "@pithy-sh/auth/src/capability";
+import { consent } from "@pithy-sh/consent/src/capability";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { personColumnsOf, personRowGaps } from "@pithy-sh/core/src/capability/personColumns";
 import { isRetained, purgeExports, purgeSteps } from "@pithy-sh/core/src/capability/purge";
@@ -77,6 +78,7 @@ const KIT: Record<string, () => Capability> = {
   artifacts: () => artifacts(),
   audit: () => audit(),
   auth: () => auth({ baseURL: "http://localhost:8787" }),
+  consent: () => consent(),
   core: () => controlplane(),
   email: () => email({ fromAddress: "noreply@acme.test", baseUrl: "https://api.acme.test" }),
   i18n: () => i18n(),
@@ -125,7 +127,7 @@ describe("every kit capability that holds rows about a person answers for them",
         .filter((contribution) => contribution.subject === "user" && isRetained(contribution))
         .map((contribution) => [capability.name, contribution.retain?.basis.length ?? 0] as const),
     );
-    expect(kept.map(([name]) => name).sort()).toEqual(["audit", "controlplane", "email", "payments"]);
+    expect(kept.map(([name]) => name).sort()).toEqual(["audit", "consent", "controlplane", "email", "payments"]);
     for (const [, basis] of kept) expect(basis).toBeGreaterThan(0);
   });
 });
@@ -182,7 +184,7 @@ describe("a project composing the whole kit answers an export from every one of 
     expect(entries.map((entry) => entry.capability).sort()).toEqual([...holding].sort());
     expect(entries.filter((entry) => entry.state !== "exported")).toEqual([]);
     const kept = entries.filter((entry) => entry.disposition === "retain").map((entry) => entry.capability);
-    expect(kept.sort()).toEqual(["audit", "controlplane", "email", "payments"]);
+    expect(kept.sort()).toEqual(["audit", "consent", "controlplane", "email", "payments"]);
   });
 
   test("and every step that erases runs against the composed tables", async () => {
