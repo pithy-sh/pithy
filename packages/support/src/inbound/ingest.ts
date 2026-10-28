@@ -7,7 +7,7 @@ import { chunkRowsByBoundParameters } from "@pithy-sh/core/src/data/boundParamet
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { attachmentKey, putAttachment, rawMessageKey, sha256Hex } from "../attachment/store";
 import { SupportAuditActions } from "../audit/actions";
-import type { SupportConfig } from "../config/config";
+import { type SupportConfig, supportSemantic } from "../config/config";
 import { SupportAttachment } from "../data/attachment";
 import { SupportMessage } from "../data/message";
 import {
@@ -520,7 +520,10 @@ export async function ingestInbound(deps: IngestDeps, input: IngestInput): Promi
   // 9. Classification, last and allowed to fail. An out-of-office is not worth an inference, and an
   // adopter who turned classification off should pay nothing for it.
   const classifying = deps.config.ai.enabled && !parsed.autoSubmitted;
-  if (classifying) {
+  // The same Workflow embeds the message when semantic search is on, so it runs for either reason —
+  // an inbox with classification off and semantic search on still wants its mail findable by meaning.
+  const embedding = supportSemantic(deps.config.search) !== undefined && !parsed.autoSubmitted;
+  if (classifying || embedding) {
     try {
       await deps.dispatchClassify(messageId);
     } catch (error) {

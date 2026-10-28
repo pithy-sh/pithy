@@ -572,6 +572,38 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
         supportConfig: ownCapability(context, "support", "@pithy-sh/support", isSupportCapability).supportConfig,
       });
     },
+    // The semantic message index, when `search.semantic` is on: a feature gets its own, named the way the
+    // resolver above binds the host to it, at the shape `pithy support provision` creates.
+    async featureIndexes(capability, projectDir, feature) {
+      const [{ supportMessageIndex, supportMessageIndexName }, { isSupportCapability }] = await load(
+        "support",
+        "@pithy-sh/support",
+        projectDir,
+        () =>
+          Promise.all([
+            kitImport<typeof import("@pithy-sh/support/src/semantic/messageIndex")>(
+              projectDir,
+              "@pithy-sh/support/src/semantic/messageIndex",
+            ),
+            kitImport<typeof import("@pithy-sh/support/src/capability")>(
+              projectDir,
+              "@pithy-sh/support/src/capability",
+            ),
+          ]),
+      );
+      if (!isSupportCapability(capability)) return [];
+      const index = supportMessageIndex(capability.supportConfig.search);
+      if (!index) return [];
+      return [
+        {
+          binding: index.binding,
+          name: supportMessageIndexName(feature.project, "feature", feature),
+          dimensions: index.dimensions,
+          metric: index.metric,
+          metadata: [],
+        },
+      ];
+    },
   },
   {
     capability: "testers",

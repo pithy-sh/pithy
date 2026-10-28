@@ -30,10 +30,15 @@
   // and their customers' support mail never leaves their account.
   "ai": { "binding": "AI" },
 
-  // The classification Workflow this worker hosts. `class_name` matches the exported
-  // WorkflowEntrypoint subclass; `binding` is what the app worker dispatches to after storing a message.
+  // The Workflows this worker hosts. `class_name` matches the exported WorkflowEntrypoint subclass;
+  // `SUPPORT_CLASSIFY` is what the app worker dispatches to after storing a message, and `SUPPORT_REPROCESS`
+  // re-embeds the semantic message index when `pithy vector reprocess --index support-messages` starts it.
+  // When `search.semantic` is on, provisioning adds a `vectorize` entry binding `SUPPORT_VECTORIZE` to this
+  // environment's `<project>-<env>-support-messages` index; the template carries none, because most inboxes
+  // have no index.
   "workflows": [
-    { "binding": "SUPPORT_CLASSIFY", "name": "pithy-support-classify", "class_name": "SupportClassifyWorkflow" }
+    { "binding": "SUPPORT_CLASSIFY", "name": "pithy-support-classify", "class_name": "SupportClassifyWorkflow" },
+    { "binding": "SUPPORT_REPROCESS", "name": "pithy-support-reprocess", "class_name": "SupportReprocessWorkflow" }
   ],
 
   "vars": {

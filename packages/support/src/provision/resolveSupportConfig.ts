@@ -5,6 +5,7 @@ import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { hostWorkflowsFor, resolveWorkflowHost, type WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import type { SupportConfig } from "../config/config";
+import { supportMessageIndex, supportMessageIndexName } from "../semantic/messageIndex";
 import { SUPPORT_CAPABILITY, supportWorkflowRegistry } from "../workflows/specs";
 
 /**
@@ -60,21 +61,31 @@ export function resolveSupportConfig(
 ): WorkflowHostTemplate {
   const feature = params.feature;
   const { project, env } = params;
-  return resolveWorkflowHost(template, {
-    project,
-    capability: SUPPORT_CAPABILITY,
-    env,
-    ...(feature ? { feature } : {}),
-    databaseIds: { DB: params.appDatabaseId },
-    remoteBindings: ["AI"],
-    vars: { SUPPORT_CONFIG: JSON.stringify(params.supportConfig) },
-    // The classification Workflow, derived from support's own specs. A Workflow name is
-    // account-scoped, so it has to carry the project, and only the registry knows the job.
-    workflows: hostWorkflowsFor(supportWorkflowRegistry, {
+  // The semantic message index, only when `search.semantic` is on. The template carries no `vectorize`
+  // entry because most inboxes have none; one is added here, named the way provisioning created it.
+  const index = supportMessageIndex(params.supportConfig.search);
+  const indexName = index ? supportMessageIndexName(project, env, feature) : undefined;
+  return resolveWorkflowHost(
+    index && indexName
+      ? { ...template, vectorize: [{ binding: index.binding, index_name: indexName, remote: true }] }
+      : template,
+    {
       project,
       capability: SUPPORT_CAPABILITY,
       env,
       ...(feature ? { feature } : {}),
-    }).workflows,
-  });
+      databaseIds: { DB: params.appDatabaseId },
+      ...(index && indexName ? { vectorizeIndexNames: { [index.binding]: indexName } } : {}),
+      remoteBindings: index ? ["AI", index.binding] : ["AI"],
+      vars: { SUPPORT_CONFIG: JSON.stringify(params.supportConfig) },
+      // The classification Workflow, derived from support's own specs. A Workflow name is
+      // account-scoped, so it has to carry the project, and only the registry knows the job.
+      workflows: hostWorkflowsFor(supportWorkflowRegistry, {
+        project,
+        capability: SUPPORT_CAPABILITY,
+        env,
+        ...(feature ? { feature } : {}),
+      }).workflows,
+    },
+  );
 }

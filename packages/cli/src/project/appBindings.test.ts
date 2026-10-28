@@ -10,7 +10,7 @@ import type { WorkflowRegistry } from "@pithy-sh/core/src/workflow/spec";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
-import { applyAppBindings, appWorkflowBindings, incompleteBindings } from "./appBindings";
+import { applyAppBindings, appWorkflowBindings, incompleteBindings, removeAppVectorize } from "./appBindings";
 
 /**
  * The provisioner-owned wrangler bindings.
@@ -209,5 +209,28 @@ describe("incompleteBindings", () => {
       }),
     ).toEqual([]);
     expect(incompleteBindings({ d1_databases: [{ binding: "DB" }] })).toEqual([]);
+  });
+});
+
+describe("removeAppVectorize", () => {
+  const entry = (binding: string) => ({ binding, index_name: `acme-staging-${binding.toLowerCase()}`, remote: true });
+
+  test("removes one entry by binding and leaves its neighbors and the file's comments", async () => {
+    await applyAppBindings(dir, "staging", { vectorize: [entry("SUPPORT_VECTORIZE"), entry("VECTORIZE")] });
+    expect(await removeAppVectorize(dir, "staging", "SUPPORT_VECTORIZE")).toBe(true);
+    expect((await read()).env?.staging?.vectorize?.map((found) => found.binding)).toEqual(["VECTORIZE"]);
+    expect(await readFile(join(dir, "wrangler.jsonc"), "utf8")).toContain("// The app database.");
+  });
+
+  test("is idempotent: nothing to remove is not an error and writes nothing", async () => {
+    expect(await removeAppVectorize(dir, "staging", "SUPPORT_VECTORIZE")).toBe(false);
+    expect(await removeAppVectorize(dir, "prod", "SUPPORT_VECTORIZE")).toBe(false);
+    expect(await readFile(join(dir, "wrangler.jsonc"), "utf8")).toBe(fixture);
+  });
+
+  test("dev is the top level", async () => {
+    await applyAppBindings(dir, "dev", { vectorize: [entry("SUPPORT_VECTORIZE")] });
+    expect(await removeAppVectorize(dir, "dev", "SUPPORT_VECTORIZE")).toBe(true);
+    expect((await read()).vectorize).toEqual([]);
   });
 });

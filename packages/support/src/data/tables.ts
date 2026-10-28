@@ -8,6 +8,7 @@ import type { z } from "zod";
 import { SupportAssignment } from "./assignment";
 import { SupportAttachment } from "./attachment";
 import { SupportClassification } from "./classification";
+import { SupportEmbedding } from "./embedding";
 import { SupportThreadFlag } from "./flag";
 import { SupportMessage } from "./message";
 import { SupportThread } from "./thread";
@@ -29,6 +30,8 @@ export const SUPPORT_CLASSIFICATIONS_TABLE = "pithySupportClassifications";
 export const SUPPORT_FLAGS_TABLE = "pithySupportThreadFlags";
 /** Append-only assignee history. `pithy_support_assignments`. */
 export const SUPPORT_ASSIGNMENTS_TABLE = "pithySupportAssignments";
+/** The semantic index's per-message model stamps. `pithy_support_embeddings`. */
+export const SUPPORT_EMBEDDINGS_TABLE = "pithySupportEmbeddings";
 
 /**
  * The FTS5 full-text index. Not a Kysely table and deliberately not in {@link supportTables}: it is a
@@ -48,6 +51,7 @@ export const supportTables = {
   [SUPPORT_CLASSIFICATIONS_TABLE]: SupportClassification,
   [SUPPORT_FLAGS_TABLE]: SupportThreadFlag,
   [SUPPORT_ASSIGNMENTS_TABLE]: SupportAssignment,
+  [SUPPORT_EMBEDDINGS_TABLE]: SupportEmbedding,
 } satisfies Record<string, z.ZodObject>;
 
 /** The support tables, as a type. */

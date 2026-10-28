@@ -19,7 +19,7 @@ import { SUPPORT_MIGRATIONS } from "../migrations/set";
 import { assignThread } from "./assignment";
 import { MAX_PAGE_SIZE } from "./paging";
 import { provisionSearchIndex } from "./provisionIndex";
-import { indexMessage } from "./search";
+import { keywordHits } from "./search";
 import { createSearchIndex } from "./searchIndex";
 import { listOwnThreads, listThreads, readOwnThread, readThread, setArchived, setFlags } from "./threads";
 
@@ -138,6 +138,7 @@ const ids = (page: { threads: SupportThread[] }): string[] => page.threads.map((
 beforeEach(async () => {
   for (const table of [
     "pithy_support_search",
+    "pithy_support_embeddings",
     "pithy_support_assignments",
     "pithy_support_thread_flags",
     "pithy_support_classifications",
@@ -158,7 +159,7 @@ describe("listThreads", () => {
     await seedThread({ id: "newest", lastMessageAt: T0 + 300 });
     await seedThread({ id: "oldest", lastMessageAt: T0 + 100 });
 
-    expect(ids(await listThreads(db, {}, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) }))).toEqual([
+    expect(ids(await listThreads(db, {}, { viewer: VIEWER, now: new Date(T0 + 10_000_000) }))).toEqual([
       "newest",
       "middle",
       "oldest",
@@ -171,12 +172,10 @@ describe("listThreads", () => {
 
     // The default matters more than the filter: an inbox that showed resolved threads is not a work
     // queue, and `archived` is absent from most callers' queries.
-    expect(ids(await listThreads(db, {}, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) }))).toEqual([
-      "open",
+    expect(ids(await listThreads(db, {}, { viewer: VIEWER, now: new Date(T0 + 10_000_000) }))).toEqual(["open"]);
+    expect(ids(await listThreads(db, { archived: true }, { viewer: VIEWER, now: new Date(T0 + 10_000_000) }))).toEqual([
+      "done",
     ]);
-    expect(
-      ids(await listThreads(db, { archived: true }, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) })),
-    ).toEqual(["done"]);
   });
 
   test("the console filters by channel, and shows both when it does not", async () => {
@@ -195,9 +194,9 @@ describe("listThreads", () => {
     const now = new Date(T0 + 10_000_000);
     // Absent is both, because the inbox is one queue however things arrived — that is the argument for
     // this being a channel rather than a second capability.
-    expect(ids(await listThreads(db, {}, { fts: false, viewer: VIEWER, now }))).toEqual(["by-mail", "in-app"]);
-    expect(ids(await listThreads(db, { channel: "app" }, { fts: false, viewer: VIEWER, now }))).toEqual(["in-app"]);
-    expect(ids(await listThreads(db, { channel: "email" }, { fts: false, viewer: VIEWER, now }))).toEqual(["by-mail"]);
+    expect(ids(await listThreads(db, {}, { viewer: VIEWER, now }))).toEqual(["by-mail", "in-app"]);
+    expect(ids(await listThreads(db, { channel: "app" }, { viewer: VIEWER, now }))).toEqual(["in-app"]);
+    expect(ids(await listThreads(db, { channel: "email" }, { viewer: VIEWER, now }))).toEqual(["by-mail"]);
   });
 
   test("category, priority, sentiment, and inbox each narrow the page", async () => {
@@ -207,26 +206,20 @@ describe("listThreads", () => {
     await seedThread({ id: "security", lastMessageAt: T0 + 100, inbox: "security@help.example.com" });
 
     expect(
-      ids(
-        await listThreads(db, { category: "billing" }, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) }),
-      ),
+      ids(await listThreads(db, { category: "billing" }, { viewer: VIEWER, now: new Date(T0 + 10_000_000) })),
     ).toEqual(["billing"]);
     expect(
-      ids(
-        await listThreads(db, { priority: "urgent" }, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) }),
-      ),
+      ids(await listThreads(db, { priority: "urgent" }, { viewer: VIEWER, now: new Date(T0 + 10_000_000) })),
     ).toEqual(["urgent"]);
     expect(
-      ids(
-        await listThreads(db, { sentiment: "angry" }, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) }),
-      ),
+      ids(await listThreads(db, { sentiment: "angry" }, { viewer: VIEWER, now: new Date(T0 + 10_000_000) })),
     ).toEqual(["angry"]);
     expect(
       ids(
         await listThreads(
           db,
           { inbox: "security@help.example.com" },
-          { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) },
+          { viewer: VIEWER, now: new Date(T0 + 10_000_000) },
         ),
       ),
     ).toEqual(["security"]);
@@ -247,24 +240,15 @@ describe("listThreads", () => {
     await seedThread({ id: "by-mail", lastMessageAt: T0 + 100, category: "billing" });
 
     const now = new Date(T0 + 10_000_000);
-    expect(ids(await listThreads(db, { declaredCategory: "billing" }, { fts: false, viewer: VIEWER, now }))).toEqual([
+    expect(ids(await listThreads(db, { declaredCategory: "billing" }, { viewer: VIEWER, now }))).toEqual([
       "disagrees",
       "agrees",
       "unclassified",
     ]);
-    expect(ids(await listThreads(db, { category: "billing" }, { fts: false, viewer: VIEWER, now }))).toEqual([
-      "agrees",
-      "by-mail",
-    ]);
+    expect(ids(await listThreads(db, { category: "billing" }, { viewer: VIEWER, now }))).toEqual(["agrees", "by-mail"]);
     // Asking both is asking for agreement, which is the one shape a conflated filter could not express.
     expect(
-      ids(
-        await listThreads(
-          db,
-          { declaredCategory: "billing", category: "billing" },
-          { fts: false, viewer: VIEWER, now },
-        ),
-      ),
+      ids(await listThreads(db, { declaredCategory: "billing", category: "billing" }, { viewer: VIEWER, now })),
     ).toEqual(["agrees"]);
   });
 
@@ -276,7 +260,7 @@ describe("listThreads", () => {
     const page = await listThreads(
       db,
       { category: "billing", priority: "urgent" },
-      { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) },
+      { viewer: VIEWER, now: new Date(T0 + 10_000_000) },
     );
     expect(ids(page)).toEqual(["both"]);
   });
@@ -284,7 +268,7 @@ describe("listThreads", () => {
   test("a thread arriving mid-read is neither skipped nor repeated on the next page", async () => {
     for (const at of [400, 300, 200, 100]) await seedThread({ id: `t-${at}`, lastMessageAt: T0 + at });
 
-    const first = await listThreads(db, { limit: 2 }, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) });
+    const first = await listThreads(db, { limit: 2 }, { viewer: VIEWER, now: new Date(T0 + 10_000_000) });
     expect(ids(first)).toEqual(["t-400", "t-300"]);
 
     // Mail lands at the front of the order while the operator is still reading. This is the failure
@@ -295,7 +279,7 @@ describe("listThreads", () => {
     const second = await listThreads(
       db,
       { cursor: first.nextCursor ?? undefined, limit: 2 },
-      { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) },
+      { viewer: VIEWER, now: new Date(T0 + 10_000_000) },
     );
     expect(ids(second)).toEqual(["t-200", "t-100"]);
   });
@@ -306,11 +290,11 @@ describe("listThreads", () => {
     await seedThread({ id: "b", lastMessageAt: T0 + 100 });
     await seedThread({ id: "a", lastMessageAt: T0 + 100 });
 
-    const first = await listThreads(db, { limit: 1 }, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) });
+    const first = await listThreads(db, { limit: 1 }, { viewer: VIEWER, now: new Date(T0 + 10_000_000) });
     const second = await listThreads(
       db,
       { cursor: first.nextCursor ?? undefined, limit: 1 },
-      { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) },
+      { viewer: VIEWER, now: new Date(T0 + 10_000_000) },
     );
     expect([...ids(first), ...ids(second)]).toEqual(["b", "a"]);
   });
@@ -319,13 +303,13 @@ describe("listThreads", () => {
     await seedThread({ id: "one", lastMessageAt: T0 + 200 });
     await seedThread({ id: "two", lastMessageAt: T0 + 100 });
 
-    const first = await listThreads(db, { limit: 1 }, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) });
+    const first = await listThreads(db, { limit: 1 }, { viewer: VIEWER, now: new Date(T0 + 10_000_000) });
     expect(first.nextCursor).not.toBeNull();
 
     const second = await listThreads(
       db,
       { cursor: first.nextCursor ?? undefined, limit: 1 },
-      { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) },
+      { viewer: VIEWER, now: new Date(T0 + 10_000_000) },
     );
     expect(second.nextCursor).toBeNull();
   });
@@ -336,11 +320,7 @@ describe("listThreads", () => {
 
     // A truncated or hand-edited cursor arrives from a client, so it is bad input rather than a
     // server fault — the caller gets the top of the inbox, not a 500.
-    const page = await listThreads(
-      db,
-      { cursor: "not-a-cursor" },
-      { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) },
-    );
+    const page = await listThreads(db, { cursor: "not-a-cursor" }, { viewer: VIEWER, now: new Date(T0 + 10_000_000) });
     expect(ids(page)).toEqual(["newest", "oldest"]);
   });
 
@@ -358,7 +338,7 @@ describe("listThreads", () => {
         .execute();
     }
 
-    const page = await listThreads(db, { limit: 5000 }, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) });
+    const page = await listThreads(db, { limit: 5000 }, { viewer: VIEWER, now: new Date(T0 + 10_000_000) });
     expect(page.threads).toHaveLength(MAX_PAGE_SIZE);
     expect(page.nextCursor).not.toBeNull();
   });
@@ -385,128 +365,25 @@ describe("listThreads — by assignee", () => {
   });
 
   test("assignee=<ref> lists only the threads that ref has", async () => {
-    expect(ids(await listThreads(db, { assignee: "ada" }, { fts: false, viewer: VIEWER, now: NOW }))).toEqual(["t1"]);
-    expect(ids(await listThreads(db, { assignee: "grace" }, { fts: false, viewer: VIEWER, now: NOW }))).toEqual(["t3"]);
+    expect(ids(await listThreads(db, { assignee: "ada" }, { viewer: VIEWER, now: NOW }))).toEqual(["t1"]);
+    expect(ids(await listThreads(db, { assignee: "grace" }, { viewer: VIEWER, now: NOW }))).toEqual(["t3"]);
   });
 
   test("assignee=none lists only the threads nobody has, an unassigned one included", async () => {
     await assign("t3", null);
-    expect(ids(await listThreads(db, { assignee: "none" }, { fts: false, viewer: VIEWER, now: NOW }))).toEqual([
-      "t3",
-      "t2",
-    ]);
+    expect(ids(await listThreads(db, { assignee: "none" }, { viewer: VIEWER, now: NOW }))).toEqual(["t3", "t2"]);
   });
 
   test("no assignee filter lists every thread, and each carries its assignee", async () => {
-    const page = await listThreads(db, {}, { fts: false, viewer: VIEWER, now: NOW });
+    const page = await listThreads(db, {}, { viewer: VIEWER, now: NOW });
     expect(ids(page)).toEqual(["t3", "t2", "t1"]);
     expect(page.threads.map((thread) => thread.assigneeRef ?? null)).toEqual(["grace", null, "ada"]);
     expect(page.threads[2]?.assigneeName).toBe("Name ada");
   });
 
   test("a ref nobody holds matches nothing, and composes with the other filters", async () => {
-    expect(ids(await listThreads(db, { assignee: "nobody" }, { fts: false, viewer: VIEWER, now: NOW }))).toEqual([]);
-    expect(
-      ids(await listThreads(db, { assignee: "ada", archived: true }, { fts: false, viewer: VIEWER, now: NOW })),
-    ).toEqual([]);
-  });
-});
-
-describe("listThreads — search over the LIKE scan", () => {
-  beforeEach(async () => {
-    await seedThread({ id: "refund", lastMessageAt: T0 + 300 });
-    await seedThread({ id: "login", lastMessageAt: T0 + 200 });
-    await seedMessage({ id: "m1", threadId: "refund", subject: "Money problem", body: "I was charged twice" });
-    await seedMessage({ id: "m2", threadId: "login", subject: "Cannot log in", body: "the link never arrived" });
-  });
-
-  test("finds a word in a message body", async () => {
-    expect(
-      ids(await listThreads(db, { q: "charged" }, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) })),
-    ).toEqual(["refund"]);
-  });
-
-  test("finds a word in a subject, not only in a body", async () => {
-    expect(
-      ids(await listThreads(db, { q: "Cannot log" }, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) })),
-    ).toEqual(["login"]);
-  });
-
-  test("a term containing % matches a literal percent sign", async () => {
-    await seedThread({ id: "discount", lastMessageAt: T0 + 400 });
-    await seedThread({ id: "invoice", lastMessageAt: T0 + 100 });
-    await seedMessage({ id: "m3", threadId: "discount", subject: "Coupon", body: "the 50% code was refused" });
-    await seedMessage({ id: "m4", threadId: "invoice", subject: "Invoice", body: "line item 5000 is wrong" });
-
-    // Unescaped, `%50%%` is a wildcard either side of "50" and matches the 5000 invoice too. Escaping
-    // is what keeps a search term data rather than pattern syntax.
-    expect(
-      ids(await listThreads(db, { q: "50%" }, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) })),
-    ).toEqual(["discount"]);
-  });
-
-  test("searches every filter alongside it, rather than replacing them", async () => {
-    await seedThread({ id: "archived-refund", lastMessageAt: T0 + 400, archived: true });
-    await seedMessage({ id: "m5", threadId: "archived-refund", subject: "Money", body: "I was charged twice" });
-
-    expect(
-      ids(await listThreads(db, { q: "charged" }, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) })),
-    ).toEqual(["refund"]);
-  });
-});
-
-describe("listThreads — search over the FTS5 index", () => {
-  beforeEach(async () => {
-    await runMigrations(env.DB, provider(BASE));
-    await createSearchIndex(db);
-  });
-
-  /** Store a message and index it, the way ingest and the reply path both do. */
-  async function seedIndexed(seed: { id: string; threadId: string; subject: string; body: string }): Promise<void> {
-    await seedMessage(seed);
-    await indexMessage(db, {
-      threadId: seed.threadId,
-      messageId: seed.id,
-      subject: seed.subject,
-      body: seed.body,
-    });
-  }
-
-  test("finds the same words the LIKE scan finds", async () => {
-    await seedThread({ id: "refund", lastMessageAt: T0 + 300 });
-    await seedThread({ id: "login", lastMessageAt: T0 + 200 });
-    await seedIndexed({ id: "m1", threadId: "refund", subject: "Money problem", body: "I was charged twice" });
-    await seedIndexed({ id: "m2", threadId: "login", subject: "Cannot log in", body: "the link never arrived" });
-
-    expect(
-      ids(await listThreads(db, { q: "charged" }, { fts: true, viewer: VIEWER, now: new Date(T0 + 10_000_000) })),
-    ).toEqual(["refund"]);
-    expect(
-      ids(await listThreads(db, { q: "Cannot" }, { fts: true, viewer: VIEWER, now: new Date(T0 + 10_000_000) })),
-    ).toEqual(["login"]);
-  });
-
-  test("FTS5 operator syntax in a query is searched for, never obeyed", async () => {
-    await seedThread({ id: "literal", lastMessageAt: T0 + 300 });
-    await seedThread({ id: "other", lastMessageAt: T0 + 200 });
-    await seedIndexed({ id: "m1", threadId: "literal", subject: "Terms", body: "alpha NOT beta" });
-    await seedIndexed({ id: "m2", threadId: "other", subject: "Terms", body: "alpha gamma" });
-
-    // "Input is data, never syntax", applied to the search box. Read as FTS5 syntax, `alpha NOT beta`
-    // means "alpha without beta" and would return the *other* thread; quoted, it is three words and
-    // returns the one that actually contains them. A customer named Ng, an error string with an
-    // asterisk, or somebody probing all land here.
-    expect(
-      ids(
-        await listThreads(db, { q: "alpha NOT beta" }, { fts: true, viewer: VIEWER, now: new Date(T0 + 10_000_000) }),
-      ),
-    ).toEqual(["literal"]);
-    // `OR` likewise: as an operator this would match both threads; as a word it matches neither.
-    expect(
-      ids(
-        await listThreads(db, { q: "alpha OR gamma" }, { fts: true, viewer: VIEWER, now: new Date(T0 + 10_000_000) }),
-      ),
-    ).toEqual([]);
+    expect(ids(await listThreads(db, { assignee: "nobody" }, { viewer: VIEWER, now: NOW }))).toEqual([]);
+    expect(ids(await listThreads(db, { assignee: "ada", archived: true }, { viewer: VIEWER, now: NOW }))).toEqual([]);
   });
 });
 
@@ -660,9 +537,8 @@ describe("setArchived", () => {
     expect(archived.archivedBy).toBe("ada@ops");
     expect(archived.archivedAt?.getTime()).toBe(T0 + 500);
 
-    const stored = (
-      await listThreads(db, { archived: true }, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) })
-    ).threads[0];
+    const stored = (await listThreads(db, { archived: true }, { viewer: VIEWER, now: new Date(T0 + 10_000_000) }))
+      .threads[0];
     expect(stored?.archivedBy).toBe("ada@ops");
   });
 
@@ -787,7 +663,7 @@ describe("per-viewer flags actually affect what a viewer sees", () => {
       now: new Date(T0),
     });
 
-    const page = await listThreads(db, {}, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) });
+    const page = await listThreads(db, {}, { viewer: VIEWER, now: new Date(T0 + 10_000_000) });
     expect(page.threads.map((row) => row.id)).not.toContain("t-snooze");
   });
 
@@ -801,7 +677,7 @@ describe("per-viewer flags actually affect what a viewer sees", () => {
       now: new Date(T0),
     });
 
-    const page = await listThreads(db, {}, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) });
+    const page = await listThreads(db, {}, { viewer: VIEWER, now: new Date(T0 + 10_000_000) });
     expect(page.threads.map((row) => row.id)).toContain("t-expired");
   });
 
@@ -816,7 +692,7 @@ describe("per-viewer flags actually affect what a viewer sees", () => {
       now: new Date(T0),
     });
 
-    const other = await listThreads(db, {}, { fts: false, viewer: "viewer-2", now: new Date(T0 + 10_000_000) });
+    const other = await listThreads(db, {}, { viewer: "viewer-2", now: new Date(T0 + 10_000_000) });
     expect(other.threads.map((row) => row.id)).toContain("t-mine");
   });
 
@@ -825,7 +701,7 @@ describe("per-viewer flags actually affect what a viewer sees", () => {
     await seedThread({ id: "t-unread", lastMessageAt: T0 + 100 });
     await setFlags(db, { threadId: "t-read", viewer: VIEWER, read: true, newId: () => "f-4", now: new Date(T0) });
 
-    const page = await listThreads(db, {}, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) });
+    const page = await listThreads(db, {}, { viewer: VIEWER, now: new Date(T0 + 10_000_000) });
     const byId = new Map(page.threads.map((row) => [row.id, row.read]));
     expect(byId.get("t-read")).toBe(true);
     expect(byId.get("t-unread")).toBe(false);
@@ -840,38 +716,8 @@ describe("per-viewer flags actually affect what a viewer sees", () => {
     await write(true, "f-5");
     await expect(write(false, "f-6")).resolves.toBeUndefined();
 
-    const page = await listThreads(db, {}, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) });
+    const page = await listThreads(db, {}, { viewer: VIEWER, now: new Date(T0 + 10_000_000) });
     expect(page.threads.find((row) => row.id === "t-twice")?.read).toBe(false);
-  });
-});
-
-describe("the index being configured is not the index existing", () => {
-  /**
-   * `search.fts` is a config flag while the virtual table is a migration, and the two disagree more
-   * easily than they should: a project that flipped the flag but has not migrated, a database
-   * restored from an older snapshot, a Worker deployed ahead of `pithy migrate`. Every one of those
-   * says FTS in config and "no such table" in the schema, and the inbox route must not 500 for it.
-   */
-  test("falls back to a LIKE scan when the FTS table is absent, rather than failing the inbox", async () => {
-    // 0002_search deliberately not applied — `beforeEach` runs BASE only.
-    await seedThread({ id: "t1", lastMessageAt: T0 + 100 });
-    await seedMessage({ id: "m1", threadId: "t1", subject: "Refund", body: "charged twice" });
-
-    const page = await listThreads(db, { q: "charged" }, { fts: true, viewer: VIEWER, now: new Date(T0 + 1) });
-    expect(ids(page)).toEqual(["t1"]);
-  });
-
-  test("a real query error still surfaces rather than degrading forever", async () => {
-    // The fallback is narrow on purpose: only a missing-table error is caught. Proven by the fact
-    // that the FTS path works normally once the migration is applied — a blanket catch would make
-    // every future query bug look like a slow search.
-    await runMigrations(env.DB, provider(BASE));
-    await createSearchIndex(db);
-    await seedThread({ id: "t1", lastMessageAt: T0 + 100 });
-    await indexMessage(db, { threadId: "t1", messageId: "m1", subject: "Refund", body: "charged twice" });
-
-    const page = await listThreads(db, { q: "charged" }, { fts: true, viewer: VIEWER, now: new Date(T0 + 1) });
-    expect(ids(page)).toEqual(["t1"]);
   });
 });
 
@@ -900,7 +746,7 @@ describe("the exported response schemas against real rows", () => {
       now: new Date(T0),
     });
 
-    const page = await listThreads(db, {}, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) });
+    const page = await listThreads(db, {}, { viewer: VIEWER, now: new Date(T0 + 10_000_000) });
     const listed = page.threads.map(listedThreadView);
     expect(SupportListedThreadView.array().parse(listed)).toEqual(listed);
     expect(listed[0]?.read).toBe(true);
@@ -914,8 +760,7 @@ describe("the exported response schemas against real rows", () => {
   });
 });
 
-describe("provisionSearchIndex — what `pithy support provision` and `pithy restore` both run (#848)", () => {
-  const now = new Date(T0 + 10_000_000);
+describe("provisionSearchIndex — what `pithy support provision` and `pithy restore` both run", () => {
   const sqliteNames = async (): Promise<string[]> =>
     (
       await env.DB.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'pithy_support_search%' ORDER BY name").all<{
@@ -933,7 +778,9 @@ describe("provisionSearchIndex — what `pithy support provision` and `pithy res
 
   test("creates the index and its triggers, and backfills what is already there", async () => {
     expect(await provisionSearchIndex(env.DB, true)).toBe("create");
-    expect(ids(await listThreads(db, { q: "charged" }, { fts: true, viewer: VIEWER, now }))).toEqual(["refund"]);
+    expect((await keywordHits(db, "charged", { backend: "fts", limit: 20 })).map((hit) => hit.threadId)).toEqual([
+      "refund",
+    ]);
     expect(await sqliteNames()).toEqual(expect.arrayContaining(["pithy_support_search", "pithy_support_search_ai"]));
   });
 
@@ -948,7 +795,9 @@ describe("provisionSearchIndex — what `pithy support provision` and `pithy res
       await env.DB.exec(`DROP TRIGGER ${trigger}`);
     }
     expect(await provisionSearchIndex(env.DB, true)).toBe("repair");
-    expect(ids(await listThreads(db, { q: "arrived" }, { fts: true, viewer: VIEWER, now }))).toEqual(["login"]);
+    expect((await keywordHits(db, "arrived", { backend: "fts", limit: 20 })).map((hit) => hit.threadId)).toEqual([
+      "login",
+    ]);
   });
 
   test("drops the index and its triggers when search.fts is off", async () => {

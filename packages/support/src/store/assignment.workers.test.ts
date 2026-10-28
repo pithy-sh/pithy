@@ -81,6 +81,7 @@ beforeEach(async () => {
   counter = 0;
   for (const table of [
     "pithy_support_search",
+    "pithy_support_embeddings",
     "pithy_support_assignments",
     "pithy_support_thread_flags",
     "pithy_support_classifications",

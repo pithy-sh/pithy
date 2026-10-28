@@ -163,6 +163,22 @@ describe("opening a thread from inside the app", () => {
     expect(thread.fromAddress).toBe("ada@example.com");
   });
 
+  test("with classification off and semantic search on, the Workflow still runs, to embed it", async () => {
+    const outcome = await submit(
+      {},
+      {
+        config: SupportConfig.parse({ inboundAddresses: [INBOX], ai: { enabled: false }, search: { semantic: true } }),
+      },
+    );
+    expect(outcome.classifying).toBe(false);
+    expect(classified).toEqual([outcome.messageId]);
+  });
+
+  test("with both off, nothing is dispatched", async () => {
+    await submit({}, { config: SupportConfig.parse({ inboundAddresses: [INBOX], ai: { enabled: false } }) });
+    expect(classified).toEqual([]);
+  });
+
   test("the classifier runs over the same taxonomy, with nothing new introduced", async () => {
     const outcome = await submit();
     // The same dispatch the mail path uses, keyed on the stored message — so the thread lands in the

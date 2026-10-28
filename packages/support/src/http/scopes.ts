@@ -83,8 +83,14 @@ export function supportAdminRoutes(basePath: string): AdminRoute[] {
       operation: "threads.list",
       path: `${basePath}/threads`,
       scope: SUPPORT_THREADS_READ_SCOPE,
-      summary:
-        "List the inbox, newest first, filtered by category, priority, assignee, and archived, searched by text.",
+      summary: "List the inbox, newest first, filtered by category, priority, assignee, and archived.",
+    },
+    {
+      method: "GET",
+      operation: "threads.search",
+      path: `${basePath}/threads/search`,
+      scope: SUPPORT_THREADS_READ_SCOPE,
+      summary: "Search the inbox by words and by meaning, ranked as one, with the same filters as the list.",
     },
     {
       method: "GET",

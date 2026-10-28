@@ -162,6 +162,7 @@ const DECLARED_ONLY: Record<string, string> = {
  * `store/provisionIndex.ts`, the index step `pithy support provision` and `pithy restore` share.
  * In `audit`, `chain/prune.ts`, `chain/tombstone.ts` and `workflows/prune.ts` read and write the checkpoint bucket and
  * the trail. In `core`, `retention/holds.ts` reads the legal holds over the env's own D1.
+ * `support` counts `test-utils/seed.ts` too, which migrates a suite's D1 and seeds threads and messages on it.
  */
 const IMPORTERS: Record<string, number> = {
   "packages/artifacts": 3,
@@ -181,7 +182,7 @@ const IMPORTERS: Record<string, number> = {
   "packages/rating": 5,
   "packages/secrets": 7,
   "packages/storage": 7,
-  "packages/support": 11,
+  "packages/support": 12,
   "packages/testers": 8,
   "packages/vector": 4,
 };

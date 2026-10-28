@@ -169,9 +169,9 @@ describe("support route contract", () => {
   });
 
   test("the probe reads the whole mounted surface, not a slice of it", () => {
-    // Anti-vacuity for the check above, exact rather than a floor: twelve routes carry a method — the
-    // eight the management surface serves, the three a signed-in customer calls, and the one a signed-in
-    // member of the support staff calls. A thirteenth is either a new management route, which the check
+    // Anti-vacuity for the check above, exact rather than a floor: thirteen routes carry a method — the
+    // nine the management surface serves, the three a signed-in customer calls, and the one a signed-in
+    // member of the support staff calls. A fourteenth is either a new management route, which the check
     // above then demands a declaration for, or a new session route, which is a deliberate edit here.
     expect(
       mountedRoutes()
@@ -183,6 +183,7 @@ describe("support route contract", () => {
       "GET /support/replies",
       "GET /support/threads",
       "GET /support/threads/:id",
+      "GET /support/threads/search",
       "POST /support/feedback",
       "POST /support/staff/threads/:id/assign",
       "POST /support/threads/:id/archive",

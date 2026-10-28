@@ -137,3 +137,19 @@ describe("featureHostScripts", () => {
     for (const host of scripts) expect(host.script.startsWith("replay-f643-feature-address--")).toBe(true);
   });
 });
+
+describe("a feature's own support message index", () => {
+  const identity = { project: "acme", issue: "94", slug: "hybrid" };
+
+  test("is created only when support's semantic search is on, at its shape, under the feature's name", async () => {
+    const { support } = await import("@pithy-sh/support/src/capability");
+    const { featureIndexesFor } = await import("./hosts");
+    const { KIT_ROOT } = await import("../test-utils/kitRoot");
+    expect(await featureIndexesFor([support({})], KIT_ROOT, identity)).toEqual([]);
+    const [index, ...rest] = await featureIndexesFor([support({ search: { semantic: true } })], KIT_ROOT, identity);
+    expect(rest).toEqual([]);
+    expect(index).toMatchObject({ binding: "SUPPORT_VECTORIZE", dimensions: 1024, metric: "cosine", metadata: [] });
+    expect(index?.name).toContain("support-messages");
+    expect(index?.name).toContain("94");
+  });
+});
