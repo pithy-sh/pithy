@@ -52,6 +52,24 @@ describe("CloudflareArtifactsManager", () => {
     );
   });
 
+  it("lists every namespace on the account, following the cursor to the last page", async () => {
+    fetchMock
+      .mockResolvedValueOnce(envelope([{ name: "a", id: "1" }], 200, { result_info: { cursor: "c2" } }))
+      .mockResolvedValueOnce(envelope([{ name: "b", id: "2" }], 200, { result_info: { cursor: null } }));
+    expect(await manager().listNamespaces()).toEqual(["a", "b"]);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.cloudflare.com/client/v4/accounts/acct-1/artifacts/namespaces?limit=200",
+    );
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "https://api.cloudflare.com/client/v4/accounts/acct-1/artifacts/namespaces?limit=200&cursor=c2",
+    );
+  });
+
+  it("refuses a namespace listing it cannot read, in Cloudflare's words", async () => {
+    fetchMock.mockResolvedValue(refusal(403, 10000, "Authentication error"));
+    await expect(manager().listNamespaces()).rejects.toBeInstanceOf(CloudflareRequestError);
+  });
+
   it("stops on a cursor it has already followed, rather than looping", async () => {
     fetchMock.mockImplementation(async () => envelope([repo("a")], 200, { result_info: { cursor: "same" } }));
     expect(await manager().listRepos("ns")).toEqual(["a"]);
