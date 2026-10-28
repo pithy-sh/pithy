@@ -12,7 +12,7 @@ import {
   isControlPlaneCapability,
 } from "./capability";
 import { ControlPlaneConfig } from "./config/config";
-import { CONTROL_PLANE_CONNECTIONS_TABLE, CONTROL_PLANE_REPLAYS_TABLE } from "./data/tables";
+import { CONTROL_PLANE_CONNECTIONS_TABLE, CONTROL_PLANE_HOLDS_TABLE, CONTROL_PLANE_REPLAYS_TABLE } from "./data/tables";
 
 /**
  * The composed shape of the `control-plane` capability — assertions on the object, no request made.
@@ -71,27 +71,33 @@ describe("controlplane capability", () => {
       "GET /admin/cp/erasure",
       "GET /admin/cp/erasure/:subjectType/:subjectId",
       "GET /admin/cp/evidence",
+      "GET /admin/cp/holds",
       "GET /admin/cp/keys",
       "GET /admin/cp/manifest",
       "GET /admin/cp/migrations",
       "GET /admin/cp/ping",
       "GET /admin/cp/privacy",
+      "POST /admin/cp/holds",
+      "POST /admin/cp/holds/:holdId/release",
       "POST /admin/cp/keys",
       "POST /admin/cp/keys/:keyId/expire",
       "POST /admin/cp/presence/tickets",
     ]);
   });
 
-  test("registers exactly the eleven seam routes", () => {
+  test("registers exactly the fourteen seam routes", () => {
     expect(registeredRoutes(controlplane())).toEqual([
       "GET /control-plane/erasure",
       "GET /control-plane/erasure/:subjectType/:subjectId",
       "GET /control-plane/evidence",
+      "GET /control-plane/holds",
       "GET /control-plane/keys",
       "GET /control-plane/manifest",
       "GET /control-plane/migrations",
       "GET /control-plane/ping",
       "GET /control-plane/privacy",
+      "POST /control-plane/holds",
+      "POST /control-plane/holds/:holdId/release",
       "POST /control-plane/keys",
       "POST /control-plane/keys/:keyId/expire",
       "POST /control-plane/presence/tickets",
@@ -113,8 +119,13 @@ describe("controlplane capability", () => {
       "0002_management_origin",
       "0003_connection_principal",
       "0004_connection_trusts",
+      "0005_holds",
     ]);
-    expect(Object.keys(app?.tables ?? {})).toEqual([CONTROL_PLANE_CONNECTIONS_TABLE, CONTROL_PLANE_REPLAYS_TABLE]);
+    expect(Object.keys(app?.tables ?? {})).toEqual([
+      CONTROL_PLANE_CONNECTIONS_TABLE,
+      CONTROL_PLANE_REPLAYS_TABLE,
+      CONTROL_PLANE_HOLDS_TABLE,
+    ]);
   });
 
   test("the default records replays in D1, so a project needs no KV namespace at all", () => {

@@ -1,10 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { composedCapability } from "@pithy-sh/core/src/capability/composition";
+import { composedCapabilities, composedCapability } from "@pithy-sh/core/src/capability/composition";
 import { messageOf } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { bindWorkflowContext, createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
+import { composedRetention, subjectClasses } from "@pithy-sh/core/src/retention/composed";
+import { type LegalHolds, legalHolds } from "@pithy-sh/core/src/retention/holds";
+import { inactivityDays } from "@pithy-sh/core/src/retention/policy";
 import { workflowBindingFor } from "@pithy-sh/core/src/workflow/dispatch";
 import type { TerminalErrorConstructor, WorkflowStepLike } from "@pithy-sh/core/src/workflow/faults";
 import type { EmailEnqueueEnv } from "@pithy-sh/email/src/capability";
@@ -12,8 +15,18 @@ import { enqueueFromEnv } from "@pithy-sh/email/src/send/fromComposition";
 import { type AuthCapability, isAuthCapability } from "../capability";
 import { authDatabase } from "../data/tables";
 import { resolveDb } from "../http/resolve";
-import type { LifecycleDeps } from "../lifecycle/transitions";
-import { duePurgesOf, type PurgeDueRun, type PurgeOutcome, purgeOps, purgeUser, startDuePurges } from "./run";
+import { inactiveAccounts } from "../lifecycle/inactivity";
+import { deleteUser, type LifecycleDeps } from "../lifecycle/transitions";
+import {
+  deleteInactiveAccounts,
+  duePurgesOf,
+  type InactivityRun,
+  type PurgeDueRun,
+  type PurgeOutcome,
+  purgeOps,
+  purgeUser,
+  startDuePurges,
+} from "./run";
 import { AUTH_PURGE_BINDING, AUTH_PURGE_KEY, AuthPurgeDueParams, AuthPurgeParams } from "./specs";
 import { startPurgeInstance } from "./start";
 
@@ -88,21 +101,66 @@ export async function runAuthPurge(
   const params = AuthPurgeParams.parse(event.payload ?? {});
   const auth = composedCapability<AuthCapability>("auth", isAuthCapability);
   const lifecycle = lifecycleFor(auth, env, runLog(env, event, "auth:purge"));
-  return purgeUser({ steps: auth.purgeSteps, env, ops: purgeOps(lifecycle) }, step, terminalError, params);
+  return purgeUser(
+    { steps: auth.purgeSteps, env, ops: purgeOps(lifecycle, legalHolds(env)) },
+    step,
+    terminalError,
+    params,
+  );
 }
 
-/** The daily pass: start a purge for every account past its window. See `./run.ts`. */
+/**
+ * The daily pass: start a purge for every account past its window, then soft-delete every account inactive past the
+ * strictest class age it holds. See `./run.ts`.
+ */
 export async function runAuthPurgeDue(
   env: Record<string, unknown>,
   event: PurgeEvent,
   step: WorkflowStepLike,
   terminalError: TerminalErrorConstructor,
-): Promise<{ started: number }> {
+): Promise<{ started: number; inactive: number }> {
   const params = AuthPurgeDueParams.parse(event.payload ?? {});
   const auth = composedCapability<AuthCapability>("auth", isAuthCapability);
   const log = runLog(env, event, "auth:purge-due");
   const lifecycle = lifecycleFor(auth, env, log);
-  return startDuePurges({ due: duePurgesOf(lifecycle), start: purgeStarter(env, log) }, step, terminalError, params);
+  const holds = legalHolds(env);
+  const { started } = await startDuePurges(
+    { due: duePurgesOf(lifecycle), start: purgeStarter(env, log), held: (userId) => holds.held("user", userId) },
+    step,
+    terminalError,
+    params,
+  );
+  const { deleted } = await deleteInactiveAccounts(inactivityRun(lifecycle, holds), step, terminalError);
+  return { started, inactive: deleted };
+}
+
+/**
+ * The inactivity pass over this composition: the strictest class age among the classes a user's rows hold, from
+ * the Worker's resolved `retention` block, and the lifecycle's own soft deletion, by the system, with its notice mail.
+ */
+export function inactivityRun(lifecycle: LifecycleDeps, holds: LegalHolds): InactivityRun {
+  return inactivityOps(lifecycle, holds, () => {
+    const retention = composedRetention();
+    return retention ? inactivityDays(retention, subjectClasses(composedCapabilities(), "user")) : null;
+  });
+}
+
+/** The inactivity pass's reads and deletions over one set of lifecycle dependencies, for a class age in days. */
+export function inactivityOps(lifecycle: LifecycleDeps, holds: LegalHolds, days: () => number | null): InactivityRun {
+  return {
+    days: async () => days(),
+    inactive: (cutoff, limit) => inactiveAccounts(lifecycle.db, cutoff, limit),
+    held: (userId) => holds.held("user", userId),
+    remove: async (userId, limit) => {
+      const deletion = await deleteUser(lifecycle, {
+        userId,
+        actor: { type: "system", id: null },
+        reason: `Inactive for more than ${limit} days, the retention policy's limit for the personal data it holds.`,
+      });
+      return deletion.outcome === "deleted";
+    },
+    now: lifecycle.now ?? (() => new Date()),
+  };
 }
 
 /**

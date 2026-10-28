@@ -57,7 +57,22 @@ describe("audit capability", () => {
     const cap = audit({ database: "ANALYTICS" });
     expect(cap.auditDatabase).toBe("ANALYTICS");
     expect(cap.databases?.app?.binding).toBe("ANALYTICS");
-    expect(cap.requiredBindings.map((b) => b.name)).toEqual(["ANALYTICS", "AUDIT_CHECKPOINTS", "AUDIT_CHECKPOINT"]);
+    expect(cap.requiredBindings.map((b) => b.name)).toEqual([
+      "ANALYTICS",
+      "AUDIT_CHECKPOINTS",
+      "AUDIT_CHECKPOINT",
+      "AUDIT_PRUNE",
+    ]);
+  });
+
+  test("binds the retention prune, optionally, and hosts it in the adopter's own Worker", () => {
+    const cap = audit();
+    expect(cap.requiredBindings.find((b) => b.name === "AUDIT_PRUNE")).toMatchObject({
+      type: "workflow",
+      optional: true,
+    });
+    expect(cap.workflows?.prune).toMatchObject({ binding: "AUDIT_PRUNE", schedule: "0 2 * * *" });
+    expect(cap.workflows?.prune?.className).toBeUndefined();
   });
 
   test("binds the checkpoint bucket, optionally, so an unprovisioned Worker still records (#822)", () => {

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: FSL-1.1-MIT
 
 import { type ChainedEvent, type ChainedEventFields, type ChainLink, commitment } from "@pithy-sh/core/src/audit/chain";
+import type { Expression, SqlBool } from "kysely";
 import type { AuditDatabase } from "../data/tables";
 
 /**
@@ -119,7 +120,17 @@ export async function readChainLink(db: AuditDatabase, tenant: string | null, se
  */
 export async function readChainRows(
   db: AuditDatabase,
-  options: { tenant: string | null; afterSeq: number; afterId?: number; limit: number; throughSeq?: number },
+  options: {
+    tenant: string | null;
+    afterSeq: number;
+    afterId?: number;
+    limit: number;
+    throughSeq?: number;
+    /** Only rows that occurred before this instant, in stored ms: what the retention prune asks for. */
+    occurredBefore?: number;
+    /** Only rows this condition holds for: the retention prune's rows past their own windows. */
+    matching?: Expression<SqlBool>;
+  },
 ): Promise<ChainRow[]> {
   const { afterSeq, afterId } = options;
   let query = db
@@ -134,6 +145,8 @@ export async function readChainRows(
     .orderBy("id", "asc")
     .limit(options.limit);
   if (options.throughSeq !== undefined) query = query.where("chainSeq", "<=", options.throughSeq);
+  if (options.occurredBefore !== undefined) query = query.where("occurredAt", "<", options.occurredBefore);
+  if (options.matching !== undefined) query = query.where(options.matching);
   return (await whereChain(query, options.tenant).execute()) as ChainRow[];
 }
 

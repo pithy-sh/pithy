@@ -3,6 +3,7 @@
 
 import { z } from "zod";
 import { Ed25519PublicJwk } from "../data/connection";
+import { HoldState, HoldSubjectType } from "../data/hold";
 
 /**
  * The request contract for the seam's own routes. Every input surface is validated here and read in a
@@ -92,3 +93,70 @@ export const ErasurePeriodQuery = z
   })
   .describe("The period to attest: at most 366 days.");
 export type ErasurePeriodQuery = z.infer<typeof ErasurePeriodQuery>;
+
+/**
+ * Place a legal hold. The subject and a reason, and nothing else: no field shortens a retention, because a hold
+ * can only preserve.
+ */
+export const PlaceHoldRequest = z
+  .object({
+    subjectType: HoldSubjectType,
+    subjectId: z
+      .string()
+      .min(1)
+      .max(255)
+      .nullable()
+      .describe(
+        "The user's or organization's id, or the tenant whose audit trail to hold. Null only for `audit`, which then holds the untenanted trail.",
+      ),
+    reason: z
+      .string()
+      .trim()
+      .min(1)
+      .max(500)
+      .describe(
+        "Why the hold is placed, in one or two sentences. Required, and recorded with the hold and its audit event.",
+      ),
+  })
+  .strict()
+  .refine((body) => body.subjectId !== null || body.subjectType === "audit", {
+    message: "Only an audit hold may name no subject: a user or organization hold names its id.",
+    path: ["subjectId"],
+  })
+  .describe("A legal hold to place: the subject, and why.");
+export type PlaceHoldRequest = z.infer<typeof PlaceHoldRequest>;
+
+/** The path parameter of the release route. */
+export const HoldParams = z
+  .object({ holdId: z.string().min(1).max(64).describe("The hold's id, as placing it returned.") })
+  .describe("The hold to release.");
+export type HoldParams = z.infer<typeof HoldParams>;
+
+/** Release a legal hold, with a reason. */
+export const ReleaseHoldRequest = z
+  .object({
+    reason: z
+      .string()
+      .trim()
+      .min(1)
+      .max(500)
+      .describe("Why the hold is released. Required, and recorded with the release and its audit event."),
+  })
+  .strict()
+  .describe("A legal hold's release: why it ends.");
+export type ReleaseHoldRequest = z.infer<typeof ReleaseHoldRequest>;
+
+/** Which holds to list. */
+export const HoldListQuery = z
+  .object({
+    state: HoldState.optional().describe("Only holds in this state. Absent lists both, standing first."),
+    limit: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(500)
+      .optional()
+      .describe("How many holds to list, at most 500. Defaults to 100."),
+  })
+  .describe("Which legal holds to list.");
+export type HoldListQuery = z.infer<typeof HoldListQuery>;

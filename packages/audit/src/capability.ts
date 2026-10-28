@@ -35,7 +35,7 @@ import { sinkSecretsRegistry } from "./ship/secrets";
 import { shipperFor } from "./ship/shipper";
 import { AuditSinks } from "./ship/sinks";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
-import { auditWorkflows } from "./workflows/specs";
+import { auditAppWorkflows, auditWorkflows } from "./workflows/specs";
 
 /**
  * Sort order of the audit migration within the audit database, relative to other capabilities
@@ -128,6 +128,8 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
       // The checkpoint Workflow's binding, derived from the spec rather than written again. Optional: it exists only
       // once the checkpoint host is deployed, and nothing in the app dispatches it — the host's cron does.
       ...workflowBindings(auditWorkflows),
+      // The retention prune's binding: optional, and bound by the adopter to the class their own Worker exports.
+      ...workflowBindings(auditAppWorkflows),
       // The shipping queue and its dead-letter queue (#824), only when a sink is declared: Cloudflare Queues needs
       // the Workers Paid plan, so a project that ships nothing binds neither. Required when declared — a sink that
       // could never be enqueued to is a config that does not do what it says.
@@ -161,7 +163,8 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
         }
       : {}),
     // The checkpoint job (#822), hosted by the prebuilt audit worker and fired hourly from its cron.
-    workflows: auditWorkflows,
+    // And the retention prune, hosted by the adopter's own Worker and fired daily from its cron.
+    workflows: { ...auditWorkflows, ...auditAppWorkflows },
     // `pithy doctor` says whether object lock is in force on each deployed environment's checkpoint bucket (#822).
     settings: checkpointLockCheck(),
     databases: {

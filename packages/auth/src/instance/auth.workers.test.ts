@@ -406,3 +406,61 @@ describe("every delete.after the instance wires claims its removals", () => {
     expect(survey.wired.length).toBeGreaterThan(0);
   });
 });
+
+/**
+ * **The activity clock the retention policy's class ages count from.** A sign-in stamps it, and so does the rolling
+ * refresh of a session that stays open, so signing out after weeks of use on one session never reads as weeks idle.
+ */
+describe("the activity clock", () => {
+  const LONG_AGO = Date.UTC(2020, 0, 1);
+
+  async function signedIn(auth: ReturnType<typeof makeAuth>, mailbox: AuthEmailMessage[], email: string) {
+    await auth.api.sendVerificationOTP({ body: { email, type: "sign-in" }, headers: new Headers() });
+    const otp = mailbox.filter((message) => message.template === "otp").at(-1);
+    if (otp?.template !== "otp") throw new Error("no OTP sent");
+    const result = await auth.api.signInEmailOTP({ body: { email, otp: otp.code }, headers: new Headers() });
+    return result.token;
+  }
+
+  async function lastActive(email: string): Promise<number | null> {
+    const row = await env.DB.prepare("select last_active_at as at from pithy_auth_users where email = ?")
+      .bind(email)
+      .first<{ at: number | null }>();
+    return row?.at ?? null;
+  }
+
+  async function stampLongAgo(email: string): Promise<void> {
+    await env.DB.prepare("update pithy_auth_users set last_active_at = ? where email = ?").bind(LONG_AGO, email).run();
+  }
+
+  test("a sign-in through the instance stamps the account active now, and a second sign-in moves it on", async () => {
+    const { auth, mailbox } = instanceWithMailbox();
+    const before = Date.now();
+    await signedIn(auth, mailbox, "active@example.test");
+    const first = await lastActive("active@example.test");
+    expect(first).not.toBeNull();
+    expect(first).toBeGreaterThanOrEqual(before - 1000);
+
+    await stampLongAgo("active@example.test");
+    await signedIn(auth, mailbox, "active@example.test");
+    expect(await lastActive("active@example.test")).toBeGreaterThanOrEqual(before - 1000);
+  });
+
+  test("a session refreshed in place stamps the account, so signing out after it leaves the account active", async () => {
+    const { auth, mailbox } = instanceWithMailbox();
+    const token = await signedIn(auth, mailbox, "rolling@example.test");
+    // The sign-in was long ago and the session has rolled since: it is due its refresh on the next read.
+    await stampLongAgo("rolling@example.test");
+    const dueForRefresh = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    await env.DB.prepare("update pithy_auth_sessions set expires_at = ?").bind(dueForRefresh).run();
+
+    const before = Date.now();
+    const session = await auth.api.getSession({ headers: new Headers({ authorization: `Bearer ${token}` }) });
+    expect(session?.user.email).toBe("rolling@example.test");
+    await auth.api.signOut({ headers: new Headers({ authorization: `Bearer ${token}` }) });
+
+    const sessions = await env.DB.prepare("select count(*) as n from pithy_auth_sessions").first<{ n: number }>();
+    expect(sessions?.n).toBe(0);
+    expect(await lastActive("rolling@example.test")).toBeGreaterThanOrEqual(before - 1000);
+  });
+});

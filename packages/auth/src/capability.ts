@@ -14,6 +14,7 @@ import { isTurnstileCapability } from "@pithy-sh/turnstile/src/capability";
 import { TURNSTILE_LOGIN_ACTION, type TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
 import type { Context } from "hono";
 import { z } from "zod";
+import { AuthAuditActions } from "./audit/actions";
 import type { AuthClientProjection } from "./client/projection";
 import { authTables } from "./data/tables";
 import { publishSameOrigin } from "./http/csrf";
@@ -495,6 +496,14 @@ export function auth(options: AuthOptions): AuthCapability {
     purge: [authPurgeContribution(resolved.database, pluginPlan.userTables)],
     // How a purge's record is read back for the control plane's erasure attestation (#823).
     erasureRecords: authErasureRecords(resolved.database),
+    // The soft-delete window this config declares. A Worker's `retention` block may replace it.
+    purgeWindow: { subject: "user", days: resolved.retention.purgeAfterDays },
+    // The lifecycle transitions the erasure record does not name, so the retention floor keeps them too.
+    lifecycleAuditActions: [
+      AuthAuditActions.adminUserSuspended,
+      AuthAuditActions.adminUserReinstated,
+      AuthAuditActions.adminUserRestored,
+    ],
     // The purge of one account, and the daily pass that starts every due one. Both hosted by the adopter's own
     // Worker, because a purge runs every composed capability's contribution — see `purge/specs.ts`.
     workflows: authWorkflows,

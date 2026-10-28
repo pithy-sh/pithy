@@ -51,6 +51,8 @@ describe("ControlPlaneAuditActions", () => {
       "controlplane/connection_registered",
       "controlplane/connection_updated",
       "controlplane/connection_removed",
+      "controlplane/hold_placed",
+      "controlplane/hold_released",
     ]);
   });
 });

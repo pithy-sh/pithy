@@ -3,6 +3,7 @@
 
 import { JsonDate, SQLiteBoolean, SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { Locale } from "@pithy-sh/core/src/i18n/locale";
+import { pii } from "@pithy-sh/core/src/privacy/classes";
 import { z } from "zod";
 
 /**
@@ -30,10 +31,10 @@ const BetterAuthDate = JsonDate;
 export const User = z
   .object({
     id: z.string().describe("Primary key. A random/UUID text id (not auto-increment) so users cannot be enumerated."),
-    name: z.string().describe("The user's display name, supplied by the provider profile or at sign-up."),
-    email: z
-      .string()
-      .describe("The user's email address. Unique across all users; the identity key for passwordless sign-in."),
+    name: pii(z.string()).describe("The user's display name, supplied by the provider profile or at sign-up."),
+    email: pii(z.string()).describe(
+      "The user's email address. Unique across all users; the identity key for passwordless sign-in.",
+    ),
     emailVerified: SQLiteBoolean.describe(
       "Whether the email has been verified. Stored as `0|1`; magic-link/OTP sign-in sets it true.",
     ),
@@ -71,6 +72,9 @@ export const User = z
     ),
     purgeAfter: SQLiteDate.nullish().describe(
       "When a deleted account's data may be erased — the deletion instant plus `retention.purgeAfterDays`. Null unless the account is deleted. Ms-epoch in SQLite.",
+    ),
+    lastActiveAt: SQLiteDate.nullish().describe(
+      "When this account last opened a session — a sign-in or a token refresh — which a sign-out does not erase. The retention policy's class ages count inactivity from it. Stamped on every existing account when the column arrived. Ms-epoch in SQLite.",
     ),
   })
   .describe("A user in `pithy_auth_users` — the canonical identity every session and account hangs off.");

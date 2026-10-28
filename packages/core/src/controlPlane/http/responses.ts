@@ -628,3 +628,42 @@ export const ControlPlaneErasurePeriodResponse = z
     "Every purge in a period: counts of complete, in-progress and failed, and each failed or overdue one named with the step it stopped at.",
   );
 export type ControlPlaneErasurePeriodResponse = z.output<typeof ControlPlaneErasurePeriodResponse>;
+
+/** One legal hold, as the holds routes answer it. */
+export const LegalHoldView = z
+  .object({
+    id: z.string().describe("The hold's id. Name it to release the hold."),
+    subjectType: z
+      .enum(["user", "organization", "audit"])
+      .describe("What the hold preserves: a user, an organization, or a tenant's audit trail."),
+    subjectId: z
+      .string()
+      .nullable()
+      .describe(
+        "The held user's or organization's id, or the tenant whose trail is held. Null for the untenanted trail.",
+      ),
+    reason: z.string().describe("Why it was placed."),
+    placedBy: z.string().describe("The management client's user id that placed it."),
+    placedAt: z.iso.datetime().describe("When it was placed, ISO-8601."),
+    state: z.enum(["active", "released"]).describe("`active` while it stands; `released` once lifted."),
+    releasedAt: z.iso.datetime().nullable().describe("When it was released, ISO-8601, or null while it stands."),
+    releasedBy: z.string().nullable().describe("Who released it, or null while it stands."),
+    releaseReason: z.string().nullable().describe("Why it was released, or null while it stands."),
+  })
+  .describe("A legal hold on one user, one organization or one tenant's audit trail.");
+export type LegalHoldView = z.output<typeof LegalHoldView>;
+
+/** `GET /control-plane/holds`. */
+export const ControlPlaneHoldsResponse = z
+  .object({
+    active: z.number().int().nonnegative().describe("How many holds stand, whatever the listing was narrowed to."),
+    holds: z.array(LegalHoldView).describe("The holds, standing first, newest first within each."),
+  })
+  .describe("This Worker's legal holds.");
+export type ControlPlaneHoldsResponse = z.output<typeof ControlPlaneHoldsResponse>;
+
+/** `POST /control-plane/holds` and `POST /control-plane/holds/:holdId/release`: the hold as it now stands. */
+export const ControlPlaneHoldResponse = z
+  .object({ hold: LegalHoldView })
+  .describe("One legal hold, as the call left it.");
+export type ControlPlaneHoldResponse = z.output<typeof ControlPlaneHoldResponse>;

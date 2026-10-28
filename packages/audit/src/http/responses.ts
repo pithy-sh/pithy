@@ -384,6 +384,14 @@ export const ChainVerifyResponse = z
       .nonnegative()
       .describe("How many chained events were checked before the first break, or all of them."),
     checkpoints: z.number().int().nonnegative().describe("How many checkpoints the walk was held to."),
+    pruned: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe(
+        "How many events the walk crossed as pruned by the retention policy, each run bridged by the tombstone written before it was deleted. Absent from a Worker that cannot prune.",
+      ),
     checkpointStore: z
       .enum(["bound", "absent"])
       .describe(

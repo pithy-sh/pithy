@@ -74,6 +74,7 @@ import {
   absent,
   checkSuspension,
   type OrganizationLifecycleDeps,
+  organizationPurgeWindowDays,
   reinstateOrganization,
   removeOrganization,
   restoreOrganization,
@@ -2396,7 +2397,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
           actor: { type: "control-plane", id: caller.subject },
           reason: body.reason,
           mode,
-          purgeAfterDays: config.retention.purgeAfterDays,
+          purgeAfterDays: organizationPurgeWindowDays(config.retention.purgeAfterDays),
         });
         // Before the purge is started: the cascade asks who belongs elsewhere, and the purge takes the memberships.
         const members = cascade

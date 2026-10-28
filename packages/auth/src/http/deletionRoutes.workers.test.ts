@@ -14,6 +14,7 @@ import {
 import { controlplane_0001_init } from "@pithy-sh/core/src/controlPlane/migrations/0001_init";
 import { controlplane_0002_management_origin } from "@pithy-sh/core/src/controlPlane/migrations/0002_management_origin";
 import { controlplane_0003_connection_principal } from "@pithy-sh/core/src/controlPlane/migrations/0003_connection_principal";
+import { controlplane_0005_holds } from "@pithy-sh/core/src/controlPlane/migrations/0005_holds";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { ERASURE_READ_SCOPE } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "@pithy-sh/core/src/controlPlane/token/mint";
@@ -232,8 +233,10 @@ const hook =
   (event: UserLifecycleHookEvent): void =>
     void fired.push({ hook: name, event });
 
-function buildApp() {
+/** The composed backend, with the Worker's `retention` block when a test records one. */
+function buildApp(retention?: unknown) {
   return createBackend({
+    ...(retention === undefined ? {} : { retention }),
     capabilities: [
       secrets({ registry: authSecretsRegistry }),
       email({ fromAddress: "no@reply.test", fromName: "Test", baseUrl: ORIGIN }),
@@ -344,8 +347,8 @@ async function seedUser(id: string, address = `${id}@example.test`): Promise<voi
     .values(
       User.encode({
         id,
-        name: "Ada Lovelace",
-        email: address,
+        name: "Ada Lovelace" as User["name"],
+        email: address as User["email"],
         emailVerified: true,
         image: null,
         locale: null,
@@ -497,6 +500,7 @@ beforeEach(async () => {
     ...AUTH_TABLES,
     "pithy_controlplane_connections",
     "pithy_controlplane_replays",
+    "pithy_controlplane_holds",
     "pithy_migrations",
     "pithy_migrations_lock",
   ]) {
@@ -520,6 +524,8 @@ beforeEach(async () => {
         "0001_init": controlplane_0001_init,
         "0002_management_origin": controlplane_0002_management_origin,
         "0003_connection_principal": controlplane_0003_connection_principal,
+        // The legal holds, which the purge asks before each step and the export answers for.
+        "0005_holds": controlplane_0005_holds,
       },
     },
   ]).app;
@@ -647,7 +653,10 @@ describe("DELETE /auth/admin/users/:userId", () => {
     expect(body.purge).toBe("pending");
     bindPurge = true;
     buildApp();
-    expect(await runAuthPurgeDue(workerEnv(), { payload: {} }, journal().step, Terminal)).toEqual({ started: 1 });
+    expect(await runAuthPurgeDue(workerEnv(), { payload: {} }, journal().step, Terminal)).toEqual({
+      started: 1,
+      inactive: 0,
+    });
     // The pass hands the purge the account alone; the choice is the deletion's, read off its row.
     expect(startedParams()).toEqual([{ userId: "u-1" }]);
     expect(await purge("u-1")).toMatchObject({ state: "purged", mailed: false });
@@ -671,15 +680,24 @@ describe("DELETE /auth/admin/users/:userId", () => {
       .run();
     buildApp();
     bindPurge = false;
-    expect(await runAuthPurgeDue(workerEnv(), { payload: {} }, journal().step, Terminal)).toEqual({ started: 0 });
+    expect(await runAuthPurgeDue(workerEnv(), { payload: {} }, journal().step, Terminal)).toEqual({
+      started: 0,
+      inactive: 0,
+    });
     bindPurge = true;
     const refusing = {
       ...workerEnv(),
       AUTH_PURGE: { create: async () => Promise.reject(new Error("quota exceeded")) },
     };
-    expect(await runAuthPurgeDue(refusing, { payload: {} }, journal().step, Terminal)).toEqual({ started: 0 });
+    expect(await runAuthPurgeDue(refusing, { payload: {} }, journal().step, Terminal)).toEqual({
+      started: 0,
+      inactive: 0,
+    });
     expect(started).toEqual([]);
-    expect(await runAuthPurgeDue(workerEnv(), { payload: {} }, journal().step, Terminal)).toEqual({ started: 2 });
+    expect(await runAuthPurgeDue(workerEnv(), { payload: {} }, journal().step, Terminal)).toEqual({
+      started: 2,
+      inactive: 0,
+    });
   });
 
   test("hard is never reached by omission or by a typo in mode: a typo is refused and nothing is written", async () => {
@@ -814,11 +832,21 @@ describe("the purge", () => {
       userId: "u-1",
       state: "purged",
       erased: ["silent", "app", "auth"],
-      // Email is composed, and keeps the address's suppression and mail log through a purge (#814).
-      retained: ["email"],
+      // Email is composed, and keeps the address's suppression and mail log through a purge. The control plane keeps
+      // the record of any legal hold placed on the account.
+      retained: ["email", "controlplane"],
       mailed: true,
     });
-    expect(steps.ran).toEqual(["due", "retain email", "erase silent", "erase app", "mail", "erase auth", "complete"]);
+    expect(steps.ran.filter((name) => !name.startsWith("hold "))).toEqual([
+      "due",
+      "retain email",
+      "retain controlplane",
+      "erase silent",
+      "erase app",
+      "mail",
+      "erase auth",
+      "complete",
+    ]);
     expect(drafts.has("u-1")).toBe(false);
 
     const counts = await footprintCounts(env.DB, "u-1");
@@ -835,6 +863,7 @@ describe("the purge", () => {
     expect((await history("u-1")).map((row) => [row.action, row.step])).toEqual([
       ["deleted", null],
       ["purge_retained", "email"],
+      ["purge_retained", "controlplane"],
       ["purge_step", "silent"],
       ["purge_step", "app"],
       ["purge_step", "auth"],
@@ -902,10 +931,30 @@ describe("the purge", () => {
       .run();
     buildApp();
     const result = await runAuthPurgeDue(workerEnv(), { payload: {} }, journal().step, Terminal);
-    expect(result).toEqual({ started: 2 });
+    expect(result).toEqual({ started: 2, inactive: 0 });
     expect(startedParams()).toEqual([{ userId: "due-1" }, { userId: "due-2" }]);
     // One instance per deletion: each account's own id.
     expect(new Set(started.map((each) => each.id)).size).toBe(2);
+  });
+
+  test("the daily pass soft-deletes an account idle past the strictest class age its rows hold, and nobody active", async () => {
+    await seedUser("u-idle");
+    await seedUser("u-active");
+    await env.DB.prepare("update pithy_auth_users set last_active_at = ? where id = 'u-idle'")
+      .bind(Date.now() - 4 * 365 * DAY)
+      .run();
+    await env.DB.prepare("update pithy_auth_users set last_active_at = ? where id = 'u-active'")
+      .bind(Date.now() - DAY)
+      .run();
+    // Auth's own rows hold `pii`, so the class age the block records is the one the pass applies.
+    buildApp({ classAges: { pii: "3y" } });
+    expect(await runAuthPurgeDue(workerEnv(), { payload: {} }, journal().step, Terminal)).toEqual({
+      started: 0,
+      inactive: 1,
+    });
+    expect((await columns("u-idle")).deleted_at).not.toBeNull();
+    expect((await columns("u-active")).deleted_at).toBeNull();
+    expect(await lifecycleMail()).toEqual([{ template: "deletionScheduled", to: "u-idle@example.test" }]);
   });
 });
 
@@ -940,6 +989,7 @@ describe("the erasure attestation (#823)", () => {
     });
     expect(attestation.steps.map((step) => [step.capability, step.disposition])).toEqual([
       ["email", "retained"],
+      ["controlplane", "retained"],
       ["silent", "erased"],
       ["app", "erased"],
       ["auth", "erased"],
@@ -953,6 +1003,7 @@ describe("the erasure attestation (#823)", () => {
     expect(new Set(cited.map((each) => each?.eventId)).size).toBe(cited.length);
     expect(events("auth/admin_user_purge_step").map((event) => event.metadata)).toEqual([
       { step: "email", disposition: "retained" },
+      { step: "controlplane", disposition: "retained" },
       { step: "silent", disposition: "erased" },
       { step: "app", disposition: "erased" },
       { step: "auth", disposition: "erased" },
@@ -1182,13 +1233,20 @@ describe("GET /auth/admin/users/:userId/export", () => {
     expect(document.capabilities.map((entry) => [entry.capability, entry.state])).toEqual([
       ["email", "exported"],
       ["auth", "exported"],
+      ["controlplane", "exported"],
       ["silent", "not_exported"],
       ["app", "exported"],
     ]);
     // A retained part says so, and why; an erased one says that (#814).
-    expect(document.capabilities.map((entry) => entry.disposition)).toEqual(["retain", "erase", "erase", "erase"]);
+    expect(document.capabilities.map((entry) => entry.disposition)).toEqual([
+      "retain",
+      "erase",
+      "retain",
+      "erase",
+      "erase",
+    ]);
     expect(document.capabilities[0]?.basis).toMatch(/unsubscribe/);
-    const [, authPart, , appPart] = document.capabilities;
+    const [, authPart, , , appPart] = document.capabilities;
     if (authPart?.state !== "exported" || appPart?.state !== "exported") throw new Error("expected two parts");
     expect(AuthUserExport.parse(authPart.data).user.email).toBe("u-1@test.com");
     expect(appPart.data).toEqual({ drafts: ["a draft"] });
@@ -1216,7 +1274,13 @@ describe("GET /auth/admin/users/:userId/export", () => {
         metadata: expect.objectContaining({
           reason: "Access request 4411.",
           disclosure: true,
-          capabilities: ["email:exported", "auth:exported", "silent:not_exported", "app:exported"],
+          capabilities: [
+            "email:exported",
+            "auth:exported",
+            "controlplane:exported",
+            "silent:not_exported",
+            "app:exported",
+          ],
         }),
       }),
     ]);

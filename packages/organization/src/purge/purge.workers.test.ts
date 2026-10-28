@@ -6,9 +6,12 @@ import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { forgetComposition, recordComposition } from "@pithy-sh/core/src/capability/composition";
 import type { PurgeStep } from "@pithy-sh/core/src/capability/purge";
+import { controlPlaneDatabase } from "@pithy-sh/core/src/controlPlane/data/tables";
+import { controlplane_0005_holds } from "@pithy-sh/core/src/controlPlane/migrations/0005_holds";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import { placeHold, releaseHold } from "@pithy-sh/core/src/retention/holds";
 import type { WorkflowStepLike } from "@pithy-sh/core/src/workflow/faults";
 import type { Kysely } from "kysely";
 import type { MigrationProvider } from "kysely/migration";
@@ -49,6 +52,7 @@ const TABLES = [
   "adopter_projects",
   "pithy_migrations",
   "pithy_migrations_lock",
+  "pithy_controlplane_holds",
 ];
 
 class Terminal extends Error {}
@@ -158,7 +162,13 @@ describe("the organization purge", () => {
       { organizationId: ACME },
     );
     expect(outcome).toEqual({ organizationId: ACME, state: "purged", erased: ["media", "organization"], retained: [] });
-    expect(ran).toEqual(["due", "erase media", "erase media", "erase organization", "complete"]);
+    expect(ran.filter((name) => !name.startsWith("hold "))).toEqual([
+      "due",
+      "erase media",
+      "erase media",
+      "erase organization",
+      "complete",
+    ]);
 
     // Acme is gone, with its memberships and the adopter's rows. Beta is untouched.
     const organizations = await db().selectFrom(ORGANIZATIONS_TABLE).select("id").execute();
@@ -181,6 +191,41 @@ describe("the organization purge", () => {
       { action: "purge_step", step: "organization", reason: ORGANIZATION_PURGE_SUMMARY, actorType: "system" },
       { action: "purged", step: null, reason: null, actorType: "system" },
     ]);
+  });
+
+  test("with no answer handed in, it reads the organization holds in the env's own DB, and a user hold on the same id does not stop it", async () => {
+    await controlplane_0005_holds.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
+    const holds = controlPlaneDatabase(env.DB);
+    const counsel = { subject: "usr_counsel" };
+    await removeOrganization(deps(), {
+      organizationId: ACME,
+      actor: { type: "control-plane", id: "operator-1" },
+      reason: "r",
+      mode: "hard",
+      purgeAfterDays: 30,
+    });
+    const hold = await placeHold(holds, {
+      subjectType: "organization",
+      subjectId: ACME,
+      reason: "Litigation.",
+      actor: counsel,
+      at: NOW,
+    });
+    const own: PurgeStep = { step: "organization", contribution: organizationPurgeContribution("DB", sweep) };
+    const run = { steps: [own], env: { DB: env.DB }, ops: organizationPurgeOps(deps()) };
+    const first = await purgeOrganization(run, workflow().step, Terminal, { organizationId: ACME });
+    expect(first).toMatchObject({ state: "held", erased: [] });
+    expect(await db().selectFrom(ORGANIZATIONS_TABLE).select("id").where("id", "=", ACME).executeTakeFirst()).toEqual({
+      id: ACME,
+    });
+
+    await releaseHold(holds, { id: hold.id, reason: "Settled.", actor: counsel, at: NOW });
+    await placeHold(holds, { subjectType: "user", subjectId: ACME, reason: "Other.", actor: counsel, at: NOW });
+    const second = await purgeOrganization(run, workflow().step, Terminal, { organizationId: ACME });
+    expect(second).toMatchObject({ state: "purged", erased: ["organization"] });
+    expect(
+      await db().selectFrom(ORGANIZATIONS_TABLE).select("id").where("id", "=", ACME).executeTakeFirst(),
+    ).toBeUndefined();
   });
 
   test("a purge run again finds nothing to do, and an organization inside its window erases nothing", async () => {

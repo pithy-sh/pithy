@@ -30,6 +30,7 @@ import {
   type PresenceDeclaration,
 } from "../presence/declaration";
 import type { CapabilityQueueHandler } from "../queue/consumer";
+import type { PurgeWindowDefault } from "../retention/policy";
 import type { SeedSet } from "../seed/seed";
 import type { WorkflowSpecMap } from "../workflow/spec";
 import { BindingSpec, type BindingSpecInput } from "./bindings";
@@ -721,6 +722,18 @@ export interface Capability<
    * control plane's erasure attestation reads it. See `./erasure.ts`.
    */
   erasureRecords?: ErasureRecords;
+  /**
+   * This capability's own soft-delete window — declared by the capability that owns a deletion, from its
+   * own `retention.purgeAfterDays`. A Worker's `retention` block may replace it; `GET /control-plane/manifest`
+   * and `pithy doctor` report which window takes effect and where it came from. See `../retention/policy.ts`.
+   */
+  purgeWindow?: PurgeWindowDefault;
+  /**
+   * The audit actions that record this capability's lifecycle transitions beyond its erasure — a suspension, a
+   * reinstatement, a restore. The retention floor covers each, beside the actions `erasureRecords` names, so an
+   * operator lifting a suspension is kept as long as the deletion it reversed. See `../retention/policy.ts`.
+   */
+  lifecycleAuditActions?: readonly string[];
   /**
    * The role powers this capability's own routes gate on, through the acting-organization seam —
    * `media:manage`, `storage:manage`. Omit it when a capability asks no power, which is the normal case.

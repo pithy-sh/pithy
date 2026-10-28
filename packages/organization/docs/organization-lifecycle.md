@@ -52,7 +52,7 @@ A suspension or a deletion may reach the people in the organization, and only on
 
 Every route takes a required `reason` in its JSON body, at most 500 characters and no email address, and every write records an `organization/admin_organization_*` audit event with the operator, the connection, the reason and the tenant; the two previews record none. An unknown `:organizationId` is a 404 on every one, never a 403. The two scopes are separate from each other and from every read and write scope; a client holding neither is refused 403 on all six. A deleted organization cannot be suspended or reinstated — restore it first; the refusal names the route — and its suspension is still there to lift after.
 
-**Delete, soft**: shut now, gone from every list, every selection of it cleared, its memberships kept. `purge_after` is now plus `retention.purgeAfterDays`, 30 unless you set it. `purge` is `scheduled`. **Delete, hard**: the window closes now, nothing can restore it, and the purge starts in the same call — `purge` is `started`, or `pending` when this Worker binds no purge Workflow, and the daily pass starts it. A hard deletion of one already deleted softly brings its purge forward; `outcome` says `deleted`, `brought_forward` or `unchanged`.
+**Delete, soft**: shut now, gone from every list, every selection of it cleared, its memberships kept. `purge_after` is now plus the purge window: `retention.purgeWindows.organization` from the Worker's `retention` block in `pithy.config.ts` when it names one, otherwise organization's own `retention.purgeAfterDays`, 30 unless you set it. `purge` is `scheduled`. **Delete, hard**: the window closes now, nothing can restore it, and the purge starts in the same call — `purge` is `started`, or `pending` when this Worker binds no purge Workflow, and the daily pass starts it. A hard deletion of one already deleted softly brings its purge forward; `outcome` says `deleted`, `brought_forward` or `unchanged`.
 
 **Restore** clears both columns inside the window. Its memberships were never removed, so every member sees it again. A suspension it was under is still in force, and the response says `state: "suspended"`. Once `purge_after` has passed it is a 409 naming the date. After the purge there is no organization: a 404, whose action says the data is gone.
 
@@ -79,6 +79,8 @@ purge: [
 ```
 
 A daily cron at 02:00 UTC, the one auth's purge uses, starts the purge for every organization past its `purge_after`. The instance is named for the deletion and the UTC day, so a hard deletion and the daily pass start one purge, not two.
+
+**A legal hold stops it.** The daily pass starts no purge for an organization a hold stands on. A purge already running asks before each step whether one stands, and a hold found ends the run as `held` with nothing more erased; once the hold is released, the next daily pass starts it again and its finished steps find nothing left to erase. Holds are placed over the control plane: [`docs/CONTROL-PLANE.md`](../../../docs/CONTROL-PLANE.md#retention-and-legal-holds).
 
 **The Workflows are yours to export**, for the reason auth's are: only the Worker that composes the capabilities has their contributions.
 

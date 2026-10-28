@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { isRetained, type PurgeContext, type PurgeStep } from "@pithy-sh/core/src/capability/purge";
+import { legalHolds } from "@pithy-sh/core/src/retention/holds";
 import {
   classifiedSteps,
   type TerminalErrorConstructor,
@@ -36,6 +37,11 @@ import { ORGANIZATION_CAPABILITY, type OrganizationPurgeDueParams, type Organiza
  * Every step from 2 on records an audit event as well as its row (#823), which the erasure attestation cites. A step
  * that exhausts its retries is caught once, recorded in its own `fail` step with the step it stopped at, and thrown
  * on unchanged, so the instance fails exactly as it did and the record does not read as a purge still running.
+ *
+ * **A legal hold stops it.** Before every step after `due` the purge asks whether a hold stands on the
+ * organization, each ask its own step — `hold <next>` — and a hold found ends the run as `held` with nothing more
+ * erased. Once it is released the organization is still due, and the next daily pass starts a fresh purge whose
+ * idempotent steps carry on from where this one stopped. A hold that cannot be read fails its step, which retries.
  */
 
 /** What a purge does with the organization's own records. */
@@ -100,8 +106,8 @@ export function organizationPurgeOps(
 export interface OrganizationPurgeOutcome {
   /** The organization. */
   readonly organizationId: string;
-  /** `purged`, or why nothing was erased. */
-  readonly state: "purged" | "not_due" | "gone";
+  /** `purged`; or why nothing was erased; or `held`, a legal hold stopped it before its next step. */
+  readonly state: "purged" | "not_due" | "gone" | "held";
   /** Every step that erased its rows, in the order it ran. Empty when nothing was erased. */
   readonly erased: readonly string[];
   /** Every step that kept its rows under a stated basis (#814), in the order it ran. */
@@ -116,6 +122,11 @@ export interface OrganizationPurgeRun {
   readonly env: Record<string, unknown>;
   /** The organization's own records. */
   readonly ops: OrganizationPurgeOps;
+  /**
+   * Whether a legal hold stands on the organization. Defaults to the holds in this run's own `env`, so a
+   * purge reads the control plane's table unless a caller hands it another answer.
+   */
+  readonly held?: (organizationId: string) => Promise<boolean>;
 }
 
 /** Run one organization's purge, one step per contribution, this capability's last. See the file header. */
@@ -129,6 +140,8 @@ export async function purgeOrganization(
   const organizationId = params.organizationId;
   const state = await own.do("due", () => run.ops.due(organizationId));
   if (state !== "due") return { organizationId, state, erased: [], retained: [] };
+  const held = run.held ?? ((id: string) => legalHolds(run.env).held("organization", id));
+  const stopped = (next: string) => own.do(`hold ${next}`, () => held(organizationId));
 
   const context: PurgeContext = { subject: { type: "organization", id: organizationId }, env: run.env };
   const mine = run.steps.filter((each) => each.step === ORGANIZATION_CAPABILITY);
@@ -139,6 +152,7 @@ export async function purgeOrganization(
   let current = "due";
   try {
     for (const each of [...others, ...mine]) {
+      if (await stopped(each.step)) return { organizationId, state: "held", erased, retained };
       const { contribution } = each;
       current = each.step;
       if (isRetained(contribution)) {
@@ -216,6 +230,8 @@ export interface OrganizationPurgeDueRun {
   due(limit: number): Promise<DueOrganizationPurge[]>;
   /** Start one organization's purge. Says whether it is running; `false` is not counted. */
   start(due: DueOrganizationPurge): Promise<boolean>;
+  /** Whether a legal hold stands on it: a held organization is not started. */
+  held?(organizationId: string): Promise<boolean>;
 }
 
 /**
@@ -236,7 +252,10 @@ export async function startDueOrganizationPurges(
     const ids = due.slice(page * ORGANIZATION_PURGE_START_PAGE, (page + 1) * ORGANIZATION_PURGE_START_PAGE);
     started += await own.do(`start ${page + 1}`, async () => {
       let running = 0;
-      for (const each of ids) if (await run.start(each)) running += 1;
+      for (const each of ids) {
+        if (run.held && (await run.held(each.organizationId))) continue;
+        if (await run.start(each)) running += 1;
+      }
       return running;
     });
   }

@@ -106,6 +106,7 @@ import {
   type PortsRegistryEntry,
 } from "../doctor/portsRegistry";
 import { checkProjectName, describeProjectName, type ProjectNameCheck } from "../doctor/projectName";
+import { checkRetention, describeRetention, type RetentionCheck, type RetentionOptions } from "../doctor/retention";
 import { ScopeGateFinding, ScopeGateHealth } from "../doctor/scopeGates";
 import { checkSecretBindings, describeSecretBindings, type SecretBindingsCheck } from "../doctor/secretBindings";
 import {
@@ -438,6 +439,13 @@ export interface DoctorReport {
    * unbound secret, which reports on this report's standard and gates nothing.
    */
   auditSinks: AuditSinksCheck | null;
+  /**
+   * How long each Worker keeps what it keeps, as its `retention` block resolves over what it composes, and every
+   * legal hold standing in each deployed environment. `null` outside a project, `not-applicable` when no Worker
+   * declares a block or composes the control plane. **It reports and never fails the exit**: a refused block is
+   * also the deploy's refusal, and a hold is a decision, not a fault.
+   */
+  retention: RetentionCheck | null;
   /**
    * Whether every declared environment's `pithy.config.ts` **loads** (#548) — the question the block above
    * does not ask, because comparing a stanza to a declaration never evaluates either config. `null`
@@ -899,6 +907,11 @@ export interface DoctorReportOptions {
    * per distinct sink token, and none at all for a project that ships nothing.
    */
   checkAuditSinks?: (options: AuditSinksOptions) => Promise<AuditSinksCheck>;
+  /**
+   * Retention seam; defaults to {@link checkRetention}. One count per deployed environment per Worker composing the
+   * control plane, and none at all for a project that composes neither a block nor the control plane.
+   */
+  checkRetention?: (options: RetentionOptions) => Promise<RetentionCheck>;
   /** Origin-declaration seam; defaults to {@link checkOrigins}. Reads files only — no account call. */
   checkOrigins?: (projectDir: string) => Promise<OriginsCheck>;
   /** App-Workflow binding seam; defaults to {@link checkWorkflows}. Reads files only — no account call. */
@@ -1079,6 +1092,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeSecretRotations = options.checkSecretRotations ?? checkSecretRotations;
   const probePaymentsAllowances = options.checkPaymentsAllowances ?? checkPaymentsAllowances;
   const probeAuditSinks = options.checkAuditSinks ?? checkAuditSinks;
+  const probeRetention = options.checkRetention ?? checkRetention;
   const probeOrigins = options.checkOrigins ?? checkOrigins;
   const probeWorkflows = options.checkWorkflows ?? checkWorkflows;
   const probeDevPreferences =
@@ -1213,6 +1227,10 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // the health block (#595): the Turnstile check reads each environment's widget from it rather than composing
   // again, or composing for none. Unset when the project would not resolve; that probe then composes its own.
   let composeWorkerFor: ComposeWorkerFor | undefined;
+  // The same compositions, with the Worker's own config beside them, for the one check that reads a config key.
+  let composeResolvedFor:
+    | ((worker: { name: string; dir: string }, environment: string) => Promise<ResolvedWorker>)
+    | undefined;
   // The deployed environments this project declares, kept for the probes that run after the project block.
   // Empty is a declaration that would not parse, and an empty sweep is the honest answer to it: `Environments:`
   // reports the declaration, and no probe below may invent a name the project did not write (#586).
@@ -1311,6 +1329,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
       return composition;
     };
     composeWorkerFor = composedFor;
+    composeResolvedFor = composedFor;
     // Every composition, in environment order, each Worker once per environment it composed for. Taken
     // here, ahead of the health block that reads the same ones, so the probes below have them however
     // that block ends. An environment a Worker did not compose for contributes nothing: `Environment configs:`
@@ -1589,6 +1608,31 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
           { state: "could-not-check", sinks: [], secrets: [] },
         )
       : null;
+  // How long each Worker keeps what it keeps, and every legal hold standing, on the same `remoteSkip`.
+  const retention =
+    inProject && workersResolved
+      ? await probed<RetentionCheck>(
+          () =>
+            probeRetention({
+              environments: declaredEnvironments,
+              workers: resolvedWorkers.map((worker) => ({ name: worker.name, dir: worker.dir })),
+              account,
+              remoteSkip,
+              composeWorker: async (worker, environment) => {
+                const match =
+                  composeResolvedFor !== undefined
+                    ? await composeResolvedFor(worker, environment)
+                    : (await resolve(environment, { projectDir: options.projectDir, worker: worker.name })).find(
+                        (candidate) => candidate.dir === worker.dir,
+                      );
+                if (match === undefined)
+                  throw new ValidationError({ message: `${worker.name} did not resolve for ${environment}.` });
+                return { capabilities: match.capabilities, retention: match.config.retention };
+              },
+            }),
+          { state: "could-not-check", workers: [], holds: [] },
+        )
+      : null;
   // The same declaration, asked the question the block above cannot: comparing a stanza to a declaration
   // never evaluates a config, and a `pithy.config.ts` is code that may load under one environment and
   // throw under another (#548). Files only once more — the composition is taken in this process, and
@@ -1712,6 +1756,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     secretRotations,
     paymentsAllowances,
     auditSinks,
+    retention,
     environmentConfigs,
     origins,
     workflows,
@@ -2821,6 +2866,11 @@ function auditSinksBlock(check: AuditSinksCheck): string {
   return ["Audit sinks:", ...describeAuditSinks(check).map((line) => `  ${line}`)].join("\n");
 }
 
+/** The `Retention:` block — each Worker's effective retention, then each deployed environment's standing holds. */
+function retentionBlock(check: RetentionCheck): string {
+  return ["Retention:", ...describeRetention(check).map((line) => `  ${line}`)].join("\n");
+}
+
 /**
  * The `Payments allowances:` lines — each meter, then each environment's unrestricted subjects (#561).
  *
@@ -3201,6 +3251,10 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // Quiet when nothing ships or every token is set — never a failing exit (#824).
   const auditSinksQuiet =
     report.auditSinks === null || report.auditSinks.state === "not-applicable" || report.auditSinks.state === "ok";
+  // Quiet when nothing is declared, or every block resolves, every count was read and no hold stands. Never a
+  // failing exit.
+  const retentionQuiet =
+    report.retention === null || report.retention.state === "not-applicable" || report.retention.state === "ok";
   // Its own answer, because it is its own question — see {@link DoctorReport.environmentConfigs}. A config
   // that does not load for a declared environment is never terse: it is the loudest finding this report has
   // about a file the adopter owns.
@@ -3265,6 +3319,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     secretRotationsQuiet &&
     paymentsAllowancesQuiet &&
     auditSinksQuiet &&
+    retentionQuiet &&
     environmentConfigsOk &&
     originsOk &&
     workflowsOk &&
@@ -3506,6 +3561,11 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // Every sink, whenever one is declared and the report is verbose, and whenever a token is missing (#824).
   if (report.auditSinks && report.auditSinks.state !== "not-applicable") {
     blocks.push(auditSinksBlock(report.auditSinks));
+  }
+
+  // Every Worker's retention, whenever one declares a block or composes the control plane, and every standing hold.
+  if (report.retention && report.retention.state !== "not-applicable") {
+    blocks.push(retentionBlock(report.retention));
   }
 
   // Straight after it, because it is the same declaration asked whether it *works*: one of these

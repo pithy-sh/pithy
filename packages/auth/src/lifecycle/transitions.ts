@@ -8,6 +8,8 @@ import { SQLiteBoolean, SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { ConflictError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { formattingLocaleOf } from "@pithy-sh/core/src/i18n/locale";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
+import { composedRetention } from "@pithy-sh/core/src/retention/composed";
+import { purgeWindowDays } from "@pithy-sh/core/src/retention/policy";
 import type { EnqueueInput } from "@pithy-sh/email/src/send/enqueue";
 import { type CompiledQuery, sql } from "kysely";
 import { type AuthAuditAction, AuthAuditActions } from "../audit/actions";
@@ -527,6 +529,15 @@ export async function reinstateUser(
 /** How a deletion runs: shut now and purged once the window closes, or purged now. */
 export type DeletionMode = "soft" | "hard";
 
+/**
+ * How many days a soft deletion stays restorable: the Worker's `retention.purgeWindows.user` when its block
+ * names one, else `retention.purgeAfterDays` from this capability's own config.
+ */
+export function userPurgeWindowDays(config: Pick<LifecycleDeps["config"], "retention">): number {
+  const retention = composedRetention();
+  return (retention && purgeWindowDays(retention, "user")) ?? config.retention.purgeAfterDays;
+}
+
 /** What a deletion did, and the deletion it left in force. */
 export interface DeleteTransition extends LifecycleTransition {
   /**
@@ -563,7 +574,7 @@ export async function deleteUser(
   const at = (deps.now ?? (() => new Date()))();
   const reason = reasonOf(input.reason);
   const hard = input.mode === "hard";
-  const purgeAfter = hard ? at : new Date(at.getTime() + deps.config.retention.purgeAfterDays * 86_400_000);
+  const purgeAfter = hard ? at : new Date(at.getTime() + userPurgeWindowDays(deps.config) * 86_400_000);
   const subject = await subjectOf(deps.db, input.userId);
   // A hard deletion's `notify` is the purge's to read, so it is written on the row: the purge that sends the last
   // mail may be one the daily pass started, with no request to carry it (#622).

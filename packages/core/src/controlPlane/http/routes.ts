@@ -16,6 +16,8 @@ import {
   MANIFEST_READ_SCOPE,
   MIGRATIONS_READ_SCOPE,
   PRIVACY_READ_SCOPE,
+  RETENTION_HOLD_SCOPE,
+  RETENTION_READ_SCOPE,
 } from "../scope/scope";
 import { requireControlPlane } from "./guard";
 import {
@@ -31,11 +33,14 @@ import {
   privacyHandler,
   registerKeyHandler,
 } from "./handlers";
+import { listHoldsHandler, placeHoldHandler, releaseHoldHandler } from "./holds";
 import { presenceTicketGate, presenceTicketHandler } from "./presence";
 import {
   ControlPlaneErasurePeriodResponse,
   ControlPlaneErasureSubjectResponse,
   ControlPlaneEvidenceResponse,
+  ControlPlaneHoldResponse,
+  ControlPlaneHoldsResponse,
   ControlPlaneKeysResponse,
   ControlPlaneMigrationsResponse,
   ControlPlanePingResponse,
@@ -48,7 +53,11 @@ import {
   ErasureSubjectParams,
   ExpireKeyParams,
   ExpireKeyRequest,
+  HoldListQuery,
+  HoldParams,
+  PlaceHoldRequest,
   RegisterKeyRequest,
+  ReleaseHoldRequest,
 } from "./schemas";
 
 /**
@@ -64,6 +73,9 @@ import {
  *   GET  /control-plane/evidence              → SOC 2 and ISO 27001 evidence  (evidence:read)
  *   GET  /control-plane/erasure               → every purge in a period       (erasure:read)
  *   GET  /control-plane/erasure/:type/:id     → one subject's purge, attested (erasure:read)
+ *   GET  /control-plane/holds                 → every legal hold              (retention:read)
+ *   POST /control-plane/holds                 → place a legal hold            (retention:hold)
+ *   POST /control-plane/holds/:id/release     → release one, with a reason    (retention:hold)
  *   POST /control-plane/presence/tickets      → a ticket into a presence room (the room kind's scope)
  *
  * Every one is `control-plane` and default-denied — with no connection registered they all answer 403,
@@ -167,6 +179,29 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
       scope: ERASURE_READ_SCOPE,
       summary:
         "One user's or organization's erasure: the deletion, every step erased or kept with its reason, the state, and the audit events that record each.",
+    },
+    {
+      method: "GET",
+      operation: "holds.list",
+      path: `${basePath}/holds`,
+      scope: RETENTION_READ_SCOPE,
+      summary:
+        "Every legal hold, standing first: its subject, who placed it and why, and when and why it was released.",
+    },
+    {
+      method: "POST",
+      operation: "holds.place",
+      path: `${basePath}/holds`,
+      scope: RETENTION_HOLD_SCOPE,
+      summary:
+        "Place a legal hold on a user, an organization or a tenant's audit trail, with a reason. Every purge, prune and inactivity deletion touching it stops until it is released.",
+    },
+    {
+      method: "POST",
+      operation: "holds.release",
+      path: `${basePath}/holds/:holdId/release`,
+      scope: RETENTION_HOLD_SCOPE,
+      summary: "Release a legal hold, with a reason. The subject returns to the retention the Worker deploys with.",
     },
     {
       method: "POST",
@@ -319,6 +354,52 @@ export function registerControlPlaneRoutes(
     requireControlPlane(ERASURE_READ_SCOPE),
     validate("param", ErasureSubjectParams),
     (c) => erasureSubjectHandler(deps)(c, c.req.valid("param")),
+  );
+
+  app.get(
+    `${basePath}/holds`,
+    describeRoute({
+      summary: "List the legal holds.",
+      description:
+        "Every hold, standing first and newest first within each: the subject, who placed it and why, and when, by whom and why it was released. `active` counts the holds standing. Read-only.",
+      verification: "control-plane",
+      scopes: [RETENTION_READ_SCOPE],
+      responses: { 200: ControlPlaneHoldsResponse },
+    }),
+    requireControlPlane(RETENTION_READ_SCOPE),
+    validate("query", HoldListQuery),
+    (c) => listHoldsHandler(deps)(c, c.req.valid("query")),
+  );
+
+  app.post(
+    `${basePath}/holds`,
+    describeRoute({
+      summary: "Place a legal hold.",
+      description:
+        "Holds one user, one organization, or one tenant's audit trail, with a reason. While it stands no purge, prune or inactivity deletion touches the subject, and a purge already running stops at its next step. Audited. A hold can only preserve: nothing here shortens a retention.",
+      verification: "control-plane",
+      scopes: [RETENTION_HOLD_SCOPE],
+      responses: { 201: ControlPlaneHoldResponse },
+    }),
+    requireControlPlane(RETENTION_HOLD_SCOPE),
+    validate("json", PlaceHoldRequest),
+    (c) => placeHoldHandler(deps)(c, c.req.valid("json")),
+  );
+
+  app.post(
+    `${basePath}/holds/:holdId/release`,
+    describeRoute({
+      summary: "Release a legal hold.",
+      description:
+        "Ends one standing hold, with a reason, and keeps it as a record. The subject returns to the Worker's retention; a purge it stopped resumes on the next daily pass. Audited.",
+      verification: "control-plane",
+      scopes: [RETENTION_HOLD_SCOPE],
+      responses: { 200: ControlPlaneHoldResponse },
+    }),
+    requireControlPlane(RETENTION_HOLD_SCOPE),
+    validate("param", HoldParams),
+    validate("json", ReleaseHoldRequest),
+    (c) => releaseHoldHandler(deps)(c, c.req.valid("param"), c.req.valid("json")),
   );
 
   app.post(

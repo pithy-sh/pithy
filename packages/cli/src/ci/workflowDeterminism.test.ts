@@ -89,10 +89,16 @@ const SHIPPED_WORKFLOWS = [
  * re-executes from the top on every resume.
  */
 const SHIPPED_DELEGATES = [
+  // The retention prune's body, hosted by the adopter's Worker. The policy is read inside its first step, and the
+  // clock inside each page's.
+  "packages/audit/src/workflows/prune.ts#pruneAuditTrail",
+  "packages/audit/src/workflows/prune.ts#runAuditPrune",
   // #622. The purge's two bodies — one account's purge, one step per composed contribution, and the daily pass that
   // starts every due one — and the step each contribution runs in. Their classes are the adopter's, five lines in
   // their own entry, so the walk meets the kit's half here. The clock is read inside the transitions each step
   // calls, never in a body.
+  // The inactivity pass: the class age is read inside its own step, the clock inside the listing's.
+  "packages/auth/src/purge/run.ts#deleteInactiveAccounts",
   "packages/auth/src/purge/run.ts#eraseStep",
   "packages/auth/src/purge/run.ts#purgeUser",
   // #823. A purge that gives up records where, in its own step.

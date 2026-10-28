@@ -33,8 +33,8 @@ export const authExampleSeed: SeedSet = defineSeed({
       User,
       EXAMPLE_IDENTITIES.map((identity) => ({
         id: identity.id,
-        name: identity.name,
-        email: identity.email,
+        name: identity.name as User["name"],
+        email: identity.email as User["email"],
         emailVerified: true,
         image: null,
         // The example cast has never picked a language, which is the state most real users are in:

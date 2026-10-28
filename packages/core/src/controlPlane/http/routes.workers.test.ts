@@ -558,11 +558,14 @@ describe("GET /control-plane/manifest", () => {
       "GET /control-plane/erasure",
       "GET /control-plane/erasure/:subjectType/:subjectId",
       "GET /control-plane/evidence",
+      "GET /control-plane/holds",
       "GET /control-plane/keys",
       "GET /control-plane/manifest",
       "GET /control-plane/migrations",
       "GET /control-plane/ping",
       "GET /control-plane/privacy",
+      "POST /control-plane/holds",
+      "POST /control-plane/holds/:holdId/release",
       "POST /control-plane/keys",
       "POST /control-plane/keys/:keyId/expire",
       "POST /control-plane/presence/tickets",
@@ -1243,6 +1246,7 @@ describe("GET /control-plane/migrations", () => {
   const SEAM_2 = "1100_controlplane_0002_management_origin";
   const SEAM_3 = "1100_controlplane_0003_connection_principal";
   const SEAM_4 = "1100_controlplane_0004_connection_trusts";
+  const SEAM_5 = "1100_controlplane_0005_holds";
 
   /** A second database on `ANALYTICS`, so one can be unreadable while the other answers. */
   const reporting = defineCapability({
@@ -1332,6 +1336,7 @@ describe("GET /control-plane/migrations", () => {
             { name: SEAM_2, namespace: "controlplane" },
             { name: SEAM_3, namespace: "controlplane" },
             { name: SEAM_4, namespace: "controlplane" },
+            { name: SEAM_5, namespace: "controlplane" },
           ],
           undeclared: [{ name: "0400_vault_0001_init", namespace: "vault" }],
           lastGroup: {
@@ -1395,8 +1400,9 @@ describe("GET /control-plane/migrations", () => {
     expect(seam?.healthKeys.map((key) => [key.key, key.nominal])).toEqual([
       ["pendingMigrations", { atMost: 0 }],
       ["undeclaredMigrations", null],
+      ["activeHolds", null],
     ]);
-    expect(seam?.health).toEqual({ state: "reported", values: { pendingMigrations: 3, undeclaredMigrations: 1 } });
+    expect(seam?.health).toEqual({ state: "reported", values: { pendingMigrations: 4, undeclaredMigrations: 1 } });
   });
 
   test("a connection without migrations:read gets no value for either key, rather than a zero", async () => {

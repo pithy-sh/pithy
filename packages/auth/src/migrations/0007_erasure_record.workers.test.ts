@@ -80,6 +80,7 @@ describe("auth_0007_erasure_record", () => {
       "insert into pithy_auth_user_lifecycle (user_id, action, actor_type, created_at) values ('u1', 'deleted', 'system', 1)",
     ).run();
     await rollbackMigration(env.DB, provider());
+    await rollbackMigration(env.DB, provider());
     expect(await lifecycleColumns()).not.toContain("mode");
     expect(await lifecycleColumns()).not.toContain("purge_after");
     expect(await indexNames()).not.toContain("pithy_auth_user_lifecycle_created_at_idx");

@@ -12,6 +12,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { EmailCapability } from "@pithy-sh/email/src/capability";
 import type { Migration } from "kysely/migration";
 import { actingOrganizationMiddleware } from "./acting/seam";
+import { OrganizationAuditActions } from "./audit/actions";
 import { OrganizationConfig, type OrganizationConfigInput } from "./config/config";
 import { organizationTables } from "./data/tables";
 import { registerOrganizationRoutes } from "./http/routes";
@@ -362,6 +363,14 @@ export function organization<const Power extends string = never, const Role exte
     purge: [organizationPurgeContribution("DB", onDelete), organizationUserPurge("DB")],
     // How an organization purge's record is read back for the control plane's erasure attestation (#823).
     erasureRecords: organizationErasureRecords,
+    // The soft-delete window this config declares. A Worker's `retention` block may replace it.
+    purgeWindow: { subject: "organization", days: resolved.retention.purgeAfterDays },
+    // The lifecycle transitions the erasure record does not name, so the retention floor keeps them too.
+    lifecycleAuditActions: [
+      OrganizationAuditActions.adminOrganizationSuspended,
+      OrganizationAuditActions.adminOrganizationReinstated,
+      OrganizationAuditActions.adminOrganizationRestored,
+    ],
     // The purge of one organization, and the daily pass that starts every due one. Both hosted by the adopter's
     // own Worker, because a purge runs every composed capability's contribution — see `purge/specs.ts`.
     workflows: organizationWorkflows,

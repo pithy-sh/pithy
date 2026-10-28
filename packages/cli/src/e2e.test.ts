@@ -224,6 +224,7 @@ test("pithy add auth --with-prerequisites composes secrets, email and auth, and 
     "0300_auth_0005_purge_once",
     "0300_auth_0006_verification_outcomes",
     "0300_auth_0007_erasure_record",
+    "0300_auth_0008_last_active",
   ]);
   expect(result.databases.every((database) => database.results.every((entry) => entry.status === "Success"))).toBe(
     true,
