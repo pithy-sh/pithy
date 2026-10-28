@@ -7,7 +7,7 @@ import { MAX_SUBMISSION_ATTACHMENTS, MAX_SUBMISSION_BODY_CHARS, MAX_SUBMISSION_S
 import { UNASSIGNED } from "../data/assignment";
 import { SupportChannel, SupportPriority, SupportSentiment } from "../data/enums";
 import { SupportSubmissionContext } from "../data/message";
-import { MAX_PAGE_SIZE } from "../store/paging";
+import { DEFAULT_SEARCH_LIMIT, MAX_PAGE_SIZE, MAX_SEARCH_LIMIT, MAX_SEARCH_TERM } from "../store/paging";
 
 /** An assignee reference, as the listing filters on it and an assignment names it. */
 const AssigneeRef = PresenceParticipantRef.refine((ref) => ref !== UNASSIGNED, {
@@ -50,40 +50,45 @@ const CategoryFilter = z
     "One category key from this project's effective taxonomy. A key an adopter removed simply matches nothing.",
   );
 
-/** The inbox listing query. */
+/** The filters the inbox listing and the search route share, applied in D1 either way. */
+const threadFilterFields = {
+  archived: z
+    .enum(["true", "false"])
+    .optional()
+    .describe("`true` for the done pile, `false` or absent for the open inbox — which is the default on purpose."),
+  category: CategoryFilter.optional().describe("Filter to one category — what the classifier made of it."),
+  declaredCategory: CategoryFilter.optional().describe(
+    "Filter to one category **the submitter chose**, which is a different question from `category` and answers it about different threads. Combining the two is how an operator finds the disagreements; asking for this one alone is how they triage a project with `ai.enabled: false`, where nothing ever writes the other.",
+  ),
+  priority: SupportPriority.optional().describe("Filter to one priority."),
+  sentiment: SupportSentiment.optional().describe("Filter to one sentiment."),
+  channel: SupportChannel.optional().describe(
+    "Filter to one channel — `email` for mail, `app` for what signed-in users filed from inside the app. Absent shows both, which is the right default for an inbox that is one queue however things arrived.",
+  ),
+  inbox: z
+    .string()
+    .min(3)
+    .max(256)
+    .optional()
+    .describe("Filter to one configured inbox address, for a Worker serving several."),
+  assignee: z
+    .union([z.literal(UNASSIGNED), AssigneeRef])
+    .optional()
+    .describe(
+      "Filter to the threads one assignee has, by their `assigneeRef`, or `none` for the threads nobody has. Absent shows every thread, assigned or not.",
+    ),
+};
+
+/**
+ * The inbox listing query.
+ *
+ * **Strict, and there is no `q`.** Listing lists; `GET {basePath}/threads/search` searches. An unknown
+ * key is refused as `validation/invalid_input` rather than ignored, so a client still sending `q` hears that
+ * it moved instead of getting the unfiltered inbox back as though it were the answer.
+ */
 export const ListThreadsQuery = z
   .object({
-    archived: z
-      .enum(["true", "false"])
-      .optional()
-      .describe("`true` for the done pile, `false` or absent for the open inbox — which is the default on purpose."),
-    category: CategoryFilter.optional().describe("Filter to one category — what the classifier made of it."),
-    declaredCategory: CategoryFilter.optional().describe(
-      "Filter to one category **the submitter chose**, which is a different question from `category` and answers it about different threads. Combining the two is how an operator finds the disagreements; asking for this one alone is how they triage a project with `ai.enabled: false`, where nothing ever writes the other.",
-    ),
-    priority: SupportPriority.optional().describe("Filter to one priority."),
-    sentiment: SupportSentiment.optional().describe("Filter to one sentiment."),
-    channel: SupportChannel.optional().describe(
-      "Filter to one channel — `email` for mail, `app` for what signed-in users filed from inside the app. Absent shows both, which is the right default for an inbox that is one queue however things arrived.",
-    ),
-    inbox: z
-      .string()
-      .min(3)
-      .max(256)
-      .optional()
-      .describe("Filter to one configured inbox address, for a Worker serving several."),
-    assignee: z
-      .union([z.literal(UNASSIGNED), AssigneeRef])
-      .optional()
-      .describe(
-        "Filter to the threads one assignee has, by their `assigneeRef`, or `none` for the threads nobody has. Absent shows every thread, assigned or not.",
-      ),
-    q: z
-      .string()
-      .min(1)
-      .max(200)
-      .optional()
-      .describe("Free text over subjects and bodies. Keyword search — the words people actually remember."),
+    ...threadFilterFields,
     cursor: z
       .string()
       .max(512)
@@ -97,8 +102,44 @@ export const ListThreadsQuery = z
       .optional()
       .describe("How many threads to return. Bounded, because a verified client can still have a bug."),
   })
-  .describe("The inbox query: what to filter by, what to search for, and where to resume.");
+  .strict()
+  .describe("The inbox query: what to filter by, and where to resume. Search is its own route.");
 export type ListThreadsQuery = z.infer<typeof ListThreadsQuery>;
+
+/** How a search runs. */
+export const SupportSearchMode = z
+  .enum(["keyword", "semantic", "hybrid"])
+  .describe(
+    "`keyword` finds the exact words — FTS5 when `search.fts` is on, the `LIKE` scan otherwise. `semantic` finds the meaning, through the message index. `hybrid` runs both and ranks them as one.",
+  );
+export type SupportSearchMode = z.infer<typeof SupportSearchMode>;
+
+/** The search query. */
+export const SearchThreadsQuery = z
+  .object({
+    q: z
+      .string()
+      .trim()
+      .min(1)
+      .max(MAX_SEARCH_TERM)
+      .describe("What to search for, in the customer's words or yours. An order number, an error, or a description."),
+    mode: SupportSearchMode.optional().describe(
+      "Which backends to run. Absent runs every one that is on, as `hybrid`. `semantic` or `hybrid` while `search.semantic` is off is refused, naming the flag.",
+    ),
+    limit: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_SEARCH_LIMIT)
+      .optional()
+      .describe(
+        `How many threads to return, best first. Default ${DEFAULT_SEARCH_LIMIT}, at most ${MAX_SEARCH_LIMIT}. No cursor: a ranked list has a top, not pages.`,
+      ),
+    ...threadFilterFields,
+  })
+  .strict()
+  .describe("A search over the inbox: the words, the mode, how many, and the same filters the inbox listing takes.");
+export type SearchThreadsQuery = z.infer<typeof SearchThreadsQuery>;
 
 /** The archive/unarchive body. */
 export const ArchiveThreadInput = z

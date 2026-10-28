@@ -139,6 +139,7 @@ const PUBLISHED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   },
   support: {
     "threads.list": "GET /support/threads",
+    "threads.search": "GET /support/threads/search",
     "threads.read": "GET /support/threads/:id",
     "threads.archive": "POST /support/threads/:id/archive",
     "threads.assign": "POST /support/threads/:id/assign",

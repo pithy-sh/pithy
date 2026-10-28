@@ -32,6 +32,12 @@ import { supportUserPurge } from "./purge/contribution";
 import { resolveReplies, type SupportReplySnippets } from "./reply/snippets";
 import { inapplicableAttachmentSecrets, SUPPORT_BUCKET_BINDING, supportSecretsRegistry } from "./secret/registry";
 import { supportExampleSeed } from "./seeds/example";
+import {
+  SUPPORT_AI_BINDING,
+  SUPPORT_MESSAGES_INDEX,
+  SUPPORT_VECTORIZE_BINDING,
+  supportMessageIndex,
+} from "./semantic/messageIndex";
 import { assertStaffComposition } from "./staff/staff";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 import { supportWorkflows } from "./workflows/specs";
@@ -185,7 +191,8 @@ export interface SupportCapability
  * The support capability — an inbound support inbox in the adopter's own D1, classified on their own
  * Workers AI binding.
  *
- * It contributes five tables (and optionally a full-text index) to the app `DB`, an `email()` handler
+ * It contributes its tables (and optionally a full-text index, and a semantic message index in Vectorize) to the
+ * app `DB`, an `email()` handler
  * that claims the configured addresses out of the Worker's single inbound entry, the classification
  * Workflow that handler dispatches to, and a control-plane admin surface for a dashboard to read and
  * act on.
@@ -242,6 +249,17 @@ export function support(options: SupportOptions = {}): SupportCapability {
     // The classification Workflow the inbound handler dispatches to, derived from the spec rather
     // than listed again — one declaration, so a binding rename cannot leave the two disagreeing.
     ...workflowBindings(supportWorkflows),
+    // The semantic message index and the model that embeds a query, **only when `search.semantic` is
+    // on**. The index's `index_name` is a provisioning output, so `pithy support provision` writes the entry
+    // once the index exists; until then it is absent and the search route skips the semantic backend, naming
+    // it, which is why the binding is optional. Neither has a local emulation, so both reach the real resource
+    // under `wrangler dev`.
+    ...(supportMessageIndex(resolved.search)
+      ? [
+          { type: "vectorize" as const, name: SUPPORT_VECTORIZE_BINDING, optional: true, remote: true },
+          { type: "ai" as const, name: SUPPORT_AI_BINDING, remote: true },
+        ]
+      : []),
   ];
 
   const capability = defineCapability({
@@ -296,6 +314,11 @@ export function support(options: SupportOptions = {}): SupportCapability {
     // for why the list is as short as it is.
     client: (): SupportClientProjection => clientProjection(resolved, mountPath),
     adminRoutes: supportAdminRoutes(mountPath),
+    // The semantic message index, so `pithy vector reprocess` re-embeds it beside every `vector()` index.
+    // Declared only when it exists to re-embed.
+    ...(supportMessageIndex(resolved.search)
+      ? { vectorIndexes: [{ name: SUPPORT_MESSAGES_INDEX, reprocessJob: "reprocess" }] }
+      : {}),
     // Who else has a thread open (#816): one `support.thread` room per thread, on core's presence seam.
     // Declaring it is the whole of the wiring — core adds the room's binding, socket and ticket routes.
     presence: supportPresence(mountPath, wiring),
@@ -310,7 +333,7 @@ export function support(options: SupportOptions = {}): SupportCapability {
     // A person's threads — linked to their account, or sent from their address and linked to no other — with every
     // message, attachment and raw mail in them: exported on an access request and erased by their purge, as its own
     // step (#814).
-    purge: [supportUserPurge()],
+    purge: [supportUserPurge("DB", { semantic: supportMessageIndex(resolved.search) !== undefined })],
   });
 
   return Object.assign(capability, {

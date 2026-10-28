@@ -4,11 +4,13 @@
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { statusOf } from "@pithy-sh/cloudflare/src/client/errors";
 import type { R2Credentials } from "@pithy-sh/cloudflare/src/r2/r2Credentials";
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { GLOBAL_SCOPE } from "@pithy-sh/core/src/naming/environment";
 import { bindingResourceName, type ProjectGlobalNaming } from "@pithy-sh/core/src/naming/provisionScope";
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
@@ -109,6 +111,29 @@ export async function loadSupportSearch(
     throw await capabilityLoadError("support", "@pithy-sh/support", error, projectDir);
   }
 }
+
+/**
+ * The semantic message index's naming and shape, from the optional package. Its own guarded import, used
+ * only by the two index steps — the orchestrator that calls them ships in the same release as this module.
+ */
+async function loadSupportSemantic(
+  projectDir: string,
+): Promise<typeof import("@pithy-sh/support/src/semantic/messageIndex")> {
+  try {
+    return await kitImport<typeof import("@pithy-sh/support/src/semantic/messageIndex")>(
+      projectDir,
+      "@pithy-sh/support/src/semantic/messageIndex",
+    );
+  } catch (error) {
+    throw await capabilityLoadError("support", "@pithy-sh/support", error, projectDir);
+  }
+}
+
+/**
+ * The binding the semantic message index arrives on — restated from `@pithy-sh/support/src/semantic/messageIndex`
+ * because the app Worker's entry is written here, and **pinned to it by `supportProvisioner.test.ts`**.
+ */
+export const SUPPORT_VECTORIZE_BINDING = "SUPPORT_VECTORIZE";
 
 /** The R2 binding the bucket is bound to, in every Worker and every environment. */
 const SUPPORT_BUCKET_BINDING = "SUPPORT_BUCKET";
@@ -214,6 +239,34 @@ export interface CloudflareSupportProvisionerOptions {
   routing?: SupportRouting;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
+  /**
+   * The account's Workflows client — how a freshly created message index is backfilled, by starting the
+   * reprocess Workflow the worker just deployed. Absent, a created index is left for
+   * `pithy vector reprocess --index support-messages --all` and the result says it was not backfilled.
+   */
+  workflows?: Pick<CloudflareWorkflowsClient, "createInstance">;
+}
+
+/**
+ * Look for the index `search.semantic` no longer asks for, on a token that may not reach Vectorize at all.
+ *
+ * With semantic search off, nothing else in support needs Vectorize: the token's grants come from the
+ * composed capabilities, and Vectorize also needs a paid Workers plan. So a 401 or 403 here means this
+ * credential cannot hold or see an index, and the answer is "nothing to drop" rather than a failed run.
+ * Every other failure still throws. A stamp left behind by an index this skips keeps the purge refusing
+ * while the index is unbound, so nothing is erased on a guess.
+ */
+async function findIndexToDrop(
+  vectorize: ReturnType<CloudflareClients["vectorizeProvisioner"]>,
+  indexName: string,
+): Promise<boolean> {
+  try {
+    return (await vectorize.findIndexByName(indexName)) !== null;
+  } catch (error) {
+    const status = statusOf(error instanceof Error ? error.cause : undefined);
+    if (status === 401 || status === 403) return false;
+    throw error;
+  }
 }
 
 /** The live {@link SupportProvisioner}. Every step is idempotent, so provisioning is safe to re-run. */
@@ -227,6 +280,7 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
   readonly #resolveEnv: ResolveSupportEnv;
   readonly #routing: SupportRouting | undefined;
   readonly #audit: CliAuditEmit;
+  readonly #workflows: Pick<CloudflareWorkflowsClient, "createInstance"> | undefined;
 
   constructor(options: CloudflareSupportProvisionerOptions) {
     this.#projectDir = options.projectDir;
@@ -238,6 +292,109 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
     this.#resolveEnv = options.resolveEnv;
     this.#routing = options.routing;
     this.#audit = options.audit ?? (async () => {});
+    this.#workflows = options.workflows;
+  }
+
+  /**
+   * Create the semantic message index when `search.semantic` is on and it does not exist. Find-then-create,
+   * so a re-run reuses it. An index that exists with another shape — a model of another width — is refused,
+   * because querying it would compare vectors from two spaces and return plausible, wrong neighbors.
+   */
+  async ensureSemanticIndex(env: ManagedEnvironment): Promise<{ indexName: string; created: boolean }> {
+    const { supportMessageIndexName, supportMessageIndexShape } = await loadSupportSemantic(this.#projectDir);
+    const indexName = supportMessageIndexName(this.#project, env);
+    const shape = supportMessageIndexShape(this.#supportConfig.search);
+    if (!shape) return { indexName, created: false };
+    const vectorize = this.#cf.vectorizeProvisioner();
+    const existing = await vectorize.findIndexByName(indexName);
+    if (existing) {
+      if (existing.config.dimensions !== shape.dimensions || existing.config.metric !== shape.metric) {
+        throw new ValidationError({
+          message: `The \`${indexName}\` index already exists with a different shape.`,
+          action:
+            "Dimensions and metric are fixed when an index is created. Change `search.semantic` back, or turn it off and provision to drop the index, then on again to rebuild it.",
+          detail: `live ${existing.config.dimensions}/${existing.config.metric}, config ${shape.dimensions}/${shape.metric}`,
+        });
+      }
+      return { indexName, created: false };
+    }
+    await vectorize.createIndex(indexName, shape);
+    await this.#audit({
+      environment: env,
+      action: "support/semantic_index_created",
+      outcome: "success",
+      severity: "info",
+      resourceType: "cf_vectorize_index",
+      resourceId: indexName,
+    });
+    return { indexName, created: true };
+  }
+
+  /** Whether the environment holds inbound mail and no model stamp at all — an index never backfilled. */
+  async #unstamped(env: ManagedEnvironment): Promise<boolean> {
+    const { appDatabaseId } = await this.#resolveEnv(env);
+    try {
+      const row = await this.#cf
+        .d1(appDatabaseId)
+        .prepare(
+          "SELECT (SELECT COUNT(*) FROM (SELECT 1 FROM pithy_support_messages WHERE direction = 'inbound' LIMIT 1)) AS messages, (SELECT COUNT(*) FROM (SELECT 1 FROM pithy_support_embeddings LIMIT 1)) AS stamps",
+        )
+        .first<{ messages: number; stamps: number }>();
+      return Number(row?.messages ?? 0) > 0 && Number(row?.stamps ?? 0) === 0;
+    } catch (error) {
+      // A database that never ran the migration holds no mail to backfill.
+      if (String(error instanceof Error ? error.message : error).includes("no such table")) return false;
+      throw error;
+    }
+  }
+
+  /**
+   * After the worker is deployed: backfill an index that holds nothing yet, once, or drop one `search.semantic`
+   * no longer asks for — with the model stamps, which would otherwise name vectors that are gone.
+   *
+   * **Nothing yet** is decided from what is stored, not from this run: an index this run created, or one that
+   * exists while inbound mail does and no message carries a stamp. A run that created the index and then failed
+   * leaves exactly that, so the next run backfills it. An index that holds any stamp is never re-embedded here.
+   *
+   * The backfill is started, not awaited: re-embedding an inbox is a Workflow's job, and a provisioning command
+   * that blocked on it would block for as long as the inbox is large.
+   */
+  async settleSemanticIndex(
+    env: ManagedEnvironment,
+    created: boolean,
+  ): Promise<{ dropped: boolean; backfilled: boolean }> {
+    const { supportMessageIndexName, supportMessageIndex, SUPPORT_MESSAGES_INDEX } = await loadSupportSemantic(
+      this.#projectDir,
+    );
+    const indexName = supportMessageIndexName(this.#project, env);
+    if (supportMessageIndex(this.#supportConfig.search)) {
+      if (!this.#workflows) return { dropped: false, backfilled: false };
+      if (!created && !(await this.#unstamped(env))) return { dropped: false, backfilled: false };
+      await this.#workflows.createInstance(resourceNames(this.#project).env(env).workflow("support", "reprocess"), {
+        index: SUPPORT_MESSAGES_INDEX,
+        all: true,
+      });
+      return { dropped: false, backfilled: true };
+    }
+    const vectorize = this.#cf.vectorizeProvisioner();
+    if (!(await findIndexToDrop(vectorize, indexName))) return { dropped: false, backfilled: false };
+    await vectorize.deleteIndex(indexName);
+    const { appDatabaseId } = await this.#resolveEnv(env);
+    try {
+      await this.#cf.d1(appDatabaseId).prepare("DELETE FROM pithy_support_embeddings").run();
+    } catch (error) {
+      // A database that never ran the migration holds no stamps to clear.
+      if (!String(error instanceof Error ? error.message : error).includes("no such table")) throw error;
+    }
+    await this.#audit({
+      environment: env,
+      action: "support/semantic_index_dropped",
+      outcome: "success",
+      severity: "info",
+      resourceType: "cf_vectorize_index",
+      resourceId: indexName,
+    });
+    return { dropped: true, backfilled: false };
   }
 
   /** Require a registered `workers.dev` subdomain — Cloudflare needs one to deploy the Workflow-hosting worker. */

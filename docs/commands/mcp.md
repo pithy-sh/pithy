@@ -138,7 +138,7 @@ claude-code  added /home/you/.claude.json
 Done.
 ```
 
-The same agent's tools, as the client lists them: `controlplane_ping`, `controlplane_manifest_read`, `support_threads_list`, `support_threads_read`, `support_replies_list`.
+The same agent's tools, as the client lists them: `controlplane_ping`, `controlplane_manifest_read`, `support_threads_list`, `support_threads_search`, `support_threads_read`, `support_replies_list`.
 
 An agent in GitHub Actions, for staging, with no key anywhere.
 

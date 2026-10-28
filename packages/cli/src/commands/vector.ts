@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { defineCommand } from "citty";
 import { z } from "zod";
 import { createRemoteCliAudit } from "../audit/cliAudit";
@@ -15,7 +17,7 @@ import { resolveCapabilityWorker } from "../project/capabilityWorker";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { workerDirName } from "../project/workerIdentity";
-import { projectCapabilities, type ResolvedWorker, resolveWorkers } from "../project/workerScope";
+import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 import { stanzaFor } from "../project/wranglerInheritance";
 import { withProvisionFix } from "../provision/provisionFix";
@@ -448,7 +450,11 @@ const reset = withContract(
 
 const reprocess = withContract(
   defineCommand({
-    meta: { name: "reprocess", description: "Re-embed an index's documents through the reprocess Workflow" },
+    meta: {
+      name: "reprocess",
+      description:
+        "Re-embed an index through its reprocess Workflow — vector()'s indexes, and the ones other capabilities own",
+    },
     args: {
       env: ENV_ARG,
       worker: {
@@ -456,7 +462,11 @@ const reprocess = withContract(
         description:
           "The app worker whose wrangler.jsonc carries the per-environment DB binding (default: the project's only worker)",
       },
-      index: { type: "string", description: "The index to re-embed, as named in pithy.config.ts" },
+      index: {
+        type: "string",
+        description:
+          "The index to re-embed: a vector() index as named in pithy.config.ts, or one a capability owns, e.g. support-messages (default: every index)",
+      },
       all: {
         type: "boolean",
         default: false,
@@ -469,25 +479,66 @@ const reprocess = withContract(
       withErrorReporting(args.json, async () => {
         const env = requireEnvironment(args.env);
         const projectDir = process.cwd();
-        const { provisioner, config } = await buildProvisioner(projectDir, env, args.worker);
         const filter = parseFilter(args.filter);
+        // The name first: every Workflow these runs dispatch to leads with it, and a guess dispatches nowhere.
+        const project = requireProjectName(await loadProject(projectDir));
+        const appWorker = await resolveSingleWorker({
+          projectDir,
+          ...(args.worker !== undefined ? { worker: args.worker } : {}),
+        });
 
-        // No `--index` means every configured index, which is what "re-embed after a model change" usually is.
-        const indexes = args.index ? [args.index] : Object.keys(config.indexes);
+        // The indexes other capabilities own and re-embed themselves — support's message index — read
+        // off the Worker's own composition, so a project that never composes `vector()` reprocesses them too.
+        const contributed = contributedIndexes(appWorker.capabilities);
+        // `vector()`'s own, through its provisioner — and its refusal, unchanged, when there is nothing at all.
+        const composesVector = appWorker.capabilities.some((capability) => capability.name === "vector");
+        const owned =
+          composesVector || contributed.length === 0 ? await buildProvisioner(projectDir, env, args.worker) : undefined;
+        const ownedNames = owned ? Object.keys(owned.config.indexes) : [];
+
+        const clash = contributed.find((index) => ownedNames.includes(index.name));
+        if (clash) {
+          throw new ValidationError({
+            message: `Two indexes are named \`${clash.name}\`: one in vector()'s config and one the ${clash.capability} capability owns.`,
+            action: `Rename the \`${clash.name}\` index in vector()'s config. The name is the ${clash.capability} capability's.`,
+          });
+        }
+        const known = [...ownedNames, ...contributed.map((index) => index.name)];
+
+        // No `--index` means every index in the Worker — vector's and every capability's — which is what
+        // "re-embed after a model change" usually is.
+        const indexes = args.index ? [args.index] : known;
         for (const index of indexes) {
-          if (!config.indexes[index]) {
+          if (!known.includes(index)) {
             throw new ValidationError({
               message: `No index named \`${index}\` is configured.`,
-              action: `Pick one of: ${Object.keys(config.indexes).join(", ")}.`,
+              action: `Pick one of: ${known.join(", ")}.`,
+            });
+          }
+          if (filter && contributed.some((entry) => entry.name === index)) {
+            throw new ValidationError({
+              message: `The \`${index}\` index cannot be filtered: its vectors carry no metadata.`,
+              action: "Drop --filter, or name an index from vector()'s config with --index.",
             });
           }
         }
 
+        const workflows = contributed.length
+          ? await cloudflareWorkflows(commandCredentials(await projectCloudflareAccount(projectDir)))
+          : undefined;
         const runs: { index: string; report: unknown }[] = [];
         for (const index of indexes) {
+          const theirs = contributed.find((entry) => entry.name === index);
+          if (theirs && workflows) {
+            // The capability's own reprocess Workflow, under the name every Workflow is deployed by, with the
+            // parameters every reprocess takes.
+            const name = resourceNames(project).env(env).workflow(theirs.capability, theirs.reprocessJob);
+            runs.push({ index, report: await workflows.dispatchAndPoll(name, { index, all: args.all }) });
+            continue;
+          }
           runs.push({
             index,
-            report: await provisioner.reprocess(env, index, {
+            report: await (owned as NonNullable<typeof owned>).provisioner.reprocess(env, index, {
               all: args.all,
               ...(filter ? { filter } : {}),
             }),
@@ -516,6 +567,27 @@ const reprocess = withContract(
     needsNetwork: true,
   },
 );
+
+/** One index a capability other than `vector` owns, as `reprocess` dispatches it. */
+interface ContributedIndex {
+  /** The index's name, as `--index` takes it. */
+  name: string;
+  /** The capability that owns it — the second segment of its reprocess Workflow's name. */
+  capability: string;
+  /** The capability's job that re-embeds it. */
+  reprocessJob: string;
+}
+
+/** Every index a composed capability declares through `Capability.vectorIndexes`, in composition order. */
+export function contributedIndexes(capabilities: readonly Capability[]): ContributedIndex[] {
+  return capabilities.flatMap((capability) =>
+    (capability.vectorIndexes ?? []).map((index) => ({
+      name: index.name,
+      capability: capability.name,
+      reprocessJob: index.reprocessJob,
+    })),
+  );
+}
 
 /** The interactive reset prompt: an `@clack/prompts` text field asking for the exact, environment-named phrase. */
 export function resetPrompt(env: string): () => Promise<string> {

@@ -4,6 +4,7 @@
 import type { Migration } from "kysely/migration";
 import { support_0001_threads } from "./0001_threads";
 import { support_0002_assignment } from "./0002_assignment";
+import { support_0003_embeddings } from "./0003_embeddings";
 
 /**
  * Every support migration, in order — the set the capability contributes and the one every test that
@@ -16,4 +17,5 @@ import { support_0002_assignment } from "./0002_assignment";
 export const SUPPORT_MIGRATIONS: Record<string, Migration> = {
   "0001_threads": support_0001_threads,
   "0002_assignment": support_0002_assignment,
+  "0003_embeddings": support_0003_embeddings,
 };

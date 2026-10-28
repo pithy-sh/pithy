@@ -47,6 +47,7 @@ async function indexes(): Promise<string[]> {
 beforeEach(async () => {
   for (const table of [
     "pithy_support_search",
+    "pithy_support_embeddings",
     "pithy_support_assignments",
     "pithy_support_thread_flags",
     "pithy_support_classifications",
@@ -101,6 +102,8 @@ describe("support_0002_assignment", () => {
 
   test("down removes what up added and leaves 0001's tables and columns as they were", async () => {
     await runMigrations(env.DB, provider());
+    // 0003 first: it is above this one in the chain.
+    await rollbackMigration(env.DB, provider());
     await rollbackMigration(env.DB, provider());
     expect(await supportTables()).toEqual([
       "pithy_support_attachments",

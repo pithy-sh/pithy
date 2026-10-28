@@ -160,6 +160,7 @@ const DECLARED_ONLY: Record<string, string> = {
  * Backup and restore (#848) moved `cli` by four: `backup/backup.ts`, `backup/inspect.ts`, `backup/owned.ts` and
  * `backup/restore.ts`, which read and write a D1 through the binding or the REST client alike; and `support` by one:
  * `store/provisionIndex.ts`, the index step `pithy support provision` and `pithy restore` share.
+ * `support` counts `test-utils/seed.ts` too, which migrates a suite's D1 and seeds threads and messages on it.
  */
 const IMPORTERS: Record<string, number> = {
   "packages/artifacts": 3,
@@ -179,7 +180,7 @@ const IMPORTERS: Record<string, number> = {
   "packages/rating": 5,
   "packages/secrets": 7,
   "packages/storage": 7,
-  "packages/support": 11,
+  "packages/support": 12,
   "packages/testers": 8,
   "packages/vector": 4,
 };

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { hostWorkflowsFor } from "@pithy-sh/core/src/workflow/host";
 import type { WorkflowHostNameParts } from "@pithy-sh/core/src/workflow/naming";
@@ -180,4 +181,26 @@ export function appWorkflowBindings(registry: WorkflowRegistry, parts: WorkflowH
     ...entry,
     script_name: scriptName,
   }));
+}
+
+/**
+ * Remove one `vectorize` entry from an environment's stanza, by binding name — the inverse of the upsert, for a
+ * capability whose index was just dropped.
+ *
+ * A binding left behind names an index that no longer exists, and `wrangler deploy` refuses a Worker bound to
+ * one: turning a feature off would break the next deploy. Spliced **in place**, for the reason `upsertByBinding`
+ * writes in place — the array's comments live on the array. Idempotent: an absent entry, an absent array and an
+ * absent stanza all leave the file untouched. Returns whether anything was removed.
+ */
+export async function removeAppVectorize(projectDir: string, env: string, binding: string): Promise<boolean> {
+  const config = (await readWranglerConfig(projectDir)) as AppBindingStanza & {
+    env?: Record<string, AppBindingStanza | undefined>;
+  };
+  const stanza = (env === LOCAL_ENVIRONMENT ? config : config.env?.[env]) as AppBindingStanza | undefined;
+  const entries = stanza?.vectorize;
+  const at = entries?.findIndex((entry) => entry.binding === binding) ?? -1;
+  if (!entries || at === -1) return false;
+  entries.splice(at, 1);
+  await writeWranglerConfig(projectDir, config);
+  return true;
 }

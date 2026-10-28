@@ -224,8 +224,10 @@ export const SIDES: readonly Side[] = ["input", "output"];
  * control-plane revocations.
  * Moved on 2026-10-27 (#820): `@pithy-sh/multiplayer` brings `pithy_multiplayer_sessions` and
  * `pithy_multiplayer_void_keys` — the index of sessions in flight, and every idempotency key spent voiding a result.
+ * `@pithy-sh/support`'s `pithy_support_embeddings` holds the model that embedded each message into the semantic
+ * index, which is what `pithy vector reprocess --index support-messages` re-embeds by.
  */
-export const CENSUS = { tables: 74, packages: 18 };
+export const CENSUS = { tables: 75, packages: 18 };
 
 /**
  * Where the generated programs are written — **outside the checkout, and that is forced**.

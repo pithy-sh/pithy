@@ -37,6 +37,7 @@ import type { ClientProjection, ClientProjectionContext } from "./client";
 import type { ErasureRecords } from "./erasure";
 import { assertPurgeContributions, type PurgeContribution } from "./purge";
 import type { CapabilitySettings } from "./settings";
+import { assertVectorIndexContributions, type VectorIndexContribution } from "./vectorIndex";
 
 /** Hono `Variables` every capability's routes are typed against. `createBackend` seeds these per request. */
 export interface PithyVars {
@@ -732,6 +733,12 @@ export interface Capability<
    * importing any of them.
    */
   powers?: readonly string[];
+  /**
+   * The Vectorize indexes this capability owns and re-embeds in a Workflow of its own — see `./vectorIndex.ts`.
+   * `pithy vector reprocess` reads them beside `vector()`'s own indexes, so one command re-embeds every
+   * index in the project. Omit it when a capability owns no index, which is the ordinary case.
+   */
+  vectorIndexes?: readonly VectorIndexContribution[];
   /** Bindings this capability needs in the env (normalized — `optional` is always set). */
   requiredBindings: BindingSpec[];
 }
@@ -766,6 +773,10 @@ export function defineCapability<
   // A purge contribution no purge could run — a subject the kit does not know, or two for one — is refused
   // where it is written, naming the capability, rather than on the day somebody is erased.
   if (input.purge) assertPurgeContributions(input.name, input.purge);
+  // An index no reprocess could re-embed is refused the same way, naming the capability.
+  if (input.vectorIndexes) {
+    assertVectorIndexContributions(input.name, input.vectorIndexes, Object.keys(input.workflows ?? {}));
+  }
   // A capability that declares room kinds needs the room's binding and serves the room's socket, so both are
   // added here, once, rather than spelled by every capability that declares one and drifting from it.
   const presence = input.presence && input.presence.rooms.length > 0 ? input.presence : undefined;

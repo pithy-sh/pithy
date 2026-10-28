@@ -37,12 +37,46 @@ export const SupportClassifyParams = z
   .describe("The instance parameters of the classification Workflow — the one message it runs against.");
 export type SupportClassifyParams = z.infer<typeof SupportClassifyParams>;
 
+/**
+ * One re-embed of the semantic message index, started by `pithy vector reprocess --index support-messages`.
+ *
+ * The parameters are the ones `pithy vector reprocess` sends every index, so the CLI dispatches a capability's
+ * index exactly as it dispatches one `vector()` owns. There is no `filter`: the vectors carry no metadata to
+ * filter on.
+ */
+export const SupportReprocessParams = z
+  .object({
+    index: z.literal("support-messages").describe("The index to re-embed. Support declares one, `support-messages`."),
+    all: z
+      .boolean()
+      .optional()
+      .describe(
+        "Re-embed every inbound message, not only the ones whose stamp differs from the configured model. What a fresh index's backfill runs.",
+      ),
+    pageSize: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("Messages per Workflow step. Defaults to the Vectorize upsert ceiling of 1,000."),
+  })
+  .describe("The instance parameters of a re-embed of the support message index.");
+export type SupportReprocessParams = z.infer<typeof SupportReprocessParams>;
+
 /** Support's durable jobs, keyed by job name. The key is the second segment of the `support/<job>` dispatch key. */
 export const supportWorkflows = {
   classify: {
     binding: "SUPPORT_CLASSIFY",
     className: "SupportClassifyWorkflow",
     params: SupportClassifyParams,
+    optional: true,
+  },
+  // Hosted beside classification, in the same prebuilt worker, because it needs the same three things: the
+  // app database, the `AI` binding, and the message index. Optional for the same reason classify is.
+  reprocess: {
+    binding: "SUPPORT_REPROCESS",
+    className: "SupportReprocessWorkflow",
+    params: SupportReprocessParams,
     optional: true,
   },
 } as const satisfies WorkflowSpecMap;
