@@ -8,6 +8,7 @@ import { ValidationError } from "../error/pithyError";
 import { type RouteSpec, routeSpecOf, type ToolEffect } from "../http/routeSpec";
 import type { RouteGroup } from "../openapi/document";
 import { isMiddlewareOnly, operationsOf } from "../openapi/operations";
+import { KIND_SENTENCES, kindAnnotations, type ToolAnnotations } from "./annotations";
 
 /**
  * The app's own MCP tools, read off the composed router (`docs/AGENT-ACCESS.md` §4.1, §5).
@@ -21,13 +22,6 @@ import { isMiddlewareOnly, operationsOf } from "../openapi/operations";
  *
  * **A tool inherits its route's power. That is the whole mapping**, and there is no tool-to-role table to maintain.
  */
-
-/** The MCP annotations a tool carries, set by its effect. */
-export interface ToolAnnotations {
-  readonly readOnlyHint: boolean;
-  readonly destructiveHint: boolean;
-  readonly openWorldHint: boolean;
-}
 
 /** One route, as a tool. */
 export interface AppTool {
@@ -59,19 +53,15 @@ export interface AppTool {
 
 /** What each effect says in a tool's description and on the consent screen. One sentence each. */
 export const EFFECT_SENTENCES: Readonly<Record<ToolEffect, string>> = {
-  writes: "Changes data in this application.",
-  sends: "Sends a message to somebody.",
-  charges: "Charges money.",
-  deletes: "Deletes data, and it cannot be undone.",
+  writes: KIND_SENTENCES.writes,
+  sends: KIND_SENTENCES.sends,
+  charges: KIND_SENTENCES.charges,
+  deletes: KIND_SENTENCES.deletes,
 };
 
 /** The MCP annotations for an effect. `null` is a read. */
 export function toolAnnotations(effect: ToolEffect | null): ToolAnnotations {
-  return {
-    readOnlyHint: effect === null,
-    destructiveHint: effect === "charges" || effect === "deletes",
-    openWorldHint: effect === "sends" || effect === "charges",
-  };
+  return kindAnnotations(effect ?? "reads");
 }
 
 /** One described route that opted in, before it is a tool. */
