@@ -209,7 +209,7 @@ Every kit capability that holds rows about a person declares a `user` contributi
 | Capability | Disposition | What |
 |---|---|---|
 | `auth` | erase | The account, sessions, providers, devices, refresh-token ledger, pending codes, verification ledger, plugin rows. Its lifecycle history stays. |
-| `mcp` | erase | The consents the person gave applications to act as them, and the access and refresh tokens minted under them. A dynamically registered client is the application's and stays. |
+| `mcp` | erase | The consents the person gave applications to act as them, and the access and refresh tokens minted under them. A client is the application's, whether it registered dynamically or is known by its metadata document, and stays. |
 | `ledger` | erase | Balances in every currency, the transaction log, holds. |
 | `rating` | erase | The rating in every pool, and the control-plane acts on it. The person's place in every logged outcome is anonymized instead, so each opponent's rating still replays exactly. |
 | `leaderboard` | erase | Entries on every board, in every window, what each session result put on them, and their moderation history. |
