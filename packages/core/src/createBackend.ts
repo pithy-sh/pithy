@@ -30,6 +30,7 @@ import { buildKvRegistry, composeKv, type KvRegistry } from "./kv/namespaces";
 import { loggingErrorHandler } from "./logger/errorHandler";
 import type { Logger } from "./logger/logger";
 import { bindRequestContext, createWorkerLogger } from "./logger/worker";
+import { assertToolDeclarations } from "./mcp/tools";
 import type { RouteGroup } from "./openapi/document";
 import { recordRouteGroups } from "./openapi/routeGroups";
 import { registerPresenceRoutes } from "./presence/http/routes";
@@ -360,6 +361,9 @@ export function createBackend<
     groups.push({ tag: cap.name, routes: app.routes.slice(start) });
   }
   recordRouteGroups(app, groups);
+  // A route that opts in as an MCP tool says so on `describeRoute`, which cannot see its method — so a non-GET
+  // claiming to be a read, or two routes sharing an operation, is refused here, at boot (`mcp/tools.ts`).
+  assertToolDeclarations(groups);
 
   return app as unknown as Hono<BackendEnv<readonly [...Caps, App]>>;
 }

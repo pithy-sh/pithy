@@ -47,6 +47,13 @@ export interface UiStubContext {
    * harder than its grant. A fourth capability-gated set, chosen exactly as the three above are.
    */
   consent: boolean;
+  /**
+   * Whether to write the agent screens — agent consent, and connected applications.
+   *
+   * A fifth capability-gated set, on the Worker composing `mcp`. It stacks on `auth`, whose sign-in the agent
+   * consent screen sends a signed-out person through.
+   */
+  mcp: boolean;
   /** The project's package manager — what the generated docs and commands tell the adopter to run. */
   packageManager: PackageManager;
 }

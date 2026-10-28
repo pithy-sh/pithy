@@ -1327,6 +1327,50 @@ describe("renderDoctorText", () => {
     });
   });
 
+  describe("the MCP endpoint's floor", () => {
+    /** One Worker composing the mcp capability with a given floor report. */
+    const agents = (floorReport: { open: boolean; line: string }) =>
+      healthyOptions({
+        resolveWorkersFor: async () =>
+          [
+            {
+              name: "api",
+              dir: "/p/apps/api",
+              capabilities: [
+                { name: "auth", requiredBindings: [] },
+                { name: "mcp", requiredBindings: [], floorReport },
+              ],
+            },
+          ] as unknown as Awaited<ReturnType<NonNullable<DoctorReportOptions["resolveWorkersFor"]>>>,
+        readCapabilityReach: async () => ({ ok: true, reachable: ["auth", "mcp"], unreachable: [], split: [] }),
+      });
+
+    test("says the endpoint is open to every signed-in user, and does not fail the exit", async () => {
+      const report = await buildDoctorReport(agents({ open: true, line: "open to every signed-in user" }));
+      expect(renderDoctorText(report, "/home/u")).toContain(
+        [
+          "    agents       MCP endpoint open to every signed-in user.",
+          "                 Set mcp({ floor }) to a power or an entitlement to narrow it. Reported, not failed.",
+        ].join("\n"),
+      );
+      expect(doctorExitCode(report)).toBe(0);
+    });
+
+    test("names the floor in force when it is not open", async () => {
+      const report = await buildDoctorReport(
+        agents({ open: false, line: "open only to callers whose role holds agents:use" }),
+      );
+      const worker = report.project?.health?.workers[0];
+      if (worker?.state !== "checked") throw new Error("the Worker is checked");
+      expect(worker.agents).toEqual({
+        composed: true,
+        open: false,
+        floor: "open only to callers whose role holds agents:use",
+      });
+      expect(renderDoctorText(report, "/home/u")).not.toContain("open to every signed-in user");
+    });
+  });
+
   test("up-to-date layout is terser and omits the config/health blocks", async () => {
     const report = await buildDoctorReport(healthyOptions());
     expect(renderDoctorText(report, "/home/u")).toBe(

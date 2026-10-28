@@ -5,6 +5,7 @@ import { env } from "cloudflare:test";
 import { describe, expect, test } from "vitest";
 import { defineCapability } from "./capability/capability";
 import { createBackend } from "./createBackend";
+import { describeRoute } from "./http/routeSpec";
 import { createLogger } from "./logger/logger";
 import type { LogRecord } from "./logger/record";
 
@@ -54,6 +55,27 @@ describe("createBackend", () => {
     const res = await app.request("/ping", {}, env);
     expect(res.status).toBe(200);
     expect(await res.text()).toBe("pong");
+  });
+
+  test("refuses to boot a composition whose non-GET route opts in as a tool without an effect", () => {
+    const loose = defineCapability({
+      name: "notes",
+      requiredBindings: [],
+      routes: (a) => {
+        a.post(
+          "/notes",
+          describeRoute({
+            summary: "Write a note.",
+            verification: "public",
+            responses: { 200: { description: "Written." } },
+            operation: "notes.write",
+            tool: true,
+          }),
+          (c) => c.text("ok"),
+        );
+      },
+    });
+    expect(() => createBackend({ capabilities: [loose] })).toThrow(/without an effect/);
   });
 
   test("mounts the app capability's routes after capability routes", async () => {

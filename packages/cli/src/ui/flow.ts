@@ -37,6 +37,8 @@ const PAYMENTS_CAPABILITY = "payments";
 /** The capability the account chooser is written against. */
 const ORGANIZATION_CAPABILITY = "organization";
 const CONSENT_CAPABILITY = "consent";
+/** The capability whose agent consent and connected-applications screens ride on the auth screens. */
+const MCP_CAPABILITY = "mcp";
 
 /** Which capability-gated screen set a decision is about. */
 export type UiScreenSet =
@@ -209,7 +211,7 @@ function composes(config: WorkerConfig, capability: string): boolean {
 async function planFiles(
   options: UiAddOptions,
   stub: UiStub,
-  screens: { auth: boolean; payments: boolean; organization: boolean; consent: boolean },
+  screens: { auth: boolean; payments: boolean; organization: boolean; consent: boolean; mcp: boolean },
 ): Promise<{ files: Record<string, string>; strict: boolean }> {
   const current = await readWorkerUi(options.workerDir);
   const worker = workerName(options.workerDir);
@@ -337,7 +339,11 @@ export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
     options.consent,
     composes(options.config, CONSENT_CAPABILITY),
   );
-  const plan = await planFiles({ ...options, packageManager }, stub, { auth, payments, organization, consent });
+  // The agent screens ride on the auth screens and on the Worker composing `mcp`, with no flag of their own:
+  // the agent consent screen is where that capability's authorization lands, so a Worker serving the endpoint
+  // without it would send every agent's user to a page that does not exist.
+  const mcp = auth && composes(options.config, MCP_CAPABILITY);
+  const plan = await planFiles({ ...options, packageManager }, stub, { auth, payments, organization, consent, mcp });
   // Compose first. `deriveWorkerFirst` assembles every capability's routes, once per environment, and
   // reads nothing this run is about to write — which is what makes moving it ahead of the write legal.
   const patterns = deriveWorkerFirst(options.config, await projectEnvironments(options.projectDir));

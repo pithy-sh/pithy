@@ -42,6 +42,7 @@ function manifest(context: UiStubContext): UiStubFile[] {
   if (context.payments) files.push(...inPlace(TEMPLATE_GROUPS.payments));
   if (context.organization) files.push(...inPlace(TEMPLATE_GROUPS.organization));
   if (context.consent) files.push(...inPlace(TEMPLATE_GROUPS.consent));
+  if (context.mcp) files.push(...inPlace(TEMPLATE_GROUPS.mcp));
   return files;
 }
 

@@ -63,6 +63,12 @@ apps/api/
       pithy/choose-organization.tsx
                              new   --organization  and its seeded gate
       pithy/consent.tsx      new   --consent  every purpose, and where you stand on each
+      pithy/agent-consent.tsx
+                             new   --auth with mcp composed  the screen an agent's authorization lands on
+      pithy/agent-consent.test.tsx
+                             new   --auth with mcp composed  the gate that keeps the redirect address on it
+      pithy/connected-applications.tsx
+                             new   --auth with mcp composed  what you approved, and the revoke
       app/home.tsx           new   yours, written once and never again
   wrangler.jsonc             edited  assets stanza
   pithy.worker.jsonc         edited  dev block + ui block

@@ -149,6 +149,15 @@ const LEDGER: Record<string, Held> = {
     ungated:
       "The suspended screen's shape for the other state, held by the same two sweeps and reached by the same role lookup. It renders no date and no reason, so there is nothing in it a value from elsewhere could drift from.",
   },
+  "src/routes/pithy/agent-consent.tsx": {
+    gate: "src/routes/pithy/agent-consent.test.tsx",
+    expectation: "canary",
+    why: "The application's name is self-asserted and the redirect address is what identifies it. A restyle that promotes the name to the heading, or drops the address as clutter, turns the screen into a phishing page on the adopter's own domain — and every manual test uses the adopter's own application, so nothing looks wrong. The gate renders an invented name and address and asserts where each lands.",
+  },
+  "src/routes/pithy/connected-applications.tsx": {
+    ungated:
+      "A list and a revoke button over `@pithy-sh/auth/src/client/mcp`. What makes revocation real — the consent, its tokens and the endpoint refusing the next call — is the server's, and `packages/auth/src/mcp/flow.workers.test.ts` holds it; nothing on this screen is an invariant an edit can quietly break.",
+  },
   "src/routes/pithy/organization-suspended.tsx": {
     ungated:
       "Static copy and a link home, ahead of the organization state it describes (#623). Held by the same sweeps as the two account screens; the one value in it, `HOME`, is the adopter's to change and says so.",

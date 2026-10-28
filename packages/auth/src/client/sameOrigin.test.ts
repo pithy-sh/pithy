@@ -144,6 +144,12 @@ const FETCH_EXEMPTIONS: Readonly<Record<string, string>> = {
     "A live integration test driving a real deployed Worker and Cloudflare's siteverify endpoint from Node, by absolute URL. Not a browser program.",
   "src/instance/githubUserInfo.ts":
     "The kit's GitHub identity resolver, reading api.github.com by absolute URL with the OAuth token this callback was issued. Server-side, inside the Worker, and never a browser program: it runs from Better Auth's `getUserInfo` and this Worker's session cookie has no business on github.com. The transport is injected (`FetchJson`) so every test drives it without a socket.",
+  "src/mcp/http/routes.ts":
+    "`app.fetch(...)` — the MCP endpoint dispatching a tool call into this Worker's own composed app, in process. No network, no browser and no cookie: the caller rides beside the request, never on it.",
+  "src/mcp/flow.workers.test.ts":
+    "`app.fetch(...)` — dispatching into a Hono app under test, in a Worker, the way the MCP endpoint does. No network, no browser, no cookie mode of its own.",
+  "src/http/csrf.test.ts":
+    "`app.fetch(...)` — dispatching a request into a Hono app under test, in process, the way the MCP endpoint does: `app.request` would rebuild the request and lose the identity that rides beside it. No network, no browser.",
   "src/http/clientRoundTrip.test.ts":
     "Node's `fetch` standing in for a browser against a real listening port, so the primitive can be driven over a real socket with a real cookie jar. It is the harness the primitive is tested through, not a second producer: it takes the relative path `callAuth` produced and resolves it, and nothing in the package calls it.",
 };

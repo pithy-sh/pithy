@@ -68,6 +68,9 @@
     },
     {
       "name": "artifacts"
+    },
+    {
+      "name": "mcp"
     }
   ],
   "paths": {
@@ -18388,7 +18391,11 @@
         "x-pithy-verification": [
           "bearer",
           "session"
-        ]
+        ],
+        "x-pithy-operation": "boards.list",
+        "x-pithy-tool": {
+          "effect": null
+        }
       }
     },
     "/leaderboard/{board}/segment": {
@@ -18686,7 +18693,11 @@
         "x-pithy-verification": [
           "bearer",
           "session"
-        ]
+        ],
+        "x-pithy-operation": "top.read",
+        "x-pithy-tool": {
+          "effect": null
+        }
       }
     },
     "/leaderboard/{board}/me": {
@@ -18802,7 +18813,11 @@
         "x-pithy-verification": [
           "bearer",
           "session"
-        ]
+        ],
+        "x-pithy-operation": "rank.read",
+        "x-pithy-tool": {
+          "effect": null
+        }
       }
     },
     "/leaderboard/{board}/around": {
@@ -22870,7 +22885,11 @@
         "x-pithy-verification": [
           "bearer",
           "session"
-        ]
+        ],
+        "x-pithy-operation": "standing.read",
+        "x-pithy-tool": {
+          "effect": null
+        }
       }
     },
     "/rating/games/{game}/players/{userId}": {
@@ -25854,7 +25873,11 @@
         "x-pithy-verification": [
           "bearer",
           "session"
-        ]
+        ],
+        "x-pithy-operation": "transactions.list",
+        "x-pithy-tool": {
+          "effect": null
+        }
       }
     },
     "/ledger/{currency}": {
@@ -25930,7 +25953,11 @@
         "x-pithy-verification": [
           "bearer",
           "session"
-        ]
+        ],
+        "x-pithy-operation": "balance.read",
+        "x-pithy-tool": {
+          "effect": null
+        }
       }
     },
     "/ledger/{currency}/credit": {
@@ -36844,7 +36871,11 @@
         "x-pithy-verification": [
           "bearer",
           "session"
-        ]
+        ],
+        "x-pithy-operation": "feedback.write",
+        "x-pithy-tool": {
+          "effect": "sends"
+        }
       },
       "get": {
         "tags": [
@@ -36963,7 +36994,11 @@
         "x-pithy-verification": [
           "bearer",
           "session"
-        ]
+        ],
+        "x-pithy-operation": "feedback.list",
+        "x-pithy-tool": {
+          "effect": null
+        }
       }
     },
     "/support/feedback/{id}": {
@@ -37200,7 +37235,11 @@
         "x-pithy-verification": [
           "bearer",
           "session"
-        ]
+        ],
+        "x-pithy-operation": "feedback.read",
+        "x-pithy-tool": {
+          "effect": null
+        }
       }
     },
     "/support/presence/tickets": {
@@ -46380,6 +46419,844 @@
             "content": {
               "application/octet-stream": {
                 "schema": {}
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      }
+    },
+    "/.well-known/oauth-protected-resource/mcp": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "getWellKnownOauthProtectedResourceMcp",
+        "summary": "Name the authorization server for the MCP endpoint.",
+        "description": "RFC 9728 protected-resource metadata. Where an MCP client starts, from the endpoint's URL alone.",
+        "responses": {
+          "200": {
+            "description": "Protected-resource metadata (RFC 9728) for the app's MCP endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "resource": {
+                      "type": "string",
+                      "description": "The MCP endpoint's absolute URL. Every token's audience."
+                    },
+                    "authorization_servers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The issuer that mints tokens for this resource."
+                    },
+                    "scopes_supported": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The one scope this server issues, and `offline_access`."
+                    },
+                    "bearer_methods_supported": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "How a token is presented: `header` only."
+                    },
+                    "resource_name": {
+                      "type": "string",
+                      "description": "What this resource is, for a client to show."
+                    }
+                  },
+                  "required": [
+                    "resource",
+                    "authorization_servers",
+                    "scopes_supported",
+                    "bearer_methods_supported",
+                    "resource_name"
+                  ],
+                  "description": "Protected-resource metadata (RFC 9728) for the app's MCP endpoint."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
+        ]
+      }
+    },
+    "/.well-known/oauth-protected-resource": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "getWellKnownOauthProtectedResource",
+        "summary": "Name the authorization server for the MCP endpoint.",
+        "description": "RFC 9728 protected-resource metadata. Where an MCP client starts, from the endpoint's URL alone.",
+        "responses": {
+          "200": {
+            "description": "Protected-resource metadata (RFC 9728) for the app's MCP endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "resource": {
+                      "type": "string",
+                      "description": "The MCP endpoint's absolute URL. Every token's audience."
+                    },
+                    "authorization_servers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The issuer that mints tokens for this resource."
+                    },
+                    "scopes_supported": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The one scope this server issues, and `offline_access`."
+                    },
+                    "bearer_methods_supported": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "How a token is presented: `header` only."
+                    },
+                    "resource_name": {
+                      "type": "string",
+                      "description": "What this resource is, for a client to show."
+                    }
+                  },
+                  "required": [
+                    "resource",
+                    "authorization_servers",
+                    "scopes_supported",
+                    "bearer_methods_supported",
+                    "resource_name"
+                  ],
+                  "description": "Protected-resource metadata (RFC 9728) for the app's MCP endpoint."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
+        ]
+      }
+    },
+    "/.well-known/oauth-authorization-server/auth": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "getWellKnownOauthAuthorizationServerAuth",
+        "summary": "Describe the authorization server that mints MCP tokens.",
+        "description": "RFC 8414 authorization-server metadata, at the address its issuer implies.",
+        "responses": {
+          "200": {
+            "description": "Authorization-server metadata (RFC 8414), as the composed provider publishes it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string",
+                    "description": "A metadata field."
+                  },
+                  "additionalProperties": {
+                    "description": "Its value."
+                  },
+                  "description": "Authorization-server metadata (RFC 8414), as the composed provider publishes it."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
+        ]
+      }
+    },
+    "/.well-known/oauth-authorization-server": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "getWellKnownOauthAuthorizationServer",
+        "summary": "Describe the authorization server that mints MCP tokens.",
+        "description": "RFC 8414 authorization-server metadata, at the address its issuer implies.",
+        "responses": {
+          "200": {
+            "description": "Authorization-server metadata (RFC 8414), as the composed provider publishes it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string",
+                    "description": "A metadata field."
+                  },
+                  "additionalProperties": {
+                    "description": "Its value."
+                  },
+                  "description": "Authorization-server metadata (RFC 8414), as the composed provider publishes it."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
+        ]
+      }
+    },
+    "/mcp": {
+      "post": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "postMcp",
+        "summary": "Serve the app's MCP tools to an agent acting as a user.",
+        "description": "Streamable HTTP, stateless, one JSON-RPC message per request answered in the body. The bearer token must be one this application minted for this endpoint. `tools/list` holds only what the caller's role allows, and every call runs through the route it names, as the caller.",
+        "requestBody": {
+          "required": true,
+          "description": "One JSON-RPC 2.0 request or notification.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jsonrpc": {
+                    "type": "string",
+                    "const": "2.0",
+                    "description": "Always `2.0`."
+                  },
+                  "id": {
+                    "description": "The request's id. Absent on a notification, which gets no answer.",
+                    "type": [
+                      "string",
+                      "number"
+                    ]
+                  },
+                  "method": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The method called, e.g. `tools/list`."
+                  },
+                  "params": {
+                    "description": "The method's parameters.",
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "jsonrpc",
+                  "method"
+                ],
+                "description": "One JSON-RPC 2.0 request or notification."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "One JSON-RPC 2.0 answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "jsonrpc": {
+                      "type": "string",
+                      "const": "2.0",
+                      "description": "Always `2.0`."
+                    },
+                    "id": {
+                      "description": "The id of the request this answers.",
+                      "type": [
+                        "string",
+                        "number"
+                      ]
+                    },
+                    "result": {
+                      "description": "The method's result, on success."
+                    },
+                    "error": {
+                      "description": "What went wrong, on failure.",
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "The JSON-RPC error code."
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "What went wrong, in one sentence."
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "jsonrpc",
+                    "id"
+                  ],
+                  "description": "One JSON-RPC 2.0 answer."
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "A notification, accepted. No body."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer"
+        ]
+      },
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "getMcp",
+        "summary": "Refuse to open an event stream or end a session on the MCP endpoint.",
+        "description": "The endpoint is stateless and answers every message in the response body, so it offers no server-sent event stream and has no session to end. Always 405, with `Allow: POST`.",
+        "responses": {
+          "405": {
+            "description": "Only POST is served here."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
+        ]
+      },
+      "delete": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "deleteMcp",
+        "summary": "Refuse to open an event stream or end a session on the MCP endpoint.",
+        "description": "The endpoint is stateless and answers every message in the response body, so it offers no server-sent event stream and has no session to end. Always 405, with `Allow: POST`.",
+        "responses": {
+          "405": {
+            "description": "Only POST is served here."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
+        ]
+      }
+    },
+    "/mcp/consent": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "getMcpConsent",
+        "summary": "Show what an application asking to act as you will be able to do.",
+        "description": "Read by the scaffolded consent screen. The client's name is as it reported itself; the redirect URI is the one the authorization server enforces. Only operations your role allows are listed.",
+        "parameters": [
+          {
+            "name": "oauth_query",
+            "in": "query",
+            "required": true,
+            "description": "The query string the authorization server redirected the screen with, signed by it.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 8192
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What the consent screen shows: one decision, and its consequence.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "client": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "The client's id, assigned when it registered."
+                        },
+                        "reportedName": {
+                          "description": "The name the client gave itself. Self-asserted and never verified — show it as reported.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "reportedUri": {
+                          "description": "The homepage the client gave itself. Also unverified.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "redirectUri": {
+                          "type": "string",
+                          "description": "Where the token goes. Enforced by the authorization server, so it is what identifies the client."
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "reportedName",
+                        "reportedUri",
+                        "redirectUri"
+                      ],
+                      "description": "The application asking for access."
+                    },
+                    "capabilities": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "capability": {
+                            "type": "string",
+                            "description": "The capability's name."
+                          },
+                          "operations": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "tool": {
+                                  "type": "string",
+                                  "description": "The tool's name, `<capability>_<operation>`."
+                                },
+                                "summary": {
+                                  "type": "string",
+                                  "description": "What it does, in the capability's own words."
+                                },
+                                "effect": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "writes",
+                                        "sends",
+                                        "charges",
+                                        "deletes"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "What it does beyond reading, or null for a read."
+                                }
+                              },
+                              "required": [
+                                "tool",
+                                "summary",
+                                "effect"
+                              ],
+                              "description": "One thing the client will be able to do, as you."
+                            },
+                            "description": "What the client will be able to do in it — only what your role allows."
+                          },
+                          "reachable": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "How many of its operations your role allows."
+                          },
+                          "total": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "How many operations it offers agents in all."
+                          },
+                          "effects": {
+                            "type": "object",
+                            "properties": {
+                              "writes": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "Operations that change data."
+                              },
+                              "sends": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "Operations that send a message."
+                              },
+                              "charges": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "Operations that charge money."
+                              },
+                              "deletes": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "Operations that delete data."
+                              }
+                            },
+                            "required": [
+                              "writes",
+                              "sends",
+                              "charges",
+                              "deletes"
+                            ],
+                            "description": "The reachable operations that do more than read, counted by effect."
+                          }
+                        },
+                        "required": [
+                          "capability",
+                          "operations",
+                          "reachable",
+                          "total",
+                          "effects"
+                        ],
+                        "description": "One capability the client will be able to act in, and what it can do there."
+                      },
+                      "description": "One row per capability you can reach. Nothing is selectable."
+                    },
+                    "requested": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "scope": {
+                            "type": "string",
+                            "description": "The scope as the client asked for it."
+                          },
+                          "granted": {
+                            "type": "boolean",
+                            "description": "Whether approving grants it."
+                          },
+                          "reason": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "role",
+                                  "unknown"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Why it is not granted: `role` when the caller's role does not reach it, `unknown` when no such permission exists. Null when it is granted."
+                          }
+                        },
+                        "required": [
+                          "scope",
+                          "granted",
+                          "reason"
+                        ],
+                        "description": "One scope the client requested."
+                      },
+                      "description": "What the client asked for, each with what approving grants."
+                    }
+                  },
+                  "required": [
+                    "client",
+                    "capabilities",
+                    "requested"
+                  ],
+                  "description": "What the consent screen shows: one decision, and its consequence."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      },
+      "post": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "postMcpConsent",
+        "summary": "Let an application act as you in this application, or refuse it.",
+        "description": "One decision for the whole request; nothing is selectable. Approving is audited as `auth/mcp_grant_approved`, refusing as `auth/mcp_grant_denied`. Answers where to send the browser next.",
+        "requestBody": {
+          "required": true,
+          "description": "One decision: let this client act as you, or not. Nothing in it is selectable.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "oauth_query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 8192,
+                    "description": "The query string the authorization server redirected the screen with, signed by it."
+                  },
+                  "accept": {
+                    "type": "boolean",
+                    "description": "Whether you let this client act as you in this application."
+                  }
+                },
+                "required": [
+                  "oauth_query",
+                  "accept"
+                ],
+                "additionalProperties": false,
+                "description": "One decision: let this client act as you, or not. Nothing in it is selectable."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Where to send the browser after the decision.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "redirect": {
+                      "type": "string",
+                      "description": "Where the browser goes next: the client's redirect, carrying a code or a refusal."
+                    }
+                  },
+                  "required": [
+                    "redirect"
+                  ],
+                  "description": "Where to send the browser after the decision."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      }
+    },
+    "/mcp/connections": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "getMcpConnections",
+        "summary": "List the applications acting as you.",
+        "description": "What you approved, when, and where each sends its tokens. Revoking is the only narrowing there is.",
+        "responses": {
+          "200": {
+            "description": "The applications acting as you, each revocable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "applications": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "clientId": {
+                            "type": "string",
+                            "description": "The client's id."
+                          },
+                          "reportedName": {
+                            "description": "The name the client gave itself. Unverified.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "redirectUris": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Where its tokens go."
+                          },
+                          "approvedAt": {
+                            "type": "string",
+                            "description": "When you approved it, ISO-8601."
+                          }
+                        },
+                        "required": [
+                          "clientId",
+                          "reportedName",
+                          "redirectUris",
+                          "approvedAt"
+                        ],
+                        "description": "One application acting as you."
+                      },
+                      "description": "Newest first."
+                    }
+                  },
+                  "required": [
+                    "applications"
+                  ],
+                  "description": "The applications acting as you, each revocable."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      }
+    },
+    "/mcp/connections/{clientId}": {
+      "delete": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "deleteMcpConnectionsByClientId",
+        "summary": "Revoke an application acting as you.",
+        "description": "Takes effect on its next call: the consent, its refresh tokens and its stored access tokens go, and the MCP endpoint refuses a token with no consent behind it. Audited as `auth/mcp_grant_revoked`. No administrator needed.",
+        "parameters": [
+          {
+            "name": "clientId",
+            "in": "path",
+            "required": true,
+            "description": "The client's id.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A revoked connection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "revoked": {
+                      "type": "boolean",
+                      "const": true,
+                      "description": "Always true: the client can no longer act as you."
+                    }
+                  },
+                  "required": [
+                    "revoked"
+                  ],
+                  "description": "A revoked connection."
+                }
               }
             }
           },

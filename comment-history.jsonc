@@ -1189,7 +1189,6 @@
     "packages/core/src/controlPlane/discovery/healthSummary.test.ts": 9,
     "packages/core/src/controlPlane/discovery/healthSummary.ts": 17,
     "packages/core/src/controlPlane/discovery/routeInput.ts": 1,
-    "packages/core/src/controlPlane/discovery/toolName.ts": 1,
     "packages/core/src/controlPlane/erasure/attest.ts": 2,
     "packages/core/src/controlPlane/erasure/read.ts": 1,
     "packages/core/src/controlPlane/error/errors.ts": 3,

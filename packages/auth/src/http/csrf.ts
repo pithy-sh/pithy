@@ -6,6 +6,7 @@ import { type AmbientEnv, ambientEnv } from "@pithy-sh/core/src/env/ambient";
 import { ForbiddenError } from "@pithy-sh/core/src/error/pithyError";
 import type { SameOriginGate } from "@pithy-sh/core/src/http/sameOrigin";
 import type { AuthWiring } from "../capability";
+import { dispatchedAuth } from "../mcp/dispatch";
 import { baseURLResolver, type ResolveBaseURL } from "./baseUrl";
 
 /**
@@ -50,7 +51,9 @@ function sameOriginGate(allowedOrigins: readonly string[], resolveBaseURL: Resol
   const allowed = new Set(allowedOrigins);
   return async (c, next) => {
     // A bearer request has no ambient credential to forge — CSRF-exempt.
-    if (c.req.raw.headers.has("authorization")) {
+    // Nor does a tool call the MCP endpoint dispatched in process: it carries no credential at all, and the
+    // bearer token it was verified against was checked before it was built.
+    if (c.req.raw.headers.has("authorization") || dispatchedAuth(c.req.raw) !== undefined) {
       await next();
       return;
     }

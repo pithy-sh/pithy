@@ -46,12 +46,12 @@ export const AUTH_PURGE_SUMMARY =
 const CREDENTIAL_COLUMN = /secret|token|key|code|hash|password|credential/i;
 
 /** The auth Kysely without its table map — a plugin's table is named by the plan, not by `authTables`. */
-function untyped(db: AuthDatabase): Kysely<Record<string, Record<string, unknown>>> {
+export function untyped(db: AuthDatabase): Kysely<Record<string, Record<string, unknown>>> {
   return db as unknown as Kysely<Record<string, Record<string, unknown>>>;
 }
 
 /** The D1 binding the auth tables live in, off a run's env — or a wiring fault naming it. */
-function bindingOf(env: Record<string, unknown>, database: string): D1Database {
+export function bindingOf(env: Record<string, unknown>, database: string): D1Database {
   const binding = env[database];
   if (typeof binding !== "object" || binding === null) {
     throw new InternalError({
@@ -69,7 +69,7 @@ function literal(value: string): string {
 }
 
 /** Bind a compiled statement to D1, so it can join a `batch`. */
-function prepared(d1: D1Database, compiled: CompiledQuery) {
+export function prepared(d1: D1Database, compiled: CompiledQuery) {
   return d1.prepare(compiled.sql).bind(...(compiled.parameters as unknown[]));
 }
 
@@ -177,7 +177,7 @@ export async function exportAuthUser(
 }
 
 /** One plugin table's rows about the account, every column but a credential's. */
-async function pluginRows(db: AuthDatabase, table: string, userId: string): Promise<Record<string, unknown>[]> {
+export async function pluginRows(db: AuthDatabase, table: string, userId: string): Promise<Record<string, unknown>[]> {
   const rows = await untyped(db).selectFrom(table).selectAll().where("userId", "=", userId).execute();
   return rows.map((row) =>
     Object.fromEntries(Object.entries(row).filter(([column]) => !CREDENTIAL_COLUMN.test(column))),

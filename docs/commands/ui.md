@@ -52,6 +52,7 @@ Scaffold the account chooser?
 
 - The suggested answer is **yes when the target Worker composes that capability** — `auth`, `payments`, `organization`, `consent` — and no when it does not.
 - `--auth` / `--no-auth`, `--payments` / `--no-payments`, `--organization` / `--no-organization` and `--consent` / `--no-consent` answer them without asking. Where nobody may be asked (`--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`), the suggested answer applies unless a flag is passed.
+- The agent screens have no flag and no question of their own. They ride on `--auth` when the Worker composes `mcp`: the agent consent screen an MCP client's authorization lands on, its seeded gate, and the connected-applications screen a person revokes an approval from (`docs/AGENT-ACCESS.md` §4.0). A Worker serving the endpoint without them would send every agent's user to a page that does not exist.
 - With auth on, the stub adds `src/routes/pithy/` — the magic-link, OTP, and callback screens, and the screens a suspended or deleted account lands on — and the router's route guard. Payments adds the paywall, pricing and subscription screens; organization adds the account chooser; consent adds the settings screen where a person reads and withdraws their consents. Everything else is scaffolded either way. `docs/UI.md` lists every file and the flag that writes it.
 
 Asking for a set on a Worker that does not compose its capability is an error, not a warning (Errors, below).
@@ -77,6 +78,7 @@ Both are `composite`, because both are referenced from the project's root `tscon
 | `src/session.tsx` | `--auth` | The session hook, `signOut`, and the signed-in route guard |
 | `src/turnstile.tsx` | `--auth` | The Turnstile widget and the token placement the middleware reads |
 | `src/routes/pithy/*.tsx` | `--auth` | Pithy's screens: sign-in, OTP, callback, and account suspended, account deleted, organization suspended |
+| `src/routes/pithy/agent-consent.tsx`, `agent-consent.test.tsx`, `connected-applications.tsx` | `--auth`, on a Worker composing `mcp` | The agent consent screen, its seeded gate, and the screen that lists and revokes what you approved |
 | `src/routes/app/home.tsx` | always | Your first screen. Written once, never again |
 
 `src/index.ts` — the Worker entry — is not touched.

@@ -143,6 +143,8 @@ export function registerLeaderboardRoutes(options: LeaderboardRoutesOptions): (a
       base,
       describeRoute({
         summary: "List the configured boards.",
+        operation: "boards.list",
+        tool: true,
         verification: ["bearer", "session"],
         responses: { 200: BoardList },
       }),
@@ -168,6 +170,8 @@ export function registerLeaderboardRoutes(options: LeaderboardRoutesOptions): (a
       `${base}/:board/top`,
       describeRoute({
         summary: "Read the top of a board.",
+        operation: "top.read",
+        tool: true,
         verification: ["bearer", "session"],
         responses: { 200: BoardPage },
       }),
@@ -181,6 +185,8 @@ export function registerLeaderboardRoutes(options: LeaderboardRoutesOptions): (a
       `${base}/:board/me`,
       describeRoute({
         summary: "Read the caller's own rank.",
+        operation: "rank.read",
+        tool: true,
         verification: ["bearer", "session"],
         responses: { 200: OwnRank },
       }),

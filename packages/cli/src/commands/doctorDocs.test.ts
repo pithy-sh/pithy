@@ -5,6 +5,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { mcp } from "@pithy-sh/auth/src/index";
 import { consent } from "@pithy-sh/consent/src/capability";
 import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
@@ -294,8 +295,10 @@ describe("docs/commands/doctor.md", () => {
     // Twenty since #560 added the `scopes` fragment — a gate no resolver can open, the second finding that
     // prints while the exit stays 0.
     // The `consent` fragment — processing under consent with no consent record — is the third finding that
-    // prints while the exit stays 0, and the last block of the section.
-    expect(WHAT_BLOCKS).toHaveLength(21);
+    // prints while the exit stays 0.
+    // The `agents` fragment, an MCP endpoint open to every signed-in user, is the fourth, and the last block of
+    // the section.
+    expect(WHAT_BLOCKS).toHaveLength(22);
     expect(EXAMPLE_BLOCKS).toHaveLength(2);
     expect(JSON_SAMPLES).toHaveLength(1);
     // The carry-over sequence is prose and shell rather than a rendered report, so it is its own class:
@@ -1198,6 +1201,35 @@ describe("docs/commands/doctor.md", () => {
     if (worker?.state !== "checked") throw new Error("the Worker is checked");
     const quoted = `${worker.consent.purposes.length} purposes, recorded by consent ✓`;
     expect(PAGE).toContain(`the line reads \`${quoted}\``);
+  });
+
+  /**
+   * The agents fragment, pinned against a Worker composing the real `mcp()` with the open floor — the floor
+   * report is the capability's own, never a hand stub.
+   */
+  const agentWorker = (floor: Parameters<typeof mcp>[0]["floor"]) =>
+    harness.baseOptions({
+      resolveWorkersFor: async () =>
+        [
+          { name: "api", dir: "/p/apps/api", capabilities: [{ name: "auth", requiredBindings: [] }, mcp({ floor })] },
+        ] as unknown as ReturnType<typeof workerSet>,
+      buildPlan: planStub(cleanPlanFor("api")),
+      readCapabilityReach: async () => ({ ok: true, reachable: [], unreachable: [], split: [] }),
+    });
+
+  test("the agents fragment is what the renderer prints for an endpoint open to every signed-in user", async () => {
+    const report = await buildDoctorReport(docOptions(agentWorker("signed-in")));
+    const fragment = FRAGMENTS[20];
+    if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the agents fragment.`);
+    expect(renderDoctorText(report, harness.dir)).toContain(fragment);
+  });
+
+  test("the floor line the page quotes is the one a power floor prints", async () => {
+    const report = await buildDoctorReport(docOptions(agentWorker({ power: "agents:use" })));
+    expect(renderDoctorText(report, harness.dir)).toContain(
+      "MCP endpoint open only to callers whose role holds agents:use ✓",
+    );
+    expect(PAGE).toContain("`MCP endpoint open only to callers whose role holds agents:use ✓`");
   });
 });
 
