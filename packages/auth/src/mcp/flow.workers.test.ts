@@ -5,6 +5,7 @@ import { env } from "cloudflare:test";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { createBackend } from "@pithy-sh/core/src/createBackend";
+import { ForbiddenError } from "@pithy-sh/core/src/error/pithyError";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { validate } from "@pithy-sh/core/src/http/validation";
 import { appTools } from "@pithy-sh/core/src/mcp/tools";
@@ -41,6 +42,10 @@ const roles = new Map<string, string[]>();
 /** Every request the notes routes saw, as who. */
 const seen: { route: string; userId: string | null }[] = [];
 const emitted: AuditEventInput[] = [];
+/** What the app's emitter does: record, throw as a broken audit write would, or stay the no-op of a Worker with none. */
+let emitter: "record" | "throw" | "absent" = "record";
+/** The tool-call rows in {@link emitted}. */
+const toolCalls = () => emitted.filter((event) => event.action === "mcp/tool_call");
 /** The consent decisions in {@link emitted}, as the trail records them. */
 const grants = () => emitted.filter((event) => event.action.startsWith("auth/mcp_grant_"));
 
@@ -48,14 +53,19 @@ const Note = z.object({ id: z.string().describe("The note's id.") }).describe("A
 const NoteParam = z.object({ id: z.string().describe("Which note.") }).describe("Which note.");
 const NoteBody = z.object({ text: z.string().describe("What it says.") }).describe("A note to write.");
 
-/** An app with one read, one write behind a power, and one route that is not a tool. */
+/** An app with one read, one write behind a power, one read behind a power whose answer breaks, and one route that is not a tool. */
 const notes = defineCapability({
   name: "notes",
   requiredBindings: [],
   middleware: [
     (app) => {
       app.use("*", async (c, next) => {
-        c.set("emit", async (event: AuditEventInput) => void emitted.push(event));
+        if (emitter === "record") c.set("emit", async (event: AuditEventInput) => void emitted.push(event));
+        if (emitter === "throw") {
+          c.set("emit", async () => {
+            throw new Error("the audit database is down");
+          });
+        }
         c.set("actingOrganization", async () => {
           const userId = c.var.auth?.userId;
           if (userId === undefined) return null;
@@ -95,10 +105,40 @@ const notes = defineCapability({
       }),
       requireAuth(),
       validate("json", NoteBody),
-      (c) => {
+      async (c) => {
+        const { text } = c.req.valid("json");
+        if (text === "refuse") throw new ForbiddenError({ message: "Not your note.", detail: "test refusal" });
         seen.push({ route: "write", userId: c.var.auth?.userId ?? null });
-        return c.json({ id: c.req.valid("json").text });
+        await c.var.emit({
+          action: "notes/written",
+          outcome: "success",
+          actorType: "user",
+          actorId: c.var.auth?.userId ?? null,
+          requestId: c.req.header("cf-ray"),
+        });
+        return c.json({ id: text });
       },
+    );
+    app.get(
+      "/notes/:id/broken",
+      describeRoute({
+        summary: "Read a note whose body breaks mid-answer.",
+        verification: ["bearer", "session"],
+        responses: { 200: Note },
+        operation: "notes.broken",
+        tool: true,
+        power: "notes:break",
+      }),
+      requireAuth(),
+      () =>
+        new Response(
+          new ReadableStream({
+            pull(controller) {
+              controller.error(new Error("the answer broke mid-stream"));
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        ),
     );
     app.get(
       "/notes",
@@ -220,10 +260,17 @@ async function approveAndExchange(
   return (await token.json()) as { access_token: string; refresh_token?: string };
 }
 
-async function rpc(app: App, token: string, method: string, params?: Record<string, unknown>) {
+async function rpc(
+  app: App,
+  token: string,
+  method: string,
+  params?: Record<string, unknown>,
+  headers: Record<string, string> = {},
+) {
   const res = await call(app, "/mcp", {
     method: "POST",
     headers: {
+      ...headers,
       authorization: `Bearer ${token}`,
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
@@ -252,6 +299,7 @@ async function connected(app: App, address = "agent@test.com") {
 }
 
 beforeEach(async () => {
+  emitter = "record";
   roles.clear();
   seen.length = 0;
   emitted.length = 0;
@@ -517,6 +565,228 @@ describe("the role is the only authority", () => {
   });
 });
 
+describe("the audit trail", () => {
+  const MARK = "MARKED-VALUE-91c2";
+
+  test("an allowed call writes one row: the user, as an agent, through the client as it reported itself", async () => {
+    const app = buildApp();
+    const { tokens, userId, clientId } = await connected(app);
+    emitted.length = 0;
+    const read = await rpc(
+      app,
+      tokens.access_token,
+      "tools/call",
+      { name: "notes_notes_read", arguments: { path: { id: "n1" } } },
+      { "cf-connecting-ip": "203.0.113.9", "user-agent": "agent/1.0" },
+    );
+    expect(read.body.result).toMatchObject({ isError: false });
+    expect(toolCalls()).toHaveLength(1);
+    const [row] = toolCalls();
+    expect(row).toMatchObject({
+      action: "mcp/tool_call",
+      outcome: "success",
+      actorType: "user",
+      actorId: userId,
+      actorKind: "agent",
+      tenant: "org-1",
+      ip: "203.0.113.9",
+      userAgent: "agent/1.0",
+      requestId: expect.any(String),
+    });
+    expect(row?.metadata).toMatchObject({
+      tool: "notes_notes_read",
+      clientId,
+      clientReportedName: "POWERPLAY Official Sync",
+      status: 200,
+      durationMs: expect.any(Number),
+      responseBytes: JSON.stringify({ id: "n1" }).length,
+      arguments: { path: { id: "n1" } },
+    });
+  });
+
+  test("a withheld tool and a made-up one each write a denied row, told apart from an allowed call", async () => {
+    const app = buildApp();
+    const { tokens } = await connected(app);
+    emitted.length = 0;
+    await rpc(app, tokens.access_token, "tools/call", {
+      name: "notes_notes_write",
+      arguments: { body: { text: "x" } },
+    });
+    await rpc(app, tokens.access_token, "tools/call", { name: "notes_notes_burn" });
+    expect(toolCalls().map((row) => [row.outcome, row.metadata?.tool, row.metadata?.refused])).toEqual([
+      ["denied", "notes_notes_write", "withheld"],
+      ["denied", "notes_notes_burn", "unknown"],
+    ]);
+    expect(seen).toEqual([]);
+  });
+
+  test("a call the endpoint refuses before verifying a caller writes no row: there is no user to name", async () => {
+    const app = buildApp();
+    const { session, clientId, tokens } = await connected(app);
+    await call(app, `/mcp/connections/${clientId}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${session}`, origin: SCOPED_ORIGIN },
+    });
+    emitted.length = 0;
+    const params = { name: "notes_notes_read", arguments: { path: { id: "n1" } } };
+    expect((await rpc(app, tokens.access_token, "tools/call", params)).status).toBe(401);
+    expect((await rpc(app, "not-a-token", "tools/call", params)).status).toBe(401);
+    expect(toolCalls()).toEqual([]);
+    expect(seen).toEqual([]);
+  });
+
+  test("a route's refusal is denied and a route's error is failure, each with the route's status", async () => {
+    const app = buildApp();
+    const { tokens, userId } = await connected(app);
+    roles.set(userId, ["notes:write"]);
+    emitted.length = 0;
+    const write = (body: unknown) =>
+      rpc(app, tokens.access_token, "tools/call", { name: "notes_notes_write", arguments: { body } });
+    expect((await write({ text: "refuse" })).body.result).toMatchObject({ isError: true });
+    expect((await write({ wrong: 1 })).body.result).toMatchObject({ isError: true });
+    expect(toolCalls().map((row) => [row.outcome, row.metadata?.status])).toEqual([
+      ["denied", 403],
+      ["failure", 400],
+    ]);
+  });
+
+  test("no argument value reaches a row: the query and body leave their keys and types, the path its ids", async () => {
+    const app = buildApp();
+    const { tokens, userId } = await connected(app);
+    roles.set(userId, ["notes:write"]);
+    emitted.length = 0;
+    await rpc(app, tokens.access_token, "tools/call", {
+      name: "notes_notes_read",
+      arguments: { path: { id: "n1", extra: MARK }, query: { q: MARK, page: 2 } },
+    });
+    await rpc(app, tokens.access_token, "tools/call", {
+      name: "notes_notes_write",
+      arguments: { body: { text: MARK, nested: { inner: MARK }, list: [MARK] } },
+    });
+    expect(JSON.stringify(toolCalls())).not.toContain(MARK);
+    expect(toolCalls().map((row) => row.metadata?.arguments)).toEqual([
+      {
+        path: { id: "n1" },
+        query: {
+          type: "object",
+          keys: [
+            { key: "page", type: "number" },
+            { key: "q", type: "string" },
+          ],
+        },
+      },
+      {
+        body: {
+          type: "object",
+          keys: [
+            { key: "list", type: "array" },
+            { key: "nested", type: "object" },
+            { key: "text", type: "string" },
+          ],
+        },
+      },
+    ]);
+  });
+
+  test("arguments that build no request write a failure row with the refusal's status and size", async () => {
+    const app = buildApp();
+    const { tokens } = await connected(app);
+    emitted.length = 0;
+    const read = await rpc(app, tokens.access_token, "tools/call", { name: "notes_notes_read", arguments: {} });
+    const [content] = (read.body.result?.content ?? []) as { text: string }[];
+    expect(seen).toEqual([]);
+    expect(toolCalls()).toHaveLength(1);
+    expect(toolCalls()[0]).toMatchObject({ outcome: "failure", resourceId: "notes_notes_read" });
+    expect(toolCalls()[0]?.metadata).toMatchObject({
+      status: 400,
+      responseBytes: new TextEncoder().encode(content?.text ?? "").byteLength,
+      arguments: {},
+    });
+  });
+
+  test("a call that throws on its way back still writes a row, as a 500 with nothing answered", async () => {
+    const app = buildApp();
+    const { tokens, userId } = await connected(app);
+    roles.set(userId, ["notes:break"]);
+    emitted.length = 0;
+    await rpc(app, tokens.access_token, "tools/call", {
+      name: "notes_notes_broken",
+      arguments: { path: { id: "n1" } },
+    });
+    expect(toolCalls()).toHaveLength(1);
+    expect(toolCalls()[0]).toMatchObject({ outcome: "failure", resourceId: "notes_notes_broken" });
+    expect(toolCalls()[0]?.metadata).toMatchObject({
+      status: 500,
+      responseBytes: 0,
+      arguments: { path: { id: "n1" } },
+    });
+  });
+
+  test("a body padded with huge key names still writes a bounded row for the write it made", async () => {
+    const app = buildApp();
+    const { tokens, userId } = await connected(app);
+    roles.set(userId, ["notes:write"]);
+    emitted.length = 0;
+    const junk = Object.fromEntries(Array.from({ length: 63 }, (_, i) => [`${i}`.padEnd(40_000, "j"), 1]));
+    const write = await rpc(app, tokens.access_token, "tools/call", {
+      name: "notes_notes_write",
+      arguments: { path: { id: "x".repeat(40_000) }, body: { text: "kept", ...junk } },
+    });
+    expect(write.body.result).toMatchObject({ isError: false, structuredContent: { id: "kept" } });
+    expect(seen).toEqual([{ route: "write", userId }]);
+    expect(toolCalls()).toHaveLength(1);
+    expect(toolCalls()[0]?.outcome).toBe("success");
+    expect(JSON.stringify(toolCalls()[0]).length).toBeLessThan(32_000);
+  });
+
+  test("the route's own rows carry the tool call's request id, given one by the edge or not", async () => {
+    const app = buildApp();
+    const { tokens, userId } = await connected(app);
+    roles.set(userId, ["notes:write"]);
+    for (const headers of [{ "cf-ray": "ray-from-the-edge" }, {}] as Record<string, string>[]) {
+      emitted.length = 0;
+      await rpc(
+        app,
+        tokens.access_token,
+        "tools/call",
+        { name: "notes_notes_write", arguments: { body: { text: "x" } } },
+        headers,
+      );
+      const written = emitted.find((event) => event.action === "notes/written");
+      const [row] = toolCalls();
+      expect(row?.requestId).toEqual(expect.any(String));
+      expect(written?.requestId).toBe(row?.requestId);
+    }
+    expect(toolCalls()[0]?.requestId).not.toBe("ray-from-the-edge");
+  });
+
+  test("a failing audit write does not fail the tool call", async () => {
+    const app = buildApp();
+    const { tokens, userId } = await connected(app);
+    emitter = "throw";
+    const read = await rpc(app, tokens.access_token, "tools/call", {
+      name: "notes_notes_read",
+      arguments: { path: { id: "n1" } },
+    });
+    expect(read.body.result).toMatchObject({ isError: false, structuredContent: { id: "n1" } });
+    expect(seen).toEqual([{ route: "read", userId }]);
+  });
+
+  test("with no audit capability composed, a tool call still succeeds and nothing is written", async () => {
+    const app = buildApp();
+    const { tokens, userId } = await connected(app);
+    emitter = "absent";
+    emitted.length = 0;
+    const read = await rpc(app, tokens.access_token, "tools/call", {
+      name: "notes_notes_read",
+      arguments: { path: { id: "n1" } },
+    });
+    expect(read.body.result).toMatchObject({ isError: false, structuredContent: { id: "n1" } });
+    expect(seen).toEqual([{ route: "read", userId }]);
+    expect(emitted).toEqual([]);
+  });
+});
+
 describe("the floor", () => {
   test("a power floor refuses a caller whose role lacks it, and admits one who holds it", async () => {
     const app = buildApp({ power: "agents:use" });
@@ -559,7 +829,7 @@ describe("consent", () => {
       expect.objectContaining({
         capability: "notes",
         reachable: 1,
-        total: 2,
+        total: 3,
         operations: [expect.objectContaining({ tool: "notes_notes_read" })],
       }),
     ]);

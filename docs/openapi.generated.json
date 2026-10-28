@@ -9295,7 +9295,7 @@
             "name": "actorKind",
             "in": "query",
             "required": false,
-            "description": "Filter to one kind of management client: `agent`, `dashboard` or `script`. What `actorType=control-plane` cannot say on its own.",
+            "description": "Filter to one kind of client: `agent`, `dashboard` or `script`. `agent` finds a management agent's rows and every row a user's MCP client wrote, on both paths.",
             "schema": {
               "type": "string",
               "enum": [
@@ -9526,7 +9526,7 @@
                             ]
                           },
                           "actorKind": {
-                            "description": "For a `control-plane` actor, which kind of management client acted — `agent`, `dashboard` or `script` — or null. Absent from a Worker older than the field.",
+                            "description": "Which kind of client acted — `agent`, `dashboard` or `script` — or null. A `control-plane` actor's connection kind, or `agent` on a `user` row an MCP client wrote. Absent from a Worker older than the field.",
                             "anyOf": [
                               {
                                 "type": "string",
@@ -9757,7 +9757,7 @@
                           ]
                         },
                         "actorKind": {
-                          "description": "For a `control-plane` actor, which kind of management client acted — `agent`, `dashboard` or `script` — or null. Absent from a Worker older than the field.",
+                          "description": "Which kind of client acted — `agent`, `dashboard` or `script` — or null. A `control-plane` actor's connection kind, or `agent` on a `user` row an MCP client wrote. Absent from a Worker older than the field.",
                           "anyOf": [
                             {
                               "type": "string",
@@ -10055,7 +10055,7 @@
                                     "type": "null"
                                   }
                                 ],
-                                "description": "For a `control-plane` actor, which kind of management client made the change, or null."
+                                "description": "Which kind of client made the change — a `control-plane` actor's connection kind, or `agent` for a user's MCP client — or null."
                               },
                               "detail": {
                                 "type": "string",
@@ -10173,7 +10173,7 @@
                                     "type": "null"
                                   }
                                 ],
-                                "description": "For a `control-plane` actor, which kind of management client made the change, or null."
+                                "description": "Which kind of client made the change — a `control-plane` actor's connection kind, or `agent` for a user's MCP client — or null."
                               },
                               "detail": {
                                 "type": "string",
@@ -10333,7 +10333,7 @@
                                     "type": "null"
                                   }
                                 ],
-                                "description": "For a `control-plane` actor, which kind of management client made the change, or null."
+                                "description": "Which kind of client made the change — a `control-plane` actor's connection kind, or `agent` for a user's MCP client — or null."
                               },
                               "detail": {
                                 "type": "string",

@@ -109,8 +109,17 @@ export function toolUrl(tool: AppTool, args: ToolArguments): string {
 /**
  * The request a call makes to its route, registered to run as `auth`. Refused when the URL parser would read the
  * built path as any other path: whatever the reason, the request would then reach a route the tool is not.
+ *
+ * `correlation` is copied onto it — the request id as `cf-ray`, where every route reads it, and the caller's address
+ * and user agent — so the rows the route writes join the tool call's own. None of it is a credential.
  */
-export function dispatchRequest(origin: string, tool: AppTool, args: ToolArguments, auth: AuthContext): Request {
+export function dispatchRequest(
+  origin: string,
+  tool: AppTool,
+  args: ToolArguments,
+  auth: AuthContext,
+  correlation: Readonly<Record<string, string>> = {},
+): Request {
   const hasBody = args.body !== undefined && tool.method !== "GET" && tool.method !== "HEAD";
   const built = toolUrl(tool, args);
   const url = new URL(built, origin);
@@ -118,22 +127,28 @@ export function dispatchRequest(origin: string, tool: AppTool, args: ToolArgumen
   if (url.pathname !== builtPath) elsewhere(tool, `${builtPath} resolves to ${url.pathname}`);
   const request = new Request(url, {
     method: tool.method,
-    headers: { accept: "application/json", ...(hasBody ? { "content-type": "application/json" } : {}) },
+    headers: {
+      ...correlation,
+      accept: "application/json",
+      ...(hasBody ? { "content-type": "application/json" } : {}),
+    },
     ...(hasBody ? { body: JSON.stringify(args.body) } : {}),
   });
   dispatched.set(request, auth);
   return request;
 }
 
-/** A route's answer, as a tool call reports it: the status, and the body parsed when it is JSON. */
-export async function dispatchedOutcome(response: Response): Promise<{ status: number; body: unknown }> {
-  const text = await response.text();
+/** A route's answer, as a tool call reports it: the status, the body parsed when it is JSON, and its size in bytes. */
+export async function dispatchedOutcome(response: Response): Promise<{ status: number; body: unknown; bytes: number }> {
+  const raw = new Uint8Array(await response.arrayBuffer());
+  const text = new TextDecoder().decode(raw);
+  const bytes = raw.byteLength;
   if ((response.headers.get("content-type") ?? "").includes("json")) {
     try {
-      return { status: response.status, body: JSON.parse(text) as unknown };
+      return { status: response.status, body: JSON.parse(text) as unknown, bytes };
     } catch {
-      return { status: response.status, body: text };
+      return { status: response.status, body: text, bytes };
     }
   }
-  return { status: response.status, body: text };
+  return { status: response.status, body: text, bytes };
 }

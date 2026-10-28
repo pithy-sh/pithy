@@ -28,12 +28,21 @@ import { resolveDb } from "../../http/resolve";
 import type { AuthInstance } from "../../instance/auth";
 import { lifecycleRefusalFor } from "../../lifecycle/enforce";
 import { PACKAGE_VERSION } from "../../version.generated";
+import { argumentClass } from "../argumentClass";
 import { consentView } from "../consent";
-import { dispatchedOutcome, dispatchRequest, toolArguments } from "../dispatch";
+import { dispatchedOutcome, dispatchRequest, type ToolArguments, toolArguments } from "../dispatch";
 import { floorAdmits, type McpFloor } from "../floor";
 import type { McpHost } from "../host";
 import { MCP_SCOPE, MCP_SCOPES } from "../provider";
 import { answer } from "../rpc";
+import {
+  recordToolCall,
+  requestedToolName,
+  type ToolCallActor,
+  type ToolCallCorrelation,
+  type ToolCallResult,
+  toolCallEvent,
+} from "../toolAudit";
 import { redirectList } from "./redirectList";
 import {
   AuthorizationServerMetadata,
@@ -67,11 +76,17 @@ export interface McpRouteDeps {
   readonly tools: () => readonly AppTool[];
 }
 
-/** A verified MCP caller: who, through which client, and what their role allows. */
-interface McpCaller {
+/** A verified MCP caller: who, through which client, for which organization, and what their role allows. */
+interface VerifiedCaller {
   readonly auth: AuthContext;
   readonly clientId: string;
+  readonly tenant: string | null;
   readonly roleAllows: ((power: string) => boolean) | null;
+}
+
+/** A verified caller, and when their request arrived. */
+interface McpCaller extends VerifiedCaller {
+  readonly receivedAt: number;
 }
 
 /** Each MCP request's verified caller, set by {@link mcpCallerGuard} and read by the endpoint's handler. */
@@ -138,7 +153,7 @@ function claim(payload: Record<string, unknown>, name: string): string | undefin
  * which client; it is checked for its signature, issuer, audience and expiry, for a consent still on record, for a
  * session still live, and for an account in good standing. What the caller may *do* is never read off it.
  */
-async function verifyCaller(c: Context<PithyHonoEnv>, deps: McpRouteDeps): Promise<McpCaller | Response> {
+async function verifyCaller(c: Context<PithyHonoEnv>, deps: McpRouteDeps): Promise<VerifiedCaller | Response> {
   const bearer = /^Bearer\s+(.+)$/i.exec(c.req.header("authorization") ?? "")?.[1]?.trim();
   if (!bearer) return challenge(c, deps, "no bearer token on the MCP request");
   const host = deps.host();
@@ -193,7 +208,7 @@ async function verifyCaller(c: Context<PithyHonoEnv>, deps: McpRouteDeps): Promi
       detail: `user ${userId} is below the MCP endpoint's floor`,
     });
   }
-  return { auth, clientId, roleAllows };
+  return { auth, clientId, tenant: acting?.organizationId ?? null, roleAllows };
 }
 
 /**
@@ -203,10 +218,29 @@ async function verifyCaller(c: Context<PithyHonoEnv>, deps: McpRouteDeps): Promi
  */
 function mcpCallerGuard(deps: McpRouteDeps): MiddlewareHandler<PithyHonoEnv> {
   return async (c, next) => {
+    const receivedAt = Date.now();
     const caller = await verifyCaller(c, deps);
     if (caller instanceof Response) return caller;
-    callers.set(c.req.raw, caller);
+    callers.set(c.req.raw, { ...caller, receivedAt });
     await next();
+  };
+}
+
+/** What a request's tool-call row and its route's rows are joined by, and where the call came from. */
+function correlationOf(c: Context<PithyHonoEnv>): ToolCallCorrelation {
+  return {
+    requestId: c.req.header("cf-ray") ?? crypto.randomUUID(),
+    ip: c.req.header("cf-connecting-ip") ?? null,
+    userAgent: c.req.header("user-agent") ?? null,
+  };
+}
+
+/** The correlation, as the headers the dispatched request carries to the route. */
+function correlationHeaders(correlation: ToolCallCorrelation): Record<string, string> {
+  return {
+    "cf-ray": correlation.requestId,
+    ...(correlation.ip === null ? {} : { "cf-connecting-ip": correlation.ip }),
+    ...(correlation.userAgent === null ? {} : { "user-agent": correlation.userAgent }),
   };
 }
 
@@ -215,17 +249,19 @@ async function callTool(
   c: Context<PithyHonoEnv>,
   deps: McpRouteDeps,
   caller: McpCaller,
+  correlation: ToolCallCorrelation,
   tool: AppTool,
-  args: Record<string, unknown>,
-): Promise<{ status: number; body: unknown }> {
+  args: ToolArguments,
+): Promise<{ status: number; body: unknown; bytes: number }> {
   let request: Request;
   try {
-    request = dispatchRequest(new URL(c.req.url).origin, tool, toolArguments(args), caller.auth);
+    request = dispatchRequest(new URL(c.req.url).origin, tool, args, caller.auth, correlationHeaders(correlation));
   } catch (error) {
     // Arguments that build no request to the tool's route are the agent's to correct, so they are answered as the
     // route would answer them, inside a tool result, rather than as an HTTP failure of the transport.
     if (!(error instanceof PithyError)) throw error;
-    return { status: error.payload.status, body: { error: HttpError.encode(error.payload) } };
+    const body = { error: HttpError.encode(error.payload) };
+    return { status: error.payload.status, body, bytes: new TextEncoder().encode(JSON.stringify(body)).byteLength };
   }
   let executionCtx: ExecutionContext | undefined;
   try {
@@ -234,6 +270,68 @@ async function callTool(
     executionCtx = undefined;
   }
   return dispatchedOutcome(await deps.app().fetch(request, c.env, executionCtx));
+}
+
+/** Who a tool-call row names: the caller, and the client's name as it registered itself. */
+async function toolCallActor(c: Context<PithyHonoEnv>, deps: McpRouteDeps, caller: McpCaller): Promise<ToolCallActor> {
+  const client = await (await adapterOf(await deps.host().instance(c))).findOne<{ name?: string | null }>({
+    model: "oauthClient",
+    where: [{ field: "clientId", value: caller.clientId }],
+  });
+  return {
+    userId: caller.auth.userId,
+    sessionId: caller.auth.sessionId,
+    clientId: caller.clientId,
+    clientReportedName: client?.name ?? null,
+    tenant: caller.tenant,
+  };
+}
+
+/** Write the row for one tool call. Never fails the call. */
+function auditToolCall(
+  c: Context<PithyHonoEnv>,
+  deps: McpRouteDeps,
+  caller: McpCaller,
+  correlation: ToolCallCorrelation,
+  tool: string | null,
+  result: ToolCallResult,
+): Promise<void> {
+  const durationMs = Date.now() - caller.receivedAt;
+  return recordToolCall(c.var.emit, async () =>
+    toolCallEvent({ actor: await toolCallActor(c, deps, caller), correlation, tool, durationMs, result }),
+  );
+}
+
+/** One tool call, made and recorded. */
+async function auditedCall(
+  c: Context<PithyHonoEnv>,
+  deps: McpRouteDeps,
+  caller: McpCaller,
+  correlation: ToolCallCorrelation,
+  tool: AppTool,
+  raw: Record<string, unknown>,
+): Promise<{ status: number; body: unknown }> {
+  const args = toolArguments(raw);
+  const classed = argumentClass(tool.path, args);
+  let outcome: { status: number; body: unknown; bytes: number };
+  try {
+    outcome = await callTool(c, deps, caller, correlation, tool, args);
+  } catch (error) {
+    await auditToolCall(c, deps, caller, correlation, tool.name, {
+      kind: "answered",
+      status: 500,
+      responseBytes: 0,
+      arguments: classed,
+    });
+    throw error;
+  }
+  await auditToolCall(c, deps, caller, correlation, tool.name, {
+    kind: "answered",
+    status: outcome.status,
+    responseBytes: outcome.bytes,
+    arguments: classed,
+  });
+  return outcome;
 }
 
 /** Emit one consent event. Never fatal: the audit seam swallows its own failures. */
@@ -352,10 +450,16 @@ export function registerMcpRoutes(app: Hono<PithyHonoEnv>, deps: McpRouteDeps): 
     async (c) => {
       const caller = callers.get(c.req.raw);
       if (caller === undefined) return challenge(c, deps, "the MCP request reached its handler unverified");
+      const correlation = correlationOf(c);
       const reply = await answer(c.req.valid("json"), {
         server: { name: "pithy", version: PACKAGE_VERSION },
         tools: async () => offeredTools(deps.tools(), { roleAllows: caller.roleAllows, scopes: caller.auth.scopes }),
-        call: (tool, args) => callTool(c, deps, caller, tool, args),
+        call: (tool, args) => auditedCall(c, deps, caller, correlation, tool, args),
+        refused: (name) =>
+          auditToolCall(c, deps, caller, correlation, requestedToolName(name), {
+            kind: "refused",
+            reason: deps.tools().some((tool) => tool.name === name) ? "withheld" : "unknown",
+          }),
       });
       if (reply === null) return c.body(null, 202);
       return c.json(reply as RpcResponse);
