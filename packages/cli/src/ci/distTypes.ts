@@ -226,8 +226,11 @@ export const SIDES: readonly Side[] = ["input", "output"];
  * `pithy_multiplayer_void_keys` — the index of sessions in flight, and every idempotency key spent voiding a result.
  * `@pithy-sh/support`'s `pithy_support_embeddings` holds the model that embedded each message into the semantic
  * index, which is what `pithy vector reprocess --index support-messages` re-embeds by.
+ * `@pithy-sh/consent` brings `pithy_consent_records`,
+ * `pithy_consent_documents` and `pithy_consent_merges` — every grant and withdrawal with its evidence, each signed
+ * document kept once per hash, and every visitor merged into an account at sign-in.
  */
-export const CENSUS = { tables: 76, packages: 18 };
+export const CENSUS = { tables: 79, packages: 19 };
 
 /**
  * Where the generated programs are written — **outside the checkout, and that is forced**.

@@ -2751,6 +2751,11 @@ export const COMMANDS = {
         "required": false,
         "repeatable": false
       },
+      "--consent": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      },
       "--dry-run": {
         "type": "boolean",
         "required": false,

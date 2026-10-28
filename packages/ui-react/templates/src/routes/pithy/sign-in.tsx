@@ -10,7 +10,7 @@ import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { authConfig } from "../../pithy-config";
 import { navigate, routeTable, screenPath, useSearchParam } from "../../router";
-import { refusedAccountScreen } from "../../session";
+import { refusedAccountScreen, resumeQuery } from "../../session";
 import { Turnstile, turnstilePending, turnstileRequest } from "../../turnstile";
 // The magic link's callback URL is built from this, never from a literal of the same shape. The two are
 // one statement for the reason #393 gives: renaming `callback.tsx`'s path is an edit that typechecks,
@@ -469,7 +469,10 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
   async function sendLink(event: FormEvent): Promise<void> {
     event.preventDefault();
     setBusy(true);
-    await sendMagicLink({ email, callbackURL: `${origin}${callbackPath}` }, { ...client, gate: check.attach });
+    await sendMagicLink(
+      { email, callbackURL: `${origin}${callbackPath}${resumeQuery()}` },
+      { ...client, gate: check.attach },
+    );
     setBusy(false);
     // Always the same answer, whether or not the address is registered. Telling the two apart is an
     // enumeration oracle, so neither the copy nor the timing of it confirms either way.
@@ -487,7 +490,7 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
     const started = await startSocialSignIn(
       {
         provider: provider.id,
-        callbackURL: `${origin}${callbackPath}`,
+        callbackURL: `${origin}${callbackPath}${resumeQuery()}`,
         // The provider's *id*, resolved back through `SOCIAL` on return — never its label, which would
         // be attacker-chosen text rendered as product copy. Better Auth appends `&error=` to this, so
         // the parameter survives the round trip that component state cannot.

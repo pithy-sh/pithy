@@ -23,6 +23,7 @@ import {
   resolveMicrosoftCredentials,
   resolveSessionSecrets,
 } from "../instance/secrets";
+import { mcpAuthorizationServer } from "../mcp/provider";
 import { baseURLResolver } from "./baseUrl";
 
 /**
@@ -139,6 +140,9 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
     log: (c.get("log") ?? createWorkerLogger({ name: "auth" })).child("auth"),
   });
   const listener = wiring.onSessionRevoked;
+  // Never `cfg.baseURL` directly — see the `baseURL` key below. Named once, because the MCP endpoint's resource is
+  // built from the same address the instance runs under.
+  const baseURL = baseURLResolver(cfg.baseURL)(c.req.raw);
   return makeAuth({
     db: authDatabase(d1),
     // The adopter's listener, bound to *this* request's binding. The instance is built per request, so
@@ -152,7 +156,7 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
     // one of those has to name the address this run is actually serving on — not the production origin
     // the config records. The gate lives in `baseURLResolver` and nowhere else; outside `dev` this is
     // `cfg.baseURL`, unchanged. Resolved here because the instance is itself built per request.
-    baseURL: baseURLResolver(cfg.baseURL)(c.req.raw),
+    baseURL,
     // The language this request negotiated, for the translator plugin. `c.var.locale` is the project's
     // own chain already resolved — never a second negotiation of Better Auth's, which would let the
     // screens and the refusals disagree about who is reading (#452). `null` when nothing negotiated,
@@ -195,6 +199,11 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
     // The adopter's additional Better Auth plugins, exactly as `auth({ plugins: [...] })` declared them
     // and already checked for additivity at `auth()` call time. The same list the derived migrations
     // were built from — the routes a plugin serves and the tables it needs come from one declaration.
-    plugins: cfg.plugins,
+    plugins: wiring.mcp
+      ? [
+          ...cfg.plugins,
+          ...mcpAuthorizationServer({ resource: `${baseURL}${wiring.mcp.path}`, consentPage: wiring.mcp.consentPage }),
+        ]
+      : cfg.plugins,
   });
 }

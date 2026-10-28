@@ -30,6 +30,14 @@ function routed(name: string, base: string) {
 const WITH_AUTH: WorkerConfig = { capabilities: [routed("auth", "/auth")] };
 const WITHOUT_AUTH: WorkerConfig = { capabilities: [routed("leaderboard", "/leaderboard")] };
 const WITH_PAYMENTS: WorkerConfig = { capabilities: [routed("auth", "/auth"), routed("payments", "/payments")] };
+const WITH_MCP: WorkerConfig = { capabilities: [routed("auth", "/auth"), routed("mcp", "/mcp")] };
+
+/** The agent screens: what an MCP client's authorization lands on, and where a person revokes it. */
+const MCP_SCREENS = [
+  "src/routes/pithy/connected-applications.tsx",
+  "src/routes/pithy/agent-consent.test.tsx",
+  "src/routes/pithy/agent-consent.tsx",
+];
 
 /**
  * A worker composing a capability that mounts its route **only** in a `dev` composition — the shape
@@ -173,6 +181,7 @@ describe("pithy ui", () => {
       { screens: "auth", suggestion: true },
       { screens: "payments", suggestion: true },
       { screens: "organization", suggestion: false },
+      { screens: "consent", suggestion: false },
     ]);
     expect(report.auth).toBe(false);
     expect(report.payments).toBe(false);
@@ -188,6 +197,21 @@ describe("pithy ui", () => {
     // Derived from the real route table, so the payments routes reach the worker instead of the SPA shell.
     expect(report.runWorkerFirst).toContain("/payments");
     expect(report.runWorkerFirst).toContain("/payments/*");
+  });
+
+  test("a worker composing mcp beside auth gets the consent and connected-applications screens", async () => {
+    const report = await runUiAdd({ ...options(WITH_MCP), auth: true });
+    for (const file of MCP_SCREENS) expect(report.created, file).toContain(file);
+  });
+
+  test("a worker composing mcp with the auth screens off gets no agent screens", async () => {
+    const report = await runUiAdd({ ...options(WITH_MCP), auth: false });
+    for (const file of MCP_SCREENS) expect(report.created, file).not.toContain(file);
+  });
+
+  test("a worker composing auth and no mcp gets no agent screens", async () => {
+    const report = await runUiAdd({ ...options(WITH_AUTH), auth: true });
+    for (const file of MCP_SCREENS) expect(report.created, file).not.toContain(file);
   });
 
   test("--payments on a worker with no payments capability is actionable, never a broken scaffold", async () => {

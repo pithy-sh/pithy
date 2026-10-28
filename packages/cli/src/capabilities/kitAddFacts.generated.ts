@@ -21,6 +21,12 @@ export const KIT_ADD_FACTS = {
     ],
     "requiredOptions": []
   },
+  "consent": {
+    "peerCapabilities": [
+      "auth"
+    ],
+    "requiredOptions": []
+  },
   "controlplane": {
     "peerCapabilities": [],
     "requiredOptions": []

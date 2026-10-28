@@ -28,6 +28,7 @@ import { payments_0001_purchases } from "./migrations/0001_purchases";
 import { payments_0002_allowances } from "./migrations/0002_allowances";
 import { payments_0003_webhook_targets } from "./migrations/0003_webhook_targets";
 import { type PaymentsPeer, paymentsPeer } from "./peer";
+import { paymentsProcessing } from "./processing/activities";
 import { paymentsUserPurge } from "./purge/contribution";
 import { paymentsInapplicableSecrets, paymentsSecretBranches } from "./secret/branches";
 import { paymentsSecretsRegistry } from "./secret/registry";
@@ -89,11 +90,11 @@ export type PaymentsOptions = PaymentsConfigInput & {
  * Structural, and recognized by a copied three-line predicate rather than by importing the ledger's own
  * `isLedgerCapability`. The ledger is an **optional** peer, and a specifier naming it — static, or a dynamic
  * `import()` behind a `try` — is one a bundler resolves whether or not the branch holding it ever runs, so a
- * project that never installed it could not bundle payments at all (#645). So payments names the package
+ * project that never installed it could not bundle payments at all. So payments names the package
  * nowhere, not even for a type, and the ledger reaches it through the composition: this hook finds it, and
  * {@link payments} keeps its `ledgerPeer` for the routes.
  *
- * `ledgerPeer` is optional here because a ledger released before #645 does not carry one, and that is a
+ * `ledgerPeer` is optional here because an older ledger does not carry one, and that is a
  * composition {@link checkLedgerGrants} refuses by name rather than a purchase that fails later.
  */
 interface LedgerPeerCapability extends Capability {
@@ -161,7 +162,7 @@ function checkLedgerGrants({ capabilities }: CapabilityComposeContext, config: P
       detail: `Products with a \`grants.ledger\` clause: ${granting.map((entry) => entry.id).join(", ")}. Crediting needs @pithy-sh/ledger composed in the same Worker.`,
     });
   }
-  // A ledger from before #645 is composed and cannot be called: it carries no peer surface, and payments no
+  // An older ledger is composed and cannot be called: it carries no peer surface, and payments no
   // longer imports the package to reach around it. Refused here, by name, rather than as the first purchase.
   if (typeof peer.ledgerPeer?.openLedger !== "function") {
     throw new ValidationError({
@@ -209,7 +210,7 @@ function checkLedgerGrants({ capabilities }: CapabilityComposeContext, config: P
  * `pithy.config.ts` is evaluated and the CLI evaluates it on nearly every command. Refusing the
  * placeholder here would leave the adopter with no `pithy` at all in the project the scaffold just landed
  * in. `requireImplementedSubject`, on the capability's `boot` hook, is where the placeholder is refused —
- * `createEntrypoint` runs it and nothing else does, so the Worker still will not serve (#500).
+ * `createEntrypoint` runs it and nothing else does, so the Worker still will not serve.
  */
 function requireResolvableSubject(config: PaymentsConfig, resolveSubject: PaymentsSubjectResolver | undefined): void {
   if (config.billingSubject !== "organization" || resolveSubject !== undefined) return;
@@ -351,7 +352,7 @@ export interface PaymentsCapability
   /**
    * What a capability composed beside this one reads purchases through — `support`, showing an operator what a
    * sender bought. Found in its `compose` hook, so it never imports this package and a project without
-   * payments bundles it (#645). See `peer.ts`.
+   * payments bundles it. See `peer.ts`.
    */
   paymentsPeer: PaymentsPeer;
   /**
@@ -386,8 +387,8 @@ export interface PaymentsCapability
  * than at the first receipt. Auth is *not* listed — it is a seam: under `billingSubject: "user"` a purchase
  * scopes to the authenticated caller, so with no auth capability composed every route denies, which is the
  * right failure and needs no dependency edge. `@pithy-sh/ledger` is likewise a seam: `compose` finds it among
- * the composed capabilities and hands its `ledgerPeer` to the routes, and nothing in this package imports it
- * (#645). Only a product whose catalog entry declares `grants` ever calls it. Both belong in the manifest's
+ * the composed capabilities and hands its `ledgerPeer` to the routes, and nothing in this package imports it.
+ * Only a product whose catalog entry declares `grants` ever calls it. Both belong in the manifest's
  * `optionalCapabilities`.
  *
  * Under `billingSubject: "organization"` the holder is not the caller and cannot be derived from them, so
@@ -455,7 +456,7 @@ export function payments(options: PaymentsOptions): PaymentsCapability {
     // The package this capability ships in and the version it ships at, both stamped by
     // `scripts/stampVersions.ts` — a Worker cannot read its own package.json. Reported per capability by
     // the control-plane manifest, and reported together: a release feed is keyed by package name, so the
-    // version alone leaves a client guessing the key (#626).
+    // version alone leaves a client guessing the key.
     version: PACKAGE_VERSION,
     package: PACKAGE_NAME,
     dependsOn: ["secrets"],
@@ -467,14 +468,14 @@ export function payments(options: PaymentsOptions): PaymentsCapability {
     // schema knows five are possible; only this catalog knows which are on. See `secret/branches.ts`.
     secretBranches: paymentsSecretBranches(resolved.rails),
     // And whether the bundle is reachable at all. With every rail off, every read of it is behind a
-    // refusal — so it is not outstanding work, and `pithy doctor` asked for it anyway (#541).
+    // refusal — so it is not outstanding work, and `pithy doctor` asked for it anyway.
     inapplicableSecrets: paymentsInapplicableSecrets(resolved.rails),
     // The one durable job: the nightly reconciliation pass. Declared here so `createBackend` derives its
     // binding and types `c.var.workflows.trigger("payments/reconcile", …)` precisely.
     workflows,
     // The one thing this capability cannot check on its own: whether the ledger it credits agrees the
     // currency exists. See `checkLedgerGrants` for why the failure is otherwise invisible. And the one place
-    // the ledger reaches payments at all: found among the composed capabilities, never imported (#645).
+    // the ledger reaches payments at all: found among the composed capabilities, never imported.
     compose: (context) => {
       checkLedgerGrants(context, resolved);
       peers.ledger = composedLedger(context.capabilities);
@@ -504,7 +505,7 @@ export function payments(options: PaymentsOptions): PaymentsCapability {
     // manifest naming `/billing/entitlements/grant` — the whole point of describing rather than
     // assuming. `routeContract.test.ts` checks these against the routes actually registered.
     adminRoutes: paymentsAdminRoutes(resolved.basePath),
-    // The one decision a management client cannot infer: what this project bills (#422). Built from the
+    // The one decision a management client cannot infer: what this project bills. Built from the
     // resolved config for the same reason the routes are, and it is the only check there is — nothing
     // downstream compares a stated fact against the seam that acts on it.
     manifestConfig: paymentsManifestConfig(resolved.billingSubject),
@@ -513,8 +514,10 @@ export function payments(options: PaymentsOptions): PaymentsCapability {
     routes: registerPaymentsRoutes({ config: resolved, subject, ledger: () => peers.ledger }),
     seeds: [paymentsExampleSeed],
     // A person's purchases and what they granted are kept through their purge, for tax law, and exported on an access
-    // request with the basis that keeps them (#814).
+    // request with the basis that keeps them.
     purge: [paymentsUserPurge()],
+    // Each rail the config turns on is named as a recipient of the purchases made on it.
+    processing: paymentsProcessing(resolved.rails),
   });
 
   return Object.assign(capability, {

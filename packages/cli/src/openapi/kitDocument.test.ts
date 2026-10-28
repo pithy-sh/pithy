@@ -8,6 +8,7 @@ import { undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi
 import { describe, expect, test } from "vitest";
 import { CATALOG } from "../capabilities/catalog";
 import {
+  KIT_COMPANIONS,
   KIT_COMPOSITION,
   KIT_CONTRACT_PATH,
   KIT_SOCKET_CONTRACT_PATH,
@@ -87,7 +88,11 @@ describe("the kit's OpenAPI document", () => {
   test("the document is not vacuous: it holds the kit's routes, under every capability's tag", () => {
     // A floor rather than the count, which moves with every route a capability adds. 174 when written.
     expect(operationCount(document)).toBeGreaterThanOrEqual(170);
-    const expected = ["core", ...Object.keys(KIT_COMPOSITION).filter((name) => !(name in ROUTELESS))].sort();
+    const expected = [
+      "core",
+      ...Object.keys(KIT_COMPOSITION).filter((name) => !(name in ROUTELESS)),
+      ...Object.keys(KIT_COMPANIONS),
+    ].sort();
     expect(document.tags.map((tag) => tag.name).sort()).toEqual(expected);
     for (const name of Object.keys(ROUTELESS)) {
       expect(groups.find((group) => group.tag === name)?.routes, name).toEqual([]);

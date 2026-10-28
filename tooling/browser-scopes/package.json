@@ -16,6 +16,7 @@
     "@pithy-sh/audit": "workspace:*",
     "@pithy-sh/auth": "workspace:*",
     "@pithy-sh/cli": "workspace:*",
+    "@pithy-sh/consent": "workspace:*",
     "@pithy-sh/core": "workspace:*",
     "@pithy-sh/email": "workspace:*",
     "@pithy-sh/leaderboard": "workspace:*",

@@ -77,6 +77,7 @@ describe("controlplane capability", () => {
       "GET /admin/cp/migrations",
       "GET /admin/cp/ping",
       "GET /admin/cp/privacy",
+      "GET /admin/cp/processing",
       "POST /admin/cp/holds",
       "POST /admin/cp/holds/:holdId/release",
       "POST /admin/cp/keys",
@@ -85,7 +86,7 @@ describe("controlplane capability", () => {
     ]);
   });
 
-  test("registers exactly the fourteen seam routes", () => {
+  test("registers exactly the fifteen seam routes", () => {
     expect(registeredRoutes(controlplane())).toEqual([
       "GET /control-plane/erasure",
       "GET /control-plane/erasure/:subjectType/:subjectId",
@@ -96,6 +97,7 @@ describe("controlplane capability", () => {
       "GET /control-plane/migrations",
       "GET /control-plane/ping",
       "GET /control-plane/privacy",
+      "GET /control-plane/processing",
       "POST /control-plane/holds",
       "POST /control-plane/holds/:holdId/release",
       "POST /control-plane/keys",
@@ -112,7 +114,7 @@ describe("controlplane capability", () => {
     expect(app?.binding).toBe("DB");
     expect(app?.migrationOrder).toBe(CONTROLPLANE_MIGRATION_ORDER);
     // Append-only, and the order is the order they run in. `0002` adds the origin a connection was
-    // registered against (#614), which nothing on this side reads — it is the operator's side that
+    // registered against, which nothing on this side reads — it is the operator's side that
     // needs it, so their commands stop asking whichever dashboard a flag's default names.
     expect(Object.keys(app?.migrations ?? {})).toEqual([
       "0001_init",

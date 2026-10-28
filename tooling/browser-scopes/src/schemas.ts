@@ -4,6 +4,7 @@
 import * as artifacts from "@pithy-sh/artifacts/src/http/schemas";
 import * as audit from "@pithy-sh/audit/src/http/schemas";
 import * as auth from "@pithy-sh/auth/src/http/schemas";
+import * as consent from "@pithy-sh/consent/src/http/schemas";
 import * as email from "@pithy-sh/email/src/http/schemas";
 import * as leaderboard from "@pithy-sh/leaderboard/src/http/schemas";
 import * as ledger from "@pithy-sh/ledger/src/http/schemas";
@@ -51,6 +52,7 @@ export const EVERY_REQUEST_SCHEMA_MODULE: readonly object[] = [
   artifacts,
   audit,
   auth,
+  consent,
   email,
   leaderboard,
   ledger,

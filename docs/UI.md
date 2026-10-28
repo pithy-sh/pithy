@@ -12,7 +12,7 @@ pithy ui add react --worker api
 
 It scaffolds the client into `apps/api/`, beside the Worker that serves it, and edits three files to connect them.
 
-- **Writes the client.** A Vite entry document, a Vite config wired with the Cloudflare and React plugins, two tsconfigs, ambient types, an SPA entry, a router, styles, the one module that narrows every capability's client projection, Pithy's sign-in screens and the screens a suspended or deleted account lands on when the Worker composes `auth`, its paywall, pricing and subscription screens when it composes `payments`, the account chooser when it composes `organization`, and one screen of your own.
+- **Writes the client.** A Vite entry document, a Vite config wired with the Cloudflare and React plugins, two tsconfigs, ambient types, an SPA entry, a router, styles, the one module that narrows every capability's client projection, Pithy's sign-in screens and the screens a suspended or deleted account lands on when the Worker composes `auth`, its paywall, pricing and subscription screens when it composes `payments`, the account chooser when it composes `organization`, the privacy-choices screen when it composes `consent`, and one screen of your own.
 - **Wires the asset routing.** An `assets` stanza in `wrangler.jsonc`: SPA fallback for anything the browser asks for, and an explicit allowlist of the API paths the Worker must answer itself.
 - **Declares how it starts.** A `dev` block in `pithy.worker.jsonc` so `pithy dev` runs Vite for this Worker instead of `wrangler dev` — one process serving the SPA and the API together.
 - **Records the build.** A `ui` block so `pithy deploy` builds the client before shipping the Worker.
@@ -62,6 +62,13 @@ apps/api/
       pithy/paywall.tsx      new   --payments  and pricing.tsx, subscription.tsx
       pithy/choose-organization.tsx
                              new   --organization  and its seeded gate
+      pithy/consent.tsx      new   --consent  every purpose, and where you stand on each
+      pithy/agent-consent.tsx
+                             new   --auth with mcp composed  the screen an agent's authorization lands on
+      pithy/agent-consent.test.tsx
+                             new   --auth with mcp composed  the gate that keeps the redirect address on it
+      pithy/connected-applications.tsx
+                             new   --auth with mcp composed  what you approved, and the revoke
       app/home.tsx           new   yours, written once and never again
   wrangler.jsonc             edited  assets stanza
   pithy.worker.jsonc         edited  dev block + ui block
@@ -203,7 +210,7 @@ That is a deliberate boundary, and it is about growth. A framework's templates n
 
 It also means the screens are ordinary source: the kit's typecheck checks them and Biome lints them, in the layout they will have once copied. A template that does not compile fails CI here, rather than in your project.
 
-The tree mirrors the scaffolded layout one-to-one, and which files a given invocation writes is chosen by a named group in the library's manifest rather than by directory. `base` is written always; `auth` rides on the auth capability, `payments` on the payments one, and `organization` on the tenancy one. The groups stack rather than choose — a Worker composing both gets both screen sets, because they name disjoint files over one layout. That is what a later screen set costs too: a new group naming new files in the same tree, with no path moved, no import changed, and no change to the stub contract.
+The tree mirrors the scaffolded layout one-to-one, and which files a given invocation writes is chosen by a named group in the library's manifest rather than by directory. `base` is written always; `auth` rides on the auth capability, `payments` on the payments one, `organization` on the tenancy one, and `consent` on the consent one. The groups stack rather than choose — a Worker composing both gets both screen sets, because they name disjoint files over one layout. That is what a later screen set costs too: a new group naming new files in the same tree, with no path moved, no import changed, and no change to the stub contract.
 
 ## Routing
 

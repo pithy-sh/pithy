@@ -22,3 +22,5 @@ export {
   authSecretsRegistry,
   GoogleOAuthCredentials,
 } from "./instance/secrets";
+export { type McpCapability, McpConfig, type McpConfigInput, mcp } from "./mcp/capability";
+export { McpFloor } from "./mcp/floor";

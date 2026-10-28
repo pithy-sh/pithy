@@ -28,6 +28,9 @@
       "name": "audit"
     },
     {
+      "name": "consent"
+    },
+    {
       "name": "storage"
     },
     {
@@ -65,6 +68,9 @@
     },
     {
       "name": "artifacts"
+    },
+    {
+      "name": "mcp"
     }
   ],
   "paths": {
@@ -2372,6 +2378,553 @@
         ],
         "x-pithy-scopes": [
           "evidence:read"
+        ]
+      }
+    },
+    "/control-plane/processing": {
+      "get": {
+        "tags": [
+          "controlplane"
+        ],
+        "operationId": "getControlPlaneProcessing",
+        "summary": "Report the record of processing activities.",
+        "description": "Every processing activity the composed capabilities and the `processing` block declare: its purpose, the data classes it uses cross-checked against the privacy inventory, its legal basis or a gap, a consent basis's purpose and grant counts, its recipients with what each receives, its effective retention, and the evidence pack's controls. Every gap is named and none is filled in. It describes the processing and changes none of it. Read-only.",
+        "responses": {
+          "200": {
+            "description": "The GDPR Article 30 record this Worker derives: each activity's purpose, data classes, legal basis, recipients, retention and measures, and every gap named.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "environment": {
+                      "type": "string",
+                      "description": "The environment this Worker serves."
+                    },
+                    "generatedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the record was derived, ISO-8601."
+                    },
+                    "version": {
+                      "description": "The Cloudflare version id of the build answering, or null.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "activities": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The activity id, `<domain>.<name>`."
+                          },
+                          "purpose": {
+                            "type": "string",
+                            "description": "Why the data is processed."
+                          },
+                          "declaredBy": {
+                            "type": "string",
+                            "description": "The capability that declared it, or `config` for the adopter's own."
+                          },
+                          "classes": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "The data classes it uses."
+                          },
+                          "legalBasis": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "consent",
+                                  "contract",
+                                  "legal-obligation",
+                                  "vital-interests",
+                                  "public-task",
+                                  "legitimate-interests"
+                                ],
+                                "description": "The lawful basis of GDPR Article 6(1): `consent` (a), `contract` (b), `legal-obligation` (c), `vital-interests` (d), `public-task` (e) or `legitimate-interests` (f). A `consent` basis names the consent purpose it rests on."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Its legal basis, or null: a gap the record names."
+                          },
+                          "basisSource": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "capability",
+                                  "config"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Where the basis came from: the declaring `capability`, or the `config` block. Null with no basis."
+                          },
+                          "consent": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "purpose": {
+                                    "type": "string",
+                                    "description": "The consent purpose id the activity rests on."
+                                  },
+                                  "noticeVersion": {
+                                    "anyOf": [
+                                      {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "The purpose's current notice version. Null when no composed catalog declares the purpose."
+                                  },
+                                  "explicit": {
+                                    "description": "Whether the purpose needs explicit consent. Null when undeclared.",
+                                    "type": [
+                                      "boolean",
+                                      "null"
+                                    ]
+                                  },
+                                  "grants": {
+                                    "anyOf": [
+                                      {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "Subjects whose latest choice is a grant. Null when the consent record could not be read."
+                                  },
+                                  "withdrawals": {
+                                    "anyOf": [
+                                      {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "Subjects whose latest choice is a withdrawal. Null when the consent record could not be read."
+                                  },
+                                  "standing": {
+                                    "anyOf": [
+                                      {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "Subjects whose grant stands now: current notice, at the minimum method, unexpired. Null when the consent record could not be read."
+                                  }
+                                },
+                                "required": [
+                                  "purpose",
+                                  "noticeVersion",
+                                  "explicit",
+                                  "grants",
+                                  "withdrawals",
+                                  "standing"
+                                ],
+                                "description": "The consent purpose a consent-based activity rests on, and its grant counts."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "For a consent basis, its purpose and grant counts. Else null."
+                          },
+                          "recipients": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "name": {
+                                  "type": "string",
+                                  "description": "Who receives the data."
+                                },
+                                "receives": {
+                                  "type": "string",
+                                  "description": "What they receive."
+                                },
+                                "classes": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "description": "The data classes in what they receive."
+                                },
+                                "source": {
+                                  "type": "string",
+                                  "enum": [
+                                    "platform",
+                                    "binding",
+                                    "declared"
+                                  ],
+                                  "description": "Where the recipient came from: `platform`, Cloudflare, which runs every Worker; `binding`, a binding this Worker has, such as Workers AI; `declared`, an activity's own declaration, built from the resolved config."
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "receives",
+                                "classes",
+                                "source"
+                              ],
+                              "description": "One recipient: who, what it receives, the classes in it, and where the record learned of it."
+                            },
+                            "description": "Who receives its data: Cloudflare always, then any binding or declared recipient."
+                          },
+                          "retention": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "classAges": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "class": {
+                                          "type": "string",
+                                          "description": "The privacy class."
+                                        },
+                                        "days": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991,
+                                          "description": "The longest an account holding it may sit inactive, in days."
+                                        }
+                                      },
+                                      "required": [
+                                        "class",
+                                        "days"
+                                      ],
+                                      "description": "One class age."
+                                    },
+                                    "description": "The retention block's class ages for the classes this activity uses, strictest first."
+                                  },
+                                  "purgeWindows": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "subject": {
+                                          "type": "string",
+                                          "enum": [
+                                            "user",
+                                            "organization"
+                                          ],
+                                          "description": "Whose deletion the window governs."
+                                        },
+                                        "days": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991,
+                                          "description": "How many days a deletion stays restorable before its purge."
+                                        },
+                                        "source": {
+                                          "type": "string",
+                                          "enum": [
+                                            "policy",
+                                            "capability",
+                                            "floor"
+                                          ],
+                                          "description": "Where the value came from."
+                                        }
+                                      },
+                                      "required": [
+                                        "subject",
+                                        "days",
+                                        "source"
+                                      ],
+                                      "description": "One soft-delete window."
+                                    },
+                                    "description": "Every soft-delete window the Worker runs, as it takes effect."
+                                  }
+                                },
+                                "required": [
+                                  "classAges",
+                                  "purgeWindows"
+                                ],
+                                "description": "The effective retention behind an activity: its classes' ages and the purge windows."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "How long its data is kept, from the Worker's resolved retention. Null when the Worker recorded none."
+                          },
+                          "measures": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "audit-logging",
+                                "route-verification",
+                                "management-access",
+                                "key-rotation",
+                                "change-history",
+                                "data-protection",
+                                "csrf"
+                              ],
+                              "description": "The control this entry reports on, as a stable id. Keyed on by clients; the title may be reworded."
+                            },
+                            "description": "The evidence pack's controls that protect this activity's data, by id. `measures` states each."
+                          },
+                          "gaps": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no-legal-basis",
+                                    "no-consent-purpose",
+                                    "class-not-stored",
+                                    "class-unclaimed",
+                                    "phi-not-covered",
+                                    "no-standing-grant"
+                                  ],
+                                  "description": "What is missing: `no-legal-basis` (an activity states none), `no-consent-purpose` (a consent basis names no purpose the catalog holds), `class-not-stored` (an activity claims a class nothing stores), `class-unclaimed` (a capability stores a class no activity claims), `phi-not-covered` (a stored `phi` field no consent purpose covers), or `no-standing-grant` (a purpose covering a class holds no standing grant)."
+                                },
+                                "subject": {
+                                  "type": "string",
+                                  "description": "What the gap is about: an activity id, a capability name, a consent purpose id, or a stored field as `<capability>/<table>.<path>`. A stored field is named only to a connection that also holds `privacy:read`; without it, the gap names the capability."
+                                },
+                                "detail": {
+                                  "type": "string",
+                                  "description": "What is missing, in one sentence."
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "subject",
+                                "detail"
+                              ],
+                              "description": "Something the record needs and the Worker does not declare. Named, never filled in."
+                            },
+                            "description": "What this activity is missing. Empty when nothing is."
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "purpose",
+                          "declaredBy",
+                          "classes",
+                          "legalBasis",
+                          "basisSource",
+                          "consent",
+                          "recipients",
+                          "retention",
+                          "measures",
+                          "gaps"
+                        ],
+                        "description": "One processing activity, as GDPR Article 30 lists it."
+                      },
+                      "description": "Every activity: each capability's, in composition order, then the adopter's."
+                    },
+                    "recipients": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "description": "Who receives the data."
+                          },
+                          "receives": {
+                            "type": "string",
+                            "description": "What they receive."
+                          },
+                          "classes": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "The data classes in what they receive."
+                          },
+                          "source": {
+                            "type": "string",
+                            "enum": [
+                              "platform",
+                              "binding",
+                              "declared"
+                            ],
+                            "description": "Where the recipient came from: `platform`, Cloudflare, which runs every Worker; `binding`, a binding this Worker has, such as Workers AI; `declared`, an activity's own declaration, built from the resolved config."
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "receives",
+                          "classes",
+                          "source"
+                        ],
+                        "description": "One recipient: who, what it receives, the classes in it, and where the record learned of it."
+                      },
+                      "description": "Every recipient across the record, once each: Cloudflare first, then by binding, then declared."
+                    },
+                    "measures": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "control": {
+                            "type": "string",
+                            "enum": [
+                              "audit-logging",
+                              "route-verification",
+                              "management-access",
+                              "key-rotation",
+                              "change-history",
+                              "data-protection",
+                              "csrf"
+                            ],
+                            "description": "The control this entry reports on, as a stable id. Keyed on by clients; the title may be reworded."
+                          },
+                          "title": {
+                            "type": "string",
+                            "description": "What the control is."
+                          },
+                          "soc2": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Its SOC 2 Trust Services Criteria references."
+                          },
+                          "iso27001": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Its ISO/IEC 27001:2022 Annex A references."
+                          },
+                          "state": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "evidenced",
+                                  "gap",
+                                  "not-derivable"
+                                ],
+                                "description": "What the Worker could say about this control: `evidenced` when the facts are present, `gap` when something is missing and the entry names what, `not-derivable` when the Worker cannot say and the entry names why. Evidence for an auditor, never a judgment."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "What the evidence pack says of it now. Null when the connection does not hold `evidence:read`."
+                          }
+                        },
+                        "required": [
+                          "control",
+                          "title",
+                          "soc2",
+                          "iso27001",
+                          "state"
+                        ],
+                        "description": "A technical or organizational security measure, cited from the evidence pack."
+                      },
+                      "description": "Every security measure the activities cite."
+                    },
+                    "gaps": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "no-legal-basis",
+                              "no-consent-purpose",
+                              "class-not-stored",
+                              "class-unclaimed",
+                              "phi-not-covered",
+                              "no-standing-grant"
+                            ],
+                            "description": "What is missing: `no-legal-basis` (an activity states none), `no-consent-purpose` (a consent basis names no purpose the catalog holds), `class-not-stored` (an activity claims a class nothing stores), `class-unclaimed` (a capability stores a class no activity claims), `phi-not-covered` (a stored `phi` field no consent purpose covers), or `no-standing-grant` (a purpose covering a class holds no standing grant)."
+                          },
+                          "subject": {
+                            "type": "string",
+                            "description": "What the gap is about: an activity id, a capability name, a consent purpose id, or a stored field as `<capability>/<table>.<path>`. A stored field is named only to a connection that also holds `privacy:read`; without it, the gap names the capability."
+                          },
+                          "detail": {
+                            "type": "string",
+                            "description": "What is missing, in one sentence."
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "subject",
+                          "detail"
+                        ],
+                        "description": "Something the record needs and the Worker does not declare. Named, never filled in."
+                      },
+                      "description": "Gaps about no single activity: unclaimed classes, uncovered `phi`, purposes with no standing grant."
+                    },
+                    "notDerivable": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "What the record could not read, and why. Empty when it read everything it needs."
+                    }
+                  },
+                  "required": [
+                    "environment",
+                    "generatedAt",
+                    "version",
+                    "activities",
+                    "recipients",
+                    "measures",
+                    "gaps",
+                    "notDerivable"
+                  ],
+                  "description": "The GDPR Article 30 record this Worker derives: each activity's purpose, data classes, legal basis, recipients, retention and measures, and every gap named."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "processing:read"
         ]
       }
     },
@@ -11216,6 +11769,1878 @@
         ]
       }
     },
+    "/consent/purposes": {
+      "get": {
+        "tags": [
+          "consent"
+        ],
+        "operationId": "getConsentPurposes",
+        "summary": "List every purpose this Worker asks consent for, with its current notice version.",
+        "responses": {
+          "200": {
+            "description": "The purposes this Worker asks consent for.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "purposes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The purpose id — `email.marketing`."
+                          },
+                          "summary": {
+                            "type": "string",
+                            "description": "What agreeing allows, written for the person."
+                          },
+                          "noticeVersion": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "The current notice version. A grant names it."
+                          },
+                          "classes": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "The data classes the purpose covers."
+                          },
+                          "explicit": {
+                            "type": "boolean",
+                            "description": "Whether the purpose needs explicit consent (GDPR Article 9)."
+                          },
+                          "minimumMethod": {
+                            "type": "string",
+                            "enum": [
+                              "click",
+                              "typed",
+                              "drawn",
+                              "provider"
+                            ],
+                            "description": "The weakest method a grant may be given by."
+                          },
+                          "writtenWithdrawal": {
+                            "type": "boolean",
+                            "description": "Whether a withdrawal must be made at least at the grade of the grant it withdraws."
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "summary",
+                          "noticeVersion",
+                          "classes",
+                          "explicit",
+                          "minimumMethod",
+                          "writtenWithdrawal"
+                        ],
+                        "description": "One purpose processed under consent."
+                      },
+                      "description": "Every purpose this Worker asks consent for."
+                    }
+                  },
+                  "required": [
+                    "purposes"
+                  ],
+                  "description": "The purposes this Worker asks consent for."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
+        ]
+      }
+    },
+    "/consent/me": {
+      "get": {
+        "tags": [
+          "consent"
+        ],
+        "operationId": "getConsentMe",
+        "summary": "Read your own consents: where you stand on each purpose, and every choice behind it.",
+        "responses": {
+          "200": {
+            "description": "The caller's own consents: where they stand, and the record behind it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "subject": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "account",
+                                "visitor"
+                              ],
+                              "description": "Whose consent: an account, or an anonymous visitor."
+                            },
+                            "id": {
+                              "type": "string",
+                              "description": "The user id, or the anonymous device id."
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id"
+                          ],
+                          "description": "Whose consent this is."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Who is asking: the signed-in account, or the visitor whose device id cookie came with the request. Null for a visitor who has not chosen yet."
+                    },
+                    "purposes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "purpose": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "description": "The purpose id — `email.marketing`."
+                              },
+                              "summary": {
+                                "type": "string",
+                                "description": "What agreeing allows, written for the person."
+                              },
+                              "noticeVersion": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "The current notice version. A grant names it."
+                              },
+                              "classes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "The data classes the purpose covers."
+                              },
+                              "explicit": {
+                                "type": "boolean",
+                                "description": "Whether the purpose needs explicit consent (GDPR Article 9)."
+                              },
+                              "minimumMethod": {
+                                "type": "string",
+                                "enum": [
+                                  "click",
+                                  "typed",
+                                  "drawn",
+                                  "provider"
+                                ],
+                                "description": "The weakest method a grant may be given by."
+                              },
+                              "writtenWithdrawal": {
+                                "type": "boolean",
+                                "description": "Whether a withdrawal must be made at least at the grade of the grant it withdraws."
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "summary",
+                              "noticeVersion",
+                              "classes",
+                              "explicit",
+                              "minimumMethod",
+                              "writtenWithdrawal"
+                            ],
+                            "description": "One purpose processed under consent."
+                          },
+                          "standing": {
+                            "type": "string",
+                            "enum": [
+                              "granted",
+                              "never_granted",
+                              "withdrawn",
+                              "expired",
+                              "stale_notice",
+                              "below_minimum",
+                              "visitor_expired",
+                              "unknown_purpose"
+                            ],
+                            "description": "Where the subject stands on a purpose: `granted`, or why not — never granted, withdrawn, expired, granted under an older notice, granted below the purpose's minimum method, a visitor's grant past the anonymous window, or a purpose no longer declared."
+                          },
+                          "granted": {
+                            "type": "boolean",
+                            "description": "Whether `hasConsent` answers yes for this purpose now."
+                          }
+                        },
+                        "required": [
+                          "purpose",
+                          "standing",
+                          "granted"
+                        ],
+                        "description": "Where a subject stands on one purpose."
+                      },
+                      "description": "Every purpose, and where this subject stands on it."
+                    },
+                    "records": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The record's id."
+                          },
+                          "subject": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "account",
+                                  "visitor"
+                                ],
+                                "description": "Whose consent: an account, or an anonymous visitor."
+                              },
+                              "id": {
+                                "type": "string",
+                                "description": "The user id, or the anonymous device id."
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "id"
+                            ],
+                            "description": "Whose consent this is."
+                          },
+                          "purpose": {
+                            "type": "string",
+                            "description": "The purpose id."
+                          },
+                          "action": {
+                            "type": "string",
+                            "enum": [
+                              "grant",
+                              "withdraw"
+                            ],
+                            "description": "Whether this gave consent or withdrew it."
+                          },
+                          "noticeVersion": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "The notice version in force when it was recorded."
+                          },
+                          "method": {
+                            "type": "string",
+                            "enum": [
+                              "click",
+                              "typed",
+                              "drawn",
+                              "provider"
+                            ],
+                            "description": "How the consent was given or withdrawn."
+                          },
+                          "surface": {
+                            "type": "string",
+                            "description": "Where the choice was made."
+                          },
+                          "identity": {
+                            "type": "string",
+                            "enum": [
+                              "none",
+                              "session",
+                              "verified_email",
+                              "in_person",
+                              "provider"
+                            ],
+                            "description": "How the person's identity was verified."
+                          },
+                          "documentHash": {
+                            "description": "The SHA-256 of the exact document agreed to, or null.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "typedName": {
+                            "description": "The typed signature, for `typed`; null otherwise.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "drawnImageHash": {
+                            "description": "The SHA-256 of the drawn signature, kept in R2 under it; null otherwise.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "drawnImageType": {
+                            "description": "The drawn image's media type; null otherwise.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "provider": {
+                            "description": "The e-signature provider, for `provider`; null otherwise.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "providerEnvelopeId": {
+                            "description": "The provider's envelope id; null otherwise.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "providerCertificateHash": {
+                            "description": "The SHA-256 of the provider's completion certificate, kept in R2 under it; null when none.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "expiresAt": {
+                            "description": "When the grant stops counting, ISO-8601; null for no expiry.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "representative": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "name": {
+                                    "type": "string",
+                                    "description": "The representative's name."
+                                  },
+                                  "relationship": {
+                                    "type": "string",
+                                    "description": "How they are related to the subject."
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "relationship"
+                                ],
+                                "description": "A parent, guardian or personal representative who signed for the subject."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Who signed for the subject, or null."
+                          },
+                          "recordedAt": {
+                            "type": "string",
+                            "description": "When it was recorded, ISO-8601."
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "subject",
+                          "purpose",
+                          "action",
+                          "noticeVersion",
+                          "method",
+                          "surface",
+                          "identity",
+                          "documentHash",
+                          "typedName",
+                          "drawnImageHash",
+                          "drawnImageType",
+                          "provider",
+                          "providerEnvelopeId",
+                          "providerCertificateHash",
+                          "expiresAt",
+                          "representative",
+                          "recordedAt"
+                        ],
+                        "description": "One grant or withdrawal in the append-only consent record."
+                      },
+                      "description": "Every grant and withdrawal this subject made, oldest first."
+                    }
+                  },
+                  "required": [
+                    "subject",
+                    "purposes",
+                    "records"
+                  ],
+                  "description": "The caller's own consents: where they stand, and the record behind it."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          },
+          {}
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session",
+          "public"
+        ]
+      }
+    },
+    "/consent/me/documents/{hash}": {
+      "get": {
+        "tags": [
+          "consent"
+        ],
+        "operationId": "getConsentMeDocumentsByHash",
+        "summary": "Read a document you agreed to, byte for byte, by its content hash.",
+        "parameters": [
+          {
+            "name": "hash",
+            "in": "path",
+            "required": true,
+            "description": "A SHA-256 content hash in lowercase hex.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The document's exact text.",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          },
+          {}
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session",
+          "public"
+        ]
+      }
+    },
+    "/consent/grants": {
+      "post": {
+        "tags": [
+          "consent"
+        ],
+        "operationId": "postConsentGrants",
+        "summary": "Give consent to one purpose, with the evidence its method needs.",
+        "requestBody": {
+          "required": true,
+          "description": "Give consent to one purpose.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "purpose": {
+                    "type": "string",
+                    "maxLength": 128,
+                    "pattern": "^[a-z][a-z0-9-]*\\.[a-z][a-z0-9_.-]*$",
+                    "description": "A consent purpose id, `<domain>.<name>` — `email.marketing`. The domain is the declaring capability's name, or the adopter's own domain for a purpose declared in `consent({ purposes })`."
+                  },
+                  "method": {
+                    "type": "string",
+                    "enum": [
+                      "click",
+                      "typed",
+                      "drawn",
+                      "provider"
+                    ],
+                    "description": "How a consent was given or withdrawn, weakest first: `click` (a checkbox or a button), `typed` (the person typed their name), `drawn` (a drawn signature), or `provider` (an e-signature provider's completed envelope). The order is the grade a purpose's minimum is held against."
+                  },
+                  "surface": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "pattern": "^[a-z0-9][a-z0-9_.-]*$",
+                    "description": "Where the person made the choice — `settings`, `banner`, `signup`. A short lowercase name."
+                  },
+                  "identity": {
+                    "description": "How the person's identity was verified, as your flow declares it. Defaults to `session` for a signed-in account and `none` for a visitor; a visitor cannot claim `session`.",
+                    "type": "string",
+                    "enum": [
+                      "none",
+                      "session",
+                      "verified_email",
+                      "in_person",
+                      "provider"
+                    ]
+                  },
+                  "document": {
+                    "description": "The exact rendered text the person saw. Required for a signed grant (any method but `click`), and kept once per content hash so it can be produced again byte for byte. A `click` records its hash and keeps no text.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 262144
+                  },
+                  "typedName": {
+                    "description": "The name the person typed, for the `typed` method. Encrypted at rest.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "drawn": {
+                    "description": "The drawn signature, for the `drawn` method.",
+                    "type": "object",
+                    "properties": {
+                      "image": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 524288,
+                        "description": "The drawn signature as standard base64 — a PNG, or an SVG's UTF-8 bytes."
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "image/png",
+                          "image/svg+xml"
+                        ],
+                        "description": "The image's media type."
+                      }
+                    },
+                    "required": [
+                      "image",
+                      "type"
+                    ]
+                  },
+                  "provider": {
+                    "description": "The provider's completed envelope, for the `provider` method.",
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64,
+                        "description": "The e-signature provider, as your integration names it — `docusign`, `dropbox-sign`."
+                      },
+                      "envelopeId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "description": "The provider's id for the completed envelope."
+                      },
+                      "certificate": {
+                        "description": "The provider's completion certificate as standard base64, usually a PDF. Kept in R2 by hash.",
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2097152
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "envelopeId"
+                    ]
+                  },
+                  "noticeVersion": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": "The notice version the person was shown. It must be the purpose's current one."
+                  },
+                  "expiresAt": {
+                    "description": "When the grant stops counting, as an ISO-8601 instant in the future. Omit for no expiry.",
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                  },
+                  "representative": {
+                    "description": "Who signed for the subject, when it was not the subject.",
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "description": "The representative's name. Encrypted at rest."
+                      },
+                      "relationship": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64,
+                        "description": "How they are related to the subject — `parent`, `guardian`, `personal representative`."
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "relationship"
+                    ]
+                  }
+                },
+                "required": [
+                  "purpose",
+                  "method",
+                  "surface",
+                  "noticeVersion"
+                ],
+                "description": "Give consent to one purpose."
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The row the choice appended, and where the subject now stands.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "record": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "The record's id."
+                        },
+                        "subject": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "account",
+                                "visitor"
+                              ],
+                              "description": "Whose consent: an account, or an anonymous visitor."
+                            },
+                            "id": {
+                              "type": "string",
+                              "description": "The user id, or the anonymous device id."
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id"
+                          ],
+                          "description": "Whose consent this is."
+                        },
+                        "purpose": {
+                          "type": "string",
+                          "description": "The purpose id."
+                        },
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "grant",
+                            "withdraw"
+                          ],
+                          "description": "Whether this gave consent or withdrew it."
+                        },
+                        "noticeVersion": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "The notice version in force when it was recorded."
+                        },
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "click",
+                            "typed",
+                            "drawn",
+                            "provider"
+                          ],
+                          "description": "How the consent was given or withdrawn."
+                        },
+                        "surface": {
+                          "type": "string",
+                          "description": "Where the choice was made."
+                        },
+                        "identity": {
+                          "type": "string",
+                          "enum": [
+                            "none",
+                            "session",
+                            "verified_email",
+                            "in_person",
+                            "provider"
+                          ],
+                          "description": "How the person's identity was verified."
+                        },
+                        "documentHash": {
+                          "description": "The SHA-256 of the exact document agreed to, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "typedName": {
+                          "description": "The typed signature, for `typed`; null otherwise.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "drawnImageHash": {
+                          "description": "The SHA-256 of the drawn signature, kept in R2 under it; null otherwise.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "drawnImageType": {
+                          "description": "The drawn image's media type; null otherwise.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "provider": {
+                          "description": "The e-signature provider, for `provider`; null otherwise.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "providerEnvelopeId": {
+                          "description": "The provider's envelope id; null otherwise.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "providerCertificateHash": {
+                          "description": "The SHA-256 of the provider's completion certificate, kept in R2 under it; null when none.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "expiresAt": {
+                          "description": "When the grant stops counting, ISO-8601; null for no expiry.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "representative": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "name": {
+                                  "type": "string",
+                                  "description": "The representative's name."
+                                },
+                                "relationship": {
+                                  "type": "string",
+                                  "description": "How they are related to the subject."
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "relationship"
+                              ],
+                              "description": "A parent, guardian or personal representative who signed for the subject."
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Who signed for the subject, or null."
+                        },
+                        "recordedAt": {
+                          "type": "string",
+                          "description": "When it was recorded, ISO-8601."
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "subject",
+                        "purpose",
+                        "action",
+                        "noticeVersion",
+                        "method",
+                        "surface",
+                        "identity",
+                        "documentHash",
+                        "typedName",
+                        "drawnImageHash",
+                        "drawnImageType",
+                        "provider",
+                        "providerEnvelopeId",
+                        "providerCertificateHash",
+                        "expiresAt",
+                        "representative",
+                        "recordedAt"
+                      ],
+                      "description": "One grant or withdrawal in the append-only consent record."
+                    },
+                    "standing": {
+                      "type": "string",
+                      "enum": [
+                        "granted",
+                        "never_granted",
+                        "withdrawn",
+                        "expired",
+                        "stale_notice",
+                        "below_minimum",
+                        "visitor_expired",
+                        "unknown_purpose"
+                      ],
+                      "description": "Where the subject stands on a purpose: `granted`, or why not — never granted, withdrawn, expired, granted under an older notice, granted below the purpose's minimum method, a visitor's grant past the anonymous window, or a purpose no longer declared."
+                    },
+                    "granted": {
+                      "type": "boolean",
+                      "description": "Whether `hasConsent` answers yes for this purpose now."
+                    }
+                  },
+                  "required": [
+                    "record",
+                    "standing",
+                    "granted"
+                  ],
+                  "description": "The row the choice appended, and where the subject now stands."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          },
+          {}
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session",
+          "public"
+        ]
+      }
+    },
+    "/consent/withdrawals": {
+      "post": {
+        "tags": [
+          "consent"
+        ],
+        "operationId": "postConsentWithdrawals",
+        "summary": "Withdraw consent from one purpose. As easy as giving it, unless the purpose requires it in writing.",
+        "requestBody": {
+          "required": true,
+          "description": "Withdraw consent from one purpose. A click withdraws, unless the purpose requires a written withdrawal at the grade of the grant.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "purpose": {
+                    "type": "string",
+                    "maxLength": 128,
+                    "pattern": "^[a-z][a-z0-9-]*\\.[a-z][a-z0-9_.-]*$",
+                    "description": "A consent purpose id, `<domain>.<name>` — `email.marketing`. The domain is the declaring capability's name, or the adopter's own domain for a purpose declared in `consent({ purposes })`."
+                  },
+                  "method": {
+                    "type": "string",
+                    "enum": [
+                      "click",
+                      "typed",
+                      "drawn",
+                      "provider"
+                    ],
+                    "description": "How a consent was given or withdrawn, weakest first: `click` (a checkbox or a button), `typed` (the person typed their name), `drawn` (a drawn signature), or `provider` (an e-signature provider's completed envelope). The order is the grade a purpose's minimum is held against."
+                  },
+                  "surface": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "pattern": "^[a-z0-9][a-z0-9_.-]*$",
+                    "description": "Where the person made the choice — `settings`, `banner`, `signup`. A short lowercase name."
+                  },
+                  "identity": {
+                    "description": "How the person's identity was verified, as your flow declares it. Defaults to `session` for a signed-in account and `none` for a visitor; a visitor cannot claim `session`.",
+                    "type": "string",
+                    "enum": [
+                      "none",
+                      "session",
+                      "verified_email",
+                      "in_person",
+                      "provider"
+                    ]
+                  },
+                  "document": {
+                    "description": "The exact rendered text the person saw. Required for a signed grant (any method but `click`), and kept once per content hash so it can be produced again byte for byte. A `click` records its hash and keeps no text.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 262144
+                  },
+                  "typedName": {
+                    "description": "The name the person typed, for the `typed` method. Encrypted at rest.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "drawn": {
+                    "description": "The drawn signature, for the `drawn` method.",
+                    "type": "object",
+                    "properties": {
+                      "image": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 524288,
+                        "description": "The drawn signature as standard base64 — a PNG, or an SVG's UTF-8 bytes."
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "image/png",
+                          "image/svg+xml"
+                        ],
+                        "description": "The image's media type."
+                      }
+                    },
+                    "required": [
+                      "image",
+                      "type"
+                    ]
+                  },
+                  "provider": {
+                    "description": "The provider's completed envelope, for the `provider` method.",
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64,
+                        "description": "The e-signature provider, as your integration names it — `docusign`, `dropbox-sign`."
+                      },
+                      "envelopeId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "description": "The provider's id for the completed envelope."
+                      },
+                      "certificate": {
+                        "description": "The provider's completion certificate as standard base64, usually a PDF. Kept in R2 by hash.",
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2097152
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "envelopeId"
+                    ]
+                  }
+                },
+                "required": [
+                  "purpose",
+                  "method",
+                  "surface"
+                ],
+                "description": "Withdraw consent from one purpose. A click withdraws, unless the purpose requires a written withdrawal at the grade of the grant."
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The row the choice appended, and where the subject now stands.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "record": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "The record's id."
+                        },
+                        "subject": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "account",
+                                "visitor"
+                              ],
+                              "description": "Whose consent: an account, or an anonymous visitor."
+                            },
+                            "id": {
+                              "type": "string",
+                              "description": "The user id, or the anonymous device id."
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id"
+                          ],
+                          "description": "Whose consent this is."
+                        },
+                        "purpose": {
+                          "type": "string",
+                          "description": "The purpose id."
+                        },
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "grant",
+                            "withdraw"
+                          ],
+                          "description": "Whether this gave consent or withdrew it."
+                        },
+                        "noticeVersion": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "The notice version in force when it was recorded."
+                        },
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "click",
+                            "typed",
+                            "drawn",
+                            "provider"
+                          ],
+                          "description": "How the consent was given or withdrawn."
+                        },
+                        "surface": {
+                          "type": "string",
+                          "description": "Where the choice was made."
+                        },
+                        "identity": {
+                          "type": "string",
+                          "enum": [
+                            "none",
+                            "session",
+                            "verified_email",
+                            "in_person",
+                            "provider"
+                          ],
+                          "description": "How the person's identity was verified."
+                        },
+                        "documentHash": {
+                          "description": "The SHA-256 of the exact document agreed to, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "typedName": {
+                          "description": "The typed signature, for `typed`; null otherwise.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "drawnImageHash": {
+                          "description": "The SHA-256 of the drawn signature, kept in R2 under it; null otherwise.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "drawnImageType": {
+                          "description": "The drawn image's media type; null otherwise.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "provider": {
+                          "description": "The e-signature provider, for `provider`; null otherwise.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "providerEnvelopeId": {
+                          "description": "The provider's envelope id; null otherwise.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "providerCertificateHash": {
+                          "description": "The SHA-256 of the provider's completion certificate, kept in R2 under it; null when none.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "expiresAt": {
+                          "description": "When the grant stops counting, ISO-8601; null for no expiry.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "representative": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "name": {
+                                  "type": "string",
+                                  "description": "The representative's name."
+                                },
+                                "relationship": {
+                                  "type": "string",
+                                  "description": "How they are related to the subject."
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "relationship"
+                              ],
+                              "description": "A parent, guardian or personal representative who signed for the subject."
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Who signed for the subject, or null."
+                        },
+                        "recordedAt": {
+                          "type": "string",
+                          "description": "When it was recorded, ISO-8601."
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "subject",
+                        "purpose",
+                        "action",
+                        "noticeVersion",
+                        "method",
+                        "surface",
+                        "identity",
+                        "documentHash",
+                        "typedName",
+                        "drawnImageHash",
+                        "drawnImageType",
+                        "provider",
+                        "providerEnvelopeId",
+                        "providerCertificateHash",
+                        "expiresAt",
+                        "representative",
+                        "recordedAt"
+                      ],
+                      "description": "One grant or withdrawal in the append-only consent record."
+                    },
+                    "standing": {
+                      "type": "string",
+                      "enum": [
+                        "granted",
+                        "never_granted",
+                        "withdrawn",
+                        "expired",
+                        "stale_notice",
+                        "below_minimum",
+                        "visitor_expired",
+                        "unknown_purpose"
+                      ],
+                      "description": "Where the subject stands on a purpose: `granted`, or why not — never granted, withdrawn, expired, granted under an older notice, granted below the purpose's minimum method, a visitor's grant past the anonymous window, or a purpose no longer declared."
+                    },
+                    "granted": {
+                      "type": "boolean",
+                      "description": "Whether `hasConsent` answers yes for this purpose now."
+                    }
+                  },
+                  "required": [
+                    "record",
+                    "standing",
+                    "granted"
+                  ],
+                  "description": "The row the choice appended, and where the subject now stands."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          },
+          {}
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session",
+          "public"
+        ]
+      }
+    },
+    "/consent/control-plane/purposes": {
+      "get": {
+        "tags": [
+          "consent"
+        ],
+        "operationId": "getConsentControlPlanePurposes",
+        "summary": "List every consent purpose, with counts of current grants and withdrawals per notice version.",
+        "responses": {
+          "200": {
+            "description": "Counts of current grants and withdrawals, per purpose and notice version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "purposes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "purpose": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "description": "The purpose id — `email.marketing`."
+                              },
+                              "summary": {
+                                "type": "string",
+                                "description": "What agreeing allows, written for the person."
+                              },
+                              "noticeVersion": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "The current notice version. A grant names it."
+                              },
+                              "classes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "The data classes the purpose covers."
+                              },
+                              "explicit": {
+                                "type": "boolean",
+                                "description": "Whether the purpose needs explicit consent (GDPR Article 9)."
+                              },
+                              "minimumMethod": {
+                                "type": "string",
+                                "enum": [
+                                  "click",
+                                  "typed",
+                                  "drawn",
+                                  "provider"
+                                ],
+                                "description": "The weakest method a grant may be given by."
+                              },
+                              "writtenWithdrawal": {
+                                "type": "boolean",
+                                "description": "Whether a withdrawal must be made at least at the grade of the grant it withdraws."
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "summary",
+                              "noticeVersion",
+                              "classes",
+                              "explicit",
+                              "minimumMethod",
+                              "writtenWithdrawal"
+                            ],
+                            "description": "One purpose processed under consent."
+                          },
+                          "versions": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "noticeVersion": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991,
+                                  "description": "The notice version."
+                                },
+                                "grants": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991,
+                                  "description": "Subjects whose latest row is a grant under this version."
+                                },
+                                "withdrawals": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991,
+                                  "description": "Subjects whose latest row is a withdrawal under this version."
+                                }
+                              },
+                              "required": [
+                                "noticeVersion",
+                                "grants",
+                                "withdrawals"
+                              ],
+                              "description": "Counts under one notice version."
+                            },
+                            "description": "Counts per notice version, oldest first. A version nobody answered is absent."
+                          }
+                        },
+                        "required": [
+                          "purpose",
+                          "versions"
+                        ],
+                        "description": "One purpose and its counts."
+                      },
+                      "description": "Every declared purpose, with counts per notice version."
+                    }
+                  },
+                  "required": [
+                    "purposes"
+                  ],
+                  "description": "Counts of current grants and withdrawals, per purpose and notice version."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "consent:read"
+        ]
+      }
+    },
+    "/consent/control-plane/subjects/{kind}/{subjectId}": {
+      "get": {
+        "tags": [
+          "consent"
+        ],
+        "operationId": "getConsentControlPlaneSubjectsByKindBySubjectId",
+        "summary": "Read one subject's consent record: where they stand, every row, and the merges behind it.",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "description": "Whose consent this is. `account` is a user id from `@pithy-sh/auth`. `visitor` is an anonymous device id, held in a first-party cookie set only once the visitor has chosen.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "account",
+                "visitor"
+              ]
+            }
+          },
+          {
+            "name": "subjectId",
+            "in": "path",
+            "required": true,
+            "description": "The user id or the anonymous device id.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One subject's consent record.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "subject": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "account",
+                            "visitor"
+                          ],
+                          "description": "Whose consent: an account, or an anonymous visitor."
+                        },
+                        "id": {
+                          "type": "string",
+                          "description": "The user id, or the anonymous device id."
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "id"
+                      ],
+                      "description": "Whose consent this is."
+                    },
+                    "purposes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "purpose": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "description": "The purpose id — `email.marketing`."
+                              },
+                              "summary": {
+                                "type": "string",
+                                "description": "What agreeing allows, written for the person."
+                              },
+                              "noticeVersion": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "The current notice version. A grant names it."
+                              },
+                              "classes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "The data classes the purpose covers."
+                              },
+                              "explicit": {
+                                "type": "boolean",
+                                "description": "Whether the purpose needs explicit consent (GDPR Article 9)."
+                              },
+                              "minimumMethod": {
+                                "type": "string",
+                                "enum": [
+                                  "click",
+                                  "typed",
+                                  "drawn",
+                                  "provider"
+                                ],
+                                "description": "The weakest method a grant may be given by."
+                              },
+                              "writtenWithdrawal": {
+                                "type": "boolean",
+                                "description": "Whether a withdrawal must be made at least at the grade of the grant it withdraws."
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "summary",
+                              "noticeVersion",
+                              "classes",
+                              "explicit",
+                              "minimumMethod",
+                              "writtenWithdrawal"
+                            ],
+                            "description": "One purpose processed under consent."
+                          },
+                          "standing": {
+                            "type": "string",
+                            "enum": [
+                              "granted",
+                              "never_granted",
+                              "withdrawn",
+                              "expired",
+                              "stale_notice",
+                              "below_minimum",
+                              "visitor_expired",
+                              "unknown_purpose"
+                            ],
+                            "description": "Where the subject stands on a purpose: `granted`, or why not — never granted, withdrawn, expired, granted under an older notice, granted below the purpose's minimum method, a visitor's grant past the anonymous window, or a purpose no longer declared."
+                          },
+                          "granted": {
+                            "type": "boolean",
+                            "description": "Whether `hasConsent` answers yes for this purpose now."
+                          }
+                        },
+                        "required": [
+                          "purpose",
+                          "standing",
+                          "granted"
+                        ],
+                        "description": "Where a subject stands on one purpose."
+                      },
+                      "description": "Every purpose, and where this subject stands on it."
+                    },
+                    "records": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The record's id."
+                          },
+                          "subject": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "account",
+                                  "visitor"
+                                ],
+                                "description": "Whose consent: an account, or an anonymous visitor."
+                              },
+                              "id": {
+                                "type": "string",
+                                "description": "The user id, or the anonymous device id."
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "id"
+                            ],
+                            "description": "Whose consent this is."
+                          },
+                          "purpose": {
+                            "type": "string",
+                            "description": "The purpose id."
+                          },
+                          "action": {
+                            "type": "string",
+                            "enum": [
+                              "grant",
+                              "withdraw"
+                            ],
+                            "description": "Whether this gave consent or withdrew it."
+                          },
+                          "noticeVersion": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "The notice version in force when it was recorded."
+                          },
+                          "method": {
+                            "type": "string",
+                            "enum": [
+                              "click",
+                              "typed",
+                              "drawn",
+                              "provider"
+                            ],
+                            "description": "How the consent was given or withdrawn."
+                          },
+                          "surface": {
+                            "type": "string",
+                            "description": "Where the choice was made."
+                          },
+                          "identity": {
+                            "type": "string",
+                            "enum": [
+                              "none",
+                              "session",
+                              "verified_email",
+                              "in_person",
+                              "provider"
+                            ],
+                            "description": "How the person's identity was verified."
+                          },
+                          "documentHash": {
+                            "description": "The SHA-256 of the exact document agreed to, or null.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "typedName": {
+                            "description": "The typed signature, for `typed`; null otherwise.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "drawnImageHash": {
+                            "description": "The SHA-256 of the drawn signature, kept in R2 under it; null otherwise.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "drawnImageType": {
+                            "description": "The drawn image's media type; null otherwise.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "provider": {
+                            "description": "The e-signature provider, for `provider`; null otherwise.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "providerEnvelopeId": {
+                            "description": "The provider's envelope id; null otherwise.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "providerCertificateHash": {
+                            "description": "The SHA-256 of the provider's completion certificate, kept in R2 under it; null when none.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "expiresAt": {
+                            "description": "When the grant stops counting, ISO-8601; null for no expiry.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "representative": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "name": {
+                                    "type": "string",
+                                    "description": "The representative's name."
+                                  },
+                                  "relationship": {
+                                    "type": "string",
+                                    "description": "How they are related to the subject."
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "relationship"
+                                ],
+                                "description": "A parent, guardian or personal representative who signed for the subject."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Who signed for the subject, or null."
+                          },
+                          "recordedAt": {
+                            "type": "string",
+                            "description": "When it was recorded, ISO-8601."
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "subject",
+                          "purpose",
+                          "action",
+                          "noticeVersion",
+                          "method",
+                          "surface",
+                          "identity",
+                          "documentHash",
+                          "typedName",
+                          "drawnImageHash",
+                          "drawnImageType",
+                          "provider",
+                          "providerEnvelopeId",
+                          "providerCertificateHash",
+                          "expiresAt",
+                          "representative",
+                          "recordedAt"
+                        ],
+                        "description": "One grant or withdrawal in the append-only consent record."
+                      },
+                      "description": "Every row about this subject, and for an account every row of the visitors merged into it."
+                    },
+                    "merges": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "visitorId": {
+                            "type": "string",
+                            "description": "The anonymous device id that was merged."
+                          },
+                          "userId": {
+                            "type": "string",
+                            "description": "The account it was merged into."
+                          },
+                          "mergedAt": {
+                            "type": "string",
+                            "description": "When, ISO-8601."
+                          }
+                        },
+                        "required": [
+                          "visitorId",
+                          "userId",
+                          "mergedAt"
+                        ],
+                        "description": "A visitor's consent carried into an account at sign-in."
+                      },
+                      "description": "The visitors merged into this account, or the account this visitor was merged into."
+                    }
+                  },
+                  "required": [
+                    "subject",
+                    "purposes",
+                    "records",
+                    "merges"
+                  ],
+                  "description": "One subject's consent record."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "consent:read"
+        ]
+      }
+    },
+    "/consent/control-plane/documents/{hash}": {
+      "get": {
+        "tags": [
+          "consent"
+        ],
+        "operationId": "getConsentControlPlaneDocumentsByHash",
+        "summary": "Read a signed document, byte for byte, by its content hash.",
+        "parameters": [
+          {
+            "name": "hash",
+            "in": "path",
+            "required": true,
+            "description": "A SHA-256 content hash in lowercase hex.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The document's exact text.",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "consent:read"
+        ]
+      }
+    },
+    "/consent/control-plane/evidence/{hash}": {
+      "get": {
+        "tags": [
+          "consent"
+        ],
+        "operationId": "getConsentControlPlaneEvidenceByHash",
+        "summary": "Read a drawn signature or a provider's certificate, by its content hash.",
+        "parameters": [
+          {
+            "name": "hash",
+            "in": "path",
+            "required": true,
+            "description": "A SHA-256 content hash in lowercase hex.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The evidence object's bytes.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "consent:read"
+        ]
+      }
+    },
     "/storage": {
       "post": {
         "tags": [
@@ -16513,7 +18938,11 @@
         "x-pithy-verification": [
           "bearer",
           "session"
-        ]
+        ],
+        "x-pithy-operation": "boards.list",
+        "x-pithy-tool": {
+          "effect": null
+        }
       }
     },
     "/leaderboard/{board}/segment": {
@@ -16811,7 +19240,11 @@
         "x-pithy-verification": [
           "bearer",
           "session"
-        ]
+        ],
+        "x-pithy-operation": "top.read",
+        "x-pithy-tool": {
+          "effect": null
+        }
       }
     },
     "/leaderboard/{board}/me": {
@@ -16927,7 +19360,11 @@
         "x-pithy-verification": [
           "bearer",
           "session"
-        ]
+        ],
+        "x-pithy-operation": "rank.read",
+        "x-pithy-tool": {
+          "effect": null
+        }
       }
     },
     "/leaderboard/{board}/around": {
@@ -20995,7 +23432,11 @@
         "x-pithy-verification": [
           "bearer",
           "session"
-        ]
+        ],
+        "x-pithy-operation": "standing.read",
+        "x-pithy-tool": {
+          "effect": null
+        }
       }
     },
     "/rating/games/{game}/players/{userId}": {
@@ -23979,7 +26420,11 @@
         "x-pithy-verification": [
           "bearer",
           "session"
-        ]
+        ],
+        "x-pithy-operation": "transactions.list",
+        "x-pithy-tool": {
+          "effect": null
+        }
       }
     },
     "/ledger/{currency}": {
@@ -24055,7 +26500,11 @@
         "x-pithy-verification": [
           "bearer",
           "session"
-        ]
+        ],
+        "x-pithy-operation": "balance.read",
+        "x-pithy-tool": {
+          "effect": null
+        }
       }
     },
     "/ledger/{currency}/credit": {
@@ -35508,7 +37957,11 @@
         "x-pithy-verification": [
           "bearer",
           "session"
-        ]
+        ],
+        "x-pithy-operation": "feedback.write",
+        "x-pithy-tool": {
+          "effect": "sends"
+        }
       },
       "get": {
         "tags": [
@@ -35627,7 +38080,11 @@
         "x-pithy-verification": [
           "bearer",
           "session"
-        ]
+        ],
+        "x-pithy-operation": "feedback.list",
+        "x-pithy-tool": {
+          "effect": null
+        }
       }
     },
     "/support/feedback/{id}": {
@@ -35864,7 +38321,11 @@
         "x-pithy-verification": [
           "bearer",
           "session"
-        ]
+        ],
+        "x-pithy-operation": "feedback.read",
+        "x-pithy-tool": {
+          "effect": null
+        }
       }
     },
     "/support/presence/tickets": {
@@ -45044,6 +47505,844 @@
             "content": {
               "application/octet-stream": {
                 "schema": {}
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      }
+    },
+    "/.well-known/oauth-protected-resource/mcp": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "getWellKnownOauthProtectedResourceMcp",
+        "summary": "Name the authorization server for the MCP endpoint.",
+        "description": "RFC 9728 protected-resource metadata. Where an MCP client starts, from the endpoint's URL alone.",
+        "responses": {
+          "200": {
+            "description": "Protected-resource metadata (RFC 9728) for the app's MCP endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "resource": {
+                      "type": "string",
+                      "description": "The MCP endpoint's absolute URL. Every token's audience."
+                    },
+                    "authorization_servers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The issuer that mints tokens for this resource."
+                    },
+                    "scopes_supported": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The one scope this server issues, and `offline_access`."
+                    },
+                    "bearer_methods_supported": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "How a token is presented: `header` only."
+                    },
+                    "resource_name": {
+                      "type": "string",
+                      "description": "What this resource is, for a client to show."
+                    }
+                  },
+                  "required": [
+                    "resource",
+                    "authorization_servers",
+                    "scopes_supported",
+                    "bearer_methods_supported",
+                    "resource_name"
+                  ],
+                  "description": "Protected-resource metadata (RFC 9728) for the app's MCP endpoint."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
+        ]
+      }
+    },
+    "/.well-known/oauth-protected-resource": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "getWellKnownOauthProtectedResource",
+        "summary": "Name the authorization server for the MCP endpoint.",
+        "description": "RFC 9728 protected-resource metadata. Where an MCP client starts, from the endpoint's URL alone.",
+        "responses": {
+          "200": {
+            "description": "Protected-resource metadata (RFC 9728) for the app's MCP endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "resource": {
+                      "type": "string",
+                      "description": "The MCP endpoint's absolute URL. Every token's audience."
+                    },
+                    "authorization_servers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The issuer that mints tokens for this resource."
+                    },
+                    "scopes_supported": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The one scope this server issues, and `offline_access`."
+                    },
+                    "bearer_methods_supported": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "How a token is presented: `header` only."
+                    },
+                    "resource_name": {
+                      "type": "string",
+                      "description": "What this resource is, for a client to show."
+                    }
+                  },
+                  "required": [
+                    "resource",
+                    "authorization_servers",
+                    "scopes_supported",
+                    "bearer_methods_supported",
+                    "resource_name"
+                  ],
+                  "description": "Protected-resource metadata (RFC 9728) for the app's MCP endpoint."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
+        ]
+      }
+    },
+    "/.well-known/oauth-authorization-server/auth": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "getWellKnownOauthAuthorizationServerAuth",
+        "summary": "Describe the authorization server that mints MCP tokens.",
+        "description": "RFC 8414 authorization-server metadata, at the address its issuer implies.",
+        "responses": {
+          "200": {
+            "description": "Authorization-server metadata (RFC 8414), as the composed provider publishes it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string",
+                    "description": "A metadata field."
+                  },
+                  "additionalProperties": {
+                    "description": "Its value."
+                  },
+                  "description": "Authorization-server metadata (RFC 8414), as the composed provider publishes it."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
+        ]
+      }
+    },
+    "/.well-known/oauth-authorization-server": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "getWellKnownOauthAuthorizationServer",
+        "summary": "Describe the authorization server that mints MCP tokens.",
+        "description": "RFC 8414 authorization-server metadata, at the address its issuer implies.",
+        "responses": {
+          "200": {
+            "description": "Authorization-server metadata (RFC 8414), as the composed provider publishes it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string",
+                    "description": "A metadata field."
+                  },
+                  "additionalProperties": {
+                    "description": "Its value."
+                  },
+                  "description": "Authorization-server metadata (RFC 8414), as the composed provider publishes it."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
+        ]
+      }
+    },
+    "/mcp": {
+      "post": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "postMcp",
+        "summary": "Serve the app's MCP tools to an agent acting as a user.",
+        "description": "Streamable HTTP, stateless, one JSON-RPC message per request answered in the body. The bearer token must be one this application minted for this endpoint. `tools/list` holds only what the caller's role allows, and every call runs through the route it names, as the caller.",
+        "requestBody": {
+          "required": true,
+          "description": "One JSON-RPC 2.0 request or notification.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jsonrpc": {
+                    "type": "string",
+                    "const": "2.0",
+                    "description": "Always `2.0`."
+                  },
+                  "id": {
+                    "description": "The request's id. Absent on a notification, which gets no answer.",
+                    "type": [
+                      "string",
+                      "number"
+                    ]
+                  },
+                  "method": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The method called, e.g. `tools/list`."
+                  },
+                  "params": {
+                    "description": "The method's parameters.",
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "jsonrpc",
+                  "method"
+                ],
+                "description": "One JSON-RPC 2.0 request or notification."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "One JSON-RPC 2.0 answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "jsonrpc": {
+                      "type": "string",
+                      "const": "2.0",
+                      "description": "Always `2.0`."
+                    },
+                    "id": {
+                      "description": "The id of the request this answers.",
+                      "type": [
+                        "string",
+                        "number"
+                      ]
+                    },
+                    "result": {
+                      "description": "The method's result, on success."
+                    },
+                    "error": {
+                      "description": "What went wrong, on failure.",
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "The JSON-RPC error code."
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "What went wrong, in one sentence."
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "jsonrpc",
+                    "id"
+                  ],
+                  "description": "One JSON-RPC 2.0 answer."
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "A notification, accepted. No body."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer"
+        ]
+      },
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "getMcp",
+        "summary": "Refuse to open an event stream or end a session on the MCP endpoint.",
+        "description": "The endpoint is stateless and answers every message in the response body, so it offers no server-sent event stream and has no session to end. Always 405, with `Allow: POST`.",
+        "responses": {
+          "405": {
+            "description": "Only POST is served here."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
+        ]
+      },
+      "delete": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "deleteMcp",
+        "summary": "Refuse to open an event stream or end a session on the MCP endpoint.",
+        "description": "The endpoint is stateless and answers every message in the response body, so it offers no server-sent event stream and has no session to end. Always 405, with `Allow: POST`.",
+        "responses": {
+          "405": {
+            "description": "Only POST is served here."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
+        ]
+      }
+    },
+    "/mcp/consent": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "getMcpConsent",
+        "summary": "Show what an application asking to act as you will be able to do.",
+        "description": "Read by the scaffolded consent screen. The client's name is as it reported itself; the redirect URI is the one the authorization server enforces. Only operations your role allows are listed.",
+        "parameters": [
+          {
+            "name": "oauth_query",
+            "in": "query",
+            "required": true,
+            "description": "The query string the authorization server redirected the screen with, signed by it.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 8192
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What the consent screen shows: one decision, and its consequence.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "client": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "The client's id, assigned when it registered."
+                        },
+                        "reportedName": {
+                          "description": "The name the client gave itself. Self-asserted and never verified — show it as reported.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "reportedUri": {
+                          "description": "The homepage the client gave itself. Also unverified.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "redirectUri": {
+                          "type": "string",
+                          "description": "Where the token goes. Enforced by the authorization server, so it is what identifies the client."
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "reportedName",
+                        "reportedUri",
+                        "redirectUri"
+                      ],
+                      "description": "The application asking for access."
+                    },
+                    "capabilities": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "capability": {
+                            "type": "string",
+                            "description": "The capability's name."
+                          },
+                          "operations": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "tool": {
+                                  "type": "string",
+                                  "description": "The tool's name, `<capability>_<operation>`."
+                                },
+                                "summary": {
+                                  "type": "string",
+                                  "description": "What it does, in the capability's own words."
+                                },
+                                "effect": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "writes",
+                                        "sends",
+                                        "charges",
+                                        "deletes"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "What it does beyond reading, or null for a read."
+                                }
+                              },
+                              "required": [
+                                "tool",
+                                "summary",
+                                "effect"
+                              ],
+                              "description": "One thing the client will be able to do, as you."
+                            },
+                            "description": "What the client will be able to do in it — only what your role allows."
+                          },
+                          "reachable": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "How many of its operations your role allows."
+                          },
+                          "total": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "How many operations it offers agents in all."
+                          },
+                          "effects": {
+                            "type": "object",
+                            "properties": {
+                              "writes": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "Operations that change data."
+                              },
+                              "sends": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "Operations that send a message."
+                              },
+                              "charges": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "Operations that charge money."
+                              },
+                              "deletes": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "Operations that delete data."
+                              }
+                            },
+                            "required": [
+                              "writes",
+                              "sends",
+                              "charges",
+                              "deletes"
+                            ],
+                            "description": "The reachable operations that do more than read, counted by effect."
+                          }
+                        },
+                        "required": [
+                          "capability",
+                          "operations",
+                          "reachable",
+                          "total",
+                          "effects"
+                        ],
+                        "description": "One capability the client will be able to act in, and what it can do there."
+                      },
+                      "description": "One row per capability you can reach. Nothing is selectable."
+                    },
+                    "requested": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "scope": {
+                            "type": "string",
+                            "description": "The scope as the client asked for it."
+                          },
+                          "granted": {
+                            "type": "boolean",
+                            "description": "Whether approving grants it."
+                          },
+                          "reason": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "role",
+                                  "unknown"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Why it is not granted: `role` when the caller's role does not reach it, `unknown` when no such permission exists. Null when it is granted."
+                          }
+                        },
+                        "required": [
+                          "scope",
+                          "granted",
+                          "reason"
+                        ],
+                        "description": "One scope the client requested."
+                      },
+                      "description": "What the client asked for, each with what approving grants."
+                    }
+                  },
+                  "required": [
+                    "client",
+                    "capabilities",
+                    "requested"
+                  ],
+                  "description": "What the consent screen shows: one decision, and its consequence."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      },
+      "post": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "postMcpConsent",
+        "summary": "Let an application act as you in this application, or refuse it.",
+        "description": "One decision for the whole request; nothing is selectable. Approving is audited as `auth/mcp_grant_approved`, refusing as `auth/mcp_grant_denied`. Answers where to send the browser next.",
+        "requestBody": {
+          "required": true,
+          "description": "One decision: let this client act as you, or not. Nothing in it is selectable.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "oauth_query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 8192,
+                    "description": "The query string the authorization server redirected the screen with, signed by it."
+                  },
+                  "accept": {
+                    "type": "boolean",
+                    "description": "Whether you let this client act as you in this application."
+                  }
+                },
+                "required": [
+                  "oauth_query",
+                  "accept"
+                ],
+                "additionalProperties": false,
+                "description": "One decision: let this client act as you, or not. Nothing in it is selectable."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Where to send the browser after the decision.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "redirect": {
+                      "type": "string",
+                      "description": "Where the browser goes next: the client's redirect, carrying a code or a refusal."
+                    }
+                  },
+                  "required": [
+                    "redirect"
+                  ],
+                  "description": "Where to send the browser after the decision."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      }
+    },
+    "/mcp/connections": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "getMcpConnections",
+        "summary": "List the applications acting as you.",
+        "description": "What you approved, when, and where each sends its tokens. Revoking is the only narrowing there is.",
+        "responses": {
+          "200": {
+            "description": "The applications acting as you, each revocable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "applications": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "clientId": {
+                            "type": "string",
+                            "description": "The client's id."
+                          },
+                          "reportedName": {
+                            "description": "The name the client gave itself. Unverified.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "redirectUris": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Where its tokens go."
+                          },
+                          "approvedAt": {
+                            "type": "string",
+                            "description": "When you approved it, ISO-8601."
+                          }
+                        },
+                        "required": [
+                          "clientId",
+                          "reportedName",
+                          "redirectUris",
+                          "approvedAt"
+                        ],
+                        "description": "One application acting as you."
+                      },
+                      "description": "Newest first."
+                    }
+                  },
+                  "required": [
+                    "applications"
+                  ],
+                  "description": "The applications acting as you, each revocable."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      }
+    },
+    "/mcp/connections/{clientId}": {
+      "delete": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "deleteMcpConnectionsByClientId",
+        "summary": "Revoke an application acting as you.",
+        "description": "Takes effect on its next call: the consent, its refresh tokens and its stored access tokens go, and the MCP endpoint refuses a token with no consent behind it. Audited as `auth/mcp_grant_revoked`. No administrator needed.",
+        "parameters": [
+          {
+            "name": "clientId",
+            "in": "path",
+            "required": true,
+            "description": "The client's id.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A revoked connection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "revoked": {
+                      "type": "boolean",
+                      "const": true,
+                      "description": "Always true: the client can no longer act as you."
+                    }
+                  },
+                  "required": [
+                    "revoked"
+                  ],
+                  "description": "A revoked connection."
+                }
               }
             }
           },

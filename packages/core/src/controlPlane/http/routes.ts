@@ -16,6 +16,7 @@ import {
   MANIFEST_READ_SCOPE,
   MIGRATIONS_READ_SCOPE,
   PRIVACY_READ_SCOPE,
+  PROCESSING_READ_SCOPE,
   RETENTION_HOLD_SCOPE,
   RETENTION_READ_SCOPE,
 } from "../scope/scope";
@@ -35,6 +36,7 @@ import {
 } from "./handlers";
 import { listHoldsHandler, placeHoldHandler, releaseHoldHandler } from "./holds";
 import { presenceTicketGate, presenceTicketHandler } from "./presence";
+import { processingHandler } from "./processing";
 import {
   ControlPlaneErasurePeriodResponse,
   ControlPlaneErasureSubjectResponse,
@@ -45,6 +47,7 @@ import {
   ControlPlaneMigrationsResponse,
   ControlPlanePingResponse,
   ControlPlanePrivacyResponse,
+  ControlPlaneProcessingResponse,
   ExpireKeyResponse,
   RegisterKeyResponse,
 } from "./responses";
@@ -71,6 +74,7 @@ import {
  *   GET  /control-plane/migrations            → where each database stands   (migrations:read)
  *   GET  /control-plane/privacy               → what each schema holds        (privacy:read)
  *   GET  /control-plane/evidence              → SOC 2 and ISO 27001 evidence  (evidence:read)
+ *   GET  /control-plane/processing            → the Article 30 record         (processing:read)
  *   GET  /control-plane/erasure               → every purge in a period       (erasure:read)
  *   GET  /control-plane/erasure/:type/:id     → one subject's purge, attested (erasure:read)
  *   GET  /control-plane/holds                 → every legal hold              (retention:read)
@@ -163,6 +167,14 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
       scope: EVIDENCE_READ_SCOPE,
       summary:
         "SOC 2 and ISO 27001 evidence derived from what this Worker composes and records: each control's facts, their sources, and what could be said. Evidence for an auditor, never a judgment.",
+    },
+    {
+      method: "GET",
+      operation: "processing.read",
+      path: `${basePath}/processing`,
+      scope: PROCESSING_READ_SCOPE,
+      summary:
+        "The record of processing activities, GDPR Article 30: each purpose, its data classes, legal basis, recipients, retention and measures, and every gap named.",
     },
     {
       method: "GET",
@@ -324,6 +336,20 @@ export function registerControlPlaneRoutes(
     }),
     requireControlPlane(EVIDENCE_READ_SCOPE),
     evidenceHandler(deps),
+  );
+
+  app.get(
+    `${basePath}/processing`,
+    describeRoute({
+      summary: "Report the record of processing activities.",
+      description:
+        "Every processing activity the composed capabilities and the `processing` block declare: its purpose, the data classes it uses cross-checked against the privacy inventory, its legal basis or a gap, a consent basis's purpose and grant counts, its recipients with what each receives, its effective retention, and the evidence pack's controls. Every gap is named and none is filled in. It describes the processing and changes none of it. Read-only.",
+      verification: "control-plane",
+      scopes: [PROCESSING_READ_SCOPE],
+      responses: { 200: ControlPlaneProcessingResponse },
+    }),
+    requireControlPlane(PROCESSING_READ_SCOPE),
+    processingHandler(deps),
   );
 
   app.get(

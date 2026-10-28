@@ -4,7 +4,8 @@
 import { readFileSync } from "node:fs";
 import { artifacts } from "@pithy-sh/artifacts/src/index";
 import { audit } from "@pithy-sh/audit/src/index";
-import { auth } from "@pithy-sh/auth/src/index";
+import { auth, mcp } from "@pithy-sh/auth/src/index";
+import { consent } from "@pithy-sh/consent/src/index";
 import {
   type AsyncApiDocument,
   asyncApiDocument,
@@ -99,6 +100,18 @@ const ORGANIZATION_ROLES = defineRoles({
 });
 
 /**
+ * **Capabilities that ship inside another capability's package, and are composed by hand.** `pithy add` installs a
+ * package and reads the one manifest it carries, so a second capability in that package has no `CATALOG` row of its
+ * own — and its routes still belong in the kit's document. One row each, beside {@link KIT_COMPOSITION}, and
+ * `kitDocument.test.ts` holds this list to the tags the document carries.
+ */
+export const KIT_COMPANIONS: Readonly<Record<string, () => Capability>> = {
+  // The app's own agent surface, in `@pithy-sh/auth` because its authorization server is a plugin of the
+  // auth instance. Open to every signed-in user here, which mounts the same routes any floor does.
+  mcp: () => mcp({ floor: "signed-in" }),
+};
+
+/**
  * **Every capability in the kit, and the call that composes it with its whole route surface.** One row per
  * `CATALOG` entry, `controlplane` included; `kitDocument.test.ts` fails, naming it, on a catalog entry with
  * no row here.
@@ -118,6 +131,7 @@ export const KIT_COMPOSITION: Readonly<Record<string, () => Capability>> = {
   // Contributes a gate on other capabilities' routes, and no route of its own.
   turnstile: () => turnstile(),
   audit: () => audit(),
+  consent: () => consent(),
   // The share-link route mounts at its own path (`/s` by default) beside the object routes.
   storage: () => storage(),
   media: () => media(),
@@ -231,7 +245,9 @@ export function kitVersion(): string {
 /** The whole kit, assembled by `createBackend` for {@link KIT_CONTRACT_ENVIRONMENT}: its capabilities and route groups. */
 export function kitComposition(): { capabilities: readonly Capability[]; groups: readonly RouteGroup[] } {
   return composeForSync(KIT_CONTRACT_ENVIRONMENT, () => {
-    const capabilities = Object.values(KIT_COMPOSITION).map((compose) => compose());
+    const capabilities = [...Object.values(KIT_COMPOSITION), ...Object.values(KIT_COMPANIONS)].map((compose) =>
+      compose(),
+    );
     const app = createBackend({ capabilities });
     const groups = routeGroupsOf(app);
     if (groups === undefined) {

@@ -1,0 +1,45 @@
+{
+  "name": "consent",
+  "package": "@pithy-sh/consent",
+  "requiredBindings": [
+    {
+      "type": "d1",
+      "name": "DB"
+    },
+    {
+      "type": "r2",
+      "name": "CONSENT_EVIDENCE",
+      "optional": true
+    }
+  ],
+  "peerCapabilities": ["auth"],
+  "optionalCapabilities": ["email", "audit", "controlplane"],
+  "migrationNamespace": "consent",
+  "whenToEnable": "Record consent the way a regulator asks to see it, in your own D1. Purposes are declared and versioned: email declares marketing and tracking, and you add your own with the data classes each covers, whether it is explicit, and the weakest method a grant may be given by — a click, a typed name, a drawn signature, or an e-signature provider's completed envelope. Bump a notice version and every older grant needs renewing. Every grant and withdrawal is an append-only row the database itself refuses to change, and an audit event, so the tamper-evident trail covers it. A signed grant keeps the exact document by its hash, the signature, how identity was verified, an expiry and a representative, with the names encrypted at rest. Visitors consent against an anonymous device id held only once they choose, merged into their account at sign-in. hasConsent is the one question every capability asks, and email's tracking and marketing mail follow it. Writes wear auth's same-origin gate, so add auth too.",
+  "scaffold": [
+    "Add a `consent()` block to pithy.config.ts. Email's purposes, `email.marketing` and `email.tracking`, are composed for you.",
+    "Declare your own purposes under your own domain in `consent({ purposes })`: an id, a summary written for the person, a notice version, the data classes it covers, whether it is explicit, the minimum method, and whether a withdrawal must be written.",
+    "Run `pithy migrate` to create pithy_consent_records, pithy_consent_documents and pithy_consent_merges.",
+    "Run `pithy secrets provision`: the typed and representative names are encrypted fields, so the Worker needs PITHY_FIELD_KEYS.",
+    "Bind the R2 bucket CONSENT_EVIDENCE if you take drawn signatures or a provider's certificates. `pithy provision` creates it.",
+    "Pass `consentSubject` when you enqueue marketing mail, so email can ask whose consent it is sent under.",
+    "Run `pithy ui add react --consent` for the settings screen a person reads and withdraws their consents on."
+  ],
+  "configOptions": [
+    {
+      "key": "purposes",
+      "default": [],
+      "describe": "Your own purposes, beside the ones composed capabilities declare. Each under your own domain — `clinic.records` — with a summary, a notice version, its data classes, whether it is explicit, its minimum method and whether a withdrawal must be written."
+    },
+    {
+      "key": "visitorWindowDays",
+      "default": 395,
+      "describe": "How many days a visitor's consent counts while it has not been merged into an account. The device-id cookie lives as long."
+    },
+    {
+      "key": "basePath",
+      "default": "/consent",
+      "describe": "Where the consent routes mount: the purposes, the person's own record, grants, withdrawals and the control-plane reads."
+    }
+  ]
+}

@@ -858,6 +858,8 @@ describe("a gate is keyed on what it reads", () => {
     //
     // Everything not named here is covered by the tree key, which the first two tests hold turbo to.
     const PACKAGE_SCOPED: Record<string, string> = {
+      "appTools.test.ts":
+        "It composes the kit through `openapi/kitDocument.ts`, as `adminOperations.test.ts` does, so what it reads arrives as imports of each capability's built `dist`, which the `^build` dependency already keys. It opens no file outside its own package.",
       "adminOperations.test.ts":
         "It composes the kit through `openapi/kitDocument.ts`, so what it reads arrives as imports of each capability's built `dist`, which the `^build` dependency already keys. It opens no file outside its own package, so turbo's default inputs and that dependency are exactly right for it.",
       "envStanzaWriters.test.ts":

@@ -205,6 +205,14 @@ export function healthWithFixes(
         ...worker,
         // An edit to `pithy.config.ts` the adopter has to decide on — which caller is trusted is theirs.
         scopes: { ...worker.scopes, gates: worker.scopes.gates.map((gate) => ({ ...gate, ...none })) },
+        // `pithy add consent` on this Worker records it; whether a law requires it is still the adopter's call.
+        consent: {
+          ...worker.consent,
+          purposes: worker.consent.purposes.map((entry) => ({
+            ...entry,
+            fix: worker.consent.unrecorded ? prerequisiteFix(name, "consent") : null,
+          })),
+        },
         prerequisites: {
           ...worker.prerequisites,
           missing: worker.prerequisites.missing.map((entry) => ({

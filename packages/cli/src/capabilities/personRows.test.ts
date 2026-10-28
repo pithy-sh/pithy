@@ -7,12 +7,17 @@ import type { D1Database } from "@cloudflare/workers-types";
 import { artifacts } from "@pithy-sh/artifacts/src/capability";
 import { audit } from "@pithy-sh/audit/src/capability";
 import { auth } from "@pithy-sh/auth/src/capability";
+import { consent } from "@pithy-sh/consent/src/capability";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { personColumnsOf, personRowGaps } from "@pithy-sh/core/src/capability/personColumns";
 import { isRetained, purgeExports, purgeSteps } from "@pithy-sh/core/src/capability/purge";
+import { composedConsentPurposes } from "@pithy-sh/core/src/consent/reader";
 import { controlplane } from "@pithy-sh/core/src/controlPlane/capability";
+import { deriveProcessingRecord } from "@pithy-sh/core/src/controlPlane/processing/derive";
 import { buildRegistryFromCapabilities } from "@pithy-sh/core/src/migrations/capabilitySets";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import { privacyInventory } from "@pithy-sh/core/src/privacy/inventory";
+import { effectiveProcessing } from "@pithy-sh/core/src/processing/composed";
 import { email } from "@pithy-sh/email/src/capability";
 import { i18n } from "@pithy-sh/i18n/src/capability";
 import { leaderboard } from "@pithy-sh/leaderboard/src/capability";
@@ -35,7 +40,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { KIT_ROOT } from "../test-utils/kitRoot";
 
 /**
- * **Every kit capability that holds rows about a person answers for them (#814)** — it erases them on a purge, or
+ * **Every kit capability that holds rows about a person answers for them** — it erases them on a purge, or
  * keeps them and says why, and in both cases it exports them.
  *
  * Stated over the kit rather than over a list. Every package that ships a capability manifest is constructed here,
@@ -77,6 +82,7 @@ const KIT: Record<string, () => Capability> = {
   artifacts: () => artifacts(),
   audit: () => audit(),
   auth: () => auth({ baseURL: "http://localhost:8787" }),
+  consent: () => consent(),
   core: () => controlplane(),
   email: () => email({ fromAddress: "noreply@acme.test", baseUrl: "https://api.acme.test" }),
   i18n: () => i18n(),
@@ -125,8 +131,37 @@ describe("every kit capability that holds rows about a person answers for them",
         .filter((contribution) => contribution.subject === "user" && isRetained(contribution))
         .map((contribution) => [capability.name, contribution.retain?.basis.length ?? 0] as const),
     );
-    expect(kept.map(([name]) => name).sort()).toEqual(["audit", "controlplane", "email", "payments"]);
+    expect(kept.map(([name]) => name).sort()).toEqual(["audit", "consent", "controlplane", "email", "payments"]);
     for (const [, basis] of kept) expect(basis).toBeGreaterThan(0);
+  });
+});
+
+describe("every kit capability that stores a classed field declares the processing behind it", () => {
+  const record = deriveProcessingRecord({
+    activities: effectiveProcessing(undefined, capabilities),
+    inventory: privacyInventory(capabilities),
+    retention: null,
+    consent: { state: "not-composed", declared: composedConsentPurposes(capabilities) },
+    bindingRecipients: [],
+    measures: null,
+    fieldNames: true,
+  });
+
+  test("and the sweep finds classed fields, so it is looking at schemas and not at nothing", () => {
+    const storing = new Set(privacyInventory(capabilities).schemas.map((schema) => schema.capability));
+    expect([...storing].sort()).toEqual(expect.arrayContaining(["auth", "consent", "email"]));
+  });
+
+  test("no stored class goes unclaimed, and every kit activity states a legal basis", () => {
+    expect(record.gaps.filter((gap) => gap.kind === "class-unclaimed")).toEqual([]);
+    const activityGaps = record.activities.flatMap((entry) => entry.gaps);
+    expect(activityGaps.filter((gap) => gap.kind !== "no-consent-purpose")).toEqual([]);
+  });
+
+  test("each consent-based kit activity names a purpose its capability declares", () => {
+    const consented = record.activities.filter((entry) => entry.legalBasis === "consent");
+    expect(consented.length).toBeGreaterThan(0);
+    for (const entry of consented) expect(entry.consent?.noticeVersion, entry.id).toBeTypeOf("number");
   });
 });
 
@@ -182,7 +217,7 @@ describe("a project composing the whole kit answers an export from every one of 
     expect(entries.map((entry) => entry.capability).sort()).toEqual([...holding].sort());
     expect(entries.filter((entry) => entry.state !== "exported")).toEqual([]);
     const kept = entries.filter((entry) => entry.disposition === "retain").map((entry) => entry.capability);
-    expect(kept.sort()).toEqual(["audit", "controlplane", "email", "payments"]);
+    expect(kept.sort()).toEqual(["audit", "consent", "controlplane", "email", "payments"]);
   });
 
   test("and every step that erases runs against the composed tables", async () => {

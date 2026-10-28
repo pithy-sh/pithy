@@ -4,11 +4,13 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { pithyCommandOf } from "@pithy-sh/core/src/cli/command";
+import { composedConsent } from "@pithy-sh/core/src/consent/reader";
 import { composedUsageMeter, type MeterCharge, type UsageMeter } from "@pithy-sh/core/src/entitlement/meter";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
 import { z } from "zod";
 import { createBounceHandler } from "./bounce/handler";
+import { EMAIL_CONSENT_PURPOSES, emailConsentGranted, emailConsentWithdrawn } from "./consent/consent";
 import { emailSigningRegistry } from "./crypto/signingKey";
 import {
   type EmailSuppressionDatabase,
@@ -23,6 +25,7 @@ import { emailAdminRoutes } from "./http/guards";
 import { registerEmailAdminRoutes } from "./http/routes";
 import { email_0001_init } from "./migrations/0001_init";
 import { email_0001_suppressions } from "./migrations/0001_suppressions";
+import { EMAIL_PROCESSING } from "./processing/activities";
 import { DevMailDelivery } from "./provision/devDelivery";
 import { emailHostCatalogs } from "./provision/hostCatalogs";
 import { emailSettings } from "./provision/settingsCheck";
@@ -39,7 +42,7 @@ import { EmailScheduleParams, EmailSendParams } from "./workflows/params";
  * global suppression database. A consumer (e.g. `@pithy-sh/auth`) forwards its worker env; it never
  * names these bindings itself.
  *
- * **`EMAIL_SUPPRESSIONS` is on this list, and that is the whole of pithy-sh/pithy#355.** The wiring is
+ * **`EMAIL_SUPPRESSIONS` is on this list.** The wiring is
  * not the adopter's problem: the capability declares the binding, `pithy add email` provisions it,
  * `enqueue` reads it off the env, and no consumer config, route option, or constant names it. What an
  * adopter *may* do — because it is their database — is ask for it back through
@@ -140,7 +143,7 @@ export interface EmailCapability extends Capability {
   enqueue: (env: EmailEnqueueEnv, input: EnqueueInput) => Promise<EnqueueResult>;
   /**
    * The suppression list, from a request env — **it is the adopter's database, and this is how they open
-   * it** (pithy-sh/pithy#355).
+   * it**.
    *
    * Nobody has to call this to be protected: `enqueue` consults the list on its own and `runSend`
    * refuses a blocked recipient regardless. This exists for the adopter who genuinely wants to look —
@@ -202,12 +205,17 @@ export function email(config: EmailConfigInput): EmailCapability {
    * exactly as it always was: nothing is counted and nothing is refused.
    */
   let meter: UsageMeter | undefined;
+  /**
+   * Every composed capability, kept by `compose` so an enqueue can find the consent reader over its own env.
+   * Empty until then, which is a composition with no consent: nothing is gated.
+   */
+  let composition: readonly Capability[] = [];
   const capability = defineCapability({
     name: "email",
     // The package this capability ships in and the version it ships at, both stamped by
     // `scripts/stampVersions.ts` — a Worker cannot read its own package.json. Reported per capability by
     // the control-plane manifest, and reported together: a release feed is keyed by package name, so the
-    // version alone leaves a client guessing the key (#626).
+    // version alone leaves a client guessing the key.
     version: PACKAGE_VERSION,
     package: PACKAGE_NAME,
     // The link-signing key is read through @pithy-sh/secrets, so the secrets capability must be
@@ -219,7 +227,7 @@ export function email(config: EmailConfigInput): EmailCapability {
      * This capability's own copy — the seven templates whose words the kit owns, plus the shell's
      * severity vocabulary and its opt-out link. All under `email/`, which `composeMessages` enforces.
      *
-     * **In every language it is written in, not English alone (#442).** The send Worker is a separate
+     * **In every language it is written in, not English alone.** The send Worker is a separate
      * deploy with no request and no config, so anything it does not bundle is stamped into it as a
      * variable — and the kit's own translations were doing that on every provision run. Held here,
      * they are built into the host and only an adopter's diff travels.
@@ -244,6 +252,7 @@ export function email(config: EmailConfigInput): EmailCapability {
      */
     compose: ({ capabilities }) => {
       meter = composedUsageMeter(capabilities);
+      composition = capabilities;
       for (const composed of capabilities) {
         if (composed.name !== "i18n") continue;
         const candidate = (composed as { layersFor?: unknown }).layersFor;
@@ -278,13 +287,24 @@ export function email(config: EmailConfigInput): EmailCapability {
         },
         // Every address that bounced, complained or unsubscribed. Dropping it is not a schema change — the
         // next send goes to people who asked not to be mailed, and the list cannot be rebuilt from anywhere.
-        // Declared retained, so no `down` runs against it while it holds rows unless counted (#588).
+        // Declared retained, so no `down` runs against it while it holds rows unless counted.
         retained: emailSuppressionsRetainedTables,
       },
     },
     // A person's suppression and the log of mail sent to them are kept through their purge, so an unsubscribe holds,
-    // and exported on an access request with the basis that keeps them (#814).
+    // and exported on an access request with the basis that keeps them.
     purge: [emailUserPurge()],
+    processing: EMAIL_PROCESSING,
+    /**
+     * What email processes under consent: marketing mail and open and click tracking. With
+     * `@pithy-sh/consent` composed, an enqueue asks before either; without it, nothing is gated and `pithy doctor`
+     * says tracking runs with no consent record behind it.
+     */
+    consentPurposes: EMAIL_CONSENT_PURPOSES,
+    // A withdrawal from marketing suppresses the address for marketing; one from tracking stops tracking mail
+    // already queued. The suppression list and the consent record never disagree.
+    consentWithdrawn: emailConsentWithdrawn,
+    consentGranted: emailConsentGranted,
     /**
      * The two durable jobs email owns. Both classes live in the prebuilt email worker
      * (`workflows/worker.ts`), never in the app worker — the app only ever dispatches into `send`.
@@ -300,7 +320,7 @@ export function email(config: EmailConfigInput): EmailCapability {
         className: "EmailSendWorkflow",
         // The same object the host's own registry and its dispatch route validate against
         // (`workflows/params.ts`). One schema, three readers: what the app dispatches, what the host
-        // deploys, and what a loopback dispatch is checked against at the door (#410).
+        // deploys, and what a loopback dispatch is checked against at the door.
         params: EmailSendParams,
       },
       schedule: {
@@ -335,7 +355,7 @@ export function email(config: EmailConfigInput): EmailCapability {
      */
     adminRoutes: emailAdminRoutes(resolved.basePath),
     /**
-     * How `pithy doctor` checks that these settings **work**, not merely that they are written (#411).
+     * How `pithy doctor` checks that these settings **work**, not merely that they are written.
      *
      * Built from the resolved config, on the instance, so discovery needs no `pithy.manifest.json` and no
      * import of this package by the CLI. The local half runs `workflows/hostEnv.ts` — the very declaration
@@ -386,6 +406,8 @@ export function email(config: EmailConfigInput): EmailCapability {
         suppressionDb: env.EMAIL_SUPPRESSIONS ? emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS) : undefined,
         // Read through the closure for the reason `layersFor` is: `compose` fills it after this is defined.
         meter: chargeFor(env),
+        // Read through the closure for the same reason: `compose` fills the composition after this is defined.
+        consent: composedConsent(composition, env as unknown as Record<string, unknown>),
         now: new Date(),
         newId: () => crypto.randomUUID(),
       },

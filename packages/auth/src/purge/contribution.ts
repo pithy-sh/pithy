@@ -12,6 +12,7 @@ import { UserLifecycleEvent } from "../data/userLifecycle";
 import { VerificationOutcome } from "../data/verificationOutcome";
 import type { AuthUserExport } from "../http/responses";
 import { authUserExportView } from "../http/views";
+import { purgeAddress } from "../lifecycle/transitions";
 
 /**
  * Auth's own purge contribution (#622): what erasing one person means for the `pithy_auth_*` tables, and what
@@ -45,12 +46,12 @@ export const AUTH_PURGE_SUMMARY =
 const CREDENTIAL_COLUMN = /secret|token|key|code|hash|password|credential/i;
 
 /** The auth Kysely without its table map — a plugin's table is named by the plan, not by `authTables`. */
-function untyped(db: AuthDatabase): Kysely<Record<string, Record<string, unknown>>> {
+export function untyped(db: AuthDatabase): Kysely<Record<string, Record<string, unknown>>> {
   return db as unknown as Kysely<Record<string, Record<string, unknown>>>;
 }
 
 /** The D1 binding the auth tables live in, off a run's env — or a wiring fault naming it. */
-function bindingOf(env: Record<string, unknown>, database: string): D1Database {
+export function bindingOf(env: Record<string, unknown>, database: string): D1Database {
   const binding = env[database];
   if (typeof binding !== "object" || binding === null) {
     throw new InternalError({
@@ -68,7 +69,7 @@ function literal(value: string): string {
 }
 
 /** Bind a compiled statement to D1, so it can join a `batch`. */
-function prepared(d1: D1Database, compiled: CompiledQuery) {
+export function prepared(d1: D1Database, compiled: CompiledQuery) {
   return d1.prepare(compiled.sql).bind(...(compiled.parameters as unknown[]));
 }
 
@@ -176,7 +177,7 @@ export async function exportAuthUser(
 }
 
 /** One plugin table's rows about the account, every column but a credential's. */
-async function pluginRows(db: AuthDatabase, table: string, userId: string): Promise<Record<string, unknown>[]> {
+export async function pluginRows(db: AuthDatabase, table: string, userId: string): Promise<Record<string, unknown>[]> {
   const rows = await untyped(db).selectFrom(table).selectAll().where("userId", "=", userId).execute();
   return rows.map((row) =>
     Object.fromEntries(Object.entries(row).filter(([column]) => !CREDENTIAL_COLUMN.test(column))),
@@ -187,6 +188,16 @@ async function pluginRows(db: AuthDatabase, table: string, userId: string): Prom
  * The contribution `auth()` declares, over the D1 binding its config names. The export of an account that is
  * not there is an empty object, which the route never reaches: it answers 404 before it reads any capability.
  */
+/**
+ * An account's address by user id, over the env's auth database — what auth answers through core's `addressOf`
+ * seam, so a capability holding state by address (email's suppression list) finds it without importing auth.
+ * `null` for an account that has none, or no longer exists.
+ */
+export function authAddressOf(database: string) {
+  return (env: Record<string, unknown>, userId: string): Promise<string | null> =>
+    purgeAddress(authDatabase(bindingOf(env, database)), userId);
+}
+
 export function authPurgeContribution(
   database: string,
   pluginTables: readonly string[] = [],

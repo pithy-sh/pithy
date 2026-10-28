@@ -393,6 +393,8 @@ export function registerSupportRoutes(options: SupportRoutesOptions): (app: Hono
       `${base}/feedback`,
       describeRoute({
         summary: "Write in to support from the app.",
+        operation: "feedback.write",
+        tool: { effect: "sends" },
         verification: ["bearer", "session"],
         responses: { 201: SupportSubmissionResponse },
       }),
@@ -406,6 +408,8 @@ export function registerSupportRoutes(options: SupportRoutesOptions): (app: Hono
       `${base}/feedback`,
       describeRoute({
         summary: "List the caller's own support requests.",
+        operation: "feedback.list",
+        tool: true,
         verification: ["bearer", "session"],
         responses: { 200: SupportMyThreadsResponse },
       }),
@@ -418,6 +422,8 @@ export function registerSupportRoutes(options: SupportRoutesOptions): (app: Hono
       `${base}/feedback/:id`,
       describeRoute({
         summary: "Read one of the caller's own support requests.",
+        operation: "feedback.read",
+        tool: true,
         verification: ["bearer", "session"],
         responses: { 200: SupportMyThreadResponse },
       }),

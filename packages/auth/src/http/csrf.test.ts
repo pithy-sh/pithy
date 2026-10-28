@@ -7,6 +7,7 @@ import { requireSameOrigin } from "@pithy-sh/core/src/http/sameOrigin";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { type AuthConfigInput, auth } from "../capability";
+import { dispatchRequest } from "../mcp/dispatch";
 import { publishSameOrigin } from "./csrf";
 
 /**
@@ -68,6 +69,37 @@ describe("an adopter's route wears auth's same-origin policy", () => {
   test("a bearer request is exempt — it carries no ambient credential to forge", async () => {
     const response = await post(compose(), { authorization: "Bearer t", origin: "https://evil.example.com" });
     expect(response.status).toBe(200);
+  });
+
+  test("a tool call the MCP endpoint dispatched in process is exempt — it carries no credential at all", async () => {
+    const tool = {
+      name: "orgs_create",
+      capability: "orgs",
+      operation: "create",
+      method: "POST",
+      path: "/organizations",
+      summary: "Create.",
+      description: "Create.",
+      inputSchema: {},
+      effect: "writes" as const,
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+      power: undefined,
+      scopes: [],
+    };
+    const request = dispatchRequest(
+      "https://api.example.com",
+      tool,
+      { body: {} },
+      {
+        userId: "u1",
+        sessionId: "s1",
+        scopes: [],
+      },
+    );
+    const response = await compose().fetch(request, {});
+    expect(response.status).toBe(200);
+    // And the same request built by anyone else — no credential, no origin — is refused.
+    expect((await post(compose(), {})).status).toBe(403);
   });
 
   /**

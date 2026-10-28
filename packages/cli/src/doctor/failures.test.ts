@@ -880,6 +880,22 @@ describe("every finding in every block carries fix", () => {
                 requiredBindings: [],
                 scopeGates: [{ scope: "ledger:admin", route: "POST /ledger/:currency/credit" }],
               },
+              {
+                // Processing under consent with no consent record composed.
+                name: "newsletter",
+                requiredBindings: [],
+                consentPurposes: [
+                  {
+                    id: "newsletter.marketing",
+                    summary: "News by email.",
+                    noticeVersion: 1,
+                    classes: [],
+                    explicit: false,
+                    minimumMethod: "click",
+                    writtenWithdrawal: false,
+                  },
+                ],
+              },
             ],
           }),
         ),

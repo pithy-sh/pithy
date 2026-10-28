@@ -18,7 +18,7 @@ import { Hono } from "hono";
 import type { Kysely } from "kysely";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
 import type { z } from "zod";
-import { EmailJob } from "../data/emailJob";
+import { EmailJob, personalAddress } from "../data/emailJob";
 import type { EmailJobStatus } from "../data/enums";
 import { emailDatabase, emailSuppressionDatabase } from "../data/tables";
 import { email_0001_init } from "../migrations/0001_init";
@@ -174,8 +174,8 @@ async function seedJob(overrides: Partial<EmailJob> = {}): Promise<EmailJob> {
   const n = ++sequence;
   const job: EmailJob = {
     id: `job-${n}`,
-    toAddress: `person${n}@example.com`,
-    recipientKey: `person${n}@example.com`,
+    toAddress: personalAddress(`person${n}@example.com`),
+    recipientKey: personalAddress(`person${n}@example.com`),
     fromAddress: "noreply@pithy.sh",
     fromName: "Pithy",
     subject: "Your sign-in link",

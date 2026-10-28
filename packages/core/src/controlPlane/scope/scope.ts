@@ -79,7 +79,7 @@ export const KEYS_ROTATE_SCOPE: ControlPlaneScope = "keys:rotate";
 
 /**
  * Read where each database this Worker binds stands: what is applied, what is pending, what is undeclared,
- * and which run put it there (#729). Read-only by construction — every route behind it is a `GET`, and
+ * and which run put it there. Read-only by construction — every route behind it is a `GET`, and
  * nothing over the seam runs, reverses or resets a migration. The two migration health keys on the seam's
  * manifest entry sit behind it too, so a connection without it gets no number rather than a zero.
  */
@@ -87,7 +87,7 @@ export const MIGRATIONS_READ_SCOPE: ControlPlaneScope = "migrations:read";
 
 /**
  * Read this Worker's full privacy inventory: every storage schema holding a marked field, each marked field's
- * path, its class, and where it is stored (#132). Read-only — the one route behind it is a `GET`.
+ * path, its class, and where it is stored. Read-only — the one route behind it is a `GET`.
  *
  * **Its own scope rather than `manifest:read`**, because field names are the kind of thing an adopter may
  * reasonably withhold from a client that has no business seeing them. The manifest's privacy block carries
@@ -96,7 +96,7 @@ export const MIGRATIONS_READ_SCOPE: ControlPlaneScope = "migrations:read";
 export const PRIVACY_READ_SCOPE: ControlPlaneScope = "privacy:read";
 
 /**
- * Read this Worker's evidence pack: the SOC 2 and ISO 27001 evidence it derives from its own declarations (#821).
+ * Read this Worker's evidence pack: the SOC 2 and ISO 27001 evidence it derives from its own declarations.
  * Read-only — the one route behind it is a `GET`, and it performs nothing it reports on.
  *
  * **Its own scope**, because the pack reads across the seam: every connection's principal, kind, purpose and
@@ -107,7 +107,7 @@ export const PRIVACY_READ_SCOPE: ControlPlaneScope = "privacy:read";
 export const EVIDENCE_READ_SCOPE: ControlPlaneScope = "evidence:read";
 
 /**
- * Read the erasure attestation (#823): one subject's purge, or every purge in a period, with the audit events that
+ * Read the erasure attestation: one subject's purge, or every purge in a period, with the audit events that
  * record each step. Read-only — both routes behind it are `GET`s — and kind `reads`.
  *
  * **Its own scope**, because it answers across subjects: which accounts and organizations were deleted, by which
@@ -115,6 +115,18 @@ export const EVIDENCE_READ_SCOPE: ControlPlaneScope = "evidence:read";
  * never widens `audit:events:read`: it cites an event by id and chain position, never its contents.
  */
 export const ERASURE_READ_SCOPE: ControlPlaneScope = "erasure:read";
+
+/**
+ * Read the record of processing activities, GDPR Article 30: each activity's purpose, data classes, legal basis,
+ * recipients, retention and measures, and every gap. Read-only — the one route behind it is a `GET` — and kind
+ * `reads`.
+ *
+ * **Its own scope**, because it reads across the Worker: every activity, the consent counts behind each consent
+ * basis, and where each stored class sits. It never widens another: the measures carry the evidence pack's states
+ * only for a connection that also holds {@link EVIDENCE_READ_SCOPE}, and a gap names a stored table or field only for
+ * one that also holds {@link PRIVACY_READ_SCOPE}. Without it, a gap names the capability and the class.
+ */
+export const PROCESSING_READ_SCOPE: ControlPlaneScope = "processing:read";
 
 /**
  * Place and release a legal hold on a user, an organization or a tenant's audit trail. A write — both routes
@@ -136,7 +148,8 @@ export const RETENTION_READ_SCOPE: ControlPlaneScope = "retention:read";
  * The seam's base grant — what `pithy dashboard connect` grants whatever the Worker composes. Ping is absent
  * because it is not grantable; see {@link ANY_VERIFIED_CALLER}.
  *
- * **{@link MIGRATIONS_READ_SCOPE}, {@link PRIVACY_READ_SCOPE}, {@link EVIDENCE_READ_SCOPE} and {@link ERASURE_READ_SCOPE} are absent on purpose.** Each is a read —
+ * **The seam's reads are absent on purpose** — {@link MIGRATIONS_READ_SCOPE}, {@link PRIVACY_READ_SCOPE},
+ * {@link EVIDENCE_READ_SCOPE}, {@link ERASURE_READ_SCOPE}, {@link PROCESSING_READ_SCOPE}. Each is a read —
  * every route requiring it is a `GET` — so `connect` derives it from the seam's `adminRoutes` the way it
  * derives every capability's reads. The base exists for `keys:rotate`, which is not a read and would
  * otherwise drop out.

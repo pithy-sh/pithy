@@ -46,6 +46,7 @@ Each one is a package you add to a Worker with `pithy add <name>`, and each runs
 | [`auth`](https://pithy.sh/docs/capabilities/auth/) | Passwordless identity, sessions, short-lived access tokens, and devices. |
 | [`organization`](packages/organization/README.md) | Tenancy: organizations, memberships, the roles you declare, and invitations. |
 | [`artifacts`](packages/artifacts/README.md) | Git repositories for your own customers, with short-lived tokens minted against a grant you control. |
+| [`consent`](packages/consent/README.md) | Consent recorded the way a regulator asks to see it, from a checkbox to a signed authorization. |
 | [`turnstile`](https://pithy.sh/docs/capabilities/turnstile/) | A humanity check you stack on any route. |
 | [`audit`](https://pithy.sh/docs/capabilities/audit/) | Who did what, when, and whether it succeeded. |
 | [`secrets`](https://pithy.sh/docs/capabilities/secrets/) | Encrypted storage per environment, with a Worker-only master key and rotation. |

@@ -3,6 +3,8 @@
 
 import type { MiddlewareHandler } from "hono";
 import type { z } from "zod";
+import type { PithyHonoEnv } from "../capability/capability";
+import { ForbiddenError, UnauthorizedError } from "../error/pithyError";
 import type { VerificationStrategy } from "./verification";
 
 /**
@@ -43,6 +45,24 @@ export interface RouteResponse {
 /** The HTTP methods an `app.all` route is documented under. OpenAPI has no "any method". */
 export type DocumentedMethod = "get" | "post" | "put" | "patch" | "delete" | "head" | "options";
 
+/**
+ * What a tool does beyond reading, which every non-`GET` tool must say (`docs/AGENT-ACCESS.md` §4).
+ *
+ * **A route is a tool only when it says so, and a non-`GET` says so louder.** One that sends mail, charges a card or
+ * deletes something is a tool an agent can call in a loop, so the effect is not inferred from the method: it is
+ * declared, it sets the tool's MCP annotations, it is written into the tool's description, and it is counted on the
+ * consent screen beside its capability.
+ */
+export const TOOL_EFFECTS = ["writes", "sends", "charges", "deletes"] as const;
+export type ToolEffect = (typeof TOOL_EFFECTS)[number];
+
+/**
+ * A route's opt-in to the app's MCP endpoint. `true` is a read, and only a `GET` may say it; anything else declares
+ * its {@link ToolEffect}. `createBackend` refuses a composition where either half is wrong — `describeRoute` cannot
+ * see the method it is mounted under, so the composition is the first place the pair can be checked.
+ */
+export type RouteTool = true | { readonly effect: ToolEffect };
+
 /** What a route is for, how its caller is verified, and what it returns. */
 export interface RouteSpec {
   /** One sentence, in the brand voice. The operation's title in the contract. */
@@ -64,14 +84,64 @@ export interface RouteSpec {
   readonly responses: Readonly<Record<number, z.ZodType | RouteResponse>>;
   /** For an `app.all` route only: the methods it is documented under. */
   readonly methods?: readonly DocumentedMethod[];
+  /**
+   * The power a caller's role must hold to reach this route at all. **Declaring it installs the gate**: the
+   * same middleware that carries this spec refuses a caller whose acting organization's role does not hold it, so
+   * what the MCP endpoint filters `tools/list` on and what the route enforces are one value and cannot drift.
+   *
+   * A route whose access depends on the record — its owner may, a manager may — declares the power that lets a
+   * member reach it at all, and keeps its in-handler check. Absent, the route is gated by its other guards alone,
+   * and a tool for it is offered to every signed-in user the endpoint admits.
+   */
+  readonly power?: string;
+  /**
+   * The route's permanent name within its capability, e.g. `threads.reply`. Its MCP tool is
+   * `<capability>_<operation>`, through the one normalizer the control-plane server's tools use. Unique within a
+   * capability, and never renamed once published: an agent references a tool by name.
+   */
+  readonly operation?: string;
+  /**
+   * The route's opt-in to the app's MCP endpoint. Absent, the route is not a tool. See {@link RouteTool}.
+   */
+  readonly tool?: RouteTool;
 }
 
-/** Declare what a route is for, how its caller is verified, and what it returns. See {@link RouteSpec}. */
+/**
+ * Declare what a route is for, how its caller is verified, and what it returns. See {@link RouteSpec}.
+ *
+ * With a {@link RouteSpec.power} it is also the route's power gate, read off the acting-organization seam the way
+ * every capability outside tenancy asks it. It sits first on the route line, so it answers an anonymous caller
+ * itself rather than assuming a guard below it will: a 401, because signing in might help, where a role that does
+ * not hold the power is a 403.
+ */
 export function describeRoute(spec: RouteSpec): MiddlewareHandler {
-  const middleware: MiddlewareHandler = async (_c, next) => {
-    await next();
-  };
-  return Object.assign(middleware, { [ROUTE_SPEC]: spec });
+  const { power } = spec;
+  const middleware: MiddlewareHandler<PithyHonoEnv> =
+    power === undefined
+      ? async (_c, next) => {
+          await next();
+        }
+      : async (c, next) => {
+          if (!c.var.auth) {
+            throw new UnauthorizedError({
+              message: "Authentication required.",
+              action: "Sign in and retry with a valid session or bearer token.",
+              detail: `describeRoute(power: ${power}) ran with no signed-in caller`,
+            });
+          }
+          const acting = await c.var.actingOrganization();
+          if (acting === null || !acting.roleAllows(power)) {
+            throw new ForbiddenError({
+              message: `Your role does not allow \`${power}\`.`,
+              detail:
+                acting === null
+                  ? `no organization is in force for user ${c.var.auth.userId}, so ${power} is not held`
+                  : `the role in organization ${acting.organizationId} does not hold ${power}`,
+            });
+          }
+          await next();
+        };
+  return Object.assign(middleware as MiddlewareHandler, { [ROUTE_SPEC]: spec });
 }
 
 /** The spec a {@link describeRoute} middleware carries, or `undefined` for any other handler. */

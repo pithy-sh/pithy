@@ -92,7 +92,7 @@ describe("the catalogs are the size they are", () => {
     expect(
       Object.keys(esErrors),
       "the taxonomy size moved: update all four hand-written counts — core/src/error/payload.test.ts, cli/src/ci/catalogCoverage.test.ts, i18n/src/catalogs/es/errors.test.ts and this one — plus the Spanish sentence in i18n/src/catalogs/es/errors.ts, then run `bun run docs-catalog`",
-    ).toHaveLength(156);
+    ).toHaveLength(164);
     expect(ENTRIES.length).toBeGreaterThanOrEqual(191);
   });
 
@@ -135,7 +135,7 @@ describe("every key is a catalog key", () => {
     // are pinned by `./client.test.ts` against the exported sentinels rather than against a list — see
     // that file for why the two SDKs share two of the four codes.
     const domains = [...new Set(Object.keys(esScreens).map((key) => key.split("/")[0]))].sort();
-    expect(domains).toEqual(["app", "auth", "client", "organization", "payments"]);
+    expect(domains).toEqual(["app", "auth", "client", "consent", "organization", "payments"]);
   });
 });
 

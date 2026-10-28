@@ -136,6 +136,16 @@ export const TEMPLATE_GROUPS = {
     // `navigate` looks identical until somebody who belongs to two accounts uses it in production.
     "src/routes/pithy/choose-organization.test.tsx",
   ],
+  mcp: [
+    // The app's agent surface: the consent screen an MCP client's authorization lands on, and the screen a
+    // person revokes what they approved from. Every adopter needs the identical consent screen, and it is the one
+    // place in the flow where a mistake is irreversible — so it ships, rather than being left to each to get right.
+    "src/routes/pithy/agent-consent.tsx",
+    // Seeded: the invariant is that the application's name is never the headline and the redirect address is
+    // always on the page, and the edit that breaks it looks like a restyle.
+    "src/routes/pithy/agent-consent.test.tsx",
+    "src/routes/pithy/connected-applications.tsx",
+  ],
   payments: [
     "src/payments.tsx",
     "src/routes/pithy/paywall.tsx",
@@ -146,6 +156,10 @@ export const TEMPLATE_GROUPS = {
     // tax convention wrong in one direction or the other, and freezing it into their own repository.
     "src/routes/pithy/pricing.tsx",
     "src/routes/pithy/subscription.tsx",
+  ],
+  consent: [
+    // One screen: every purpose and where the reader stands, and a withdrawal never harder than its grant. It rides on the Worker composing `consent`, and serves visitors and accounts alike.
+    "src/routes/pithy/consent.tsx",
   ],
 } as const satisfies Record<string, readonly string[]>;
 

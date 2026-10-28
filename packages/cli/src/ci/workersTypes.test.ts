@@ -163,15 +163,19 @@ const DECLARED_ONLY: Record<string, string> = {
  * In `audit`, `chain/prune.ts`, `chain/tombstone.ts` and `workflows/prune.ts` read and write the checkpoint bucket and
  * the trail. In `core`, `retention/holds.ts` reads the legal holds over the env's own D1.
  * `support` counts `test-utils/seed.ts` too, which migrates a suite's D1 and seeds threads and messages on it.
+ * In `consent`, `data/tables.ts`, `record/store.ts` and `evidence/evidence.ts` read and write its D1 and its R2, and
+ * `http/routes.ts`, `purge/contribution.ts` and `capability.ts` open them off an env. In `email`, `consent/consent.ts`
+ * suppresses an address and stops tracking queued mail on a withdrawal.
  */
 const IMPORTERS: Record<string, number> = {
   "packages/artifacts": 3,
   "packages/audit": 11,
-  "packages/auth": 10,
+  "packages/auth": 11,
   "packages/cli": 19,
   "packages/cloudflare": 2,
+  "packages/consent": 6,
   "packages/core": 21,
-  "packages/email": 10,
+  "packages/email": 11,
   "packages/leaderboard": 12,
   "packages/ledger": 4,
   "packages/matchmaking": 9,
@@ -577,10 +581,10 @@ describe("the Workers types are declared the way they are used", () => {
     ).toBeDefined();
     stated.push({ where: scaffold, range: literal });
 
-    // Twenty-two workspace manifests, the starter Worker `pithy init` copies, and the scaffolder literal.
+    // Twenty-three workspace manifests, the starter Worker `pithy init` copies, and the scaffolder literal.
     // Pinned rather than floored: a walk that read nothing would satisfy any floor, and a declaration
     // landing or leaving is a change whose author should confirm the number rather than inherit it.
-    expect(stated.length, "the set of declarations moved — count them, then say so here").toBe(24);
+    expect(stated.length, "the set of declarations moved — count them, then say so here").toBe(25);
     expect(
       stated.filter((entry) => entry.range !== RANGE),
       "these state a different range. Two versions of an ambient global type in one adopter's program are duplicate-identifier errors, so all of them dedupe to one copy or none of them do",
