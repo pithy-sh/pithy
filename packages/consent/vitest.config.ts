@@ -13,7 +13,7 @@ export default defineConfig({
           environment: "node",
           include: ["src/**/*.test.ts", "scripts/**/*.test.ts"],
           exclude: ["src/**/*.workers.test.ts", "src/**/*.integration.test.ts", "node_modules/**"],
-          // No ambient account, no real config directory. #198, #200 — see `vitest.shared.ts`.
+          // No ambient account, no real config directory. See `vitest.shared.ts`.
           env: { ...NO_ACCOUNT },
           setupFiles: [CONFIG_DIR_SETUP],
         },

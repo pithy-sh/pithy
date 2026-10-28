@@ -293,9 +293,8 @@ describe("docs/commands/doctor.md", () => {
     // first finding on this page that prints while the exit stays 0.
     // Twenty since #560 added the `scopes` fragment — a gate no resolver can open, the second finding that
     // prints while the exit stays 0.
-    // Twenty-one with the `consent` fragment — processing under consent with no consent record,
-    // the third finding that prints while the exit stays 0, and the last block of the section because it is
-    // the newest.
+    // The `consent` fragment — processing under consent with no consent record — is the third finding that
+    // prints while the exit stays 0, and the last block of the section.
     expect(WHAT_BLOCKS).toHaveLength(21);
     expect(EXAMPLE_BLOCKS).toHaveLength(2);
     expect(JSON_SAMPLES).toHaveLength(1);

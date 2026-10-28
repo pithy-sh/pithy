@@ -7,7 +7,7 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
 /**
  * Consent's control-plane scope, and the admin surface a manifest advertises.
  *
- * **Separate from the routes because a scope name is a client's business** (#315): the dashboard's scope builder
+ * **Separate from the routes because a scope name is a client's business**: the dashboard's scope builder
  * reads these constants in a browser program with no Workers types, so this module imports types and nothing else.
  *
  * - `consent:read` reads the record an auditor reads — counts, a subject's rows with

@@ -14,7 +14,7 @@ import { emailDatabase, emailSuppressionDatabase } from "../data/tables";
  * Email does two things a law may require consent for: it tracks opens and clicks, and it sends marketing mail. It
  * declares each as a purpose, and when `@pithy-sh/consent` is composed it asks before doing either. Transactional
  * mail is never gated: a sign-in link answers something the person just did. Without consent composed, email
- * behaves exactly as it did before, and `pithy doctor` names that tracking runs with no consent record behind it.
+ * gates nothing, and `pithy doctor` names that tracking runs with no consent record behind it.
  */
 
 /** Marketing mail: a template whose category is `marketing`. */
@@ -53,7 +53,7 @@ export interface ConsentGate {
   readonly tracking: boolean;
 }
 
-/** Ungated: no consent capability is composed, so email behaves as it always has. */
+/** Ungated: no consent capability is composed, so nothing is withheld and tracking is left to the template. */
 const UNGATED: ConsentGate = { withheld: null, tracking: true };
 
 /**

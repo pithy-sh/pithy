@@ -12,7 +12,7 @@ import type { ConsentPurpose } from "./purpose";
  * gates its tracking without depending on a sibling (principle 4).
  *
  * **Absent is not "no".** With no consent capability composed there is no record to consult, so
- * {@link composedConsent} answers `null`, and a capability behaves as it did before consent existed. `pithy doctor`
+ * {@link composedConsent} answers `null`, and a capability gates nothing on it. `pithy doctor`
  * names that state, because processing that a law may require consent for is running with no record behind it.
  */
 

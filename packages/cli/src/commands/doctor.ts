@@ -2269,7 +2269,7 @@ function consentLines(health: WorkerChecks): string[] {
 
 /**
  * Whether a Worker has a scope gate nothing can open, or processes under consent with no record — reported on a
- * passing Worker, never collapsed (#560).
+ * passing Worker, never collapsed.
  */
 function hasScopeNotes(worker: WorkerChecks): boolean {
   return worker.scopes.denying || worker.consent.unrecorded;

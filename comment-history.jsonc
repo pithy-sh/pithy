@@ -483,7 +483,7 @@
     "packages/cli/src/commands/docs.test.ts": 1,
     "packages/cli/src/commands/docs.ts": 2,
     "packages/cli/src/commands/doctor.test.ts": 57,
-    "packages/cli/src/commands/doctor.ts": 186,
+    "packages/cli/src/commands/doctor.ts": 185,
     "packages/cli/src/commands/doctorDeclines.test.ts": 3,
     "packages/cli/src/commands/doctorDocs.test.ts": 78,
     "packages/cli/src/commands/doctorDocsMcp.test.ts": 1,

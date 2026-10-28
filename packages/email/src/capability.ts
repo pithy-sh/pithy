@@ -295,7 +295,7 @@ export function email(config: EmailConfigInput): EmailCapability {
     purge: [emailUserPurge()],
     /**
      * What email processes under consent: marketing mail and open and click tracking. With
-     * `@pithy-sh/consent` composed, an enqueue asks before either; without it, nothing changes and `pithy doctor`
+     * `@pithy-sh/consent` composed, an enqueue asks before either; without it, nothing is gated and `pithy doctor`
      * says tracking runs with no consent record behind it.
      */
     consentPurposes: EMAIL_CONSENT_PURPOSES,

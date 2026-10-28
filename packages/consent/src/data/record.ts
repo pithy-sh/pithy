@@ -13,7 +13,7 @@ import { ConsentAction, ConsentIdentity, ConsentSubjectKind } from "./enums";
  * never deleted, the account's purge included. The table's triggers refuse both, except a field-key rotation
  * re-sealing the two encrypted names, which changes no fact the row records.
  *
- * The typed name and the representative's name rest encrypted (#390), so the table is declared with
+ * The typed name and the representative's name rest encrypted, so the table is declared with
  * `encryptedTable` under the stable name `consent_record`, keyed by the app-assigned `id`.
  */
 export const ConsentRecord = encryptedTable(

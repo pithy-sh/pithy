@@ -19,7 +19,7 @@ export type ConsentTables = typeof consentTables;
 
 /**
  * Every table here is the record an auditor reads, so none is dropped by a `down` while it holds rows unless the
- * rows are counted first (#588). The records are append-only by trigger as well; this guards the schema around them.
+ * rows are counted first. The records are append-only by trigger as well; this guards the schema around them.
  */
 export const consentRetainedTables = [
   "pithyConsentRecords",

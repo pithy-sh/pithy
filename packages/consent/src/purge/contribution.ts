@@ -14,7 +14,7 @@ import { recordView } from "../http/views";
 import { consentStore } from "../record/store";
 
 /**
- * What a person's purge means for `@pithy-sh/consent` (#814): **nothing is erased, and the export says so and
+ * What a person's purge means for `@pithy-sh/consent`: **nothing is erased, and the export says so and
  * why.**
  *
  * The consent record is the proof that processing was allowed while it ran and that it stopped when the person said

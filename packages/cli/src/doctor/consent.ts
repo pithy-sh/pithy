@@ -8,7 +8,7 @@ import { z } from "zod";
  * **Whether this Worker processes under consent with no consent record behind it.**
  *
  * `@pithy-sh/email` tracks opens and clicks and sends marketing mail, and declares both as consent purposes. With
- * `@pithy-sh/consent` composed, it asks before either. Without it, email behaves as it always has — which is the
+ * `@pithy-sh/consent` composed, it asks before either. Without it, email gates nothing — which is the
  * right default for a project that never needed consent, and the wrong one to leave unsaid for a project that
  * does. So `pithy doctor` asks it of each Worker's own composition: which composed capabilities declare
  * `consentPurposes`, and whether any provides the consent seam. The same question the scope gates ask, one seam

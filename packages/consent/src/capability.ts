@@ -82,7 +82,7 @@ export function consent(config: ConsentConfigInput = {}): ConsentCapability {
 
   const capability = defineCapability({
     name: "consent",
-    // Stamped by `scripts/stampVersions.ts` — a Worker cannot read its own package.json (#626).
+    // Stamped by `scripts/stampVersions.ts` — a Worker cannot read its own package.json.
     version: PACKAGE_VERSION,
     package: PACKAGE_NAME,
     // The writes wear the same-origin gate auth publishes; without auth they would refuse every visitor.
@@ -122,7 +122,7 @@ export function consent(config: ConsentConfigInput = {}): ConsentCapability {
     routes: registerConsentRoutes(options),
     adminRoutes: consentAdminRoutes(resolved.basePath),
     // The record is the proof processing was allowed and that it stopped: kept through a purge, with its basis, and
-    // exported on an access request (#814).
+    // exported on an access request.
     purge: [consentUserPurge(visitorWindowMs)],
   });
 

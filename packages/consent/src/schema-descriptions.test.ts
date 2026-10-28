@@ -16,11 +16,9 @@ declare global {
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"], { eager: true });
 describe("schema descriptions (CLAUDE.md §Zod: schemas are the docs)", () => {
   test("the sweep is looking at the package, not at nothing", () => {
-    // **The guard sixteen of nineteen of these files did without** (#326, #351). A glob that matches
-    // nothing produces no findings, and no findings is what passing looks like — so the population is
-    // pinned in three places, and a collapse in any one of them is loud.
-    //
-    // Near-exact, not a comfortable floor: measured at 22 modules, 29 schemas and 118 fields on 2026-10-27, and each floor is about 90% of that.
+    // A glob that matches nothing produces no findings, and no findings is what passing looks like — so the
+    // population is pinned in three places, and a collapse in any one of them is loud. Each floor sits about 10%
+    // under the package's own count: near-exact, not a comfortable floor.
     const walk = undescribedExports(modules);
     expect(walk.modules).toBeGreaterThanOrEqual(20);
     expect(walk.schemas).toBeGreaterThanOrEqual(26);

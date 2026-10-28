@@ -177,7 +177,7 @@ export interface EnqueueDeps {
   meter?: (charge: MeterCharge) => Promise<void>;
   /**
    * The composed consent reader, or absent when no consent capability is composed — and then nothing is
-   * gated, exactly as before consent existed.
+   * gated.
    */
   consent?: ConsentReader | null;
   now: Date;
@@ -298,7 +298,7 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
   /**
    * What consent allows, when it is composed: a marketing message to a subject not consenting to it is
    * withheld like a suppressed one, and tracking runs only for a subject consenting to it. Transactional mail is
-   * never withheld. With no consent composed the gate passes everything, as before.
+   * never withheld. With no consent composed the gate passes everything.
    */
   const marketing = template.category === "marketing";
   const gate = await consentGate(deps.consent, input.consentSubject, marketing);
