@@ -42602,8 +42602,8 @@
           "artifacts"
         ],
         "operationId": "getArtifactsAdminReposByNameTokens",
-        "summary": "List every token on one repository, with its holder where the kit minted it.",
-        "description": "Every token Cloudflare lists, with its scope, state, creation and expiry. A token the kit did not mint is reported as minted outside Pithy and never given a holder. No value is ever returned.",
+        "summary": "List one page of live tokens on a repository, with the total and the holder where the kit minted one.",
+        "description": "One page of live tokens, as Cloudflare's listing answers it: up to 30, newest first, with no cursor, so a repository with more live tokens than that is not fully listed, and `total` is the count Cloudflare reports. Each has its scope, state, creation and expiry. A token the kit did not mint is reported as minted outside Pithy and never given a holder. No value is ever returned.",
         "parameters": [
           {
             "name": "name",
@@ -42667,7 +42667,7 @@
                               "outside",
                               "unknown"
                             ],
-                            "description": "Who minted it: `pithy`, the kit, which recorded its holder; `outside`, something else, such as Cloudflare's dashboard or a script, so it has no holder; or `unknown`, created before the kit began recording or long expired, so the kit may have minted it with no record left."
+                            "description": "Who minted it: `pithy`, the kit, which recorded its holder; `outside`, something else, such as Cloudflare's dashboard or a script, so it has no holder; or `unknown`, created before the kit began recording when `0002_tokens` ran, so the kit may have minted it with no record. A token expired longer ago than a record is kept also reads `unknown`, but Cloudflare's listing holds live tokens only, so it does not appear there."
                           },
                           "holderId": {
                             "description": "The user the kit minted it for, or an `erased-` stand-in once that user's account was purged. Null for any token the kit did not record.",
@@ -42746,7 +42746,7 @@
         ],
         "operationId": "postArtifactsAdminReposByNameTokensByTokenIdRevoke",
         "summary": "Revoke one token on a repository, with an idempotency key and a reason.",
-        "description": "A git client holding it is refused on its next request. A replay under the same key answers what the first request did and revokes nothing. A token the repository does not hold is a 404 and spends no key.",
+        "description": "A git client holding it is refused on its next request. A replay under the same key answers what the first request did and revokes nothing. A token the kit minted that is already revoked or expired answers `revoked: 0` while the kit keeps its record. Any other token that is not live is a 404, like one the repository never held, because Cloudflare lists live tokens only; a 404 spends no key.",
         "parameters": [
           {
             "name": "name",

@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import { Cloudflare } from "cloudflare";
+import type { CloudflareArtifactsManager } from "../artifacts/artifactsManager";
 import { CloudflareClients } from "../client/clients";
 import { listEmailRoutingRules, namedRules } from "./emailRoutingRules";
 import {
@@ -142,6 +144,26 @@ export async function reapKinds(
 }
 
 /**
+ * Remove one throwaway Artifacts namespace: every repository in it, then the namespace.
+ *
+ * Cloudflare refuses to delete a namespace that still holds a repository, and a repository delete is `202 Accepted`,
+ * so one just reaped can hold the namespace a moment longer. That case throws, so the sweep reports it as not reaped
+ * and the next run tries again, rather than waiting here on Cloudflare's clock. A namespace already gone is done.
+ */
+export async function reapArtifactsNamespace(
+  artifacts: Pick<CloudflareArtifactsManager, "listRepos" | "deleteRepo" | "deleteNamespace">,
+  namespace: string,
+): Promise<void> {
+  for (const repo of await artifacts.listRepos(namespace)) await artifacts.deleteRepo(namespace, repo);
+  if ((await artifacts.deleteNamespace(namespace)) === "occupied") {
+    throw new ConflictError({
+      message: `Artifacts namespace ${namespace} still holds a repository.`,
+      detail: "a repository delete is 202 Accepted; the next sweep deletes the namespace once it is released",
+    });
+  }
+}
+
+/**
  * Build the sweep plan for an account.
  *
  * Alphabetical by label, so the set is readable as a list rather than as an accident of construction
@@ -171,6 +193,13 @@ export function testResourceReapPlan(creds: IntegrationCreds, options: ReapScope
       remove: async (name) => {
         await tokens.deleteTokensByName(name);
       },
+    },
+    {
+      // Minted by `@pithy-sh/artifacts`' `revokeAll.integration.test.ts`: a Worker bound to a throwaway namespace,
+      // which Cloudflare creates on the first repository and nothing but this deletes.
+      label: "Artifacts namespace",
+      list: () => clients.artifacts().listNamespaces(),
+      remove: (name) => reapArtifactsNamespace(clients.artifacts(), name),
     },
     {
       label: "D1 database",

@@ -67,6 +67,11 @@ export interface ArtifactsStore {
   recordTokens(records: readonly ArtifactsTokenRecord[]): Promise<void>;
   /** Every token record on a repository, oldest first. */
   tokenRecords(repo: string): Promise<ArtifactsTokenRecord[]>;
+  /**
+   * The ids of a repository's token records that expire after `now`, oldest first: every token the kit handed out
+   * that could still be live. Revoke-all revokes these by id, because the listing cannot be trusted to reach them.
+   */
+  unexpiredTokenIds(repo: string, now: Date): Promise<string[]>;
   /** When this database began recording tokens, or `undefined` when the mark `0002_tokens` writes is missing. */
   tokenRecordsBegan(): Promise<Date | undefined>;
   /** Drop a repository's records of tokens that expired before `before`. */
@@ -266,6 +271,18 @@ export function artifactsStore(db: ArtifactsDatabase): ArtifactsStore {
         .orderBy("id")
         .execute();
       return rows.map((row) => ArtifactsTokenRecord.parse(row));
+    },
+
+    async unexpiredTokenIds(repo, now) {
+      const rows = await db
+        .selectFrom(ARTIFACTS_TOKENS_TABLE)
+        .select("id")
+        .where("repo", "=", repo)
+        .where("expiresAt", ">", ArtifactsTokenRecord.shape.expiresAt.encode(now))
+        .orderBy("createdAt")
+        .orderBy("id")
+        .execute();
+      return rows.map((row) => row.id);
     },
 
     async tokenRecordsBegan() {

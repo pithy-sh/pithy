@@ -16,9 +16,10 @@ import { getAuthInstance, resolveDb } from "./resolve";
 
 /**
  * The session-resolution middleware: it fills core's `AuthContext` seam (`c.var.auth`) for every
- * request that carries a credential — a bearer token or a session cookie. Better Auth resolves both
+ * request that carries a credential — a bearer token, a session cookie, or an API key in `x-api-key` when
+ * the adopter composes `apiKey({ enableSessionForAPIKeys: true })`. Better Auth resolves all three
  * transparently (the bearer plugin rewrites the header into the session cookie), so one `getSession`
- * call covers mobile and web. A credential-less request stays anonymous (no instance build, no D1 hit).
+ * call covers mobile, web and a machine. A credential-less request stays anonymous (no instance build, no D1 hit).
  * Resolution never throws — an invalid credential simply leaves `auth` null for `requireAuth` to reject.
  */
 /** The session's authentication instant when it is a real `Date`, else `null`. Never anything else. */
@@ -67,10 +68,26 @@ async function resolvedScopes(
   return parsed.data;
 }
 
+/**
+ * The header Better Auth's `apiKey()` plugin reads a key from by default. With `enableSessionForAPIKeys` on, the plugin
+ * answers `getSession` for a request carrying one, so a key stands for its owner's session. It is the default
+ * rather than whatever an adopter configured, because the plugin does not expose its options: an adopter who renames
+ * the header keeps `x-api-key` for keys meant to reach this middleware.
+ */
+export const API_KEY_HEADER = "x-api-key";
+
+/**
+ * Whether a request carries anything `getSession` could resolve: a bearer token, a session cookie, or an API key. A
+ * request with none stays anonymous without building the instance or reading D1.
+ */
+export function carriesCredential(headers: Headers): boolean {
+  return headers.has("authorization") || headers.has("cookie") || headers.has(API_KEY_HEADER);
+}
+
 export function createSessionMiddleware(wiring: AuthWiring): PithyMiddleware {
   return (app) => {
     app.use("*", async (c, next) => {
-      if (!c.req.raw.headers.has("authorization") && !c.req.raw.headers.has("cookie")) return await next();
+      if (!carriesCredential(c.req.raw.headers)) return await next();
       // A credential signed under a session secret this deployment has since rotated is re-signed under the
       // current one before anything reads it (#602), and the re-signed one rides back on the response. A
       // failure building the instance is not this middleware's to raise, so it is left to the routes.
