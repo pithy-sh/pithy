@@ -30,6 +30,8 @@ export type NotGrantedReason = ConsentScope["reason"];
 /** The client, as the screen presents it. */
 export interface ConsentClient {
   readonly id: string;
+  /** The host a metadata document proved the client by, or `null` when it registered itself. */
+  readonly verifiedHost: string | null;
   readonly reportedName: string | null;
   readonly reportedUri: string | null;
   readonly redirectUri: string;

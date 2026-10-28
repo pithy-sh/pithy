@@ -94,7 +94,16 @@ export const ConsentView = z
   .object({
     client: z
       .object({
-        id: z.string().describe("The client's id, assigned when it registered."),
+        id: z
+          .string()
+          .describe("The client's id: assigned when it registered dynamically, or the URL of its metadata document."),
+        verifiedHost: z
+          .string()
+          .nullable()
+          .optional()
+          .describe(
+            "The host that serves the client's metadata document, which is its id. Proven by fetching the document there, so it may be shown as verified. Null for a dynamically registered client, which nothing has verified.",
+          ),
         reportedName: z
           .string()
           .nullable()
@@ -123,6 +132,11 @@ export type ConsentDecision = z.infer<typeof ConsentDecision>;
 export const ConnectedApplication = z
   .object({
     clientId: z.string().describe("The client's id."),
+    verifiedHost: z
+      .string()
+      .nullable()
+      .optional()
+      .describe("The host that serves the client's metadata document. Null for a dynamically registered client."),
     reportedName: z.string().nullable().describe("The name the client gave itself. Unverified."),
     redirectUris: z.array(z.string()).describe("Where its tokens go."),
     approvedAt: z.string().describe("When you approved it, ISO-8601."),

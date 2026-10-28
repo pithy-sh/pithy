@@ -39,6 +39,8 @@ export interface ConsentCapability {
 export interface ConsentView {
   readonly client: {
     readonly id: string;
+    /** The host its metadata document proved it by. Absent or `null` when nothing verified it. */
+    readonly verifiedHost?: string | null;
     readonly reportedName: string | null;
     readonly reportedUri: string | null;
     readonly redirectUri: string;
@@ -54,6 +56,8 @@ export interface ConsentView {
 /** One application acting as the user. */
 export interface ConnectedApplication {
   readonly clientId: string;
+  /** The host its metadata document proved it by. Absent or `null` when nothing verified it. */
+  readonly verifiedHost?: string | null;
   readonly reportedName: string | null;
   readonly redirectUris: readonly string[];
   readonly approvedAt: string;

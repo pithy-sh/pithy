@@ -36,7 +36,7 @@ export const esScreens: MessageCatalog = {
   "auth/sign_in.provider.label": "Continuar con {provider}",
   "auth/sign_in.provider_unconfigured": "{provider} no está configurado aquí. Usa el enlace.",
   "auth/sign_in.provider_silent": "{provider} no respondió. Usa el enlace.",
-  // Ni una palabra sobre si la cuenta existe (#625). El servidor manda un solo código para "tienes
+  // Ni una palabra sobre si la cuenta existe. El servidor manda un solo código para "tienes
   // cuenta y este proveedor no está conectado a ella" y para "no tienes ninguna", así que una frase que
   // eligiera una de las dos devolvería, escrita, el oráculo que el Worker acaba de cerrar en la cabecera.
   "auth/sign_in.refused.title": "{provider} no te ha dejado entrar.",
@@ -85,6 +85,7 @@ export const esScreens: MessageCatalog = {
   "auth/consent.title": "Una aplicación quiere actuar en tu nombre.",
   "auth/consent.reported": "Se presenta como {name}. Ese nombre lo puso ella, y nadie lo ha comprobado.",
   "auth/consent.unnamed": "No dio ningún nombre.",
+  "auth/consent.verified": "Comprobado: se publica en",
   "auth/consent.redirect": "El acceso se enviará a",
   "auth/consent.redirect_note": "Aprueba solo si empezaste esto desde esa aplicación.",
   "auth/consent.can_do": "Si apruebas, podrá:",
@@ -108,6 +109,7 @@ export const esScreens: MessageCatalog = {
   "auth/connected.title": "Aplicaciones que actúan en tu nombre",
   "auth/connected.empty": "Ninguna. Nada actúa en tu nombre.",
   "auth/connected.unnamed": "Una aplicación sin nombre",
+  "auth/connected.verified": "Publicada en {host}. Eso está comprobado.",
   "auth/connected.approved": "Aprobada el {date}. El acceso va a {redirect}.",
   "auth/connected.revoke": "Revocar",
   "auth/connected.failed": "No pudimos cargar tus aplicaciones.",

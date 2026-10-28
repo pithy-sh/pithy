@@ -48574,7 +48574,7 @@
         ],
         "operationId": "getMcpConsent",
         "summary": "Show what an application asking to act as you will be able to do.",
-        "description": "Read by the scaffolded consent screen. The client's name is as it reported itself; the redirect URI is the one the authorization server enforces. Only operations your role allows are listed.",
+        "description": "Read by the scaffolded consent screen. The client's name is as it reported itself; its host is verified only when its id is its metadata document's URL; the redirect URI is the one the authorization server enforces. Only operations your role allows are listed.",
         "parameters": [
           {
             "name": "oauth_query",
@@ -48601,7 +48601,14 @@
                       "properties": {
                         "id": {
                           "type": "string",
-                          "description": "The client's id, assigned when it registered."
+                          "description": "The client's id: assigned when it registered dynamically, or the URL of its metadata document."
+                        },
+                        "verifiedHost": {
+                          "description": "The host that serves the client's metadata document, which is its id. Proven by fetching the document there, so it may be shown as verified. Null for a dynamically registered client, which nothing has verified.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
                         },
                         "reportedName": {
                           "description": "The name the client gave itself. Self-asserted and never verified — show it as reported.",
@@ -48904,6 +48911,13 @@
                           "clientId": {
                             "type": "string",
                             "description": "The client's id."
+                          },
+                          "verifiedHost": {
+                            "description": "The host that serves the client's metadata document. Null for a dynamically registered client.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "reportedName": {
                             "description": "The name the client gave itself. Unverified.",

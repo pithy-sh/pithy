@@ -17,8 +17,9 @@ export const path = "/agent-consent";
 //
 // **The application's name is whatever it said it was.** Anybody can register a client and call it "POWERPLAY
 // Official Sync"; nothing has checked it. So the name is shown as reported, in ordinary weight, and the emphasis goes
-// to the one thing that cannot be spoofed: where the access goes — the redirect address, which the authorization
-// server enforces. Making the name the headline is how this screen becomes a phishing page you shipped.
+// to what cannot be spoofed: where the access goes — the redirect address, which the authorization server enforces —
+// and, for an application identified by a metadata document, the host that serves it, which the server fetched it
+// from. Making the name the headline is how this screen becomes a phishing page you shipped.
 //
 // **One decision, and nothing to tick.** Approving lets the application act as you in this app. The list is the
 // consequence — what it will then be able to do, per capability, in each capability's own words — and it only ever
@@ -35,6 +36,7 @@ const EN = {
   "auth/consent.title": "An application wants to act as you.",
   "auth/consent.reported": "It calls itself {name}. That name is its own, and nobody has checked it.",
   "auth/consent.unnamed": "It gave no name.",
+  "auth/consent.verified": "Checked: it is published at",
   "auth/consent.redirect": "Access will be sent to",
   "auth/consent.redirect_note": "Approve only if you started this from that application.",
   "auth/consent.can_do": "If you approve, it can:",
@@ -115,6 +117,11 @@ export default function Consent() {
             ? t.t("auth/consent.unnamed")
             : t.t("auth/consent.reported", { name: view.client.reportedName })}
         </p>
+        {view.client.verifiedHost == null ? null : (
+          <p>
+            {t.t("auth/consent.verified")} <strong className="consent__host">{view.client.verifiedHost}</strong>
+          </p>
+        )}
         <p>
           {t.t("auth/consent.redirect")} <strong className="consent__redirect">{view.client.redirectUri}</strong>
         </p>

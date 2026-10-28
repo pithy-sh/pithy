@@ -11,17 +11,15 @@ import { describe, expect, test } from "vitest";
  *
  * `callAuth` in `./api.ts` is the only place that knows how a browser program asks this Worker an auth
  * question: the base-path join, `credentials: "include"`, the same-origin refusal, and the three ways
- * an answer can fail to be one. Before it existed, six scaffolded screens each wrote that transport out
- * by hand — and a scaffolded screen is copied into an adopter's repository, so a later fix to any of it
- * reaches none of them (#370).
+ * an answer can fail to be one. A scaffolded screen is copied into an adopter's repository, so a fix to a
+ * transport one of them wrote out by hand would reach none of them.
  *
  * ## The rule that bites is the cookie mode, not `fetch(`
  *
- * This is the lesson `#346`'s gate paid for and it is not obvious. Its first rule scanned for the
- * literal `fetch(` — and **would not have caught the defect it was written for**, because the offending
- * module called an injected `fetcher` and the literal never appeared in it. `credentials: "include"` is
- * what makes a request carry the session, so a second producer cannot avoid writing it. That is rule 2,
- * and it is the one that fires. Rule 1 is what stops the next producer reaching for the global directly.
+ * A scan for the literal `fetch(` misses a module that calls an injected `fetcher`. `credentials:
+ * "include"` is what makes a request carry the session, so a second producer cannot avoid writing it.
+ * That is rule 2, and it is the one that fires. Rule 1 is what stops the next producer reaching for the
+ * global directly.
  *
  * ## Neither permitted set is derived from the code it polices
  *
@@ -146,6 +144,8 @@ const FETCH_EXEMPTIONS: Readonly<Record<string, string>> = {
     "The kit's GitHub identity resolver, reading api.github.com by absolute URL with the OAuth token this callback was issued. Server-side, inside the Worker, and never a browser program: it runs from Better Auth's `getUserInfo` and this Worker's session cookie has no business on github.com. The transport is injected (`FetchJson`) so every test drives it without a socket.",
   "src/mcp/http/routes.ts":
     "`app.fetch(...)` — the MCP endpoint dispatching a tool call into this Worker's own composed app, in process. No network, no browser and no cookie: the caller rides beside the request, never on it.",
+  "src/mcp/clientMetadata.ts":
+    "The authorization server fetching a client's metadata document by its absolute HTTPS URL, from inside the Worker. Not a browser program and never this Worker's origin: the host is refused unless it is public, and no cookie goes with it.",
   "src/mcp/flow.workers.test.ts":
     "`app.fetch(...)` — dispatching into a Hono app under test, in a Worker, the way the MCP endpoint does. No network, no browser, no cookie mode of its own.",
   "src/http/csrf.test.ts":

@@ -74,7 +74,7 @@ beforeAll(async () => {
 /** Every route module the stub writes, by path. */
 function routeModules(files: Record<string, string>): [string, string][] {
   // A co-located test is not a route module. `router.tsx`'s globs negate `*.test.tsx` and `*.spec.tsx`
-  // for exactly that reason (#245), so this reads the same line the router does.
+  // for exactly that reason, so this reads the same line the router does.
   return Object.entries(files).filter(([path]) => path.startsWith("src/routes/") && !path.includes(".test."));
 }
 
@@ -125,6 +125,7 @@ describe("the React 19 stub", () => {
       "src/routes/pithy/agent-consent.tsx",
       "src/routes/pithy/agent-consent.test.tsx",
       "src/routes/pithy/connected-applications.tsx",
+      "src/routes/pithy/connected-applications.test.tsx",
     ];
     const context = {
       worker: "api",
@@ -198,10 +199,9 @@ describe("the React 19 stub", () => {
       "client-env.d.ts",
       "index.html",
       // The three gates base seeds. `client.tsx` mounts into a node it creates rather than one an id in
-      // `index.html` names (#394), `router.tsx` sends a guard to the path the screen declares rather
-      // than to a copy of it (#393), and `pithy-locale.tsx` makes the language the document declares and
-      // the language it renders one value (#441). All three breaks were silent, so all three gates
-      // travel (#391).
+      // `index.html` names, `router.tsx` sends a guard to the path the screen declares rather
+      // than to a copy of it, and `pithy-locale.tsx` makes the language the document declares and
+      // the language it renders one value. Each break is silent, so each gate travels.
       "src/client.test.tsx",
       "src/client.tsx",
       // Base for the same reason `pithy-config.tsx` is: it is written whenever it is absent, which is
@@ -226,11 +226,10 @@ describe("the React 19 stub", () => {
     }
     // Home does one typed fetch and nothing else — and it does not write down where.
     //
-    // **This used to be `toContain('fetch("/health"')`, a literal compared to a literal inside the CLI
-    // (#400).** It proved the two strings, not the contract: `createBackend` mounts the route, and a
-    // rename there left this assertion green while the only screen a no-auth scaffold ships rendered
-    // "The worker says: unknown." — a 200, no error, nothing in a log. So the path became one statement
-    // in `@pithy-sh/core`, and what is held here is that the screen reads it rather than restating it.
+    // A literal compared to a literal here would prove the two strings, not the contract:
+    // `createBackend` mounts the route, and a rename there would render "The worker says: unknown." — a
+    // 200, no error, nothing in a log. The path is one statement in `@pithy-sh/core`, and what is held
+    // here is that the screen reads it rather than restating it.
     const home = BARE["src/routes/app/home.tsx"] ?? "";
     expect(home).toContain('import { HEALTH_PATH } from "@pithy-sh/core/src/worker/health"');
     expect(home).toContain("fetch(HEALTH_PATH)");
@@ -243,22 +242,22 @@ describe("the React 19 stub", () => {
     const added = Object.keys(AUTH).filter((path) => !(path in BARE));
     expect(added.sort()).toEqual([
       // Where a suspended or deleted account lands, and where somebody acting for a suspended
-      // organization does (#620).
+      // organization does.
       "src/routes/pithy/account-deleted.tsx",
       "src/routes/pithy/account-suspended.tsx",
       "src/routes/pithy/callback.tsx",
       "src/routes/pithy/organization-suspended.tsx",
-      // A refused account's right code goes on to its screen, and this gate travels with the screen (#620).
+      // A refused account's right code goes on to its screen, and this gate travels with the screen.
       "src/routes/pithy/otp.test.tsx",
       "src/routes/pithy/otp.tsx",
       // The magic link's `callbackURL` is built from `callback.tsx`'s `path`, and this is what keeps
-      // them one statement once both files are the adopter's (#393).
+      // them one statement once both files are the adopter's.
       "src/routes/pithy/sign-in.test.tsx",
       "src/routes/pithy/sign-in.tsx",
       "src/session.tsx",
       // The one test the kit seeds. `turnstile.tsx` becomes the adopter's the moment it lands and its
       // whole risk is that the action can be retyped into it — a drift no environment before production
-      // can see (#374), so the gate travels with the file rather than staying here (#383).
+      // can see, so the gate travels with the file rather than staying here.
       "src/turnstile.test.tsx",
       "src/turnstile.tsx",
     ]);
@@ -320,7 +319,7 @@ describe("the React 19 stub", () => {
     const router = PAY["src/router.tsx"] ?? "";
     expect(router).toContain("import.meta.glob<{ holdsEntitlement:");
     // Where it sends them is the paywall screen's own `path`, read through the role it claims — never
-    // a literal here, which is what made a rename redirect to the not-found screen (#393).
+    // a literal here, which a rename would send to the not-found screen.
     expect(router).toContain('screenPath(table, "paywall")');
     expect(router).not.toMatch(/PAYWALL_PATH/);
     expect(PAY["src/routes/pithy/paywall.tsx"]).toContain('export const role = "paywall"');
@@ -331,9 +330,8 @@ describe("the React 19 stub", () => {
   });
 
   test("no template writes another screen's path — a declared path is read, never restated", () => {
-    // #393. Every one of these was two literals nothing compared: the router's `SIGN_IN_PATH`, the
-    // magic link's `${origin}/callback`, `signOut`'s redirect, and two `<Link to="…">`. A rename
-    // typechecked, built, and left the other end pointing at the not-found screen.
+    // A path written twice is two literals nothing compares: a rename typechecks, builds, and leaves the
+    // other end pointing at the not-found screen.
     //
     // The declaration itself is the one permitted mention, so the check is stated against it: a path
     // string may appear on the line that exports it and nowhere else in the scaffolded front end.
@@ -359,7 +357,7 @@ describe("the React 19 stub", () => {
     const router = AUTH["src/router.tsx"] ?? "";
     expect(router).toContain('"./routes/pithy/**/*.tsx"');
     expect(router).toContain('"./routes/app/**/*.tsx"');
-    // #245: a co-located `home.test.tsx` was a route, and shipped the test runner to the browser. The
+    // A co-located `home.test.tsx` that is globbed as a route ships the test runner to the browser. The
     // build gate is `@pithy-sh/ui-react`'s `routeGlob.test.ts`; this holds the negation in the file the
     // CLI copies, because the CLI is what puts it in front of an adopter.
     for (const directory of ["pithy", "app"]) {
@@ -376,7 +374,7 @@ describe("the React 19 stub", () => {
   });
 
   test("the router the CLI copies matches path parameters", () => {
-    // #291: without these a link-addressed screen — an invitation, a reset, an unsubscribe — cannot be
+    // Without these a link-addressed screen — an invitation, a reset, an unsubscribe — cannot be
     // written without forking this file. The matching rules are tested in `@pithy-sh/ui-react`; what is
     // held here is that the file an adopter actually receives is the one that has them.
     const router = BARE["src/router.tsx"] ?? "";
@@ -394,16 +392,16 @@ describe("the React 19 stub", () => {
     //
     // **This asserts the string is there, and that is all it can assert.** The contract is a depth —
     // right relative to `apps/<worker>/`, wrong anywhere else — and a rename of the scaffolded layout
-    // reads identically here. `scaffoldGates.test.ts` resolves it against a real project instead
-    // (#399); keep this line as the cheap read, not as the gate.
+    // reads identically here. `scaffoldGates.test.ts` resolves it against a real project instead;
+    // keep this line as the cheap read, not as the gate.
     expect(config).toContain('persistState: { path: "../../.wrangler/state" }');
     // Pinned off: the inspector silently advances off 9229 on a collision.
     expect(config).toContain("inspectorPort: false");
   });
 
   test("vite.config.ts resolves one React, so a linked package cannot bring a second", () => {
-    // #447. Vite resolves a symlinked package from its realpath, so a kit consumed from a sibling
-    // checkout — which is every adopter until `@pithy-sh/*` publishes — imports `react` out of the kit's
+    // Vite resolves a symlinked package from its realpath, so a kit consumed from a sibling
+    // checkout imports `react` out of the kit's
     // tree. Two Reacts is `invalid hook call` on the first kit component mounted, and the stack names
     // that component rather than the resolution, which is why nobody debugs it from the error.
     //
@@ -433,10 +431,10 @@ describe("the React 19 stub", () => {
       expect(contents, path).not.toMatch(/\bBearer\b/);
       expect(contents, path).not.toContain("refreshToken");
     }
-    // **The cookie mode is no longer written here, and that is the fix rather than a regression
-    // (#370).** A scaffolded file is copied into the adopter's repository and Pithy may never rewrite
-    // it, so a transport spelled out in one is frozen at the moment they scaffolded. It lives in
-    // `@pithy-sh/auth/src/client/api` now, whose `sameOrigin.test.ts` holds it to one producer; what
+    // **The cookie mode is not written here.** A scaffolded file is copied into the adopter's repository
+    // and Pithy may never rewrite it, so a transport spelled out in one is frozen at the moment they
+    // scaffolded. It lives in `@pithy-sh/auth/src/client/api`, whose `sameOrigin.test.ts` holds it to one
+    // producer; what
     // this scaffold has to get right is that the session module reaches the route through it.
     expect(BOTH["src/session.tsx"]).toContain('from "@pithy-sh/auth/src/client/api"');
     expect(BOTH["src/session.tsx"]).toContain("getSession as readSession");
@@ -452,9 +450,9 @@ describe("the React 19 stub", () => {
       // **Comments are blanked first, and that is the invariant rather than a loophole.** What must
       // not appear is a host the running client *reaches*; a comment citing GitHub's or Google's brand
       // terms beside the mark they govern is documentation, and the rule beside the asset is exactly
-      // where #257 decided those terms belong. So this reads the code.
-      // The shared walk, so a `//` in a URL opens no comment: it is the one shape that could have
-      // blanked a real host off the end of a line here (#439).
+      // where those terms belong. So this reads the code.
+      // The shared walk, so a `//` in a URL opens no comment and cannot blank a real host off the end of
+      // a line here.
       const code = blankComments(contents);
       // The only absolute URL the client reaches is Cloudflare's Turnstile script. Not Stripe's:
       // hosted Checkout needs no SDK. Not the app stores': those URLs live in @pithy-sh/payments, so a
@@ -495,7 +493,7 @@ describe("the React 19 stub", () => {
     expect(signIn).toContain("SOCIAL.filter((provider) => auth.providers[provider.id])");
     // Anti-enumeration: the answer never distinguishes a known address from an unknown one. `setSent`
     // is unconditional and the response is discarded, so there is nothing for the copy to branch on —
-    // stated about the code rather than as a banned phrase, because #257's account line is the words
+    // stated about the code rather than as a banned phrase, because the account line is the words
     // "No account yet?" and it is about this visitor, not about an address that was submitted.
     expect(signIn).toContain("Check your inbox.");
     expect(signIn).toContain("If that address can sign in");
@@ -505,12 +503,12 @@ describe("the React 19 stub", () => {
   });
 
   test("one way in — the magic link, and nothing beside it", () => {
-    // #257. Two passwordless paths on one screen is two things to explain, two surfaces to rate-limit,
+    // Two passwordless paths on one screen is two things to explain, two surfaces to rate-limit,
     // and two inboxes' worth of mail for one intent. The OTP screen stays in the tree; nothing on the
     // sign-in screen sends anybody to it.
     const signIn = AUTH["src/routes/pithy/sign-in.tsx"] ?? "";
-    // The route path moved into `@pithy-sh/auth` with the request (#370), so the screen names the
-    // intent. One intent is still the assertion, and it is the same one.
+    // The route path lives in `@pithy-sh/auth` with the request, so the screen names the
+    // intent. One intent is the assertion.
     expect(signIn).toContain("sendMagicLink(");
     expect(signIn).not.toContain("email-otp");
     expect(signIn).not.toContain("sendOtp");
@@ -520,7 +518,7 @@ describe("the React 19 stub", () => {
   });
 
   test("the brand panel is a slot, and it ships empty", () => {
-    // #257. The panel carries product claims — what a company does and does not keep — and a template
+    // The panel carries product claims — what a company does and does not keep — and a template
     // shipping someone else's claims is a template deployed with them still in it.
     const signIn = AUTH["src/routes/pithy/sign-in.tsx"] ?? "";
     expect(signIn).toContain("const BRAND: ReactNode = null;");
@@ -531,10 +529,10 @@ describe("the React 19 stub", () => {
 
   test("the social redirect is followed only from the branch the package vetted", () => {
     const signIn = AUTH["src/routes/pithy/sign-in.tsx"] ?? "";
-    // **Both checks moved into `@pithy-sh/auth` with the request itself (#370)**, where they upgrade
+    // **Both checks live in `@pithy-sh/auth` with the request itself**, where they upgrade
     // with a minor release rather than being frozen into an adopter's copy of this file: the scheme
     // check, because `window.location.href = url` with a `javascript:` URL executes in this page, and
-    // #257's `client_id` check, because an authorization URL naming no client is a provider switched
+    // the `client_id` check, because an authorization URL naming no client is a provider switched
     // on with a blank credential behind it. `startSocialSignIn` answers with a discriminated outcome
     // and `packages/auth/src/client/api.test.ts` holds both halves.
     //
@@ -554,8 +552,8 @@ describe("the React 19 stub", () => {
     expect(callbacks.length).toBeGreaterThan(0);
     // Interpolated from `origin`, whose only default is the page's own — never a value from config or
     // from a response. The prop exists so a test can render the screen without a window, nothing more.
-    // The path half is `callback.tsx`'s own export, not a literal of the same shape — #393. Two
-    // strings that agree today is precisely what broke the round trip nobody signed in can test.
+    // The path half is `callback.tsx`'s own export, not a literal of the same shape. Two strings
+    // that agree today break, silently, the round trip nobody signed in can test.
     // Each carries `resumeQuery()`, so a sign-in the consent screen asked for lands back on the authorization
     // request it stopped at. It is a path on this same origin or nothing, read through `session.tsx`.
     for (const callback of callbacks) {
@@ -567,7 +565,7 @@ describe("the React 19 stub", () => {
 
   test("turnstile gates the magic-link and OTP forms only, at action login", () => {
     const widget = AUTH["src/turnstile.tsx"] ?? "";
-    // The action is read from the projection, never declared here — #377. `@pithy-sh/ui-react`'s
+    // The action is read from the projection, never declared here. `@pithy-sh/ui-react`'s
     // `turnstileAction.test.tsx` is the gate that proves the rendered widget carries it.
     expect(widget).toContain("action: turnstileConfig.action");
     expect(widget).not.toMatch(/const ACTION\s*=/);
@@ -580,14 +578,14 @@ describe("the React 19 stub", () => {
     const form = signIn.slice(signIn.indexOf('<form className="stack"'), signIn.indexOf("</form>"));
     expect(form).toContain('<div className="auth__check">{check.widget}</div>');
     // Blanked whole, then cut: the shared walk preserves every offset, so the markers found in the
-    // raw screen index the blanked one (#439).
+    // raw screen index the blanked one.
     const social = blankComments(signIn).slice(signIn.indexOf("async function social"), signIn.indexOf("if (sent)"));
     expect(social).not.toContain("check.attach");
     expect(AUTH["src/routes/pithy/otp.tsx"]).toContain("<Turnstile");
   });
 
   test("the widget's gate ships with it, and cannot pass against the literal it exists to catch", () => {
-    // #383. Everything else about the action binding is proven by running the gate — here and, once
+    // Everything else about the action binding is proven by running the gate — here and, once
     // scaffolded, there. What running it cannot prove is that it was *shipped*, and that nothing has
     // since sanded off the two properties it depends on for its whole value.
     const gate = AUTH["src/turnstile.test.tsx"] ?? "";
@@ -602,14 +600,14 @@ describe("the React 19 stub", () => {
     expect(gate.match(/"login"/g) ?? []).toEqual(['"login"']);
     expect(gate).toContain('expect(CANARY_ACTION).not.toBe("login")');
     // It runs under the `vitest run` a scaffolded project already has: the starter's node project
-    // collects co-located `.tsx` (#245) but gives them no `document`, so the gate names its own
+    // collects co-located `.tsx` but gives them no `document`, so the gate names its own
     // environment and the stub installs the package that name resolves to.
     expect(gate).toContain("@vitest-environment happy-dom");
     expect(reactStub.devDependencies["happy-dom"]).toBeTruthy();
   });
 
   test("the widget is asked to fill the column the stylesheet gives it", () => {
-    // #257, both halves. Turnstile renders an iframe with an intrinsic size, so a `width: 100%` host
+    // Both halves. Turnstile renders an iframe with an intrinsic size, so a `width: 100%` host
     // does nothing on its own. `@pithy-sh/ui-react`'s `humanityCheckFit.test.ts` is the gate; this is
     // the half in the file the CLI puts in front of an adopter.
     expect(AUTH["src/turnstile.tsx"]).toContain('size: "flexible"');
@@ -629,12 +627,11 @@ describe("the React 19 stub", () => {
     // form is written later, against a file this run is the only chance to write. i18n's is here
     // because `src/pithy-config.tsx` narrows it for every scaffold, composed or not.
     //
-    // **What the declarations say is deliberately not asserted here (#392, #398).** This file used to
-    // check that the ambient types contained `otpLength: number;` and eleven other strings somebody had
-    // once typed — which confirms the file against itself and stays green for exactly the drift that
-    // matters, a field a capability's `client` projection stopped emitting.
+    // **What the declarations say is deliberately not asserted here.** Strings typed into this test
+    // would confirm the file against itself and stay green for exactly the drift that matters, a field
+    // a capability's `client` projection stopped emitting.
     //
-    // There is nothing left here to drift from. Since #398 the declarations are **generated** from the
+    // There is nothing here to drift from. The declarations are **generated** from the
     // declared projection types — `@pithy-sh/vite`'s `clientEnvDeclaration.ts` emits the file and
     // `clientEnvDeclaration.test.ts` holds the generator — so a projection losing a field changes the
     // template, rather than disagreeing with it. What is left here is the CLI's own claim: the bytes it
@@ -670,7 +667,7 @@ describe("the React 19 stub", () => {
     expect(reactStub.devDependencies["@vitejs/plugin-react"]).toBe("^6.0.4");
     expect(reactStub.devDependencies.vite).toBe("^8.2.1");
     // Exact, not a caret: every release pins one wrangler and peers `^4.<that wrangler>`, so a caret
-    // resolves the next release against the stub's exact wrangler and conflicts with it (#738).
+    // resolves the next release against the stub's exact wrangler and conflicts with it.
     expect(reactStub.devDependencies["@cloudflare/vite-plugin"]).toMatch(/^\d+\.\d+\.\d+$/);
     expect(reactStub.devDependencies["@cloudflare/vite-plugin"]).toBe(CLOUDFLARE_VITE_PLUGIN.version);
   });
@@ -680,9 +677,9 @@ describe("the React 19 stub", () => {
     // the scope publishes while every sibling range beside it is correct — so the range is derived.
     //
     // But it is derived from **core's** `PACKAGE_VERSION`, and the package it is written for is
-    // `@pithy-sh/vite`. This used to assert exactly that, which restated the bug as an invariant: two
-    // packages that version independently, one range. Read each package's own version instead. It is the
-    // test below that makes them equal, and that is where the equality belongs.
+    // `@pithy-sh/vite`. Asserting core's version here would restate a bug as an invariant: two packages
+    // that version independently, one range. So each package's own version is read. It is the test below
+    // that makes them equal, and that is where the equality belongs.
     for (const [name, range] of Object.entries({ ...reactStub.dependencies, ...reactStub.devDependencies })) {
       if (!name.startsWith("@pithy-sh/")) continue;
       expect(range, name).toBe(kitRange(await declaredVersion(name)));
@@ -723,7 +720,7 @@ describe("the React 19 stub", () => {
       for (const [path, contents] of Object.entries(files)) {
         if (!path.endsWith(".ts") && !path.endsWith(".tsx")) continue;
         // Blanked with the shared stripper, so a docblock naming a package it tells you NOT to import is
-        // prose rather than a finding — and so a `//` inside a string cannot switch the scan off (#439).
+        // prose rather than a finding — and so a `//` inside a string cannot switch the scan off.
         for (const match of blankComments(contents).matchAll(/from "(@pithy-sh\/[a-z0-9-]+)/g)) {
           const pkg = match[1] ?? "";
           seen += 1;
@@ -745,7 +742,7 @@ describe("the React 19 stub", () => {
     // `react.ts` writes `kitRange(PACKAGE_VERSION)`, core's version, for a sibling. `stampWorkerManifest`
     // forbids exactly that ("there is no honest range to invent for a sibling") and it is right: with
     // `linked` and `fixed` both empty, the first release that touched only core would have written a
-    // range `@pithy-sh/vite` never published — #141 again, past publication, where it cannot be fixed by
+    // range `@pithy-sh/vite` never published, past publication, where it cannot be fixed by
     // dropping the line.
     //
     // **`fixed`, not `linked`.** Linked packages that are released together take one version; a package

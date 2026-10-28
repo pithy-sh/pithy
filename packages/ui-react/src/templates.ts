@@ -61,16 +61,14 @@ export const TEMPLATE_GROUPS = {
     "tsconfig.node.json",
     "client-env.d.ts",
     "src/client.tsx",
-    // **The gate travels with the file it protects (#383, #391).** `src/client.tsx` used to find its
-    // mount node by an id declared in `index.html`, and renaming that div rendered an empty page with
-    // no error at all (#394). The node is created in code now, and this is what keeps it that way in a
-    // repository Pithy will never see again.
+    // **The gate travels with the file it protects.** `src/client.tsx` creates its mount node in code,
+    // because a node found by an id declared in `index.html` renders an empty page with no error once
+    // that div is renamed. This keeps it so in a repository Pithy will never see.
     "src/client.test.tsx",
     "src/pithy-config.tsx",
     // **The language the document declares and the language the page renders are one value, and this
-    // file is where it is resolved.** `client.tsx` used to negotiate a locale, put it on `<html lang>`,
-    // and mount no translator at all — so a project composing i18n served `lang="es"` over a page of
-    // English, which a screen reader believes and mispronounces. Base rather than an i18n group, for
+    // file is where it is resolved.** A `<html lang>` that disagrees with the rendered text is believed
+    // by a screen reader, which mispronounces the page. Base rather than an i18n group, for
     // `pithy-config.tsx`'s reason: it compiles with nothing composed, where it renders its children
     // untouched and no catalog is ever fetched.
     "src/pithy-locale.tsx",
@@ -78,8 +76,8 @@ export const TEMPLATE_GROUPS = {
     // state the invariant at all.
     "src/pithy-locale.test.tsx",
     "src/router.tsx",
-    // The router's half of #393: a guard's destination is the path the screen declares, and this is
-    // what keeps it so once `router.tsx` is a file in somebody else's repository.
+    // A guard's destination is the path the screen declares, and this is what keeps it so once
+    // `router.tsx` is a file in somebody else's repository.
     "src/router.test.tsx",
     "src/styles.css",
     // **`src/pithy-screens.css` is base, and it is base for the same reason `pithy-config.tsx` is.**
@@ -88,10 +86,10 @@ export const TEMPLATE_GROUPS = {
     // that render styled. Putting it in the `auth` group instead would leave a payments-only scaffold
     // unstyled, and duplicating it across both groups would name one file twice.
     //
-    // The adopter's `src/styles.css` is correctly skipped on that backfill — it is theirs. Before this
-    // file existed, the classes lived in it, so the run wrote a sign-in screen whose `stack`, `divider`
-    // and `secondary` nothing defined and reported it as created.
-    // The palette these two files share is #391's item I, and its gate is the one that could NOT be
+    // The adopter's `src/styles.css` is correctly skipped on that backfill — it is theirs — so no class a
+    // screen renders may live there.
+    //
+    // The palette these two files share has the one gate that could NOT be
     // seeded: the invariant is CSS text, and a scaffolded project's runner stubs CSS modules to the
     // empty string, so a seeded gate would sweep nothing and pass. It is kept in `palette.test.ts`,
     // with that reason at the site — see `seededGates.test.ts`, which records it rather than letting
@@ -101,24 +99,24 @@ export const TEMPLATE_GROUPS = {
   auth: [
     "src/session.tsx",
     "src/turnstile.tsx",
-    // **The gate travels with the file it protects (#383).** `src/turnstile.tsx` is the adopter's the
+    // **The gate travels with the file it protects.** `src/turnstile.tsx` is the adopter's the
     // moment it lands, and its whole risk is that the action label can be retyped into it — a drift
     // no environment before production can see, because the test keys dev and staging run answer with
-    // no action to compare (#374). The kit keeping the only gate for that leaves the adopter most
+    // no action to compare. The kit keeping the only gate for that leaves the adopter most
     // likely to hit it with nothing that goes red. So this one is seeded, not kept.
     "src/turnstile.test.tsx",
     "src/routes/pithy/sign-in.tsx",
     // The magic link's `callbackURL` and `callback.tsx`'s `path` are one statement, and this is the
-    // gate that keeps them one after the screens are yours (#393). Seeded for the same reason the
+    // gate that keeps them one after the screens are yours. Seeded for the same reason the
     // widget's is: the round trip it protects is the one flow nobody already signed in can test.
     "src/routes/pithy/sign-in.test.tsx",
     "src/routes/pithy/otp.tsx",
     // A right code for a suspended or deleted account goes on to the screen for that state, not to "that
-    // code didn't work" (#620). Seeded: the screen is the adopter's, and an edit that reads every failure as
+    // code didn't work". Seeded: the screen is the adopter's, and an edit that reads every failure as
     // a wrong code looks like a simplification.
     "src/routes/pithy/otp.test.tsx",
     "src/routes/pithy/callback.tsx",
-    // The account lifecycle (#620): where a suspended or deleted account lands, and where somebody acting
+    // The account lifecycle: where a suspended or deleted account lands, and where somebody acting
     // for a suspended organization does. Each says what happened, what it means, and who to ask. The third
     // is auth's rather than organization's because the account screens and it are one set, written once.
     "src/routes/pithy/account-suspended.tsx",
@@ -145,6 +143,9 @@ export const TEMPLATE_GROUPS = {
     // always on the page, and the edit that breaks it looks like a restyle.
     "src/routes/pithy/agent-consent.test.tsx",
     "src/routes/pithy/connected-applications.tsx",
+    // Seeded: the invariant is that the checked host is the only thing called checked, and the name an
+    // application gave itself never is.
+    "src/routes/pithy/connected-applications.test.tsx",
   ],
   payments: [
     "src/payments.tsx",

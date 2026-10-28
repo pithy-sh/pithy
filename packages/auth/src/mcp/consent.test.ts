@@ -82,6 +82,7 @@ describe("consentView", () => {
     const view = consentView({
       client: {
         id: "c1",
+        verifiedHost: null,
         reportedName: "POWERPLAY Official Sync",
         reportedUri: null,
         redirectUri: "http://127.0.0.1:9/cb",
@@ -92,10 +93,30 @@ describe("consentView", () => {
     });
     expect(ConsentView.parse(view)).toEqual(view);
     expect(view.client.redirectUri).toBe("http://127.0.0.1:9/cb");
-    // The name is carried as reported, under a key that says so; nothing names it verified.
-    expect(Object.keys(view.client)).toEqual(["id", "reportedName", "reportedUri", "redirectUri"]);
-    expect(JSON.stringify(view)).not.toMatch(/selected|checked|verified/i);
+    // The name is carried as reported, under a key that says so; the one verified key holds a host, and a
+    // dynamically registered client has none.
+    expect(Object.keys(view.client)).toEqual(["id", "verifiedHost", "reportedName", "reportedUri", "redirectUri"]);
+    expect(view.client.verifiedHost).toBeNull();
+    expect(JSON.stringify(view)).not.toMatch(/selected|checked/i);
     // The screen words every part of it in the reader's language, so the server sends no prose of its own.
     expect(Object.keys(view)).toEqual(["client", "capabilities", "requested"]);
+  });
+
+  test("a metadata-document client carries its verified host beside its reported name, never in place of it", () => {
+    const view = consentView({
+      client: {
+        id: "https://client.example.com/oauth/client.json",
+        verifiedHost: "client.example.com",
+        reportedName: "POWERPLAY Official Sync",
+        reportedUri: null,
+        redirectUri: "http://127.0.0.1:9/cb",
+      },
+      tools,
+      caller: agent,
+      requestedScopes: ["mcp"],
+    });
+    expect(ConsentView.parse(view)).toEqual(view);
+    expect(view.client.verifiedHost).toBe("client.example.com");
+    expect(view.client.reportedName).toBe("POWERPLAY Official Sync");
   });
 });

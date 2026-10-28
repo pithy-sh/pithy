@@ -35,6 +35,7 @@ const WITH_MCP: WorkerConfig = { capabilities: [routed("auth", "/auth"), routed(
 /** The agent screens: what an MCP client's authorization lands on, and where a person revokes it. */
 const MCP_SCREENS = [
   "src/routes/pithy/connected-applications.tsx",
+  "src/routes/pithy/connected-applications.test.tsx",
   "src/routes/pithy/agent-consent.test.tsx",
   "src/routes/pithy/agent-consent.tsx",
 ];
@@ -299,7 +300,7 @@ describe("pithy ui", () => {
       const payload = (error as PithyError).payload;
       expect(payload.action).toContain("pithy add auth");
       expect(payload.action).toContain("--no-auth");
-      // The worker lacks what the screens depend on: exit 3, with the command that composes it (#697).
+      // The worker lacks what the screens depend on: exit 3, with the command that composes it.
       expect(payload.code).toBe("core/precondition_failed");
       // auth declares `secrets` and `email`, so the add composes them too, with nobody to ask.
       expect(fixOf(error as PithyError)).toMatch(/^pithy add auth --worker \S+ --with-prerequisites$/);
@@ -316,20 +317,20 @@ describe("pithy ui", () => {
     const second = await runUiAdd({ ...options(WITH_AUTH), auth: true });
     expect(second.created.sort()).toEqual([
       // Where a suspended or deleted account lands, and where somebody acting for a suspended
-      // organization does (#620).
+      // organization does.
       "src/routes/pithy/account-deleted.tsx",
       "src/routes/pithy/account-suspended.tsx",
       "src/routes/pithy/callback.tsx",
       "src/routes/pithy/organization-suspended.tsx",
-      // A refused account's right code goes on to its screen, and this gate travels with the screen (#620).
+      // A refused account's right code goes on to its screen, and this gate travels with the screen.
       "src/routes/pithy/otp.test.tsx",
       "src/routes/pithy/otp.tsx",
-      // The seeded gate over the callback contract backfills with the screens it protects (#393).
+      // The seeded gate over the callback contract backfills with the screens it protects.
       "src/routes/pithy/sign-in.test.tsx",
       "src/routes/pithy/sign-in.tsx",
       "src/session.tsx",
-      // The widget's gate backfills with the widget (#383). A backfilled front end that got the file
-      // it can retype and not the test that notices is the exact hole this closes.
+      // The widget's gate backfills with the widget: a backfilled front end must not get the file it
+      // can retype without the test that notices.
       "src/turnstile.test.tsx",
       "src/turnstile.tsx",
     ]);
@@ -409,9 +410,8 @@ describe("pithy ui", () => {
   });
 
   test("sync re-asks whether the screens are styled, and a stylesheet edited later is caught", async () => {
-    // **The defect #401 is about.** The unstyled check ran once, at `pithy ui add`, printed, and did
-    // not affect the exit — and `styles.css` is the adopter's, so the ordinary way a screen loses its
-    // rules is an edit a week later. Nothing asked again. The screen renders with a 200 and no rules.
+    // `styles.css` is the adopter's, so the ordinary way a screen loses its rules is an edit a week
+    // after `pithy ui add`, and the screen still renders with a 200. So sync asks again, and fails.
     await runUiAdd({ ...options(WITH_AUTH), auth: true });
     expect((await runUiSync({ projectDir, workerDir, config: WITH_AUTH, check: true })).unstyled).toEqual([]);
 
@@ -427,9 +427,8 @@ describe("pithy ui", () => {
   });
 
   test("a class defined in a stylesheet Pithy never wrote is defined", async () => {
-    // The false positive that had to go before a finding could fail a build. The check used to read
-    // only the paths the run planned, so an adopter's own `src/brand.css` was invisible and its rules
-    // counted for nothing — a screen reported unstyled by rules that were on disk the whole time.
+    // The check reads every stylesheet on disk, not only the paths the run planned, so an adopter's own
+    // `src/brand.css` counts and a finding can fail a build without a false positive.
     await runUiAdd({ ...options(WITH_AUTH), auth: true });
     const screens = await readFile(join(workerDir, "src", "pithy-screens.css"), "utf8");
     await rm(join(workerDir, "src", "pithy-screens.css"));
@@ -489,7 +488,7 @@ describe("pithy ui", () => {
 });
 
 /**
- * **`pithy ui add --dry-run`: the same write, made in a copy (#697).** The report is the prediction and the
+ * **`pithy ui add --dry-run`: the same write, made in a copy.** The report is the prediction and the
  * plan is the difference, so the two are held to the real run: the files it plans are the files it would
  * create, and the project is byte-identical afterwards.
  */
@@ -539,8 +538,8 @@ describe("pithy ui add --dry-run", () => {
   });
 
   test("a link out of the project is refused as the real run refuses it, and nothing lands where it points", async () => {
-    // `apps/<worker>/src` leading out of the project, relatively: the copy used to drop it, so the dry run wrote
-    // a fresh `src` and planned success where the real run stops at the link.
+    // `apps/<worker>/src` leading out of the project, relatively: the copy keeps the link, so the dry run stops
+    // at it as the real run does rather than writing a fresh `src` and planning success.
     const elsewhere = await mkdtemp(join(tmpdir(), "pithy-ui-dry-elsewhere-"));
     try {
       await symlink(relative(workerDir, elsewhere), join(workerDir, "src"));

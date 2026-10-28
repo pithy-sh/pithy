@@ -8,13 +8,12 @@ import { HOME_SCREEN, TEMPLATE_DIR, TEMPLATE_GROUPS } from "./templates";
 
 /**
  * **The ledger for `docs/CONVENTIONS.md` § *Seeded files*: every file this library seeds is held by a
- * gate that travels with it, or is ungated for a reason written down (#391).**
+ * gate that travels with it, or is ungated for a reason written down.**
  *
  * `pithy ui add react --auth --payments` writes a whole front end into a repository Pithy will never see
- * again — eighteen files when #391 counted them, and **no test at all**. All ten gates over those files
- * lived in `src/` here, each stated over the *pristine* template text, so every one of them went silent
- * at the exact moment the files became the adopter's, which is the same moment they stopped being
- * fixable from here.
+ * again. A gate kept in `src/` here is stated over the *pristine* template text, so it goes silent at
+ * the exact moment the files become the adopter's, which is the same moment they stop being fixable
+ * from here.
  *
  * ## What this can check, and what it cannot
  *
@@ -29,7 +28,7 @@ import { HOME_SCREEN, TEMPLATE_DIR, TEMPLATE_GROUPS } from "./templates";
  * added — and refuse to let the answer rot afterwards. A path added to `TEMPLATE_GROUPS` is red here
  * until this ledger says which gate holds it or why none does. A ledger entry naming a file that has
  * left the tree is red. A gate named by no entry is red. And the one property that *is* mechanisable,
- * #383's second, is checked on its own below.
+ * that a gate does not restate the value it checks, is checked on its own below.
  *
  * That is the honest shape: **a forcing function, not a detector.** The alternative — inferring an
  * invariant from source — would be a gate that guesses, and a gate that guesses is one people learn to
@@ -46,7 +45,7 @@ import { HOME_SCREEN, TEMPLATE_DIR, TEMPLATE_GROUPS } from "./templates";
 /** How a seeded file is held. Exactly one of these, and the sentence is the point of either. */
 type Held =
   /**
-   * A seeded gate whose expectation is a canary invented in the test file. #383's second property:
+   * A seeded gate whose expectation is a canary invented in the test file, because
    * asserting the real value would pass against the very drift the gate exists to catch.
    */
   | { readonly gate: string; readonly expectation: "canary" }
@@ -71,8 +70,8 @@ type Held =
    * party who can break the invariant is the kit rather than the adopter, or the gate cannot run where
    * it would be seeded. Either way the ledger says so, rather than looking complete.
    *
-   * The second wall has two shapes now. #391 found the first — the runner an adopter has cannot read
-   * the subject, since Vitest stubs CSS modules to `""`. #399 found the other: the invariant is a fact
+   * The second wall has two shapes. In the first, the runner an adopter has cannot read the subject,
+   * since Vitest stubs CSS modules to `""`. In the other, the invariant is a fact
    * about *where the Worker sits in a scaffolded project*, so the gate needs a whole scaffolded project
    * and a spawned compiler to resolve against, and a test inside one such project is the wrong altitude
    * to check it from. Both end in the same place — the gate is kept, and what it cannot see is written
@@ -155,8 +154,9 @@ const LEDGER: Record<string, Held> = {
     why: "The application's name is self-asserted and the redirect address is what identifies it. A restyle that promotes the name to the heading, or drops the address as clutter, turns the screen into a phishing page on the adopter's own domain — and every manual test uses the adopter's own application, so nothing looks wrong. The gate renders an invented name and address and asserts where each lands.",
   },
   "src/routes/pithy/connected-applications.tsx": {
-    ungated:
-      "A list and a revoke button over `@pithy-sh/auth/src/client/mcp`. What makes revocation real — the consent, its tokens and the endpoint refusing the next call — is the server's, and `packages/auth/src/mcp/flow.workers.test.ts` holds it; nothing on this screen is an invariant an edit can quietly break.",
+    gate: "src/routes/pithy/connected-applications.test.tsx",
+    expectation: "canary",
+    why: "Each application is shown by a name it gave itself and, when its metadata document proved one, a host that is checked. A restyle that moves \"That is checked.\" onto the name, or drops the host as clutter, tells a person a self-asserted name was verified, and every manual test uses the adopter's own application, so nothing looks wrong. The gate renders an invented name and host and asserts which one is called checked. What makes revocation real is the server's, held by `packages/auth/src/mcp/flow.workers.test.ts`.",
   },
   "src/routes/pithy/organization-suspended.tsx": {
     ungated:
@@ -268,7 +268,7 @@ describe("the ledger and the tree agree", () => {
 });
 
 describe("a seeded gate does not write down the value it is checking", () => {
-  // #383's second property, mechanised as far as it goes: the expectation is either a canary this file
+  // Mechanised as far as it goes: the expectation is either a canary this file
   // invented, or a comparison of two subjects. It is NOT the real value restated — that passes against
   // the exact drift the gate exists to catch, and it is the failure mode that leaves a green suite.
 
@@ -307,7 +307,7 @@ describe("a seeded gate does not write down the value it is checking", () => {
       ).toBe(true);
       checked += 1;
     }
-    // Near-exact, not a comfortable floor. Six canary gates are seeded, by #383, #393, #394, #441 and #620.
+    // Near-exact, not a comfortable floor: six canary gates are seeded.
     // A sweep that found five has stopped reading one, and a sweep that found none passes over nothing.
     expect(checked, "the canary sweep no longer reads every canary gate the ledger names").toBeGreaterThanOrEqual(6);
   });
@@ -330,10 +330,9 @@ describe("a seeded gate does not write down the value it is checking", () => {
       ).toBeGreaterThan(80);
       checked += 1;
     }
-    // Six: the ambient declarations, both halves of the palette, two of the three build contracts #399
-    // moved to the scaffolder's suite, and the bare home screen #400 made one statement. `vite.config.ts`
-    // was the third of those until #447 added a second invariant to it that no wall accounts for; its
-    // entry is a decline now, and it is read by the sweep above rather than by this one.
+    // Six: the ambient declarations, both halves of the palette, two build contracts held by the
+    // scaffolder's suite, and the bare home screen. `vite.config.ts` holds a second invariant no wall
+    // accounts for, so its entry is a decline, read by the sweep above rather than by this one.
     expect(checked, "the kept-gate sweep no longer reads every such gate the ledger names").toBeGreaterThanOrEqual(6);
   });
 });
