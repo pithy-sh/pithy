@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: FSL-1.1-MIT
 
-import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import type { AdminRouteDeclaration } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 
 /**
@@ -38,24 +38,24 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
  * cannot resolve one. `scopeCovers` matches exactly — no prefix, no wildcard — so holding one confers nothing about
  * the other.
  *
- * **Usage rides the listing scope (#812).** `GET {base}/control-plane/usage` counts one connection's calls by scope
+ * **Usage rides the listing scope.** `GET {base}/control-plane/usage` counts one connection's calls by scope
  * and key. Its answer is the scope, the key id, and the method and path of the last allowed call — the management
  * client's own footprint, which the listing already discloses in shape through `action`, `actorId` and `resourceId`
  * — and never an IP, a user-agent, or any other metadata key. So it needs no detail scope, and an access review does
  * not have to hold the most dangerous grant audit defines to ask which grants are used.
  *
- * **The access history rides the listing scope (#831).** `GET {base}/control-plane/access-history` answers every
+ * **The access history rides the listing scope.** `GET {base}/control-plane/access-history` answers every
  * membership, connection and key change in a window with its before and after — roles, scopes, the connection's
  * kind, purpose and principal, a key id. It lifts those named metadata keys and no other, and never an IP or a
  * user-agent, so replaying who could reach the data does not need the grant that discloses where everyone was.
  *
- * **Reach rides the listing scope (#828).** `GET {base}/control-plane/reach` answers what one credential touched:
+ * **Reach rides the listing scope.** `GET {base}/control-plane/reach` answers what one credential touched:
  * per tenant, route and outcome, counts and two instants, and on request one route's called paths and the subject
  * ids they name. Those ids are segments of paths the credential itself sent, naming the subjects the listing
  * already names in `resourceId`, and the tenant is what it shows as `tenant`; the answer never carries an IP, a user-agent, or a metadata key beyond the key id, scope, method and
  * path. So a breach review does not need the detail scope to draw a breach scope.
  *
- * **The chain has a scope of its own (#822).** `GET {base}/control-plane/verify` walks one tenant's chain, and
+ * **The chain has a scope of its own.** `GET {base}/control-plane/verify` walks one tenant's chain, and
  * `GET {base}/control-plane/export` takes it out in canonical form with its checkpoints. An export is the trail in
  * bulk, meant to leave the building, so neither read rides the listing scope: both need `audit:events:export`. The
  * export carries IP, user-agent and metadata values only when the connection also holds the detail scope, and their
@@ -79,8 +79,8 @@ export const AUDIT_TRAIL_READ_SCOPE: ControlPlaneScope = "audit:events:read";
 export const AUDIT_EVENT_DETAIL_READ_SCOPE: ControlPlaneScope = "audit:events:read_detail";
 
 /**
- * Verify and export the hash chain (#822): walk one tenant's chain against its checkpoints, and take it out in
- * canonical form for an auditor to check offline. Kind `reads` under #725's table, declared in code once that lands.
+ * Verify and export the hash chain: walk one tenant's chain against its checkpoints, and take it out in
+ * canonical form for an auditor to check offline.
  *
  * Its own scope, because an export is the trail in bulk — every event of a tenant, in a form meant to leave the
  * building. The IP, user-agent and metadata ride along only when the connection also holds
@@ -110,13 +110,14 @@ export const AUDIT_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  * The summaries say what the operation is *for*. A client renders these beside a pane somebody is
  * about to open over other people's activity.
  */
-export function auditAdminRoutes(basePath: string): AdminRoute[] {
+export function auditAdminRoutes(basePath: string): AdminRouteDeclaration[] {
   return [
     {
       method: "GET",
       operation: "events.list",
       path: `${basePath}/events`,
       scope: AUDIT_TRAIL_READ_SCOPE,
+      kind: "reads",
       summary:
         "Page the trail, newest first, filtered by actor, action, resource, outcome, severity, origin, and time.",
     },
@@ -125,7 +126,7 @@ export function auditAdminRoutes(basePath: string): AdminRoute[] {
       operation: "access_history.read",
       path: `${basePath}/control-plane/access-history`,
       scope: AUDIT_TRAIL_READ_SCOPE,
-      // Kind `reads` under #725's table, declared in code once that lands.
+      kind: "reads",
       summary:
         "Replay who could do what: every membership, connection and key change in a window, oldest first, with its before and after. No event is read in full.",
     },
@@ -134,6 +135,7 @@ export function auditAdminRoutes(basePath: string): AdminRoute[] {
       operation: "reach.read",
       path: `${basePath}/control-plane/reach`,
       scope: AUDIT_TRAIL_READ_SCOPE,
+      kind: "reads",
       summary:
         "Read what one control-plane credential reached, by tenant, route and outcome, and expand a route into the subjects it touched.",
     },
@@ -142,7 +144,7 @@ export function auditAdminRoutes(basePath: string): AdminRoute[] {
       operation: "usage.read",
       path: `${basePath}/control-plane/usage`,
       scope: AUDIT_TRAIL_READ_SCOPE,
-      // Kind `reads` under #725's table, declared in code once that lands.
+      kind: "reads",
       summary:
         "Count which scopes one control-plane connection exercised and was refused, by key, over a window. Counts only — no event is read in full.",
     },
@@ -151,7 +153,7 @@ export function auditAdminRoutes(basePath: string): AdminRoute[] {
       operation: "chain.verify",
       path: `${basePath}/control-plane/verify`,
       scope: AUDIT_CHAIN_EXPORT_SCOPE,
-      // Kind `reads` under #725's table, declared in code once that lands.
+      kind: "reads",
       summary:
         "Walk one tenant's hash chain against its checkpoints, and say whether it is whole or where it first breaks.",
     },
@@ -160,7 +162,7 @@ export function auditAdminRoutes(basePath: string): AdminRoute[] {
       operation: "chain.export",
       path: `${basePath}/control-plane/export`,
       scope: AUDIT_CHAIN_EXPORT_SCOPE,
-      // Kind `reads` under #725's table, declared in code once that lands.
+      kind: "reads",
       summary:
         "Export one tenant's hash chain in canonical form with its checkpoints, to verify offline. Personal values only with the detail scope.",
     },
@@ -169,6 +171,7 @@ export function auditAdminRoutes(basePath: string): AdminRoute[] {
       operation: "events.read",
       path: `${basePath}/events/:eventId`,
       scope: AUDIT_EVENT_DETAIL_READ_SCOPE,
+      kind: "reads",
       summary: "Read one event in full, including the client IP, user-agent, and capability metadata.",
     },
   ];

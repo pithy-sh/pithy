@@ -5,7 +5,13 @@ import { z } from "zod";
 import { PrivacyPosture } from "../../privacy/posture";
 import { PRIVACY_SOURCES } from "../../privacy/report";
 import { BASIS_SOURCES, LegalBasis, PROCESSING_GAP_KINDS, RECIPIENT_SOURCES } from "../../processing/vocabulary";
-import { ConnectionPrincipal, ConnectionPurpose, ControlPlaneActorKind, Ed25519PublicJwk } from "../data/connection";
+import {
+  ConnectionCredentialKind,
+  ConnectionPrincipal,
+  ConnectionPurpose,
+  ControlPlaneActorKind,
+  Ed25519PublicJwk,
+} from "../data/connection";
 import { EvidenceControlId, EvidenceSource, EvidenceState } from "../evidence/mapping";
 
 /**
@@ -834,3 +840,74 @@ export const ControlPlaneProcessingResponse = z
     "The GDPR Article 30 record this Worker derives: each activity's purpose, data classes, legal basis, recipients, retention and measures, and every gap named.",
   );
 export type ControlPlaneProcessingResponse = z.infer<typeof ControlPlaneProcessingResponse>;
+
+/** One trust's subject constraint, as a connection listing shows it: the population that may use the trust. */
+export const ConnectionTrustView = z
+  .object({
+    trustId: z.string().describe("The trust's id."),
+    issuer: z.string().describe("The `iss` the trust accepts."),
+    claims: z
+      .record(z.string().describe("A claim name."), z.string().describe("The value that claim must have."))
+      .describe("The subject constraint: every named claim must equal its value. This is who may use the trust."),
+    revokedAt: z.iso.datetime().nullable().describe("When the trust was revoked, ISO-8601, or null while it stands."),
+  })
+  .describe("One OIDC trust's subject constraint, on the face of the listing.");
+export type ConnectionTrustView = z.output<typeof ConnectionTrustView>;
+
+/** One connection, as `GET {basePath}/connections` lists it. No key material and no secret. */
+export const ConnectionView = z
+  .object({
+    id: z.string().describe("The connection's id. Name it to revoke the connection."),
+    environment: z.string().describe("The environment the connection is bound to."),
+    actorKind: ControlPlaneActorKind.nullable().describe(
+      "What kind of client the connection is for: `agent`, `dashboard` or `script`. Null for one registered before it was recorded.",
+    ),
+    purpose: ConnectionPurpose.nullable().describe(
+      "What the client is for, in the registering operator's words. Untrusted text: render it escaped. Null for one registered before it was recorded.",
+    ),
+    authorizedBy: ConnectionPrincipal.nullable().describe(
+      "The email of the person who sanctioned the connection. Null for one registered before principals were recorded.",
+    ),
+    credentialKind: ConnectionCredentialKind,
+    scopes: z.array(z.string()).describe("The scopes the connection was granted."),
+    trusts: z.array(ConnectionTrustView).describe("Every OIDC trust on the connection, revoked ones included."),
+    live: z.boolean().describe("Whether any key or trust on the connection can verify a call now."),
+    registeredAt: z.iso.datetime().describe("When the connection was registered, ISO-8601."),
+    revokedAt: z.iso
+      .datetime()
+      .nullable()
+      .describe(
+        "When the connection was revoked, ISO-8601: the latest revocation once every credential was revoked. Null while anything is live, and for one whose keys merely expired.",
+      ),
+  })
+  .describe("One connection: who authorized it, for what, with which credentials and grant, and whether it is live.");
+export type ConnectionView = z.output<typeof ConnectionView>;
+
+/** `GET /control-plane/connections`. */
+export const ControlPlaneConnectionsResponse = z
+  .object({
+    connections: z
+      .array(ConnectionView)
+      .describe("Every connection with a recorded principal, matching the filter when one was given, oldest first."),
+    unattributed: z
+      .array(ConnectionView)
+      .describe(
+        "Every connection registered before principals were recorded, oldest first. Listed apart for a person to read; never matched by a principal.",
+      ),
+  })
+  .describe("Every connection bound to this Worker's environment, attributed ones and unattributed ones apart.");
+export type ControlPlaneConnectionsResponse = z.output<typeof ControlPlaneConnectionsResponse>;
+
+/** `POST /control-plane/connections/:connectionId/revoke`. */
+export const RevokeConnectionResponse = z
+  .object({
+    connection: ConnectionView.describe("The connection as it now stands."),
+    revokedKeyIds: z
+      .array(z.string())
+      .describe("The keys this call revoked. Empty when every key was already revoked."),
+    revokedTrustIds: z
+      .array(z.string())
+      .describe("The trusts this call revoked. Empty when every trust was already revoked."),
+  })
+  .describe("A revoked connection, and the credentials the revocation ended.");
+export type RevokeConnectionResponse = z.output<typeof RevokeConnectionResponse>;

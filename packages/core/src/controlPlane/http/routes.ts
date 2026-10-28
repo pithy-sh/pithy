@@ -7,9 +7,11 @@ import { describeRoute } from "../../http/routeSpec";
 import { validate } from "../../http/validation";
 import { PresenceTicket } from "../../presence/http/responses";
 import { ControlPlanePresenceTicketRequest } from "../../presence/http/schemas";
-import { type AdminRoute, ControlPlaneManifest } from "../discovery/adminRoute";
+import { type AdminRouteDeclaration, ControlPlaneManifest } from "../discovery/adminRoute";
 import {
   ANY_VERIFIED_CALLER,
+  CONNECTIONS_READ_SCOPE,
+  CONNECTIONS_REVOKE_SCOPE,
   ERASURE_READ_SCOPE,
   EVIDENCE_READ_SCOPE,
   KEYS_ROTATE_SCOPE,
@@ -20,6 +22,7 @@ import {
   RETENTION_HOLD_SCOPE,
   RETENTION_READ_SCOPE,
 } from "../scope/scope";
+import { listConnectionsHandler, revokeConnectionHandler } from "./connections";
 import { requireControlPlane } from "./guard";
 import {
   type ControlPlaneHandlerDeps,
@@ -38,6 +41,7 @@ import { listHoldsHandler, placeHoldHandler, releaseHoldHandler } from "./holds"
 import { presenceTicketGate, presenceTicketHandler } from "./presence";
 import { processingHandler } from "./processing";
 import {
+  ControlPlaneConnectionsResponse,
   ControlPlaneErasurePeriodResponse,
   ControlPlaneErasureSubjectResponse,
   ControlPlaneEvidenceResponse,
@@ -50,8 +54,11 @@ import {
   ControlPlaneProcessingResponse,
   ExpireKeyResponse,
   RegisterKeyResponse,
+  RevokeConnectionResponse,
 } from "./responses";
 import {
+  ConnectionListQuery,
+  ConnectionParams,
   ErasurePeriodQuery,
   ErasureSubjectParams,
   ExpireKeyParams,
@@ -61,6 +68,7 @@ import {
   PlaceHoldRequest,
   RegisterKeyRequest,
   ReleaseHoldRequest,
+  RevokeConnectionRequest,
 } from "./schemas";
 
 /**
@@ -71,6 +79,8 @@ import {
  *   GET  /control-plane/keys                  → the registration state       (keys:rotate)
  *   POST /control-plane/keys                  → register a key               (keys:rotate)
  *   POST /control-plane/keys/:keyId/expire    → retire a superseded key      (keys:rotate)
+ *   GET  /control-plane/connections           → every connection, by principal (connections:read)
+ *   POST /control-plane/connections/:id/revoke → revoke another connection    (connections:revoke)
  *   GET  /control-plane/migrations            → where each database stands   (migrations:read)
  *   GET  /control-plane/privacy               → what each schema holds        (privacy:read)
  *   GET  /control-plane/evidence              → SOC 2 and ISO 27001 evidence  (evidence:read)
@@ -107,7 +117,7 @@ import {
  * `ping` carries a null scope. It requires a verified caller and no authorization, and saying so is
  * how a client knows it can always prove a key — including on a connection granted nothing at all.
  */
-export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
+export function controlPlaneRouteDescriptors(basePath: string): AdminRouteDeclaration[] {
   return [
     {
       method: "GET",
@@ -121,6 +131,7 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
       operation: "manifest.read",
       path: `${basePath}/manifest`,
       scope: MANIFEST_READ_SCOPE,
+      kind: "reads",
       summary: "What this Worker composes, and how to call each capability's admin surface.",
     },
     {
@@ -128,6 +139,7 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
       operation: "keys.list",
       path: `${basePath}/keys`,
       scope: KEYS_ROTATE_SCOPE,
+      kind: "credentials",
       summary: "The registered keys, their validity windows, and their ages.",
     },
     {
@@ -135,6 +147,7 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
       operation: "keys.register",
       path: `${basePath}/keys`,
       scope: KEYS_ROTATE_SCOPE,
+      kind: "credentials",
       summary: "Register a successor public key. Signed with the key it replaces; appends only.",
     },
     {
@@ -142,13 +155,33 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
       operation: "keys.expire",
       path: `${basePath}/keys/:keyId/expire`,
       scope: KEYS_ROTATE_SCOPE,
+      kind: "credentials",
       summary: "Retire a superseded key. Must be signed with the successor it names as proven.",
+    },
+    {
+      method: "GET",
+      operation: "connections.list",
+      path: `${basePath}/connections`,
+      scope: CONNECTIONS_READ_SCOPE,
+      kind: "reads",
+      summary:
+        "Every connection bound to this Worker's environment: who authorized it, what kind of client it is for and why, its credentials, grant and trust constraints, and when it was registered or revoked. Filterable by principal. No key material.",
+    },
+    {
+      method: "POST",
+      operation: "connections.revoke",
+      path: `${basePath}/connections/:connectionId/revoke`,
+      scope: CONNECTIONS_REVOKE_SCOPE,
+      kind: "credentials",
+      summary:
+        "Revoke every key and trust another connection in this environment holds, with a reason. Never the calling connection, which ends through disconnect.",
     },
     {
       method: "GET",
       operation: "migrations.read",
       path: `${basePath}/migrations`,
       scope: MIGRATIONS_READ_SCOPE,
+      kind: "reads",
       summary:
         "What each bound database has applied, what is pending, what is undeclared, and which run put it there. Undeclared is relative to this Worker.",
     },
@@ -157,6 +190,7 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
       operation: "privacy.read",
       path: `${basePath}/privacy`,
       scope: PRIVACY_READ_SCOPE,
+      kind: "reads",
       summary:
         "Every stored schema holding a privacy-marked field, each field's path and class, and where it lives. Derived from the running code.",
     },
@@ -165,6 +199,7 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
       operation: "evidence.read",
       path: `${basePath}/evidence`,
       scope: EVIDENCE_READ_SCOPE,
+      kind: "reads",
       summary:
         "SOC 2 and ISO 27001 evidence derived from what this Worker composes and records: each control's facts, their sources, and what could be said. Evidence for an auditor, never a judgment.",
     },
@@ -173,6 +208,7 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
       operation: "processing.read",
       path: `${basePath}/processing`,
       scope: PROCESSING_READ_SCOPE,
+      kind: "reads",
       summary:
         "The record of processing activities, GDPR Article 30: each purpose, its data classes, legal basis, recipients, retention and measures, and every gap named.",
     },
@@ -181,6 +217,7 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
       operation: "erasure.list",
       path: `${basePath}/erasure`,
       scope: ERASURE_READ_SCOPE,
+      kind: "reads",
       summary:
         "Every purge in a period: how many completed, are in progress or failed, and each failed or overdue one with the step it stopped at.",
     },
@@ -189,6 +226,7 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
       operation: "erasure.read",
       path: `${basePath}/erasure/:subjectType/:subjectId`,
       scope: ERASURE_READ_SCOPE,
+      kind: "reads",
       summary:
         "One user's or organization's erasure: the deletion, every step erased or kept with its reason, the state, and the audit events that record each.",
     },
@@ -197,6 +235,7 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
       operation: "holds.list",
       path: `${basePath}/holds`,
       scope: RETENTION_READ_SCOPE,
+      kind: "reads",
       summary:
         "Every legal hold, standing first: its subject, who placed it and why, and when and why it was released.",
     },
@@ -205,6 +244,7 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
       operation: "holds.place",
       path: `${basePath}/holds`,
       scope: RETENTION_HOLD_SCOPE,
+      kind: "writes",
       summary:
         "Place a legal hold on a user, an organization or a tenant's audit trail, with a reason. Every purge, prune and inactivity deletion touching it stops until it is released.",
     },
@@ -213,6 +253,7 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
       operation: "holds.release",
       path: `${basePath}/holds/:holdId/release`,
       scope: RETENTION_HOLD_SCOPE,
+      kind: "writes",
       summary: "Release a legal hold, with a reason. The subject returns to the retention the Worker deploys with.",
     },
     {
@@ -294,6 +335,37 @@ export function registerControlPlaneRoutes(
     validate("param", ExpireKeyParams),
     validate("json", ExpireKeyRequest),
     (c) => expireKeyHandler(deps)(c, c.req.valid("param"), c.req.valid("json")),
+  );
+
+  app.get(
+    `${basePath}/connections`,
+    describeRoute({
+      summary: "List every connection in this Worker's environment.",
+      description:
+        "Every connection bound to this Worker's environment, the caller's own among them; a database shared with another environment never lists that environment's rows. Each connection's id, environment, actor kind, purpose, authorizing principal, credential kind, granted scopes, every trust's subject constraint, whether it is live, and when it was registered and revoked. `principal` narrows to the connections one email authorized; connections registered before principals were recorded are listed apart in `unattributed` and never match. No key material and no secret. Read-only.",
+      verification: "control-plane",
+      scopes: [CONNECTIONS_READ_SCOPE],
+      responses: { 200: ControlPlaneConnectionsResponse },
+    }),
+    requireControlPlane(CONNECTIONS_READ_SCOPE),
+    validate("query", ConnectionListQuery),
+    (c) => listConnectionsHandler(deps)(c, c.req.valid("query")),
+  );
+
+  app.post(
+    `${basePath}/connections/:connectionId/revoke`,
+    describeRoute({
+      summary: "Revoke another connection.",
+      description:
+        "Revokes every key and trust on the connection not yet revoked, at once, with a reason: a live one, and one whose window has not opened yet. A token already minted under a trust stays usable until it expires. Refused on the calling connection, which ends through `pithy dashboard disconnect`, naming its environment with `--env`. A connection bound to another environment answers 404. `pithy dashboard connect` keeps one connection per environment, replacing the one stored, so this route has a target only where the database holds more than one connection for this environment. Audited as `controlplane/connection_revoked`.",
+      verification: "control-plane",
+      scopes: [CONNECTIONS_REVOKE_SCOPE],
+      responses: { 200: RevokeConnectionResponse },
+    }),
+    requireControlPlane(CONNECTIONS_REVOKE_SCOPE),
+    validate("param", ConnectionParams),
+    validate("json", RevokeConnectionRequest),
+    (c) => revokeConnectionHandler(deps)(c, c.req.valid("param"), c.req.valid("json")),
   );
 
   app.get(

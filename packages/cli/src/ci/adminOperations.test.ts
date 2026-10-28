@@ -23,6 +23,8 @@ const PUBLISHED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
     "keys.list": "GET /control-plane/keys",
     "keys.register": "POST /control-plane/keys",
     "keys.expire": "POST /control-plane/keys/:keyId/expire",
+    "connections.list": "GET /control-plane/connections",
+    "connections.revoke": "POST /control-plane/connections/:connectionId/revoke",
     "migrations.read": "GET /control-plane/migrations",
     "privacy.read": "GET /control-plane/privacy",
     "processing.read": "GET /control-plane/processing",

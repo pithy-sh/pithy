@@ -64,8 +64,8 @@ const support = defineCapability({
   name: "support",
   requiredBindings: [],
   adminRoutes: [
-    { method: "GET", path: "/support/threads/:id", scope: THREADS_READ, summary: "Read one thread." },
-    { method: "GET", path: "/support/inbox", scope: INBOX_READ, summary: "Read the inbox." },
+    { method: "GET", path: "/support/threads/:id", scope: THREADS_READ, kind: "reads", summary: "Read one thread." },
+    { method: "GET", path: "/support/inbox", scope: INBOX_READ, kind: "reads", summary: "Read the inbox." },
   ],
   presence,
 });

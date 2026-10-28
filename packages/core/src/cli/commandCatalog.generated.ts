@@ -455,6 +455,47 @@ export const COMMANDS = {
       }
     ]
   },
+  "dashboard connections": {
+    "positionals": [],
+    "flags": {
+      "--principal": {
+        "type": "string",
+        "required": true,
+        "repeatable": false
+      },
+      "--env": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--worker": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--revoke": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      },
+      "--reason": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--yes": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
   "dashboard disconnect": {
     "positionals": [],
     "flags": {

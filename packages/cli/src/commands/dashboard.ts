@@ -37,6 +37,16 @@ import {
   rotateDashboardKey,
   type StatusReport,
 } from "../dashboard/connect";
+import {
+  formatPrincipalReport,
+  formatRevocationPlan,
+  listPrincipalConnections,
+  type OpenRegistry,
+  PrincipalEnvironment,
+  RevokedConnection,
+  revocable,
+  revokePrincipalConnections,
+} from "../dashboard/connections";
 import type { DashboardClient, DeviceAuthorization } from "../dashboard/contract";
 import { decideGrant, type GrantableScope, isNarrowed, readScopeRequest } from "../dashboard/grant";
 import {
@@ -57,7 +67,7 @@ import {
 } from "../dashboard/resolveTarget";
 import { type OpenOffer, offerToOpen, openingIsOffered } from "../platform/browser";
 import { resolveWorkersFor } from "../project/composeFor";
-import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
+import { loadProject, projectCloudflareAccount, projectEnvironments, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { workerDirName } from "../project/workerIdentity";
 import { projectCapabilities } from "../project/workerScope";
@@ -163,7 +173,7 @@ export function parsePublicKey(raw: string, keyId: string | undefined): { keyId:
 }
 
 /**
- * Read `--kind`: what kind of client holds a key the operator registered themselves (#721).
+ * Read `--kind`: what kind of client holds a key the operator registered themselves.
  *
  * `agent` or `script`, and nothing else. `dashboard` is the device-code flow's, always, so a key registered
  * by hand never gets to say it is one — that would let a script read as a person at a dashboard in the
@@ -178,7 +188,7 @@ export function parseKindFlag(raw: string): "agent" | "script" {
   });
 }
 
-/** Who sanctioned a connection, what kind of client it is, and what for — a report's three fields (#721). */
+/** Who sanctioned a connection, what kind of client it is, and what for — a report's three fields. */
 interface Attribution {
   authorizedBy: string | null;
   actorKind: string | null;
@@ -202,7 +212,7 @@ function attributionRows(report: Attribution): Row[] {
 }
 
 /**
- * What a connection registered before principals were recorded is told (#721): that it is one, how to say
+ * What a connection registered before principals were recorded is told: that it is one, how to say
  * what it is for when nobody has, and that its principal is set only by registering again.
  */
 function beforePrincipals(report: { environment: string; purpose: string | null }): string {
@@ -221,7 +231,7 @@ export function formatConnectReport(
     json: boolean;
     /**
      * The `pithy dashboard connect` the human line names, in code — `connectSentence`, asked by the caller only
-     * when this report prints one, since it reads every Worker's config (#711).
+     * when this report prints one, since it reads every Worker's config.
      */
     connect: string;
   },
@@ -281,7 +291,7 @@ function admits(claims: Readonly<Record<string, string>>): string {
 }
 
 /**
- * Render a trust registration (#722). Never `Connected`: nothing can prove a trust at registration, so the state
+ * Render a trust registration. Never `Connected`: nothing can prove a trust at registration, so the state
  * is awaiting a first call, and the line says what that call carries.
  */
 function formatTrustRegistered(report: ConnectReport, trust: NonNullable<ConnectReport["trust"]>): string {
@@ -345,7 +355,7 @@ export function formatStatusReport(
     json: boolean;
     /**
      * The `pithy dashboard connect` the human line names, in code — `connectSentence`, asked by the caller only
-     * when this report prints one, since it reads every Worker's config (#711).
+     * when this report prints one, since it reads every Worker's config.
      */
     connect: string;
   },
@@ -364,9 +374,8 @@ export function formatStatusReport(
       ? `${report.environment} is connected. Not verified — pass --verify to prove it with a signed ping.`
       : report.status === "connected"
         ? `${report.environment} is connected and answering.`
-        : // Nothing answered, so nothing is claimed about the registration (#614). The old line said
-          // `needs reconnecting` here, which sent an operator to rebuild a connection that was fine
-          // while a management client was merely down — or while the CLI was asking the wrong one.
+        : // Nothing answered, so nothing is claimed about the registration: a management client that is down
+          // says nothing about whether the connection needs rebuilding.
           report.status === "unreachable"
           ? `${report.environment} was not checked: the management client did not answer. ${report.detail ?? ""}`.trimEnd()
           : `${report.environment} needs reconnecting. ${report.detail ?? ""}`.trimEnd();
@@ -382,7 +391,7 @@ export function formatStatusReport(
     name: key.keyId,
     description: dim(`${key.live ? "live" : key.revokedAt ? "revoked" : "expired"}  ${key.ageDays} days`),
   }));
-  // A trust's state never reads `live`: until a call verifies under it, nothing has proven it (#722).
+  // A trust's state never reads `live`: until a call verifies under it, nothing has proven it.
   const trusts = report.trusts.map((trust) => ({
     name: trust.trustId,
     description: dim(
@@ -484,7 +493,7 @@ const authorizeFor =
     authorizeDashboard(client, { announce: announceFor(args) });
 
 /**
- * The recorder every write to the connection row records itself through (#294).
+ * The recorder every write to the connection row records itself through.
  *
  * Built over the handle {@link openConnectionRegistry} resolved, never over a database id looked up a
  * second time — the row and its record have to land in the same store, and on `dev` a resolved id names
@@ -496,7 +505,7 @@ const authorizeFor =
  * no account, so demanding an account token to record it would make the trail depend on something the
  * action does not. Without one the row is written unattributed rather than dropped.
  *
- * **A mismatched account names nobody, and does not throw here (#236).** This resolves credentials only to
+ * **A mismatched account names nobody, and does not throw here.** This resolves credentials only to
  * put a name on the actor, so it reads through {@link resolveCloudflare} rather than {@link cloudflareEnv}:
  * an operator whose pin and credentials disagree must not be recorded in their own trail as the account
  * the project does not claim, and a trail wiring must not be the thing that refuses a `dev` run that
@@ -531,7 +540,7 @@ export async function withRegistry<T>(
   work: (registry: ConnectionRegistry) => Promise<T>,
 ): Promise<T> {
   // Every subcommand opens the registry, so this is the one door the `--env` check belongs behind —
-  // and the one place the project's account is resolved for it (#234). A `--env staging` lookup opens
+  // and the one place the project's account is resolved for it. A `--env staging` lookup opens
   // the app database over REST, and it is this project's account that says which one that is.
   const projectDir = process.cwd();
   const env = requireEnvironment(options.env);
@@ -551,14 +560,10 @@ export async function withRegistry<T>(
 }
 
 /**
- * **The one place a `pithy dashboard` command decides which dashboard it is talking to (#614).**
+ * **The one place a `pithy dashboard` command decides which dashboard it is talking to.**
  *
- * Every subcommand used to build its own client from `args.origin`, so an omitted flag meant the hosted
- * dashboard — and `status --verify` asked `app.pithy.sh` about a connection registered against a
- * self-hosted one, could not reach a host that was never involved, and reported that the *connection*
- * needed reconnecting.
- *
- * So a command asks the connection first. {@link resolveDashboardOrigin} holds the order; this holds the
+ * A command asks the connection first, so `status --verify` never asks `app.pithy.sh` about a connection
+ * registered against a self-hosted one. {@link resolveDashboardOrigin} holds the order; this holds the
  * wiring, and `ci/dashboardOrigin.test.ts` holds every other module to going through it.
  *
  * It also re-points the row when `--origin` names somewhere else, because an operator saying where the
@@ -574,7 +579,7 @@ export async function clientFor(
   const resolved = resolveDashboardOrigin({ flag: args.origin, connection });
   if (repointsOrigin(resolved, connection)) {
     // Written through `save` like every other change to this row, so it is recorded in the adopter's own
-    // trail (#294) rather than slipped in. The keys are untouched, so the key invariant is not engaged.
+    // trail rather than slipped in. The keys are untouched, so the key invariant is not engaged.
     await registry.save({
       ...(connection as ControlPlaneConnection),
       managementOrigin: resolved.origin,
@@ -637,7 +642,7 @@ export async function promptScopes(
 }
 
 /**
- * Ask what a new connection's client is for, at a terminal (#721).
+ * Ask what a new connection's client is for, at a terminal.
  *
  * Validated as it is typed, by the same rule `--purpose` meets, so a line the codec would refuse is never
  * accepted here and then thrown away after the browser approval.
@@ -678,7 +683,7 @@ export function formatRevokeKeyReport(
     json: boolean;
     /**
      * The `pithy dashboard connect` the human line names, in code — `connectSentence`, asked by the caller only
-     * when this report prints one, since it reads every Worker's config (#711).
+     * when this report prints one, since it reads every Worker's config.
      */
     connect: string;
   },
@@ -697,7 +702,7 @@ export function formatRevokeKeyReport(
 }
 
 /**
- * Render a trust revocation (#722), and say the latency out loud: a token cannot be revoked, only the trust, so
+ * Render a trust revocation, and say the latency out loud: a token cannot be revoked, only the trust, so
  * one already minted stays in its holder's hands until it expires.
  */
 export function formatRevokeTrustReport(report: RevokeTrustReport, options: { json: boolean }): string {
@@ -714,7 +719,7 @@ function revokeTrustQuestion(trustId: string, env: string): Pick<ConfirmOrRefuse
 }
 
 /**
- * The grant a trust registration carries (#722), decided once it is known whether a connection exists.
+ * The grant a trust registration carries, decided once it is known whether a connection exists.
  *
  * Joining one takes that connection's grant, so nothing is asked: a scope prompt there would be a question whose
  * answer is thrown away. A `--scope` passed anyway is still resolved, so `connectTrust` refuses it by name rather
@@ -737,7 +742,7 @@ export async function confirmRevokeTrust(trustId: string, env: string): Promise<
 }
 
 /**
- * Ask for a profiled issuer's recommended claims, one at a time (#722).
+ * Ask for a profiled issuer's recommended claims, one at a time.
  *
  * A prompt over real choices rather than a string composed from documentation: each claim says what it pins and
  * shows an example. The first claim names the workload and must be answered; an empty answer skips any other.
@@ -778,7 +783,7 @@ export interface TrustClaimsInput {
 }
 
 /**
- * The claims a trust registers with (#722): its `--oidc-claim`s, or — for a profiled issuer, at a terminal, when none
+ * The claims a trust registers with: its `--oidc-claim`s, or — for a profiled issuer, at a terminal, when none
  * was passed — the answers to {@link promptTrustClaims}. Flags win over the prompt. A custom issuer is never asked,
  * because nothing here knows what that provider sends, and a run that cannot ask is never asked: both are refused
  * when no claim names the workload. Whichever way they came, the claims are held to {@link requireWorkloadIdentity}.
@@ -809,7 +814,7 @@ export interface ConfirmOrRefuseOptions {
 
 /**
  * Confirm a destructive step: `--yes` answers it, a person at a terminal is asked, and anything else fails
- * `input/required`, naming `--yes` (#697).
+ * `input/required`, naming `--yes`.
  *
  * **A run that cannot ask is refused, never taken as yes.** The confirmation's own default is no
  * (`initialValue: false`), so there is no default for a non-interactive run to take. These two used to
@@ -871,7 +876,7 @@ const Scopes = z
 const Iso = (what: string) => z.string().describe(`${what}, ISO-8601.`);
 
 /**
- * The three fields #721 added, as every `--json` contract that reports a connection carries them.
+ * The principal, kind and purpose, as every `--json` contract that reports a connection carries them.
  *
  * `.optional()` as well as `.nullable()`, as every added response field is: an agent pinned to this
  * schema reads a line from an older CLI, which sends none of them, and must still parse it.
@@ -891,13 +896,13 @@ const Purpose = ConnectionPurpose.nullable()
   .describe("What the client is for, in the registering operator's words, or `null` when it was never said.");
 const IsoOrNull = (what: string) => z.string().nullable().describe(`${what}, ISO-8601, or \`null\`.`);
 
-/** A trust's subject constraint as `--json` writes it (#722): the population it admits. */
+/** A trust's subject constraint as `--json` writes it: the population it admits. */
 const TrustClaims = z
   .record(z.string().describe("A claim name."), z.string().describe("The value that claim must have."))
   .describe("Who the trust admits: every named claim must equal its value.");
 
 /**
- * The latency a trust revocation carries (#722): a token cannot be revoked, only the trust, so one already minted
+ * The latency a trust revocation carries: a token cannot be revoked, only the trust, so one already minted
  * stays usable until it expires.
  */
 const TrustLatency = z
@@ -933,7 +938,7 @@ const ConnectionJson = z
           .describe("One registered key and its validity window."),
       )
       .describe("Every key the connection may sign with, current and superseded."),
-    // Added (#722), so `.optional()`: a line from an older CLI carries none.
+    // Added, so `.optional()`: a line from an older CLI carries none.
     trusts: z
       .array(
         z
@@ -1179,7 +1184,7 @@ const connect = withContract(
             action: "Drop --kind. A connection through the dashboard is the dashboard's, always.",
           });
         }
-        // The trust's flag set (#722): a partial one is refused rather than half applied.
+        // The trust's flag set: a partial one is refused rather than half applied.
         if (!trustPath && (claimFlags.length > 0 || args["oidc-audience"] !== undefined)) {
           throw new ValidationError({
             message: "--oidc-claim and --oidc-audience only apply with --oidc-issuer.",
@@ -1307,7 +1312,7 @@ const connect = withContract(
         // The account the session must belong to, read the way `withRegistry` reads it.
         const account = await projectCloudflareAccount(projectDir);
         const report = await withRegistry(args, async (registry) => {
-          // A trust contacts no management client (#722): it is a row written against this project, so there is
+          // A trust contacts no management client: it is a row written against this project, so there is
           // no dashboard to resolve, and none is built.
           if (trust) {
             const trustGrant = await decideTrustGrant((await registry.read()) !== null, narrowed, decide);
@@ -1328,7 +1333,7 @@ const connect = withContract(
             });
           }
           // Resolved once: the same answer decides which client is called and what the row records, so
-          // the two cannot disagree about which dashboard this connection belongs to (#614).
+          // the two cannot disagree about which dashboard this connection belongs to.
           const { client, resolved } = await clientFor(registry, args);
           return connectDashboard({
             registry,
@@ -1344,7 +1349,7 @@ const connect = withContract(
             ...(workerUrl === undefined ? {} : { workerUrl }),
             ...(target === null ? {} : { basePath: target.basePath }),
             ...(granted === undefined ? {} : { scopes: granted }),
-            // The default grant is derived from these when no `--scope` narrowed it (#248). Sent even
+            // The default grant is derived from these when no `--scope` narrowed it. Sent even
             // when `granted` is set, so nothing depends on which branch above ran.
             capabilities: composed,
             update: args.update,
@@ -1352,7 +1357,7 @@ const connect = withContract(
             // The offline path called nothing, so it records only an origin the operator named — which is
             // what `resolved.source === "flag"` means there.
             ...(publicKey !== undefined && resolved.source !== "flag" ? {} : { managementOrigin: resolved.origin }),
-            // Who is registering, from the signed-in session, through the one seam that decides it (#721).
+            // Who is registering, from the signed-in session, through the one seam that decides it.
             // In every environment: `dev` reaches no account, and still records a person.
             principal: () => requireRegisteringPrincipal({ account }),
             ...(purpose === undefined ? {} : { purpose }),
@@ -1360,7 +1365,7 @@ const connect = withContract(
             ...(interactive ? { askPurpose: promptPurpose } : {}),
           });
         });
-        // The re-point line, asked for only when it prints (#711).
+        // The re-point line, asked for only when it prints.
         const connect =
           !args.json && report.status === "needs_reconnect"
             ? await connectSentence({ projectDir, environment: args.env, update: true })
@@ -1370,7 +1375,7 @@ const connect = withContract(
   }),
   {
     ...DASHBOARD,
-    // 2 since #722: `status` gained `awaiting_first_call`, a value a consumer switching over the old four never saw.
+    // `status` carries `awaiting_first_call`, a value a consumer switching over the version-1 four never saw.
     schemaVersion: 2,
     payload: DashboardConnectPayload,
     idempotent: false,
@@ -1519,7 +1524,7 @@ const revokeKey = withContract(
           const updated = await registry.revokeKey(args["key-id"], new Date());
           return { environment: args.env, keyId: args["key-id"], revoked: updated !== null, connection: updated };
         });
-        // The reconnect line, asked for only when it prints: the last live key went (#711).
+        // The reconnect line, asked for only when it prints: the last live key went.
         const connect =
           !args.json && report.revoked && leftNothingLive(report)
             ? await connectSentence({ projectDir: process.cwd(), environment: args.env, worker: args.worker })
@@ -1531,7 +1536,7 @@ const revokeKey = withContract(
 );
 
 /**
- * `pithy dashboard revoke-trust` — stop honoring one OIDC trust (#722).
+ * `pithy dashboard revoke-trust` — stop honoring one OIDC trust.
  *
  * Local, immediate and unilateral, like `revoke-key`. And unlike it, with a latency the output states: a token
  * cannot be revoked, only the trust, so one already minted stays in its holder's hands until it expires.
@@ -1561,6 +1566,164 @@ const revokeTrust = withContract(
   { ...DASHBOARD, payload: DashboardRevokeTrustPayload, idempotent: true, needsNetwork: true },
 );
 
+/** `pithy dashboard connections --json`. */
+const DashboardConnectionsPayload = z
+  .object({
+    command: z.literal("dashboard.connections").describe('`"dashboard.connections"`.'),
+    principal: ConnectionPrincipal.describe("The email the connections were matched on, without regard to case."),
+    byEnvironment: z.array(PrincipalEnvironment).describe("Every environment read, in the order read."),
+    revocations: z
+      .array(RevokedConnection)
+      .optional()
+      .describe(
+        "What `--revoke` ended. Absent without `--revoke`; empty when every matching credential was already revoked.",
+      ),
+  })
+  .describe("What `pithy dashboard connections` found, and with `--revoke` what it revoked.");
+
+/** The confirmation `connections --revoke` asks, and the refusal it gives when it cannot. */
+function revokeConnectionsQuestion(
+  principal: string,
+  count: number,
+): Pick<ConfirmOrRefuseOptions, "message" | "action"> {
+  return {
+    message: `Revoke ${count === 1 ? "this connection" : `these ${count} connections`} authorized by ${principal}?`,
+    action: "Pass --yes to revoke them without asking.",
+  };
+}
+
+/** Confirm a revocation by principal at a terminal. `--yes` skips it, which is how CI runs the same command. */
+async function confirmRevokeConnections(principal: string, count: number): Promise<void> {
+  const { confirm, isCancel } = await import("@clack/prompts");
+  const answer = await confirm({ message: revokeConnectionsQuestion(principal, count).message, initialValue: false });
+  if (isCancel(answer)) canceled();
+  if (answer !== true) declined();
+}
+
+/** The environments `connections` reads: the one `--env` names, or every one the project declares. */
+export async function connectionEnvironments(
+  env: string | undefined,
+  declared: () => Promise<readonly string[]>,
+): Promise<string[]> {
+  return env === undefined ? [...(await declared())] : [requireEnvironment(env)];
+}
+
+/**
+ * `connections --revoke` once the listing is read: write what it will end, unless `--json`, then ask, or refuse
+ * without `--yes` where nobody can answer, then revoke. Nothing is revoked before the answer, and nothing on a no.
+ */
+export async function revokeByPrincipal(options: {
+  principal: string;
+  reason: string;
+  found: readonly PrincipalEnvironment[];
+  open: OpenRegistry;
+  json: boolean;
+  yes: boolean;
+  ask: (count: number) => Promise<void>;
+  write: (text: string) => void;
+  now: () => Date;
+}): Promise<RevokedConnection[]> {
+  const plan = revocable(options.found);
+  if (!options.json) options.write(formatRevocationPlan(options.principal, options.found));
+  if (plan.length > 0) {
+    await confirmOrRefuse({
+      ...revokeConnectionsQuestion(options.principal, plan.length),
+      json: options.json,
+      yes: options.yes,
+      ask: () => options.ask(plan.length),
+    });
+  }
+  return revokePrincipalConnections({
+    found: options.found,
+    reason: options.reason,
+    open: options.open,
+    now: options.now(),
+  });
+}
+
+/**
+ * `pithy dashboard connections --principal <email>` — every connection one person authorized, across the project's
+ * environments, and with `--revoke` the end of each one holding anything not yet revoked. A connection registered before principals were
+ * recorded is listed apart and never revoked by a principal match.
+ */
+const connections = withContract(
+  defineCommand({
+    meta: {
+      name: "connections",
+      description: "List every connection one person authorized, across environments, and revoke them",
+    },
+    args: {
+      principal: {
+        type: "string",
+        required: true,
+        description: "The email whose connections to list, as the connection recorded it",
+      },
+      env: {
+        type: "string",
+        description: "Read one environment instead of every one pithy.config.ts declares",
+      },
+      worker: { type: "string", description: "Which worker's wrangler.jsonc resolves the app database (apps/<name>)" },
+      revoke: {
+        type: "boolean",
+        default: false,
+        description: "Revoke every key and trust not yet revoked on each connection listed",
+      },
+      reason: { type: "string", description: "Why they are revoked. Required with --revoke, and recorded" },
+      yes: { type: "boolean", default: false, description: "Skip the confirmation (how CI runs it)" },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const principal = ConnectionPrincipal.safeParse(args.principal);
+        if (!principal.success) {
+          throw new ValidationError({
+            message: "--principal is an email address.",
+            action: "Pass the email the connection recorded, e.g. --principal ada@example.com.",
+            detail: `--principal ${JSON.stringify(args.principal)} is not an email`,
+          });
+        }
+        const reason = args.reason?.trim() ?? "";
+        if (args.revoke && reason === "") {
+          throw new ValidationError({
+            message: "--revoke needs a --reason.",
+            action: "Say why, e.g. --reason 'Left the company.' It is recorded on every revocation.",
+            detail: "--revoke passed without --reason",
+          });
+        }
+        const environments = await connectionEnvironments(args.env, () => projectEnvironments(process.cwd()));
+        const open: OpenRegistry = <T>(environment: string, work: (registry: ConnectionRegistry) => Promise<T>) =>
+          withRegistry({ env: environment, ...(args.worker === undefined ? {} : { worker: args.worker }) }, work);
+        const found = await listPrincipalConnections({
+          principal: principal.data,
+          environments,
+          open,
+          now: new Date(),
+        });
+        if (!args.revoke) {
+          process.stdout.write(
+            formatPrincipalReport({ principal: principal.data, byEnvironment: found }, { json: args.json }),
+          );
+          return;
+        }
+        const revocations = await revokeByPrincipal({
+          principal: principal.data,
+          reason,
+          found,
+          open,
+          json: args.json,
+          yes: args.yes,
+          ask: (count) => confirmRevokeConnections(principal.data, count),
+          write: (text) => process.stdout.write(text),
+          now: () => new Date(),
+        });
+        process.stdout.write(
+          formatPrincipalReport({ principal: principal.data, byEnvironment: found, revocations }, { json: args.json }),
+        );
+      }),
+  }),
+  { ...DASHBOARD, payload: DashboardConnectionsPayload, mutates: true, idempotent: true },
+);
+
 /** `pithy dashboard status` — what is registered, and (with `--verify`) whether it still answers. */
 const status = withContract(
   defineCommand({
@@ -1575,7 +1738,7 @@ const status = withContract(
 
         const report = await withRegistry(args, async (registry) => {
           // Built inside the registry, because which dashboard to ask is a fact of the connection this
-          // registry holds — not of a flag with a default (#614).
+          // registry holds — not of a flag with a default.
           const client = args.verify ? (await clientFor(registry, args)).client : undefined;
           return dashboardStatus({
             registry,
@@ -1592,7 +1755,7 @@ const status = withContract(
                 }),
           });
         });
-        // The connect line, asked for only when it prints: nothing is connected (#711).
+        // The connect line, asked for only when it prints: nothing is connected.
         const connect =
           !args.json && !report.connected
             ? await connectSentence({ projectDir: process.cwd(), environment: args.env, worker: args.worker })
@@ -1609,5 +1772,13 @@ export default defineCommand({
     name: "dashboard",
     description: "Connect, rotate, revoke, and inspect a management client (control-plane seam)",
   },
-  subCommands: { connect, rotate, "revoke-key": revokeKey, "revoke-trust": revokeTrust, disconnect, status },
+  subCommands: {
+    connect,
+    rotate,
+    "revoke-key": revokeKey,
+    "revoke-trust": revokeTrust,
+    disconnect,
+    status,
+    connections,
+  },
 });

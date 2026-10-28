@@ -18,8 +18,20 @@ const support: Capability = {
   name: "support",
   requiredBindings: [],
   adminRoutes: [
-    { method: "GET", path: "/support/tickets", scope: "support:tickets:read", summary: "Page the queue." },
-    { method: "POST", path: "/support/tickets/:id/close", scope: "support:tickets:close", summary: "Close one." },
+    {
+      method: "GET",
+      path: "/support/tickets",
+      scope: "support:tickets:read",
+      kind: "reads",
+      summary: "Page the queue.",
+    },
+    {
+      method: "POST",
+      path: "/support/tickets/:id/close",
+      scope: "support:tickets:close",
+      kind: "writes",
+      summary: "Close one.",
+    },
   ],
 };
 
@@ -115,7 +127,7 @@ describe("resolveConnectScopes", () => {
 });
 
 /**
- * **Two different mistakes, as `project/capabilityWorker.ts` tells them apart (#697).** A Worker the caller named
+ * **Two different mistakes, as `project/capabilityWorker.ts` tells them apart.** A Worker the caller named
  * with `--worker` that composes no seam is a call another `--worker` fixes: exit 2. The Worker the project
  * resolved to on its own lacks what the call depends on: exit 3, with `pithy add controlplane` as the step.
  */
@@ -211,7 +223,7 @@ describe("composedForGrant", () => {
 });
 
 /**
- * **`dashboard connect --env feature` registers the feature's own `workers.dev` origin (#643).** The stanza is
+ * **`dashboard connect --env feature` registers the feature's own `workers.dev` origin.** The stanza is
  * the one provisioning generated, under `.wrangler/`, never the tracked `wrangler.jsonc` — reading the tracked
  * file is what left a feature with no address to register.
  */
@@ -246,7 +258,7 @@ describe("resolveConnectTarget on a feature", () => {
 });
 
 /**
- * **The `pithy dashboard connect` a sentence names runs as written (#711).** One Worker needs no `--worker`;
+ * **The `pithy dashboard connect` a sentence names runs as written.** One Worker needs no `--worker`;
  * with several, each Worker composing the seam is named, because `connect` refuses `input/required` without
  * one and refuses a Worker that does not compose it.
  */

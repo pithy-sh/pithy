@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import type { AdminRouteDeclaration } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 
 /**
@@ -26,13 +26,14 @@ export const STORAGE_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [STORA
  * The admin routes this capability advertises on `GET /control-plane/manifest`, built from the **resolved**
  * mount path, never the default.
  */
-export function storageAdminRoutes(basePath: string): AdminRoute[] {
+export function storageAdminRoutes(basePath: string): AdminRouteDeclaration[] {
   return [
     {
       method: "GET",
       operation: "usage.read",
       path: `${basePath}/admin/usage`,
       scope: STORAGE_USAGE_READ_SCOPE,
+      kind: "reads",
       summary:
         "Files and bytes held, per organization or per owner within one organization. Never across organizations.",
     },

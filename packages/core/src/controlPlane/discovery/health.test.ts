@@ -16,14 +16,14 @@ import { HealthSummaryKey } from "./healthSummary";
 /**
  * The health seam: a bounded, scalar, scope-inheriting summary a capability contributes to its own
  * manifest entry, so a management client can say "3 secrets need rotating" from the read it already
- * made (#317).
+ * made.
  *
  * Every case below is about one of the three things that would turn this into a data API: a value that
  * is not a scalar, a key nobody declared, and a number a caller was never granted.
  *
  * **The vocabulary's own cases live in `healthSummary.test.ts`** — what a key may be called, what a
- * declaration may hold, and how the four states cross the wire. That half moved out of this module in
- * #430 so that a scope declaration importing `AdminRoute` stops reaching `Capability` and D1 with it.
+ * declaration may hold, and how the four states cross the wire. It lives apart so that a scope declaration
+ * importing `AdminRoute` does not reach `Capability` and D1 with it.
  */
 
 /** A key as a capability writes one, before parsing. */
@@ -118,7 +118,13 @@ describe("a summary inherits a scope the capability already gates a read with", 
       name: "secrets",
       requiredBindings: [],
       adminRoutes: [
-        { method: "GET", path: "/secrets/admin/status", scope: "secrets:other:read", summary: "Something else." },
+        {
+          method: "GET",
+          path: "/secrets/admin/status",
+          scope: "secrets:other:read",
+          kind: "reads",
+          summary: "Something else.",
+        },
       ],
       health: defineCapabilityHealth({ keys: [dueForRotation], read: async () => ({}) }),
     });
@@ -138,7 +144,13 @@ describe("a summary inherits a scope the capability already gates a read with", 
       name: "secrets",
       requiredBindings: [],
       adminRoutes: [
-        { method: "GET", path: "/secrets/admin/status", scope: "secrets:status:read", summary: "Every secret." },
+        {
+          method: "GET",
+          path: "/secrets/admin/status",
+          scope: "secrets:status:read",
+          kind: "reads",
+          summary: "Every secret.",
+        },
       ],
       health: defineCapabilityHealth({ keys: [dueForRotation], read: async () => ({}) }),
     });
@@ -189,8 +201,7 @@ describe("the produced summary is the declaration, and anything else is unavaila
   const granted = ["secrets:status:read"];
 
   /**
-   * A violated declaration lands on `unavailable` rather than rejecting, and that is the #350 change to
-   * #317's behavior, made deliberately: the blast radius of a rejection is every other capability's
+   * A violated declaration lands on `unavailable` rather than rejecting, deliberately: the blast radius of a rejection is every other capability's
    * number, and from a caller's side "the producer threw" and "what it produced was not permitted" are
    * one fact — this capability could not say. The shape of a declaration is still a hard failure, at
    * assembly, before any request; what reaches here is data-dependent.

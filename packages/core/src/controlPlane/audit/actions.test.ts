@@ -51,6 +51,7 @@ describe("ControlPlaneAuditActions", () => {
       "controlplane/connection_registered",
       "controlplane/connection_updated",
       "controlplane/connection_removed",
+      "controlplane/connection_revoked",
       "controlplane/hold_placed",
       "controlplane/hold_released",
     ]);

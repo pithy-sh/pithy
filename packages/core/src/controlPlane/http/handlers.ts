@@ -15,10 +15,11 @@ import { workerVersionMetadata } from "../../worker/identity";
 import { ControlPlaneAuditActions, safeEmit } from "../audit/actions";
 import type { ControlPlaneConfig } from "../config/config";
 import type { ControlPlaneContext } from "../context";
-import { ControlPlaneConnection, type RegisteredKey } from "../data/connection";
+import type { RegisteredKey } from "../data/connection";
+import { type ConnectionForWrite, readConnectionForWrite, writeKeys } from "../data/connections";
 import { appendKey, expireKey, pruneKeys } from "../data/keyLifecycle";
 import type { OidcTrust } from "../data/oidcTrust";
-import { CONTROL_PLANE_CONNECTIONS_TABLE, type ControlPlaneDatabase } from "../data/tables";
+import type { ControlPlaneDatabase } from "../data/tables";
 import type { CapabilityDeclaration, ControlPlaneManifestWire } from "../discovery/adminRoute";
 import { type CapabilityHealthSource, readCapabilityHealth } from "../discovery/health";
 import { healthWire } from "../discovery/healthSummary";
@@ -95,16 +96,16 @@ export interface ControlPlaneHandlerDeps {
   composedHealth: () => ReadonlyMap<string, CapabilityHealthSource>;
   /**
    * Every database this Worker binds, with the provider this build composes for it — captured by the same
-   * `compose` hook through `collectMigrationSets`, the function `pithy migrate` composes with (#729).
+   * `compose` hook through `collectMigrationSets`, the function `pithy migrate` composes with.
    */
   composedMigrations: () => readonly ComposedMigrationDatabase[];
   /**
-   * The privacy inventory of every storage schema this Worker composed (#132), walked on the first call and
+   * The privacy inventory of every storage schema this Worker composed, walked on the first call and
    * cached for the isolate. A thunk, so a Worker whose control plane is never called never walks.
    */
   privacyInventory: () => PrivacyInventory;
   /**
-   * The field key's retirement verdict (#390): the guard over this Worker's encrypted columns, read through its own
+   * The field key's retirement verdict: the guard over this Worker's encrypted columns, read through its own
    * bindings. Never throws: whatever it cannot read is incomplete coverage.
    */
   retirement: (env: Record<string, unknown>) => Promise<RetirementVerdict>;
@@ -115,7 +116,7 @@ export interface ControlPlaneHandlerDeps {
   composedPresence: () => ReadonlyMap<string, PresenceDeclaration>;
   /**
    * Every capability this Worker composed, as the objects themselves — the evidence pack reads which one records
-   * audit events and the bindings it writes through (#821). A thunk for the same reason as the rest.
+   * audit events and the bindings it writes through. A thunk for the same reason as the rest.
    */
   composition: () => readonly Capability[];
   /**
@@ -144,37 +145,33 @@ export function caller(c: Context<PithyHonoEnv>): ControlPlaneContext {
   return context;
 }
 
-/** Load the connection this call authenticated against. It verified moments ago, so it exists. */
-async function loadConnection(
-  db: ControlPlaneDatabase,
-  connectionId: string,
-): Promise<{ connection: ControlPlaneConnection }> {
-  const row = await db
-    .selectFrom(CONTROL_PLANE_CONNECTIONS_TABLE)
-    .selectAll()
-    .where("id", "=", connectionId)
-    .executeTakeFirst();
-  if (!row) {
+/** Load the connection this call authenticated against, as stored, for a key write. It verified moments ago. */
+async function loadConnection(db: ControlPlaneDatabase, connectionId: string): Promise<ConnectionForWrite> {
+  const loaded = await readConnectionForWrite(db, connectionId);
+  if (loaded === null) {
     // The row was deleted between verification and here — a revocation landing mid-request. Denying is
     // the correct answer: revocation is meant to be immediate.
     throw new ControlPlaneInvalidCredentialError({ detail: `connection ${connectionId} disappeared mid-request` });
   }
-  return { connection: ControlPlaneConnection.parse(row) };
+  return loaded;
 }
 
-/** Write a connection's key array back, stamping `updatedAt`. One UPDATE — a rotation cannot half-apply. */
+/**
+ * Write a connection's key array back, stamping `updatedAt`. One UPDATE, so a rotation cannot half-apply, and only
+ * while the keys are still what `loaded` read: a revocation landing between the read and this write is never undone.
+ */
 async function saveKeys(
   db: ControlPlaneDatabase,
-  connectionId: string,
+  loaded: ConnectionForWrite,
   keys: readonly RegisteredKey[],
   now: Date,
 ): Promise<void> {
-  const encoded = ControlPlaneConnection.shape.keys.encode([...keys]);
-  await db
-    .updateTable(CONTROL_PLANE_CONNECTIONS_TABLE)
-    .set({ keys: encoded, updatedAt: ControlPlaneConnection.shape.updatedAt.encode(now) })
-    .where("id", "=", connectionId)
-    .execute();
+  if (await writeKeys(db, loaded, keys, now)) return;
+  throw new ControlPlaneKeyConflictError({
+    message: "The connection's keys changed while this call ran.",
+    action: "Make the call again.",
+    detail: `connection ${loaded.connection.id} had its keys written between this call's read and its write`,
+  });
 }
 
 /**
@@ -209,7 +206,7 @@ function trustView(trust: OidcTrust): TrustView {
 }
 
 /**
- * Refuse a key write to a caller that verified under an OIDC trust (#722).
+ * Refuse a key write to a caller that verified under an OIDC trust.
  *
  * A trust exists so that no key is held on the workload's host. Letting a trust's caller register a key would
  * turn a short-lived identity into a standing credential at the first call — an exchange by another name, and
@@ -255,11 +252,11 @@ export function pingHandler(deps: ControlPlaneHandlerDeps) {
  * Discovery over configuration. A client builds its navigation from this rather than from settings
  * someone maintains, so a Worker with no payments capability has no purchases pane as a matter of fact.
  *
- * **And the numbers a client would otherwise pay a second round trip for** (#317). Each capability's
+ * **And the numbers a client would otherwise pay a second round trip for**. Each capability's
  * bounded summary is resolved here, behind the scope that capability's own read is behind: a connection
  * without it gets no number rather than a zero, and never costs the adopter's Worker the query.
  *
- * **One capability's failure costs one capability's number** (#350). A producer that throws, or that
+ * **One capability's failure costs one capability's number**. A producer that throws, or that
  * reports something its declaration cannot name, lands on `unavailable` for that entry alone —
  * `readCapabilityHealth` catches it, so nothing rejects, so `Promise.all` still resolves and every
  * sibling still reports. This route is what the whole management surface is built from; a manifest that
@@ -267,7 +264,7 @@ export function pingHandler(deps: ControlPlaneHandlerDeps) {
  * name.
  */
 export function manifestHandler(deps: ControlPlaneHandlerDeps) {
-  // Each admin route's input, converted once per route table rather than once per read (#723). Keyed on the
+  // Each admin route's input, converted once per route table rather than once per read. Keyed on the
   // table itself, so an app whose groups were recorded late is converted when it first has them.
   let converted: { groups: readonly RouteGroup[]; inputs: ReturnType<typeof routeInputs> } | undefined;
   const inputsFor = (groups: readonly RouteGroup[] | undefined) => {
@@ -297,12 +294,12 @@ export function manifestHandler(deps: ControlPlaneHandlerDeps) {
       environment: context.environment,
       connectionId: context.connectionId,
       version: build.id,
-      // Beside the id, because the id alone cannot tell a deploy from a rollback (#132): a rollback
+      // Beside the id, because the id alone cannot tell a deploy from a rollback: a rollback
       // reactivates a version already seen, and this is the one field that moves backwards when it does.
       versionCreatedAt: build.createdAt,
       // Classes and counts, never field names — those are `GET /privacy`'s, behind their own scope. A project
       // that declared nothing walks nothing; otherwise the walk is the isolate's cached one.
-      // The retirement verdict beside it (#390), so a dashboard reads the guard rather than inferring it.
+      // The retirement verdict beside it, so a dashboard reads the guard rather than inferring it.
       privacy: {
         ...privacyPosture(privacyAttestation(c.env), deps.privacyInventory),
         retirement: await deps.retirement(c.env as Record<string, unknown>),
@@ -322,7 +319,7 @@ function retentionOf(deps: ControlPlaneHandlerDeps): { retention?: EffectiveRete
 }
 
 /**
- * `GET /control-plane/migrations` — where each database this Worker binds stands (#729).
+ * `GET /control-plane/migrations` — where each database this Worker binds stands.
  *
  * Read-only: it reports, and nothing over the seam runs, reverses or resets a migration.
  *
@@ -359,7 +356,7 @@ export function listKeysHandler(deps: ControlPlaneHandlerDeps) {
       environment: connection.environment,
       keys: connection.keys.map(publicKeyView),
       // The review a credential listing exists for needs these, and it is the adopter's to perform —
-      // on their own side, from their own row (#721).
+      // on their own side, from their own row.
       authorizedBy: connection.authorizedBy,
       actorKind: connection.actorKind,
       purpose: connection.purpose,
@@ -384,7 +381,8 @@ export function registerKeyHandler(deps: ControlPlaneHandlerDeps) {
     refuseTrustCaller(context, "key registration");
     const db = deps.database(c);
     const now = deps.now();
-    const { connection } = await loadConnection(db, context.connectionId);
+    const loaded = await loadConnection(db, context.connectionId);
+    const { connection } = loaded;
 
     const appended = appendKey(
       connection.keys,
@@ -396,7 +394,7 @@ export function registerKeyHandler(deps: ControlPlaneHandlerDeps) {
       retentionMs: deps.config.keyRetentionDays * MS_PER_DAY,
       maxKeys: deps.config.maxKeys,
     });
-    await saveKeys(db, connection.id, pruned, now);
+    await saveKeys(db, loaded, pruned, now);
 
     await safeEmit(
       c.var.emit,
@@ -455,7 +453,8 @@ export function expireKeyHandler(deps: ControlPlaneHandlerDeps) {
     refuseTrustCaller(context, "key expiry");
     const db = deps.database(c);
     const now = deps.now();
-    const { connection } = await loadConnection(db, context.connectionId);
+    const loaded = await loadConnection(db, context.connectionId);
+    const { connection } = loaded;
 
     if (body.provenKeyId !== context.keyId) {
       throw new ControlPlaneKeyConflictError({
@@ -466,7 +465,7 @@ export function expireKeyHandler(deps: ControlPlaneHandlerDeps) {
     }
 
     const expired = expireKey(connection.keys, params.keyId, { provenKeyId: body.provenKeyId, now });
-    await saveKeys(db, connection.id, expired, now);
+    await saveKeys(db, loaded, expired, now);
 
     await safeEmit(
       c.var.emit,
@@ -500,7 +499,7 @@ export function expireKeyHandler(deps: ControlPlaneHandlerDeps) {
 }
 
 /**
- * `GET /control-plane/privacy` — the full privacy inventory (#132).
+ * `GET /control-plane/privacy` — the full privacy inventory.
  *
  * Every storage schema this Worker composed that holds a marked field, each field's path and class, and where it
  * is stored — derived from the running code, so unmarking a field removes it on the next deploy with nothing in
@@ -528,7 +527,7 @@ export function privacyHandler(deps: ControlPlaneHandlerDeps) {
 }
 
 /**
- * `GET /control-plane/evidence` — the evidence pack (#821).
+ * `GET /control-plane/evidence` — the evidence pack.
  *
  * SOC 2 and ISO 27001 evidence derived from what this Worker composes, records and declares: each control's
  * references, the facts read and their sources, and `evidenced`, `gap` or `not-derivable` with the reason. It
@@ -543,7 +542,7 @@ export function evidenceHandler(deps: ControlPlaneHandlerDeps) {
 }
 
 /**
- * `GET /control-plane/erasure/:subjectType/:subjectId` — one subject's erasure, attested (#823).
+ * `GET /control-plane/erasure/:subjectType/:subjectId` — one subject's erasure, attested.
  *
  * Read from the purge's own lifecycle rows, through the capability that owns the subject, and cited in the audit
  * chain through the composed audit. A subject with no deletion in force is a 404. Read-only.
@@ -563,7 +562,7 @@ export function erasureSubjectHandler(deps: ControlPlaneHandlerDeps) {
   };
 }
 
-/** `GET /control-plane/erasure?since&until` — every purge in a period, counted (#823). Read-only. */
+/** `GET /control-plane/erasure?since&until` — every purge in a period, counted. Read-only. */
 export function erasurePeriodHandler(deps: ControlPlaneHandlerDeps) {
   return async (c: Context<PithyHonoEnv>, query: ErasurePeriodQuery) => {
     caller(c);

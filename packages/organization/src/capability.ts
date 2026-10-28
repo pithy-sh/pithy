@@ -19,7 +19,7 @@ import { registerOrganizationRoutes } from "./http/routes";
 import { organizationAdminRoutes } from "./http/scopes";
 import type { UserLifecycleWiring } from "./lifecycle/cascade";
 import { organizationErasureRecords } from "./lifecycle/erasure";
-import type { OrganizationLifecycleHooks } from "./lifecycle/hooks";
+import type { OrganizationLifecycleHooks, OrganizationMembershipHooks } from "./lifecycle/hooks";
 import type { EnqueueInvitation } from "./mail/invitation";
 import { ORGANIZATION_MIGRATION_ORDER } from "./migrations/0001_init";
 import { ORGANIZATION_MIGRATIONS } from "./migrations/set";
@@ -36,7 +36,7 @@ import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
  * read them.
  *
  * It contributes six tables to the app `DB`, the route surface in `./http/routes.ts`, the control-plane
- * reads and writes, the organization purge and its two Workflows (#623), and a worked fixture. `@pithy-sh/auth` is a **hard peer** — a membership is a row keyed by a
+ * reads and writes, the organization purge and its two Workflows, and a worked fixture. `@pithy-sh/auth` is a **hard peer** — a membership is a row keyed by a
  * user id this capability does not own, and every route here resolves a session before it resolves a
  * membership — so a Worker composing tenancy without sign-in is refused at assembly rather than serving
  * routes that could never pass their first gate. `@pithy-sh/email` is optional and fills the invitation
@@ -76,7 +76,7 @@ const BETTER_AUTH_ORGANIZATION_PLUGIN_ID = "organization";
 
 /**
  * The composed email capability, recognized by its shape rather than by `@pithy-sh/email`'s own
- * `isEmailCapability` (#645).
+ * `isEmailCapability`.
  *
  * Email is an **optional** peer here, and importing the guard — a value — made it a required one at bundle
  * time: wrangler's esbuild resolves every specifier it finds, so a project that delivers its invitations its
@@ -91,7 +91,7 @@ function composedEmail(capabilities: readonly Capability[]): EmailCapability | u
 }
 
 /**
- * The composed auth capability, recognized by its shape, for what a member cascade needs of it (#623): its
+ * The composed auth capability, recognized by its shape, for what a member cascade needs of it: its
  * lifecycle config and the adopter's user hooks. By shape rather than through `isAuthCapability`, so this module
  * imports auth's capability only as a type — the predicate is the same two lines the guard holds.
  */
@@ -166,25 +166,25 @@ export type OrganizationOptions<Power extends string, Role extends string> = Org
    */
   readonly ownership?: OwnershipRoles<Role>;
   /**
-   * Your own tenanted rows, deleted in the transaction that deletes the account — `#570`.
+   * Your own tenanted rows, deleted in the transaction that deletes the account.
    *
    * Every adopter who composes this has tables keyed on `organizationId`; that is what tenancy is, and
-   * this capability cannot see them. Without this it swept its own five and stopped, leaving your rows
-   * behind for an account that no longer exists — and for the first adopter those rows were connections
-   * to customers' production Workers, so what outlived the deletion was a credential.
+   * this capability cannot see them. Without this it sweeps its own tables and stops, leaving your rows
+   * behind for an account that no longer exists — and when those rows are connections to customers'
+   * production Workers, what outlives the deletion is a credential.
    *
    * Return statements rather than doing the work: they join the same `d1.batch`, ahead of this
    * capability's own, so a failure in any of them rolls the account back too. A function that deleted
    * for itself could not be in that transaction, and its failure mode is exactly the bug.
    *
    * You are handed the **binding**, so build a Kysely over your own schema — `myDatabase(d1)
-   * .deleteFrom("projects")`. An earlier draft passed this capability's own handle and every adopter
-   * naming their own table had to cast it away.
+   * .deleteFrom("projects")`.
    *
    * Ordered first, so a statement may still read a membership while composing itself.
    */
   readonly onDelete?: OrganizationDeleteSweep;
-} & OrganizationLifecycleHooks;
+} & OrganizationLifecycleHooks &
+  OrganizationMembershipHooks;
 
 /** The tenancy capability, with its resolved config and the catalog it was composed with attached. */
 export interface OrganizationCapability<Power extends string = string, Role extends string = string>
@@ -199,13 +199,13 @@ export interface OrganizationCapability<Power extends string = string, Role exte
   /** The transfer's two roles, or `undefined` where this project has no transfer. */
   organizationOwnership: OwnershipRoles<Role> | undefined;
   /**
-   * The adopter's organization-lifecycle hooks, as `organization()` was handed them (#623). Read by the purge
+   * The adopter's organization-lifecycle hooks, as `organization()` was handed them. Read by the purge
    * Workflow, which fires `onOrganizationPurged` with no request.
    */
   organizationLifecycleHooks: OrganizationLifecycleHooks;
   /**
-   * Every composed capability's purge step for an organization, this one's among them, in composition order
-   * (#623). Empty until `compose` has run. Read by the purge Workflow, which runs in the Worker that composed it.
+   * Every composed capability's purge step for an organization, this one's among them, in composition order.
+   * Empty until `compose` has run. Read by the purge Workflow, which runs in the Worker that composed it.
    */
   organizationPurgeSteps: readonly PurgeStep[];
   /** The audit recorder for code with no request, over one run's env — the purge's. */
@@ -237,6 +237,8 @@ export function organization<const Power extends string = never, const Role exte
     onOrganizationReinstated,
     onOrganizationDeleted,
     onOrganizationPurged,
+    onMemberRoleChanged,
+    onMemberRemoved,
     ...configInput
   } = options;
   // The hooks, kept only where one was given, so an absent hook is an absent key. Destructured before the parse,
@@ -246,6 +248,10 @@ export function organization<const Power extends string = never, const Role exte
     ...(onOrganizationReinstated ? { onOrganizationReinstated } : {}),
     ...(onOrganizationDeleted ? { onOrganizationDeleted } : {}),
     ...(onOrganizationPurged ? { onOrganizationPurged } : {}),
+  };
+  const membershipHooks: OrganizationMembershipHooks = {
+    ...(onMemberRoleChanged ? { onMemberRoleChanged } : {}),
+    ...(onMemberRemoved ? { onMemberRemoved } : {}),
   };
   const resolved = OrganizationConfig.parse(configInput);
 
@@ -290,7 +296,7 @@ export function organization<const Power extends string = never, const Role exte
     // The package this capability ships in and the version it ships at, both stamped by
     // `scripts/stampVersions.ts` — a Worker cannot read its own package.json. Reported per capability by
     // the control-plane manifest, and reported together: a release feed is keyed by package name, so the
-    // version alone leaves a client guessing the key (#626).
+    // version alone leaves a client guessing the key.
     version: PACKAGE_VERSION,
     package: PACKAGE_NAME,
     // Auth is the one hard peer. A membership is keyed by a user id from `pithy_auth_users`, the roster
@@ -309,7 +315,7 @@ export function organization<const Power extends string = never, const Role exte
       requireComposedPowers(roles, capabilities);
       const email = composedEmail(capabilities);
       // An invitation the config says to mail, in a Worker with no email to mail it through, used to be found
-      // out by the first person to invite someone. Refused here instead, by name (#645 review).
+      // out by the first person to invite someone. Refused here instead, by name.
       if (resolved.sendInvitationEmail && email === undefined) {
         throw new ValidationError({
           message: "No email is composed in this Worker, and invitations are mailed through it.",
@@ -320,7 +326,7 @@ export function organization<const Power extends string = never, const Role exte
         });
       }
       wiring.enqueue = email?.enqueue;
-      // What a member cascade runs through: auth's own lifecycle config and the adopter's user hooks (#623).
+      // What a member cascade runs through: auth's own lifecycle config and the adopter's user hooks.
       const auth = composedAuth(capabilities);
       wiring.users = auth ? { config: auth.authConfig, hooks: auth.lifecycleHooks } : undefined;
       // Every composed capability's purge step for an organization, this one's among them.
@@ -348,6 +354,7 @@ export function organization<const Power extends string = never, const Role exte
       ownership,
       onDelete,
       lifecycleHooks,
+      membershipHooks,
       userLifecycle: () => wiring.users,
       enqueue: (env) => {
         const enqueue = wiring.enqueue;
@@ -357,11 +364,11 @@ export function organization<const Power extends string = never, const Role exte
         return ((input) => enqueue(env as never, input)) as EnqueueInvitation;
       },
     }),
-    // What erasing an organization means for the tenancy tables — and, in the same batch, the adopter's (#623).
-    // And a person's memberships, selections, offers and invitations (#814): exported on an access request and erased
+    // What erasing an organization means for the tenancy tables — and, in the same batch, the adopter's.
+    // And a person's memberships, selections, offers and invitations: exported on an access request and erased
     // by their purge, as its own step in the adopter's Worker.
     purge: [organizationPurgeContribution("DB", onDelete), organizationUserPurge("DB")],
-    // How an organization purge's record is read back for the control plane's erasure attestation (#823).
+    // How an organization purge's record is read back for the control plane's erasure attestation.
     erasureRecords: organizationErasureRecords,
     // The soft-delete window this config declares. A Worker's `retention` block may replace it.
     purgeWindow: { subject: "organization", days: resolved.retention.purgeAfterDays },

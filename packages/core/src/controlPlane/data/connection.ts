@@ -68,7 +68,7 @@ export const RegisteredKey = z
 export type RegisteredKey = z.output<typeof RegisteredKey>;
 
 /**
- * What kind of client a connection is for (#721): `agent`, `dashboard` or `script`.
+ * What kind of client a connection is for: `agent`, `dashboard` or `script`.
  *
  * The audit trail's `actorType: "control-plane"` names all three identically, and the questions asked
  * after an incident are exactly the ones that tell them apart — was it a person at the dashboard, a
@@ -122,7 +122,7 @@ export const MAX_CONNECTION_PURPOSE = 200;
 const UNRENDERABLE = /[\p{Cc}\p{Bidi_Control}\u2028\u2029\u200B\u2060\uFEFF]/u;
 
 /**
- * What a connection is for, in the words of whoever registered it (#721).
+ * What a connection is for, in the words of whoever registered it.
  *
  * **Required at registration, and refused when absent**, because a review listing credentials by key id
  * cannot support the decision it exists for. **Untrusted input**: a customer writes it and something else
@@ -141,6 +141,14 @@ export const ConnectionPurpose = z
     `What this connection's client is for, in the registering operator's words — one line of plain text, ${MAX_CONNECTION_PURPOSE} characters at most, with no control, bidi or invisible characters. Written by a customer and rendered elsewhere, so validated at the boundary.`,
   );
 export type ConnectionPurpose = z.output<typeof ConnectionPurpose>;
+
+/** Which credential kinds a connection holds, live or not. */
+export const ConnectionCredentialKind = z
+  .enum(["key", "trust", "both", "none"])
+  .describe(
+    "Which credential kinds the connection holds, live or not: `key` (registered Ed25519 keys), `trust` (OIDC trusts), `both`, or `none`.",
+  );
+export type ConnectionCredentialKind = z.infer<typeof ConnectionCredentialKind>;
 
 /**
  * One management-client connection — the row in `pithy_controlplane_connections`.

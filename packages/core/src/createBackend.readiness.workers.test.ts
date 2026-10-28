@@ -22,7 +22,7 @@ import { createDatabase } from "./data/db";
 import { InternalError, RateLimitError } from "./error/pithyError";
 
 /**
- * A Worker in a bad state still answers its control plane (#763).
+ * A Worker in a bad state still answers its control plane.
  *
  * The fixture is `@pithy-sh/vector`'s `provisionGuard` in miniature: a readiness guard that refuses every
  * request it sees. Composed **first**, which is the order that used to take the seam down — a capability's
@@ -79,7 +79,13 @@ const inventory = defineCapability({
   name: "inventory",
   requiredBindings: [],
   adminRoutes: [
-    { method: "GET", path: "/inventory/admin/things", scope: INVENTORY_READ_SCOPE, summary: "Every pending thing." },
+    {
+      method: "GET",
+      path: "/inventory/admin/things",
+      scope: INVENTORY_READ_SCOPE,
+      kind: "reads",
+      summary: "Every pending thing.",
+    },
   ],
   middleware: [
     (app) => {

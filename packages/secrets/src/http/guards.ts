@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import type { AdminRouteDeclaration } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 
 /**
@@ -82,13 +82,14 @@ export const SECRETS_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  * Everything sits under `admin/` for consistency with every other capability's management surface, and
  * so that a future non-management route under this mount point cannot collide with one of these.
  */
-export function secretsAdminRoutes(basePath: string): AdminRoute[] {
+export function secretsAdminRoutes(basePath: string): AdminRouteDeclaration[] {
   return [
     {
       method: "GET",
       operation: "status.read",
       path: `${basePath}/admin/status`,
       scope: SECRETS_STATUS_READ_SCOPE,
+      kind: "reads",
       summary: "Every declared secret's status: when it was last rotated, how often, and whether it is overdue.",
     },
     {
@@ -96,6 +97,7 @@ export function secretsAdminRoutes(basePath: string): AdminRoute[] {
       operation: "rotations.list",
       path: `${basePath}/admin/status/:name/rotations`,
       scope: SECRETS_STATUS_READ_SCOPE,
+      kind: "reads",
       summary: "One secret's rotation history, newest first — when, how it ended, what caused it, and who.",
     },
     {
@@ -103,6 +105,7 @@ export function secretsAdminRoutes(basePath: string): AdminRoute[] {
       operation: "secrets.rotate",
       path: `${basePath}/admin/status/:name/rotate`,
       scope: SECRETS_ROTATE_SCOPE,
+      kind: "credentials",
       summary:
         "Replace one declared secret in this environment, against its declared rotator. Reports per environment, never in aggregate.",
     },

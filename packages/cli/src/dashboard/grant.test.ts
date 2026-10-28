@@ -4,7 +4,7 @@
 import { artifacts } from "@pithy-sh/artifacts/src/capability";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { controlplane } from "@pithy-sh/core/src/controlPlane/capability";
-import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import type { AdminRouteDeclaration } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import { type ControlPlaneScope, SEAM_SCOPES } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { ledger } from "@pithy-sh/ledger/src/capability";
@@ -24,22 +24,34 @@ import {
 } from "./grant";
 
 /** A capability that declares nothing but an admin surface — enough for the derivation to read. */
-function capabilityWith(name: string, adminRoutes: AdminRoute[]): Capability {
+function capabilityWith(name: string, adminRoutes: AdminRouteDeclaration[]): Capability {
   return { name, requiredBindings: [], adminRoutes };
 }
 
 const support = capabilityWith("support", [
-  { method: "GET", path: "/support/tickets", scope: "support:tickets:read", summary: "Page the queue." },
-  { method: "GET", path: "/support/tickets/:id", scope: "support:tickets:read", summary: "One ticket in full." },
-  { method: "POST", path: "/support/tickets/:id/close", scope: "support:tickets:close", summary: "Close a ticket." },
+  { method: "GET", path: "/support/tickets", scope: "support:tickets:read", kind: "reads", summary: "Page the queue." },
+  {
+    method: "GET",
+    path: "/support/tickets/:id",
+    scope: "support:tickets:read",
+    kind: "reads",
+    summary: "One ticket in full.",
+  },
+  {
+    method: "POST",
+    path: "/support/tickets/:id/close",
+    scope: "support:tickets:close",
+    kind: "writes",
+    summary: "Close a ticket.",
+  },
 ]);
 
 describe("grantableScopes", () => {
   test("classifies a scope by every route that requires it, not by the first one", () => {
     // The shape `keys:rotate` has: a listing route and a mutating one, behind one scope.
     const lifecycle = capabilityWith("lifecycle", [
-      { method: "GET", path: "/l/keys", scope: "l:keys:manage", summary: "List the keys." },
-      { method: "POST", path: "/l/keys", scope: "l:keys:manage", summary: "Register a key." },
+      { method: "GET", path: "/l/keys", scope: "l:keys:manage", kind: "reads", summary: "List the keys." },
+      { method: "POST", path: "/l/keys", scope: "l:keys:manage", kind: "writes", summary: "Register a key." },
     ]);
 
     expect(grantableScopes([lifecycle])).toEqual([
@@ -49,7 +61,7 @@ describe("grantableScopes", () => {
 
   test("a scope named like a read is not a read when it opens a write", () => {
     const misnamed = capabilityWith("misnamed", [
-      { method: "POST", path: "/m/purge", scope: "misnamed:things:read", summary: "Purge everything." },
+      { method: "POST", path: "/m/purge", scope: "misnamed:things:read", kind: "writes", summary: "Purge everything." },
     ]);
 
     expect(grantableScopes([misnamed])[0]?.read).toBe(false);
@@ -161,6 +173,15 @@ describe("defaultGrant", () => {
     ]);
   });
 
+  test("offers connections:read as a read by default, and connections:revoke only when asked", () => {
+    const grantable = grantableScopes([controlplane()]);
+    expect(grantable.find((entry) => entry.scope === "connections:read")).toMatchObject({ read: true, routes: 1 });
+    expect(grantable.find((entry) => entry.scope === "connections:revoke")).toMatchObject({ read: false, routes: 1 });
+    expect(defaultGrant([controlplane()])).toContain("connections:read");
+    expect(defaultGrant([controlplane()])).not.toContain("connections:revoke");
+    expect(resolveScopeRequest(readScopeRequest(["all"]), grantable)).toContain("connections:revoke");
+  });
+
   test("offers ledger:accounts:adjust as a write, off the real capability, and never grants it unasked (#811)", () => {
     // The ledger's two reads are granted by default; its one write moves money, so it is offered at the
     // prompt and granted only when an adopter picks it.
@@ -188,7 +209,7 @@ describe("defaultGrant", () => {
 
   test("adds every declared read, so a fresh connection opens to panes that read", () => {
     const audit = capabilityWith("audit", [
-      { method: "GET", path: "/audit/events", scope: "audit:events:read", summary: "Page the trail." },
+      { method: "GET", path: "/audit/events", scope: "audit:events:read", kind: "reads", summary: "Page the trail." },
     ]);
 
     expect(defaultGrant([audit, support])).toEqual([...SEAM_SCOPES, "audit:events:read", "support:tickets:read"]);
@@ -230,10 +251,16 @@ describe("defaultGrant", () => {
 describe("a read default never grants a write", () => {
   test("across the real seam and a hostile synthetic surface", () => {
     const hostile = capabilityWith("hostile", [
-      { method: "GET", path: "/h/things", scope: "hostile:things:read", summary: "List things." },
-      { method: "DELETE", path: "/h/things/:id", scope: "hostile:things:read", summary: "Delete a thing." },
-      { method: "POST", path: "/h/wipe", scope: "hostile:wipe:read", summary: "Wipe everything." },
-      { method: "PATCH", path: "/h/thing", scope: "hostile:thing:write", summary: "Amend a thing." },
+      { method: "GET", path: "/h/things", scope: "hostile:things:read", kind: "reads", summary: "List things." },
+      {
+        method: "DELETE",
+        path: "/h/things/:id",
+        scope: "hostile:things:read",
+        kind: "writes",
+        summary: "Delete a thing.",
+      },
+      { method: "POST", path: "/h/wipe", scope: "hostile:wipe:read", kind: "writes", summary: "Wipe everything." },
+      { method: "PATCH", path: "/h/thing", scope: "hostile:thing:write", kind: "writes", summary: "Amend a thing." },
     ]);
     const composed: Capability[] = [controlplane(), hostile, support];
 
@@ -258,8 +285,14 @@ describe("a read default never grants a write", () => {
 
 /** An audit surface: one scope per detail level, which is how the default comes to leave one out. */
 const audit = capabilityWith("audit", [
-  { method: "GET", path: "/audit/events", scope: "audit:events:read", summary: "Page the trail." },
-  { method: "GET", path: "/audit/events/:id", scope: "audit:events:read_detail", summary: "One event, in full." },
+  { method: "GET", path: "/audit/events", scope: "audit:events:read", kind: "reads", summary: "Page the trail." },
+  {
+    method: "GET",
+    path: "/audit/events/:id",
+    scope: "audit:events:read_detail",
+    kind: "reads",
+    summary: "One event, in full.",
+  },
 ]);
 
 describe("readScopeRequest", () => {
@@ -355,6 +388,8 @@ describe("--scope all resolves to the list the prompt renders", () => {
   const EVERY_SCOPE = [
     "manifest:read",
     "keys:rotate",
+    "connections:read",
+    "connections:revoke",
     "migrations:read",
     "privacy:read",
     "evidence:read",
@@ -383,14 +418,22 @@ describe("--scope all resolves to the list the prompt renders", () => {
 
   test("a capability added to the fixture is granted, with nothing in the resolver to change", () => {
     const newly = capabilityWith("newly", [
-      { method: "GET", path: "/newly/things", scope: "newly:things:read", summary: "List the new things." },
-      { method: "POST", path: "/newly/things", scope: "newly:things:write", summary: "Make one." },
+      {
+        method: "GET",
+        path: "/newly/things",
+        scope: "newly:things:read",
+        kind: "reads",
+        summary: "List the new things.",
+      },
+      { method: "POST", path: "/newly/things", scope: "newly:things:write", kind: "writes", summary: "Make one." },
     ]);
     const composed: Capability[] = [controlplane(), audit, support, newly];
 
     expect(resolveScopeRequest(readScopeRequest(["all"]), grantableScopes(composed))).toEqual([
       "manifest:read",
       "keys:rotate",
+      "connections:read",
+      "connections:revoke",
       "migrations:read",
       "privacy:read",
       "evidence:read",
@@ -411,6 +454,8 @@ describe("--scope all resolves to the list the prompt renders", () => {
     expect(resolveScopeRequest(readScopeRequest(["all"]), grantableScopes([controlplane()]))).toEqual([
       "manifest:read",
       "keys:rotate",
+      "connections:read",
+      "connections:revoke",
       "migrations:read",
       "privacy:read",
       "evidence:read",
@@ -428,6 +473,7 @@ describe("--scope all resolves to the list the prompt renders", () => {
     expect(defaultGrant(composed)).toEqual([
       "manifest:read",
       "keys:rotate",
+      "connections:read",
       "migrations:read",
       "privacy:read",
       "evidence:read",
@@ -493,6 +539,8 @@ describe("decideGrant", () => {
     expect(granted).toEqual([
       "manifest:read",
       "keys:rotate",
+      "connections:read",
+      "connections:revoke",
       "migrations:read",
       "privacy:read",
       "evidence:read",
@@ -547,6 +595,7 @@ describe("decideGrant", () => {
     expect(seen[0]?.preselected).toEqual([
       "manifest:read",
       "keys:rotate",
+      "connections:read",
       "migrations:read",
       "privacy:read",
       "evidence:read",
@@ -561,6 +610,8 @@ describe("decideGrant", () => {
     expect(seen[0]?.offered).toEqual([
       "manifest:read",
       "keys:rotate",
+      "connections:read",
+      "connections:revoke",
       "migrations:read",
       "privacy:read",
       "evidence:read",

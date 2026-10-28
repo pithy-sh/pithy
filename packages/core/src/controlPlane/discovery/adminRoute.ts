@@ -5,6 +5,7 @@ import { z } from "zod";
 import { PresenceRoomDescriptor } from "../../presence/http/responses";
 import { PrivacyPosture } from "../../privacy/posture";
 import { EffectiveRetention } from "../../retention/policy";
+import { ScopeKind } from "../scope/kind";
 import { ControlPlaneScope } from "../scope/scope";
 import { ManifestConfigKey, ManifestConfigValues } from "./configuration";
 import { CapabilityHealthReport, HealthSummary, HealthSummaryKey, healthReport, healthWire } from "./healthSummary";
@@ -35,7 +36,7 @@ export const AdminRouteMethod = z
 export type AdminRouteMethod = z.infer<typeof AdminRouteMethod>;
 
 /**
- * An admin route's operation id (#723, `docs/AGENT-ACCESS.md` §5): lowercase words joined by `.`, `_` or `-`.
+ * An admin route's operation id (`docs/AGENT-ACCESS.md` §5): lowercase words joined by `.`, `_` or `-`.
  *
  * **Permanent once published.** An agent names a tool in prompts, saved workflows and its own record of what
  * worked, so a renamed operation breaks callers silently — the same class of rule as a role name. Unique within
@@ -52,7 +53,7 @@ export const AdminOperation = z
 export type AdminOperation = z.infer<typeof AdminOperation>;
 
 /**
- * An admin route's input as JSON Schema (#723): an object whose `path`, `query` and `body` properties are each
+ * An admin route's input as JSON Schema: an object whose `path`, `query` and `body` properties are each
  * the JSON Schema of the validator the route runs on that part of the request.
  *
  * A record rather than a modeled schema, because it is JSON Schema — a vocabulary this manifest relays, never
@@ -80,8 +81,12 @@ export const AdminRoute = z
       .string()
       .min(1)
       .describe("One line describing what the route does, for a management client to render beside it."),
-    // Optional, as every field added to this manifest is (#450): absent says *this Worker predates operations*,
-    // and a client that names tools from them offers no tool for such a route rather than guessing a name (#723).
+    // Optional on the wire: a client reading a Worker that states no kind treats the route as the most restrictive.
+    kind: ScopeKind.optional().describe(
+      "What kind of operation the route's scope grants — `reads`, `writes`, `sends`, `charges`, `deletes` or `credentials` — declared by the capability that owns the scope. Every route sharing a scope declares the same kind, so a management client maps its own roles onto kinds rather than onto scopes. Absent for a route with no scope, and from an older Worker, which a client treats as `credentials`, the most restrictive.",
+    ),
+    // Optional: absent says *this Worker predates operations*, and a client that names tools from them offers no
+    // tool for such a route rather than guessing a name.
     operation: AdminOperation.optional().describe(
       "The route's permanent name within its capability — `threads.reply`, `users.suspend` — declared beside the route by the capability that owns it. Never derived from the path, which moves when an adopter moves a `basePath`, and never from the scope, which several routes share. An MCP tool is named `<capability>_<operation>`. Absent from a Worker that predates #723.",
     ),
@@ -93,6 +98,13 @@ export const AdminRoute = z
     "One admin route, described well enough for a management client to call it without holding any capability-specific knowledge.",
   );
 export type AdminRoute = z.infer<typeof AdminRoute>;
+
+/**
+ * An admin route as a capability declares it: a scoped route states its kind, and a route with no scope has none.
+ * `Capability.adminRoutes` takes this, so a scoped route without a kind does not compile.
+ */
+export type AdminRouteDeclaration = Omit<AdminRoute, "scope" | "kind"> &
+  ({ scope: ControlPlaneScope; kind: ScopeKind } | { scope: null; kind?: undefined });
 
 /**
  * One composed capability's declaration — everything about it that is the same for every caller.
@@ -114,7 +126,7 @@ export const CapabilityDeclaration = z
         "The npm version of the package supplying this capability, or null where there is none — the adopter's own `app` capability has a name and no package. Reported per capability and never aggregated: a project composes some capabilities and not others, so only the intersection of what it composes and what changed is worth reporting. Joined against a release feed on the `package` beside it, never on `name` — the two are different kinds of thing.",
       ),
     // **Defaulted, like every field added after the first manifest shipped**, and for the reason written
-    // out below against `healthKeys`: a Worker deployed before #626 sends no package, and a required
+    // out below against `healthKeys`: an older Worker sends no package, and a required
     // field would cost that client the whole manifest rather than the one key it did not get.
     package: z
       .string()
@@ -132,14 +144,14 @@ export const CapabilityDeclaration = z
     // version on purpose — a client dispatches on what the Worker declares right now — so absence is the
     // only way a new field can ship without breaking every Worker deployed before it. A required one fails
     // at the object level, which costs the client the *whole* manifest rather than the part it did not
-    // know about, and every pane goes dark for an adopter whose only mistake was not upgrading yet (#352).
+    // know about, and every pane goes dark for an adopter whose only mistake was not upgrading yet.
     healthKeys: z
       .array(HealthSummaryKey)
       .default([])
       .describe(
         "The closed vocabulary of scalars this capability may report about its own state, or empty when it reports none — including when the Worker predates this field and says nothing at all. Declared alongside the routes so a client can render a key it has never heard of from what the Worker says about it — and so a *withheld* number is visible as a key with no value, rather than as silence.",
       ),
-    // Both defaulted, for the reason stated above `healthKeys` and with the same force (#422). The two
+    // Both defaulted, for the reason stated above `healthKeys` and with the same force. The two
     // arrived together and travel together: a declaration with no value is a control with nothing behind
     // it, and a value with no declaration is a fact a client can only guess the meaning of.
     configKeys: z
@@ -151,8 +163,8 @@ export const CapabilityDeclaration = z
     config: ManifestConfigValues.default({}).describe(
       "What each declared fact resolved to for this deployment. The same answer for every caller, read off the capability's parsed config at assembly: there is no producer here, so no failure state, no per-request cost, and no staleness beyond the manifest itself.",
     ),
-    // Optional rather than defaulted, as every field added to a response now is (#450): absent says *this
-    // Worker predates presence rooms*, which a client must not read as *this capability has none* (#815).
+    // Optional rather than defaulted: absent says *this Worker predates presence rooms*, which a client must not
+    // read as *this capability has none*.
     presenceRooms: z
       .array(PresenceRoomDescriptor)
       .optional()
@@ -170,12 +182,12 @@ export type CapabilityDeclaration = z.infer<typeof CapabilityDeclaration>;
  *
  * Two flat fields, and neither is what a consumer reads: {@link CapabilityDescriptor} decodes them into
  * one value that says which of the four states it is in. They are flat here because the wire has an
- * older half to keep working. A Worker deployed before #350 sends no `healthUnavailable` and a Worker
- * deployed before #317 sends neither field, and both must still parse; and a client pinned to a build
+ * older half to keep working. An older Worker may send no `healthUnavailable`, or neither
+ * field, and both must still parse; and a client pinned to a build
  * older than the Worker it is reading strips the field it has never heard of and lands on `health:
  * null`, which renders as silence rather than as a zero. Putting the fourth state *inside* `health`
  * would have cost that client the whole manifest for one capability's bad afternoon, which is the
- * failure #352 is about.
+ * failure the defaults above exist to prevent.
  */
 const CapabilityDescriptorWire = CapabilityDeclaration.extend({
   // Defaulted for the same reason as `healthKeys` above, and it lands on the meaning it already had: a
@@ -232,7 +244,7 @@ export const CapabilityDescriptor = z
       // had: a capability that declares no summary, and one that states no configured fact.
       //
       // **The `map` is load-bearing for the compiler and inert at run time, and both halves are the
-      // point (#471).** `HealthSummaryKey.nominal` is `.default(null)`, so the key's input type has it
+      // point.** `HealthSummaryKey.nominal` is `.default(null)`, so the key's input type has it
       // optional and its output type has it present — and this encode sits exactly on that seam, so
       // spreading the keys through unchanged does not compile.
       //
@@ -261,7 +273,7 @@ export type CapabilityDescriptor = z.infer<typeof CapabilityDescriptor>;
  * now — so a capability that changed its paths or its scopes reports the change directly, and a schema
  * version would be a second source of truth to keep in sync with the first. That reasoning is unchanged.
  *
- * **And `capabilities[].version` travels with the package it belongs to** (#626). A version is only
+ * **And `capabilities[].version` travels with the package it belongs to**. A version is only
  * actionable joined against a release feed, a feed is keyed by package name, and a capability name is
  * not one — `controlplane` ships inside `@pithy-sh/core`. Reporting the version alone left every client
  * guessing the key, and the guess failed silently on the most frequently released package there is.
@@ -275,7 +287,7 @@ export type CapabilityDescriptor = z.infer<typeof CapabilityDescriptor>;
  * we just fixed", and "does this project predate the capability a pane needs". Reporting only one leaves
  * half the questions unanswerable, and they are the halves people actually ask.
  *
- * **And each entry carries a third thing: the configured facts that capability states** (#422). Knowing
+ * **And each entry carries a third thing: the configured facts that capability states**. Knowing
  * where a route is and which scope it needs is not always enough to call it — `POST
  * {base}/entitlements/grant` names a holder, and whether this project's holders are people or
  * organizations is a decision the adopter made in config. A client that cannot read the decision guesses

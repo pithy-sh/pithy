@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import type { AdminRouteDeclaration } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 
 /**
@@ -21,7 +21,7 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
  * should never silently hold the second. `scopeCovers` matches exactly, with no prefix rule and no
  * wildcard, so holding one confers nothing about the other.
  *
- * **The writes are membership administration (#624), and each one is an operator's act with an actor.**
+ * **The writes are membership administration, and each one is an operator's act with an actor.**
  * A control-plane credential holds no membership, so an operator write is not recorded against one: it is
  * recorded with `actorType: "control-plane"`, the token's `sub` as the actor, the connection beside it,
  * and the reason the request was required to carry — `../audit/emit.ts`'s `recordOperatorAction`. That
@@ -38,13 +38,13 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
  * - `organization:ownership:transfer` — who owns it, moved with no nomination and no acceptance. The one
  *   that most needs its own grant, because it is the break-glass path and nothing else can undo it.
  *
- * And two more for the organization's own lifecycle (#623), each a power over whether the account exists for
+ * And two more for the organization's own lifecycle, each a power over whether the account exists for
  * its members at all:
  *
  * - `organization:accounts:suspend` — suspend an account and reinstate it. Nobody can act in it meanwhile.
  * - `organization:accounts:delete` — delete an account, softly or hard, and restore one inside its window.
  *
- * Each also gates its write's preview (#813), which names who the member cascade would reach. Who belongs to no
+ * Each also gates its write's preview, which names who the member cascade would reach. Who belongs to no
  * other organization is a disclosure, so only a caller who could act on it gets it.
  *
  * None implies another, and none implies a read. A client holding only the read scopes is refused every
@@ -66,10 +66,10 @@ export const ORGANIZATION_ACCOUNTS_WRITE_SCOPE: ControlPlaneScope = "organizatio
 /** Who owns an account, moved immediately — no nomination and no acceptance. The break-glass write. */
 export const ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE: ControlPlaneScope = "organization:ownership:transfer";
 
-/** Suspend an account and reinstate it (#623). While it is suspended, nobody can act in it. */
+/** Suspend an account and reinstate it. While it is suspended, nobody can act in it. */
 export const ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE: ControlPlaneScope = "organization:accounts:suspend";
 
-/** Delete an account, softly or hard, and restore one inside its purge window (#623). */
+/** Delete an account, softly or hard, and restore one inside its purge window. */
 export const ORGANIZATION_ACCOUNTS_DELETE_SCOPE: ControlPlaneScope = "organization:accounts:delete";
 
 /** Every control-plane scope this capability defines. */
@@ -104,7 +104,10 @@ export interface OrganizationAdminRouteOptions {
  * Declared beside the scopes so the scope a route demands and the scope a manifest advertises are the
  * same constant.
  */
-export function organizationAdminRoutes(basePath: string, options: OrganizationAdminRouteOptions = {}): AdminRoute[] {
+export function organizationAdminRoutes(
+  basePath: string,
+  options: OrganizationAdminRouteOptions = {},
+): AdminRouteDeclaration[] {
   const one = `${basePath}/admin/organizations/:organizationId`;
   return [
     {
@@ -112,6 +115,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
       operation: "organizations.list",
       path: `${basePath}/admin/organizations`,
       scope: ORGANIZATION_ACCOUNTS_READ_SCOPE,
+      kind: "reads",
       summary: "Every tenant, newest first, with how many people are in each. Bounded, and it says when it truncated.",
     },
     {
@@ -119,6 +123,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
       operation: "members.list",
       path: `${basePath}/admin/organizations/:organizationId/members`,
       scope: ORGANIZATION_MEMBERS_READ_SCOPE,
+      kind: "reads",
       summary: "One tenant's roster: who is in it, at what role, with the names and addresses behind the memberships.",
     },
     {
@@ -126,6 +131,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
       operation: "organizations.update",
       path: one,
       scope: ORGANIZATION_ACCOUNTS_WRITE_SCOPE,
+      kind: "writes",
       summary: "Rename a tenant, give it a free short name, or set its seat limit. Takes a reason.",
     },
     {
@@ -133,6 +139,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
       operation: "organizations.suspend",
       path: `${one}/suspend`,
       scope: ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
+      kind: "writes",
       summary:
         "Suspend a tenant until a date or a reinstatement: nobody can act in it. Its sole members' accounts too, when asked. Takes a reason.",
     },
@@ -141,6 +148,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
       operation: "organizations.suspend.preview",
       path: `${one}/suspend/preview`,
       scope: ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
+      kind: "writes",
       summary:
         "Preview who suspending a tenant would reach, member by member, before it runs. The suspension's own body and refusals. Writes nothing.",
     },
@@ -149,6 +157,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
       operation: "organizations.reinstate",
       path: `${one}/reinstate`,
       scope: ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
+      kind: "writes",
       summary:
         "Lift a tenant's suspension. A member suspended with it stays suspended, and the response names them. Takes a reason.",
     },
@@ -157,6 +166,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
       operation: "organizations.delete",
       path: one,
       scope: ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
+      kind: "deletes",
       summary:
         "Delete a tenant: soft by default, restorable for the retention window; hard purges now. Its sole members' accounts too, when asked. Takes a reason.",
     },
@@ -165,6 +175,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
       operation: "organizations.delete.preview",
       path: `${one}/delete/preview`,
       scope: ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
+      kind: "deletes",
       summary:
         "Preview who deleting a tenant would reach, member by member, before it runs. The deletion's own body and refusals. Writes nothing.",
     },
@@ -173,6 +184,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
       operation: "organizations.restore",
       path: `${one}/restore`,
       scope: ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
+      kind: "deletes",
       summary: "Restore a deleted tenant inside its window, with every membership it had. Takes a reason.",
     },
     {
@@ -180,6 +192,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
       operation: "members.add",
       path: `${one}/members`,
       scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
+      kind: "writes",
       summary:
         "Add an existing user at a named role but the owning one, inside the seat limit or past it on purpose. Takes a reason.",
     },
@@ -188,6 +201,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
       operation: "members.update",
       path: `${one}/members/:membershipId`,
       scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
+      kind: "writes",
       summary:
         "Change a member's role to any role the catalog declares, never to or from the owning one. Takes a reason.",
     },
@@ -196,6 +210,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
       operation: "members.remove",
       path: `${one}/members/:membershipId`,
       scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
+      kind: "writes",
       summary: "Remove a member and clear their selection. Never an owner. Takes a reason.",
     },
     {
@@ -203,6 +218,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
       operation: "invitations.list",
       path: `${one}/invitations`,
       scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
+      kind: "writes",
       summary: "A tenant's outstanding invitations, to fix one. Takes a reason.",
     },
     {
@@ -210,6 +226,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
       operation: "invitations.resend",
       path: `${one}/invitations/:invitationId/resend`,
       scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
+      kind: "writes",
       summary:
         "Send an invitation again with a fresh link, expired or not. The old link stops working. Takes a reason.",
     },
@@ -218,6 +235,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
       operation: "invitations.revoke",
       path: `${one}/invitations/:invitationId`,
       scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
+      kind: "writes",
       summary: "Revoke an invitation, so its link stops working. Takes a reason.",
     },
     ...(options.ownership
@@ -227,6 +245,7 @@ export function organizationAdminRoutes(basePath: string, options: OrganizationA
             operation: "ownership.transfer",
             path: `${one}/ownership`,
             scope: ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE,
+            kind: "writes" as const,
             summary:
               "Make a member the owner now, with no nomination and no acceptance. The previous owner stays or goes as the request says. Takes a reason.",
           },

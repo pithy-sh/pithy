@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import type { AdminRouteDeclaration } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 
 /**
- * The leaderboard's control-plane scopes, and the admin surface a manifest advertises (#817).
+ * The leaderboard's control-plane scopes, and the admin surface a manifest advertises.
  *
- * **Separate from `guard.ts` because a scope name is a client's business** (#315). A management client
+ * **Separate from `guard.ts` because a scope name is a client's business**. A management client
  * reads these to render what a connection may do, and `pithy-sh/dashboard`'s scope builder writes the
  * `pithy dashboard connect --scope …` command from exactly these constants — in a browser program, with
  * the DOM lib and no Workers types. **This module imports types and nothing else, and a gate holds it
@@ -19,10 +19,6 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
  * other. A standings pane needs the read and nothing else; a moderation tool needs both. The read is a
  * read on every route that requires it, so `pithy dashboard connect` grants it by default. The write is
  * never in a default grant, because its routes are `POST`s.
- *
- * **Kinds** (`pithy-sh/pithy#725`): `leaderboard:entries:read` is a `reads` scope and
- * `leaderboard:entries:moderate` is a `writes` scope. #725's mechanism for declaring a kind is not on
- * `main` yet; the rule is that a later scope declares its kind in its own issue, and #817 records these.
  *
  * ## Not the player surface's admin scope
  *
@@ -55,13 +51,14 @@ export const LEADERBOARD_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  * `${basePath}/:board` and `${basePath}/:board/<verb>`, so a board keyed `admin` still answers its player
  * routes: no management path is a player path with a board key in it.
  */
-export function leaderboardAdminRoutes(basePath: string): AdminRoute[] {
+export function leaderboardAdminRoutes(basePath: string): AdminRouteDeclaration[] {
   return [
     {
       method: "GET",
       operation: "boards.list",
       path: `${basePath}/admin/boards`,
       scope: LEADERBOARD_ENTRIES_READ_SCOPE,
+      kind: "reads",
       summary: "Every configured board: its store, direction, aggregation, window, and the window open now.",
     },
     {
@@ -69,6 +66,7 @@ export function leaderboardAdminRoutes(basePath: string): AdminRoute[] {
       operation: "entries.list",
       path: `${basePath}/admin/boards/:board/entries`,
       scope: LEADERBOARD_ENTRIES_READ_SCOPE,
+      kind: "reads",
       summary: "A window's entries, ranked and paged, hidden ones included, with the result that wrote each.",
     },
     {
@@ -76,6 +74,7 @@ export function leaderboardAdminRoutes(basePath: string): AdminRoute[] {
       operation: "locks.list",
       path: `${basePath}/admin/locks`,
       scope: LEADERBOARD_ENTRIES_READ_SCOPE,
+      kind: "reads",
       summary: "The rank-refresh lock, when one is held: its holder, and when it was taken.",
     },
     {
@@ -83,6 +82,7 @@ export function leaderboardAdminRoutes(basePath: string): AdminRoute[] {
       operation: "entries.hide",
       path: `${basePath}/admin/boards/:board/entries/:userId/hide`,
       scope: LEADERBOARD_ENTRIES_MODERATE_SCOPE,
+      kind: "writes",
       summary: "Hide an entry from every read, with a reason. The score is kept.",
     },
     {
@@ -90,6 +90,7 @@ export function leaderboardAdminRoutes(basePath: string): AdminRoute[] {
       operation: "entries.unhide",
       path: `${basePath}/admin/boards/:board/entries/:userId/unhide`,
       scope: LEADERBOARD_ENTRIES_MODERATE_SCOPE,
+      kind: "writes",
       summary: "Put a hidden entry back on the board, with a reason.",
     },
     {
@@ -97,6 +98,7 @@ export function leaderboardAdminRoutes(basePath: string): AdminRoute[] {
       operation: "entries.correct",
       path: `${basePath}/admin/boards/:board/entries/:userId/correct`,
       scope: LEADERBOARD_ENTRIES_MODERATE_SCOPE,
+      kind: "writes",
       summary: "Correct an entry's score, with a reason. The original is kept in its history.",
     },
     {
@@ -104,6 +106,7 @@ export function leaderboardAdminRoutes(basePath: string): AdminRoute[] {
       operation: "locks.clear",
       path: `${basePath}/admin/locks/:name/clear`,
       scope: LEADERBOARD_ENTRIES_MODERATE_SCOPE,
+      kind: "writes",
       summary: "Clear a stale rank-refresh lock, naming the holder it was taken by.",
     },
   ];

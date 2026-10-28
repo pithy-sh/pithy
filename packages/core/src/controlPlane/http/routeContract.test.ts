@@ -62,6 +62,8 @@ describe("control-plane route contract", () => {
     // Every route this seam serves. The list is what makes adding a route a deliberate edit rather
     // than a surprise, and it is the only place a control-plane route can be counted.
     expect(paths).toEqual([
+      "/control-plane/connections",
+      "/control-plane/connections/:connectionId/revoke",
       "/control-plane/erasure",
       "/control-plane/erasure/:subjectType/:subjectId",
       "/control-plane/evidence",
@@ -79,6 +81,7 @@ describe("control-plane route contract", () => {
     // The one param-carrying path, named exactly. Without this the check above would pass on an app
     // that declared no params at all, which proves nothing.
     expect(paramPaths(app)).toEqual([
+      "/control-plane/connections/:connectionId/revoke",
       "/control-plane/erasure/:subjectType/:subjectId",
       "/control-plane/holds/:holdId/release",
       "/control-plane/keys/:keyId/expire",
@@ -93,6 +96,7 @@ describe("control-plane route contract", () => {
       true,
     );
     expect(paramPaths(app)).toEqual([
+      "/admin/cp/connections/:connectionId/revoke",
       "/admin/cp/erasure/:subjectType/:subjectId",
       "/admin/cp/holds/:holdId/release",
       "/admin/cp/keys/:keyId/expire",
@@ -108,19 +112,19 @@ describe("control-plane route contract", () => {
       const key = `${route.method} ${route.path}`;
       handlerCounts.set(key, (handlerCounts.get(key) ?? 0) + 1);
     }
-    expect(handlerCounts.size).toBe(15);
+    expect(handlerCounts.size).toBe(17);
     for (const [route, count] of handlerCounts) expect(count, `${route} has no guard`).toBeGreaterThan(1);
   });
 
   test("every admin route the seam advertises is a route it actually mounts", () => {
     // The seam holds itself to the rule it imposes on every capability. `GET /control-plane/manifest`
-    // tells a management client these eleven routes exist and which scope each needs; a declaration that
+    // tells a management client these routes exist and which scope each needs; a declaration that
     // drifted from the registrations would have the client calling paths nothing serves.
     const capability = controlplane();
     const app = new Hono<PithyHonoEnv>();
     capability.routes?.(app);
 
-    expect(capability.adminRoutes).toHaveLength(15);
+    expect(capability.adminRoutes).toHaveLength(17);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
     // And the other direction. The CORS surface derives from `adminRoutes`, so a guarded
     // route nobody declared gets no preflight and no browser reaches it, with this suite still green.

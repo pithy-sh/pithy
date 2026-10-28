@@ -6,6 +6,15 @@ import type { D1Database } from "@cloudflare/workers-types";
 import { commandName } from "@pithy-sh/core/src/cli/command";
 import { type ControlPlaneAuditAction, ControlPlaneAuditActions } from "@pithy-sh/core/src/controlPlane/audit/actions";
 import { ControlPlaneConnection, type RegisteredKey } from "@pithy-sh/core/src/controlPlane/data/connection";
+import {
+  type ConnectionForWrite,
+  type ConnectionListing,
+  type CredentialColumns,
+  listConnections,
+  type RevokedCredentials,
+  revokeConnection as revokeConnectionCredentials,
+  writeCredentials,
+} from "@pithy-sh/core/src/controlPlane/data/connections";
 import { activeKeys, appendKey as appendRegisteredKey } from "@pithy-sh/core/src/controlPlane/data/keyLifecycle";
 import {
   activeTrusts,
@@ -22,7 +31,7 @@ import {
   ControlPlaneKeyConflictError,
   ControlPlaneNotConnectedError,
 } from "@pithy-sh/core/src/controlPlane/error/errors";
-import { messageOf, PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, messageOf, PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
 import type { CliAuditEmit, CliAuditEvent } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareCredentials } from "../cloudflare/config";
 import { discoverWorkers } from "../project/workers";
@@ -45,7 +54,7 @@ import { createCliLogger } from "../terminal/logger";
  * the array here: the ordering that keeps a failed rotation from locking the adopter out is a property
  * of that function, and a second implementation of it is a second thing to get wrong.
  *
- * ## The invariant (#287)
+ * ## The key invariant
  *
  * **The CLI adds a key to a connection only when no live key exists to sign for one through the seam.**
  *
@@ -70,14 +79,13 @@ import { createCliLogger } from "../terminal/logger";
  * a connection with live keys, on purpose: it *removes* trust, and revocation that needed the Worker's
  * cooperation would not be revocation (docs/CONTROL-PLANE.md §7). The invariant is about granting.
  *
- * ## The second invariant (#294)
+ * ## The audit invariant
  *
  * **A write to this table records itself in the adopter's own audit trail.**
  *
- * `ControlPlaneAuditActions` declared `connectionRegistered`, `connectionUpdated` and
- * `connectionRemoved` from the day the seam shipped, and nothing emitted any of them. Not an oversight
- * in a handler: those are the writes the CLI performs by opening the adopter's D1 directly, so no
- * request reaches their Worker and no route is in a position to record one. An adopter could read a
+ * `connectionRegistered`, `connectionUpdated`, `connectionRemoved` and a CLI-side `connectionRevoked` are the
+ * writes the CLI performs by opening the adopter's D1 directly, so no request reaches their Worker and no route
+ * is in a position to record one. An adopter could read a
  * *key* rotation in their trail but not the connection being created or destroyed — the larger event
  * was the invisible one.
  *
@@ -147,9 +155,9 @@ function removalEvent(existing: ControlPlaneConnection, extra: Record<string, un
     basePath: existing.basePath,
     scopes: [...existing.scopes],
     removedKeyIds: keyIds(existing),
-    // Every trust stopped being honored with the row (#722), and the trail names which.
+    // Every trust stopped being honored with the row, and the trail names which.
     ...(trustIds(existing).length === 0 ? {} : { removedTrustIds: trustIds(existing) }),
-    // The kind, purpose and principal it had, as a registration records them (#831): the access history names who
+    // The kind, purpose and principal it had, as a registration records them: the access history names who
     // the removed connection was for, from this row alone.
     authorizedBy: existing.authorizedBy,
     actorKind: existing.actorKind,
@@ -158,7 +166,7 @@ function removalEvent(existing: ControlPlaneConnection, extra: Record<string, un
   });
 }
 
-/** Trust ids (#722). Said only where a connection holds one, so a key-only row reads as it always did. */
+/** Trust ids. Said only where a connection holds one, so a key-only row reads as it always did. */
 function trustIds(connection: ControlPlaneConnection): string[] {
   return (connection.trusts ?? []).map((trust) => trust.trustId);
 }
@@ -202,7 +210,7 @@ function addressAndGrantChanges(
       ? {}
       : { basePath: { from: stored.basePath, to: connection.basePath } }),
     ...(before.join(" ") === after.join(" ") ? {} : { scopes: { from: before, to: after } }),
-    // An update may change the purpose (#721). The principal and the kind change only when a key is
+    // An update may change the purpose. The principal and the kind change only when a key is
     // registered on a connection with nothing live, which credits whoever sanctioned the new key.
     ...(stored.purpose === connection.purpose ? {} : { purpose: { from: stored.purpose, to: connection.purpose } }),
     ...(stored.authorizedBy === connection.authorizedBy
@@ -215,7 +223,7 @@ function addressAndGrantChanges(
 }
 
 /**
- * What an update leaves the connection holding, beside what it moved (#831).
+ * What an update leaves the connection holding, beside what it moved.
  *
  * `addressAndGrantChanges` says what moved, and only that, so an update that changed no scope says nothing
  * about the scopes — and an access history replaying the connection from its events could not tell what it
@@ -239,7 +247,7 @@ function standingAfterUpdate(
 /**
  * Refuse a key write while something live could have signed for it at the seam.
  *
- * The gate #287's invariant is stated as. It reads the connection as stored — never as offered — so a
+ * The gate the key invariant is stated as. It reads the connection as stored — never as offered — so a
  * caller cannot talk its way past by describing the keys it wishes were there.
  */
 function refuseWhileSomethingCanSign(connection: ControlPlaneConnection, now: Date, detail: string): void {
@@ -252,11 +260,26 @@ function refuseWhileSomethingCanSign(connection: ControlPlaneConnection, now: Da
   });
 }
 
+/** How many times a CLI revocation reads again after another write landed between its read and its own. */
+const REVOKE_ATTEMPTS = 5;
+
+/** The refusal for a write whose read went stale: another writer, a revocation over the seam among them, got there first. */
+function changedSinceRead(connectionId: string, what: string): ConflictError {
+  return new ConflictError({
+    message: "The connection changed while this command was writing it.",
+    action: "Run the command again; it reads the connection as it is now.",
+    detail: `${what} on connection ${connectionId}: the credential columns changed between read and write`,
+  });
+}
+
 /** Read, write, and revoke one environment's registration. */
 export interface ConnectionRegistry {
   /** The environment's connection, or null when nothing is registered — the default, denying state. */
   read(): Promise<ControlPlaneConnection | null>;
-  /** Write the environment's connection, replacing whatever was registered for it. */
+  /**
+   * Write the environment's connection, replacing whatever was registered for it. Keeping the same id writes everything
+   * but the credential columns, and refuses offered keys or trusts that differ from the stored ones.
+   */
   save(connection: ControlPlaneConnection): Promise<void>;
   /**
    * Append a public key through core's lifecycle rules, and return the updated connection.
@@ -276,10 +299,10 @@ export interface ConnectionRegistry {
    */
   revokeKey(keyId: string, now: Date): Promise<ControlPlaneConnection | null>;
   /**
-   * Add an OIDC trust to the environment's connection, beside whatever keys and trusts it holds (#722), and
+   * Add an OIDC trust to the environment's connection, beside whatever keys and trusts it holds, and
    * return the updated connection.
    *
-   * **Not held to the key invariant, and that is not an exemption.** #287 routes a key through the seam because
+   * **Not held to the key invariant, and that is not an exemption.** The invariant routes a key through the seam because
    * a live key can sign for its successor there. Nothing can sign for a trust — the seam has no route that
    * registers one, and must not: a workload able to add a trust could widen its own population. So, like the
    * grant and the address, a trust is the adopter's to write, on the adopter's side, and it is recorded here.
@@ -291,6 +314,16 @@ export interface ConnectionRegistry {
    * until it expires, which the caller says out loud.
    */
   revokeTrust(trustId: string, now: Date): Promise<ControlPlaneConnection | null>;
+  /**
+   * Every connection bound to this environment, through the one function `GET {basePath}/connections` reads with:
+   * those `principal` authorized, or every attributed one without it, and the unattributed ones apart.
+   */
+  list(principal?: string): Promise<ConnectionListing>;
+  /**
+   * Revoke every key and trust not yet revoked on one connection in this environment, with a reason, and record it as
+   * `controlplane/connection_revoked`. Null when no connection in this environment has that id.
+   */
+  revokeConnection(id: string, reason: string, now: Date): Promise<RevokedCredentials | null>;
   /** Delete the registration. `false` when there was nothing to delete — re-running is not an error. */
   remove(): Promise<boolean>;
   /** Release whatever the registry opened (the local Miniflare instance; nothing remotely). */
@@ -306,7 +339,7 @@ export function connectionRegistry(
   env: string,
   dispose: () => Promise<void> = async () => {},
   /**
-   * Where a write records itself (#294). Defaults to dropping the event, which is what a project not
+   * Where a write records itself. Defaults to dropping the event, which is what a project not
    * composing `audit` gets — and what a test constructing a bare registry gets, so the recording is
    * opt-in for a caller that has a trail to write to and invisible to every caller that has not.
    */
@@ -330,13 +363,55 @@ export function connectionRegistry(
     }
   }
 
-  async function read(): Promise<ControlPlaneConnection | null> {
+  async function readForWrite(): Promise<ConnectionForWrite | null> {
     const row = await db
       .selectFrom(CONTROL_PLANE_CONNECTIONS_TABLE)
       .selectAll()
       .where("environment", "=", env)
       .executeTakeFirst();
-    return row ? ControlPlaneConnection.parse(row) : null;
+    if (!row) return null;
+    return { connection: ControlPlaneConnection.parse(row), storedKeys: row.keys, storedTrusts: row.trusts };
+  }
+
+  async function read(): Promise<ControlPlaneConnection | null> {
+    return (await readForWrite())?.connection ?? null;
+  }
+
+  async function requireForWrite(): Promise<ConnectionForWrite> {
+    const loaded = await readForWrite();
+    if (!loaded) {
+      throw new ControlPlaneNotConnectedError({
+        detail: `no connection registered for environment ${env}`,
+      });
+    }
+    return loaded;
+  }
+
+  /**
+   * Write one revocation, computed afresh from each read, only while the credential columns still hold what that read
+   * saw. Null when `revoke` finds nothing to revoke.
+   */
+  async function revokeFromFreshRead(
+    what: string,
+    revoke: (connection: ControlPlaneConnection) => CredentialColumns | null,
+    now: Date,
+  ): Promise<ControlPlaneConnection | null> {
+    let connectionId = "";
+    for (let attempt = 0; attempt < REVOKE_ATTEMPTS; attempt++) {
+      const loaded = await requireForWrite();
+      connectionId = loaded.connection.id;
+      const columns = revoke(loaded.connection);
+      if (columns === null) return null;
+      if (await writeCredentials(db, loaded, columns, now)) {
+        return {
+          ...loaded.connection,
+          ...(columns.keys === undefined ? {} : { keys: [...columns.keys] }),
+          ...(columns.trusts === undefined ? {} : { trusts: [...columns.trusts] }),
+          updatedAt: now,
+        };
+      }
+    }
+    throw changedSinceRead(connectionId, what);
   }
 
   return {
@@ -349,19 +424,37 @@ export function connectionRegistry(
       //
       // Keeping the same connection and rewriting its keys is the other thing entirely — that is a
       // rotation wearing a create's clothes, and it goes through the seam like every other one.
+      //
+      // Keeping a connection writes everything but its credential columns, so a revocation landing after this read is
+      // never written over. Credentials offered that differ from the stored ones came from a stale read, and are refused.
       const stored = await read();
       if (stored && stored.id === connection.id) {
-        const before = ControlPlaneConnection.shape.keys.encode([...stored.keys]);
-        const after = ControlPlaneConnection.shape.keys.encode([...connection.keys]);
-        if (before !== after) {
+        const keysBefore = ControlPlaneConnection.shape.keys.encode([...stored.keys]);
+        const keysAfter = ControlPlaneConnection.shape.keys.encode([...connection.keys]);
+        if (keysBefore !== keysAfter) {
           refuseWhileSomethingCanSign(stored, connection.updatedAt, `save rewrote the keys of connection ${stored.id}`);
         }
+        const trustsChanged =
+          connection.trusts !== undefined &&
+          ControlPlaneConnection.shape.trusts.encode([...(stored.trusts ?? [])]) !==
+            ControlPlaneConnection.shape.trusts.encode([...connection.trusts]);
+        if (keysBefore !== keysAfter || trustsChanged) throw changedSinceRead(stored.id, "save");
+        const { id: _id, keys: _keys, trusts: _trusts, ...columns } = ControlPlaneConnection.encode(connection);
+        await db
+          .updateTable(CONTROL_PLANE_CONNECTIONS_TABLE)
+          .set(columns)
+          .where("id", "=", stored.id)
+          .where("environment", "=", env)
+          .execute();
+      } else {
+        // One connection per environment. SQLite carries no unique index on `environment` — the column is
+        // indexed for reads, not constrained — so the invariant is enforced here, by replacing.
+        await db.deleteFrom(CONTROL_PLANE_CONNECTIONS_TABLE).where("environment", "=", env).execute();
+        await db
+          .insertInto(CONTROL_PLANE_CONNECTIONS_TABLE)
+          .values(ControlPlaneConnection.encode(connection))
+          .execute();
       }
-
-      // One connection per environment. SQLite carries no unique index on `environment` — the column is
-      // indexed for reads, not constrained — so the invariant is enforced here, by replacing.
-      await db.deleteFrom(CONTROL_PLANE_CONNECTIONS_TABLE).where("environment", "=", env).execute();
-      await db.insertInto(CONTROL_PLANE_CONNECTIONS_TABLE).values(ControlPlaneConnection.encode(connection)).execute();
 
       // The row landed, so the event can be written. A new id — or none stored at all — is a management
       // client that did not have reach into this environment a moment ago and now does; the same id is
@@ -380,7 +473,7 @@ export function connectionRegistry(
       }
       if (stored !== null) {
         // Starting over ended the stored connection's grant as surely as a disconnect would, so it is recorded as one,
-        // from the connection as it was (#831). Without it the trail shows the old connection registered and never
+        // from the connection as it was. Without it the trail shows the old connection registered and never
         // ended, and anyone replaying who held what keeps its scopes live for ever.
         await record(removalEvent(stored, { replacedByConnectionId: connection.id }));
       }
@@ -394,7 +487,7 @@ export function connectionRegistry(
           ...(trustIds(connection).length === 0
             ? {}
             : { registeredTrusts: (connection.trusts ?? []).map(trustRecord) }),
-          // Who sanctioned it, what kind of client, and what for (#721) — on the adopter's own trail, where
+          // Who sanctioned it, what kind of client, and what for — on the adopter's own trail, where
           // the review of this credential is performed, possibly with no dashboard open.
           authorizedBy: connection.authorizedBy,
           actorKind: connection.actorKind,
@@ -407,23 +500,16 @@ export function connectionRegistry(
     },
 
     async appendKey(key, now) {
-      const connection = await read();
-      if (!connection) {
-        throw new ControlPlaneNotConnectedError({
-          detail: `no connection registered for environment ${env}`,
-        });
-      }
+      const loaded = await requireForWrite();
+      const { connection } = loaded;
       refuseWhileSomethingCanSign(connection, now, `appendKey ${key.keyId} on connection ${connection.id}`);
       // Core owns the rule. It refuses a duplicate id and a key that is already retired, and it never
       // moves an existing key's window — which is what leaves the old credential working until the new
       // one has been proven.
       const keys = appendRegisteredKey(connection.keys, key, now);
       const updated: ControlPlaneConnection = { ...connection, keys, updatedAt: now };
-      await db
-        .updateTable(CONTROL_PLANE_CONNECTIONS_TABLE)
-        .set(ControlPlaneConnection.encode(updated))
-        .where("id", "=", connection.id)
-        .execute();
+      // A miss is refused rather than retried: a key added to a connection revoked since the read would revive it.
+      if (!(await writeCredentials(db, loaded, { keys }, now))) throw changedSinceRead(connection.id, "appendKey");
       // The connection existed and now trusts a key it did not, so this is a change to it rather than a
       // registration of one. The seam's own `keyRegistered` is not the code for it: that one means the
       // Worker accepted a signed registration through the route, and nothing here went near the Worker.
@@ -438,26 +524,24 @@ export function connectionRegistry(
     },
 
     async revokeKey(keyId, now) {
-      const connection = await read();
-      if (!connection) {
-        throw new ControlPlaneNotConnectedError({
-          detail: `no connection registered for environment ${env}`,
-        });
-      }
-      if (!connection.keys.some((key) => key.keyId === keyId)) return null;
-
       // `revokedAt`, not `validUntil`. Expiry is the orderly end of a rotation and core refuses it while
       // it would leave no live key; revocation is the disorderly one, and it must not be refusable on
       // those grounds — a leaked key has to come out even if it is the only one. That leaves the
       // connection denying every call, which is the correct state for a credential you no longer trust,
-      // and `pithy dashboard connect` is the way back.
-      const keys = connection.keys.map((key) => (key.keyId === keyId ? { ...key, revokedAt: now } : key));
-      const updated: ControlPlaneConnection = { ...connection, keys, updatedAt: now };
-      await db
-        .updateTable(CONTROL_PLANE_CONNECTIONS_TABLE)
-        .set(ControlPlaneConnection.encode(updated))
-        .where("id", "=", connection.id)
-        .execute();
+      // and `pithy dashboard connect` is the way back. A key already revoked keeps its instant.
+      const updated = await revokeFromFreshRead(
+        `revokeKey ${keyId}`,
+        (connection) =>
+          connection.keys.some((key) => key.keyId === keyId)
+            ? {
+                keys: connection.keys.map((key) =>
+                  key.keyId === keyId && key.revokedAt === null ? { ...key, revokedAt: now } : key,
+                ),
+              }
+            : null,
+        now,
+      );
+      if (updated === null) return null;
       // Recorded after the revocation, never before it, and it cannot fail one. Revocation is immediate
       // and unilateral (§7); a leaked key that stayed live because the trail was unreachable would be the
       // audit tail wagging the security dog. The count of what is still live is on the row because
@@ -474,23 +558,13 @@ export function connectionRegistry(
     },
 
     async appendTrust(trust, now) {
-      const connection = await read();
-      if (!connection) {
-        throw new ControlPlaneNotConnectedError({
-          detail: `no connection registered for environment ${env}`,
-        });
-      }
+      const loaded = await requireForWrite();
+      const { connection } = loaded;
       // Core owns the rule: a duplicate id is refused, since the id is what a call addresses.
       const trusts = appendOidcTrust(connection.trusts ?? [], trust);
       const updated: ControlPlaneConnection = { ...connection, trusts, updatedAt: now };
-      await db
-        .updateTable(CONTROL_PLANE_CONNECTIONS_TABLE)
-        .set({
-          trusts: ControlPlaneConnection.shape.trusts.encode(trusts),
-          updatedAt: ControlPlaneConnection.shape.updatedAt.encode(now),
-        })
-        .where("id", "=", connection.id)
-        .execute();
+      // Refused on a miss, for the reason `appendKey` gives.
+      if (!(await writeCredentials(db, loaded, { trusts }, now))) throw changedSinceRead(connection.id, "appendTrust");
       await record(
         lifecycleEvent(ControlPlaneAuditActions.connectionUpdated, updated, {
           changed: ["trusts"],
@@ -502,27 +576,16 @@ export function connectionRegistry(
     },
 
     async revokeTrust(trustId, now) {
-      const connection = await read();
-      if (!connection) {
-        throw new ControlPlaneNotConnectedError({
-          detail: `no connection registered for environment ${env}`,
-        });
-      }
-      const trusts = revokeOidcTrust(connection.trusts ?? [], trustId, now);
-      if (trusts === null) return null;
-      const updated: ControlPlaneConnection = { ...connection, trusts, updatedAt: now };
-      // Only the trusts column and the stamp, never the whole row: nothing else on it is this write's to touch.
-      // A first call the Worker recorded between the read and this write is lost to it, which costs a listing
-      // one timestamp until the next call; the opposite race — the Worker's write undoing a revocation — is the
-      // one that matters, and `recordTrustFirstCall` is built so it cannot happen.
-      await db
-        .updateTable(CONTROL_PLANE_CONNECTIONS_TABLE)
-        .set({
-          trusts: ControlPlaneConnection.shape.trusts.encode(trusts),
-          updatedAt: ControlPlaneConnection.shape.updatedAt.encode(now),
-        })
-        .where("id", "=", connection.id)
-        .execute();
+      const updated = await revokeFromFreshRead(
+        `revokeTrust ${trustId}`,
+        (connection) => {
+          const trusts = revokeOidcTrust(connection.trusts ?? [], trustId, now);
+          return trusts === null ? null : { trusts };
+        },
+        now,
+      );
+      if (updated === null) return null;
+      const trusts = updated.trusts ?? [];
       // Recorded after the revocation and never able to fail it, for the reason `revokeKey` gives.
       await record(
         lifecycleEvent(ControlPlaneAuditActions.connectionUpdated, updated, {
@@ -532,6 +595,27 @@ export function connectionRegistry(
         }),
       );
       return updated;
+    },
+
+    list(principal) {
+      return listConnections(db, { principal, environment: env });
+    },
+
+    async revokeConnection(id, reason, now) {
+      const revoked = await revokeConnectionCredentials(db, id, now, { environment: env });
+      if (revoked === null) return null;
+      const stored = revoked.connection;
+      await record(
+        lifecycleEvent(ControlPlaneAuditActions.connectionRevoked, stored, {
+          authorizedBy: stored.authorizedBy,
+          actorKind: stored.actorKind,
+          purpose: stored.purpose,
+          reason,
+          revokedKeyIds: [...revoked.revokedKeyIds],
+          revokedTrustIds: [...revoked.revokedTrustIds],
+        }),
+      );
+      return revoked;
     },
 
     async remove() {
@@ -552,10 +636,8 @@ export function connectionRegistry(
 /**
  * Test seam: open the backend driver for a Worker and environment.
  *
- * **It carries the account (#234).** The seam is shaped by what {@link openSeedDriver} needs, and that
- * function's `account` was optional until then — so this type could not name one, so `openConnectionRegistry`
- * could not pass one even once it wanted to. A registry lookup on a non-`dev` environment opens a real D1
- * over REST, and it was opening it against whichever account `<config>/cloudflare.json` held.
+ * **It carries the account.** A registry lookup on a non-`dev` environment opens a real D1 over REST, and the
+ * account it opens it against is the project's, never whichever account `<config>/cloudflare.json` holds.
  */
 export type OpenDriver = (options: {
   workerDir: string;
@@ -572,7 +654,7 @@ export interface OpenConnectionRegistryOptions {
   env: string;
   /**
    * The Cloudflare account this project belongs to, from `projectCloudflareAccount(projectDir)`, or
-   * `null` when it names none. Required (#234): every non-`dev` environment resolves the app database
+   * `null` when it names none. Required: every non-`dev` environment resolves the app database
    * over REST, and the credentials that reads it with belong to exactly one account.
    */
   account: CloudflareAccountSelection | null;
@@ -581,7 +663,7 @@ export interface OpenConnectionRegistryOptions {
   /** Driver seam (default: {@link openSeedDriver}), so a test needs no Miniflare of the CLI's making. */
   openDriver?: OpenDriver;
   /**
-   * Build the recorder a write records itself through (#294), over **the database this registry resolved**
+   * Build the recorder a write records itself through, over **the database this registry resolved**
    * — which is why it is a factory taking that handle rather than an emitter passed in ready-made.
    *
    * The `DB` a connection row lives in is decided here, by walking the project's Workers, and on `dev` it
@@ -596,14 +678,13 @@ export interface OpenConnectionRegistryOptions {
 }
 
 /**
- * Settle the account before a single Worker is considered (#236).
+ * Settle the account before a single Worker is considered.
  *
  * **A per-item refusal collector will swallow a whole-run refusal**, because the whole-run failure arrives
  * wearing a per-item costume. The loop below gathers "why each Worker was skipped" so one unresolvable
  * Worker does not stop the rest — a summary that is exactly the wrong shape for a fact settled before the
- * loop began. An account mismatch went in as a per-Worker reason and came out as "No worker resolves the
- * DB binding for this environment", pointing an adopter at a `wrangler.jsonc` that was fine. #199 was the
- * same shape: a config that would not import, reported as "this Worker declares no secrets".
+ * loop began. An account mismatch collected per Worker would come out as "No worker resolves the DB
+ * binding for this environment", pointing an adopter at a `wrangler.jsonc` that is fine.
  *
  * So the two whole-project facts are asked here, once, and thrown rather than collected — the way
  * `migrate`, `deploy`, `env`, `seed` and `upgrade` already refuse. {@link cloudflareCredentials} owns both
@@ -674,7 +755,7 @@ export async function openConnectionRegistry(options: OpenConnectionRegistryOpti
   // `detail`. `detail` is stripped at the display boundary and always will be; an operator staring at
   // "add the DB binding" on a project that has one needs to be told which Worker said what.
   const why = refusals.length === 0 ? "No workers under apps/." : `Skipped: ${refusals.join("; ")}.`;
-  // The project's state, not the call's: no Worker answers for the app database. Exit 3 (#697).
+  // The project's state, not the call's: no Worker answers for the app database. Exit 3.
   throw new PreconditionFailedError({
     message: "No worker resolves the DB binding for this environment.",
     action: `${why} Add the DB d1_databases binding to a worker's wrangler.jsonc, or pass --worker to name one.`,

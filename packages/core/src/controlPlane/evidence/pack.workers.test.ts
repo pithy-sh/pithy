@@ -22,7 +22,7 @@ import { EVIDENCE_READ_SCOPE } from "../scope/scope";
 import { type EvidenceSources, readEvidencePack } from "./pack";
 
 /**
- * `readEvidencePack` called directly (#821), with hand-built sources, so its own reads can be made to fail: the
+ * `readEvidencePack` called directly, with hand-built sources, so its own reads can be made to fail: the
  * route cannot reach these, because the gate reads the connections table before the pack does. It holds the
  * module's two promises — a failed read costs its controls their answer and never the pack, and a cause goes to the
  * log and never into the pack — and that management access lists this environment's connections only.
@@ -120,7 +120,13 @@ const secretsLike = defineCapability({
   name: "secrets",
   requiredBindings: [],
   adminRoutes: [
-    { method: "GET", path: "/secrets/admin/status", scope: SECRETS_STATUS_SCOPE, summary: "Every secret's status." },
+    {
+      method: "GET",
+      path: "/secrets/admin/status",
+      scope: SECRETS_STATUS_SCOPE,
+      kind: "reads",
+      summary: "Every secret's status.",
+    },
   ],
   health: defineCapabilityHealth({
     keys: [

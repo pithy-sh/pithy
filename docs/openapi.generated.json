@@ -614,6 +614,18 @@
                                   "minLength": 1,
                                   "description": "One line describing what the route does, for a management client to render beside it."
                                 },
+                                "kind": {
+                                  "description": "What kind of operation the route's scope grants — `reads`, `writes`, `sends`, `charges`, `deletes` or `credentials` — declared by the capability that owns the scope. Every route sharing a scope declares the same kind, so a management client maps its own roles onto kinds rather than onto scopes. Absent for a route with no scope, and from an older Worker, which a client treats as `credentials`, the most restrictive.",
+                                  "type": "string",
+                                  "enum": [
+                                    "reads",
+                                    "writes",
+                                    "sends",
+                                    "charges",
+                                    "deletes",
+                                    "credentials"
+                                  ]
+                                },
                                 "operation": {
                                   "description": "The route's permanent name within its capability — `threads.reply`, `users.suspend` — declared beside the route by the capability that owns it. Never derived from the path, which moves when an adopter moves a `basePath`, and never from the scope, which several routes share. An MCP tool is named `<capability>_<operation>`. Absent from a Worker that predates #723.",
                                   "type": "string",
@@ -1543,6 +1555,652 @@
         ],
         "x-pithy-scopes": [
           "keys:rotate"
+        ]
+      }
+    },
+    "/control-plane/connections": {
+      "get": {
+        "tags": [
+          "controlplane"
+        ],
+        "operationId": "getControlPlaneConnections",
+        "summary": "List every connection in this Worker's environment.",
+        "description": "Every connection bound to this Worker's environment, the caller's own among them; a database shared with another environment never lists that environment's rows. Each connection's id, environment, actor kind, purpose, authorizing principal, credential kind, granted scopes, every trust's subject constraint, whether it is live, and when it was registered and revoked. `principal` narrows to the connections one email authorized; connections registered before principals were recorded are listed apart in `unattributed` and never match. No key material and no secret. Read-only.",
+        "parameters": [
+          {
+            "name": "principal",
+            "in": "query",
+            "required": false,
+            "description": "Only connections this email authorized, compared without regard to case. Connections with no recorded principal are listed apart either way and never match.",
+            "schema": {
+              "type": "string",
+              "maxLength": 254,
+              "format": "email",
+              "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every connection bound to this Worker's environment, attributed ones and unattributed ones apart.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "connections": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The connection's id. Name it to revoke the connection."
+                          },
+                          "environment": {
+                            "type": "string",
+                            "description": "The environment the connection is bound to."
+                          },
+                          "actorKind": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "agent",
+                                  "dashboard",
+                                  "script"
+                                ],
+                                "description": "What kind of client a connection is for: `agent` (an automated client acting on its own judgment, often unattended), `dashboard` (a management dashboard a person drives, registered through the device-code flow), or `script` (an operator's own automation, doing one fixed thing)."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "What kind of client the connection is for: `agent`, `dashboard` or `script`. Null for one registered before it was recorded."
+                          },
+                          "purpose": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 200,
+                                "description": "What this connection's client is for, in the registering operator's words — one line of plain text, 200 characters at most, with no control, bidi or invisible characters. Written by a customer and rendered elsewhere, so validated at the boundary."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "What the client is for, in the registering operator's words. Untrusted text: render it escaped. Null for one registered before it was recorded."
+                          },
+                          "authorizedBy": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "maxLength": 254,
+                                "format": "email",
+                                "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                                "description": "The email address of the person who sanctioned this connection, read from their signed-in Cloudflare session at registration. Never typed, so never asserted."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The email of the person who sanctioned the connection. Null for one registered before principals were recorded."
+                          },
+                          "credentialKind": {
+                            "type": "string",
+                            "enum": [
+                              "key",
+                              "trust",
+                              "both",
+                              "none"
+                            ],
+                            "description": "Which credential kinds the connection holds, live or not: `key` (registered Ed25519 keys), `trust` (OIDC trusts), `both`, or `none`."
+                          },
+                          "scopes": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "The scopes the connection was granted."
+                          },
+                          "trusts": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "trustId": {
+                                  "type": "string",
+                                  "description": "The trust's id."
+                                },
+                                "issuer": {
+                                  "type": "string",
+                                  "description": "The `iss` the trust accepts."
+                                },
+                                "claims": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string",
+                                    "description": "A claim name."
+                                  },
+                                  "additionalProperties": {
+                                    "type": "string",
+                                    "description": "The value that claim must have."
+                                  },
+                                  "description": "The subject constraint: every named claim must equal its value. This is who may use the trust."
+                                },
+                                "revokedAt": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "format": "date-time",
+                                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "When the trust was revoked, ISO-8601, or null while it stands."
+                                }
+                              },
+                              "required": [
+                                "trustId",
+                                "issuer",
+                                "claims",
+                                "revokedAt"
+                              ],
+                              "description": "One OIDC trust's subject constraint, on the face of the listing."
+                            },
+                            "description": "Every OIDC trust on the connection, revoked ones included."
+                          },
+                          "live": {
+                            "type": "boolean",
+                            "description": "Whether any key or trust on the connection can verify a call now."
+                          },
+                          "registeredAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the connection was registered, ISO-8601."
+                          },
+                          "revokedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "When the connection was revoked, ISO-8601: the latest revocation once every credential was revoked. Null while anything is live, and for one whose keys merely expired."
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "environment",
+                          "actorKind",
+                          "purpose",
+                          "authorizedBy",
+                          "credentialKind",
+                          "scopes",
+                          "trusts",
+                          "live",
+                          "registeredAt",
+                          "revokedAt"
+                        ],
+                        "description": "One connection: who authorized it, for what, with which credentials and grant, and whether it is live."
+                      },
+                      "description": "Every connection with a recorded principal, matching the filter when one was given, oldest first."
+                    },
+                    "unattributed": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The connection's id. Name it to revoke the connection."
+                          },
+                          "environment": {
+                            "type": "string",
+                            "description": "The environment the connection is bound to."
+                          },
+                          "actorKind": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "agent",
+                                  "dashboard",
+                                  "script"
+                                ],
+                                "description": "What kind of client a connection is for: `agent` (an automated client acting on its own judgment, often unattended), `dashboard` (a management dashboard a person drives, registered through the device-code flow), or `script` (an operator's own automation, doing one fixed thing)."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "What kind of client the connection is for: `agent`, `dashboard` or `script`. Null for one registered before it was recorded."
+                          },
+                          "purpose": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 200,
+                                "description": "What this connection's client is for, in the registering operator's words — one line of plain text, 200 characters at most, with no control, bidi or invisible characters. Written by a customer and rendered elsewhere, so validated at the boundary."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "What the client is for, in the registering operator's words. Untrusted text: render it escaped. Null for one registered before it was recorded."
+                          },
+                          "authorizedBy": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "maxLength": 254,
+                                "format": "email",
+                                "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                                "description": "The email address of the person who sanctioned this connection, read from their signed-in Cloudflare session at registration. Never typed, so never asserted."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The email of the person who sanctioned the connection. Null for one registered before principals were recorded."
+                          },
+                          "credentialKind": {
+                            "type": "string",
+                            "enum": [
+                              "key",
+                              "trust",
+                              "both",
+                              "none"
+                            ],
+                            "description": "Which credential kinds the connection holds, live or not: `key` (registered Ed25519 keys), `trust` (OIDC trusts), `both`, or `none`."
+                          },
+                          "scopes": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "The scopes the connection was granted."
+                          },
+                          "trusts": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "trustId": {
+                                  "type": "string",
+                                  "description": "The trust's id."
+                                },
+                                "issuer": {
+                                  "type": "string",
+                                  "description": "The `iss` the trust accepts."
+                                },
+                                "claims": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string",
+                                    "description": "A claim name."
+                                  },
+                                  "additionalProperties": {
+                                    "type": "string",
+                                    "description": "The value that claim must have."
+                                  },
+                                  "description": "The subject constraint: every named claim must equal its value. This is who may use the trust."
+                                },
+                                "revokedAt": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "format": "date-time",
+                                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "When the trust was revoked, ISO-8601, or null while it stands."
+                                }
+                              },
+                              "required": [
+                                "trustId",
+                                "issuer",
+                                "claims",
+                                "revokedAt"
+                              ],
+                              "description": "One OIDC trust's subject constraint, on the face of the listing."
+                            },
+                            "description": "Every OIDC trust on the connection, revoked ones included."
+                          },
+                          "live": {
+                            "type": "boolean",
+                            "description": "Whether any key or trust on the connection can verify a call now."
+                          },
+                          "registeredAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the connection was registered, ISO-8601."
+                          },
+                          "revokedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "When the connection was revoked, ISO-8601: the latest revocation once every credential was revoked. Null while anything is live, and for one whose keys merely expired."
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "environment",
+                          "actorKind",
+                          "purpose",
+                          "authorizedBy",
+                          "credentialKind",
+                          "scopes",
+                          "trusts",
+                          "live",
+                          "registeredAt",
+                          "revokedAt"
+                        ],
+                        "description": "One connection: who authorized it, for what, with which credentials and grant, and whether it is live."
+                      },
+                      "description": "Every connection registered before principals were recorded, oldest first. Listed apart for a person to read; never matched by a principal."
+                    }
+                  },
+                  "required": [
+                    "connections",
+                    "unattributed"
+                  ],
+                  "description": "Every connection bound to this Worker's environment, attributed ones and unattributed ones apart."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "connections:read"
+        ]
+      }
+    },
+    "/control-plane/connections/{connectionId}/revoke": {
+      "post": {
+        "tags": [
+          "controlplane"
+        ],
+        "operationId": "postControlPlaneConnectionsByConnectionIdRevoke",
+        "summary": "Revoke another connection.",
+        "description": "Revokes every key and trust on the connection not yet revoked, at once, with a reason: a live one, and one whose window has not opened yet. A token already minted under a trust stays usable until it expires. Refused on the calling connection, which ends through `pithy dashboard disconnect`, naming its environment with `--env`. A connection bound to another environment answers 404. `pithy dashboard connect` keeps one connection per environment, replacing the one stored, so this route has a target only where the database holds more than one connection for this environment. Audited as `controlplane/connection_revoked`.",
+        "parameters": [
+          {
+            "name": "connectionId",
+            "in": "path",
+            "required": true,
+            "description": "The connection's id, as the listing reports it.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A connection's revocation: why it ends.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why the connection is revoked. Required, and recorded on the revocation's audit event."
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "A connection's revocation: why it ends."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A revoked connection, and the credentials the revocation ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "connection": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "The connection's id. Name it to revoke the connection."
+                        },
+                        "environment": {
+                          "type": "string",
+                          "description": "The environment the connection is bound to."
+                        },
+                        "actorKind": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "agent",
+                                "dashboard",
+                                "script"
+                              ],
+                              "description": "What kind of client a connection is for: `agent` (an automated client acting on its own judgment, often unattended), `dashboard` (a management dashboard a person drives, registered through the device-code flow), or `script` (an operator's own automation, doing one fixed thing)."
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "What kind of client the connection is for: `agent`, `dashboard` or `script`. Null for one registered before it was recorded."
+                        },
+                        "purpose": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 200,
+                              "description": "What this connection's client is for, in the registering operator's words — one line of plain text, 200 characters at most, with no control, bidi or invisible characters. Written by a customer and rendered elsewhere, so validated at the boundary."
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "What the client is for, in the registering operator's words. Untrusted text: render it escaped. Null for one registered before it was recorded."
+                        },
+                        "authorizedBy": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "maxLength": 254,
+                              "format": "email",
+                              "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                              "description": "The email address of the person who sanctioned this connection, read from their signed-in Cloudflare session at registration. Never typed, so never asserted."
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "The email of the person who sanctioned the connection. Null for one registered before principals were recorded."
+                        },
+                        "credentialKind": {
+                          "type": "string",
+                          "enum": [
+                            "key",
+                            "trust",
+                            "both",
+                            "none"
+                          ],
+                          "description": "Which credential kinds the connection holds, live or not: `key` (registered Ed25519 keys), `trust` (OIDC trusts), `both`, or `none`."
+                        },
+                        "scopes": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "The scopes the connection was granted."
+                        },
+                        "trusts": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "trustId": {
+                                "type": "string",
+                                "description": "The trust's id."
+                              },
+                              "issuer": {
+                                "type": "string",
+                                "description": "The `iss` the trust accepts."
+                              },
+                              "claims": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string",
+                                  "description": "A claim name."
+                                },
+                                "additionalProperties": {
+                                  "type": "string",
+                                  "description": "The value that claim must have."
+                                },
+                                "description": "The subject constraint: every named claim must equal its value. This is who may use the trust."
+                              },
+                              "revokedAt": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "When the trust was revoked, ISO-8601, or null while it stands."
+                              }
+                            },
+                            "required": [
+                              "trustId",
+                              "issuer",
+                              "claims",
+                              "revokedAt"
+                            ],
+                            "description": "One OIDC trust's subject constraint, on the face of the listing."
+                          },
+                          "description": "Every OIDC trust on the connection, revoked ones included."
+                        },
+                        "live": {
+                          "type": "boolean",
+                          "description": "Whether any key or trust on the connection can verify a call now."
+                        },
+                        "registeredAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When the connection was registered, ISO-8601."
+                        },
+                        "revokedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the connection was revoked, ISO-8601: the latest revocation once every credential was revoked. Null while anything is live, and for one whose keys merely expired."
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "environment",
+                        "actorKind",
+                        "purpose",
+                        "authorizedBy",
+                        "credentialKind",
+                        "scopes",
+                        "trusts",
+                        "live",
+                        "registeredAt",
+                        "revokedAt"
+                      ],
+                      "description": "The connection as it now stands."
+                    },
+                    "revokedKeyIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The keys this call revoked. Empty when every key was already revoked."
+                    },
+                    "revokedTrustIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The trusts this call revoked. Empty when every trust was already revoked."
+                    }
+                  },
+                  "required": [
+                    "connection",
+                    "revokedKeyIds",
+                    "revokedTrustIds"
+                  ],
+                  "description": "A revoked connection, and the credentials the revocation ended."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "connections:revoke"
         ]
       }
     },

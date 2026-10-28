@@ -148,9 +148,9 @@ describe("pithyCommand", () => {
 });
 
 /**
- * **A value a caller supplied is quoted, never read as a placeholder (#711).** `pithy add email --set 'fromName=Acme
- * <hi@acme.io>'` is a valid run, and the builder that named it again read `<hi@acme.io>` as a placeholder and turned it
- * into `core/internal`. A value handed to a builder is data: it is shell-quoted as it is.
+ * **A value a caller supplied is quoted, never read as a placeholder.** `pithy add email --set 'fromName=Acme
+ * <hi@acme.io>'` is a valid run, so `<hi@acme.io>` is not a placeholder. A value handed to a builder is data: it is
+ * shell-quoted as it is.
  */
 describe("a value a caller supplied", () => {
   test("is quoted as it is, whatever it holds", () => {
@@ -326,9 +326,9 @@ describe("rerunRemedy", () => {
 });
 
 /**
- * **A builder used at run time never throws on a production consequence (#711).** The environment is data a run
- * reads — a deployed Worker's `ENVIRONMENT`, a caller's `--env` — so a builder that refused a production one turned
- * a run that worked into `core/internal`. Each entry point that takes an environment at run time is run here with
+ * **A builder used at run time never throws on a production consequence.** The environment is data a run reads —
+ * a deployed Worker's `ENVIRONMENT`, a caller's `--env` — so refusing a production one would turn a run that works
+ * into `core/internal`. Each entry point that takes an environment at run time is run here with
  * every production name, against every command a production run makes a person's decision.
  */
 describe("a builder used at run time never throws on a production consequence", () => {
@@ -457,13 +457,13 @@ describe("the facts hold against the catalog", () => {
   });
 
   /**
-   * **Every command that reads as destructive is decided (#711).** Its last word, or a flag it declares, says it
+   * **Every command that reads as destructive is decided.** Its last word, or a flag it declares, says it
    * deletes something; it is in {@link DESTRUCTIVE_COMMANDS}, or {@link NOT_DESTRUCTIVE} says why not, or every flag
    * that makes it destructive is in {@link DESTRUCTIVE_FLAGS}. So a new `deprovision` cannot arrive as a remedy.
    */
   test("every command that reads as destructive is classified", () => {
     const verbs = /\b(?:deprovision|destroy|disconnect|prune|remove|reset|revoke|revoke-key|rm|close|delete)$/;
-    const flagged = /^--(?:destroy-retained|drop|rollback|redo|confirm-[a-z-]+)$/;
+    const flagged = /^--(?:destroy-retained|drop|rollback|redo|revoke|confirm-[a-z-]+)$/;
     const unclassified = paths.filter((path) => {
       if (Object.hasOwn(DESTRUCTIVE_COMMANDS, path) || Object.hasOwn(NOT_DESTRUCTIVE, path)) return false;
       const flags = flagsOf(path).filter((flag) => flagged.test(flag) && !flag.startsWith("--confirm"));
@@ -525,10 +525,9 @@ describe("the facts hold against the catalog", () => {
 });
 
 /**
- * **One caller context, the only input a rerun is built from (#711).** Every run again a line names was rebuilt at
- * its own site from the flags that site happened to hold, and each review round found one more that dropped what
- * the caller gave: `--json`, `--worker`, `--dry-run`, a `--set`, an option the Worker's config already answers. So
- * a rerun builder takes a {@link Caller}, which only {@link callerOf} makes, from a run's own parsed arguments.
+ * **One caller context, the only input a rerun is built from.** A rerun must keep what the caller gave: `--json`,
+ * `--worker`, `--dry-run`, a `--set`, an option the Worker's config already answers. So a rerun builder takes a
+ * {@link Caller}, which only {@link callerOf} makes, from a run's own parsed arguments.
  */
 describe("the caller's own run", () => {
   test("carries the run's --set values, by key, and every flag", () => {
@@ -559,9 +558,9 @@ describe("the caller's own run", () => {
 });
 
 /**
- * **A command that acts on every environment when `--env` is left off touches production (#711).** `pithy testers
+ * **A command that acts on every environment when `--env` is left off touches production.** `pithy testers
  * provision` with no `--env` provisions every declared environment, production included, so the bare command is a
- * person's decision exactly as `--env prod` is. It was offered as the runnable fix for one undeclinable binding.
+ * person's decision exactly as `--env prod` is.
  */
 describe("a command that acts on every environment without --env", () => {
   test("is a production consequence", () => {
@@ -591,9 +590,9 @@ describe("a command that acts on every environment without --env", () => {
 });
 
 /**
- * **A command with no `--env` that acts on every environment on every run touches production (#711).** `pithy secrets
+ * **A command with no `--env` that acts on every environment on every run touches production.** `pithy secrets
  * provision` deploys each declared environment's manager and mints its store entries, production included, and has no
- * flag to narrow it. It was offered as the runnable fix for one staging binding, one database and one setting.
+ * flag to narrow it.
  */
 describe("a command that acts on every environment always", () => {
   test("is a production consequence", () => {

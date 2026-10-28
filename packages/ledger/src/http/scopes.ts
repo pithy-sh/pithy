@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import type { AdminRouteDeclaration } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 
 /**
  * The ledger's control-plane scopes, and the admin surface a manifest advertises.
  *
- * **Separate from `guards.ts` because a scope name is a client's business** (#315). A management
+ * **Separate from `guards.ts` because a scope name is a client's business**. A management
  * client reads these to render what a connection may do, and `pithy-sh/dashboard`'s scope builder
  * writes the `pithy dashboard connect --scope …` command from exactly these constants — in a browser
  * program, with the DOM lib and no Workers types. While they sat beside the Hono middleware, naming
@@ -82,13 +82,14 @@ export const LEDGER_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  * whichever of the two Hono matched first. The extra segment removes the ambiguity by construction
  * rather than by registration order.
  */
-export function ledgerAdminRoutes(basePath: string): AdminRoute[] {
+export function ledgerAdminRoutes(basePath: string): AdminRouteDeclaration[] {
   return [
     {
       method: "GET",
       operation: "accounts.list",
       path: `${basePath}/admin/accounts`,
       scope: LEDGER_ACCOUNTS_READ_SCOPE,
+      kind: "reads",
       summary: "Page every account holding a balance, newest first, optionally in one currency.",
     },
     {
@@ -96,6 +97,7 @@ export function ledgerAdminRoutes(basePath: string): AdminRoute[] {
       operation: "accounts.read",
       path: `${basePath}/admin/accounts/:userId`,
       scope: LEDGER_ACCOUNTS_READ_SCOPE,
+      kind: "reads",
       summary: "What one player holds, in every currency they have an account in.",
     },
     {
@@ -103,6 +105,7 @@ export function ledgerAdminRoutes(basePath: string): AdminRoute[] {
       operation: "transactions.list",
       path: `${basePath}/admin/accounts/:userId/:currency/transactions`,
       scope: LEDGER_TRANSACTIONS_READ_SCOPE,
+      kind: "reads",
       summary: "The entry log behind one balance — every movement, newest first, with its memo.",
     },
     {
@@ -110,6 +113,7 @@ export function ledgerAdminRoutes(basePath: string): AdminRoute[] {
       operation: "accounts.credit",
       path: `${basePath}/admin/accounts/:userId/:currency/credit`,
       scope: LEDGER_ACCOUNTS_ADJUST_SCOPE,
+      kind: "charges",
       summary: "Add funds to one account, with an idempotency key and a reason.",
     },
     {
@@ -117,6 +121,7 @@ export function ledgerAdminRoutes(basePath: string): AdminRoute[] {
       operation: "accounts.debit",
       path: `${basePath}/admin/accounts/:userId/:currency/debit`,
       scope: LEDGER_ACCOUNTS_ADJUST_SCOPE,
+      kind: "charges",
       summary: "Remove funds from one account, never below what it has available.",
     },
     {
@@ -124,6 +129,7 @@ export function ledgerAdminRoutes(basePath: string): AdminRoute[] {
       operation: "transactions.reverse",
       path: `${basePath}/admin/accounts/:userId/:currency/reverse`,
       scope: LEDGER_ACCOUNTS_ADJUST_SCOPE,
+      kind: "charges",
       summary: "Post the opposite of one credit or debit. The original stays in the log.",
     },
     {
@@ -131,6 +137,7 @@ export function ledgerAdminRoutes(basePath: string): AdminRoute[] {
       operation: "holds.release",
       path: `${basePath}/admin/accounts/:userId/:currency/release`,
       scope: LEDGER_ACCOUNTS_ADJUST_SCOPE,
+      kind: "charges",
       summary: "Release one open hold, returning its funds to available.",
     },
   ];

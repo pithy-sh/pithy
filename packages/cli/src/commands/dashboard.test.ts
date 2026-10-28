@@ -5,11 +5,13 @@ import { resolve } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { controlplane } from "@pithy-sh/core/src/controlPlane/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { FIXTURE_NOW, fixtureConnection } from "@pithy-sh/core/src/test-utils/connectionFixtures";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { type ArgsDef, type CommandDef, parseArgs } from "citty";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { readSource } from "../ci/sourceFiles";
 import { authorizeDashboard } from "../dashboard/connect";
+import { listPrincipalConnections, type OpenRegistry } from "../dashboard/connections";
 import type { DashboardClient, DeviceAuthorization } from "../dashboard/contract";
 import { defaultGrant, grantableScopes } from "../dashboard/grant";
 import type { IssuerProfile } from "../dashboard/oidc";
@@ -17,12 +19,14 @@ import { OPEN_PROMPT, offerToOpen } from "../platform/browser";
 import { latchInputMode } from "../terminal/inputMode";
 import type { KeyStream } from "../terminal/keys";
 import { readKeys } from "../terminal/keys";
+import { fakeConnectionRegistry } from "../test-utils/connectionRegistry";
 import { expectConforms } from "../test-utils/payloadContract";
 import dashboard, {
   announceFor,
   collectRepeatedFlag,
   collectScopeFlags,
   confirmOrRefuse,
+  connectionEnvironments,
   decideTrustGrant,
   formatConnectReport,
   formatDisconnectReport,
@@ -33,6 +37,7 @@ import dashboard, {
   offerIsAnswerable,
   parseKindFlag,
   parsePublicKey,
+  revokeByPrincipal,
   trustClaimsFor,
 } from "./dashboard";
 
@@ -46,8 +51,20 @@ const support: Capability = {
   name: "support",
   requiredBindings: [],
   adminRoutes: [
-    { method: "GET", path: "/support/tickets", scope: "support:tickets:read", summary: "Page the queue." },
-    { method: "POST", path: "/support/tickets/:id/close", scope: "support:tickets:close", summary: "Close one." },
+    {
+      method: "GET",
+      path: "/support/tickets",
+      scope: "support:tickets:read",
+      kind: "reads",
+      summary: "Page the queue.",
+    },
+    {
+      method: "POST",
+      path: "/support/tickets/:id/close",
+      scope: "support:tickets:close",
+      kind: "writes",
+      summary: "Close one.",
+    },
   ],
 };
 
@@ -62,7 +79,7 @@ function argNames(name: string): string[] {
 }
 
 describe("the command surface", () => {
-  test("connect, rotate, revoke-key, revoke-trust, disconnect, and status", () => {
+  test("connect, rotate, revoke-key, revoke-trust, disconnect, status, and connections", () => {
     expect(Object.keys(subCommands())).toEqual([
       "connect",
       "rotate",
@@ -70,11 +87,12 @@ describe("the command surface", () => {
       "revoke-trust",
       "disconnect",
       "status",
+      "connections",
     ]);
   });
 
-  test("every subcommand is agent-drivable — --json and --env on all six", () => {
-    for (const name of ["connect", "rotate", "revoke-key", "revoke-trust", "disconnect", "status"]) {
+  test("every subcommand is agent-drivable — --json and --env on all seven", () => {
+    for (const name of ["connect", "rotate", "revoke-key", "revoke-trust", "disconnect", "status", "connections"]) {
       expect(argNames(name)).toContain("json");
       expect(argNames(name)).toContain("env");
     }
@@ -800,6 +818,8 @@ describe("the scope prompt", () => {
     expect(options.map((option) => option.value)).toEqual([
       "manifest:read",
       "keys:rotate",
+      "connections:read",
+      "connections:revoke",
       "migrations:read",
       "privacy:read",
       "evidence:read",
@@ -810,13 +830,14 @@ describe("the scope prompt", () => {
       "support:tickets:read",
       "support:tickets:close",
     ]);
-    expect(options[9]?.hint).toContain("support");
+    expect(options[11]?.hint).toContain("support");
   });
 
   test("preselects the default grant, which still leaves keys:rotate's peers to be chosen", async () => {
     expect((await renderedPrompt()).initialValues).toEqual([
       "manifest:read",
       "keys:rotate",
+      "connections:read",
       "migrations:read",
       "privacy:read",
       "evidence:read",
@@ -1475,5 +1496,145 @@ describe("parseKindFlag", () => {
         expect((error as PithyError).payload.action).toContain("--kind agent");
       }
     }
+  });
+});
+
+describe("connections", () => {
+  const tty = { stdin: process.stdin.isTTY, stdout: process.stdout.isTTY };
+  afterEach(() => {
+    latchInputMode(false);
+    process.stdin.isTTY = tty.stdin;
+    process.stdout.isTTY = tty.stdout;
+    vi.restoreAllMocks();
+  });
+
+  /** Run the command in-process and read the refusal it reports on stderr. */
+  async function refusal(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const written: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      written.push(String(chunk));
+      return true;
+    });
+    vi.spyOn(process, "exit").mockImplementation((code) => {
+      throw new Error(`exit ${code}`);
+    });
+    await expect(
+      subCommands().connections?.run?.({
+        args: { revoke: false, yes: false, json: true, _: [], ...args },
+        rawArgs: [],
+        cmd: {},
+      } as never),
+    ).rejects.toThrow(/^exit /);
+    return (JSON.parse(written.join("").trim()) as { error: Record<string, unknown> }).error;
+  }
+
+  test("refuses a principal that is not an email, before it reads the project", async () => {
+    const error = await refusal({ principal: "ada" });
+    expect(error.message).toBe("--principal is an email address.");
+  });
+
+  test.each([undefined, "", "   "])(
+    "refuses --revoke with the reason %j, before it reads the project",
+    async (reason) => {
+      const error = await refusal({ principal: "ada@example.com", revoke: true, reason });
+      expect(error.message).toBe("--revoke needs a --reason.");
+    },
+  );
+
+  test("reads every environment the project declares when no --env is passed", async () => {
+    const declared = vi.fn(async () => ["dev", "staging", "prod"]);
+    expect(await connectionEnvironments(undefined, declared)).toEqual(["dev", "staging", "prod"]);
+    expect(declared).toHaveBeenCalledOnce();
+  });
+
+  test("reads only the environment --env names, without reading the project", async () => {
+    const declared = vi.fn(async () => ["dev", "staging", "prod"]);
+    expect(await connectionEnvironments("staging", declared)).toEqual(["staging"]);
+    expect(declared).not.toHaveBeenCalled();
+  });
+
+  /** One environment holding Ada's live connection, the plan read from it, and the registry to inspect after. */
+  async function planned() {
+    const registry = fakeConnectionRegistry(fixtureConnection());
+    const open: OpenRegistry = (_environment, work) => work(registry);
+    const found = await listPrincipalConnections({
+      principal: "ada@example.com",
+      environments: ["prod"],
+      open,
+      now: FIXTURE_NOW,
+    });
+    return { registry, open, found };
+  }
+
+  function revokeOptions(
+    context: Awaited<ReturnType<typeof planned>>,
+    overrides: Partial<Parameters<typeof revokeByPrincipal>[0]>,
+  ): Parameters<typeof revokeByPrincipal>[0] {
+    return {
+      principal: "ada@example.com",
+      reason: "Ada left.",
+      found: context.found,
+      open: context.open,
+      json: false,
+      yes: false,
+      ask: async () => {},
+      write: () => {},
+      now: () => FIXTURE_NOW,
+      ...overrides,
+    };
+  }
+
+  test("--revoke writes the plan before it asks, and revokes once the answer is yes", async () => {
+    const context = await planned();
+    process.stdin.isTTY = true;
+    process.stdout.isTTY = true;
+    const order: string[] = [];
+    const revoked = await revokeByPrincipal(
+      revokeOptions(context, {
+        write: (text) => order.push(`write ${text.split("\n")[0]}`),
+        ask: async (count) => {
+          order.push(`ask ${count}`);
+        },
+      }),
+    );
+    expect(order).toEqual(["write Revoking 1 connection authorized by ada@example.com:", "ask 1"]);
+    expect(revoked.map((entry) => entry.revokedKeyIds)).toEqual([["k1"]]);
+    expect(context.registry.current()?.keys[0]?.revokedAt).toEqual(FIXTURE_NOW);
+  });
+
+  test("--revoke under --json without --yes is refused naming --yes, and nothing is revoked", async () => {
+    const context = await planned();
+    const write = vi.fn();
+    const failure = await revokeByPrincipal(revokeOptions(context, { json: true, write })).catch(
+      (error: unknown) => error,
+    );
+    expect((failure as PithyError).payload).toMatchObject({ code: "input/required", flag: "--yes" });
+    expect(write).not.toHaveBeenCalled();
+    expect(context.registry.current()?.keys[0]?.revokedAt).toBeNull();
+  });
+
+  test("--revoke revokes nothing when the person declines", async () => {
+    const context = await planned();
+    process.stdin.isTTY = true;
+    process.stdout.isTTY = true;
+    const declined = new Error("declined");
+    await expect(
+      revokeByPrincipal(
+        revokeOptions(context, {
+          ask: async () => {
+            throw declined;
+          },
+        }),
+      ),
+    ).rejects.toBe(declined);
+    expect(context.registry.current()?.keys[0]?.revokedAt).toBeNull();
+  });
+
+  test("--revoke --yes revokes without asking", async () => {
+    const context = await planned();
+    const ask = vi.fn(async () => {});
+    const revoked = await revokeByPrincipal(revokeOptions(context, { json: true, yes: true, ask }));
+    expect(ask).not.toHaveBeenCalled();
+    expect(revoked).toHaveLength(1);
   });
 });

@@ -29,7 +29,7 @@ import { requireControlPlane } from "./guard";
  * passes there, the difference is the runtime and that is the finding.
  *
  * What it still does not prove is that a *browser* accepts these bytes. Nothing that runs in CI can:
- * that is a deploy and a real origin, the way #462 verified its own claim.
+ * that is a deploy and a real origin.
  */
 
 const DASHBOARD = "https://app.pithy.sh";
@@ -42,7 +42,13 @@ const inventory = defineCapability({
   name: "inventory",
   requiredBindings: [],
   adminRoutes: [
-    { method: "GET", path: "/inventory/admin/things", scope: INVENTORY_READ_SCOPE, summary: "Every pending thing." },
+    {
+      method: "GET",
+      path: "/inventory/admin/things",
+      scope: INVENTORY_READ_SCOPE,
+      kind: "reads",
+      summary: "Every pending thing.",
+    },
   ],
   routes: (app) => {
     app.get("/inventory/admin/things", requireControlPlane(INVENTORY_READ_SCOPE), (c) => c.json({ things: [] }));

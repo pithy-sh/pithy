@@ -23,7 +23,7 @@ import { CONTROL_PLANE_OIDC_HEADER, CONTROL_PLANE_SCOPE_HEADER, CONTROL_PLANE_TR
 import { requireControlPlane } from "./guard";
 
 /**
- * A call under an OIDC trust (#722), end to end through the real `controlplane()` capability: real D1, the
+ * A call under an OIDC trust, end to end through the real `controlplane()` capability: real D1, the
  * capability's own verifier wiring, its isolate-wide key cache, and its first-call write.
  *
  * `verifyTrust.test.ts` owns the decision and `guardTrust.test.ts` the rows, both over a verifier built by hand.
@@ -68,11 +68,18 @@ const inventory = defineCapability({
   name: "inventory",
   requiredBindings: [],
   adminRoutes: [
-    { method: "GET", path: "/inventory/admin/things", scope: INVENTORY_READ_SCOPE, summary: "Every pending thing." },
+    {
+      method: "GET",
+      path: "/inventory/admin/things",
+      scope: INVENTORY_READ_SCOPE,
+      kind: "reads",
+      summary: "Every pending thing.",
+    },
     {
       method: "GET",
       path: "/inventory/admin/vault",
       scope: INVENTORY_READ_SCOPE,
+      kind: "reads",
       summary: "A route whose handler refuses past the gate.",
     },
   ],

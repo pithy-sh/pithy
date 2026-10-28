@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * **What the catalog cannot say about a `pithy` command, written down once (#711).**
+ * **What the catalog cannot say about a `pithy` command, written down once.**
  *
  * `commandCatalog.generated.ts` is the parser's own account of every command: its arguments, its flags, which
  * are required, which have defaults, which go together. Four facts are not in any parser, and each was the
@@ -56,6 +56,7 @@ export type WorkerScopedPath = (typeof WORKER_SCOPED)[number];
 export const WORKER_NARROWS = [
   "backup",
   "contract",
+  "dashboard connections",
   "dashboard disconnect",
   "dashboard revoke-key",
   "dashboard revoke-trust",
@@ -134,6 +135,7 @@ export const DESTRUCTIVE_FLAGS = {
   "--destroy-retained": "a resource kept for recovery",
   "--drop": "a capability's tables",
   "--redo": "the data a seed wrote",
+  "--revoke": "every key and trust a principal's connections hold",
   "--rollback": "the schema a migration group applied",
 } as const;
 
@@ -204,7 +206,7 @@ export const PRODUCTION_CONFIRMS = {
 export type ProductionPath = keyof typeof PRODUCTION_CONFIRMS;
 
 /**
- * **A command that acts on every environment when its `--env` is left off (#711)**, production among them. `pithy
+ * **A command that acts on every environment when its `--env` is left off**, production among them. `pithy
  * testers provision` with no `--env` provisions every declared environment, so the bare line touches production as
  * surely as `--env prod` does, and is a person's decision for the same reason. Each declares `--env` with no
  * default; `command.test.ts` holds that against the catalog.
@@ -212,7 +214,7 @@ export type ProductionPath = keyof typeof PRODUCTION_CONFIRMS;
 export const EVERY_ENVIRONMENT_WITHOUT_ENV = ["testers provision"] as const satisfies readonly ProductionPath[];
 
 /**
- * **A command that acts on every environment on every run (#711)**, production among them, with no `--env` to narrow
+ * **A command that acts on every environment on every run**, production among them, with no `--env` to narrow
  * it. `pithy secrets provision` deploys each declared environment's manager and mints its store entries, so every line
  * naming it touches production and is a person's decision — never the fix for one binding, one database or one
  * setting. None declares `--env`; `command.test.ts` holds that against the catalog.

@@ -24,8 +24,8 @@ import type { Logger } from "../../logger/logger";
  * Emission goes through core's `emit` seam (`c.var.emit`), a no-op when the audit capability is
  * absent, so the seam never imports audit at runtime either (principle 4).
  *
- * **Four of these are emitted by a route; three are emitted by the CLI** (#294). The connection
- * lifecycle — registered, updated, removed — is written by `pithy dashboard` opening the adopter's D1
+ * **Most of these are emitted by a route; four are emitted by the CLI, one of them by a route as well.** The
+ * connection lifecycle — registered, updated, removed — is written by `pithy dashboard` opening the adopter's D1
  * directly, because those operations never reach their Worker: a first connect has no key to sign with
  * and the Worker may not be deployed, an update re-points an address the Worker never reads, and a
  * disconnect withdraws trust, which must not depend on a working connection (docs/CONTROL-PLANE.md §15).
@@ -34,8 +34,12 @@ import type { Logger } from "../../logger/logger";
  * `control-plane`, meaning the management client called in and proved it, while a CLI-side event carries
  * the adopter's own operator and no session at all.
  *
- * A declared code that nothing emits is a surface the trail promises and never delivers, which is what
- * these three were until #294. `packages/cli/src/ci/auditActions.test.ts` fails the build on one.
+ * `connectionRevoked` is the one written from both sides: by `POST {basePath}/connections/:connectionId/revoke`,
+ * with `actorType` `control-plane` and the caller's connection, and by `pithy dashboard connections --revoke`, with
+ * the operator as actor and no session.
+ *
+ * A declared code that nothing emits is a surface the trail promises and never delivers.
+ * `packages/cli/src/ci/auditActions.test.ts` fails the build on one.
  */
 export const ControlPlaneAuditActions = {
   /** A verified, in-scope management call was admitted. The trail of what the dashboard actually did. */
@@ -52,6 +56,11 @@ export const ControlPlaneAuditActions = {
   connectionUpdated: "controlplane/connection_updated",
   /** A connection was removed. The seam returns to its shipped state: connected to nothing, denying everything. */
   connectionRemoved: "controlplane/connection_removed",
+  /**
+   * Another connection's keys and trusts were revoked, with a reason: by a management client over the seam, or by the
+   * operator at the CLI.
+   */
+  connectionRevoked: "controlplane/connection_revoked",
   holdPlaced: "controlplane/hold_placed",
   holdReleased: "controlplane/hold_released",
 } as const;

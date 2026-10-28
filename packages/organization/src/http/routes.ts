@@ -68,7 +68,7 @@ import {
   suspendSoleMembers,
   type UserLifecycleWiring,
 } from "../lifecycle/cascade";
-import type { OrganizationLifecycleHooks } from "../lifecycle/hooks";
+import type { MembershipActor, OrganizationLifecycleHooks, OrganizationMembershipHooks } from "../lifecycle/hooks";
 import { organizationStanding } from "../lifecycle/state";
 import {
   absent,
@@ -114,7 +114,7 @@ import {
 } from "../provision/provision";
 import { ORGANIZATION_PURGE_BINDING } from "../purge/specs";
 import { startOrganizationPurgeInstance } from "../purge/start";
-import type { KitPower, RoleCatalog } from "../roles/roles";
+import { type KitPower, powersLost, type RoleCatalog } from "../roles/roles";
 import { type OrganizationGuardDeps, type OrganizationHonoEnv, requireOrganization, requirePower } from "./guard";
 import {
   AcceptInvitationResponse,
@@ -244,7 +244,7 @@ import {
  * not this call's authority. Otherwise a roster token could add a second owner and remove the first — a
  * transfer by another door, with no ownership-scoped call, no forced-ownership event and no notice.
  *
- * ² A preview (#813): the write's own body, scope and refusals, answering who its member cascade would reach
+ * ² A preview: the write's own body, scope and refusals, answering who its member cascade would reach
  * with nothing applied. Writes nothing — no column, history row, mail, hook or audit act — so it is declared
  * not mutating, though it is a `POST`: it carries the write's body, and a body is not a query string.
  *
@@ -407,7 +407,7 @@ export const ORGANIZATION_ROUTES: readonly OrganizationRouteDeclaration[] = [
     scope: ORGANIZATION_MEMBERS_READ_SCOPE,
     mutating: false,
   },
-  // Membership administration (#624). Every one takes a reason; each scope names a blast radius.
+  // Membership administration. Every one takes a reason; each scope names a blast radius.
   {
     method: "PATCH",
     path: "/admin/organizations/:organizationId",
@@ -466,7 +466,7 @@ export const ORGANIZATION_ROUTES: readonly OrganizationRouteDeclaration[] = [
     mutating: true,
     ownership: true,
   },
-  // The organization's own lifecycle (#623). Each takes a reason; each scope is a power over whether the account
+  // The organization's own lifecycle. Each takes a reason; each scope is a power over whether the account
   // exists for its members at all.
   {
     method: "POST",
@@ -475,7 +475,7 @@ export const ORGANIZATION_ROUTES: readonly OrganizationRouteDeclaration[] = [
     scope: ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
     mutating: true,
   },
-  // Who the suspension's cascade would reach, before it runs (#813). Behind the write's scope: who belongs to no
+  // Who the suspension's cascade would reach, before it runs. Behind the write's scope: who belongs to no
   // other organization is a disclosure only a caller who could act on it gets. Writes nothing.
   {
     method: "POST",
@@ -498,7 +498,7 @@ export const ORGANIZATION_ROUTES: readonly OrganizationRouteDeclaration[] = [
     scope: ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
     mutating: true,
   },
-  // The deletion's preview, on the same terms as the suspension's (#813).
+  // The deletion's preview, on the same terms as the suspension's.
   {
     method: "POST",
     path: "/admin/organizations/:organizationId/delete/preview",
@@ -566,10 +566,12 @@ export interface OrganizationRoutesOptions<Power extends string, Role extends st
    * captured at registration would close over whichever request happened to assemble the routes.
    */
   readonly enqueue?: (env: Record<string, unknown>) => EnqueueInvitation | undefined;
-  /** The adopter's organization-lifecycle hooks (#623). */
+  /** The adopter's organization-lifecycle hooks. */
   readonly lifecycleHooks?: OrganizationLifecycleHooks;
+  /** The adopter's membership hooks: a role changed, a membership ended. */
+  readonly membershipHooks?: OrganizationMembershipHooks;
   /**
-   * The composed `@pithy-sh/auth`'s lifecycle config and user hooks, which a member cascade runs through (#623).
+   * The composed `@pithy-sh/auth`'s lifecycle config and user hooks, which a member cascade runs through.
    * A function, because `compose` fills it after the routes are registered. Absent, a cascade that would reach a
    * member refuses rather than guessing auth's config.
    */
@@ -678,6 +680,57 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
       ...correlation(c.req.raw.headers),
       sessionId: c.var.auth?.sessionId ?? null,
     });
+  }
+
+  /** Who a membership hook names as having made the change. */
+  function membershipActor(c: Ctx): MembershipActor {
+    const caller = c.var.controlPlane;
+    if (caller) return { type: "control-plane", connectionId: caller.connectionId };
+    return { type: "member", userId: session(c).userId };
+  }
+
+  /** Fire one membership hook. Swallowed and logged: the change is already written and recorded. */
+  async function fireMembershipHook<Name extends "onMemberRoleChanged" | "onMemberRemoved">(
+    c: Ctx,
+    name: Name,
+    event: Parameters<NonNullable<OrganizationMembershipHooks[Name]>>[0],
+  ): Promise<void> {
+    const hook = options.membershipHooks?.[name] as
+      | ((event: Parameters<NonNullable<OrganizationMembershipHooks[Name]>>[0], d1: D1Database) => unknown)
+      | undefined;
+    if (!hook) return;
+    try {
+      await hook(event, d1(c));
+    } catch (error) {
+      c.var.log?.child("organization").warn(`${name} threw; the change stands`, {
+        organizationId: event.organizationId,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /** Tell the adopter's hook a member's role changed, with the powers the change took away. */
+  async function roleChanged(
+    c: Ctx,
+    change: { organizationId: string; membershipId: string; userId: string; previousRole: string; role: Role },
+  ): Promise<void> {
+    if (change.previousRole === change.role) return;
+    // A previous role this catalog no longer declares held no power it can name.
+    const previous = catalog.Role.safeParse(change.previousRole);
+    await fireMembershipHook(c, "onMemberRoleChanged", {
+      ...change,
+      powersLost: previous.success ? powersLost(catalog, previous.data, change.role) : [],
+      actor: membershipActor(c),
+      at: clock(),
+    });
+  }
+
+  /** Tell the adopter's hook a membership ended. */
+  async function memberRemoved(
+    c: Ctx,
+    removal: { organizationId: string; membershipId: string; userId: string; role: string; left: boolean },
+  ): Promise<void> {
+    await fireMembershipHook(c, "onMemberRemoved", { ...removal, actor: membershipActor(c), at: clock() });
   }
 
   /** The verified management caller. Every route calling this has `requireControlPlane` above it. */
@@ -923,7 +976,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
 
   /**
    * The composed auth's lifecycle wiring, or the refusal for a Worker that has none. A cascade's write and its
-   * preview both ask, so a preview is refused exactly where the write would be (#813).
+   * preview both ask, so a preview is refused exactly where the write would be.
    */
   function userLifecycle(): UserLifecycleWiring {
     const wiring = options.userLifecycle?.();
@@ -1117,7 +1170,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
         const now = clock();
         const actable = await listActable(database, catalog, who.userId, now);
         // Read without refusing: a selection naming an organization since suspended is cleared, and the list
-        // still answers — without it, and with nothing in force (#623).
+        // still answers — without it, and with nothing in force.
         const selection = await resolveSelection(database, catalog, { ...who, now });
         const acting = selection?.kind === "acting" ? selection.acting : null;
         const rows = await readOrganizations(
@@ -1183,7 +1236,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
           // `derived` and not merely the slug: a chosen short name is a string a caller put into an
           // account's facts, and a derived one is ours. A row that read the same either way could not
           // answer which.
-          // The membership and its holder too (#831): the founding is the account's first membership, and the access
+          // The membership and its holder too: the founding is the account's first membership, and the access
           // history reads it as a join.
           facts: {
             slug: created.organization.slug,
@@ -1331,7 +1384,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
       async (c) => {
         const acting = c.var.acting;
         const who = session(c);
-        // The adopter's own tenanted rows go in the same transaction — `#570`.
+        // The adopter's own tenanted rows go in the same transaction.
         await deleteOrganization(d1(c), acting.organizationId, options.onDelete);
         // Recorded against the account that no longer exists, which is the only record that it ever did.
         await record(c, {
@@ -1400,8 +1453,15 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
           action: OrganizationAuditActions.memberRoleChanged,
           actor: { organizationId: acting.organizationId, userId: who.userId },
           resource: { type: "membership", id: changed.id },
-          // The before beside the after (#831), so the change can be replayed without a guess.
+          // The before beside the after, so the change can be replayed without a guess.
           facts: { role: changed.role, previousRole: changed.previousRole, subjectUserId: changed.userId },
+        });
+        await roleChanged(c, {
+          organizationId: acting.organizationId,
+          membershipId: changed.id,
+          userId: changed.userId,
+          previousRole: changed.previousRole,
+          role: changed.role,
         });
         return c.json({ member: membershipView(changed) } satisfies MemberRoleResponse);
       },
@@ -1434,6 +1494,13 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
           actor: { organizationId: acting.organizationId, userId: who.userId },
           resource: { type: "membership", id: removed.membership.id },
           facts: { role: removed.membership.role, subjectUserId: removed.membership.userId },
+        });
+        await memberRemoved(c, {
+          organizationId: acting.organizationId,
+          membershipId: removed.membership.id,
+          userId: removed.membership.userId,
+          role: removed.membership.role,
+          left: removed.left,
         });
         return c.json({
           membershipId: removed.membership.id,
@@ -1471,8 +1538,15 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
           action: OrganizationAuditActions.memberLeft,
           actor: { organizationId: acting.organizationId, userId: who.userId },
           resource: { type: "membership", id: removed.membership.id },
-          // The member is named on every member event (#831), even where they are also the actor.
+          // The member is named on every member event, even where they are also the actor.
           facts: { role: removed.membership.role, subjectUserId: who.userId },
+        });
+        await memberRemoved(c, {
+          organizationId: acting.organizationId,
+          membershipId: removed.membership.id,
+          userId: who.userId,
+          role: removed.membership.role,
+          left: true,
         });
         return c.json({ membershipId: removed.membership.id, left: true } satisfies RemovedMemberResponse);
       },
@@ -1765,7 +1839,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
         if (!organization) {
           throw offerInvalid(`organization ${invitation.organizationId} no longer exists`);
         }
-        // A suspended or deleted organization offers nothing (#623): `acceptInvitation` refuses the join, so the
+        // A suspended or deleted organization offers nothing: `acceptInvitation` refuses the join, so the
         // accept screen must not show an offer it cannot honor — nor the name and inviter of a shut tenant.
         const standing = organizationStanding(organization, now);
         if (standing.state !== "active") {
@@ -1991,14 +2065,14 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
             facts: {
               confers: ownership.confers,
               demoted: transfer.previousHolderMembershipIds.length,
-              // The new holder's before and after (#831).
+              // The new holder's before and after.
               role: ownership.confers,
               previousRole: transfer.previousRole,
               subjectUserId: who.userId,
             },
           });
           /*
-            **Each demoted holder gets an event of their own**, as the forced path records them (#831). A fact
+            **Each demoted holder gets an event of their own**, as the forced path records them. A fact
             cannot be a list, so without these the trail would hold a count and never say whose role the
             acceptance took away.
           */
@@ -2014,7 +2088,21 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
                 ownershipTo: transfer.newHolderMembershipId,
               },
             });
+            await roleChanged(c, {
+              organizationId: acting.organizationId,
+              membershipId: holder.id,
+              userId: holder.userId,
+              previousRole: ownership.confers,
+              role: ownership.demotesTo,
+            });
           }
+          await roleChanged(c, {
+            organizationId: acting.organizationId,
+            membershipId: transfer.newHolderMembershipId,
+            userId: who.userId,
+            previousRole: transfer.previousRole,
+            role: ownership.confers,
+          });
           return c.json({
             newHolderMembershipId: transfer.newHolderMembershipId,
             previousHolderMembershipIds: [...transfer.previousHolderMembershipIds],
@@ -2156,7 +2244,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
       },
     );
 
-    // ── membership administration: an operator's writes, each with a reason (#624) ────────────────
+    // ── membership administration: an operator's writes, each with a reason ────────────────
 
     app.patch(
       `${base}/admin/organizations/:organizationId`,
@@ -2199,7 +2287,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
       },
     );
 
-    // ── the organization's own lifecycle: suspend, reinstate, delete, restore (#623) ────────────────
+    // ── the organization's own lifecycle: suspend, reinstate, delete, restore ────────────────
 
     /**
      * Suspend a tenant. Nobody can act in it until it is reinstated or `until` passes, and a member's selection of
@@ -2274,7 +2362,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
     );
 
     /**
-     * Who suspending a tenant would reach, before it is suspended (#813). The write's body, validated the same
+     * Who suspending a tenant would reach, before it is suspended. The write's body, validated the same
      * way and refused wherever the write would be refused, with the same error; the cascade's own selection,
      * with nothing applied. **It writes nothing** — no column, history row, mail, hook or audit act: a preview is
      * not an act, and the write that follows is the one on the trail. A snapshot, not a promise.
@@ -2445,7 +2533,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
     );
 
     /**
-     * Who deleting a tenant would reach, softly or hard, before it is deleted (#813) — on the suspension preview's
+     * Who deleting a tenant would reach, softly or hard, before it is deleted — on the suspension preview's
      * terms: the write's body and refusals, the cascade's own selection, nothing applied and nothing written.
      */
     app.post(
@@ -2621,6 +2709,13 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
             subjectUserId: changed.membership.userId,
           },
         });
+        await roleChanged(c, {
+          organizationId,
+          membershipId: changed.membership.id,
+          userId: changed.membership.userId,
+          previousRole: changed.previousRole,
+          role: changed.membership.role,
+        });
         const membership = await readMembership(database, organizationId, changed.membership.id);
         const person = (await readPeople(auth(c), [membership.userId])).get(membership.userId);
         return c.json({ member: adminMemberView(membership, person) } satisfies AdminMemberResponse);
@@ -2662,6 +2757,13 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
           reason: body.reason,
           resource: { type: "membership", id: removed.id },
           facts: { role: removed.role, subjectUserId: removed.userId, mailed },
+        });
+        await memberRemoved(c, {
+          organizationId,
+          membershipId: removed.id,
+          userId: removed.userId,
+          role: removed.role,
+          left: false,
         });
         return c.json({ membershipId: removed.id, userId: removed.userId } satisfies AdminRemovedMemberResponse);
       },
@@ -2878,6 +2980,13 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
                   mailed: removedMail,
                 },
               });
+              await memberRemoved(c, {
+                organizationId,
+                membershipId: holder.id,
+                userId: holder.userId,
+                role: transfer.confers,
+                left: false,
+              });
             } else {
               await recordOperator(c, organizationId, {
                 action: OrganizationAuditActions.adminMemberRoleChanged,
@@ -2890,6 +2999,13 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
                   forcedOwnershipTo: forced.newHolder.id,
                 },
               });
+              await roleChanged(c, {
+                organizationId,
+                membershipId: holder.id,
+                userId: holder.userId,
+                previousRole: transfer.confers,
+                role: transfer.demotesTo,
+              });
             }
           }
 
@@ -2901,13 +3017,20 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
             facts: {
               confers: transfer.confers,
               subjectUserId: forced.newHolder.userId,
-              // The new holder's before and after (#831).
+              // The new holder's before and after.
               role: transfer.confers,
               previousRole: forced.newHolder.previousRole,
               previousOwner: body.previousOwner,
               previousHolders: forced.previousHolders.length,
               mailed,
             },
+          });
+          await roleChanged(c, {
+            organizationId,
+            membershipId: forced.newHolder.id,
+            userId: forced.newHolder.userId,
+            previousRole: forced.newHolder.previousRole,
+            role: transfer.confers,
           });
           return c.json({
             newHolderMembershipId: forced.newHolder.id,

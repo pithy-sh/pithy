@@ -145,6 +145,18 @@ export const RETENTION_HOLD_SCOPE: ControlPlaneScope = "retention:hold";
 export const RETENTION_READ_SCOPE: ControlPlaneScope = "retention:read";
 
 /**
+ * List every connection bound to this Worker's environment: who authorized it, what kind of client it is for, its purpose, its
+ * credential kinds, its grant and when it was registered or revoked. Kind `reads`. Never key material.
+ */
+export const CONNECTIONS_READ_SCOPE: ControlPlaneScope = "connections:read";
+
+/**
+ * Revoke every key and trust another connection in this Worker's environment holds, with a reason. Kind
+ * `credentials`. Refused on the caller's own connection, which ends through `disconnect`.
+ */
+export const CONNECTIONS_REVOKE_SCOPE: ControlPlaneScope = "connections:revoke";
+
+/**
  * The seam's base grant — what `pithy dashboard connect` grants whatever the Worker composes. Ping is absent
  * because it is not grantable; see {@link ANY_VERIFIED_CALLER}.
  *

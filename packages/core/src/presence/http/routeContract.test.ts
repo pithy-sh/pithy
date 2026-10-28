@@ -55,7 +55,13 @@ describe("presence route contract", () => {
       name: "support",
       requiredBindings: [],
       adminRoutes: [
-        { method: "GET", path: "/support/threads", scope: "support:threads:read", summary: "List threads." },
+        {
+          method: "GET",
+          path: "/support/threads",
+          scope: "support:threads:read",
+          kind: "reads",
+          summary: "List threads.",
+        },
       ],
       presence,
     });

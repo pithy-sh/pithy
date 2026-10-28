@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import type { AdminRouteDeclaration } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 
 /**
  * Payments' control-plane scopes, and the admin surface a manifest advertises.
  *
- * **Separate from `guards.ts` because a scope name is a client's business** (#315). A management
+ * **Separate from `guards.ts` because a scope name is a client's business**. A management
  * client reads these to render what a connection may do, and `pithy-sh/dashboard`'s scope builder
  * writes the `pithy dashboard connect --scope …` command from exactly these constants — in a browser
  * program, with the DOM lib and no Workers types. While they sat beside the Hono middleware, naming
@@ -51,7 +51,7 @@ export const PAYMENTS_DISCOUNT_CREATE_SCOPE: ControlPlaneScope = "payments:disco
  *
  * Separate from creating one, and strictly narrower: a pane that lists what was minted does not need the
  * power to mint. The read exists because the write does — a management client that can create a code and
- * never see it leaves a pane computing *absent* rather than blocked, which no grant repairs (#247).
+ * never see it leaves a pane computing *absent* rather than blocked, which no grant repairs.
  */
 export const PAYMENTS_DISCOUNT_READ_SCOPE: ControlPlaneScope = "payments:discounts:read";
 
@@ -135,8 +135,7 @@ export const PAYMENTS_RECONCILE_READ_SCOPE: ControlPlaneScope = "payments:reconc
  *
  * **A trigger exists because the cron is not enough.** `pithy payments reconcile` runs the same pass, and it
  * needs a laptop, a checkout, and a Cloudflare API token for the project — so the answer to "my subscription
- * isn't showing up" at 4pm on a Saturday is either this route or nothing until 04:00 UTC. Adopted from
- * `pithy-sh/dashboard#96`, where the operator with the run log open had no way to act on it.
+ * isn't showing up" at 4pm on a Saturday is either this route or nothing until 04:00 UTC.
  *
  * Idempotent by construction, so the scope carries no warning about pressing twice: `reconcilePayments` finds
  * a reconciled catalog already matching and writes nothing.
@@ -174,7 +173,7 @@ export const PAYMENTS_USAGE_READ_SCOPE: ControlPlaneScope = "payments:usage:read
 
 /**
  * Read the webhook-event log — every notification a store sent, whether it became a purchase, is still
- * pending with its attempts, or was given up on, and which purchase and subscription rows it changed (#830).
+ * pending with its attempts, or was given up on, and which purchase and subscription rows it changed.
  *
  * Its own scope, and a read in kind. The rows name no subject, but they are a record of every customer's
  * commerce as the stores reported it, so a tool reading them should hold exactly this — not the purchase log,
@@ -228,13 +227,14 @@ export const PAYMENTS_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  * construction rather than by luck. It also keeps the reads at the shape a management client looks for: a
  * `GET`, with a declared scope, no `:` segment, ending in the resource's own noun.
  */
-export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
+export function paymentsAdminRoutes(basePath: string): AdminRouteDeclaration[] {
   return [
     {
       method: "GET",
       operation: "catalog.read",
       path: `${basePath}/admin/catalog`,
       scope: PAYMENTS_CATALOG_READ_SCOPE,
+      kind: "reads",
       summary:
         "What this project sells — each product's id, kind, display name, and the entitlement keys it grants. The list a comp control fills its dropdown from.",
     },
@@ -243,6 +243,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       operation: "purchases.list",
       path: `${basePath}/admin/purchases`,
       scope: PAYMENTS_PURCHASES_READ_SCOPE,
+      kind: "reads",
       summary:
         "Page the purchase log — every verified transaction, newest first, filtered by holder (both halves of the subject), store, status or store environment.",
     },
@@ -251,6 +252,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       operation: "subscriptions.list",
       path: `${basePath}/admin/subscriptions`,
       scope: PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
+      kind: "reads",
       summary: "Page the purchases that renew — who is still paying, and when the period they paid for ends.",
     },
     {
@@ -258,6 +260,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       operation: "entitlements.list",
       path: `${basePath}/admin/entitlements`,
       scope: PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+      kind: "reads",
       summary: "Page what accounts hold — whether each entitlement grants right now, and which purchase is the reason.",
     },
     {
@@ -265,6 +268,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       operation: "entitlements.read",
       path: `${basePath}/admin/entitlements/:subjectType/:subjectId`,
       scope: PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+      kind: "reads",
       summary:
         "Everything one subject is entitled to, resolved now — addressed by both halves, `user`/`organization` and the id. The answer to “why can this person not use what they paid for”.",
     },
@@ -273,6 +277,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       operation: "discounts.list",
       path: `${basePath}/admin/discounts`,
       scope: PAYMENTS_DISCOUNT_READ_SCOPE,
+      kind: "reads",
       summary: "The discount codes this project has issued, read from the store that holds them.",
     },
     {
@@ -280,6 +285,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       operation: "discounts.create",
       path: `${basePath}/admin/discounts`,
       scope: PAYMENTS_DISCOUNT_CREATE_SCOPE,
+      kind: "charges",
       summary: "Mint a discount code at one store, from terms stated in the units a customer experiences.",
     },
     {
@@ -287,6 +293,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       operation: "reconcile_runs.list",
       path: `${basePath}/admin/reconcile-runs`,
       scope: PAYMENTS_RECONCILE_READ_SCOPE,
+      kind: "reads",
       summary:
         "The reconciliation passes this deployment has run — when each ran, what it compared, and what it had to repair. The answer to whether the nightly repair is still firing.",
     },
@@ -295,6 +302,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       operation: "reconcile_runs.start",
       path: `${basePath}/admin/reconcile-runs`,
       scope: PAYMENTS_RECONCILE_RUN_SCOPE,
+      kind: "writes",
       summary:
         "Start a reconciliation pass now, rather than waiting for the nightly one. The repair path for a purchase a dropped webhook never projected.",
     },
@@ -303,6 +311,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       operation: "entitlements.grant",
       path: `${basePath}/entitlements/grant`,
       scope: PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
+      kind: "charges",
       summary: "Comp an entitlement, or repair a purchase that verified but never projected.",
     },
     {
@@ -310,6 +319,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       operation: "entitlements.revoke",
       path: `${basePath}/entitlements/revoke`,
       scope: PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
+      kind: "charges",
       summary: "Take an entitlement back, effective immediately.",
     },
     {
@@ -317,6 +327,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       operation: "usage_runs.list",
       path: `${basePath}/admin/usage-runs`,
       scope: PAYMENTS_USAGE_READ_SCOPE,
+      kind: "reads",
       summary:
         "The usage-reporting passes this deployment has run — what each reported, and which subjects it skipped and why. The answer to why a quantity-billed customer was not billed.",
     },
@@ -325,6 +336,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       operation: "webhook_events.list",
       path: `${basePath}/admin/webhook-events`,
       scope: PAYMENTS_WEBHOOKS_READ_SCOPE,
+      kind: "reads",
       summary:
         "Page every notification a store sent — whether it became a purchase, is still pending, or was given up on, and what it changed. The answer to why a purchase is paid and not entitled, or entitled and not paid.",
     },
@@ -333,6 +345,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       operation: "overrides.list",
       path: `${basePath}/admin/overrides`,
       scope: PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+      kind: "reads",
       summary:
         "Page every subject's override — the numbers negotiated per customer, and which subjects are unrestricted.",
     },
@@ -341,6 +354,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       operation: "overrides.set",
       path: `${basePath}/entitlements/overrides`,
       scope: PAYMENTS_OVERRIDE_SET_SCOPE,
+      kind: "charges",
       summary:
         "Pin a negotiated number or switch for one subject, with a reason on the record. Merges by name; every other allowance keeps tracking the plan.",
     },
@@ -349,6 +363,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       operation: "overrides.unrestricted",
       path: `${basePath}/entitlements/overrides/unrestricted`,
       scope: PAYMENTS_OVERRIDE_UNRESTRICTED_SCOPE,
+      kind: "charges",
       summary:
         "Grant one subject the whole product — every quota unlimited and every feature on, including names declared later — or take it back.",
     },
@@ -357,6 +372,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       operation: "overrides.clear",
       path: `${basePath}/entitlements/overrides/clear`,
       scope: PAYMENTS_OVERRIDE_CLEAR_SCOPE,
+      kind: "charges",
       summary:
         "Unpin allowances for one subject, or clear its override entirely. Unpinned names follow the plan again.",
     },

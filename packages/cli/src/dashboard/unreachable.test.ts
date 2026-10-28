@@ -8,11 +8,11 @@ import { dashboardStatus } from "./connect";
 import type { ConnectionRegistry } from "./registry";
 
 /**
- * Nothing answered, so the connection's health is unknown — `#614`.
+ * Nothing answered, so the connection's health is unknown.
  *
- * `status --verify` turned every throw into `needs_reconnect`, so a CLI that could not reach a
- * dashboard reported that the operator's *connection* needed rebuilding. It is a verdict about a thing
- * nothing looked at, and an operator who believes it runs `connect` and meets a unique index.
+ * A CLI that cannot reach a dashboard must not report that the operator's *connection* needs rebuilding: that
+ * is a verdict about a thing nothing looked at, and an operator who believes it runs `connect` and meets a
+ * unique index.
  */
 
 const CONNECTION = {
@@ -45,6 +45,8 @@ function registryOf(connection: ControlPlaneConnection | null): ConnectionRegist
     revokeKey: async () => connection,
     appendTrust: async () => connection as ControlPlaneConnection,
     revokeTrust: async () => connection,
+    list: async () => ({ connections: [], unattributed: [] }),
+    revokeConnection: async () => null,
     remove: async () => true,
     dispose: async () => {},
   };

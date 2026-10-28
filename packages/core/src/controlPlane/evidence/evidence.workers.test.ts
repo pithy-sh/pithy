@@ -25,7 +25,7 @@ import { CONTROL_PLANE_HEADER } from "../wire";
 import { EVIDENCE_CONTROL_IDS, EVIDENCE_MAPPING_VERSION } from "./mapping";
 
 /**
- * The evidence pack end to end (#821), in workerd: a real composed backend, real D1, a real Ed25519 token, and the
+ * The evidence pack end to end, in workerd: a real composed backend, real D1, a real Ed25519 token, and the
  * route a management client calls. The rules for each state are `derive.test.ts`'s; this holds that the Worker
  * reads what it actually composes and records, and that the pack never says more than it found.
  */
@@ -45,7 +45,13 @@ const secretsLike = defineCapability({
   name: "secrets",
   requiredBindings: [],
   adminRoutes: [
-    { method: "GET", path: "/secrets/admin/status", scope: SECRETS_STATUS_SCOPE, summary: "Every secret's status." },
+    {
+      method: "GET",
+      path: "/secrets/admin/status",
+      scope: SECRETS_STATUS_SCOPE,
+      kind: "reads",
+      summary: "Every secret's status.",
+    },
   ],
   health: defineCapabilityHealth({
     keys: [

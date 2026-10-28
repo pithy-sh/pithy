@@ -11,7 +11,7 @@ import { allowedOriginSet, corsSurface, devLoopbackAllows, originOf } from "./co
 import { requireControlPlane } from "./guard";
 
 /**
- * CORS across the whole control-plane surface (#468).
+ * CORS across the whole control-plane surface.
  *
  * **Nothing here touches D1, and that is an assertion rather than a convenience.** Every case runs
  * against `{ DB: {} }` — an object that is not a database and would throw on the first query. A
@@ -39,7 +39,13 @@ const inventory = defineCapability({
   name: "inventory",
   requiredBindings: [],
   adminRoutes: [
-    { method: "GET", path: "/inventory/admin/things", scope: INVENTORY_READ_SCOPE, summary: "Every pending thing." },
+    {
+      method: "GET",
+      path: "/inventory/admin/things",
+      scope: INVENTORY_READ_SCOPE,
+      kind: "reads",
+      summary: "Every pending thing.",
+    },
   ],
   routes: (app) => {
     app.get("/inventory/admin/things", requireControlPlane(INVENTORY_READ_SCOPE), (c) => c.json({ things: [] }));
@@ -51,7 +57,13 @@ const vault = defineCapability({
   name: "vault",
   requiredBindings: [],
   adminRoutes: [
-    { method: "GET", path: "/vault/admin/secrets", scope: VAULT_READ_SCOPE, summary: "Every secret, in full." },
+    {
+      method: "GET",
+      path: "/vault/admin/secrets",
+      scope: VAULT_READ_SCOPE,
+      kind: "reads",
+      summary: "Every secret, in full.",
+    },
   ],
   routes: (app) => {
     app.get("/vault/admin/secrets", requireControlPlane(VAULT_READ_SCOPE), (c) => c.json({ secrets: [] }));
@@ -415,8 +427,7 @@ describe("registration order", () => {
   });
 
   test("and its refusal stays readable, which is the entire point of the change", async () => {
-    // Without this the dashboard meets a misprovisioned Worker as an opaque `fetch` TypeError — the
-    // failure #468 exists to remove, arriving on the one misconfiguration where the operator most
+    // Without this the dashboard meets a misprovisioned Worker as an opaque `fetch` TypeError, arriving on the one misconfiguration where the operator most
     // needs to read the real message.
     const response = await call(blocked, "/control-plane/manifest", { method: "GET" });
     expect(response.status).toBe(500);
