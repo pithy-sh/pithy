@@ -6,11 +6,12 @@
  * by `@pithy-sh/cloudflare`'s Vectorize suite and `@pithy-sh/vector`'s, so neither keeps a shorter budget or a
  * single confirming read of its own.
  *
- * **The budget is 120s, and 300s for a metadata index or an upsert.** A Vectorize index became visible 25-50s
- * after the call that made it, measured live. A metadata index is slower: about 97s on one run and over 120s on
- * the next, so its waits take {@link METADATA_INDEX_SETTLE_MS}. An upsert usually becomes queryable in about
- * 30s, but one written right after a metadata index was still unqueryable at 121s, with the vectors before it
- * visible, so the waits for an upsert take {@link UPSERT_SETTLE_MS}.
+ * **The budget is 120s, 300s for an upsert, and 600s for a metadata index.** A Vectorize index became visible
+ * 25-50s after the call that made it, measured live. An upsert usually becomes queryable in about 30s, but one
+ * written right after a metadata index was still unqueryable at 121s, with the vectors before it visible, so the
+ * waits for an upsert take {@link UPSERT_SETTLE_MS}. A metadata index is the slowest: about 97s on one run, over
+ * 120s on the next, and one of two still missing at 300s on a third. Cloudflare documents no readiness time and no
+ * readiness signal for one, so its waits take {@link METADATA_INDEX_SETTLE_MS}, twice the longest measured.
  *
  * **An upsert is waited on by its outcome, never by its mutation id.** `describe()` reports a
  * `processedUpToMutation` watermark, and the manager reads it. The watermark moves through mutation ids the
@@ -40,13 +41,14 @@ export const SETTLE_TIMEOUT_MS = 120_000;
 
 /**
  * Ceiling for a metadata-index wait. A metadata index is the slowest change Vectorize applies: one settled in
- * about 97s and the next was still unsettled at 120s. `pithy vector provision` waits on the same measurement.
+ * about 97s, the next was unsettled at 120s, and a third was still missing at 300s. Twice that last figure, and
+ * `pithy vector provision` waits on the same number.
  */
-export const METADATA_INDEX_SETTLE_MS = 300_000;
+export const METADATA_INDEX_SETTLE_MS = 600_000;
 
 /**
  * Ceiling for an upsert to become queryable. About 30s is usual, and one written right after a metadata index
- * was still missing from the query at 121s, so the waits for an upsert take the metadata-index budget.
+ * was still missing from the query at 121s, so the waits for an upsert take more than the shared budget.
  */
 export const UPSERT_SETTLE_MS = 300_000;
 

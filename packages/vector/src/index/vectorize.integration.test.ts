@@ -129,19 +129,19 @@ function restVectorStore(manager: CloudflareVectorizeManager): VectorStore {
  * not: when the sum outran this test's vitest timeout, vitest abandoned the body mid-poll, the failure named no
  * step, and the teardown that deletes the index never ran.
  *
- * Sized from what was measured. Creating an index and settling its two metadata indexes takes 100-115s, the
- * phase the first test here runs alone. A run that failed on the late upsert had spent about 390s before that
- * wait began, and the wait then used its whole 120s with three of the four vectors visible. The upsert waits
- * now take {@link UPSERT_SETTLE_MS} and the metadata-index waits {@link METADATA_INDEX_SETTLE_MS}, so fifteen
- * minutes covers that run's 390s, one of those waits using its whole 300s, and the steps after it. Past it, the
- * step in progress fails by name and the teardown still runs.
+ * Sized from what was measured. Creating an index and settling its two metadata indexes usually takes 100-115s,
+ * the phase the first test here runs alone. A run that failed on the late upsert had spent about 390s before that
+ * wait began. The metadata-index waits take {@link METADATA_INDEX_SETTLE_MS} and the upsert waits
+ * {@link UPSERT_SETTLE_MS}, so twenty minutes covers that run's 390s, one metadata-index wait using its whole
+ * 600s in place of its usual 100s, and the steps after it. Past it, the step in progress fails by name and the
+ * teardown still runs.
  */
-const DATA_TEST_BUDGET_MS = 900_000;
+const DATA_TEST_BUDGET_MS = 1_200_000;
 
 /**
  * The settle predicate for a metadata-index list: the drift check's own rule, with nothing missing and nothing
  * mismatched. A count passed a list of the right length with the wrong names in it. The wait it drives takes
- * {@link METADATA_INDEX_SETTLE_MS}, measured at about 97s on one run and over 120s on the next.
+ * {@link METADATA_INDEX_SETTLE_MS}.
  */
 function declares(declared: readonly MetadataIndexDescriptor[]) {
   return (live: readonly { propertyName: string; indexType: string }[]): boolean => {
@@ -232,9 +232,9 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
 
     // Teardown landed: the index is gone from the account.
     expect(await provisioner.findIndexByName(name)).toBeNull();
-    // Above the run's 300s default: the metadata-index wait alone may take its whole 300s budget, and the
+    // Above the run's 300s default: the metadata-index wait alone may take its whole 600s budget, and the
     // create, the addressable wait and the teardown come on top of it.
-  }, 360_000);
+  }, 720_000);
 
   test("embeds, upserts, filters — and a metadata index created late covers none of the vectors before it", async () => {
     const name = uniqueName("vecdat");
@@ -411,5 +411,5 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
     expect(await provisioner.findIndexByName(name)).toBeNull();
     // DATA_TEST_BUDGET_MS, plus a minute for the teardown: one index delete and the read that confirms it.
     // A literal, because a test call keeps its compact shape only with a numeric literal in this position.
-  }, 960_000);
+  }, 1_260_000);
 });

@@ -38,11 +38,12 @@ describe("the settle budget", () => {
 });
 
 describe("the metadata-index budget", () => {
-  // Measured live: a metadata index settled in about 97s on one run and was still unsettled at 120s on the
-  // next, so the shared 120s budget undercuts exactly this wait.
-  it("is 300s, and longer than every other wait's", () => {
-    expect(METADATA_INDEX_SETTLE_MS).toBe(300_000);
+  // Measured live: a metadata index settled in about 97s on one run, was unsettled at 120s on the next, and
+  // was still missing at 300s on a third. Cloudflare documents no readiness time, so the budget is twice that.
+  it("is 600s, and longer than every other wait's", () => {
+    expect(METADATA_INDEX_SETTLE_MS).toBe(600_000);
     expect(METADATA_INDEX_SETTLE_MS).toBeGreaterThan(SETTLE_TIMEOUT_MS);
+    expect(METADATA_INDEX_SETTLE_MS).toBeGreaterThan(UPSERT_SETTLE_MS);
   });
 });
 
@@ -50,10 +51,9 @@ describe("the upsert budget", () => {
   // An upsert written right after a metadata index was still missing from the query at 121s, with the vectors
   // before it visible. The wait is on the query, not on `processedUpToMutation`: the watermark steps through
   // mutation ids nobody issued, and an unordered UUID cannot say whether it has passed ours.
-  it("is 300s, longer than the shared budget and no shorter than a metadata index's", () => {
+  it("is 300s, longer than the shared budget", () => {
     expect(UPSERT_SETTLE_MS).toBe(300_000);
     expect(UPSERT_SETTLE_MS).toBeGreaterThan(SETTLE_TIMEOUT_MS);
-    expect(UPSERT_SETTLE_MS).toBeGreaterThanOrEqual(METADATA_INDEX_SETTLE_MS);
   });
 });
 

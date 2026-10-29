@@ -24,9 +24,8 @@ const DIMENSIONS = 32; // Vectorize requires dimensions in [32, 1536].
  * So a single confirming read proves nothing, and deleting straight after creating races the create: the
  * delete arrives first and Vectorize answers `400`/40005. Settle before asserting, and before deleting.
  *
- * The budget and the rule are `@pithy-sh/vector`'s suite's, shared through `test-utils/settle`: the 300s
- * metadata-index budget, three agreeing reads, and a predicate that compares the name and the type. This
- * suite had 60s and one read of its own, then 120s, and timed out on a slow apply both times (#709).
+ * The budget and the rule are `@pithy-sh/vector`'s suite's, shared through `test-utils/settle`: the
+ * metadata-index budget, three agreeing reads, and a predicate that compares the name and the type.
  */
 async function waitForMetadataIndex(
   provisioner: CloudflareVectorizeProvisioner,
@@ -51,10 +50,10 @@ describe.skipIf(!creds.hasCreds)("CloudflareVectorizeProvisioner — LIVE", () =
   // back. The reclaim is now the run's own `globalSetup` sweep rather than a `beforeAll` here, so it also
   // covers `@pithy-sh/vector`'s indexes, which this suite never saw. See `test-utils/reap.ts`.
 
-  // Its own timeout, above the run's 120s default: the metadata-index wait alone may take its whole 300s
+  // Its own timeout, above the run's 120s default: the metadata-index wait alone may take its whole 600s
   // budget, and the create, the reads and the deletes come on top of it.
   test("validates access, creates an index, finds it, indexes a metadata property, then deletes it", {
-    timeout: 360_000,
+    timeout: 720_000,
   }, async () => {
     const provisioner = new CloudflareVectorizeProvisioner({ accountId: creds.accountId, apiToken: creds.apiToken });
 
