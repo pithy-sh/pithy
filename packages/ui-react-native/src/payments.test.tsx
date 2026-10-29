@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { AppState, type AppStateStatus, Platform } from "react-native";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -81,8 +81,7 @@ describe("how a product sells here", () => {
     const payments = await load("ios");
     expect(payments.purchasePath(product)).toEqual({ kind: "hosted", rail: "stripe" });
     payments.paymentsClient.navigate?.("https://checkout.stripe.com/c/pay/cs_1");
-    await Promise.resolve();
-    expect(webBrowser.opened).toEqual(["https://checkout.stripe.com/c/pay/cs_1"]);
+    await waitFor(() => expect(webBrowser.opened).toEqual(["https://checkout.stripe.com/c/pay/cs_1"]));
     config.rails = { ios: "apple", android: "google", web: "stripe" };
   });
 

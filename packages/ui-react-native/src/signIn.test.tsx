@@ -132,9 +132,18 @@ async function open(platform: "ios" | "android" | "web", path = "/sign-in", span
 
 const posted = (suffix: string): Call | undefined => calls.find((call) => call.url.endsWith(suffix));
 
-/** The start route the sign-in sheet was opened on, and the query it carried. */
-function sheetStart(index = 0): { route: string; query: Record<string, string> } {
-  const url = new URL(webBrowser.authSessions[index]?.url ?? "");
+/**
+ * The start route the sign-in sheet was opened on, and the query it carried. The sheet opens after the press
+ * resolves, once the handoff verifier is made, so this waits for it: read early, the log is empty, and the
+ * session lands in the next test's.
+ */
+async function sheetStart(index = 0): Promise<{ route: string; query: Record<string, string> }> {
+  const session = await waitFor(() => {
+    const opened = webBrowser.authSessions[index];
+    expect(opened).toBeDefined();
+    return opened as { url: string };
+  });
+  const url = new URL(session.url);
   return { route: `${url.origin}${url.pathname}`, query: Object.fromEntries(url.searchParams) };
 }
 
@@ -451,8 +460,9 @@ describe("on a phone, Google", () => {
     await open("ios");
     await press(screen.getByRole("button", { name: "Continue with Google" }));
     expect(google.configured).toBeNull();
-    expect(sheetStart().route).toBe(START);
-    expect(sheetStart().query.provider).toBe("google");
+    const started = await sheetStart();
+    expect(started.route).toBe(START);
+    expect(started.query.provider).toBe("google");
   });
 });
 
@@ -465,7 +475,7 @@ describe("on a phone, any other provider", () => {
     await waitFor(() => expect(adapter.path()).toBe("/"));
     // The sheet itself starts the sign-in, so the provider's state cookie lands in its jar; the app posts nothing.
     expect(posted("/sign-in/social")).toBeUndefined();
-    const started = sheetStart();
+    const started = await sheetStart();
     expect(started.route).toBe(START);
     expect(started.query.provider).toBe("github");
     expect(started.query.callbackURL).toMatch(/^pithyapp:\/\/callback\?handoff_challenge=/);
@@ -484,7 +494,7 @@ describe("on a phone, any other provider", () => {
     await press(screen.getByRole("button", { name: "Continue with GitHub" }));
     await waitFor(() => expect(adapter.path()).toBe("/"));
     expect(posted("/sign-in/social")).toBeUndefined();
-    const started = sheetStart();
+    const started = await sheetStart();
     expect(started.route).toBe(START);
     expect(started.query.callbackURL).toMatch(/^https:\/\/links\.example\.com\/callback\?handoff_challenge=/);
     expect(started.query.errorCallbackURL).toBe("https://links.example.com/callback?provider=github");
@@ -531,7 +541,8 @@ describe("on a phone, any other provider", () => {
     webBrowser.authResult = { type: "cancel" };
     await open("ios");
     await press(screen.getByRole("button", { name: "Continue with GitHub" }));
-    expect(secureStore.items.has("pithy.auth.handoff")).toBe(false);
+    await sheetStart();
+    await waitFor(() => expect(secureStore.items.has("pithy.auth.handoff")).toBe(false));
     expect(posted("/handoff")).toBeUndefined();
     expect(screen.queryByText(/GitHub (is|didn't)/)).toBeNull();
   });
