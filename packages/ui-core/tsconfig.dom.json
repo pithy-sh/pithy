@@ -1,0 +1,12 @@
+{
+  // The `.tsx` tests, which render through react-dom into happy-dom and so need the DOM lib and JSX. The published
+  // source stays in `tsconfig.json`, which has neither: this package is shared by a React Native client, and a
+  // `document` reaching it there would compile in a program that declared the DOM.
+  "extends": "@pithy-sh/tsconfig/base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": []
+  },
+  "include": ["src/**/*.tsx"]
+}

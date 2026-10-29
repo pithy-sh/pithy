@@ -4,8 +4,10 @@
 import { env } from "cloudflare:test";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import { type AuditEmit, noopEmit } from "@pithy-sh/core/src/audit/recorder";
-import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import { defineCapability, type PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
+import { createLogger } from "@pithy-sh/core/src/logger/logger";
+import type { LogRecord } from "@pithy-sh/core/src/logger/record";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { email } from "@pithy-sh/email/src/capability";
@@ -244,6 +246,57 @@ describe("auth HTTP routes", () => {
     expect(bound?.device_id).toBe("dev-1");
     // A family id is minted on first rotation, so a later replay of the old token can revoke the chain.
     expect(bound?.family_id).toBeTruthy();
+  });
+
+  test("token/rotate still answers with a usable successor when a session-rotated listener throws, and names it", async () => {
+    const { token } = await signIn(DEVICE_HEADERS);
+    const heard: string[] = [];
+    const wiring: AuthWiring = {
+      ...buildWiring(),
+      composed: [
+        defineCapability({
+          name: "tenancy",
+          requiredBindings: [],
+          sessionRotated: async () => {
+            throw new Error("tenancy is not bound");
+          },
+        }),
+        defineCapability({
+          name: "after",
+          requiredBindings: [],
+          sessionRotated: async ({ sessionId }) => {
+            heard.push(sessionId);
+          },
+        }),
+      ],
+    };
+    const warnings: LogRecord[] = [];
+    const log = createLogger({ level: "debug", sink: (record) => warnings.push(record) });
+    const app = new Hono<PithyHonoEnv>();
+    app.use("*", async (c, next) => {
+      c.set("log", log);
+      await next();
+    });
+    app.route("/", buildApp(wiring));
+
+    const res = await app.request(
+      "/auth/token/rotate",
+      { method: "POST", headers: { authorization: `Bearer ${token}` } },
+      appEnv(),
+    );
+    expect(res.status).toBe(200);
+    const body = await conforming(res, TokenRotateResponse);
+    expect(heard).toHaveLength(1);
+    const fresh = await app.request(
+      "/auth/devices",
+      { headers: { authorization: `Bearer ${body.refreshToken}` } },
+      appEnv(),
+    );
+    expect(fresh.status).toBe(200);
+    const warned = warnings.filter((record) => record.level === "warn" && record.msg.includes("session-rotated"));
+    expect(warned).toHaveLength(1);
+    expect(warned[0]?.name).toBe("auth");
+    expect(warned[0]?.fields).toMatchObject({ capability: "tenancy", error: "tenancy is not bound" });
   });
 
   test("a signed-in caller reaches link-social; the gate does not refuse a fresh authentication", async () => {

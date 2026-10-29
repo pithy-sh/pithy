@@ -331,6 +331,22 @@ async function uiWorkers(projectDir: string): Promise<{ name: string; dir: strin
   return out;
 }
 
+/**
+ * Each app with a React Native front end, by directory name. Its templates come from `@pithy-sh/ui-react-native`,
+ * and this report compares `@pithy-sh/ui-react`'s alone, so it names them as not compared.
+ */
+export async function uncomparedApps(projectDir: string): Promise<string[]> {
+  const out: string[] = [];
+  for (const dir of (await bases(projectDir)).slice(1)) {
+    try {
+      if ((await readWorkerUi(dir))?.stub === "react-native") out.push(basename(dir));
+    } catch {
+      // A manifest that will not read is not a front end this can name.
+    }
+  }
+  return out;
+}
+
 /** What a Worker holds at each path, absent paths omitted. */
 async function workerFiles(dir: string, paths: readonly string[]): Promise<Map<string, string>> {
   const out = new Map<string, string>();

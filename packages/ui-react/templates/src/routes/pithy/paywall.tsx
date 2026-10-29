@@ -7,7 +7,7 @@ import {
   submitPurchase,
 } from "@pithy-sh/payments/src/client/api";
 import { useCheckout, usePaddleCheckout } from "@pithy-sh/payments/src/client/hooks";
-import { useRead } from "@pithy-sh/ui-react/src/read";
+import { useRead } from "@pithy-sh/ui-core/src/read";
 import { useState } from "react";
 // `CHECKOUT_FRAME` is imported rather than declared here: the two screens that sell share one class, and
 // `.pithy-checkout` is a hook you are meant to style. Two copies is one styled checkout and one bare one.

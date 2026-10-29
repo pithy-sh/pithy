@@ -13,7 +13,15 @@ import { ACTING_TABLE, MEMBERSHIPS_TABLE, ORGANIZATIONS_TABLE, organizationDatab
 import { ORGANIZATION_MIGRATION_ORDER } from "../migrations/0001_init";
 import { ORGANIZATION_MIGRATIONS } from "../migrations/set";
 import { defineRoles } from "../roles/roles";
-import { chooseActing, clearActing, hasAnyMembership, listActable, resolveActing, resolveActingIn } from "./acting";
+import {
+  carryActing,
+  chooseActing,
+  clearActing,
+  hasAnyMembership,
+  listActable,
+  resolveActing,
+  resolveActingIn,
+} from "./acting";
 
 /**
  * **The most important suite in this package.**
@@ -373,6 +381,32 @@ describe("listActable — what the chooser draws", () => {
       .bind(INSIDER)
       .run();
     await expect(listActable(db(), catalog, INSIDER)).rejects.toBeInstanceOf(PithyError);
+  });
+});
+
+describe("carryActing", () => {
+  const SUCCESSOR = "session_cccc";
+
+  test("a rotated session keeps the organization its predecessor chose, chosen as it was", async () => {
+    await choose(INSIDER, ACME);
+    await carryActing(db(), { previousSessionId: SESSION, sessionId: SUCCESSOR, userId: INSIDER });
+    const carried = await resolveActing(db(), catalog, { userId: INSIDER, sessionId: SUCCESSOR });
+    expect(carried?.organizationId).toBe(ACME);
+    expect(carried?.chosen).toBe(true);
+    expect(await resolveActing(db(), catalog, { userId: INSIDER, sessionId: SESSION })).toBeNull();
+  });
+
+  test("a selection is carried only for the person who made it", async () => {
+    await choose(INSIDER, ACME);
+    await carryActing(db(), { previousSessionId: SESSION, sessionId: SUCCESSOR, userId: STRANGER });
+    expect(await resolveActing(db(), catalog, { userId: STRANGER, sessionId: SUCCESSOR })).toBeNull();
+    expect((await resolveActing(db(), catalog, { userId: INSIDER, sessionId: SESSION }))?.slug).toBe("acme");
+  });
+
+  test("a session that chose nothing carries nothing, and says nothing", async () => {
+    await carryActing(db(), { previousSessionId: SESSION, sessionId: SUCCESSOR, userId: INSIDER });
+    const rows = await env.DB.prepare("select count(*) as n from pithy_organization_acting").first<{ n: number }>();
+    expect(rows?.n).toBe(0);
   });
 });
 

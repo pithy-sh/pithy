@@ -460,8 +460,8 @@ describe("pithy.manifest.json — declared secrets", () => {
  * webhook secret, an Apple issuer id, a Google service-account document. It was replaced rather than
  * extended. A negative list is complete only against the values somebody thought of, and a projection
  * widens by gaining a *field* — the event no value list can observe. Those shapes are all still refused,
- * strictly: none of them is a product id, a kind, a display name, an entitlement key, a hosted-checkout
- * identifier, a rail flag or a base path, so any of them crossing is a leaf the sweep reports.
+ * strictly: none of them is a product id, a kind, a display name, an entitlement key, a rail SKU, a rail
+ * flag or a base path, so any of them crossing is a leaf the sweep reports.
  */
 const CLIENT_CATALOG = {
   billingSubject: "user" as const,
@@ -489,9 +489,8 @@ const CLIENT_CATALOG = {
       type: "subscription" as const,
       name: "Pro",
       entitlements: ["pro"],
-      // The store SKUs are deliberately unlike the product id. They were `pro_monthly` and `coin_pack`,
-      // which are also the ids — so no sweep could tell an Apple or Play SKU that crossed from a product
-      // id that was meant to, and the two most obvious forbidden values were invisible to any check.
+      // The store SKUs are deliberately unlike the product id, so a test reading a product's SKUs can
+      // tell an Apple or Play SKU from the product id it belongs to.
       apple: { productId: "com.acme.pro.monthly" },
       google: { productId: "acme.pro.monthly.v1" },
       stripe: { priceId: "price_1Abc" },
@@ -577,8 +576,26 @@ describe("payments().client — virtual:pithy/payments", () => {
     }
     // The rail-keyed map is a second key set and gets the same treatment: written out, never derived.
     for (const product of projection.products as { skus: Record<string, unknown> }[]) {
-      expect(Object.keys(product.skus).sort()).toEqual(["lemonSqueezy", "paddle", "stripe"]);
+      expect(Object.keys(product.skus).sort()).toEqual(["apple", "google", "lemonSqueezy", "paddle", "stripe"]);
     }
+  });
+
+  test("carries each product's App Store and Play SKU, so a native app has a product to buy", () => {
+    const skus = Object.fromEntries(
+      (projection.products as { id: string; skus: Record<string, string | null> }[]).map((product) => [
+        product.id,
+        product.skus,
+      ]),
+    );
+    expect(skus.pro_monthly).toEqual({
+      apple: "com.acme.pro.monthly",
+      google: "acme.pro.monthly.v1",
+      stripe: "price_1Abc",
+      lemonSqueezy: null,
+      paddle: null,
+    });
+    expect(skus.remove_ads).toMatchObject({ apple: "com.acme.removeads", google: null });
+    expect(skus.coin_pack).toMatchObject({ apple: null, google: "acme.coin.pack.v1" });
   });
 
   test("nothing but what a browser may know crosses it, whatever a field is called", () => {
@@ -607,26 +624,24 @@ describe("payments().client — virtual:pithy/payments", () => {
     for (const [id, product] of Object.entries(CLIENT_CATALOG.products)) {
       published.push(id, product.type, product.name);
       for (const key of "entitlements" in product ? product.entitlements : []) published.push(key);
-      // The one hosted-checkout identifier a browser legitimately names: a Stripe price id is what a
-      // Checkout Session is opened with. The store SKUs above are not, and that is the whole line.
+      // The identifiers a client legitimately names: a Stripe price id is what a Checkout Session is
+      // opened with, and an App Store or Play product id is what StoreKit and Play Billing buy.
       if ("stripe" in product) published.push(product.stripe.priceId);
+      if ("apple" in product) published.push(product.apple.productId);
+      if ("google" in product) published.push(product.google.productId);
     }
     const escaped = unpublishedIn(inlined, { leaves: published, keys: PUBLISHED_CLIENT_KEYS });
     expect(
       escaped,
-      `These reached an adopter's users and are not a product's id, kind, display name, entitlement key or hosted-checkout id:\n  ${escaped.join("\n  ")}`,
+      `These reached an adopter's users and are not a product's id, kind, display name, entitlement key or rail SKU:\n  ${escaped.join("\n  ")}`,
     ).toEqual([]);
   });
 
   test("the catalog really carries everything the sweep is meant to refuse", () => {
-    // A gate over nothing passes perfectly. The config the assertion above reads must genuinely hold the
-    // store SKUs, a ledger currency and amount, three return URLs and a flag, or that test proves nothing.
+    // A gate over nothing passes perfectly. The config the assertion above reads must genuinely hold a
+    // ledger currency and amount, three return URLs and a flag, or that test proves nothing.
     const serialized = JSON.stringify(CLIENT_CATALOG);
     for (const withheld of [
-      "com.acme.pro.monthly",
-      "acme.pro.monthly.v1",
-      "com.acme.removeads",
-      "acme.coin.pack.v1",
       "coins",
       "4242",
       "https://acme.example/pricing",
@@ -644,6 +659,9 @@ describe("payments().client — virtual:pithy/payments", () => {
     const serialized = JSON.stringify(projection);
     // The Stripe price id is publishable by design: it is what a Checkout Session names.
     expect(serialized).toContain("price_1Abc");
+    // The store SKUs are what a native app hands StoreKit and Play Billing.
+    expect(serialized).toContain("com.acme.pro.monthly");
+    expect(serialized).toContain("acme.coin.pack.v1");
     // The catalog a paywall renders, and the keys a route guard checks.
     expect(serialized).toContain("Remove ads");
     expect(serialized).toContain("ads_removed");

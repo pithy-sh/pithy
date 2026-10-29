@@ -22,10 +22,11 @@ export interface TurnstileCapability extends Capability {
  * A humanity check stacks per-route via the `turnstile()` middleware
  * (`@pithy-sh/turnstile/src/http/middleware`), never as a blanket middleware or an identity strategy.
  *
- * **Its one route is a control-plane read (#731):** which widget guards this environment, whether it is a
- * real one or a test key, and how its challenges went. It has counted nothing, so the outcomes come from
+ * **It mounts two routes.** A control-plane read: which widget guards this environment, whether it is
+ * a real one or a test key, and how its challenges went. It has counted nothing, so the outcomes come from
  * Cloudflare's Turnstile analytics on the application's one `runtime` token, which is why turnstile declares
- * `analytics:read` in `runtimePermissions` and no token of its own.
+ * `analytics:read` in `runtimePermissions` and no token of its own. And a public widget page a native app
+ * renders in a WebView, carrying the same public sitekey and action the client projection does.
  *
  * `@pithy-sh/auth` reads `turnstileConfig.protect` to decide which of its routes (magic-link, OTP) get a
  * gate and at which widget mode; this package never imports auth.
@@ -34,10 +35,8 @@ export function turnstile(config: TurnstileConfigInput = {}): TurnstileCapabilit
   const resolved = TurnstileConfig.parse(config);
   const capability = defineCapability({
     name: "turnstile",
-    // The package this capability ships in and the version it ships at, both stamped by
-    // `scripts/stampVersions.ts` — a Worker cannot read its own package.json. Reported per capability by
-    // the control-plane manifest, and reported together: a release feed is keyed by package name, so the
-    // version alone leaves a client guessing the key (#626).
+    // Stamped by `scripts/stampVersions.ts`: a Worker cannot read its own package.json. Reported together,
+    // because a release feed is keyed by package name.
     version: PACKAGE_VERSION,
     package: PACKAGE_NAME,
     config: TurnstileConfig,
@@ -45,7 +44,7 @@ export function turnstile(config: TurnstileConfigInput = {}): TurnstileCapabilit
     // createBackend fails fast if it isn't (rather than 500-ing each gated request).
     dependsOn: ["secrets"],
     // The slice of secrets turnstile reads — aggregated into the shared per-invocation accessor at startup:
-    // the widget secret, the account its widgets live in, and the application's runtime token (#731).
+    // the widget secret, the account its widgets live in, and the application's runtime token.
     secretRegistry: turnstileCapabilitySecretsRegistry,
     // What turnstile's Worker calls Cloudflare with: the widget read's analytics, unioned into the one
     // `runtime` token the application holds. Nothing is added to `ci-system`.
@@ -63,14 +62,12 @@ export function turnstile(config: TurnstileConfigInput = {}): TurnstileCapabilit
      * widget unconfigured, or no sitekey for this environment) so a screen branches instead of
      * mounting a widget that cannot solve.
      *
-     * **A feature build is the one environment with a default** (#656): a branch's config is generated, so
+     * **A feature build is the one environment with a default**: a branch's config is generated, so
      * an absent key there means "nobody could have stated one" rather than "not provisioned yet", and it
      * resolves the documented always-pass test key instead of rendering nothing and blocking sign-in.
      *
-     * **`action` rides here because the boundary was already being crossed** (#377). The label is baked
-     * into the token at render and asserted by the route, so it is one contract with two ends, and it
-     * was written out at both — where nothing before production could catch them disagreeing. See
-     * {@link TURNSTILE_LOGIN_ACTION} for why that is worse than it sounds and which gates hold it.
+     * **`action` rides here** because the label is baked into the token at render and asserted by the
+     * route: one contract with two ends. See {@link TURNSTILE_LOGIN_ACTION} for the gates that hold it.
      *
      * The return type is {@link TurnstileClientProjection} — **declared, not inferred**. `ClientProjection`
      * is `{ enabled: boolean }` plus a JSON catchall, which accepts anything this closure could return.
@@ -82,9 +79,9 @@ export function turnstile(config: TurnstileConfigInput = {}): TurnstileCapabilit
       if (!mode) return { enabled: false };
       const widget = resolved.widgets[mode];
       if (!widget) return { enabled: false };
-      // A feature build resolves Cloudflare's always-pass test key when the config states none, because a
-      // branch's config is generated and nobody owns it (#656). Every other environment resolves what it
-      // states and nothing else. The control-plane read resolves through the same call (#731).
+      // A feature build resolves Cloudflare's always-pass test key when the config states none. Every other
+      // environment resolves what it states and nothing else. The control-plane read and the widget page
+      // resolve through the same call.
       const sitekey = resolveSitekey(widget.sitekeys, environment, mode);
       if (!sitekey) return { enabled: false };
       return {

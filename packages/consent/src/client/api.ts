@@ -20,6 +20,13 @@ import type { GrantBody, WithdrawBody } from "../http/schemas";
 export const CONSENT_BASE_PATH = "/consent";
 
 /**
+ * The header a phone sends its visitor id in, where a browser holds the cookie. The id is a random UUID the app
+ * mints for consent alone and keeps in its secure store, never the device id auth registers: that one is listed to
+ * operators and written to the audit trail, so it proves nothing about who sent it.
+ */
+export const CONSENT_VISITOR_HEADER = "x-pithy-consent-visitor";
+
+/**
  * The slice of `fetch` this module uses, declared structurally — payments' reason: the package compiles against
  * `@cloudflare/workers-types`, whose `RequestInit` has no `credentials`, and the cookie is the whole story here.
  */

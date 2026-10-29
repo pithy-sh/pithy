@@ -334,7 +334,7 @@ jobs:
         working-directory: packages/cli
         run: bun run pack:verify
 
-      # The same post-condition as the step above, for the other twenty-one packages. Whole-repo, and
+      # The same post-condition as the step above, for every other package. Whole-repo, and
       # for the reason the step above gives: `files` does not fail on a missing path, so a field naming
       # `pithy.manifest.json` passes every static check whether the file is there or not, and only the
       # tarball knows. Measured: half of `@pithy-sh/core`'s first tarball was test files, and

@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
 import { KitErrorPayload } from "@pithy-sh/core/src/error/payload";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, test } from "vitest";
 import { hasKitCatalog, loadKitCatalog } from "./browser";
 import { KIT_CATALOGS } from "./kit";
@@ -92,5 +94,24 @@ describe("what the Spanish catalog actually carries", () => {
     expect(shipped.filter((key) => key.startsWith("email/") && !codes.has(key))).toEqual([]);
     // And the codes really are still here, or the filter above is passing over an empty set.
     expect(shipped.filter((key) => key.startsWith("email/") && codes.has(key)).length).toBeGreaterThanOrEqual(6);
+  });
+});
+
+describe("the loaders resolve under Metro", () => {
+  test("every `import()` names a string literal, which Metro resolves at bundle time", () => {
+    // Metro has no runtime module lookup: a computed specifier is an error in a React Native bundle, where Vite only
+    // warns. A literal is bundled on native and split on web.
+    const source = readFileSync(new URL("./browser.ts", import.meta.url), "utf8");
+    const code = blankComments(source);
+    const specifiers = [...code.matchAll(/\bimport\(([^)]*)\)/g)].map((match) => match[1]?.trim() ?? "");
+    expect(specifiers.length).toBe(Object.keys(KIT_CATALOGS).length);
+    for (const specifier of specifiers) expect(specifier, specifier).toMatch(/^"\.\/[a-z-]+\/index"$/);
+  });
+
+  test("and each one resolves to a module that holds its catalog", async () => {
+    for (const locale of Object.keys(KIT_CATALOGS)) {
+      const catalog = await loadKitCatalog(locale);
+      expect(Object.keys(catalog).length, locale).toBeGreaterThan(0);
+    }
   });
 });

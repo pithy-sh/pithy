@@ -238,6 +238,11 @@ export interface AuthWiring {
    * `compose`; the instance then carries the OAuth provider that mints its tokens.
    */
   mcp?: McpWiring | undefined;
+  /**
+   * Every capability composed beside this one, auth among them. Set by `compose`; a rotation announces itself to
+   * each one's `sessionRotated` through core. Optional on the wiring for the reason `onSessionRevoked` is.
+   */
+  composed?: readonly Capability[] | undefined;
 }
 
 /** The session a {@link ScopeResolver} is asked about — the one Better Auth just resolved for this request. */
@@ -549,6 +554,7 @@ export function auth(options: AuthOptions): AuthCapability {
       // An agent surface, when one is composed: its authorization server lives in this instance.
       wiring.mcp = capabilities.find(isMcpCapability)?.mcpWiring;
       composition = capabilities;
+      wiring.composed = capabilities;
     },
     /**
      * The client-safe projection — what a sign-in screen needs and nothing more: where to call

@@ -11,11 +11,12 @@
  * after the file was written. So the calls, the error mapping, and the redirect-and-return dance ship
  * here and upgrade with a minor release; the scaffolded stub renders and styles, and calls these.
  *
- * **Cookie/session, same origin.** Every request carries `credentials: "include"` and nothing else. No
- * token in `localStorage` or `sessionStorage`, no `Authorization` header, no refresh rotation. The SPA
- * and its Worker share an origin, so the session rides an httpOnly cookie that JavaScript cannot read
- * and the server's same-origin check covers CSRF. Bearer is the mobile path — supported by the same
- * routes, documented rather than scaffolded.
+ * **Two transports, chosen by one option.** With no `origin`, every request is relative and carries
+ * `credentials: "include"` and nothing else: the SPA and its Worker share an origin, so the session rides
+ * an httpOnly cookie that JavaScript cannot read and the server's same-origin check covers CSRF. With an
+ * `origin` — a native app, which has no page origin to be relative to — the request goes to that origin
+ * with `credentials: "omit"`, and the caller hands in the bearer session's `fetch`, which adds the
+ * `Authorization` header. This module holds no credential either way.
  *
  * **Nothing here throws, and nothing here hides a failure either.** An unreachable Worker, an HTML error
  * page from a proxy, a 500 — each becomes a renderable {@link PaymentsFailure} on a `PaymentsResult`, and
@@ -27,8 +28,8 @@
  * The server's `requireEntitlement()` is still the security boundary. Nothing on this side of the wire
  * protects a feature; it only decides what a screen shows.
  *
- * **No absolute URL literals, and no schema library.** Paths are relative, so the calls follow whatever
- * origin the bundle is served from. Answers are narrowed by hand-written `is…(value: unknown): value is T`
+ * **No absolute URL literals, and no schema library.** Paths are relative unless a caller names an
+ * origin, so a web bundle's calls follow whatever origin it is served from. Answers are narrowed by hand-written `is…(value: unknown): value is T`
  * guards rather than Zod: this file is compiled into a browser bundle, and it must not drag the server's
  * schema graph in behind it.
  */
@@ -264,7 +265,7 @@ export interface PaymentsRequestInit {
   headers?: Record<string, string>;
   /** The JSON body, already serialized. */
   body?: string;
-  /** Cookie policy. Always `include` here — same-origin, httpOnly session cookie. */
+  /** Cookie policy: `include` for the same-origin cookie session, `omit` for a bearer call to an origin. */
   credentials?: "include" | "same-origin" | "omit";
 }
 
@@ -300,6 +301,13 @@ export interface PaymentsGlobal {
 
 /** What every call takes: where the routes are, and the seams a test replaces. */
 export interface PaymentsClientOptions {
+  /**
+   * The Worker's absolute origin, such as `https://api.example.com`: an http(s) scheme and a host, with no
+   * path, query, fragment or trailing slash. Set it where there is no page origin to be relative to — a
+   * native app — and pass the bearer session's `fetch` beside it. The request then sends no cookie. Unset,
+   * every request is relative and carries the session cookie.
+   */
+  origin?: string;
   /** Where the payments routes mount. Defaults to {@link PAYMENTS_BASE_PATH}. */
   basePath?: string;
   /** The fetch to use. Defaults to the one on {@link PaymentsClientOptions.global}. */
@@ -315,6 +323,20 @@ export const PAYMENTS_UNREACHABLE: PaymentsFailure = {
   code: "client/unreachable",
   message: "We couldn't reach the store.",
   action: "Check your connection, then try again.",
+};
+
+/**
+ * The request would have left this app's backend, so it was never sent.
+ *
+ * Reached through a `basePath` that is not a rooted path, or an `origin` that is not a bare http(s) origin.
+ * Appended to an origin, `evil.example` or `//evil.example` names a different host, and the bearer session's
+ * `fetch` would hand it the credential.
+ */
+export const PAYMENTS_CROSS_ORIGIN: PaymentsFailure = {
+  code: "client/cross_origin",
+  message: "That request would have left this app's backend, so it wasn't sent.",
+  action:
+    "Check the payments `basePath` in pithy.config.ts, which is a path on the worker and not a URL, and the client's `origin`, which is a scheme and host with no path.",
 };
 
 /** The worker answered with something this client cannot read. A proxy's HTML page, or a shape change. */
@@ -486,7 +508,46 @@ function readFailure(body: unknown): PaymentsFailure {
 }
 
 /**
- * One call: same-origin, cookie-carrying, never throwing. **The only producer of that request.**
+ * Whether a configured origin is a bare http(s) origin: a scheme, a host, an optional port, nothing else.
+ *
+ * A regular expression rather than `new URL`, because React Native's `URL` does not implement the getters a
+ * parsed check would read. Userinfo, a path, a query, a fragment, a backslash and whitespace are all refused, so
+ * the composed URL can only ever name this host. `@pithy-sh/auth` and `@pithy-sh/organization` apply the same
+ * rule.
+ */
+function isBareOrigin(origin: string): boolean {
+  return /^https?:\/\/[A-Za-z0-9.-]+(?::[0-9]{1,5})?$|^https?:\/\/\[[0-9A-Fa-f:.]+\](?::[0-9]{1,5})?$/.test(origin);
+}
+
+/**
+ * Whether a composed path stays on the origin it is appended to.
+ *
+ * A rooted path, and not `//host` or `/\host`: a URL parser reads either as an authority rather than a path.
+ */
+function isRootedPath(path: string): boolean {
+  if (!path.startsWith("/")) return false;
+  const second = path.charAt(1);
+  return second !== "/" && second !== "\\";
+}
+
+/**
+ * Where a request goes and which cookie policy it carries, or why it may not be sent.
+ *
+ * No origin is the cookie transport, unchanged: a relative URL and `include`. An origin is the bearer
+ * transport: an absolute URL, checked to stay on that origin, and `omit`.
+ */
+function requestTarget(
+  path: string,
+  origin: string | undefined,
+): { url: string; credentials: "include" | "omit" } | { failure: PaymentsFailure } {
+  if (origin === undefined) return { url: path, credentials: "include" };
+  if (!isBareOrigin(origin)) return { failure: PAYMENTS_CROSS_ORIGIN };
+  if (!isRootedPath(path)) return { failure: PAYMENTS_CROSS_ORIGIN };
+  return { url: `${origin}${path}`, credentials: "omit" };
+}
+
+/**
+ * One call to this Worker, never throwing. **The only producer of that request.**
  *
  * The body is read before the status is judged, because a refusal's body is the failure a screen renders.
  * A body that will not parse is the generic failure rather than a crash — a corporate proxy's HTML page
@@ -509,13 +570,15 @@ export async function callPayments<T>(
   options: PaymentsClientOptions | undefined,
   guard: (value: unknown) => value is T,
 ): Promise<PaymentsResult<T>> {
+  const target = requestTarget(`${options?.basePath ?? PAYMENTS_BASE_PATH}${path}`, options?.origin);
+  if ("failure" in target) return { ok: false, failure: target.failure };
+
   const fetcher = options?.fetch ?? globals(options).fetch;
   if (!fetcher) return { ok: false, failure: PAYMENTS_UNREACHABLE };
 
-  const base = options?.basePath ?? PAYMENTS_BASE_PATH;
   let response: PaymentsResponse;
   try {
-    response = await fetcher(`${base}${path}`, { ...init, credentials: "include" });
+    response = await fetcher(target.url, { ...init, credentials: target.credentials });
   } catch {
     return { ok: false, failure: PAYMENTS_UNREACHABLE };
   }

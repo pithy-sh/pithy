@@ -3,7 +3,7 @@ import type { MyConsentResponse } from "@pithy-sh/consent/src/http/responses";
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import type { Translator } from "@pithy-sh/core/src/i18n/translator";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
-import { useRead } from "@pithy-sh/ui-react/src/read";
+import { useRead } from "@pithy-sh/ui-core/src/read";
 import { type PointerEvent, type ReactNode, useRef, useState } from "react";
 import "../../pithy-screens.css";
 

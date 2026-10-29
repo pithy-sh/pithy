@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { screenPath } from "@pithy-sh/ui-core/src/routes";
 import { act, type ReactNode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { RequireEntitlement, RequireSignedIn, routeTable, screenPath } from "../templates/src/router";
+import { RequireEntitlement, RequireSignedIn, routeTable } from "../templates/src/router";
 
 /**
  * The scaffolded router's guards render a redirect from the answer, so the screen they guard is never on the page

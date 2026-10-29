@@ -150,6 +150,10 @@ const FETCH_EXEMPTIONS: Readonly<Record<string, string>> = {
     "`app.fetch(...)` — dispatching into a Hono app under test, in a Worker, the way the MCP endpoint does. No network, no browser, no cookie mode of its own.",
   "src/http/csrf.test.ts":
     "`app.fetch(...)` — dispatching a request into a Hono app under test, in process, the way the MCP endpoint does: `app.request` would rebuild the request and lose the identity that rides beside it. No network, no browser.",
+  "src/client/bearer.test.ts":
+    "`session.fetch(...)` — calling the bearer session's own fetch, the transport `./bearer` hands another capability's client, over a scripted stub. No network, and the request it makes is built by `./bearer` through `withoutCookies` in `./api`.",
+  "src/http/bearerRoundTrip.test.ts":
+    "Node's `fetch` standing in for a native app's against a real listening port, and `session.fetch(...)` driven over it. The harness the bearer session is tested through, not a second producer: it sends exactly the absolute URL and headers the session built, with no cookie jar.",
   "src/http/clientRoundTrip.test.ts":
     "Node's `fetch` standing in for a browser against a real listening port, so the primitive can be driven over a real socket with a real cookie jar. It is the harness the primitive is tested through, not a second producer: it takes the relative path `callAuth` produced and resolves it, and nothing in the package calls it.",
 };
@@ -267,6 +271,10 @@ const BROWSER_MODULES: Readonly<Record<string, readonly string[]>> = {
   // The primitive. No imports at all, which is the strongest form the rule can take — and the reason
   // nothing here throws a `PithyError`: the class is not in reach, and a bare `Error` is forbidden.
   "src/client/api.ts": [],
+  // The bearer session. Only the primitive, so its transport and its failures are the primitive's.
+  "src/client/bearer.ts": ["./api"],
+  // The redirect handoff. Only the primitive; its crypto is injected, so it reaches for no platform.
+  "src/client/handoff.ts": ["./api"],
 };
 
 describe("the browser half carries no schema library", () => {

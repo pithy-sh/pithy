@@ -29,7 +29,7 @@ import {
 import { GrantBody, HashParams, SubjectParams, WithdrawBody } from "./schemas";
 import { CONSENT_READ_SCOPE } from "./scopes";
 import { mergeView, purposeView, recordView, standingView } from "./views";
-import { readVisitor, writeVisitor } from "./visitor";
+import { phoneDevice, readVisitor, writeVisitor } from "./visitor";
 
 /**
  * The consent capability's HTTP surface. The person's own routes resolve who is asking — the signed-in
@@ -51,8 +51,10 @@ import { readVisitor, writeVisitor } from "./visitor";
  * **Withdrawing is the same request as granting, on the same screen**, and a click withdraws unless the purpose
  * requires a written withdrawal. The two writes wear `requireSameOrigin()`: the visitor cookie and a web session are
  * both ambient, so a cross-site form must not be able to grant or withdraw for somebody. A bearer request is exempt,
- * as the gate decides. **And they are rate-limited per client IP**, ahead of everything else, because a grant needs no
- * account and the record it writes can never be deleted: `Origin` is a header any script sets.
+ * as the gate decides, and so is a phone's: a request that names its device in the header and carries no cookie has
+ * nothing ambient to forge, and a cross-site form cannot set a header. **And they are rate-limited per client IP**,
+ * ahead of everything else, because a grant needs no account and the record it writes can never be deleted: `Origin`
+ * is a header any script sets.
  */
 export interface ConsentRoutesOptions {
   /** Where the routes mount. */
@@ -94,11 +96,37 @@ export function storeFor(c: Context<PithyHonoEnv>, options: ConsentRoutesOptions
   });
 }
 
-/** Who is asking: the signed-in account, the visitor whose cookie came with the request, or nobody yet. */
-export function subjectOf(c: Context<PithyHonoEnv>): ConsentSubject | null {
+/**
+ * Who is asking: the signed-in account, the visitor whose cookie or phone came with the request, or nobody yet.
+ *
+ * A phone's device id outlives every sign-in on it, where a cookie is let go at the merge. So once a phone's id has
+ * been merged into an account it speaks for that account alone, and signed out it is nobody: whoever holds the phone
+ * next can neither read that account's choices as a visitor's nor add to them through the merge.
+ */
+export async function subjectOf(
+  c: Context<PithyHonoEnv>,
+  options: ConsentRoutesOptions,
+): Promise<ConsentSubject | null> {
   if (c.var.auth) return { kind: "account", id: c.var.auth.userId };
   const visitor = readVisitor(c);
-  return visitor === null ? null : { kind: "visitor", id: visitor };
+  if (visitor === null) return null;
+  if (visitor.carriedBy === "device" && (await storeFor(c, options).mergeOf(visitor.id)) !== null) return null;
+  return { kind: "visitor", id: visitor.id };
+}
+
+/** Hold a visitor's device id in the cookie, unless a phone's header named it: that phone keeps its own. */
+function holdVisitor(c: Context<PithyHonoEnv>, subject: ConsentSubject, options: ConsentRoutesOptions): void {
+  if (subject.kind !== "visitor" || phoneDevice(c)?.id === subject.id) return;
+  writeVisitor(c, subject.id, options.visitorWindowMs);
+}
+
+/** The same-origin gate, except for a phone's request: it carries no cookie, so nothing in it is ambient. */
+function sameOriginUnlessPhone(): MiddlewareHandler<PithyHonoEnv> {
+  const gate = requireSameOrigin();
+  return async (c, next) => {
+    if (phoneDevice(c) === null) return await gate(c, next);
+    await next();
+  };
 }
 
 /** Every purpose, and where the subject stands on each. */
@@ -212,7 +240,7 @@ export function registerConsentRoutes(options: ConsentRoutesOptions): (app: Hono
         responses: { 200: MyConsentResponse },
       }),
       async (c) => {
-        const subject = subjectOf(c);
+        const subject = await subjectOf(c, options);
         const catalog = options.catalog();
         if (subject === null) {
           const purposes = [...catalog.values()].map((purpose) => standingView(purpose, "never_granted"));
@@ -240,7 +268,7 @@ export function registerConsentRoutes(options: ConsentRoutesOptions): (app: Hono
       validate("param", HashParams),
       async (c) => {
         const { hash } = c.req.valid("param");
-        const subject = subjectOf(c);
+        const subject = await subjectOf(c, options);
         const store = storeFor(c, options);
         // Only a document this subject's own record names: a hash is not a credential, and the text may be theirs.
         const own = subject !== null && (await store.rowsOf(subject)).some(({ row }) => row.documentHash === hash);
@@ -258,14 +286,14 @@ export function registerConsentRoutes(options: ConsentRoutesOptions): (app: Hono
         responses: { 201: ConsentChoiceResponse },
       }),
       rateLimited(options.rateLimiterBinding),
-      requireSameOrigin(),
+      sameOriginUnlessPhone(),
       validate("json", GrantBody),
       async (c) => {
-        const subject = subjectOf(c) ?? { kind: "visitor" as const, id: crypto.randomUUID() };
+        const subject = (await subjectOf(c, options)) ?? { kind: "visitor" as const, id: crypto.randomUUID() };
         const store = storeFor(c, options);
         const record = await store.grant(subject, c.req.valid("json"));
         // The device id is held only now that a choice has been made, and only for a visitor.
-        if (subject.kind === "visitor") writeVisitor(c, subject.id, options.visitorWindowMs);
+        holdVisitor(c, subject, options);
         await audit(c, ConsentAuditActions.granted, subject, rowMetadata(record));
         const standing = await store.standingOf(subject, record.purpose);
         if (standing === "granted") await notifyOwner(c, options, subject, record.purpose, "granted");
@@ -284,13 +312,13 @@ export function registerConsentRoutes(options: ConsentRoutesOptions): (app: Hono
         responses: { 201: ConsentChoiceResponse },
       }),
       rateLimited(options.rateLimiterBinding),
-      requireSameOrigin(),
+      sameOriginUnlessPhone(),
       validate("json", WithdrawBody),
       async (c) => {
-        const subject = subjectOf(c) ?? { kind: "visitor" as const, id: crypto.randomUUID() };
+        const subject = (await subjectOf(c, options)) ?? { kind: "visitor" as const, id: crypto.randomUUID() };
         const store = storeFor(c, options);
         const record = await store.withdraw(subject, c.req.valid("json"));
-        if (subject.kind === "visitor") writeVisitor(c, subject.id, options.visitorWindowMs);
+        holdVisitor(c, subject, options);
         await audit(c, ConsentAuditActions.withdrawn, subject, rowMetadata(record));
         await notifyOwner(c, options, subject, record.purpose, "withdrawn");
         const standing = await store.standingOf(subject, record.purpose);

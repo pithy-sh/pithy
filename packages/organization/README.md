@@ -148,11 +148,13 @@ auth({
 
 Without it the row outlives the credential that made it, one per sign-in, in a table with no TTL and no sweep. It confers nothing — every read re-joins memberships and matches the user id too — so this is growth rather than an access question, and it is still the kind of growth nobody notices until it is large.
 
+**A rotation is not an ending, and needs no wiring.** A bearer client's session token is replaced each time it rotates, and the new session would start with no organization in force. So the capability declares `sessionRotated`, auth announces each rotation through core, and the selection moves to the new session id for the same user. Compose both and it happens.
+
 ## The one page you have to serve
 
 **An invitation email links to your app, not to this capability.** `invitationAcceptPath` says where — `/invitations` by default — and the token arrives as the last segment, so the page you serve is `/invitations/:token`.
 
-That page reads `GET {base}/invitations/:token` to show the offer, and posts the token to `POST {base}/invitations/accept` to redeem it. Both are in the table below.
+That page reads `GET {base}/invitations/:token` to show the offer, and posts the token to `POST {base}/invitations/accept` to redeem it. Both are in the table below. `readInvitation(token)` and `acceptInvitation(token)` in `@pithy-sh/organization/src/client/api` make the two calls, and the `--organization` screens of `pithy ui add react` and `pithy ui add react-native` include the page. Accepting does not move the organization in force: call `chooseOrganization` with the `organizationId` the accept answers if the reader should act in it. A client off the Worker's origin, a native app, passes `origin` and a `fetch` that adds its bearer credential.
 
 They are two settings because they are two things: one is where this capability's API lives, the other is where a person is sent. Building the link from `basePath` is what `pithy-sh/pithy#571` was — every invitation pointed at the JSON route, so the recipient got a response body in their browser. Change `invitationAcceptPath` after an invitation has been sent and the link in that mail breaks, so pick it first.
 

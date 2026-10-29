@@ -21,6 +21,7 @@ import { Hono } from "hono";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { CONSENT_MIGRATION_ORDER, consent } from "../capability";
+import { CONSENT_VISITOR_HEADER } from "../client/api";
 import { CONSENT_VISITOR_COOKIE } from "../config/config";
 import { documentHash } from "../evidence/evidence";
 import { consent_0001_init } from "../migrations/0001_init";
@@ -45,6 +46,7 @@ const CONNECTION_ID = "6f1d2e40-7b3a-4c9e-8d51-2a4b6c8e0f13";
 const ISSUER = "https://dashboard.example";
 const KEY_ID = "key-1";
 const ENVIRONMENT = "prod";
+const DEVICE = "0b6e9a52-3c1d-4f7e-9a2b-5d8c1e4f6a70";
 const DOCUMENT = "I authorize the clinic to keep my health record.";
 
 let keys: CryptoKeyPair;
@@ -225,6 +227,8 @@ async function request(
     body?: unknown;
     user?: string;
     cookie?: string;
+    device?: string;
+    registeredDevice?: string;
     crossSite?: boolean;
     ip?: string;
     bindings?: Record<string, unknown>;
@@ -234,6 +238,8 @@ async function request(
   if (options.ip) headers["cf-connecting-ip"] = options.ip;
   if (options.user) headers["x-user"] = options.user;
   if (options.cookie) headers.cookie = options.cookie;
+  if (options.device) headers[CONSENT_VISITOR_HEADER] = options.device;
+  if (options.registeredDevice) headers["x-pithy-device-id"] = options.registeredDevice;
   if (options.crossSite) headers["x-cross-site"] = "1";
   return app.request(
     `https://acme.example${path}`,
@@ -409,6 +415,99 @@ describe("the person's routes", () => {
       body: { purpose: "clinic.records", noticeVersion: 2, method: "click", surface: "x" },
     });
     expect(((await below.json()) as { error: { code: string } }).error.code).toBe("consent/method_below_minimum");
+  });
+});
+
+describe("a phone, which holds no cookie", () => {
+  test("a signed-out phone's choice is held against the visitor id it sends, and read back by it", async () => {
+    const { app } = makeApp();
+    const granted = await request(app, "POST", "/consent/grants", { body: marketing, device: DEVICE });
+    expect(granted.status).toBe(201);
+    expect(granted.headers.get("set-cookie")).toBeNull();
+    const mine = MyConsentResponse.parse(await (await request(app, "GET", "/consent/me", { device: DEVICE })).json());
+    expect(mine.subject).toEqual({ kind: "visitor", id: DEVICE });
+    expect(mine.purposes.find((p) => p.purpose.id === "email.marketing")?.granted).toBe(true);
+    expect(emitted[0]?.actorId).toBe(DEVICE);
+  });
+
+  test("a device id that is not a UUID is no visitor, and a cookie always wins over the header", async () => {
+    const { app } = makeApp();
+    const odd = MyConsentResponse.parse(
+      await (await request(app, "GET", "/consent/me", { device: "device-1" })).json(),
+    );
+    expect(odd.subject).toBeNull();
+
+    const granted = await request(app, "POST", "/consent/grants", { body: marketing });
+    const cookie = visitorCookie(granted) ?? "";
+    const both = MyConsentResponse.parse(
+      await (await request(app, "GET", "/consent/me", { cookie, device: DEVICE })).json(),
+    );
+    expect(both.subject?.id).toBe(cookie.split("=")[1]);
+  });
+
+  test("a phone's write has nothing ambient to forge, so the same-origin gate stands aside", async () => {
+    const { app } = makeApp();
+    for (const path of ["/consent/grants", "/consent/withdrawals"]) {
+      const body =
+        path === "/consent/grants" ? marketing : { purpose: "email.marketing", method: "click", surface: "app" };
+      const phone = await request(app, "POST", path, { body, device: DEVICE, crossSite: true });
+      expect(phone.status, path).toBe(201);
+      const withCookie = await request(app, "POST", path, {
+        body,
+        device: DEVICE,
+        cookie: "locale=es",
+        crossSite: true,
+      });
+      expect(withCookie.status, path).toBe(403);
+      const malformed = await request(app, "POST", path, { body, device: "device-1", crossSite: true });
+      expect(malformed.status, path).toBe(403);
+    }
+  });
+
+  test("the device merges into the account it signs in as, and is no visitor once merged", async () => {
+    const { app, capabilities } = makeApp();
+    await request(app, "POST", "/consent/grants", { body: marketing, device: DEVICE });
+    const signedIn = await request(app, "GET", "/consent/purposes", { user: "ada", device: DEVICE });
+    expect(signedIn.status).toBe(200);
+    expect(emitted.map((event) => event.action)).toEqual(["consent/granted", "consent/merged"]);
+    const reader = composedConsent(capabilities, env as unknown as Record<string, unknown>);
+    expect(await reader?.hasConsent({ kind: "account", id: "ada" }, "email.marketing")).toBe(true);
+
+    // Signed out again on the same phone: the device's id now speaks for an account, so it reads as nobody, and a
+    // choice made here cannot reach that account through the merge.
+    const after = MyConsentResponse.parse(await (await request(app, "GET", "/consent/me", { device: DEVICE })).json());
+    expect(after.subject).toBeNull();
+    await request(app, "POST", "/consent/withdrawals", {
+      body: { purpose: "email.marketing", method: "click", surface: "app" },
+      device: DEVICE,
+    });
+    expect(await reader?.hasConsent({ kind: "account", id: "ada" }, "email.marketing")).toBe(true);
+  });
+});
+
+describe("the device id auth registers, which is no secret", () => {
+  test("names no visitor: it reads nobody's choices, writes none cross-site, and merges nothing at sign-in", async () => {
+    const { app, capabilities } = makeApp();
+    await request(app, "POST", "/consent/grants", { body: marketing, device: DEVICE });
+
+    const read = MyConsentResponse.parse(
+      await (await request(app, "GET", "/consent/me", { registeredDevice: DEVICE })).json(),
+    );
+    expect(read.subject).toBeNull();
+
+    const forged = await request(app, "POST", "/consent/grants", {
+      body: marketing,
+      registeredDevice: DEVICE,
+      crossSite: true,
+    });
+    expect(forged.status).toBe(403);
+
+    await request(app, "GET", "/consent/purposes", { user: "mallory", registeredDevice: DEVICE });
+    expect(emitted.map((event) => event.action)).toEqual(["consent/granted"]);
+    const reader = composedConsent(capabilities, env as unknown as Record<string, unknown>);
+    expect(await reader?.hasConsent({ kind: "account", id: "mallory" }, "email.marketing")).toBe(false);
+    const still = MyConsentResponse.parse(await (await request(app, "GET", "/consent/me", { device: DEVICE })).json());
+    expect(still.subject).toEqual({ kind: "visitor", id: DEVICE });
   });
 });
 

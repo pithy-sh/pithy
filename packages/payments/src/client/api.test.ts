@@ -19,6 +19,7 @@ import {
   openBillingPortal,
   openStoreSubscriptions,
   PAYMENTS_BASE_PATH,
+  PAYMENTS_CROSS_ORIGIN,
   PAYMENTS_HOSTED_RAILS,
   type PaymentsClientEnvironment,
   type PaymentsClientProductType,
@@ -27,6 +28,7 @@ import {
   type PaymentsFetch,
   type PaymentsRequestInit,
   restorePurchases,
+  resumeCheckout,
   returnedCheckoutSession,
   STORE_SUBSCRIPTION_URLS,
   startCheckout,
@@ -537,6 +539,139 @@ describe("returnedCheckoutSession", () => {
 
   test("off a browser it is null, not a crash", () => {
     expect(returnedCheckoutSession({ global: {} })).toBeNull();
+  });
+});
+
+describe("an absolute origin — the native app's transport", () => {
+  const ORIGIN = "https://api.acme.example";
+
+  test("the request goes to the origin, carrying no cookie", async () => {
+    const calls: Call[] = [];
+    const result = await getEntitlements({ origin: ORIGIN, fetch: stubFetch(200, ENTITLEMENTS, calls) });
+    expect(result.ok).toBe(true);
+    expect(calls.map((call) => call.url)).toEqual(["https://api.acme.example/payments/entitlements"]);
+    expect(calls[0]?.init?.credentials).toBe("omit");
+  });
+
+  test("the base path still composes after the origin", async () => {
+    const calls: Call[] = [];
+    await submitPurchase(
+      { rail: "apple", receipt: "jws" },
+      { origin: "http://localhost:8787", basePath: "/billing", fetch: stubFetch(200, PURCHASE, calls) },
+    );
+    expect(calls[0]?.url).toBe("http://localhost:8787/billing/purchases");
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(calls[0]?.init?.credentials).toBe("omit");
+  });
+
+  test("without an origin nothing changes: a relative URL and the session cookie", async () => {
+    const calls: Call[] = [];
+    await getEntitlements({ fetch: stubFetch(200, ENTITLEMENTS, calls) });
+    expect(calls.map((call) => call.url)).toEqual(["/payments/entitlements"]);
+    expect(calls[0]?.init?.credentials).toBe("include");
+  });
+
+  test("anything but a bare http(s) origin is refused before a request is made", async () => {
+    for (const origin of [
+      "api.acme.example",
+      "https://api.acme.example/",
+      "https://api.acme.example/v1",
+      "https://api.acme.example?x=1",
+      "https://api.acme.example#x",
+      "https://user:secret@api.acme.example",
+      "ftp://api.acme.example",
+      "javascript:alert(1)",
+      "myapp://payments",
+      "",
+    ]) {
+      const calls: Call[] = [];
+      const result = await getEntitlements({ origin, fetch: stubFetch(200, ENTITLEMENTS, calls) });
+      expect(result, origin).toEqual({ ok: false, failure: PAYMENTS_CROSS_ORIGIN });
+      expect(calls, origin).toEqual([]);
+    }
+  });
+
+  test("a base path that would move the request to another host is refused", async () => {
+    for (const basePath of ["evil.example", "//evil.example", "/\\evil.example", ".evil.example"]) {
+      const calls: Call[] = [];
+      const result = await getEntitlements({ origin: ORIGIN, basePath, fetch: stubFetch(200, ENTITLEMENTS, calls) });
+      expect(result, basePath).toEqual({ ok: false, failure: PAYMENTS_CROSS_ORIGIN });
+      expect(calls, basePath).toEqual([]);
+    }
+  });
+
+  test("a bad origin and a bad base path are one refusal, the code auth and organization use", () => {
+    expect(PAYMENTS_CROSS_ORIGIN.code).toBe("client/cross_origin");
+  });
+});
+
+describe("every hosted flow off a browser, through an injected navigate", () => {
+  // No `location` anywhere: `global: {}` is what a native runtime looks like to this module.
+  const NATIVE = { origin: "https://api.acme.example", global: {} };
+
+  test("a redirect checkout leaves through the injected navigate", async () => {
+    const calls: Call[] = [];
+    const visited: string[] = [];
+    const outcome = await startCheckout(
+      { productId: "pro_monthly", rail: "stripe" },
+      {
+        ...NATIVE,
+        fetch: stubFetch(200, { kind: "redirect", url: "https://checkout.stripe.com/c/pay/cs_1" }, calls),
+        navigate: (url) => visited.push(url),
+      },
+    );
+    expect(outcome).toEqual({ kind: "left" });
+    expect(visited).toEqual(["https://checkout.stripe.com/c/pay/cs_1"]);
+    expect(calls[0]?.url).toBe("https://api.acme.example/payments/checkout");
+    expect(calls[0]?.init?.credentials).toBe("omit");
+  });
+
+  test("a paddle handoff comes back to the caller and nothing navigates", async () => {
+    const visited: string[] = [];
+    const outcome = await startCheckout(
+      { productId: "pro_monthly" },
+      { ...NATIVE, fetch: stubFetch(200, PADDLE_HANDOFF), navigate: (url) => visited.push(url) },
+    );
+    expect(outcome).toEqual({ kind: "paddle", handoff: PADDLE_HANDOFF });
+    expect(visited).toEqual([]);
+  });
+
+  test("the billing portal leaves through the injected navigate", async () => {
+    const calls: Call[] = [];
+    const visited: string[] = [];
+    const failure = await openBillingPortal({
+      ...NATIVE,
+      fetch: stubFetch(200, { url: "https://billing.stripe.com/p/session/1" }, calls),
+      navigate: (url) => visited.push(url),
+    });
+    expect(failure).toBeNull();
+    expect(visited).toEqual(["https://billing.stripe.com/p/session/1"]);
+    expect(calls[0]?.url).toBe("https://api.acme.example/payments/portal");
+  });
+
+  test("a store's subscription page opens through the injected navigate", () => {
+    const visited: string[] = [];
+    expect(openStoreSubscriptions("google", { ...NATIVE, navigate: (url) => visited.push(url) })).toBe(true);
+    expect(visited).toEqual([STORE_SUBSCRIPTION_URLS.google]);
+  });
+
+  test("a paddle resume reads from the origin", async () => {
+    const calls: Call[] = [];
+    const result = await resumeCheckout("txn_01h", { ...NATIVE, fetch: stubFetch(200, PADDLE_HANDOFF, calls) });
+    expect(calls[0]?.url).toBe("https://api.acme.example/payments/checkout/resume?transaction=txn_01h");
+    expect(result.ok).toBe(true);
+  });
+
+  test("with no navigate injected a hosted flow reports rather than throwing", async () => {
+    const outcome = await startCheckout(
+      { productId: "pro_monthly" },
+      { ...NATIVE, fetch: stubFetch(200, { kind: "redirect", url: "https://checkout.stripe.com/c/pay/1" }) },
+    );
+    expect(outcome.kind === "refused" && outcome.failure.code).toBe("client/no_browser");
+    expect(
+      await openBillingPortal({ ...NATIVE, fetch: stubFetch(200, { url: "https://billing.stripe.com/p/1" }) }),
+    ).toEqual(expect.objectContaining({ code: "client/no_browser" }));
+    expect(openStoreSubscriptions("apple", NATIVE)).toBe(false);
   });
 });
 

@@ -25,7 +25,7 @@ It scaffolds the client into `apps/api/`, beside the Worker that serves it, and 
 - It does not overwrite anything. Ever. See [Ownership](#ownership).
 - It does not generate a client SDK, a types file, or any other build artifact to disk. What the client knows about your backend comes from virtual modules resolved in memory. See [`virtual:pithy/<capability>`](#virtualpithycapability).
 - It does not take provider flags. Which social providers you offer lives in `pithy.config.ts` and nowhere else. See [Social providers](#social-providers).
-- It does not scaffold a mobile client. Bearer auth is fully supported and documented below; it is simply not what this stub is.
+- The `react` stub does not scaffold a mobile client. `react-native` does, in a directory of its own. See [React Native](#react-native).
 
 ## The layout
 
@@ -210,7 +210,7 @@ The screens are real files in **`@pithy-sh/ui-react`**, a template library the C
 
 The same package is also a runtime dependency of what it writes. The copied screens import `useRead` and `useAction` from it, and the router's `<Redirect>` is built on its own (see [Reading data, running calls, leaving](#reading-data-running-calls-leaving)). Those hooks are code you upgrade rather than copies you own, so a fix to them reaches your screens with the package, not with a re-scaffold.
 
-That is a deliberate boundary, and it is about growth. A framework's templates need that framework's toolchain to be checked: React wants `react`, `@types/react` and a `jsx: react-jsx` program, and Svelte would want an entirely different one. Keeping them in the CLI would make the CLI carry every framework's devDependencies and every framework's tsconfig purely to typecheck files it only ever copies. Each framework therefore brings its own library — `@pithy-sh/ui-react` today, `@pithy-sh/ui-<framework>` as others land — while the stub contract that drives them stays in the CLI.
+That is a deliberate boundary, and it is about growth. A framework's templates need that framework's toolchain to be checked: React wants `react`, `@types/react` and a `jsx: react-jsx` program, and Svelte would want an entirely different one. Keeping them in the CLI would make the CLI carry every framework's devDependencies and every framework's tsconfig purely to typecheck files it only ever copies. Each framework therefore brings its own library — `@pithy-sh/ui-react` and `@pithy-sh/ui-react-native` today, typechecked against React's DOM types and React Native's own respectively — while the stub contract that drives them stays in the CLI.
 
 It also means the screens are ordinary source: the kit's typecheck checks them and Biome lints them, in the layout they will have once copied. A template that does not compile fails CI here, rather than in your project.
 
@@ -244,7 +244,7 @@ Two consequences worth stating plainly.
 The seeded screens call no `useEffect` of their own, and three exports carry what those effects used to do. A screen of yours can use them the same way.
 
 ```tsx
-import { useRead } from "@pithy-sh/ui-react/src/read";
+import { useRead } from "@pithy-sh/ui-core/src/read";
 import { Redirect } from "../../router";
 
 export const path = "/projects";
@@ -269,7 +269,7 @@ export default function Projects() {
 A segment beginning `:` is a parameter, and its value arrives as a typed `params` prop.
 
 ```tsx
-import type { ScreenProps } from "../../router";
+import type { ScreenProps } from "@pithy-sh/ui-core/src/routes";
 
 export const path = "/invitations/:token";
 
@@ -428,7 +428,7 @@ So the surface splits by what changes. **`@pithy-sh/payments` exports the hooks*
 
 ### The web scaffold sells on one rail
 
-StoreKit and Play Billing need native app code to present a purchase sheet, and `pithy ui add` does not scaffold a mobile client. So the paywall lists every product and offers a buy button only for the ones Stripe sells; the rest read "available in the app."
+StoreKit and Play Billing need native app code to present a purchase sheet, and a browser has none. So the `react` paywall lists every product and offers a buy button only for the ones Stripe sells; the rest read "available in the app."
 
 | Stub | Apple | Google | Stripe |
 |---|---|---|---|
@@ -469,7 +469,7 @@ The session cookie's name comes off the same resolution. Better Auth prefixes it
 
 **No token is ever put in `localStorage`.** Not the access token, not the refresh token, not a copy "just for convenience". A token in `localStorage` is readable by any script that ends up on the page, and the whole point of the cookie path is that the credential is not reachable from JavaScript at all.
 
-**Bearer stays the mobile path.** Short-lived access tokens with rotated refresh tokens in secure device storage, `Authorization: Bearer` on every call, PKCE and deep links for OAuth. It is fully supported by the same auth capability, on the same routes, and it is documented rather than scaffolded — this stub is a browser app, and in a browser, cookies are the right answer.
+**Bearer is the native path.** The raw session token in secure device storage, `Authorization: Bearer` on every call, rotated before it expires, and a one-time code handed back to the app's deep link after a redirect sign-in. `createBearerSession` in `@pithy-sh/auth/src/client/bearer` does all of it, on the same auth routes, and `pithy ui add react-native` scaffolds it. This stub is a browser app, and in a browser, cookies are the right answer.
 
 ## Dev
 
@@ -609,6 +609,42 @@ The alias names no Worker. It takes the first `apps/*` that resolves React and p
 **If your front end was scaffolded after this landed, you have the Worker's half.** Your dev server and your build resolve one React; your `.tsx` tests still resolve two. Copy the head of [`templates/starter/vitest.config.ts`](https://github.com/pithy-sh/pithy/blob/main/templates/starter/vitest.config.ts) into your own — its imports, `PROJECT_ROOT`, `packageDir`, `oneReact`, `ONE_REACT` — together with the `resolve: { alias: ONE_REACT }` line it feeds into the `node` project.
 
 **If your front end predates it too, you have neither half**, and that is the one that throws in the browser. Do the copy above, and add `resolve: { dedupe: ["react", "react-dom"] }` to `apps/<worker>/vite.config.ts` by hand — a top-level key of the object you pass `defineConfig`, beside `plugins`. No command will put it there for you. Until it is there, `invalid hook call` is exactly where it was.
+
+## React Native
+
+```bash
+pithy ui add react-native --worker api
+```
+
+`react-native` writes an Expo app (SDK 57, React Native 0.86) for iOS, Android and the web into `apps/app/`, not into the Worker. On a phone the app calls the Worker's absolute origin with a bearer token. The web build calls it by relative path with the cookie, so it is served from the Worker's own origin. Its `pithy.worker.jsonc` runs `expo start` on the port `pithy dev` pins for it, and it has no `wrangler.jsonc`, so `pithy deploy` leaves it alone and builds nothing of it. Store builds go through EAS (`eas build`); `expo export --platform web` is the web build. `--app` names the directory, `--worker` the Worker it calls. `pithy init --target mobile` or `both` offers the same app.
+
+The screens are the DOM set's, in React Native primitives, under the same file names and the same string keys, so a Spanish catalog covers both. They come from `@pithy-sh/ui-react-native` and share `@pithy-sh/ui-core` with the DOM set: the route table, `useRead`, `useAction` and `<Redirect>`.
+
+**Config is a file.** Metro cannot resolve `virtual:pithy/*`, so `src/pithy-config.generated.ts` holds what a Vite app would import: each capability's client projection, and the Worker's origin in each environment. Four fields are yours and survive every rewrite: `appScheme`, the scheme a sign-in returns to, which the Worker's `trustedOrigins` must name; `universalLinkOrigin`, the https origin a sign-in or a checkout in the system browser returns through; the Google client ids; and `rails`. `app.config.ts` reads the scheme and the link origin from the same file. When the Worker's config changes, run `pithy ui sync --app app`; `--check` in CI fails while the file is behind. The value is a plain object literal, written the way the scaffolded Biome prints it, and a sync reads it back without running it, after a format or a hand edit too.
+
+**Rails, one per platform.** `rails.ios`, `rails.android` and `rails.web` name what each platform sells through: `apple` and `google` buy in the app through StoreKit and Play Billing, `stripe`, `lemonSqueezy` and `paddle` open a hosted checkout, and `none` shows the plans and sells nothing. Set them with `--ios-rail`, `--android-rail` and `--web-rail` on `pithy ui add` or `pithy ui sync --app`, at the prompt, or by editing the file. The defaults are each platform's store and the Worker's hosted rail, wherever the Worker enables them. A rail the Worker does not enable is refused by name. A hosted rail on a phone opens checkout in the system browser; whether Apple's App Store Review Guidelines (3.1.1, 3.1.3) or Google Play's payments policy allow that link out in your market is your call, not the kit's. **Paddle on a phone needs `paddle.checkout: "hosted"`** in the Worker's config: an overlay or inline checkout opens inside a web page the app does not have, and the paywall answers one with a refusal that names the line to change.
+
+**One origin per environment.** `origins.dev`, `origins.staging` and `origins.prod` hold where the Worker answers, and a build calls the one `EXPO_PUBLIC_PITHY_ENV` names: set it to `prod` in the `env` of an `eas.json` build profile, and the store build calls production and nothing else. EAS builds in the cloud, so a variable set only in your shell does not reach it. Unset, it is `dev`. Pithy fills staging and prod from the Worker's declared domain, its route or its `BASE_URL`, and writes `null` where none names one, a Worker that answers only on `workers.dev` among them; set that origin by hand, and `pithy ui sync` keeps it until the Worker declares one.
+
+**Dev.** `origins.dev` is the Worker's local address, `http://localhost:<port>`. That reaches the Worker from the iOS simulator. An Android emulator reaches this machine's loopback at `10.0.2.2`, and the app makes that swap itself on Android. A device on your network reaches neither: set `origins.dev` to this machine's network address, with the Worker listening there, and `pithy ui sync` keeps it.
+
+**The web build, in dev and in production.** In production the web build is served from the Worker's own origin, as static assets, so its relative calls land on the Worker. Under `pithy dev` Metro serves it on its own port, and a relative call lands on Metro. So `metro.config.js` is Expo's default config with one addition from `metro-proxy.cjs`: a dev-server middleware that sends every request under the Worker's paths on to `origins.dev`, and hands Metro the rest. The paths are the generated config's `workerPaths`: every base path the Worker's composed route table answers under, wherever a capability is mounted, which `pithy ui add react-native` and `pithy ui sync --app` write from the Worker's config. A file that lists none falls back to the kit's defaults: auth's and payments' base paths, auth's OAuth discovery documents, `/organizations`, `/consent`, `/mcp`, `/health`, and `/turnstile` when Turnstile is on. A request goes on as it came, method, headers, body and `Host` alike, so the Worker answers it as same-origin with the page and sets its cookie there. Its path is matched as the Worker will resolve it, so `/api/auth/../admin` stays with Metro, and a request target naming another host is never sent; the answer comes back with its status, every `Set-Cookie` and its body. The app's own screens are never sent: `/consent` is the screen, and the routes under it are the Worker's. Metro runs the middleware only while it serves, and `expo export` builds without it. Metro reads the config once, at start: restart it after `pithy ui sync --app`. It uses Node's own `http` and `https`, and adds no dependency.
+
+**Sign-in returns to the app.** Auth refuses a sign-in that returns to a link its `trustedOrigins` does not name. Add `"<appScheme>://"` to it in the Worker's `pithy.config.ts`, and `universalLinkOrigin` when you set one; `pithy ui add react-native` names the exact entries.
+
+**A redirect sign-in starts in the system browser.** The scaffolded sign-in opens the Worker's `GET /auth/sign-in/social/start` in the sign-in sheet rather than posting `/auth/sign-in/social` from the app. Better Auth checks a signed `state` cookie at the provider's callback, and only the sheet's own jar can carry it there.
+
+**A magic link on a phone needs a universal link.** Whoever asks for a magic link chooses its challenge, and somebody else opens it, so an app that claims your custom scheme could catch the code meant for your user. The Worker hands a magic link off only to an https link in `trustedOrigins`. With `universalLinkOrigin` unset, the scaffolded sign-in offers no magic link on a phone: it emails a one-time code and goes on to `routes/pithy/otp.tsx`. Set `universalLinkOrigin` and the link is back.
+
+**An https return needs iOS 17.4.** With `universalLinkOrigin` set, the sign-in returns on the https link, and an in-app auth session closes on an https callback only on iOS 17.4 or later. To support an older iOS, leave it unset: the sign-in returns on the custom scheme.
+
+**Turnstile runs in a WebView on a phone.** The app draws no widget of its own. It loads the Worker's `GET /turnstile/widget` in `react-native-webview`, a page on the Worker's own origin that renders the login widget for that environment and posts the solved token back, and sends it where the Worker reads it. The WebView loads nothing but that page and Cloudflare's challenge, and drops a message from any other page. The prod widget's allowed hostnames must include the Worker's origin, or production refuses the challenge. The web build renders the widget into the page.
+
+**A language that flips direction needs a restart.** On a phone the language comes from the device and a choice is kept in AsyncStorage. React Native sets left-to-right or right-to-left once, at launch, so a choice that lays out the other way shows a line asking for a restart. [`docs/I18N.md`](I18N.md) § *Configuring it* has the chain.
+
+**Consent knows a signed-out phone by its own visitor id.** A phone has no cookie, so the scaffolded transport mints a visitor id for consent alone, keeps it in the secure store, and sends it as `x-pithy-consent-visitor` on consent's requests. It is never the device id, which operators can list. A choice made signed out merges into the account at sign-in.
+
+**Upgrades.** `pithy upgrade --packages` compares the React templates you copied against the version it moves to. It does not compare the React Native ones: it names each such app and leaves the diff against `@pithy-sh/ui-react-native`'s templates to you.
 
 ## See also
 

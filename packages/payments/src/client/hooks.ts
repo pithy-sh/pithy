@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { useAction } from "@pithy-sh/ui-react/src/action";
-import { useRead } from "@pithy-sh/ui-react/src/read";
+import { useAction } from "@pithy-sh/ui-core/src/action";
+import { useRead } from "@pithy-sh/ui-core/src/read";
 import { useCallback, useRef, useState } from "react";
 import {
   type AllowancesView,
@@ -53,8 +53,9 @@ import { readPaddleLinkTransaction } from "./paddleLink";
  * (`@pithy-sh/payments/src/client/hooks`). It is deliberately absent from `src/index.ts` — that is what
  * keeps React out of a Worker bundle that composes payments.
  *
- * Cookie/session throughout, because `./api` is: same-origin, `credentials: "include"`, no token in web
- * storage, no bearer header. Bearer stays the mobile path.
+ * The transport is whatever the options name, because `./api` decides it: with no `origin`, same-origin
+ * with `credentials: "include"` and no token in web storage; with an `origin` and the bearer session's
+ * `fetch`, a native app's request that sends no cookie. These hooks hold no credential either way.
  *
  * **Nothing here throws, and nothing here is a security boundary.** A refusal is a message to render, and
  * the server's `requireEntitlement()` is the gate; these exist so a user is sent to the paywall rather than
@@ -434,10 +435,13 @@ export function usePaddleLink(options?: PaymentsClientOptions): UsePaddleLink {
 
 /** What {@link usePurchase} gives the screen that submits receipts. */
 export interface UsePurchase {
-  /** Submit one receipt for verification. */
-  submit: (rail: PaymentsClientRail, receipt: string) => Promise<void>;
-  /** Submit a store account's whole history on one rail — Restore Purchases. */
-  restore: (rail: PaymentsClientRail, receipts: readonly string[]) => Promise<void>;
+  /**
+   * Submit one receipt for verification. Resolves `true` when the Worker accepted it: a native app finishes the
+   * store's transaction only then, so a refused one stays with the store to be submitted again.
+   */
+  submit: (rail: PaymentsClientRail, receipt: string) => Promise<boolean>;
+  /** Submit a store account's whole history on one rail — Restore Purchases. Resolves `true` when accepted. */
+  restore: (rail: PaymentsClientRail, receipts: readonly string[]) => Promise<boolean>;
   /** The purchase the last successful submission projected, or null. */
   purchase: PurchaseView | null;
   /** The caller's entitlements as of the last successful write. */
@@ -484,15 +488,12 @@ export function usePurchase(options?: PaymentsClientOptions): UsePurchase {
   );
   const run = write.run;
   const submit = useCallback(
-    async (rail: PaymentsClientRail, receipt: string) => {
-      await run({ kind: "submit", rail, receipt });
-    },
+    async (rail: PaymentsClientRail, receipt: string) => (await run({ kind: "submit", rail, receipt })) !== undefined,
     [run],
   );
   const restore = useCallback(
-    async (rail: PaymentsClientRail, receipts: readonly string[]) => {
-      await run({ kind: "restore", rail, receipts });
-    },
+    async (rail: PaymentsClientRail, receipts: readonly string[]) =>
+      (await run({ kind: "restore", rail, receipts })) !== undefined,
     [run],
   );
 

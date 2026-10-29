@@ -39,6 +39,8 @@ import { mayPrompt, type PromptStreams } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
 import { runUiAdd } from "../ui/flow";
+import { defaultAppFor, requireAppName } from "../ui/nativeFlow";
+import { backendRails, RAIL_PLATFORMS, type RailPlatform, resolveRails } from "../ui/rails";
 import { installAlias } from "./alias";
 import { installCompletion } from "./completion";
 import { offerDocs } from "./docs";
@@ -535,6 +537,40 @@ export async function askTarget(options: {
   return { value: parseTarget(String(answer)), prompted: true };
 }
 
+/** Whether a target has a phone among its clients, which is what a React Native app is offered to. */
+export function servesMobile(target: AppTarget): boolean {
+  return target !== "web";
+}
+
+/**
+ * Whether to add the React Native app beside the backend: offered to a `mobile` or `both` target, and never
+ * added unless someone says so. A flag decides outright; without one a human is asked, and anyone else gets
+ * no app, because `mobile` still means an API-only Worker by default.
+ */
+export async function askReactNative(options: {
+  target: AppTarget;
+  /** `--react-native` / `--no-react-native`, or true when `--app` or a rail flag asked for the app. */
+  flagged?: boolean;
+  interactive: boolean;
+  prompt?: InitPrompt;
+}): Promise<{ value: boolean; prompted: boolean }> {
+  if (options.flagged === true && !servesMobile(options.target)) {
+    throw new ValidationError({
+      message: "The React Native app is for a mobile client, and --target web has none.",
+      action: "Pass --target mobile or both, or leave out --react-native, --app and the rail flags.",
+    });
+  }
+  if (options.flagged !== undefined) return { value: options.flagged, prompted: false };
+  if (!servesMobile(options.target) || !options.interactive) return { value: false, prompted: false };
+  const prompt = options.prompt ?? (await clackPrompt());
+  const answer = await prompt.confirm({
+    message: "Add a React Native app for iOS, Android and the web?",
+    initialValue: false,
+  });
+  if (prompt.isCancel(answer)) canceled();
+  return { value: answer === true, prompted: true };
+}
+
 /** `pithy init --json`. `docs/commands/init.md`. */
 const InitPayload = z
   .object({
@@ -553,6 +589,20 @@ const InitPayload = z
       })
       .nullable()
       .describe("The front end scaffolded into the first Worker, or `null` for a `mobile` target."),
+    reactNative: z
+      .object({
+        app: z.string().describe("The Expo app's own `apps/` directory."),
+        created: z.array(z.string().describe("An app-relative path.")).describe("The files it created, sorted."),
+        rails: z
+          .object({
+            ios: z.string().describe("The rail the iOS app sells through."),
+            android: z.string().describe("The rail the Android app sells through."),
+            web: z.string().describe("The rail the web build sells through."),
+          })
+          .describe("The rail each platform sells through. `none` until the backend enables one."),
+      })
+      .nullable()
+      .describe("The React Native app scaffolded beside the first Worker, or `null` when none was added."),
     domains: WorkerDomains.nullable().describe("Where the first Worker answers, or `null` when none was declared."),
     agents: InstructionsFile.describe("`AGENTS.md`, and what happened to the Pithy block in it."),
     claude: InstructionsFile.describe("`CLAUDE.md`, and whether it now points at `AGENTS.md`."),
@@ -571,6 +621,24 @@ export default withContract(
       target: {
         type: "string",
         description: `Which clients call this backend: mobile, web or both. Web scaffolds a React front end. Defaults to "${DEFAULT_TARGET}".`,
+      },
+      "react-native": {
+        type: "boolean",
+        description:
+          "Add an Expo app for iOS, Android and the web in its own apps/<name> (--no-react-native to skip). Mobile and both targets only",
+      },
+      app: { type: "string", description: 'The React Native app\'s directory, apps/<name>. Defaults to "app"' },
+      "ios-rail": {
+        type: "string",
+        description: "The rail the iOS app sells through: apple, stripe, lemonSqueezy, paddle or none",
+      },
+      "android-rail": {
+        type: "string",
+        description: "The rail the Android app sells through: google, stripe, lemonSqueezy, paddle or none",
+      },
+      "web-rail": {
+        type: "string",
+        description: "The rail the web build sells through: stripe, lemonSqueezy, paddle or none",
       },
       dir: {
         type: "string",
@@ -618,6 +686,34 @@ export default withContract(
             ? await askTarget({ interactive: mayPrompt(args.json) })
             : { value: flaggedTarget, prompted: false };
 
+        // `--app` or a rail flag asks for the app as plainly as `--react-native` does.
+        const railFlags: Partial<Record<RailPlatform, string>> = {};
+        for (const platform of RAIL_PLATFORMS) {
+          const value = args[`${platform}-rail`];
+          if (value !== undefined) railFlags[platform] = value;
+        }
+        const wantsApp = args.app !== undefined || Object.keys(railFlags).length > 0;
+        const reactNative = await askReactNative({
+          target: target.value,
+          ...(args["react-native"] === undefined
+            ? wantsApp
+              ? { flagged: true }
+              : {}
+            : { flagged: args["react-native"] }),
+          interactive: mayPrompt(args.json),
+        });
+        const workerDir = join(targetDir, "apps", worker.value);
+        // Checked before the scaffold: the app's name, and each rail against the Worker it is about to write, which
+        // composes nothing. A refusal here leaves no project behind.
+        if (reactNative.value) {
+          requireAppName(args.app ?? defaultAppFor(worker.value), worker.value);
+          await resolveRails({
+            flags: railFlags,
+            backend: backendRails({ capabilities: [] }),
+            scope: { projectDir: targetDir, workerDir, worker: worker.value },
+          });
+        }
+
         const appName = name.value;
         await scaffoldProject({ targetDir, appName, worker: worker.value, environments: environments.environments });
         // The agent instructions, straight after the scaffold and before any question that can be
@@ -631,7 +727,6 @@ export default withContract(
         // for. Re-running `pithy ui add react` adds the screens once their capabilities are composed; files
         // already there are left as they are. `{ capabilities: [] }` is the Worker config the scaffold just
         // wrote, stated rather than imported, because importing it needs the kit installed and nothing is yet.
-        const workerDir = join(targetDir, "apps", worker.value);
         const launchedBy = packageManagerFromUserAgent();
         const frontEnd = servesWeb(target.value)
           ? await runUiAdd({
@@ -645,6 +740,25 @@ export default withContract(
               // Nothing is installed yet, so no lockfile says which package manager the front end's dev
               // command should run through. The runner that launched `pithy` is the best evidence; without
               // one the lockfile rule applies, and re-running `pithy ui add react` after the install rewires it.
+              ...(launchedBy === undefined ? {} : { packageManager: launchedBy }),
+            })
+          : null;
+        // The Expo app, in an `apps/<name>/` of its own and calling the first Worker. Like the web front end it
+        // starts with no screens and every rail `none`: the Worker composes nothing yet. `pithy ui add react-native`
+        // adds the screens once their capabilities are composed, and `pithy ui sync --app` rewrites the config.
+        const nativeApp = reactNative.value
+          ? await runUiAdd({
+              projectDir: targetDir,
+              workerDir,
+              config: { capabilities: [] },
+              framework: "react-native",
+              auth: false,
+              payments: false,
+              organization: false,
+              consent: false,
+              app: args.app ?? defaultAppFor(worker.value),
+              environments: environments.environments,
+              ...(Object.keys(railFlags).length === 0 ? {} : { rails: railFlags }),
               ...(launchedBy === undefined ? {} : { packageManager: launchedBy }),
             })
           : null;
@@ -677,23 +791,30 @@ export default withContract(
           worker.prompted ||
           environments.prompted ||
           target.prompted ||
+          reactNative.prompted ||
           asked.prompted ||
           account.prompted;
 
         const frontEndReport = frontEnd === null ? null : { framework: frontEnd.framework, created: frontEnd.created };
+        const nativeReport =
+          nativeApp?.app === undefined || nativeApp.rails === undefined
+            ? null
+            : { app: nativeApp.app, created: nativeApp.created, rails: nativeApp.rails };
         if (args.json) {
           process.stdout.write(
-            `${formatJsonLine({ command: "init", targetDir, appName, worker: worker.value, environments: environments.environments, target: target.value, frontEnd: frontEndReport, domains: asked.domains ?? null, agents, claude })}\n`,
+            `${formatJsonLine({ command: "init", targetDir, appName, worker: worker.value, environments: environments.environments, target: target.value, frontEnd: frontEndReport, reactNative: nativeReport, domains: asked.domains ?? null, agents, claude })}\n`,
           );
           return;
         }
         for (const note of credentials) process.stdout.write(`${note}\n`);
         // The two commands every checkout starts with, this one included (#764): setup installs and makes it
         // ready, and `dev` runs the front end with the Worker that serves it.
-        if (frontEnd) {
-          process.stdout.write(
-            `A React front end is in apps/${worker.value}/. Run ${commandName("setup")}, then ${commandName("dev")}.\n`,
-          );
+        if (frontEnd) process.stdout.write(`A React front end is in apps/${worker.value}/.\n`);
+        if (nativeReport) {
+          process.stdout.write(`An Expo app is in apps/${nativeReport.app}/. It calls ${worker.value}.\n`);
+        }
+        if (frontEnd || nativeReport) {
+          process.stdout.write(`Run ${commandName("setup")}, then ${commandName("dev")}.\n`);
         }
         for (const line of [agentsLine(agents, false), claudeLine(claude)]) {
           if (line !== null) process.stdout.write(`${line}\n`);

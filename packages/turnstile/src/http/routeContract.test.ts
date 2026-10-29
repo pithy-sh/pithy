@@ -24,8 +24,10 @@ describe("turnstile route contract", () => {
     expect(await uncoveredParamRoutes(makeApp() as unknown as Hono<never>)).toEqual([]);
   });
 
-  test("the gate is not vacuous — the app carries the one route it should", () => {
-    expect(makeApp().routes.map((route) => `${route.method} ${route.path}`)).toContain("GET /turnstile/admin/widgets");
+  test("the gate is not vacuous — the app carries the routes it should", () => {
+    const routes = makeApp().routes.map((route) => `${route.method} ${route.path}`);
+    expect(routes).toContain("GET /turnstile/admin/widgets");
+    expect(routes).toContain("GET /turnstile/widget");
   });
 
   test("every route declares describeRoute", () => {

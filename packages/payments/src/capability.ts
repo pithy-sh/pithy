@@ -256,8 +256,7 @@ function requireQuantityResolver(config: PaymentsConfig, resolveQuantity: Paymen
  * **Nothing else can cross, and not merely by discipline.** Apple's issuer id and key, Google's
  * service-account credentials, and Stripe's secret and webhook signing keys live in the secrets store
  * behind `paymentsSecretsRegistry` — they are not in the config this closure can see, so there is no
- * expression here that would reach them. What discipline does cover is the rest of the catalog: a
- * product's Apple and Google SKUs stay server-side because a browser has no use for them, and the
+ * expression here that would reach them. What discipline does cover is the rest of the catalog: the
  * `grants` block stays server-side because a currency code and an amount describe the economy.
  * `capability.test.ts` locks the key set and sweeps the serialized result for every credential shape.
  *
@@ -287,9 +286,11 @@ function clientProjection(config: PaymentsConfig, environment: string): Payments
       // **Keyed by rail, not one field per rail.** Two flat fields were already one too many, and a third
       // would have made `purchasable()` a growing chain of `&&`s that a fourth rail silently falls out of.
       // A screen now asks `skus[rail]`, which is the same question it was already asking and cannot go
-      // stale when a rail is added. Every id here is publishable by design: each is what a checkout names,
-      // so each may reach a browser. The API keys and the signing secrets never do.
+      // stale when a rail is added. Every id here is publishable by design: each is what a checkout or a
+      // store purchase names, so each may reach a client. The API keys and the signing secrets never do.
       skus: {
+        apple: product.apple?.productId ?? null,
+        google: product.google?.productId ?? null,
         stripe: product.stripe?.priceId ?? null,
         lemonSqueezy: product.lemonSqueezy?.variantId ?? null,
         paddle: product.paddle?.priceId ?? null,

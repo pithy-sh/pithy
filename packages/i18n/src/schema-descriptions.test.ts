@@ -12,8 +12,9 @@ declare global {
 }
 
 // Eagerly import every source module except tests, so any newly exported schema is covered
-// automatically — no manual list to keep in sync. Mirrors core's meta-test.
-const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"], { eager: true });
+// automatically — no manual list to keep in sync. Mirrors core's meta-test. `native/` imports React Native, whose
+// entry only Metro can load, and declares no schema.
+const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts", "!./native/**"], { eager: true });
 describe("schema descriptions (CLAUDE.md §Zod: schemas are the docs)", () => {
   test("the sweep is looking at the package, not at nothing", () => {
     // **The guard sixteen of nineteen of these files did without** (#326, #351). A glob that matches

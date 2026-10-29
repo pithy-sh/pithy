@@ -5,9 +5,9 @@
     "outDir": "dist",
     "types": ["node"]
   },
-  // The Worker program. `src/browser/**` and `src/react/**` are excluded on purpose: they touch
-  // `window` and `document`, and pulling the DOM library in here would make those globals resolvable
-  // from the middleware too. They compile under `tsconfig.browser.json` instead.
+  // The Worker program. `src/browser/**` and `src/react/**` touch `window` and `document` and compile under
+  // `tsconfig.browser.json`; `src/native/**` imports React Native and compiles under `tsconfig.native.json`. Neither
+  // set of globals may resolve from the middleware.
   "include": ["src/**/*.ts"],
-  "exclude": ["src/browser/**", "src/react/**"]
+  "exclude": ["src/browser/**", "src/react/**", "src/native/**"]
 }

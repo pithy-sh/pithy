@@ -2,7 +2,7 @@ import type { Translator } from "@pithy-sh/core/src/i18n/translator";
 import { getEntitlements, type PaymentsFailure } from "@pithy-sh/payments/src/client/api";
 import type { PriceVisitor } from "@pithy-sh/payments/src/pricing/location";
 import { fetchPriceVisitor, type PriceVisitorOptions } from "@pithy-sh/payments/src/pricing/visitor";
-import { useRead } from "@pithy-sh/ui-react/src/read";
+import { useRead } from "@pithy-sh/ui-core/src/read";
 import { paymentsConfig } from "./pithy-config";
 
 /**

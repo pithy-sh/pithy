@@ -52,6 +52,7 @@ export const esErrors: MessageCatalog = {
   // not here: a translating client renders this sentence and the screen shows the reason beside it.
   "auth/account_suspended": "Tu cuenta está suspendida.",
   "auth/account_deleted": "Tu cuenta está eliminada. Aún se puede recuperar durante un tiempo.",
+  "auth/handoff_invalid": "Ese código de acceso ya se usó o ha caducado. Vuelve a iniciar sesión.",
   "core/not_found": "No existe el recurso solicitado.",
   "core/conflict": "La solicitud entra en conflicto con el estado actual.",
   "rate_limit/exceeded": "Demasiadas solicitudes. Inténtalo más tarde.",

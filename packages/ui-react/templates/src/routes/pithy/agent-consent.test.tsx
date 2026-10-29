@@ -32,6 +32,9 @@ vi.mock("../../session", () => ({ getSession, RESUME_PARAM: "resume" }));
 vi.mock("../../router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../router")>()),
   routeTable: async () => ({ byRole: new Map() }),
+}));
+vi.mock("@pithy-sh/ui-core/src/routes", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@pithy-sh/ui-core/src/routes")>()),
   screenPath: () => "/sign-in",
 }));
 

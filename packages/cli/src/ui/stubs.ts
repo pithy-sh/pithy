@@ -5,12 +5,13 @@ import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { PackageManager } from "../project/packageManager";
 import { reactStub } from "./react";
+import { reactNativeStub } from "./reactNative";
 
 /**
  * The framework-stub contract — everything `pithy ui` needs to scaffold a front end into a Worker and
  * everything `pithy dev` and `pithy deploy` need to run and build it afterwards. Nothing more abstract
- * than that: React 19 is the only stub today, so the interface describes the two jobs a stub actually
- * has (write files, declare its commands) rather than a framework model invented against one example.
+ * than that: the two jobs a stub actually has (write files, declare its commands), and where its front end
+ * lives.
  */
 
 /** What a stub is told about the Worker it is being scaffolded into. */
@@ -22,6 +23,11 @@ export interface UiStubContext {
    * or a build-state file that sits beside the ones `pithy init` already named after the directory.
    */
   worker: string;
+  /**
+   * The app's own directory name, the `<name>` in `apps/<name>`, for a front end that lives beside the Worker
+   * rather than in it (see {@link UiStub.placement}). Absent for a front end the Worker serves.
+   */
+  app?: string;
   /** Whether to write the auth template (the passwordless screens) on top of the bare SPA. */
   auth: boolean;
   /**
@@ -73,6 +79,12 @@ export interface UiStub {
   id: string;
   /** One line, for `pithy ui list`. */
   description: string;
+  /**
+   * Where the front end lives. `worker`, the default, puts it in the Worker it calls, which serves it as static
+   * assets on one origin. `app` gives it an `apps/<name>/` of its own with no `wrangler.jsonc`: an Expo app that
+   * runs on a phone and calls the Worker across origins.
+   */
+  placement?: "worker" | "app";
   /**
    * The root of this stub's template tree — real files on disk, in the stub's own template library
    * (`@pithy-sh/ui-react` for React).
@@ -126,7 +138,10 @@ export interface UiStub {
   devCommand(port: string): string[];
   /** Regex source marking "ready" in this process's output — `pithy dev` matches it to release the gate. */
   readySignal: string;
-  /** The build argv, run through the adopter's package manager before `wrangler deploy`. */
+  /**
+   * The build argv. For a stub in a Worker, run through the adopter's package manager before `wrangler deploy`. For
+   * a stub in an app of its own, recorded only: `pithy deploy` deploys Workers, and the app is not one.
+   */
   buildCommand: string[];
   /**
    * The `package.json` scripts merged into the target Worker — the adopter's own entry points, for
@@ -143,6 +158,7 @@ export interface UiStub {
 /** Every framework stub `pithy ui add` can scaffold, keyed by its `id`. */
 export const UI_STUBS: Record<string, UiStub> = {
   [reactStub.id]: reactStub,
+  [reactNativeStub.id]: reactNativeStub,
 };
 
 /** The stub a `<framework>` positional names, or an actionable error pointing at `pithy ui list`. */

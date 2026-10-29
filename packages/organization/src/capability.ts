@@ -11,6 +11,7 @@ import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { EmailCapability } from "@pithy-sh/email/src/capability";
 import type { Migration } from "kysely/migration";
+import { carryActingOnRotation } from "./acting/rotation";
 import { actingOrganizationMiddleware } from "./acting/seam";
 import { OrganizationAuditActions } from "./audit/actions";
 import { OrganizationConfig, type OrganizationConfigInput } from "./config/config";
@@ -337,6 +338,8 @@ export function organization<const Power extends string = never, const Role exte
     // Core's acting-organization seam, filled for every request: media and storage scope each record to
     // the organization in force through it, and must never import this package to learn it.
     middleware: [actingOrganizationMiddleware(roles)],
+    // A refresh-credential rotation replaces the session the selection is keyed by, so the selection follows it.
+    sessionRotated: carryActingOnRotation("DB"),
     databases: {
       [ORGANIZATION_DATABASE_NAME]: {
         binding: "DB",

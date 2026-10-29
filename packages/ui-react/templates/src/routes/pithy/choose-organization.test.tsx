@@ -61,7 +61,6 @@ const SUSPENDED_CANARY = "/canary-organization-suspended";
 vi.mock("../../router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../router")>()),
   routeTable: async () => ({ byRole: new Map([["organization-suspended", SUSPENDED_CANARY]]) }),
-  screenPath: (table: { byRole: Map<string, string> }, role: string) => table.byRole.get(role),
 }));
 
 let host: HTMLElement;

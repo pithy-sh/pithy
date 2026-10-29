@@ -97,6 +97,19 @@ export const AuthAuditActions = {
    * behind it at all, not the row a cascade wrote.
    */
   oauthUnlinked: "auth/oauth_unlinked",
+  /**
+   * A redirect sign-in ended on a native app's deep link, and the session it made was left there as a one-time
+   * code instead of a cookie. Attributed to the account; `sessionId` names the session the code stands for. Outcome
+   * `denied`, severity `warning`, when the deep link carried no challenge to bind a code to: no code is issued and
+   * the session is deleted.
+   */
+  handoffIssued: "auth/handoff_issued",
+  /**
+   * A native app traded a one-time code for its session. Outcome `denied`, severity `warning`, for a code that was
+   * spent, expired, never issued or presented with the wrong verifier, with which of those in `metadata.reason` as
+   * `expired`, `unknown` or `mismatch`.
+   */
+  handoffExchanged: "auth/handoff_exchanged",
   /** A device was registered or updated from sign-in metadata. */
   deviceRegistered: "auth/device_registered",
   /** A device was revoked (its session(s) signed out). */

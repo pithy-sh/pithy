@@ -133,6 +133,8 @@ It runs on **every** move of the package that carries the templates, patch inclu
 
 A file moved off its template path is not seen; the comparison is by path.
 
+**React Native apps are not compared.** An app scaffolded by `pithy ui add react-native` holds `@pithy-sh/ui-react-native`'s templates, and this report reads `@pithy-sh/ui-react`'s alone. Each such app is named, `Templates: apps/<app> is a React Native app. Its templates are not compared; diff it against @pithy-sh/ui-react-native's by hand.`, and listed in `packages.uncompared`.
+
 `--dry-run --packages` fetches, plans and reports the templates, writes nothing and runs nothing, and reconciles as a dry run against what is installed now — saying so in one line, since the moves above it are not.
 
 ## `--json`
@@ -199,6 +201,7 @@ A Worker that could not be planned, or was refused, contributes nothing to `plan
 | `packages.templates[].to` | string \| null | The target version, or `null` when it could not be resolved |
 | `packages.templates[].applied` | boolean | Whether this run installs `to` |
 | `packages.templates[].files` | array | One entry per file to look at, each with `worker`, `path` (relative to the Worker), `change` (`"changed"` \| `"added"` \| `"removed"`), `copy` (`"untouched"` \| `"edited"` \| `"absent"` \| `"present"`) and, for an untouched copy, `from` — the version it is a copy of |
+| `packages.uncompared` | string[] | Apps with a React Native front end, by `apps/` directory, whose templates the report does not compare. Absent when there are none |
 
 ### `workers[]` when a Worker was refused
 

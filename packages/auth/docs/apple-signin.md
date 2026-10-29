@@ -82,17 +82,45 @@ Magic link and email OTP have no return URL — they work on any URL, preview or
 
 ## 6. Mobile
 
-Native iOS uses Apple's own Sign in with Apple flow, not the web redirect. The app gets an identity token from Apple and sends it to the Worker. The `appBundleIdentifier` is the audience that id token is validated against — which is why it is part of the credential.
+Native iOS uses Apple's own Sign in with Apple flow, not the web redirect. The app asks Apple for an identity token with `expo-apple-authentication` and posts it to the Worker. The `appBundleIdentifier` is the audience that token is validated against, which is why it is part of the credential.
 
-You do **not** register a deep-link or custom-scheme URL in the Apple portal. Apple only ever returns to the Services ID's return URL or, for native, hands the id token straight to the app.
+The route is Better Auth's social sign-in, with the token in the body instead of a redirect:
 
-The app passes its own deep link as the sign-in `callbackURL` — for example `myapp://auth/callback`. For that to be allowed, the scheme must be listed in `trustedOrigins` (prefix match):
+```http
+POST /auth/sign-in/social
+Content-Type: application/json
+
+{ "provider": "apple", "idToken": { "token": "<identity token>", "nonce": "<raw nonce>" } }
+```
+
+`nonce` is the raw value the app generated. Hand Apple its SHA-256 and send the raw one here; the Worker accepts either form. A token older than an hour is refused. The answer is `{ "token": "<session token>", "user": { … } }`, and `token` is the bearer credential: hand it to `session.adopt` from `@pithy-sh/auth/src/client/bearer`, which stores it in the Keychain and rotates it before it expires. `pithy ui add react-native` scaffolds the screen that does all of this. A refusal arrives in Better Auth's own shape, for example `{ "code": "INVALID_TOKEN" }` when the audience does not match `appBundleIdentifier`.
+
+You do **not** register a deep-link or custom-scheme URL in the Apple portal. Apple only ever returns to the Services ID's return URL or, for native, hands the identity token straight to the app.
+
+A provider without a native token flow signs in through the redirect instead, and comes back to the app on its own link. Use an https universal link (iOS) or app link (Android) when you can: the system opens it only in the app that proves it owns the domain, through `apple-app-site-association` or `assetlinks.json`. A custom scheme such as `myapp://` works too, but any installed app can claim one. Either must be in `trustedOrigins`, the https link by its origin and the scheme by prefix, or the Worker refuses the `callbackURL`:
 
 ```ts
 auth({
   trustedOrigins: ["myapp://", "https://app.example.com"],
 });
 ```
+
+Set the app's `universalLinkOrigin` and that origin must be in `trustedOrigins` too, beside the scheme. The scaffolded sign-in then returns on the https link, and an in-app auth session closes on an https callback only on iOS 17.4 or later. To support an older iOS, leave `universalLinkOrigin` unset and return on the custom scheme.
+
+A cookie set on that redirect would land in the system browser, which the app never reads, so the Worker hands the session over with a one-time code instead:
+
+1. Before the sign-in starts, the app makes a verifier with `createHandoffVerifier` from `@pithy-sh/auth/src/client/handoff`, passing `expo-crypto`'s `getRandomBytes` and `digest`. It keeps the verifier in memory.
+2. It opens `nativeSignInStartURL({ origin, provider, callbackURL })` with `WebBrowser.openAuthSessionAsync`, where `callbackURL` is `handoffCallbackURL("https://app.example.com/auth/callback", challenge)`, or the custom-scheme link: the app's link with the verifier's S256 challenge on it as `handoff_challenge`. That is `GET /auth/sign-in/social/start`, which starts the sign-in inside the sign-in sheet and sends it on to the provider. Never post `/auth/sign-in/social` from the app for a redirect: Better Auth checks a signed `state` cookie at the provider's callback, and only the sheet's own jar can carry it there. The route refuses a navigation another page started (`Sec-Fetch-Site` other than `none`), so open it from the app, never from a link.
+3. The sign-in returns to `https://app.example.com/auth/callback?code=<code>`. `handoffCode(link)` reads it, on any React Native runtime.
+4. Within 60 seconds, the app calls `exchangeHandoff({ code, verifier }, session.options)`, which posts both to `POST /auth/handoff`. The answer is `{ "token", "expiresAt" }`. Hand `token` to `session.adopt`.
+
+The code is good once. A spent, expired or unknown code, or a wrong verifier, gets `auth/handoff_invalid`, and any attempt spends the code: sign in again. So does a verifier outside RFC 7636's shape, 43 to 128 characters from `A-Z a-z 0-9 - . _ ~`; `createHandoffVerifier` always makes one inside it. Another app that claims the same scheme and catches the link has the code but not the verifier, so it has nothing to trade. A custom-scheme link with no challenge gets `?error=handoff_challenge_required` and no code.
+
+A magic link on native needs a universal link. Whoever asks for a magic link chooses its challenge, and somebody else opens it, so an app that claims your custom scheme could ask for a link to your user's address and catch the code it hands back. The Worker hands a magic link off only to an https link in `trustedOrigins`; one to a custom scheme gets `?error=handoff_scheme_refused`, and no session is kept. Without a universal link, sign in by email with a one-time code instead.
+
+The challenge is what asks for a code. An `https` callback that carries one is handed off like a custom scheme. An `https` callback without one is a web page to the Worker, so it gets a cookie, as a browser would, and no code.
+
+The device id goes to the auth routes alone. It is listed to operators and recorded in the audit trail, so no other capability takes it as proof of anything. Consent knows a signed-out phone by a visitor id of its own, which the scaffolded app mints and keeps in the secure store.
 
 ## Where the credentials live
 
@@ -134,7 +162,7 @@ A sign-in attempt with Apple then answers `503` with the code `auth/provider_una
 - [ ] Client secret JWT generated: ES256, `iss` = Team ID, `sub` = Services ID, `aud` = `https://appleid.apple.com`, `exp` ≤ 6 months.
 - [ ] Return URL registered per environment as `<baseURL><basePath>/callback/apple`.
 - [ ] Return URL host matches each environment's `baseURL`; domain verified and https.
-- [ ] Mobile deep-link scheme listed in `trustedOrigins` (no deep link in the Apple portal).
+- [ ] The app's universal link origin, or its custom scheme, listed in `trustedOrigins` (no deep link in the Apple portal).
 - [ ] `clientId` + `clientSecret` + optional `appBundleIdentifier` stored together via `pithy secrets create auth-apple-credentials` (typed JSON); Apple enabled in config with `apple: { enabled: true }`.
 - [ ] A plan to regenerate and rotate the client secret before it expires.
 - [ ] `requireLocalEmailVerified` left on.

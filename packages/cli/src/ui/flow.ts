@@ -5,19 +5,22 @@ import { readdir } from "node:fs/promises";
 import { join, sep } from "node:path";
 import type { WorkerDir } from "@pithy-sh/core/src/cli/command";
 import { commandAlternatives, pithyCommand } from "@pithy-sh/core/src/cli/command";
-import { ConflictError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
-import { capabilityNotComposed } from "../capabilities/notComposed";
+import { ConflictError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { PlatformRails } from "@pithy-sh/ui-react-native/src/generatedConfig";
 import { emptyPlan, type Plan } from "../plan/plan";
 import { inShadow } from "../plan/shadow";
-import { allCapabilities, projectEnvironments, type WorkerConfig } from "../project/config";
+import { projectEnvironments, type WorkerConfig } from "../project/config";
 import { detectPackageManager, type PackageManager } from "../project/packageManager";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { withRollback } from "../project/rollback";
 import { pathExists } from "../project/scaffold";
 import { workerDirName } from "../project/workerIdentity";
+import type { KitRangeSources } from "./kitRanges";
+import { type RailChoices, runNativeUiAdd } from "./nativeFlow";
 import { deriveWorkerFirst, uncoveredRoutes } from "./routeAllowlist";
 import { scaffoldFiles } from "./scaffold";
 import { PITHY_SCREEN_DIR, unstyledScreenClasses } from "./screenStyles";
+import { resolveScreenSets, type ScreenSets, type UiScreenPrompt } from "./screens";
 import { resolveStub, UI_STUBS, type UiStub } from "./stubs";
 import { loadStubFiles } from "./templates";
 import { readAssets, wireAssets, wireManifest, wirePackage, wireSolution } from "./wire";
@@ -27,34 +30,6 @@ import { readWorkerUi } from "./workerUi";
  * `pithy ui add` and `pithy ui sync`, as flows — the command file stays argument parsing and output,
  * the way `capabilities/flow.ts` sits behind `pithy add`.
  */
-
-/** The capability the auth template's screens are written against. */
-const AUTH_CAPABILITY = "auth";
-
-/** The capability the paywall and subscription screens are written against. */
-const PAYMENTS_CAPABILITY = "payments";
-
-/** The capability the account chooser is written against. */
-const ORGANIZATION_CAPABILITY = "organization";
-const CONSENT_CAPABILITY = "consent";
-/** The capability whose agent consent and connected-applications screens ride on the auth screens. */
-const MCP_CAPABILITY = "mcp";
-
-/** Which capability-gated screen set a decision is about. */
-export type UiScreenSet =
-  | typeof AUTH_CAPABILITY
-  | typeof PAYMENTS_CAPABILITY
-  | typeof ORGANIZATION_CAPABILITY
-  | typeof CONSENT_CAPABILITY;
-
-/**
- * Ask whether to scaffold one capability's screens.
- *
- * One seam for every screen set rather than one per set: a third capability's screens must be a new member
- * of {@link UiScreenSet} and nothing else, and a prompt-per-capability is exactly the shape that stops
- * being true.
- */
-export type UiScreenPrompt = (request: { screens: UiScreenSet; suggestion: boolean }) => Promise<boolean>;
 
 /**
  * The one name this file uses for a Worker: the directory it lives in, `apps/<name>`.
@@ -89,7 +64,7 @@ export function listStubs(): UiStubListing[] {
 }
 
 /** Options for {@link runUiAdd} — the target worker, already resolved, plus the choices. */
-export interface UiAddOptions {
+export interface UiAddOptions extends RailChoices {
   /** The project root — where the lockfile that names the package manager lives. */
   projectDir: string;
   /** The target worker's directory, `apps/<name>` — which is also where its name comes from. */
@@ -115,6 +90,17 @@ export interface UiAddOptions {
   packageManager?: PackageManager;
   /** Make every write in a copy of the project and report the difference as `plan`, writing nothing here. */
   dryRun?: boolean;
+  /**
+   * `--app`: the directory of a front end that lives beside the Worker rather than in it, `apps/<app>`. Only a
+   * stub placed in an app of its own takes it, and the rail flags with it.
+   */
+  app?: string;
+  /** The target Worker's deployed name, which `.dev.config.json` keys its pinned local origin by. */
+  deployedName?: string;
+  /** The project's environments, for an app's origins. Read from the root `pithy.config.ts` when absent. */
+  environments?: readonly string[];
+  /** Where an app's kit ranges are looked for past the manifests. Tests set it; the defaults reach the registry. */
+  kitRanges?: Pick<KitRangeSources, "installedFrom" | "latest">;
 }
 
 /** What `pithy ui add` did. */
@@ -123,6 +109,24 @@ export interface UiAddReport {
   worker: WorkerDir;
   /** The stub that wrote it. */
   framework: string;
+  /** The app's own `apps/` directory, for a stub placed beside the Worker. Absent when the Worker serves it. */
+  app?: string;
+  /** The rail each platform sells through, for a stub placed beside the Worker. */
+  rails?: PlatformRails;
+  /** The entries auth's `trustedOrigins` needs for an app placed beside the Worker: its scheme and universal link. */
+  trustedOrigins?: string[];
+  /**
+   * The entries auth's `trustedOrigins` needs for an app placed beside the Worker and does not have: its scheme, and
+   * its universal-link origin when it has one. Empty when nothing is missing or the Worker composes no auth.
+   */
+  untrustedOrigins?: string[];
+  /** Kit packages an app's templates import that no source had a range for, so none was written. */
+  unresolvedPackages?: string[];
+  /**
+   * For an app placed beside the Worker: whether it already existed, so this run added screens to it and rewrote its
+   * generated config from the Worker, keeping the adopter's choices.
+   */
+  backfill?: boolean;
   /** Whether the auth template was included. */
   auth: boolean;
   /** Whether the payments screens were included. */
@@ -164,43 +168,6 @@ export interface UiAddReport {
 }
 
 /**
- * Whether to write one capability's screens. `--auth`/`--no-auth` and `--payments`/`--no-payments` decide
- * outright. With neither, a human is asked (defaulting to yes when the capability is composed on this
- * worker) and anyone else — `--json`, an agent, CI — gets that same default with no prompt, because no
- * invocation may block.
- *
- * Asking for a capability's screens on a worker that does not compose it is an error, not a scaffold of
- * broken imports.
- */
-async function resolveScreens(
-  options: UiAddOptions,
-  screens: UiScreenSet,
-  requested: boolean | undefined,
-  composed: boolean,
-): Promise<boolean> {
-  let wanted = requested;
-  if (wanted === undefined)
-    wanted = options.prompt ? await options.prompt({ screens, suggestion: composed }) : composed;
-  if (wanted && !composed) {
-    const worker = workerName(options.workerDir);
-    throw capabilityNotComposed(
-      screens,
-      {
-        message: `The ${screens} screens need the ${screens} capability, and ${worker} doesn't compose it.`,
-        action: (add) => `Run ${add} first, or leave them out with --no-${screens}.`,
-      },
-      { projectDir: options.projectDir, workerDir: options.workerDir },
-    );
-  }
-  return wanted;
-}
-
-/** Whether a worker composes a capability by name. */
-function composes(config: WorkerConfig, capability: string): boolean {
-  return allCapabilities(config).some((composed) => composed.name === capability);
-}
-
-/**
  * The files this run may write: the whole template on a first scaffold, and only what does not exist
  * yet on a backfill (`--auth` after `--no-auth`).
  *
@@ -211,7 +178,7 @@ function composes(config: WorkerConfig, capability: string): boolean {
 async function planFiles(
   options: UiAddOptions,
   stub: UiStub,
-  screens: { auth: boolean; payments: boolean; organization: boolean; consent: boolean; mcp: boolean },
+  screens: ScreenSets,
 ): Promise<{ files: Record<string, string>; strict: boolean }> {
   const current = await readWorkerUi(options.workerDir);
   const worker = workerName(options.workerDir);
@@ -318,31 +285,17 @@ function touchedPaths(options: UiAddOptions, planned: Record<string, string>): s
  */
 export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
   const stub = resolveStub(options.framework);
+  if (stub.placement === "app") return runNativeUiAdd(options, stub);
+  const beside = [options.app === undefined ? null : "--app", options.rails === undefined ? null : "the rail flags"];
+  const misplaced = beside.filter((flag) => flag !== null);
+  if (misplaced.length > 0) {
+    throw new ValidationError({
+      message: `The ${stub.id} front end lives in the worker it calls, so it takes no ${misplaced.join(" or ")}.`,
+      action: `Leave them out, or run ${pithyCommand("ui add", { args: ["react-native"], flags: { "--worker": workerName(options.workerDir) } })} for an app of its own.`,
+    });
+  }
   const packageManager = options.packageManager ?? (await detectPackageManager(options.projectDir));
-  const auth = await resolveScreens(options, AUTH_CAPABILITY, options.auth, composes(options.config, AUTH_CAPABILITY));
-  const payments = await resolveScreens(
-    options,
-    PAYMENTS_CAPABILITY,
-    options.payments,
-    composes(options.config, PAYMENTS_CAPABILITY),
-  );
-
-  const organization = await resolveScreens(
-    options,
-    ORGANIZATION_CAPABILITY,
-    options.organization,
-    composes(options.config, ORGANIZATION_CAPABILITY),
-  );
-  const consent = await resolveScreens(
-    options,
-    CONSENT_CAPABILITY,
-    options.consent,
-    composes(options.config, CONSENT_CAPABILITY),
-  );
-  // The agent screens ride on the auth screens and on the Worker composing `mcp`, with no flag of their own:
-  // the agent consent screen is where that capability's authorization lands, so a Worker serving the endpoint
-  // without it would send every agent's user to a page that does not exist.
-  const mcp = auth && composes(options.config, MCP_CAPABILITY);
+  const { auth, payments, organization, consent, mcp } = await resolveScreenSets(options);
   const plan = await planFiles({ ...options, packageManager }, stub, { auth, payments, organization, consent, mcp });
   // Compose first. `deriveWorkerFirst` assembles every capability's routes, once per environment, and
   // reads nothing this run is about to write — which is what makes moving it ahead of the write legal.
@@ -411,6 +364,10 @@ export interface UiSyncReport {
   after: string[];
   /** Whether anything actually moved — false on a re-run, which is the point. */
   changed: boolean;
+  /** The app whose generated config was rewritten, for a stub placed beside the Worker. */
+  app?: string;
+  /** The rail each platform of that app sells through. */
+  rails?: PlatformRails;
   /**
    * Routes the allowlist **in the file** does not cover: the ones the SPA shell is answering with a 200
    * and the wrong body. Always empty after a write — the run just re-derived the list — so this is the

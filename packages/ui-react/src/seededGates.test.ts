@@ -140,6 +140,12 @@ const LEDGER: Record<string, Held> = {
     why: "Leaving by `window.location.assign` rather than `navigate` is the invariant, and it is one an adopter can break with a one-word edit that looks like a correction — every other screen here uses `navigate`, correctly. What it protects is invisible in every manual test: the first account somebody switches to is the one whose data is already on screen, so a route change that keeps the React tree alive looks identical until a customer with two accounts sees the other one's roster in production. There is no value to invent a canary for; the assertion is that one API ran and the other did not.",
   },
 
+  "src/routes/pithy/invitation.tsx": {
+    gate: "src/routes/pithy/invitation.test.tsx",
+    expectation: "mechanism",
+    why: "Two invariants, each one an edit that looks like a tidy-up. Accepting must be followed by choosing the joined account, because the server leaves the account in force where it was; dropping the second call looks like removing a redundant request. And leaving must be a document load, for the chooser's reason. Both are assertions about which calls ran and which navigation happened, so there is no value to invent a canary for. The sign-in and suspended destinations are canaries in the same file, so a path written as a literal goes red too.",
+  },
+
   "src/routes/pithy/account-suspended.tsx": {
     ungated:
       "Copy and one action, and both are held from the kit: templateCopy.test.ts keeps every sentence in the baked catalog, and lifecycleScreens.test.tsx renders it in both themes and holds it to naming no Pithy-hosted origin. How a reader arrives here is a role, read by the callback, the sign-in and the OTP screen through `refusedAccountScreen` in session.tsx, so renaming the path is one edit and nothing in this file restates where it is.",

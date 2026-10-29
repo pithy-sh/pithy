@@ -387,3 +387,63 @@ describe("readFailure, through callAuth", () => {
     }
   });
 });
+
+describe("an absolute origin, for a program this Worker does not serve", () => {
+  const ORIGIN = "https://api.example.test";
+
+  test("the request goes to the origin, under the base path, and carries no cookie", async () => {
+    const { fetch: send, calls } = recorder();
+    await callAuth("/get-session", {}, { origin: ORIGIN, fetch: send }, anything);
+    await callAuth(
+      "/get-session",
+      {},
+      { origin: "http://localhost:8787", basePath: "/identity", fetch: send },
+      anything,
+    );
+    expect(calls.map((call) => call.url)).toEqual([
+      `${ORIGIN}${AUTH_BASE_PATH}/get-session`,
+      "http://localhost:8787/identity/get-session",
+    ]);
+    for (const call of calls) expect(call.init?.credentials).toBe("omit");
+  });
+
+  test("an origin with a path, a slash, a query, userinfo or another scheme refuses before anything is sent", async () => {
+    const { fetch: send, calls } = recorder();
+    for (const origin of [
+      "https://api.example.test/",
+      "https://api.example.test/v1",
+      "https://api.example.test?x=1",
+      "https://api.example.test#x",
+      "https://user@api.example.test",
+      "https://api.example.test\\evil",
+      "ftp://api.example.test",
+      "myapp://",
+      "//api.example.test",
+      "api.example.test",
+      "",
+    ]) {
+      const result = await callAuth("/get-session", {}, { origin, fetch: send }, anything);
+      expect(result, origin).toEqual({ ok: false, failure: AUTH_CROSS_ORIGIN });
+    }
+    expect(calls).toEqual([]);
+  });
+
+  test("the base path is still held to a rooted path when an origin is set", async () => {
+    const { fetch: send, calls } = recorder();
+    const result = await callAuth(
+      "/get-session",
+      {},
+      { origin: ORIGIN, basePath: "//evil.test", fetch: send },
+      anything,
+    );
+    expect(result).toEqual({ ok: false, failure: AUTH_CROSS_ORIGIN });
+    expect(calls).toEqual([]);
+  });
+
+  test("a port and an IPv6 host are origins too", async () => {
+    const { fetch: send, calls } = recorder();
+    await callAuth("/get-session", {}, { origin: "https://api.example.test:8443", fetch: send }, anything);
+    await callAuth("/get-session", {}, { origin: "http://[::1]:8787", fetch: send }, anything);
+    expect(calls).toHaveLength(2);
+  });
+});

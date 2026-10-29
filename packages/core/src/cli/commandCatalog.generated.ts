@@ -1252,6 +1252,31 @@ export const COMMANDS = {
         "required": false,
         "repeatable": false
       },
+      "--react-native": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      },
+      "--app": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--ios-rail": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--android-rail": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--web-rail": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
       "--dir": {
         "type": "string",
         "required": false,
@@ -2782,6 +2807,26 @@ export const COMMANDS = {
         "required": false,
         "repeatable": false
       },
+      "--app": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--ios-rail": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--android-rail": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--web-rail": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
       "--auth": {
         "type": "boolean",
         "required": false,
@@ -2830,6 +2875,26 @@ export const COMMANDS = {
     "positionals": [],
     "flags": {
       "--worker": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--app": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--ios-rail": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--android-rail": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--web-rail": {
         "type": "string",
         "required": false,
         "repeatable": false

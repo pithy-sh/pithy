@@ -546,16 +546,33 @@ export const TokenRotateResponse = z
   .object({
     accessToken: z
       .string()
-      .describe("A fresh short-lived access token (a JWT) for the `Authorization: Bearer` header."),
+      .describe(
+        "A short-lived JWT for a service outside this Worker, which verifies it against `/jwks`. The kit's own routes do not accept it: send `refreshToken` as the bearer.",
+      ),
     refreshToken: z
       .string()
       .describe(
-        "The successor refresh credential: a new session token. The one presented is spent, and presenting it again past a short grace window revokes the whole family.",
+        "The successor session token: the bearer credential for `Authorization: Bearer` on the kit's routes, and what the next rotation takes. The one presented is spent, and presenting it again past a short grace window revokes the whole family.",
       ),
     expiresAt: z.iso.datetime().describe("When the successor session lapses, ISO-8601."),
   })
-  .describe("The rotated credential pair: a new access token and the session token that replaces the one presented.");
+  .describe(
+    "The rotated credentials: the session token that replaces the one presented, and a JWT for outside verifiers.",
+  );
 export type TokenRotateResponse = z.output<typeof TokenRotateResponse>;
+
+/** `POST {base}/handoff`. */
+export const HandoffExchangeResponse = z
+  .object({
+    token: z
+      .string()
+      .describe(
+        "The raw session token: the bearer credential for `Authorization: Bearer`, and the refresh credential `/token/rotate` takes. Hold it in secure storage.",
+      ),
+    expiresAt: z.iso.datetime().describe("When the session lapses unless it is rotated first, ISO-8601."),
+  })
+  .describe("The session a redirect sign-in made, handed to the native app that started it.");
+export type HandoffExchangeResponse = z.output<typeof HandoffExchangeResponse>;
 
 /** One of the caller's own registered devices. */
 export const MyDeviceView = z

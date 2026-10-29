@@ -145,6 +145,16 @@ export interface ClearActingOptions {
   readonly sessionId: string;
 }
 
+/** What carrying takes: the session that was rotated away, its successor, and whose both are. */
+export interface CarryActingOptions {
+  /** The session that was presented to the rotation and is now gone. */
+  readonly previousSessionId: string;
+  /** The session that replaced it. */
+  readonly sessionId: string;
+  /** The person both sessions belong to. A selection is carried only when it is theirs. */
+  readonly userId: string;
+}
+
 /** One row of the join every read here makes: a membership, with the organization it is in. */
 interface ActingRow {
   readonly organizationId: string;
@@ -439,6 +449,22 @@ export async function hasAnyMembership(
  */
 export async function clearActing(db: OrganizationDatabase, options: ClearActingOptions): Promise<void> {
   await db.deleteFrom(ACTING_TABLE).where("sessionId", "=", options.sessionId).execute();
+}
+
+/**
+ * Move a session's selection to the session that replaced it.
+ *
+ * A refresh-credential rotation mints a new session and spends the old one, and the selection is keyed by
+ * session. The row is moved whole, `chosen` and all, and only when it is the same person's. Nothing is proved
+ * again here: every read rejoins memberships, so a selection whose membership has since gone grants nothing.
+ */
+export async function carryActing(db: OrganizationDatabase, options: CarryActingOptions): Promise<void> {
+  await db
+    .updateTable(ACTING_TABLE)
+    .set({ sessionId: options.sessionId })
+    .where("sessionId", "=", options.previousSessionId)
+    .where("userId", "=", options.userId)
+    .execute();
 }
 
 /**

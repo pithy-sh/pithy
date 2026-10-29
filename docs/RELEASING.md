@@ -42,7 +42,7 @@ Read that list carefully — **a version, once published, is permanent.** npm al
 
 This is the one awkward step, and it is npm's constraint rather than ours.
 
-Trusted publishing is configured **per package, on a package that already exists**. A package that has never been published has no settings page to attach a trusted publisher to, and `npm trust` refuses for the same reason. So the very first version of each of the 22 packages has to be published some other way, and after that CI takes over permanently.
+Trusted publishing is configured **per package, on a package that already exists**. A package that has never been published has no settings page to attach a trusted publisher to, and `npm trust` refuses for the same reason. So the very first version of every package has to be published some other way, and after that CI takes over permanently.
 
 `bun run release:local` is that step. It runs the identical sequence the workflow runs, against `npm login`'s two-hour session rather than a stored token — nothing outlives the afternoon, and there is no credential to rotate or leak.
 
@@ -70,7 +70,7 @@ The claim is captured when the **run is created**, not when the publish step exe
 
 ### 4. Protect the release environment
 
-**Do this before step 5, and do not skip it.** An npm trusted publisher matches on repository and workflow **filename**. It has no branch field — and `workflow_dispatch` runs the workflow definition from whichever ref the dispatcher names. Without an environment, anyone able to push a branch could run a rewritten `release.yml` from it and publish all 22 packages, with genuine provenance attestations that make the result look *more* trustworthy.
+**Do this before step 5, and do not skip it.** An npm trusted publisher matches on repository and workflow **filename**. It has no branch field — and `workflow_dispatch` runs the workflow definition from whichever ref the dispatcher names. Without an environment, anyone able to push a branch could run a rewritten `release.yml` from it and publish every `@pithy-sh/*` package, with genuine provenance attestations that make the result look *more* trustworthy.
 
 The GitHub environment is what pins the ref, because GitHub evaluates its deployment-branch rule against the ref actually executing.
 
@@ -87,9 +87,10 @@ Now that the packages exist, point each one at this workflow. Requires npm **11.
 ```bash
 npm install -g npm@latest
 
-for pkg in artifacts audit auth cli cloudflare core email i18n leaderboard ledger \
-           matchmaking media multiplayer organization payments rating secrets \
-           storage support testers turnstile ui-react vector vite; do
+for pkg in artifacts audit auth cli cloudflare consent core email i18n leaderboard \
+           ledger matchmaking media multiplayer organization payments rating \
+           secrets storage support testers turnstile ui-core ui-react \
+           ui-react-native vector vite; do
   npm trust github "@pithy-sh/$pkg" \
     --repo pithy-sh/pithy \
     --file release.yml \
@@ -102,9 +103,9 @@ done
 npm trust list @pithy-sh/core   # confirm one landed
 ```
 
-`--file` is the workflow **filename only**, not a path. It must stay `release.yml`: renaming the workflow breaks publishing for all 24 packages until every trust is re-pointed.
+`--file` is the workflow **filename only**, not a path. It must stay `release.yml`: renaming the workflow breaks publishing for every package until every trust is re-pointed.
 
-**A package added later needs its own trust, and until it has one CI cannot cut a release at all** — `changeset publish` publishes the set or fails. `@pithy-sh/organization` was the first to arrive after setup, which is why its first version was cut from a laptop: there was no package for a publisher to attach to. `@pithy-sh/artifacts` is the second, and takes the same two steps. Once a package exists, run the one-package form and the loop above is whole again:
+**A package added later needs its own trust, and until it has one CI cannot cut a release at all** — `changeset publish` publishes the set or fails. `@pithy-sh/organization` was the first to arrive after setup, which is why its first version was cut from a laptop: there was no package for a publisher to attach to. `@pithy-sh/artifacts` was the second. `@pithy-sh/consent`, `@pithy-sh/ui-core` and `@pithy-sh/ui-react-native` take the same two steps before the first release that carries them. Once a package exists, run the one-package form and the loop above is whole again:
 
 ```bash
 npm trust github "@pithy-sh/organization" \
@@ -309,14 +310,14 @@ Nothing is backfilled. Retroactively deciding whether a two-year-old patch was s
 
 **`npm trust` refuses.** It needs npm 11.15.0+, 2FA on your account, write access to the package, and the package to already exist.
 
-**No provenance on a published package.** Provenance needs the `repository` field in `package.json` (all 22 declare it, held by `tooling/release/src/manifests.test.ts`), a public repository, and a CI build. A local publish never produces one.
+**No provenance on a published package.** Provenance needs the `repository` field in `package.json` (every published package declares it, held by `tooling/release/src/manifests.test.ts`), a public repository, and a CI build. A local publish never produces one.
 
 ## What a package publishes
 
 Every published package declares `files`, and two gates hold it:
 
 - `tooling/release/src/manifests.test.ts` — the declaration. Each package names `src`, negates `!src/**/*.test.ts`, ships its `pithy.manifest.json` and any companion manifest beside it (`pithy.mcp.manifest.json`) where it has them, ships its `docs/`, and names nothing that is not there.
-- `bun run verify-published` — the artifact. It packs all 22 and fails on a test file, a build leftover, or a capability manifest at the package root that the tarball left out. It runs in CI beside the CLI's own `pack:verify`, and again in the release workflow on the exact thing about to be published.
+- `bun run verify-published` — the artifact. It packs every published package and fails on a test file, a build leftover, or a capability manifest at the package root that the tarball left out. It runs in CI beside the CLI's own `pack:verify`, and again in the release workflow on the exact thing about to be published.
 
 Both exist because **`files` does not fail on a missing path.** A field naming `pithy.manifest.json` passes every static check whether the file is there or not, and only the tarball knows the difference — which matters, because the CLI resolves every capability manifest from the adopter's `node_modules/@pithy-sh/*`. A package that ships without one is a capability `pithy add` cannot see, and it exits 0.
 

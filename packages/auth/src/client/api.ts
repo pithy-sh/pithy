@@ -14,11 +14,12 @@
  * `/sign-out`, the two OTP routes, the magic link, and the social handoff — each spelling out the same
  * transport by hand. They call this now, and this upgrades with a minor release (#370).
  *
- * **Cookie/session, same origin, and that is enforced rather than assumed.** Every request carries
- * `credentials: "include"` and nothing else: no token in `localStorage` or `sessionStorage`, no
- * `Authorization` header, no refresh rotation. The SPA and its Worker share an origin, so the session
- * rides an httpOnly cookie JavaScript cannot read. Bearer is the mobile path — the same routes serve
- * it, documented rather than scaffolded.
+ * **Two transports, chosen by one option.** With no `origin`, every request is a rooted path on the
+ * page's own origin carrying `credentials: "include"` and nothing else: no token in `localStorage` or
+ * `sessionStorage`, no `Authorization` header, no refresh rotation. The SPA and its Worker share an
+ * origin, so the session rides an httpOnly cookie JavaScript cannot read. With an `origin` — a native
+ * app, which no Worker serves — the request goes to that origin with `credentials: "omit"`, and the
+ * credential is the `Authorization` header the handed-in `fetch` adds. `./bearer` builds that fetch.
  *
  * **CSRF travels with the cookie mode, and half of it is on this side of the wire.** The server's
  * `requireSameOrigin()` refuses a cookie-authenticated mutating request whose `Origin` does not match;
@@ -35,7 +36,7 @@
  * on this side of the wire protects anything, it only decides what a screen shows.
  *
  * **No absolute URL literals, and no schema library.** Paths are relative, so the calls follow whatever
- * origin the bundle is served from. Answers are narrowed by hand-written `is…(value: unknown): value is
+ * origin the bundle is served from, or the one `origin` names. Answers are narrowed by hand-written `is…(value: unknown): value is
  * T` guards rather than Zod: this file compiles into an adopter's browser bundle, and it must not drag
  * the Worker's schema graph in behind it. `sameOrigin.test.ts` holds the import list to empty, so the
  * property is structural rather than a habit.
@@ -58,7 +59,10 @@ export interface AuthRequestInit {
   headers?: Record<string, string>;
   /** The JSON body, already serialized. */
   body?: string;
-  /** Cookie policy. Always `include` here — same-origin, httpOnly session cookie. */
+  /**
+   * Cookie policy. `include` on the page's own origin, where the session is an httpOnly cookie; `omit`
+   * once an {@link AuthClientOptions.origin} is set, where the credential is a bearer the fetch adds.
+   */
   credentials?: "include" | "same-origin" | "omit";
 }
 
@@ -102,6 +106,13 @@ export type AuthGate = (body: Record<string, unknown>) => {
 
 /** What every call takes: where the routes are, and the seams a test replaces. */
 export interface AuthClientOptions {
+  /**
+   * The Worker's absolute origin, for a program it does not serve: a native app. `scheme://host[:port]`
+   * over http or https and nothing else — no path, no trailing slash. Absent, every request is a rooted
+   * path on the page's own origin carrying its cookie. Present, the request goes to this origin with no
+   * cookie, and the credential is whatever the `fetch` handed in adds.
+   */
+  origin?: string;
   /** Where the auth routes mount. Defaults to {@link AUTH_BASE_PATH}. */
   basePath?: string;
   /** The fetch to use. Defaults to the one on {@link AuthClientOptions.global}. */
@@ -142,15 +153,15 @@ export const AUTH_UNREADABLE: AuthFailure = {
 /**
  * The request would have left this origin, so it was never sent.
  *
- * The only way to reach it is a `basePath` or a path that is not a rooted same-origin path — an
- * absolute URL, a protocol-relative `//host`, a backslash form a URL parser reads as one. Sending it
- * would attach an ambient session to a request this page is not entitled to make, which is the thing
- * the cookie mode exists to keep from happening.
+ * Reached through a `basePath` that is not a rooted path — an absolute URL, a protocol-relative
+ * `//host`, a backslash form a URL parser reads as one — or an `origin` that is not a bare http(s)
+ * origin. Sending it would attach a session to a request this program is not entitled to make.
  */
 export const AUTH_CROSS_ORIGIN: AuthFailure = {
   code: "client/cross_origin",
   message: "That request would have left this site, so it wasn't sent.",
-  action: "Check the auth `basePath` in pithy.config.ts — it is a path on this worker, not a URL.",
+  action:
+    "Check the auth `basePath` in pithy.config.ts, which is a path on the worker and not a URL, and the client's `origin`, which is a scheme and host with no path.",
 };
 
 /** Whether a value is a plain record — the first step of every guard below. */
@@ -165,10 +176,43 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * parser reads as an authority rather than as a path, and a browser follows both — which is why the
  * check is on the second character rather than on a scheme it would never find after a leading `/`.
  */
-function isSameOriginPath(path: string): boolean {
+export function isSameOriginPath(path: string): boolean {
   if (!path.startsWith("/")) return false;
   const second = path.charAt(1);
   return second !== "/" && second !== "\\";
+}
+
+/**
+ * Whether a configured origin is a bare http(s) origin: a scheme, a host, an optional port, nothing else.
+ *
+ * A regular expression rather than `new URL`, because React Native's `URL` does not implement the
+ * getters a parsed check would read. Userinfo, a path, a query, a fragment, a backslash and whitespace
+ * are all refused, so the composed URL can only ever name this host.
+ */
+export function isBareOrigin(origin: string): boolean {
+  return /^https?:\/\/[A-Za-z0-9.-]+(?::[0-9]{1,5})?$|^https?:\/\/\[[0-9A-Fa-f:.]+\](?::[0-9]{1,5})?$/.test(origin);
+}
+
+/**
+ * The fetch a call goes through: the one passed, else the one on the injected global, else none.
+ *
+ * Exported so `./bearer` reaches the global the same way every call here does, rather than keeping a
+ * second copy of where a fetch comes from.
+ */
+export function resolveFetch(options: Pick<AuthClientOptions, "fetch" | "global"> | undefined): AuthFetch | undefined {
+  return options?.fetch ?? (options?.global ?? (globalThis as AuthGlobal)).fetch;
+}
+
+/**
+ * The same request with no cookie on it — the bearer transport's policy.
+ *
+ * Written here because this module is the one place a cookie mode is written. `./bearer` puts it on
+ * every request its session sends, which is what keeps a cookie a native `fetch` stored from a sign-in
+ * answer from riding alongside the bearer: Better Auth refuses a cookie-carrying request with no
+ * `Origin`.
+ */
+export function withoutCookies(init: AuthRequestInit | undefined): AuthRequestInit {
+  return { ...init, credentials: "omit" };
 }
 
 /**
@@ -212,7 +256,8 @@ function readFailure(body: unknown): AuthFailure {
 }
 
 /**
- * One call: same-origin, cookie-carrying, never throwing. **The only producer of that request.**
+ * One call: same-origin and cookie-carrying, or to an absolute origin with no cookie; never throwing.
+ * **The only producer of either request.**
  *
  * The body is read before the status is judged, because a refusal's body is the failure a screen
  * renders. A body that will not parse is the generic failure rather than a crash — a corporate proxy's
@@ -235,17 +280,22 @@ export async function callAuth<T>(
   guard: (value: unknown) => value is T,
 ): Promise<AuthResult<T>> {
   const base = options?.basePath ?? AUTH_BASE_PATH;
-  const url = `${base}${path}`;
+  const rooted = `${base}${path}`;
   // Before anything else, and before any fetch: the cookie mode below is only safe because this is a
-  // request to this Worker. `base` is adopter config; `path` is ours.
-  if (!isSameOriginPath(url)) return { ok: false, failure: AUTH_CROSS_ORIGIN };
+  // request to this Worker. `base` and `origin` are adopter config; `path` is ours.
+  if (!isSameOriginPath(rooted)) return { ok: false, failure: AUTH_CROSS_ORIGIN };
+  const origin = options?.origin;
+  if (origin !== undefined && !isBareOrigin(origin)) return { ok: false, failure: AUTH_CROSS_ORIGIN };
 
-  const fetcher = options?.fetch ?? (options?.global ?? (globalThis as AuthGlobal)).fetch;
+  const fetcher = resolveFetch(options);
   if (!fetcher) return { ok: false, failure: AUTH_UNREACHABLE };
 
   let response: AuthResponse;
   try {
-    response = await fetcher(url, { ...init, credentials: "include" });
+    response =
+      origin === undefined
+        ? await fetcher(rooted, { ...init, credentials: "include" })
+        : await fetcher(`${origin}${rooted}`, withoutCookies(init));
   } catch {
     return { ok: false, failure: AUTH_UNREACHABLE };
   }

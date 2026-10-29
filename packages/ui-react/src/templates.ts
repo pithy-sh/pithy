@@ -133,6 +133,12 @@ export const TEMPLATE_GROUPS = {
     // stops the previous account's roster, header and cached lists surviving the switch — and an in-app
     // `navigate` looks identical until somebody who belongs to two accounts uses it in production.
     "src/routes/pithy/choose-organization.test.tsx",
+    // Where an invitation link lands. Reading the offer is public; accepting needs a sign-in, and the sign-in comes
+    // back here. Joining does not move the account in force, so the screen records the choice itself.
+    "src/routes/pithy/invitation.tsx",
+    // Seeded, for the chooser's reason: leaving by a document load once the joined account is in force, and writing
+    // that choice at all, are both invisible to somebody who belongs to one account.
+    "src/routes/pithy/invitation.test.tsx",
   ],
   mcp: [
     // The app's agent surface: the consent screen an MCP client's authorization lands on, and the screen a

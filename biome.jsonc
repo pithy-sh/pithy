@@ -84,18 +84,27 @@
       "includes": [
         "**/packages/*/src/**",
         "**/packages/ui-react/templates/**",
+        "**/packages/ui-react-native/templates/**",
         "!**/*.test.ts",
         "!**/*.test.tsx",
         // The superseded or unmounted read's AbortController, and its deadline timer.
-        "!**/packages/ui-react/src/read.ts",
+        "!**/packages/ui-core/src/read.ts",
         // The unmounted component's in-flight call, aborted.
-        "!**/packages/ui-react/src/action.ts",
-        // The browser's history, written once after the render that asked for it.
-        "!**/packages/ui-react/src/redirect.ts",
+        "!**/packages/ui-core/src/action.ts",
+        // The router's navigation, called once after the render that asked for it.
+        "!**/packages/ui-core/src/redirect.ts",
         // Cloudflare's Turnstile script and its widget iframe.
         "!**/packages/ui-react/templates/src/turnstile.tsx",
+        // The Turnstile script and its widget in the React Native web build's page.
+        "!**/packages/ui-react-native/templates/src/useTurnstileWeb.ts",
+        // React Native's AppState, for the app coming back to the foreground.
+        "!**/packages/ui-react-native/templates/src/useAppFocus.ts",
+        // The platform store's (StoreKit / Play Billing) transaction queue, for the app's whole run.
+        "!**/packages/ui-react-native/templates/src/useStoreTransactions.ts",
         // The document's `lang` and `dir`.
         "!**/packages/i18n/src/react/useDocumentLocale.ts",
+        // React Native's I18nManager direction.
+        "!**/packages/i18n/src/native/useNativeDirection.ts",
         // The terminal's resize events.
         "!**/packages/cli/src/dev/tui/resize.ts",
         // The spinner's interval timer.

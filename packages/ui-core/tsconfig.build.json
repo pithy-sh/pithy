@@ -1,0 +1,17 @@
+{
+  // Declarations for the published surface, and nothing else.
+  //
+  // The package tsconfig covers everything a developer typechecks — tests, `scripts/`, fixtures. A
+  // published `.d.ts` tree must mirror `src/` exactly, because `exports` is `./src/*` and the types
+  // have to sit beside the JavaScript tsdown emits. Compiling the wider set either fails on `rootDir`
+  // or buries the output a level deep under `dist/src/`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "outDir": "dist"
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
+}

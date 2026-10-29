@@ -27,7 +27,7 @@
   },
   "scripts": {
     "build": "tsdown && tsc -p tsconfig.build.json && bun ../../tooling/build/src/stampDeclarations.ts",
-    "typecheck": "bun check -p tsconfig.json && bun check -p tsconfig.browser.json",
+    "typecheck": "bun check -p tsconfig.json && bun check -p tsconfig.browser.json && bun check -p tsconfig.native.json",
     "test": "vitest run",
     "test:node": "vitest run --project=node --project=dom",
     "test:workers": "vitest run --project=workers",
@@ -36,13 +36,25 @@
   },
   "peerDependencies": {
     "@pithy-sh/core": "^0.13.0",
-    "@pithy-sh/ui-react": "^0.5.0",
+    "@pithy-sh/ui-core": "^0.0.0",
+    "@react-native-async-storage/async-storage": "^2.2.0",
+    "expo-localization": "^57.0.2",
     "hono": "^4.13.2",
     "react": "^19.0.0",
+    "react-native": "^0.86.3",
     "zod": "^4.4.0"
   },
   "peerDependenciesMeta": {
+    "@react-native-async-storage/async-storage": {
+      "optional": true
+    },
+    "expo-localization": {
+      "optional": true
+    },
     "react": {
+      "optional": true
+    },
+    "react-native": {
       "optional": true
     }
   },
@@ -52,15 +64,18 @@
     "@pithy-sh/core": "workspace:*",
     "@pithy-sh/payments": "workspace:*",
     "@pithy-sh/tsconfig": "workspace:*",
-    "@pithy-sh/ui-react": "workspace:*",
+    "@pithy-sh/ui-core": "workspace:*",
+    "@react-native-async-storage/async-storage": "2.2.0",
     "@types/node": "^22.15.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitest/coverage-v8": "^4.1.0",
+    "expo-localization": "57.0.2",
     "happy-dom": "^20.11.1",
     "hono": "^4.13.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "react-native": "0.86.3",
     "tsdown": "^0.23.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.0",

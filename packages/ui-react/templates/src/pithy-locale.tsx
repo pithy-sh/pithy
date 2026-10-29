@@ -3,7 +3,7 @@ import type { LocaleContext } from "@pithy-sh/core/src/i18n/locale";
 import { applyProjectedLocale } from "@pithy-sh/i18n/src/browser/document";
 import { loadKitCatalog } from "@pithy-sh/i18n/src/catalogs/browser";
 import { TranslatorProvider } from "@pithy-sh/i18n/src/react/translator";
-import { useRead } from "@pithy-sh/ui-react/src/read";
+import { useRead } from "@pithy-sh/ui-core/src/read";
 import type { ReactNode } from "react";
 import { i18nConfig } from "./pithy-config";
 

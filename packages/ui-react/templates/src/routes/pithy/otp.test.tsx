@@ -39,7 +39,6 @@ vi.mock("../../router", () => {
     },
     useSearchParam: () => "someone@example.com",
     routeTable: async () => ({ byRole }),
-    screenPath: (table: { byRole: Map<string, string> }, role: string) => table.byRole.get(role),
   };
 });
 

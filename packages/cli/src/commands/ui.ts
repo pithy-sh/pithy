@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { pithyCommand } from "@pithy-sh/core/src/cli/command";
+import { pithyCommand, type WorkerDir } from "@pithy-sh/core/src/cli/command";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
 import { z } from "zod";
@@ -14,7 +15,10 @@ import { mayPrompt } from "../terminal/inputMode";
 import { NextKey, uiAddNext } from "../terminal/nextSteps";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
-import { listStubs, runUiAdd, runUiSync, type UiScreenSet } from "../ui/flow";
+import { listStubs, runUiAdd, runUiSync, type UiSyncReport } from "../ui/flow";
+import { nativeApp, runNativeUiSync } from "../ui/nativeFlow";
+import { RAIL_PLATFORMS, type RailPlatform, type UiRailPrompt } from "../ui/rails";
+import { composes, type UiScreenSet } from "../ui/screens";
 import { targetWorker } from "./add";
 
 /**
@@ -45,6 +49,136 @@ async function promptScreens(request: { screens: UiScreenSet; suggestion: boolea
   return answer;
 }
 
+/** What each platform's rail is called at a prompt. */
+const RAIL_QUESTIONS: Record<RailPlatform, string> = {
+  ios: "Which rail does the iOS app sell through?",
+  android: "Which rail does the Android app sell through?",
+  web: "Which rail does the web build sell through?",
+};
+
+/** Ask which rail one platform sells through. Attached only when a human can answer. */
+const promptRail: UiRailPrompt = async (request) => {
+  const { isCancel, select } = await import("@clack/prompts");
+  const answer = await select({
+    message: RAIL_QUESTIONS[request.platform],
+    options: request.choices.map((rail) => ({
+      value: rail,
+      label: rail === "none" ? "none. Show plans, sell nothing." : rail,
+    })),
+    initialValue: request.suggestion,
+  });
+  if (isCancel(answer)) canceled();
+  return answer;
+};
+
+/** The three rail flags, as `pithy ui add` and `pithy ui sync` declare them. */
+const RAIL_ARGS = {
+  "ios-rail": {
+    type: "string",
+    description: "The rail the iOS app sells through: apple, stripe, lemonSqueezy, paddle or none (react-native)",
+  },
+  "android-rail": {
+    type: "string",
+    description: "The rail the Android app sells through: google, stripe, lemonSqueezy, paddle or none (react-native)",
+  },
+  "web-rail": {
+    type: "string",
+    description: "The rail the web build sells through: stripe, lemonSqueezy, paddle or none (react-native)",
+  },
+} as const;
+
+/** The rail flags a run was given, keyed by platform, or undefined when it was given none. */
+function railFlags(
+  args: Partial<Record<`${RailPlatform}-rail`, string | undefined>>,
+): Partial<Record<RailPlatform, string>> | undefined {
+  const flags: Partial<Record<RailPlatform, string>> = {};
+  for (const platform of RAIL_PLATFORMS) {
+    const value = args[`${platform}-rail`];
+    if (value !== undefined) flags[platform] = value;
+  }
+  return Object.keys(flags).length === 0 ? undefined : flags;
+}
+
+/** `rails` in a `--json` payload: the rail each platform of a React Native app sells through. */
+const Rails = z
+  .object({
+    ios: z.string().describe("The rail the iOS app sells through."),
+    android: z.string().describe("The rail the Android app sells through."),
+    web: z.string().describe("The rail the web build sells through."),
+  })
+  .optional()
+  .describe("The rail each platform sells through. Only for `react-native`, whose app lives in its own directory.");
+
+/** What `pithy ui add react-native` says once it has written the app. */
+function writeNativeAdded(
+  report: {
+    app: string;
+    worker: WorkerDir;
+    framework: string;
+    created: string[];
+    skipped: string[];
+    packageManager: string;
+    rails: Record<RailPlatform, string>;
+    trustedOrigins?: string[] | undefined;
+    untrustedOrigins?: string[] | undefined;
+    unresolvedPackages?: string[] | undefined;
+    backfill?: boolean | undefined;
+  },
+  template: string,
+  composesAuth: boolean,
+): void {
+  process.stdout.write(
+    `Scaffolded a ${report.framework} app into apps/${report.app}. It calls ${report.worker}. ${template}\n`,
+  );
+  if (report.skipped.length > 0) {
+    process.stdout.write(`${report.created.length} files added. ${report.skipped.length} left as they were.\n`);
+  } else {
+    process.stdout.write(`${report.created.length} files created.\n`);
+  }
+  process.stdout.write(`Rails: iOS ${report.rails.ios}, Android ${report.rails.android}, web ${report.rails.web}.\n`);
+  const generated = `apps/${report.app}/src/pithy-config.generated.ts`;
+  process.stdout.write(
+    report.backfill
+      ? `${generated} was rewritten from ${report.worker}'s config. Its rails, appScheme, universalLinkOrigin and Google client ids were kept.\n`
+      : `${generated} holds ${report.worker}'s config. Set appScheme and universalLinkOrigin there before a store build.\n`,
+  );
+  const quoted = (entries: readonly string[]) => entries.map((entry) => `"${entry}"`).join(" and ");
+  if ((report.untrustedOrigins ?? []).length > 0) {
+    process.stdout.write(
+      `Add ${quoted(report.untrustedOrigins ?? [])} to auth's trustedOrigins in apps/${report.worker}/pithy.config.ts. A sign-in returns to the app there.\n`,
+    );
+  } else if (!composesAuth && (report.trustedOrigins ?? []).length > 0) {
+    process.stdout.write(
+      `When ${report.worker} composes auth, its trustedOrigins needs ${quoted(report.trustedOrigins ?? [])}.\n`,
+    );
+  }
+  for (const name of report.unresolvedPackages ?? []) {
+    process.stdout.write(`No range found for ${name}. Add one to apps/${report.app}/package.json.\n`);
+  }
+  const sync = pithyCommand("ui sync", { flags: { "--app": report.app, "--worker": report.worker } });
+  process.stdout.write(`Change ${report.worker}'s config, then run ${sync}.\n`);
+  for (const line of unpublishedKitNotice() ?? []) process.stdout.write(`${dim(line)}\n`);
+  process.stdout.write(`Install the packages: ${report.packageManager} install. Then ${pithyCommand("dev")}.\n`);
+  process.stdout.write(`${formatDone()}\n`);
+}
+
+/** What `pithy ui sync --app` says. */
+function writeNativeSynced(report: { app: string; worker: WorkerDir; changed: boolean }, check: boolean): void {
+  const file = `apps/${report.app}/src/pithy-config.generated.ts`;
+  if (check && report.changed) {
+    process.stdout.write(`${file} is behind ${report.worker}'s config.\n`);
+    const sync = pithyCommand("ui sync", { flags: { "--app": report.app, "--worker": report.worker } });
+    process.stdout.write(`Run ${sync}.\n`);
+    return;
+  }
+  if (!report.changed) {
+    process.stdout.write(`${file} is already in sync with ${report.worker}.\n`);
+  } else {
+    process.stdout.write(`Rewrote ${file} from ${report.worker}'s config. Your scheme, links and rails are kept.\n`);
+  }
+  process.stdout.write(`${formatDone()}\n`);
+}
+
 /** `pithy ui add <framework>` — scaffold a front end into one worker and wire it. */
 const Names = (what: string) => z.array(z.string().describe("One name.")).describe(what);
 
@@ -55,6 +189,34 @@ const UiAddPayload = z
     dryRun: z.boolean().describe("Whether this was `--dry-run`. Nothing was written when it is `true`."),
     ...WorkerIdentity.shape,
     framework: z.string().describe("The stub that wrote it."),
+    app: z
+      .string()
+      .optional()
+      .describe("The app's own `apps/` directory. Only for `react-native`; the paths below are relative to it."),
+    rails: Rails,
+    trustedOrigins: Names(
+      "The entries auth's `trustedOrigins` needs for the app: its scheme as `<scheme>://`, and its universal-link origin when set.",
+    )
+      .optional()
+      .describe(
+        "The entries auth's `trustedOrigins` needs for the app: its scheme as `<scheme>://`, and its universal-link origin when set. Only for `react-native`.",
+      ),
+    untrustedOrigins: Names("The entries the Worker's auth config lacks.")
+      .optional()
+      .describe(
+        "Of `trustedOrigins`, the entries the Worker's auth config does not list. Empty when nothing is missing or the Worker composes no auth. Only for `react-native`.",
+      ),
+    unresolvedPackages: Names("Kit packages with no range.")
+      .optional()
+      .describe(
+        "Kit packages the app's templates import that no source had a range for, so the app's `package.json` declares none. Only for `react-native`.",
+      ),
+    backfill: z
+      .boolean()
+      .optional()
+      .describe(
+        "Whether the app already existed, so this run added screens to it and rewrote its generated config from the Worker, keeping its rails, `appScheme`, `universalLinkOrigin` and Google client ids. Only for `react-native`.",
+      ),
     auth: z.boolean().describe("Whether the sign-in screens were included."),
     payments: z.boolean().describe("Whether the paywall screens were included."),
     organization: z.boolean().describe("Whether the account chooser was included."),
@@ -80,6 +242,8 @@ const UiSyncPayload = z
     before: Names("The allowlist before this run."),
     after: Names("The allowlist after it."),
     changed: z.boolean().describe("Whether anything moved. `false` on a re-run."),
+    app: z.string().optional().describe("The app whose generated config was rewritten. Only with `--app`."),
+    rails: Rails,
     uncovered: Names("Routes the allowlist in the file does not cover. Non-empty fails the run."),
     unstyled: Names("Class names the screens render that nothing defines. Fails the run under `--check`."),
     notFoundHandling: z
@@ -115,7 +279,15 @@ const add = withContract(
     },
     args: {
       framework: { type: "positional", required: true, description: "Framework stub, e.g. react. See pithy ui list" },
-      worker: { type: "string", description: "Which worker to scaffold into (apps/<name>)" },
+      worker: {
+        type: "string",
+        description: "Which worker to scaffold into (apps/<name>), or for react-native the worker the app calls",
+      },
+      app: {
+        type: "string",
+        description: 'The app\'s own directory, apps/<name> (react-native only). Defaults to "app"',
+      },
+      ...RAIL_ARGS,
       // No default on either: undefined means "decide" — prompt a human, else follow whether the
       // capability is composed on that worker.
       auth: { type: "boolean", description: "Include the passwordless sign-in screens (--no-auth for the bare SPA)" },
@@ -139,6 +311,7 @@ const add = withContract(
         const projectDir = process.cwd();
         const interactive = mayPrompt(args.json);
         const dryRun = args["dry-run"];
+        const rails = railFlags(args);
         // Composed for dev: which screens a Worker composes is read off the Worker `pithy dev` serves them
         // from. Each environment's route allowlist is composed for that environment by the flow itself.
         const target = await targetWorker(LOCAL_ENVIRONMENT, {
@@ -156,7 +329,10 @@ const add = withContract(
           ...(args.payments === undefined ? {} : { payments: args.payments }),
           ...(args.organization === undefined ? {} : { organization: args.organization }),
           ...(args.consent === undefined ? {} : { consent: args.consent }),
-          ...(interactive ? { prompt: promptScreens } : {}),
+          ...(args.app === undefined ? {} : { app: args.app }),
+          ...(rails === undefined ? {} : { rails }),
+          ...(interactive ? { prompt: promptScreens, railPrompt: promptRail } : {}),
+          deployedName: target.name,
           dryRun,
         });
 
@@ -173,7 +349,8 @@ const add = withContract(
           return;
         }
         if (report.plan) {
-          process.stdout.write(`Would scaffold a ${report.framework} front end into ${report.worker}.\n`);
+          const into = report.app === undefined ? report.worker : `apps/${report.app}, calling ${report.worker}`;
+          process.stdout.write(`Would scaffold a ${report.framework} front end into ${into}.\n`);
           for (const line of planText(report.plan)) process.stdout.write(`${line}\n`);
           process.stdout.write("Dry run. Nothing written.\n");
           return;
@@ -185,6 +362,14 @@ const add = withContract(
           report.consent ? "consent" : null,
         ].filter((name) => name !== null);
         const template = screens.length === 0 ? "Bare template." : `Screens included: ${screens.join(", ")}.`;
+        if (report.app !== undefined && report.rails !== undefined) {
+          writeNativeAdded(
+            { ...report, app: report.app, rails: report.rails },
+            template,
+            composes(target.config, "auth"),
+          );
+          return;
+        }
         process.stdout.write(`Scaffolded a ${report.framework} front end into ${report.worker}. ${template}\n`);
         if (report.skipped.length > 0) {
           process.stdout.write(`${report.created.length} files added. ${report.skipped.length} left as they were.\n`);
@@ -248,7 +433,15 @@ const sync = withContract(
       description: "Re-derive a worker's assets.run_worker_first from its routes, after mounting one",
     },
     args: {
-      worker: { type: "string", description: "Which worker to re-derive (apps/<name>)" },
+      worker: {
+        type: "string",
+        description: "Which worker to re-derive (apps/<name>), or with --app the worker the app calls",
+      },
+      app: {
+        type: "string",
+        description: "Rewrite this React Native app's generated config from its worker instead (apps/<name>)",
+      },
+      ...RAIL_ARGS,
       check: {
         type: "boolean",
         default: false,
@@ -260,20 +453,39 @@ const sync = withContract(
       withErrorReporting(args.json, async () => {
         const projectDir = process.cwd();
         const interactive = mayPrompt(args.json);
+        const rails = railFlags(args);
+        if (args.app === undefined && rails !== undefined) {
+          throw new ValidationError({
+            message: "The rail flags set a React Native app's rails, and no --app names one.",
+            action: "Pass --app with the app's apps/ directory.",
+          });
+        }
+        // An app of its own names the Worker it calls in its manifest; `--worker` overrides it.
+        const native = args.app === undefined ? null : await nativeApp(projectDir, args.app);
+        const worker = args.worker ?? native?.worker ?? undefined;
         // Composed for dev: which screens a Worker composes is read off the Worker `pithy dev` serves them
         // from. Each environment's route allowlist is composed for that environment by the flow itself.
         const target = await targetWorker(LOCAL_ENVIRONMENT, {
           projectDir,
           interactive,
-          ...(args.worker === undefined ? {} : { worker: args.worker }),
+          ...(worker === undefined ? {} : { worker }),
         });
 
-        const report = await runUiSync({
-          projectDir,
-          workerDir: target.dir,
-          config: target.config,
-          check: args.check,
-        });
+        const report: UiSyncReport =
+          native === null
+            ? await runUiSync({ projectDir, workerDir: target.dir, config: target.config, check: args.check })
+            : await runNativeUiSync({
+                projectDir,
+                appDir: native.appDir,
+                workerDir: target.dir,
+                config: target.config,
+                deployedName: target.name,
+                check: args.check,
+                ...(rails === undefined ? {} : { rails }),
+              });
+        // A generated config behind its Worker is the same finding as a stale allowlist: the app reads values
+        // the Worker no longer serves.
+        if (args.check && report.app !== undefined && report.changed) process.exitCode = EXIT.failed;
 
         // A shadowed route is a 200 with the wrong body, so the gate is the exit code, not the wording.
         if (report.uncovered.length > 0) process.exitCode = EXIT.failed;
@@ -285,6 +497,10 @@ const sync = withContract(
 
         if (args.json) {
           process.stdout.write(`${formatJsonLine({ command: "ui.sync", ...report, ...workerIdentity(target) })}\n`);
+          return;
+        }
+        if (report.app !== undefined) {
+          writeNativeSynced({ ...report, app: report.app }, args.check);
           return;
         }
         if (args.check) {

@@ -141,6 +141,11 @@ export interface LiveApp {
    * happened rather than a code that was blank.
    */
   mailedOtp(to: string): Promise<string | null>;
+  /**
+   * The app database, for a suite that has to put a row where time would have put it — a rotation
+   * ledger entry aged past its grace window — or count what a route left behind.
+   */
+  db: D1Database;
   /** Stop the server and dispose the runtime. Always from a `finally` or an `afterAll`. */
   close(): Promise<void>;
 }
@@ -210,6 +215,7 @@ export async function startLiveApp(options: LiveAppOptions): Promise<LiveApp> {
     basePath: options.basePath,
     callbackUrl: (provider) => `${origin}${options.basePath}/callback/${provider}`,
     events,
+    db,
     enqueued: async () => {
       const rows = await db.prepare("select template, to_address from pithy_email_jobs order by rowid").all();
       return (rows.results as { template: string; to_address: string }[]).map((row) => ({

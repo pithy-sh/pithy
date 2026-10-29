@@ -99,6 +99,10 @@ describe("pithy ui", () => {
   test("lists the frameworks it can scaffold", () => {
     expect(listStubs()).toEqual([
       { id: "react", description: "React 19 SPA on Vite, served by the worker as static assets" },
+      {
+        id: "react-native",
+        description: "Expo app for iOS, Android and the web, in its own apps/<name>, calling a worker",
+      },
     ]);
   });
 
@@ -359,6 +363,21 @@ describe("pithy ui", () => {
     await expect(runUiAdd({ ...options(WITHOUT_AUTH), auth: false })).rejects.toThrow(PithyError);
     expect(await readFile(join(workerDir, "index.html"), "utf8")).toBe("mine\n");
     await expect(readFile(join(workerDir, "vite.config.ts"), "utf8")).rejects.toThrow();
+  });
+
+  test("--app and the rail flags are refused on a front end the worker serves, and nothing is written", async () => {
+    const before = await snapshotTree(projectDir);
+    for (const extra of [{ app: "mobile" }, { rails: { ios: "apple" } }]) {
+      try {
+        await runUiAdd({ ...options(WITHOUT_AUTH), auth: false, ...extra });
+        expect.unreachable("expected the react stub to refuse an app-only flag");
+      } catch (error) {
+        expect(error).toBeInstanceOf(PithyError);
+        expect((error as PithyError).payload.code).toBe("validation/invalid_input");
+        expect((error as PithyError).payload.message).toContain("lives in the worker it calls");
+      }
+    }
+    expect(await snapshotTree(projectDir)).toEqual(before);
   });
 
   test("sync is idempotent and picks up a capability added after the scaffold", async () => {

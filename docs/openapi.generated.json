@@ -7025,7 +7025,7 @@
         "description": "The presented session is spent. Presenting it again after a short grace window is read as theft, and revokes every session descended from the same sign-in.",
         "responses": {
           "200": {
-            "description": "The rotated credential pair: a new access token and the session token that replaces the one presented.",
+            "description": "The rotated credentials: the session token that replaces the one presented, and a JWT for outside verifiers.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7033,11 +7033,11 @@
                   "properties": {
                     "accessToken": {
                       "type": "string",
-                      "description": "A fresh short-lived access token (a JWT) for the `Authorization: Bearer` header."
+                      "description": "A short-lived JWT for a service outside this Worker, which verifies it against `/jwks`. The kit's own routes do not accept it: send `refreshToken` as the bearer."
                     },
                     "refreshToken": {
                       "type": "string",
-                      "description": "The successor refresh credential: a new session token. The one presented is spent, and presenting it again past a short grace window revokes the whole family."
+                      "description": "The successor session token: the bearer credential for `Authorization: Bearer` on the kit's routes, and what the next rotation takes. The one presented is spent, and presenting it again past a short grace window revokes the whole family."
                     },
                     "expiresAt": {
                       "type": "string",
@@ -7051,7 +7051,7 @@
                     "refreshToken",
                     "expiresAt"
                   ],
-                  "description": "The rotated credential pair: a new access token and the session token that replaces the one presented."
+                  "description": "The rotated credentials: the session token that replaces the one presented, and a JWT for outside verifiers."
                 }
               }
             }
@@ -7071,6 +7071,148 @@
         "x-pithy-verification": [
           "bearer",
           "session"
+        ]
+      }
+    },
+    "/auth/sign-in/social/start": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "getAuthSignInSocialStart",
+        "summary": "Start a native app's redirect sign-in inside the system browser.",
+        "description": "A native app opens this address in the system browser's sign-in sheet (ASWebAuthenticationSession, a Custom Tab) instead of posting `/sign-in/social` itself, so the signed `state` cookie Better Auth checks at the provider's callback lands in the browser that completes it. The answer is a redirect to the provider carrying that cookie. Only for the handoff: `callbackURL` must be in `trustedOrigins` and carry a well-formed `handoff_challenge`, or it is refused, and so is an `errorCallbackURL` outside `trustedOrigins`, and a navigation another page started (`Sec-Fetch-Site` other than `none`). A provider this Worker does not enable answers `core/not_found`. A web page keeps the JSON `POST /sign-in/social`.",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "query",
+            "required": true,
+            "description": "A sign-in provider that completes in the browser, by redirect. Whether this Worker enables it is its config's call.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "apple",
+                "facebook",
+                "github",
+                "google",
+                "microsoft"
+              ]
+            }
+          },
+          {
+            "name": "callbackURL",
+            "in": "query",
+            "required": true,
+            "description": "The app's own link, in `trustedOrigins`, carrying the `handoff_challenge` the app made: where the sign-in returns with a one-time code.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            }
+          },
+          {
+            "name": "errorCallbackURL",
+            "in": "query",
+            "required": false,
+            "description": "Where a refused sign-in returns, with an `error` parameter. In `trustedOrigins`. Absent, a refusal lands on the auth error page.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "A redirect to the provider's authorization page, setting the sign-in's state cookie."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
+        ]
+      }
+    },
+    "/auth/handoff": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "postAuthHandoff",
+        "summary": "Trade the one-time code a redirect sign-in left on an app's link for the session token.",
+        "description": "A social sign-in whose `callbackURL` is in `trustedOrigins` and carries a `handoff_challenge` (the S256 digest of a verifier the app holds) returns to that link with a `code` parameter instead of a cookie, whether the link is an https universal link or app link or a custom scheme. The code is good once, for sixty seconds, and only with the verifier. A spent, expired or unknown code, or a wrong or malformed verifier, is refused with `auth/handoff_invalid`, and any attempt spends the code. A custom-scheme link with no challenge gets `error=handoff_challenge_required` and no code; an https link with no challenge is a web page and gets its cookie. A magic link is handed off only to an https link: one to a custom scheme gets `error=handoff_scheme_refused`, and no session is kept. Device headers sent here register the device against the session.",
+        "requestBody": {
+          "required": true,
+          "description": "The code a native app trades for its session after a redirect sign-in, with the verifier that binds it.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "description": "The one-time code from the `code` parameter of the deep link the sign-in returned to."
+                  },
+                  "verifier": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "description": "The random verifier the app made before the sign-in started: 43 to 128 characters from `A-Z a-z 0-9 - . _ ~`, as RFC 7636 shapes it. Its S256 digest is the `handoff_challenge` the sign-in's `callbackURL` carried."
+                  }
+                },
+                "required": [
+                  "code",
+                  "verifier"
+                ],
+                "description": "The code a native app trades for its session after a redirect sign-in, with the verifier that binds it."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The session a redirect sign-in made, handed to the native app that started it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string",
+                      "description": "The raw session token: the bearer credential for `Authorization: Bearer`, and the refresh credential `/token/rotate` takes. Hold it in secure storage."
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the session lapses unless it is rotated first, ISO-8601."
+                    }
+                  },
+                  "required": [
+                    "token",
+                    "expiresAt"
+                  ],
+                  "description": "The session a redirect sign-in made, handed to the native app that started it."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
         ]
       }
     },
@@ -9911,6 +10053,63 @@
         ],
         "x-pithy-scopes": [
           "turnstile:widgets:read"
+        ]
+      }
+    },
+    "/turnstile/widget": {
+      "get": {
+        "tags": [
+          "turnstile"
+        ],
+        "operationId": "getTurnstileWidget",
+        "summary": "Render the login widget as a page a native app loads in a WebView.",
+        "description": "Cloudflare's Turnstile widget on the Worker's own origin, for the sitekey this environment resolves and the action the sign-in gate asserts. The page posts JSON to `window.ReactNativeWebView`: `{ type: \"turnstile\", token }` when solved, `{ type: \"turnstile-expired\" }` when the token lapses, `{ type: \"turnstile-error\" }` when the widget fails. Send the token as the `cf-turnstile-response` body field. The page refuses to be framed and is never cached. A 404 means no login widget is renderable here.",
+        "parameters": [
+          {
+            "name": "theme",
+            "in": "query",
+            "required": false,
+            "description": "The widget's color scheme. `auto` follows the device. Defaults to `auto`.",
+            "schema": {
+              "default": "auto",
+              "type": "string",
+              "enum": [
+                "auto",
+                "light",
+                "dark"
+              ]
+            }
+          },
+          {
+            "name": "language",
+            "in": "query",
+            "required": false,
+            "description": "The widget's language, as a language tag like `es` or `pt-br`. `auto` follows the device. Defaults to `auto`.",
+            "schema": {
+              "default": "auto",
+              "type": "string",
+              "pattern": "^(auto|[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})?)$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The widget page.",
+            "content": {
+              "text/html": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
         ]
       }
     },

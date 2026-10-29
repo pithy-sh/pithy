@@ -4,6 +4,7 @@
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import { APIError } from "better-auth/api";
 import { z } from "zod";
+import type { HandoffRefusal } from "../token/handoff";
 import { type AuthAuditAction, AuthAuditActions } from "./actions";
 import type { AuthEmailDelivery, EndedSession } from "./evidence";
 
@@ -551,6 +552,68 @@ export async function emitProviderChangeNotFresh(
     // Attaching an identity and stripping one are the same refusal and very different intentions.
     metadata: { change: context.change },
     ...correlation(context.headers),
+  });
+}
+
+/**
+ * Emit a `handoff_issued` event: a redirect sign-in's session left on a deep link as a one-time code, or, denied,
+ * a sign-in whose deep link carried no challenge, or a magic link to a custom scheme, so no code was issued.
+ */
+export async function emitHandoffIssued(
+  emit: AuditEmit,
+  context: (
+    | { outcome: "success" }
+    /** `unbound`: the link carried no challenge to bind a code to. `scheme`: a magic link to a custom scheme. */
+    | { outcome: "denied"; reason: "unbound" | "scheme" }
+  ) & {
+    userId: string;
+    sessionId: string;
+    ip?: string;
+    userAgent?: string;
+  },
+): Promise<void> {
+  await safeEmit(emit, {
+    action: AuthAuditActions.handoffIssued,
+    outcome: context.outcome,
+    ...(context.outcome === "denied" ? { severity: "warning" as const, metadata: { reason: context.reason } } : {}),
+    actorType: "user",
+    actorId: context.userId,
+    sessionId: context.sessionId,
+    ip: context.ip,
+    userAgent: context.userAgent,
+  });
+}
+
+/**
+ * Emit a `handoff_exchanged` event. A traded code is attributed to the account it signed in; a refused one is
+ * anonymous, because the code named nobody anybody can trust.
+ */
+export async function emitHandoffExchanged(
+  emit: AuditEmit,
+  context:
+    | { outcome: "success"; userId: string; sessionId: string; ip?: string; userAgent?: string }
+    | { outcome: "denied"; reason: HandoffRefusal; ip?: string; userAgent?: string },
+): Promise<void> {
+  if (context.outcome === "success") {
+    await safeEmit(emit, {
+      action: AuthAuditActions.handoffExchanged,
+      outcome: "success",
+      actorType: "user",
+      actorId: context.userId,
+      sessionId: context.sessionId,
+      ip: context.ip,
+      userAgent: context.userAgent,
+    });
+    return;
+  }
+  await safeEmit(emit, {
+    action: AuthAuditActions.handoffExchanged,
+    outcome: "denied",
+    severity: "warning",
+    actorType: "anonymous",
+    ip: context.ip,
+    userAgent: context.userAgent,
+    metadata: { reason: context.reason },
   });
 }
 
