@@ -138,9 +138,10 @@
     flex: 1 1 auto;
   }
 
-  /* The consent screen. The redirect address is where the access goes and the one thing on the screen
-     an application cannot fake, so it is the emphasis; the application's own name never is. */
-  .consent__redirect {
+  /* The consent screen. The redirect address and a verified host are what an application cannot fake,
+     so they are the emphasis; the application's own name never is. */
+  .consent__redirect,
+  .consent__host {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     word-break: break-all;
   }

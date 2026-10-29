@@ -37,6 +37,8 @@
     "reset": "bun run clean && rm -rf node_modules"
   },
   "dependencies": {
+    "@better-auth/cimd": "^1.7.11",
+    "@better-auth/core": "^1.7.11",
     "@better-auth/i18n": "^1.7.11",
     "@better-auth/oauth-provider": "^1.7.11",
     "@cloudflare/workers-types": "^5.20260729.1",

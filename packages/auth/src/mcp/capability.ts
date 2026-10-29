@@ -11,6 +11,7 @@ import { z } from "zod";
 import { isAuthCapability } from "../capability";
 import { authPluginPlan } from "../migrations/pluginTables";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "../version.generated";
+import { clientMetadataDiscovery } from "./clientMetadata";
 import { floorLine, isOpenToEverySignedInUser, McpFloor } from "./floor";
 import type { McpHost, McpWiring } from "./host";
 import { registerMcpRoutes } from "./http/routes";
@@ -71,7 +72,11 @@ export interface McpCapability extends Capability {
 
 /** The provider's tables, derived once from the plugin itself. Its options shape no column, so any resource does. */
 const providerPlan = authPluginPlan([
-  mcpAuthorizationServer({ resource: "https://schema.invalid/mcp", consentPage: "/agent-consent" })[0],
+  mcpAuthorizationServer({
+    resource: "https://schema.invalid/mcp",
+    consentPage: "/agent-consent",
+    clientDiscovery: clientMetadataDiscovery(),
+  })[0],
 ]);
 
 /** The one migration that plan holds: the plugin's tables, under this capability's own namespace. */
@@ -116,7 +121,11 @@ function hostFrom(capabilities: readonly Capability[], config: McpConfig): McpHo
 /** The MCP capability. */
 export function mcp(options: McpConfigInput): McpCapability {
   const config = McpConfig.parse(options);
-  const wiring: McpWiring = { path: config.path, consentPage: config.consentPath };
+  const wiring: McpWiring = {
+    path: config.path,
+    consentPage: config.consentPath,
+    clientDiscovery: clientMetadataDiscovery(),
+  };
   let host: McpHost | undefined;
   let app: Hono<PithyHonoEnv> | undefined;
   let tools: readonly AppTool[] | undefined;

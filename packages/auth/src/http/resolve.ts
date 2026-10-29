@@ -51,7 +51,7 @@ export function resolveDb(env: Record<string, unknown>, bindingName: string): D1
 /**
  * The language to write a sign-in email in, for one address.
  *
- * **The stored preference first, the request's negotiation second** (pithy-sh/pithy#441). Somebody who
+ * **The stored preference first, the request's negotiation second.** Somebody who
  * picked a language in a settings pane has said something durable about themselves; the device they are
  * signing in from tonight has only sent an `Accept-Language`. But most of what this is asked about is a
  * *first* sign-in, where no row exists yet — and that is precisely the message a project cannot afford
@@ -91,23 +91,11 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
   }
   const env = c.env as unknown as AuthEnv;
   // Secret resolutions hit the same per-invocation cache; run them concurrently. Six reads, and they
-  // are not alike — which is the whole of #381.
-  //
-  // `resolveSessionSecret` is what an auth instance *is*: nothing signs a session without it, so its
-  // failure stays a precondition and still fails this call. `resolveDb` below is the same. A provider
-  // credential is one sign-in method among several, and it used to sit in this list as an equal — so a
-  // single unreadable `auth-github-credentials` rejected the whole `Promise.all` and every magic-link
-  // and OTP caller in the deployment got the secrets reader's own refusal instead of a sign-in:
-  // measured, `404 secrets/not_found`, message `Secret 'auth-github-credentials' is declared but not
-  // provisioned.` So the old behavior named the secret loudly and named it to *the browser*, on a
-  // route that has nothing to do with GitHub. Both halves of that are fixed here.
-  //
-  // `resolveProvider` catches per provider and hands back a state rather than a rejection, so this
-  // `Promise.all` settles whenever the session secret does. What the instance then lacks is one
-  // provider, and `makeAuth`'s `before` hook answers a caller who asks for it — see `instance/providers.ts`.
-  //
-  // A held failure belongs to its own secret (#170), so an unreadable provider credential does not
-  // disturb the session secret's own read, and a *disabled* provider never calls `.get()` at all.
+  // are not alike. The session secret is what an auth instance *is*, so its failure fails this call, as
+  // `resolveDb` below does. A provider credential is one sign-in method among several: `resolveProvider`
+  // hands back a state rather than a rejection, so one unreadable credential costs that provider alone,
+  // answered by `makeAuth`'s `before` hook (`instance/providers.ts`), and never reaches a caller signing in
+  // another way. A disabled provider never reads its secret at all.
   const [sessionSecrets, google, apple, facebook, github, microsoft] = await Promise.all([
     resolveSessionSecrets(env),
     resolveProvider(cfg.google.enabled, () => resolveGoogleCredentials(env)),
@@ -118,7 +106,7 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
   ]);
   const expiresMinutes = Math.max(1, Math.round(cfg.verificationExpiresIn / 60));
   const d1 = resolveDb(c.env, cfg.database);
-  // The current version signs; every retained one opens (#602). A version set with no current entry is a
+  // The current version signs; every retained one opens. A version set with no current entry is a
   // corrupt envelope, and the store's own reader has already refused that — this narrows it for the type.
   const secret = sessionSecrets.versions[sessionSecrets.currentVersion];
   if (secret === undefined) {
@@ -159,7 +147,7 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
     baseURL,
     // The language this request negotiated, for the translator plugin. `c.var.locale` is the project's
     // own chain already resolved — never a second negotiation of Better Auth's, which would let the
-    // screens and the refusals disagree about who is reading (#452). `null` when nothing negotiated,
+    // screens and the refusals disagree about who is reading. `null` when nothing negotiated,
     // which is every project that does not compose `i18n`, and which means English.
     locale: c.var.locale?.catalogLocale ?? null,
     basePath: cfg.basePath,
@@ -179,9 +167,8 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
     verificationExpiresIn: cfg.verificationExpiresIn,
     otpLength: cfg.otpLength,
     disableSignUp: cfg.disableSignUp,
-    // Per provider, and separate from the line above on purpose: `disableSignUp` governs magic link and
-    // OTP, this governs one OAuth provider. A project wanting email sign-up and no GitHub sign-up could
-    // not say so before, which is how an orphan user appeared (#554).
+    // Per provider, and separate from the line above: `disableSignUp` governs magic link and OTP, this
+    // governs one OAuth provider, so a project can take email sign-up and refuse GitHub sign-up.
     providerSignUp: {
       google: cfg.google.allowSignUp,
       apple: cfg.apple.allowSignUp,
@@ -202,7 +189,11 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
     plugins: wiring.mcp
       ? [
           ...cfg.plugins,
-          ...mcpAuthorizationServer({ resource: `${baseURL}${wiring.mcp.path}`, consentPage: wiring.mcp.consentPage }),
+          ...mcpAuthorizationServer({
+            resource: `${baseURL}${wiring.mcp.path}`,
+            consentPage: wiring.mcp.consentPage,
+            clientDiscovery: wiring.mcp.clientDiscovery,
+          }),
         ]
       : cfg.plugins,
   });

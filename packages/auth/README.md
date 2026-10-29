@@ -70,7 +70,7 @@ Every sign-in link and code auth sends is recorded in `pithy_auth_verification_o
 
 ## Agents: `mcp({ floor })`
 
-`mcp` ships in this package beside `auth`, and lets your users' agents use your app as them. Composing it mounts an MCP endpoint at `POST /mcp` with the discovery an MCP client starts from, and composes an OAuth 2.1 authorization server into the auth instance: an agent registers itself, its user signs in and approves on your own consent screen, and the token it gets is bound to that endpoint and that user. A route is a tool only when its `describeRoute({ operation, tool })` says so, and every call runs through that route's own gates, so an agent does what its user can and nothing more.
+`mcp` ships in this package beside `auth`, and lets your users' agents use your app as them. Composing it mounts an MCP endpoint at `POST /mcp` with the discovery an MCP client starts from, and composes an OAuth 2.1 authorization server into the auth instance: an agent identifies itself by the URL of a Client ID Metadata Document it publishes, or registers itself dynamically if it predates those, its user signs in and approves on your own consent screen, and the token it gets is bound to that endpoint and that user. A route is a tool only when its `describeRoute({ operation, tool })` says so, and every call runs through that route's own gates, so an agent does what its user can and nothing more.
 
 ```sh
 pithy add mcp --floor power:agents:use

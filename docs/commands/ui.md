@@ -78,7 +78,7 @@ Both are `composite`, because both are referenced from the project's root `tscon
 | `src/session.tsx` | `--auth` | The session hook, `signOut`, and the signed-in route guard |
 | `src/turnstile.tsx` | `--auth` | The Turnstile widget and the token placement the middleware reads |
 | `src/routes/pithy/*.tsx` | `--auth` | Pithy's screens: sign-in, OTP, callback, and account suspended, account deleted, organization suspended |
-| `src/routes/pithy/agent-consent.tsx`, `agent-consent.test.tsx`, `connected-applications.tsx` | `--auth`, on a Worker composing `mcp` | The agent consent screen, its seeded gate, and the screen that lists and revokes what you approved |
+| `src/routes/pithy/agent-consent.tsx`, `agent-consent.test.tsx`, `connected-applications.tsx`, `connected-applications.test.tsx` | `--auth`, on a Worker composing `mcp` | The agent consent screen, the screen that lists and revokes what you approved, and a seeded gate for each |
 | `src/routes/app/home.tsx` | always | Your first screen. Written once, never again |
 
 `src/index.ts` — the Worker entry — is not touched.

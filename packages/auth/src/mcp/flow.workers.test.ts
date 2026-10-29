@@ -13,7 +13,7 @@ import { routeGroupsOf } from "@pithy-sh/core/src/openapi/routeGroups";
 import { email } from "@pithy-sh/email/src/capability";
 import { secrets } from "@pithy-sh/secrets/src/capability";
 import { resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { auth } from "../capability";
 import { requireAuth } from "../http/middleware";
@@ -821,6 +821,7 @@ describe("consent", () => {
     };
     expect(view.client).toEqual({
       id: clientId,
+      verifiedHost: null,
       reportedName: "POWERPLAY Official Sync",
       reportedUri: null,
       redirectUri: REDIRECT,
@@ -1025,5 +1026,325 @@ describe("erasure and export", () => {
     const text = JSON.stringify(exported);
     expect(text).not.toContain(subject.tokens.access_token);
     if (subject.tokens.refresh_token !== undefined) expect(text).not.toContain(subject.tokens.refresh_token);
+  });
+});
+
+describe("a client identified by its metadata document", () => {
+  const DOCUMENT_URL = "https://client.example.com/oauth/client.json";
+  const fetched: string[] = [];
+
+  /** The document a well-behaved client serves at its own id. */
+  const documentFor = (clientId: string, overrides: Record<string, unknown> = {}) => ({
+    client_id: clientId,
+    client_name: "Canary Agent",
+    client_uri: "https://client.example.com",
+    redirect_uris: [REDIRECT],
+    grant_types: ["authorization_code", "refresh_token"],
+    response_types: ["code"],
+    token_endpoint_auth_method: "none",
+    ...overrides,
+  });
+
+  /** The network, as a Worker reaches it: whatever `answer` returns for each URL. */
+  function network(answer: (url: string, init: RequestInit | undefined) => Response | Promise<Response>) {
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      fetched.push(url);
+      return answer(url, init);
+    });
+  }
+
+  function serve(body: unknown, headers: Record<string, string> = {}) {
+    network(
+      () =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "content-type": "application/json", ...headers },
+        }),
+    );
+  }
+
+  /** Start an authorization for `clientId`, and answer the provider's response as it came. */
+  async function startAuthorization(
+    app: App,
+    clientId: string,
+    session: string,
+    verifier: string,
+    redirect = REDIRECT,
+  ): Promise<Response> {
+    const query = new URLSearchParams({
+      response_type: "code",
+      client_id: clientId,
+      redirect_uri: redirect,
+      scope: "mcp offline_access",
+      state: "s1",
+      code_challenge: await challengeOf(verifier),
+      code_challenge_method: "S256",
+      resource: RESOURCE,
+    });
+    return call(app, `/auth/oauth2/authorize?${query}`, {
+      headers: { authorization: `Bearer ${session}` },
+      redirect: "manual",
+    });
+  }
+
+  /** The authorization was refused for `reason`: no consent screen, and so no code. */
+  async function expectRefused(res: Response, reason: RegExp): Promise<void> {
+    const location = res.headers.get("location") ?? "";
+    const answer = `${res.status} ${decodeURIComponent(location.replace(/\+/g, " "))} ${await res.clone().text()}`;
+    expect(location, answer).not.toContain("/agent-consent?");
+    expect(location, answer).not.toContain("code=");
+    expect(answer).toMatch(reason);
+  }
+
+  beforeEach(() => {
+    fetched.length = 0;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  test("the authorization server's metadata says it takes a metadata document as a client id", async () => {
+    const metadata = (await (await call(buildApp(), "/.well-known/oauth-authorization-server/auth")).json()) as {
+      client_id_metadata_document_supported?: boolean;
+      registration_endpoint?: string;
+    };
+    expect(metadata.client_id_metadata_document_supported).toBe(true);
+    // Dynamic registration serves a client that speaks nothing else.
+    expect(metadata.registration_endpoint).toBe(`${SCOPED_ORIGIN}/auth/oauth2/register`);
+  });
+
+  test("authorize with its URL as the id, approve on a screen naming its verified host, exchange, and call", async () => {
+    serve(documentFor(DOCUMENT_URL));
+    const app = buildApp();
+    const { token: session, userId } = await signInScoped(env.DB, "cimd@test.com");
+    const verifier = `verifier-${crypto.randomUUID()}-${crypto.randomUUID()}`;
+    const started = await startAuthorization(app, DOCUMENT_URL, session, verifier);
+    const location = started.headers.get("location") ?? "";
+    expect(location, `${started.status} ${await started.clone().text()}`).toContain("/agent-consent?");
+    const oauthQuery = location.slice(location.indexOf("?") + 1);
+    expect(fetched).toContain(DOCUMENT_URL);
+
+    const consent = await call(app, `/mcp/consent?oauth_query=${encodeURIComponent(oauthQuery)}`, {
+      headers: { authorization: `Bearer ${session}` },
+    });
+    expect(((await consent.json()) as { client: unknown }).client).toEqual({
+      id: DOCUMENT_URL,
+      verifiedHost: "client.example.com",
+      reportedName: "Canary Agent",
+      reportedUri: "https://client.example.com",
+      redirectUri: REDIRECT,
+    });
+
+    const tokens = await approveAndExchange(app, DOCUMENT_URL, session, oauthQuery, verifier);
+    const claims = JSON.parse(
+      atob((tokens.access_token.split(".")[1] ?? "").replace(/-/g, "+").replace(/_/g, "/")),
+    ) as Record<string, unknown>;
+    expect(claims.aud).toBe(RESOURCE);
+    expect(claims.sub).toBe(userId);
+    const read = await rpc(app, tokens.access_token, "tools/call", {
+      name: "notes_notes_read",
+      arguments: { path: { id: "n1" } },
+    });
+    expect(read.body.result).toMatchObject({ isError: false, structuredContent: { id: "n1" } });
+    expect(seen).toEqual([{ route: "read", userId }]);
+  });
+
+  test("the code is bound to its PKCE challenge: the wrong verifier gets no token", async () => {
+    serve(documentFor(DOCUMENT_URL));
+    const app = buildApp();
+    const { token: session } = await signInScoped(env.DB, "cimd@test.com");
+    const verifier = `verifier-${crypto.randomUUID()}-${crypto.randomUUID()}`;
+    const started = await startAuthorization(app, DOCUMENT_URL, session, verifier);
+    const location = started.headers.get("location") ?? "";
+    const decided = await decideOn(app, session, location.slice(location.indexOf("?") + 1), true);
+    const code = new URL(((await decided.json()) as { redirect: string }).redirect).searchParams.get("code") ?? "";
+    expect(code).not.toBe("");
+    const token = await call(app, "/auth/oauth2/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: REDIRECT,
+        client_id: DOCUMENT_URL,
+        code_verifier: `wrong-${verifier}`,
+        resource: RESOURCE,
+      }).toString(),
+    });
+    expect(token.status).toBeGreaterThanOrEqual(400);
+  });
+
+  test("a document whose client_id is not its own URL is refused", async () => {
+    serve(documentFor("https://impostor.example.com/oauth/client.json"));
+    const { token: session } = await signInScoped(env.DB, "cimd@test.com");
+    await expectRefused(
+      await startAuthorization(buildApp(), DOCUMENT_URL, session, "v".repeat(48)),
+      /does not match the metadata document URL/,
+    );
+    expect(fetched).toEqual([DOCUMENT_URL]);
+  });
+
+  test("a client id that is not HTTPS is refused, and nothing is fetched", async () => {
+    serve(documentFor("http://client.example.com/oauth/client.json"));
+    const { token: session } = await signInScoped(env.DB, "cimd@test.com");
+    const res = await startAuthorization(
+      buildApp(),
+      "http://client.example.com/oauth/client.json",
+      session,
+      "v".repeat(48),
+    );
+    await expectRefused(res, /invalid_client/);
+    expect(fetched).toEqual([]);
+  });
+
+  test("a client id on a private, link-local or loopback address is refused, and nothing is fetched", async () => {
+    const { token: session } = await signInScoped(env.DB, "cimd@test.com");
+    const app = buildApp();
+    for (const clientId of [
+      "https://10.0.0.7/oauth/client.json",
+      "https://192.168.1.10/oauth/client.json",
+      "https://169.254.169.254/latest/meta-data",
+      "https://[fe80::1]/oauth/client.json",
+      "https://127.0.0.1/oauth/client.json",
+      "https://localhost/oauth/client.json",
+    ]) {
+      serve(documentFor(clientId));
+      await expectRefused(
+        await startAuthorization(app, clientId, session, "v".repeat(48)),
+        /private or reserved address/,
+      );
+    }
+    expect(fetched).toEqual([]);
+  });
+
+  test("an oversized document is refused", async () => {
+    serve(documentFor(DOCUMENT_URL, { client_name: "A".repeat(6 * 1024) }));
+    const { token: session } = await signInScoped(env.DB, "cimd@test.com");
+    await expectRefused(await startAuthorization(buildApp(), DOCUMENT_URL, session, "v".repeat(48)), /exceeds 5KB/);
+    expect(fetched).toEqual([DOCUMENT_URL]);
+  });
+
+  test("a document that answers too slowly is refused", { timeout: 20_000 }, async () => {
+    network(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        }),
+    );
+    const { token: session } = await signInScoped(env.DB, "cimd@test.com");
+    await expectRefused(await startAuthorization(buildApp(), DOCUMENT_URL, session, "v".repeat(48)), /timed out/);
+    expect(fetched).toEqual([DOCUMENT_URL]);
+  });
+
+  test("a document behind a redirect is refused, and the redirect is not followed", async () => {
+    network(() => new Response(null, { status: 302, headers: { location: "https://elsewhere.example.com/c.json" } }));
+    const { token: session } = await signInScoped(env.DB, "cimd@test.com");
+    await expectRefused(
+      await startAuthorization(buildApp(), DOCUMENT_URL, session, "v".repeat(48)),
+      /returned HTTP 302/,
+    );
+    expect(fetched).toEqual([DOCUMENT_URL]);
+  });
+
+  test("a redirect URI the document does not list is refused", async () => {
+    serve(documentFor(DOCUMENT_URL));
+    const { token: session } = await signInScoped(env.DB, "cimd@test.com");
+    const res = await startAuthorization(
+      buildApp(),
+      DOCUMENT_URL,
+      session,
+      "v".repeat(48),
+      "https://attacker.example.net/callback",
+    );
+    await expectRefused(res, /invalid redirect uri/);
+    expect(res.headers.get("location") ?? "").not.toContain("attacker.example.net");
+  });
+
+  function advanceClock(ms: number): void {
+    const now = Date.now() + ms;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+  }
+
+  async function authorizeRepeatedly(app: App, session: string, label: string, attempts = 1): Promise<void> {
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      const res = await startAuthorization(app, DOCUMENT_URL, session, `v-${label}-${attempt}-${"x".repeat(48)}`);
+      expect(res.headers.get("location") ?? "", `${label}, attempt ${attempt}`).toContain("/agent-consent?");
+    }
+  }
+
+  test("a document is fetched once while its max-age says it is fresh, and again once it has passed", async () => {
+    serve(documentFor(DOCUMENT_URL), { "cache-control": "max-age=300" });
+    const app = buildApp();
+    const { token: session } = await signInScoped(env.DB, "cimd@test.com");
+    await authorizeRepeatedly(app, session, "fresh", 2);
+    expect(fetched).toEqual([DOCUMENT_URL]);
+    advanceClock(301_000);
+    await authorizeRepeatedly(app, session, "stale");
+    expect(fetched).toEqual([DOCUMENT_URL, DOCUMENT_URL]);
+  });
+
+  test("a document served no-store is fetched on every authorization", async () => {
+    serve(documentFor(DOCUMENT_URL), { "cache-control": "no-store" });
+    const app = buildApp();
+    const { token: session } = await signInScoped(env.DB, "cimd@test.com");
+    await authorizeRepeatedly(app, session, "no-store", 2);
+    expect(fetched).toEqual([DOCUMENT_URL, DOCUMENT_URL]);
+  });
+
+  test("a document is fetched again after 60 minutes, however long its caching headers say it is fresh", async () => {
+    serve(documentFor(DOCUMENT_URL), { "cache-control": "max-age=86400" });
+    const app = buildApp();
+    const { token: session } = await signInScoped(env.DB, "cimd@test.com");
+    await authorizeRepeatedly(app, session, "first");
+    advanceClock(59 * 60_000);
+    await authorizeRepeatedly(app, session, "within the ceiling");
+    expect(fetched).toEqual([DOCUMENT_URL]);
+    advanceClock(2 * 60_000);
+    await authorizeRepeatedly(app, session, "past the ceiling");
+    expect(fetched).toEqual([DOCUMENT_URL, DOCUMENT_URL]);
+  });
+
+  test("dynamic registration still works beside it, and its client is never shown as verified", async () => {
+    const app = buildApp();
+    const { token: session } = await signInScoped(env.DB, "dcr@test.com");
+    const clientId = await register(app);
+    const oauthQuery = await authorize(app, clientId, session, `v-${crypto.randomUUID()}-${crypto.randomUUID()}`);
+    const consent = await call(app, `/mcp/consent?oauth_query=${encodeURIComponent(oauthQuery)}`, {
+      headers: { authorization: `Bearer ${session}` },
+    });
+    expect(((await consent.json()) as { client: { verifiedHost: unknown } }).client.verifiedHost).toBeNull();
+  });
+
+  test("the connected-applications list names its verified host, and revoking it by its URL works", async () => {
+    serve(documentFor(DOCUMENT_URL));
+    const app = buildApp();
+    const { token: session } = await signInScoped(env.DB, "cimd@test.com");
+    const verifier = `verifier-${crypto.randomUUID()}-${crypto.randomUUID()}`;
+    const started = await startAuthorization(app, DOCUMENT_URL, session, verifier);
+    const location = started.headers.get("location") ?? "";
+    const tokens = await approveAndExchange(
+      app,
+      DOCUMENT_URL,
+      session,
+      location.slice(location.indexOf("?") + 1),
+      verifier,
+    );
+    const listed = await call(app, "/mcp/connections", { headers: { authorization: `Bearer ${session}` } });
+    expect(((await listed.json()) as { applications: unknown[] }).applications).toEqual([
+      expect.objectContaining({
+        clientId: DOCUMENT_URL,
+        verifiedHost: "client.example.com",
+        reportedName: "Canary Agent",
+      }),
+    ]);
+    const revoked = await call(app, `/mcp/connections/${encodeURIComponent(DOCUMENT_URL)}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${session}`, origin: SCOPED_ORIGIN },
+    });
+    expect(revoked.status, await revoked.clone().text()).toBe(200);
+    expect((await rpc(app, tokens.access_token, "tools/list")).status).toBe(401);
   });
 });

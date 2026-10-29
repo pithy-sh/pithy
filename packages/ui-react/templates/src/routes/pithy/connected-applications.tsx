@@ -17,8 +17,8 @@ export const path = "/connected-applications";
 // want it doing that" has exactly one answer, and it must be reachable without asking an administrator. Link to
 // this screen from your account settings. A revoked application's next call is refused.
 //
-// Each application is shown by the name it gave itself — unverified, as on the consent screen — and by where its
-// access goes, which is what identifies it.
+// Each application is shown by the name it gave itself — unverified, as on the consent screen — by the host that
+// serves its metadata document when it has one, which is checked, and by where its access goes.
 
 /** Where the MCP capability mounts. Change this if `mcp({ path })` does. */
 const MCP_PATH = "/mcp";
@@ -28,6 +28,7 @@ const EN = {
   "auth/connected.title": "Applications acting as you",
   "auth/connected.empty": "None. Nothing is acting as you.",
   "auth/connected.unnamed": "An application with no name",
+  "auth/connected.verified": "Published at {host}. That is checked.",
   "auth/connected.approved": "Approved {date}. Access goes to {redirect}.",
   "auth/connected.revoke": "Revoke",
   "auth/connected.failed": "We couldn't load your applications.",
@@ -77,6 +78,9 @@ export default function ConnectedApplications() {
           {applications.map((application) => (
             <li key={application.clientId} className="connected__application">
               <span>{application.reportedName ?? t.t("auth/connected.unnamed")}</span>
+              {application.verifiedHost == null ? null : (
+                <span>{t.t("auth/connected.verified", { host: application.verifiedHost })}</span>
+              )}
               <span className="muted">
                 {t.t("auth/connected.approved", {
                   date: t.formatDate(new Date(application.approvedAt)),
