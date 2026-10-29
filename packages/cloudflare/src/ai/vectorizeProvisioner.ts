@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { cloudflareRequest, decodeResponse, isNotFoundError } from "../client/errors";
 import { CloudflareManager } from "../client/manager";
@@ -124,6 +125,25 @@ function isAbsentMetadataIndexError(error: unknown): boolean {
   return errors.some((entry) => (entry as { code?: unknown } | null)?.code === METADATA_INDEX_ABSENT_CODE);
 }
 
+/** Vectorize's error code for "a metadata index with that name already exists". */
+const METADATA_INDEX_EXISTS_CODE = 40004;
+
+/**
+ * Whether an error means "that metadata index is already there": `400` with error code 40004, the answer to
+ * creating a property that is already indexed. Narrow for the same reason {@link isAbsentMetadataIndexError} is:
+ * every other `400` stays an error.
+ *
+ * It is how a create retried by the SDK comes back. The SDK retries a request that timed out, lost its
+ * connection, or answered 408, 409, 429 or a 5xx, twice by default and a POST included, so a create Cloudflare
+ * applied can be sent again and refused as a duplicate of itself.
+ */
+export function isExistingMetadataIndexError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const { status, errors } = error as { status?: unknown; errors?: unknown };
+  if (status !== 400 || !Array.isArray(errors)) return false;
+  return errors.some((entry) => (entry as { code?: unknown } | null)?.code === METADATA_INDEX_EXISTS_CODE);
+}
+
 /** Options a new index accepts beyond its name and shape. */
 export interface CreateVectorizeIndexOptions {
   /** A human description stored on the index, surfaced in the Cloudflare dashboard. */
@@ -218,19 +238,39 @@ export class CloudflareVectorizeProvisioner extends CloudflareManager {
    * Make a metadata property filterable. Cloudflare caps an index at 10 indexed properties, and only vectors
    * written **after** the metadata index exists are covered — so declare these before the first insert.
    * The change is enqueued asynchronously; the returned promise resolving means accepted, not live.
+   *
+   * Idempotent, like {@link deleteMetadataIndex}. A property already indexed answers `400`/40004
+   * ({@link isExistingMetadataIndexError}); the list then decides. Listed with the same type, the create has
+   * already happened and this returns. Listed with another type, it throws `core/conflict` naming both, since a
+   * metadata index's type is fixed. Not listed yet, it returns too: Cloudflare has just said the index exists,
+   * the list lags, and the caller's own settle wait reads its type.
    */
   async createMetadataIndex(
     indexName: string,
     propertyName: string,
     indexType: VectorizeMetadataIndexType,
   ): Promise<void> {
-    await cloudflareRequest(`create Vectorize metadata index ${indexName}.${propertyName}`, () =>
-      this.getClient().vectorize.indexes.metadataIndex.create(indexName, {
-        account_id: this.accountId,
-        indexType,
-        propertyName,
-      }),
-    );
+    await cloudflareRequest(`create Vectorize metadata index ${indexName}.${propertyName}`, async () => {
+      try {
+        await this.getClient().vectorize.indexes.metadataIndex.create(indexName, {
+          account_id: this.accountId,
+          indexType,
+          propertyName,
+        });
+      } catch (error) {
+        if (!isExistingMetadataIndexError(error)) throw error;
+        const live = (await this.listMetadataIndexes(indexName)).find((entry) => entry.propertyName === propertyName);
+        if (live === undefined || live.indexType === indexType) return;
+        throw new ConflictError(
+          {
+            message: `Metadata index ${indexName}.${propertyName} already exists as ${live.indexType}, not ${indexType}.`,
+            action: `A metadata index's type is fixed. Declare ${propertyName} as ${live.indexType}, or delete the metadata index and create it again.`,
+            detail: `Cloudflare answered 40004 to a create of ${propertyName} as ${indexType}; the list holds it as ${live.indexType}.`,
+          },
+          { cause: error },
+        );
+      }
+    });
   }
 
   /** List an index's indexed metadata properties — the read that proves a `createMetadataIndex` has landed. */

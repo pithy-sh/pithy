@@ -263,20 +263,10 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
       });
     }
 
+    // The list can miss an index that exists, so a re-run can ask for one the last run's create already made.
+    // `createMetadataIndex` answers that as success, and refuses one already indexed as another type.
     for (const descriptor of before.missing) {
-      try {
-        await provisioner.createMetadataIndex(indexName, descriptor.propertyName, descriptor.indexType);
-      } catch (error) {
-        // The list can miss an index that exists, so a re-run can ask for one the last run's create already
-        // made. Cloudflare's answer to that is not something this code matches on: an index listed under its
-        // own name and type right after the refusal is that earlier create, and the wait below confirms it.
-        // Anything else is Cloudflare's refusal, and it stands.
-        const now = await provisioner.listMetadataIndexes(indexName);
-        const landed = now.some(
-          (entry) => entry.propertyName === descriptor.propertyName && entry.indexType === descriptor.indexType,
-        );
-        if (!landed) throw error;
-      }
+      await provisioner.createMetadataIndex(indexName, descriptor.propertyName, descriptor.indexType);
     }
 
     const started = this.#now();

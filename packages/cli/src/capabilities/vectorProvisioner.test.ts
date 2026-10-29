@@ -310,13 +310,12 @@ describe("ensureMetadataIndexes", () => {
     expect(fake.createMetadataIndex).toHaveBeenCalledTimes(1);
   });
 
-  test("a re-run whose create is refused because the first run's create landed carries on and waits", async () => {
-    // The list can miss an index that exists, so a re-run can ask to create one twice. Whatever Cloudflare
-    // answers to that, an index listed under its own name and type right after is the one the first run
-    // created, and the re-run waits for it rather than failing on it.
+  test("a re-run whose create meets the first run's index carries on and waits", async () => {
+    // The list can miss an index that exists, so a re-run can ask to create one twice. The provisioner's
+    // create answers that as success, and the re-run waits for the index rather than failing on it.
     const fake = fakeCf();
     fake.listMetadataIndexes.mockResolvedValueOnce([]).mockResolvedValue([OWNER]);
-    fake.createMetadataIndex.mockRejectedValue(new Error("metadata index already exists"));
+    fake.createMetadataIndex.mockResolvedValue(undefined);
 
     const report = await provisioner(fake.cf, fakeWorkflows().client).ensureMetadataIndexes(
       "pithy-vector-docs-dev",
