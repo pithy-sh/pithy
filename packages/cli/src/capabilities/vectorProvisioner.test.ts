@@ -172,10 +172,10 @@ describe("ensureIndex", () => {
 const OWNER = { propertyName: "ownerId", indexType: "string" };
 
 describe("ensureMetadataIndexes", () => {
-  test("the wait is sized from measured Vectorize latency: 300s, three agreeing reads, a 2s poll", () => {
-    // A metadata index settled in about 97s on one live run and was still unsettled at 120s on the next
-    // (#709). The ten one-second polls this replaced gave up on both.
-    expect(METADATA_SETTLE_BUDGET_MS).toBe(300_000);
+  test("the wait is sized from measured Vectorize latency: 600s, three agreeing reads, a 2s poll", () => {
+    // Measured live: one metadata index settled in about 97s, another was unsettled at 120s, and a third was
+    // still missing at 300s. Cloudflare documents no readiness time, so the budget is twice the slowest wait.
+    expect(METADATA_SETTLE_BUDGET_MS).toBe(600_000);
     expect(METADATA_STABLE_READS).toBe(3);
     expect(METADATA_POLL_INTERVAL_MS).toBe(2_000);
   });
@@ -283,7 +283,7 @@ describe("ensureMetadataIndexes", () => {
         message: "The metadata indexes on `pithy-vector-docs-dev` were accepted but are not live yet.",
         action:
           "Re-run `pithy vector provision --worker api --env dev` in a minute. Do not write vectors until it reports them ready.",
-        detail: "waited 300s for ownerId",
+        detail: "waited 600s for ownerId",
       },
     });
     expect(clock.elapsed()).toBeGreaterThanOrEqual(METADATA_SETTLE_BUDGET_MS);
@@ -310,13 +310,12 @@ describe("ensureMetadataIndexes", () => {
     expect(fake.createMetadataIndex).toHaveBeenCalledTimes(1);
   });
 
-  test("a re-run whose create is refused because the first run's create landed carries on and waits", async () => {
-    // The list can miss an index that exists, so a re-run can ask to create one twice. Whatever Cloudflare
-    // answers to that, an index listed under its own name and type right after is the one the first run
-    // created, and the re-run waits for it rather than failing on it.
+  test("a re-run whose create meets the first run's index carries on and waits", async () => {
+    // The list can miss an index that exists, so a re-run can ask to create one twice. The provisioner's
+    // create answers that as success, and the re-run waits for the index rather than failing on it.
     const fake = fakeCf();
     fake.listMetadataIndexes.mockResolvedValueOnce([]).mockResolvedValue([OWNER]);
-    fake.createMetadataIndex.mockRejectedValue(new Error("metadata index already exists"));
+    fake.createMetadataIndex.mockResolvedValue(undefined);
 
     const report = await provisioner(fake.cf, fakeWorkflows().client).ensureMetadataIndexes(
       "pithy-vector-docs-dev",
@@ -350,7 +349,7 @@ describe("ensureMetadataIndexes", () => {
 });
 
 /**
- * **Every command a refusal names runs as written (#711).** The Worker and environment are this run's, so the
+ * **Every command a refusal names runs as written.** The Worker and environment are this run's, so the
  * command runs in a project with several Workers. A reset of anything but `dev` takes the `--confirm-reset`
  * phrase, which is a person's to give, so the sentence says so rather than naming a run an agent is refused.
  * A feature's indexes are its own provisioning's: a feature run names that, and no rebuild, since none exists for one index.
@@ -415,7 +414,7 @@ describe("the commands a refusal names", () => {
   });
 });
 
-// #711: the project's own production environment is a person's decision too, not only `prod` and `production`.
+// The project's own production environment is a person's decision too, not only `prod` and `production`.
 test("an index not live yet in the project's own production environment names no provision to run", async () => {
   const fake = fakeCf();
   fake.listMetadataIndexes.mockResolvedValue([]);

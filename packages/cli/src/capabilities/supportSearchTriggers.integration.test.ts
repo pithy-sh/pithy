@@ -16,7 +16,6 @@ import {
   SEARCH_OBJECTS,
   SEARCH_TRIGGERS,
   searchIndexState,
-  searchTriggerStatements,
 } from "@pithy-sh/support/src/store/searchIndex";
 import type { MigrationProvider } from "kysely/migration";
 import { describe, expect, test } from "vitest";
@@ -31,14 +30,13 @@ import { describe, expect, test } from "vitest";
  * Miniflare-only pass is exactly what made that unfalsifiable, so the claim is settled here, on a real
  * database, or not at all.
  *
- * Three things only remote D1 can answer:
+ * Two things only remote D1 can answer:
  *
  * 1. **The authorizer permits `CREATE TRIGGER` on a real database**, with a compound body that writes to
- *    an FTS5 virtual table.
- * 2. **The casing is load-bearing.** A lowercase `begin`/`end` body is rejected as `incomplete input
- *    [code: 7500]` here and accepted by Miniflare, which is why `searchIndex.test.ts` holds the uppercase
- *    form as a unit test. This proves that unit test is guarding a real constraint rather than a style.
- * 3. **The triggers actually index, through the real column names.** `CamelCasePlugin` does not reach
+ *    an FTS5 virtual table. The bodies spell `BEGIN`/`END` in uppercase, which `searchIndex.test.ts` pins.
+ *    That is a convention, not a constraint remote D1 enforces today: a lowercase body is accepted here as
+ *    it is by Miniflare, so this suite asserts nothing about the casing.
+ * 2. **The triggers actually index, through the real column names.** `CamelCasePlugin` does not reach
  *    inside a `sql` template, so the body spells `thread_id` and `text_body` itself, and a write through
  *    the Kysely builder is the only thing that proves the two halves agree.
  *
@@ -66,7 +64,7 @@ const provider: MigrationProvider = (() => {
 describe.skipIf(!creds.hasCreds)("the support FTS triggers — LIVE remote D1", () => {
   const provisioner = new CloudflareD1Provisioner({ accountId: creds.accountId, apiToken: creds.apiToken });
 
-  test("D1 accepts the triggers, rejects a lowercased body, and indexes every write kind", async () => {
+  test("D1 accepts the triggers and indexes every write kind", async () => {
     await withThrowawayResource(
       () => provisioner.createDatabase(uniqueName("support-fts")),
       async (created) => {
@@ -82,15 +80,7 @@ describe.skipIf(!creds.hasCreds)("the support FTS triggers — LIVE remote D1", 
         await runMigrations(d1, provider);
         expect(await manager.listTables()).toContain("pithy_support_messages");
 
-        // **1. The casing, proved as a refusal first.** Asserted before the index exists, so the failure
-        // can only be the parser: a lowercase compound body is incomplete input to D1 and fine to
-        // Miniflare, which is the whole reason `searchIndex.test.ts` pins the uppercase form.
-        const lowercased = searchTriggerStatements()[0]
-          ?.replace(/\bBEGIN\b/, "begin")
-          .replace(/\bEND\b/, "end");
-        await expect(manager.executeQuery(lowercased ?? "")).rejects.toThrow(/incomplete input|7500/i);
-
-        // **2. The authorizer permits the real statements.** `createSearchIndex` issues the virtual table
+        // **1. The authorizer permits the real statements.** `createSearchIndex` issues the virtual table
         // and all three `CREATE TRIGGER`s; a refusal here is what the whole workaround existed for.
         const db = supportDatabase(d1);
         await createSearchIndex(db);
@@ -102,7 +92,7 @@ describe.skipIf(!creds.hasCreds)("the support FTS triggers — LIVE remote D1", 
         expect(searchIndexState(names)).toEqual({ table: true, triggers: "all" });
         expect(names).toEqual(expect.arrayContaining([...SEARCH_TRIGGERS]));
 
-        // **3. The index follows the table, through the physical column names.** Written with raw SQL on
+        // **2. The index follows the table, through the physical column names.** Written with raw SQL on
         // purpose here: the Kysely-builder write is proved in `@pithy-sh/support`'s own suite, and what is
         // under test on this database is the trigger, not the dialect.
         const insert = `INSERT INTO pithy_support_messages
@@ -135,14 +125,14 @@ describe.skipIf(!creds.hasCreds)("the support FTS triggers — LIVE remote D1", 
         await manager.executeQuery("DELETE FROM pithy_support_messages WHERE id = ?", ["m1"]);
         expect(await search("resolved")).toEqual([]);
 
-        // **4. The inverted durability contract, on the database it matters on.** With the FTS table gone
+        // **3. The inverted durability contract, on the database it matters on.** With the FTS table gone
         // and the triggers still there, the message write fails rather than silently skipping the index.
         await manager.executeQuery("DROP TABLE pithy_support_search");
         await expect(manager.executeQuery(insert, ["m2", "t2", "Hello", "nothing to index"])).rejects.toThrow(
           /pithy_support_search/,
         );
 
-        // **5. And the pair cannot be left half-dropped.** `dropSearchIndex` clears the stray triggers, so
+        // **4. And the pair cannot be left half-dropped.** `dropSearchIndex` clears the stray triggers, so
         // `search.fts: false` is a feature flag rather than an outage on the capability's write path.
         await createSearchIndex(db);
         await dropSearchIndex(db);
