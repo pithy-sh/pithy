@@ -26,7 +26,7 @@ import { declaredBindings, declaredRequiredSecrets, declaredVars } from "./wrang
  * There are two `.dev.vars` in a Pithy project and they are not the same file:
  *
  * ```
- * <root>/.dev.vars            hand-written. Read by the CLI, for CLOUDFLARE_ENV_KEYS and nothing else.
+ * <root>/.dev.vars            read by nothing. The CLI's credentials live in the config directory.
  * <root>/apps/<w>/.dev.vars   generated (#154). Read by wrangler, and so by the Worker.
  * ```
  *

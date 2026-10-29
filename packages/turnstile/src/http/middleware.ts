@@ -19,7 +19,7 @@ import {
 
 /**
  * The provision that writes this Worker's widget secret, as a deployed Worker can name it: it cannot know the
- * `apps/` directory that provisioned it, so it names no `--worker`, and the run asks (#711).
+ * `apps/` directory that provisioned it, so it names no `--worker`, and the run asks.
  */
 const PROVISION = pithyCommandOf("turnstile provision", {}, { runtime: true });
 
@@ -88,7 +88,7 @@ function assertSecretRecognized(codes: string[], status: number): void {
 
 /**
  * The one exception to the action binding, and the only thing that made dev and staging sign-in
- * possible: **a documented test key returns no action at all** (#374).
+ * possible: **a documented test key returns no action at all**.
  *
  * Cloudflare's always-pass secret answers `success: true` with no `action` field, verified live against
  * siteverify. `createAuthRoutes` stacks the gate as `turnstile({ action: "login" })`, so the binding
@@ -102,7 +102,7 @@ function assertSecretRecognized(codes: string[], status: number): void {
  *    carries it, so no real deployment can reach this branch however its secret is spelled.
  * 2. **No action came back at all.** An action that came back and *differs* is a token minted for
  *    another action, which is exactly what the binding exists to refuse, and it is refused here too.
- * 3. **The Worker says it is dev or staging** — {@link isTestKeyEnvironment}, off the stamped
+ * 3. **The Worker says it is dev, staging or a feature deployment** — {@link isTestKeyEnvironment}, off the stamped
  *    `ENVIRONMENT` var, which nothing in a request can influence. `prod` is not in that list and an
  *    unstamped Worker is not either, so production keeps the binding exactly as it was.
  *
@@ -122,7 +122,7 @@ async function errorCodesOf(response: Response): Promise<string[]> {
 
 /**
  * **The refusal for a gate with no widget secret, which names what is missing and which environment it is
- * missing for (#656).**
+ * missing for.**
  *
  * `{"code":"turnstile/config","message":"Turnstile is not configured."}` is what a real feature deployment
  * answered, and it is true of every environment at once: an operator holding it has learned that one of
@@ -280,8 +280,8 @@ async function readToken(c: Context, field: string, header?: string): Promise<st
  *
  * **A feature deployment needs nothing provisioned.** Where the store holds no secret and the Worker is
  * stamped `feature`, the gate verifies against Cloudflare's documented always-pass secret — the pair dev
- * wires, for the environment nothing provisions and no adopter edit can reach ({@link defaultWidgetSecret},
- * #656). Every other environment refuses.
+ * wires, for the environment nothing provisions and no adopter edit can reach ({@link defaultWidgetSecret}).
+ * Every other environment refuses.
  *
  * @throws {@link TurnstileMissingTokenError} (`turnstile/missing_token`, 400) — no token in the request.
  * @throws {@link TurnstileFailedError} (`turnstile/failed`, 403) — the token did not pass siteverify, its
@@ -311,7 +311,7 @@ export function turnstile(options: TurnstileOptions = {}): MiddlewareHandler {
     let secret: string;
     if (stored === null || Object.keys(stored).length === 0) {
       // Nothing is stated for this environment. A feature deployment defaults to Cloudflare's documented
-      // always-pass secret — nothing provisions a branch, and no adopter edit could (#656). Every other
+      // always-pass secret — nothing provisions a branch, and no adopter edit could. Every other
       // environment refuses, naming what is absent and where.
       const fallback = defaultWidgetSecret(environment);
       if (fallback === null) throw noWidgetSecret(environment, unreadable);

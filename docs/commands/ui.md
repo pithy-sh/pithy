@@ -78,14 +78,15 @@ Every file is written **only if it does not already exist**. `pithy ui add` neve
 
 Both are `composite`, because both are referenced from the project's root `tsconfig.json` (`docs/CLI.md` §1.3), and each names a `.tsbuildinfo` under the **project's** `dist/` — never this Worker's, which Vite empties on every build.
 | `client-env.d.ts` | always | Ambient declarations for the `virtual:pithy/*` modules. Generated in the kit, so a backfill rewrites it when it differs from the current emit, and reports it under `refreshed` |
-| `src/client.tsx` | always | The SPA entry |
-| `src/router.tsx` | always | The two-glob router and its route guard. Both globs negate `*.test.tsx` and `*.spec.tsx`, so a co-located route test ships to nobody (`docs/UI.md` §Routing) |
+| `src/client.tsx`, `src/client.test.tsx` | always | The SPA entry, and a seeded test that it mounts into a node it creates |
+| `src/router.tsx`, `src/router.test.tsx` | always | The two-glob router and its route guard, and a seeded test that a guard sends you to the path its screen declares. Both globs negate `*.test.tsx` and `*.spec.tsx`, so a co-located route test ships to nobody (`docs/UI.md` §Routing) |
 | `src/styles.css` | always | Yours: the palette tokens, the reset, `body` |
 | `src/pithy-screens.css` | always | Pithy's: every class name a Pithy screen renders, in a `@layer pithy` cascade layer. Written whenever absent, which is what makes a later `--auth` backfill produce screens that render styled — the adopter's `styles.css` is correctly skipped, so the rules cannot live in it |
 | `src/pithy-config.tsx` | always | Every `virtual:pithy/*` module, narrowed once for the screens. The consent screen narrows `virtual:pithy/consent` itself |
+| `src/pithy-locale.tsx`, `src/pithy-locale.test.tsx` | always | Resolves the reader's language and keeps `<html lang>` on it, and a seeded test that the two agree. Renders its children untouched when nothing is composed |
 | `src/session.tsx` | `--auth` | The session hook, `signOut`, and the signed-in route guard |
-| `src/turnstile.tsx` | `--auth` | The Turnstile widget and the token placement the middleware reads |
-| `src/routes/pithy/*.tsx` | `--auth` | Pithy's screens: sign-in, OTP, callback, and account suspended, account deleted, organization suspended |
+| `src/turnstile.tsx`, `src/turnstile.test.tsx` | `--auth` | The Turnstile widget and the token placement the middleware reads, and a seeded test that it solves for the action your config names |
+| `src/routes/pithy/*.tsx` | `--auth` | Pithy's screens: sign-in, OTP, callback, and account suspended, account deleted, organization suspended. `sign-in.test.tsx` holds the link to the path `callback.tsx` declares, and `otp.test.tsx` sends a suspended or deleted account to its own screen |
 | `src/payments.tsx`, `src/routes/pithy/paywall.tsx`, `pricing.tsx`, `subscription.tsx` | `--payments` | The payments client bound to its base path, and the paywall, pricing and subscription screens |
 | `src/routes/pithy/choose-organization.tsx`, `choose-organization.test.tsx`, `invitation.tsx`, `invitation.test.tsx` | `--organization` | The account chooser, the screen an invitation link lands on, and a seeded gate for each |
 | `src/routes/pithy/consent.tsx` | `--consent` | Every consent purpose, and where you stand on each |
