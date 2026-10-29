@@ -3,7 +3,7 @@
 
 import { mkdir } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { pithyCommand, workerDirOf } from "@pithy-sh/core/src/cli/command";
+import { type CommandFlags, pithyCommand, workerDirOf } from "@pithy-sh/core/src/cli/command";
 import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import { writeFileAtomic } from "../project/atomic";
 import { ensureScaffoldPath, pathExists } from "../project/scaffold";
@@ -75,6 +75,8 @@ export async function scaffoldFiles(options: {
   files: Record<string, string>;
   /** Refuse the whole run if any path exists (the default). Off for a backfill, which skips instead. */
   strict?: boolean;
+  /** The flags a collision's retry command names. `--worker <dir>` when absent. */
+  retry?: CommandFlags<"ui add">;
 }): Promise<ScaffoldResult> {
   const entries = Object.entries(options.files).sort(([a], [b]) => a.localeCompare(b));
   const root = scaffoldRoot(options.workerDir);
@@ -104,7 +106,7 @@ export async function scaffoldFiles(options: {
         "ui add",
         {
           args: [options.framework],
-          flags: { "--worker": workerDirOf({ dir: options.workerDir }) },
+          flags: options.retry ?? { "--worker": workerDirOf({ dir: options.workerDir }) },
         },
       )} again.`,
     });

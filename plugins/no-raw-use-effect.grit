@@ -1,8 +1,9 @@
-// Scoped by biome.jsonc to the kit's React sources: packages/*/src/** and packages/ui-react/templates/**.
+// Scoped by biome.jsonc to the kit's React sources: packages/*/src/**, packages/ui-react/templates/** and
+// packages/ui-react-native/templates/**.
 //
 // An effect syncs a component with something outside React. A read is not that, a call a person makes is not
 // that, and going somewhere because of an answer is not that, so each has its own tool: `useRead` and
-// `useAction` from `@pithy-sh/ui-react/src/read` and `src/action`, and the router's `<Redirect>`. An effect that
+// `useAction` from `@pithy-sh/ui-core/src/read` and `src/action`, and the router's `<Redirect>`. An effect that
 // really does sync with an outside system lives in a hook named for it, in its own file, and biome.jsonc excludes
 // that file with the system it syncs with beside it.
 language js

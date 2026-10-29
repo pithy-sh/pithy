@@ -8,11 +8,10 @@
  * catalog of one product infers one product's shape, and every branch the next product would have taken
  * — an empty `entitlements`, a SKU on a rail the first product does not sell — is simply not in it.
  *
- * **It is annotated on the `.map` callback, not on the array it builds.** Measured, and the difference
- * matters: `const products: PaymentsClientProduct[] = …map(…)` type-checks the *result*, by which point
- * the element literals are no longer fresh, so a product that grew an `apple` SKU passed silently. On the
- * callback's own return type the literal is checked where it is written, and the store-only field is a
- * compile error at the line that added it.
+ * **It is annotated on the `.map` callback, not on the array it builds.** `const products:
+ * PaymentsClientProduct[] = …map(…)` type-checks the *result*, by which point the element literals are no
+ * longer fresh, so an extra field passes silently. On the callback's own return type the literal is
+ * checked where it is written, and an undeclared field is a compile error at the line that added it.
  */
 export type PaymentsClientProduct = {
   /** The logical product id — what `/payments/checkout` is asked for. */
@@ -24,13 +23,21 @@ export type PaymentsClientProduct = {
   /** The display name a paywall renders. */
   name: string;
   /**
-   * This product's SKU on each web rail, or null where it is not sold. Keyed by rail rather than one
-   * field per rail, so a screen asks `skus[rail]` and a new rail cannot leave a `purchasable()` check
-   * silently out of date. Every id here is publishable by design — each is what a checkout names.
-   *
-   * Apple's and Google's product ids are deliberately absent: a browser cannot open either store.
+   * This product's SKU on each rail, or null where it is not sold. Keyed by rail rather than one field per
+   * rail, so a screen asks `skus[rail]` and a new rail cannot leave a `purchasable()` check silently out of
+   * date. Every id here is publishable by design — each is what a checkout or a store purchase names.
    */
   skus: {
+    /**
+     * The App Store product id a native app buys with StoreKit. Optional: a Worker on an older kit does
+     * not project it, and absent reads the same as null.
+     */
+    apple?: string | null;
+    /**
+     * The Play product id a native app buys with Play Billing. Optional: a Worker on an older kit does not
+     * project it, and absent reads the same as null.
+     */
+    google?: string | null;
     /** The Stripe price id. */
     stripe: string | null;
     /** The Lemon Squeezy variant id. */
@@ -71,8 +78,8 @@ export type PaymentsClientEntitlement = {
  * Nothing sensitive is in reach of the producer to begin with: Apple's issuer key, Google's service
  * account, and Stripe's secret and signing keys live in the secrets store behind
  * `paymentsSecretsRegistry`, not in the config the closure can see. What this type covers is the rest of
- * the catalog — the `grants` block and the store-only SKUs, which are omissions of judgment rather than
- * of reach, and so are the ones worth writing down.
+ * the catalog — the `grants` block, an omission of judgment rather than of reach, and so the one worth
+ * writing down.
  *
  * **`billingSubject` is a third omission of judgment, and it is deliberate.** The subject *id* obviously
  * never crosses — it is a fact about one caller, and this projection is inlined into a bundle every caller
@@ -106,12 +113,12 @@ export type PaymentsClientProjection =
       /**
        * Which rails this project sells through. Apple and Google are display-only on the web — a
        * paywall shows such a product as owned-elsewhere rather than offering a buy button nothing on
-       * the web can honor.
+       * the web can honor. A native app buys on them.
        */
       rails: {
-        /** Whether the App Store rail is on. Display-only in a browser. */
+        /** Whether the App Store rail is on. Display-only in a browser; a native app buys on it. */
         apple: boolean;
-        /** Whether the Play Store rail is on. Display-only in a browser. */
+        /** Whether the Play Store rail is on. Display-only in a browser; a native app buys on it. */
         google: boolean;
         /** Whether the Stripe rail is on. */
         stripe: boolean;
@@ -143,9 +150,9 @@ export type PaymentsClientProjection =
       /** Where the payments routes mount, e.g. `/payments`. */
       basePath: string;
       /**
-       * The catalog, browser-safe, in the order the adopter wrote it. A web rail's price id is
-       * publishable by design — a checkout names one. Apple's and Google's SKUs, and anything a
-       * purchase fulfills beyond its entitlements, stay server-side.
+       * The catalog, client-safe, in the order the adopter wrote it. Every rail's SKU is publishable by
+       * design — a checkout or a store purchase names one. Anything a purchase fulfills beyond its
+       * entitlements stays server-side.
        */
       products: PaymentsClientProduct[];
       /**

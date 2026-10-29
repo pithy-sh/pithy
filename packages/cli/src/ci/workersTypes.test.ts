@@ -165,7 +165,8 @@ const DECLARED_ONLY: Record<string, string> = {
  * `support` counts `test-utils/seed.ts` too, which migrates a suite's D1 and seeds threads and messages on it.
  * In `consent`, `data/tables.ts`, `record/store.ts` and `evidence/evidence.ts` read and write its D1 and its R2, and
  * `http/routes.ts`, `purge/contribution.ts` and `capability.ts` open them off an env. In `email`, `consent/consent.ts`
- * suppresses an address and stops tracking queued mail on a withdrawal.
+ * suppresses an address and stops tracking queued mail on a withdrawal. In `organization`, `acting/rotation.ts`
+ * carries the acting selection to a rotated session over the env's own D1.
  */
 const IMPORTERS: Record<string, number> = {
   "packages/artifacts": 3,
@@ -181,7 +182,7 @@ const IMPORTERS: Record<string, number> = {
   "packages/matchmaking": 9,
   "packages/media": 8,
   "packages/multiplayer": 10,
-  "packages/organization": 12,
+  "packages/organization": 13,
   "packages/payments": 18,
   "packages/rating": 5,
   "packages/secrets": 7,

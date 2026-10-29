@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { ACCOUNT_DELETED, ACCOUNT_SUSPENDED } from "@pithy-sh/auth/src/client/lifecycle";
+import { screenPath } from "@pithy-sh/ui-core/src/routes";
 import { act, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
-import { routeTable, screenPath } from "../templates/src/router";
+import { routeTable } from "../templates/src/router";
 import { SignInScreen } from "../templates/src/routes/pithy/sign-in";
 
 /**

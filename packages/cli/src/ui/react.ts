@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
+import { UI_CORE_VERSION } from "@pithy-sh/ui-core/src/version";
 import { HOME_SCREEN, TEMPLATE_DIR, TEMPLATE_GROUPS, WORKER_TOKEN } from "@pithy-sh/ui-react/src/templates";
 import { UI_REACT_VERSION } from "@pithy-sh/ui-react/src/version";
 import { kitRange } from "../project/scaffold";
@@ -68,8 +69,11 @@ export const reactStub: UiStub = {
     // the browser downloads. And core's `PACKAGE_VERSION` for the reason `@pithy-sh/vite` uses it —
     // the release train below is what makes that honest, and `react.test.ts` holds both halves.
     "@pithy-sh/i18n": kitRange(PACKAGE_VERSION),
-    // The screens read and redirect through `useRead`, `useAction` and `<Redirect>` from here, on every scaffold.
-    // Its own version rather than core's: the CLI depends on this package, so it can read it honestly.
+    // The screens read and redirect through `useRead`, `useAction` and `<Redirect>`, and look up the route
+    // table, from here, on every scaffold. Its own version rather than core's: the CLI depends on this
+    // package, so it can read it honestly.
+    "@pithy-sh/ui-core": kitRange(UI_CORE_VERSION),
+    // The re-exports at `src/read`, `src/action` and `src/redirect` a screen scaffolded earlier imports.
     "@pithy-sh/ui-react": kitRange(UI_REACT_VERSION),
   },
   devDependencies: {

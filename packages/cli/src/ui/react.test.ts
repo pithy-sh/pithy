@@ -370,17 +370,18 @@ describe("the React 19 stub", () => {
       router.indexOf("...Object.values(pithyRoutes)"),
     );
     expect(router).toContain("Do not edit them.");
-    expect(router).toContain("lazy(load)");
+    // The table is built, and each screen made lazy, by the shared runtime the scaffold depends on.
+    expect(router).toMatch(/import \{[^}]*\bbuildRoutes\b[^}]*\} from "@pithy-sh\/ui-core\/src\/routes"/);
   });
 
   test("the router the CLI copies matches path parameters", () => {
-    // Without these a link-addressed screen — an invitation, a reset, an unsubscribe — cannot be
-    // written without forking this file. The matching rules are tested in `@pithy-sh/ui-react`; what is
-    // held here is that the file an adopter actually receives is the one that has them.
+    // Without these a link-addressed screen — an invitation, a reset, an unsubscribe — cannot be written
+    // without forking this file. The matching rules are tested in `@pithy-sh/ui-core`; what is held here is
+    // that the file an adopter actually receives renders through them.
     const router = BARE["src/router.tsx"] ?? "";
-    expect(router).toContain("export function matchPath");
-    expect(router).toContain("export interface ScreenProps");
-    expect(router).toContain("decodeURIComponent");
+    expect(router).toMatch(/import \{[^}]*\bmatchPath\b[^}]*\} from "@pithy-sh\/ui-core\/src\/routes"/);
+    expect(router).toContain("matchPath(table.patterns, path)");
+    expect(router).toContain("<Component params={params} />");
   });
 
   test("vite.config.ts carries the three plugins and the two facts that are easy to get wrong", () => {

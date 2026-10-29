@@ -5,8 +5,14 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { ActingResponse, OrganizationsResponse } from "../http/responses";
 import {
+  AcceptInvitationResponse,
+  ActingResponse,
+  InvitationOfferResponse,
+  OrganizationsResponse,
+} from "../http/responses";
+import {
+  acceptInvitation,
   chooseOrganization,
   listOrganizations,
   ORGANIZATION_BASE_PATH,
@@ -15,6 +21,7 @@ import {
   ORGANIZATION_UNREADABLE,
   type OrganizationFetch,
   type OrganizationResponse,
+  readInvitation,
 } from "./api";
 
 /** A fetch that answers once, and records what it was asked. */
@@ -87,6 +94,150 @@ describe("the client reads what the server actually answers", () => {
   });
 });
 
+const OFFER = InvitationOfferResponse.parse({
+  organizationName: "Acme Games",
+  inviterName: null,
+  role: "member",
+  expiresAt: "2026-11-04T12:00:00.000Z",
+});
+
+const ACCEPTED = AcceptInvitationResponse.parse({
+  organizationId: "11111111-1111-4111-8111-111111111111",
+  membershipId: "33333333-3333-4333-8333-333333333333",
+  role: "member",
+  joined: true,
+});
+
+describe("an invitation is read, then accepted", () => {
+  test("the offer comes back narrowed, from the JSON route under the base path", async () => {
+    const { send, calls } = answering(OFFER);
+    const result = await readInvitation("tok-1", { fetch: send });
+    expect(result).toEqual({ ok: true, value: OFFER });
+    expect(calls[0]?.url).toBe(`${ORGANIZATION_BASE_PATH}/invitations/tok-1`);
+    expect(calls[0]?.init?.method).toBe("GET");
+    expect(calls[0]?.init?.credentials).toBe("include");
+  });
+
+  test("a token is one path segment, whatever it holds", async () => {
+    const { send, calls } = answering(OFFER);
+    await readInvitation("a/../b?c#d", { fetch: send });
+    expect(calls[0]?.url).toBe(`${ORGANIZATION_BASE_PATH}/invitations/a%2F..%2Fb%3Fc%23d`);
+  });
+
+  test("an offer missing a field, or with a named inviter that is not text, is unreadable", async () => {
+    const { role: _role, ...roleless } = OFFER;
+    await expect(readInvitation("t", { fetch: answering(roleless).send })).resolves.toEqual({
+      ok: false,
+      failure: ORGANIZATION_UNREADABLE,
+    });
+    await expect(readInvitation("t", { fetch: answering({ ...OFFER, inviterName: 7 }).send })).resolves.toEqual({
+      ok: false,
+      failure: ORGANIZATION_UNREADABLE,
+    });
+    const named = await readInvitation("t", { fetch: answering({ ...OFFER, inviterName: "Ada" }).send });
+    expect(named.ok && named.value.inviterName).toBe("Ada");
+  });
+
+  test("a spent or unknown token is the server's one refusal, passed through", async () => {
+    const refusal = {
+      error: {
+        code: "organization/invitation_invalid",
+        message: "That invitation can no longer be accepted.",
+        action: null,
+      },
+    };
+    const result = await readInvitation("spent", { fetch: answering(refusal, false, 400).send });
+    expect(!result.ok && result.failure.code).toBe("organization/invitation_invalid");
+  });
+
+  test("accepting posts the token in the body, never the path, and reads the membership back", async () => {
+    const { send, calls } = answering(ACCEPTED);
+    const result = await acceptInvitation("tok-1", { fetch: send });
+    expect(result).toEqual({ ok: true, value: ACCEPTED });
+    expect(calls[0]?.url).toBe(`${ORGANIZATION_BASE_PATH}/invitations/accept`);
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ token: "tok-1" }));
+  });
+
+  test("an acceptance missing `joined` is unreadable", async () => {
+    const { joined: _joined, ...partial } = ACCEPTED;
+    await expect(acceptInvitation("t", { fetch: answering(partial).send })).resolves.toEqual({
+      ok: false,
+      failure: ORGANIZATION_UNREADABLE,
+    });
+  });
+
+  test("a token already redeemed is still a success, and says so", async () => {
+    const result = await acceptInvitation("t", { fetch: answering({ ...ACCEPTED, joined: false }).send });
+    expect(result.ok && result.value.joined).toBe(false);
+  });
+});
+
+describe("an absolute origin, for a program not served by this Worker", () => {
+  test("prefixes the request and sends no cookie", async () => {
+    const { send, calls } = answering(LIST);
+    const result = await listOrganizations({ origin: "https://api.example.com", fetch: send });
+    expect(result.ok).toBe(true);
+    expect(calls[0]?.url).toBe(`https://api.example.com${ORGANIZATION_BASE_PATH}`);
+    // A program with an origin authenticates by bearer, through the fetch it was handed. An ambient cookie
+    // from a native jar is not a credential it chose.
+    expect(calls[0]?.init?.credentials).toBe("omit");
+  });
+
+  test("works for each invitation call, with a port and plain http", async () => {
+    const read = answering(OFFER);
+    await readInvitation("t", { origin: "http://localhost:8787", fetch: read.send });
+    expect(read.calls[0]?.url).toBe(`http://localhost:8787${ORGANIZATION_BASE_PATH}/invitations/t`);
+    const accept = answering(ACCEPTED);
+    await acceptInvitation("t", { origin: "http://localhost:8787", fetch: accept.send });
+    expect(accept.calls[0]?.url).toBe(`http://localhost:8787${ORGANIZATION_BASE_PATH}/invitations/accept`);
+    expect(accept.calls[0]?.init?.credentials).toBe("omit");
+  });
+
+  test.each([
+    ["https://api.example.com/", "a trailing path"],
+    ["https://api.example.com/v1", "a path"],
+    ["https://api.example.com?x=1", "a query"],
+    ["https://api.example.com#x", "a fragment"],
+    ["https://user@api.example.com", "credentials in the authority"],
+    ["ftp://api.example.com", "a scheme that is not http(s)"],
+    ["javascript:alert(1)", "a script URL"],
+    ["api.example.com", "no scheme"],
+    ["//api.example.com", "a protocol-relative authority"],
+    ["https://", "no host"],
+    ["https://api.example.com\\evil", "a backslash"],
+    [" https://api.example.com", "whitespace"],
+    ["", "an empty origin"],
+  ])("%s is refused before anything is sent — %s", async (origin) => {
+    const { send, calls } = answering(LIST);
+    await expect(listOrganizations({ origin, fetch: send })).resolves.toEqual({
+      ok: false,
+      failure: ORGANIZATION_CROSS_ORIGIN,
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("the base path is still held to a rooted path, origin or not", async () => {
+    const { send, calls } = answering(LIST);
+    const result = await acceptInvitation("t", {
+      origin: "https://api.example.com",
+      basePath: "//evil.example.com",
+      fetch: send,
+    });
+    expect(result).toEqual({ ok: false, failure: ORGANIZATION_CROSS_ORIGIN });
+    expect(calls).toEqual([]);
+  });
+
+  test("a cross-origin base path refuses the invitation calls too", async () => {
+    const { send, calls } = answering(OFFER);
+    await expect(readInvitation("t", { basePath: "https://evil.example.com", fetch: send })).resolves.toEqual({
+      ok: false,
+      failure: ORGANIZATION_CROSS_ORIGIN,
+    });
+    expect(calls).toEqual([]);
+  });
+});
+
 describe("nothing throws, and every failure is renderable", () => {
   test("a refusal arrives as the server's own code and message", async () => {
     const { send } = answering(
@@ -142,7 +293,7 @@ describe("nothing throws, and every failure is renderable", () => {
     await expect(listOrganizations({ fetch: send })).resolves.toEqual({ ok: false, failure: ORGANIZATION_UNREADABLE });
   });
 
-  test("a suspended count that is not a count is unreadable, and its absence is a server from before #623", async () => {
+  test("a suspended count that is not a count is unreadable, and its absence is a server that predates suspension", async () => {
     const bad = answering({ ...LIST, suspended: "1" });
     await expect(listOrganizations({ fetch: bad.send })).resolves.toEqual({
       ok: false,

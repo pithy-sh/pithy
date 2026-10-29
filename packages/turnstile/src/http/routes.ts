@@ -3,6 +3,7 @@
 
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
+import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { validate } from "@pithy-sh/core/src/http/validation";
 import { workerIdentity } from "@pithy-sh/core/src/worker/identity";
@@ -10,15 +11,19 @@ import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import type { Context, Hono } from "hono";
 import { turnstileAnalyticsConfig } from "../analytics/source";
 import { readWidgets, type WidgetDeps } from "../analytics/widgets";
-import type { TurnstileConfig } from "../config/config";
+import { TURNSTILE_LOGIN_ACTION, type TurnstileConfig } from "../config/config";
+import { resolveSitekey } from "../provision/testKeys";
 import { TurnstileWidgetsResponse } from "./responses";
-import { WidgetsQuery } from "./schemas";
+import { WidgetPageQuery, WidgetsQuery } from "./schemas";
 import { TURNSTILE_WIDGETS_PATH, TURNSTILE_WIDGETS_READ_SCOPE } from "./scopes";
+import { mintNonce, TURNSTILE_WIDGET_PATH, widgetPage } from "./widgetPage";
 
 /**
- * Turnstile's one route: the control-plane read of which widget guards this environment (#731).
+ * Turnstile's routes: the control-plane read of which widget guards this environment, and the widget page a
+ * native app renders in a WebView.
  *
  *   GET /turnstile/admin/widgets → widgets and outcomes (control-plane: turnstile:widgets:read) query: WidgetsQuery
+ *   GET /turnstile/widget        → the login widget as an HTML page (public)                 query: WidgetPageQuery
  *
  * The humanity check itself is not a route. It stacks per route through the `turnstile()` middleware.
  */
@@ -69,6 +74,26 @@ export function registerTurnstileRoutes(options: TurnstileRoutesOptions): (app: 
       async (c) => {
         const report = await readWidgets(await resolveWidgets(c), c.req.valid("query"));
         return c.json(report satisfies TurnstileWidgetsResponse, 200);
+      },
+    );
+    app.get(
+      TURNSTILE_WIDGET_PATH,
+      describeRoute({
+        summary: "Render the login widget as a page a native app loads in a WebView.",
+        description:
+          'Cloudflare\'s Turnstile widget on the Worker\'s own origin, for the sitekey this environment resolves and the action the sign-in gate asserts. The page posts JSON to `window.ReactNativeWebView`: `{ type: "turnstile", token }` when solved, `{ type: "turnstile-expired" }` when the token lapses, `{ type: "turnstile-error" }` when the widget fails. Send the token as the `cf-turnstile-response` body field. The page refuses to be framed and is never cached. A 404 means no login widget is renderable here.',
+        verification: "public",
+        responses: { 200: { description: "The widget page.", contentType: "text/html" } },
+      }),
+      validate("query", WidgetPageQuery),
+      (c) => {
+        const mode = options.config.protect[TURNSTILE_LOGIN_ACTION];
+        const widget = mode ? options.config.widgets[mode] : undefined;
+        const environment = workerIdentity(c.env).environment;
+        const sitekey = mode && widget && environment ? resolveSitekey(widget.sitekeys, environment, mode) : undefined;
+        if (!mode || !sitekey) throw new NotFoundError({ message: "No humanity check is set up here." });
+        const { theme, language } = c.req.valid("query");
+        return widgetPage({ sitekey, action: TURNSTILE_LOGIN_ACTION, mode, theme, language, nonce: mintNonce() });
       },
     );
   };

@@ -33,7 +33,7 @@ With `mcp` composed, `pithy ui add` writes the agent consent screen and the conn
 A browser signs in one of two ways. Pick the one the main session chose and do not mix them.
 
 - **Cookie session.** The app and the API share an origin, so the browser sends the session cookie itself. A state-changing request must come from an origin the Worker trusts. That check is CSRF protection, and it is on whenever sessions are.
-- **Bearer.** The same flow a mobile app uses: a short-lived access token in `Authorization: Bearer`. Never in `localStorage` where a script can read it.
+- **Bearer.** The same flow a mobile app uses, on `createBearerSession` from `@pithy-sh/auth/src/client/bearer`: the raw session token a sign-in answers with, in `Authorization: Bearer`, rotated by the session before it expires. Give it a store that is not `localStorage`, where any script can read it; memory, and signing in again on reload, is the safe default.
 
 ## What you do not do
 

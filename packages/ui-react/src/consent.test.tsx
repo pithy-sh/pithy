@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import type { ConsentFetch, ConsentRequestInit } from "@pithy-sh/consent/src/client/api";
+import type { ScreenRole } from "@pithy-sh/ui-core/src/routes";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { ScreenRole } from "../templates/src/router";
 import { ConsentScreen, role } from "../templates/src/routes/pithy/consent";
 
 /**

@@ -9,9 +9,10 @@ import { clearVisitor, readVisitor } from "./visitor";
 /**
  * Carry a visitor's consent into the account they sign in as.
  *
- * The first request that arrives both signed in and holding a visitor's device-id cookie is the sign-in, as far as
- * consent can tell: the merge is recorded then, as one append-only row and one audit event, and the cookie is let
- * go. The visitor's rows are never rewritten — the account's answer reads them through the merge.
+ * The first request that arrives both signed in and holding a visitor's device-id cookie, or a phone's visitor header,
+ * is the sign-in, as far as consent can tell: the merge is recorded then, as one append-only row and one audit event,
+ * and the cookie is let go. A phone keeps its id; once merged, it is no visitor again. The visitor's rows are never
+ * rewritten — the account's answer reads them through the merge.
  *
  * **After the request, never in its way.** It runs once the downstream handlers have, so it sees the identity the
  * auth middleware set wherever it sits in the composition, and a merge that fails is logged and costs nothing but
@@ -25,7 +26,7 @@ export function mergeOnSignIn(options: ConsentRoutesOptions): PithyMiddleware {
       const visitor = readVisitor(c);
       if (!auth || visitor === null) return;
       try {
-        const { merge, created } = await storeFor(c, options).merge(visitor, auth.userId);
+        const { merge, created } = await storeFor(c, options).merge(visitor.id, auth.userId);
         if (created) {
           await c.var.emit({
             action: ConsentAuditActions.merged,
@@ -41,7 +42,7 @@ export function mergeOnSignIn(options: ConsentRoutesOptions): PithyMiddleware {
             metadata: { visitorId: merge.visitorId, mergeId: merge.id },
           });
         }
-        clearVisitor(c);
+        if (visitor.carriedBy === "cookie") clearVisitor(c);
       } catch (cause) {
         c.var.log.child("consent").warn("A visitor's consent could not be merged at sign-in; it will be tried again.", {
           error: cause instanceof Error ? cause.message : "unknown",

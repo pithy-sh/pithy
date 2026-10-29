@@ -38,6 +38,10 @@ vi.mock("../templates/src/router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../templates/src/router")>()),
   navigate: (path: string) => navigate(path),
   routeTable: async () => ({}),
+}));
+
+vi.mock("@pithy-sh/ui-core/src/routes", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@pithy-sh/ui-core/src/routes")>()),
   screenPath: (_table: unknown, role: string) => `/${role}`,
 }));
 

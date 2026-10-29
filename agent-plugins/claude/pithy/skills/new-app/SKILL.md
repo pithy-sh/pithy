@@ -49,7 +49,7 @@ In order:
 
 1. **Server.** Hand it the design from step 2. It adds each capability with `pithy add <capability> --worker <worker> --with-prerequisites`, writes the app's routes and migrations, and runs `pithy contract`.
 2. **Runner.** It runs `pithy migrate --dry-run`, then `pithy migrate`, then the tests and typecheck, and reports.
-3. **Clients**, once the contract exists, in parallel when the target is `both`. The web client builds in the Worker `pithy init` scaffolded it into. The mobile client builds a React Native app in `mobile/` at the project root, outside `apps/`, which holds Workers only.
+3. **Clients**, once the contract exists, in parallel when the target is `both`. The web client builds in the Worker `pithy init` scaffolded it into. The mobile client builds the Expo app `pithy ui add react-native` scaffolds into `apps/<name>/`, a directory of its own beside the Worker it calls.
 4. **Runner** again: `pithy dev`, and the clients' own tests.
 
 ## 5. Report

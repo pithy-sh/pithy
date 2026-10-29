@@ -5,7 +5,7 @@ import {
 } from "@pithy-sh/auth/src/client/mcp";
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
-import { useRead } from "@pithy-sh/ui-react/src/read";
+import { useRead } from "@pithy-sh/ui-core/src/read";
 import { useState } from "react";
 import "../../pithy-screens.css";
 

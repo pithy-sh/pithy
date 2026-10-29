@@ -279,17 +279,19 @@ describe("one producer of the same-origin request", () => {
 const BROWSER_MODULES: Readonly<Record<string, readonly string[]>> = {
   // The primitive. No imports at all, which is the strongest form the rule can take.
   "src/client/api.ts": [],
-  // `useRead` and `useAction` cross into `@pithy-sh/ui-react`, whose published source imports only React.
+  // `useRead` and `useAction` cross into `@pithy-sh/ui-core`, whose published source imports only React.
   "src/client/hooks.ts": [
     "react",
-    "@pithy-sh/ui-react/src/action",
-    "@pithy-sh/ui-react/src/read",
+    "@pithy-sh/ui-core/src/action",
+    "@pithy-sh/ui-core/src/read",
     "./api",
     "./checkout",
     "./paddle",
     "./paddleLink",
   ],
   "src/client/checkout.ts": ["./api", "./paddle"],
+  // The purchase-path choice a native screen makes per platform. Types only, from inside `src/client/`.
+  "src/client/railChoice.ts": ["./api", "./projection"],
   // The payment-link reader. `../data/paddleIds` crosses out of `src/client/` and earns it the way
   // `wholeUnits.ts` does: that module imports nothing, so a predicate reaches the bundle with no graph
   // behind it. A browser module reading the server rail under `rails/` is what this gate refuses.

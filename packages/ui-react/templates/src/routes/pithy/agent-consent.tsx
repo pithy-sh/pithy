@@ -1,10 +1,11 @@
 import { type ConsentView, decideConsent, readConsent } from "@pithy-sh/auth/src/client/mcp";
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
-import { useRead } from "@pithy-sh/ui-react/src/read";
+import { useRead } from "@pithy-sh/ui-core/src/read";
+import { screenPath } from "@pithy-sh/ui-core/src/routes";
 import { useState } from "react";
 import { authConfig } from "../../pithy-config";
-import { Redirect, routeTable, screenPath } from "../../router";
+import { Redirect, routeTable } from "../../router";
 import { getSession, RESUME_PARAM } from "../../session";
 import "../../pithy-screens.css";
 

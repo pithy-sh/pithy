@@ -13,6 +13,7 @@ import { expectConforms, runCaptured } from "../test-utils/payloadContract";
 import {
   askCloudflareAccount,
   askEnvironments,
+  askReactNative,
   askTarget,
   DEFAULT_TARGET,
   type InitPrompt,
@@ -574,6 +575,195 @@ describe("the app target", () => {
     expect(payload.target).toBe("mobile");
     expect(payload.frontEnd).toBeNull();
     await expect(readFile(join(target, "apps", "api", "src", "client.tsx"), "utf8")).rejects.toThrow();
+  });
+});
+
+/** The React Native offer: made to a mobile or both target, and never taken without a yes. */
+describe("the React Native offer", () => {
+  test("asks a mobile or both target, defaulting to no, and takes the answer", async () => {
+    for (const target of ["mobile", "both"] as const) {
+      const confirm = vi.fn(async () => true);
+      expect(await askReactNative({ target, interactive: true, prompt: prompts({ confirm }) })).toEqual({
+        value: true,
+        prompted: true,
+      });
+      expect(confirm).toHaveBeenCalledWith({
+        message: "Add a React Native app for iOS, Android and the web?",
+        initialValue: false,
+      });
+    }
+  });
+
+  test("never asks a web target, and never asks without a human", async () => {
+    expect(await askReactNative({ target: "web", interactive: true, prompt: prompts({}) })).toEqual({
+      value: false,
+      prompted: false,
+    });
+    expect(await askReactNative({ target: "mobile", interactive: false, prompt: prompts({}) })).toEqual({
+      value: false,
+      prompted: false,
+    });
+  });
+
+  test("a flag decides without a question", async () => {
+    expect(await askReactNative({ target: "both", flagged: true, interactive: true, prompt: prompts({}) })).toEqual({
+      value: true,
+      prompted: false,
+    });
+    expect(await askReactNative({ target: "mobile", flagged: false, interactive: true, prompt: prompts({}) })).toEqual({
+      value: false,
+      prompted: false,
+    });
+  });
+
+  test("asking for the app on a web target is refused", async () => {
+    await expect(askReactNative({ target: "web", flagged: true, interactive: false })).rejects.toThrow(
+      "The React Native app is for a mobile client, and --target web has none.",
+    );
+  });
+
+  test("a canceled question aborts", async () => {
+    const exit = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exited");
+    });
+    await expect(
+      askReactNative({
+        target: "mobile",
+        interactive: true,
+        prompt: prompts({ confirm: async () => Symbol("cancel") }),
+      }),
+    ).rejects.toThrow("exited");
+    exit.mockRestore();
+  });
+
+  test("--react-native writes an Expo app beside the Worker, every rail none, and --json says what it made", async () => {
+    const target = join(dir, "phone");
+    const written = await runCaptured("init", ["--dir", target, "--name", "acme", "--react-native", "--json"]);
+    const payload = JSON.parse(written.join("")) as {
+      target: string;
+      frontEnd: unknown;
+      reactNative: { app: string; created: string[]; rails: Record<string, string> };
+    };
+    expect(payload.target).toBe("mobile");
+    expect(payload.frontEnd).toBeNull();
+    expect(payload.reactNative.app).toBe("app");
+    expect(payload.reactNative.created).toContain("app.config.ts");
+    expect(payload.reactNative.rails).toEqual({ ios: "none", android: "none", web: "none" });
+    expect(await readFile(join(target, "apps", "app", "src", "pithy-config.generated.ts"), "utf8")).toContain(
+      "from apps/api's composed config",
+    );
+    await expectConforms("init", written);
+  });
+
+  test("--target both with --app writes the web front end and the Expo app, each in its own directory", async () => {
+    const target = join(dir, "both");
+    const written = await runCaptured("init", [
+      "--dir",
+      target,
+      "--name",
+      "acme",
+      "--target",
+      "both",
+      "--app",
+      "phone",
+      "--json",
+    ]);
+    const payload = JSON.parse(written.join("")) as { frontEnd: { framework: string }; reactNative: { app: string } };
+    expect(payload.frontEnd.framework).toBe("react");
+    expect(payload.reactNative.app).toBe("phone");
+    expect(await readFile(join(target, "apps", "phone", "app.config.ts"), "utf8")).toContain('name: "phone"');
+  });
+
+  test("--target both --react-native says where each front end went, and the next step once", async () => {
+    const target = join(dir, "text");
+    const written = await runCaptured("init", [
+      "--dir",
+      target,
+      "--name",
+      "acme",
+      "--target",
+      "both",
+      "--react-native",
+      "--no-input",
+    ]);
+    const output = written.join("");
+    expect(output).toContain("A React front end is in apps/api/.");
+    expect(output).toContain("An Expo app is in apps/app/. It calls api.");
+    expect(output.match(/Run pithy setup, then pithy dev\./g)).toHaveLength(1);
+  });
+
+  test("no flag and no human adds no app", async () => {
+    const target = join(dir, "plain");
+    const written = await runCaptured("init", ["--dir", target, "--name", "acme", "--json"]);
+    expect((JSON.parse(written.join("")) as { reactNative: unknown }).reactNative).toBeNull();
+    await expect(readFile(join(target, "apps", "app", "package.json"), "utf8")).rejects.toThrow();
+  });
+
+  /** Run `pithy init` expecting a refusal: the exit code it asked for, and what it wrote to stderr. */
+  async function refused(args: string[]): Promise<{ code: unknown; stderr: string }> {
+    const stderr: string[] = [];
+    const write = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+    let code: unknown;
+    const exit = vi.spyOn(process, "exit").mockImplementation((value) => {
+      code = value;
+      throw new Error("exited");
+    });
+    try {
+      await runCaptured("init", args).catch(() => undefined);
+    } finally {
+      write.mockRestore();
+      exit.mockRestore();
+    }
+    return { code, stderr: stderr.join("") };
+  }
+
+  test("a rail the new backend cannot enable is refused before anything is scaffolded", async () => {
+    const target = join(dir, "refused");
+    const { code, stderr } = await refused(["--dir", target, "--name", "acme", "--ios-rail", "apple", "--json"]);
+    expect(code).toBe(3);
+    expect(stderr).toContain("The apple rail needs the payments capability");
+    await expect(readFile(join(target, "pithy.config.ts"), "utf8")).rejects.toThrow();
+  });
+
+  test("a rail value no platform takes is refused, listing the valid ones", async () => {
+    const target = join(dir, "invalid");
+    const { code, stderr } = await refused(["--dir", target, "--name", "acme", "--web-rail", "google", "--json"]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("Pass --web-rail stripe, lemonSqueezy, paddle or none.");
+    await expect(readFile(join(target, "pithy.config.ts"), "utf8")).rejects.toThrow();
+  });
+
+  test("an --app name the app cannot take is refused before anything is scaffolded", async () => {
+    for (const [name, app, message] of [
+      ["bad-app", "Mobile_App", "App name must be kebab-case"],
+      ["same-app", "api", "apps/api is the worker it calls"],
+    ] as const) {
+      const target = join(dir, name);
+      const { code, stderr } = await refused([
+        "--dir",
+        target,
+        "--name",
+        "acme",
+        "--worker",
+        "api",
+        "--app",
+        app,
+        "--json",
+      ]);
+      expect(code).toBe(2);
+      expect(stderr).toContain(message);
+      await expect(readFile(join(target, "pithy.config.ts"), "utf8")).rejects.toThrow();
+    }
+  });
+
+  test("--react-native on a web target is refused before anything is scaffolded", async () => {
+    const target = join(dir, "web-app");
+    const { code } = await refused(["--dir", target, "--name", "acme", "--target", "web", "--react-native", "--json"]);
+    expect(code).toBe(2);
+    await expect(readFile(join(target, "pithy.config.ts"), "utf8")).rejects.toThrow();
   });
 });
 

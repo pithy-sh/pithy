@@ -21,7 +21,7 @@ import {
   readPackagePlan,
 } from "./plan";
 import type { RegistryFetch } from "./registry";
-import { type TemplateSection, templateSections } from "./templates";
+import { type TemplateSection, templateSections, uncomparedApps } from "./templates";
 
 /**
  * `pithy upgrade --packages`, end to end up to the reconcile: plan, report the templates, write, install
@@ -62,6 +62,8 @@ export interface PackagesReport {
   leftAlone: PackageLeftAlone[];
   mismatches: PackageMismatch[];
   templates: TemplateSection[];
+  /** Apps with a React Native front end, whose templates the report does not compare. */
+  uncompared?: string[];
 }
 
 /** What the step hands back to `runUpgrade`. */
@@ -176,6 +178,8 @@ export async function runPackageStep(options: {
     packuments: read.packuments,
     ...(options.fetch ? { fetch: options.fetch } : {}),
   });
+  const uncompared = await uncomparedApps(options.projectDir);
+  if (uncompared.length > 0) report.uncompared = uncompared;
   if (options.dryRun || read.plan.moves.length === 0) return { report, cliMoved: null };
 
   await applyMoves({

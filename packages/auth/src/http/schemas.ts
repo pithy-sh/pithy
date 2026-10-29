@@ -39,6 +39,66 @@ export const RevokeDeviceBody = z
 export type RevokeDeviceBody = z.output<typeof RevokeDeviceBody>;
 
 /**
+ * The body of `POST /handoff`: the one-time code a redirect sign-in left on the app's link, and the verifier whose
+ * challenge the sign-in carried. Bounded rather than shape-checked, so a malformed code or verifier is refused, and
+ * the code spent, by the same trade that refuses a spent code, with the same answer.
+ */
+export const HandoffExchangeBody = z
+  .object({
+    code: z
+      .string()
+      .min(1)
+      .max(256)
+      .describe("The one-time code from the `code` parameter of the deep link the sign-in returned to."),
+    verifier: z
+      .string()
+      .min(1)
+      .max(256)
+      .describe(
+        "The random verifier the app made before the sign-in started: 43 to 128 characters from `A-Z a-z 0-9 - . _ ~`, as RFC 7636 shapes it. Its S256 digest is the `handoff_challenge` the sign-in's `callbackURL` carried.",
+      ),
+  })
+  .describe("The code a native app trades for its session after a redirect sign-in, with the verifier that binds it.");
+export type HandoffExchangeBody = z.output<typeof HandoffExchangeBody>;
+
+/** The providers a native app can sign in with through the system browser: every redirect provider auth offers. */
+export const RedirectProvider = z
+  .enum(["apple", "facebook", "github", "google", "microsoft"])
+  .describe(
+    "A sign-in provider that completes in the browser, by redirect. Whether this Worker enables it is its config's call.",
+  );
+export type RedirectProvider = z.output<typeof RedirectProvider>;
+
+/**
+ * The query of `GET /sign-in/social/start`, the address a native app opens in the system browser's sign-in sheet.
+ * Bounded rather than shape-checked: the handler holds `callbackURL` to `trustedOrigins` and to carrying a
+ * `handoff_challenge`, and Better Auth checks both URLs again when the sign-in starts.
+ */
+export const SocialSignInStartQuery = z
+  .object({
+    provider: RedirectProvider,
+    callbackURL: z
+      .string()
+      .min(1)
+      .max(2048)
+      .describe(
+        "The app's own link, in `trustedOrigins`, carrying the `handoff_challenge` the app made: where the sign-in returns with a one-time code.",
+      ),
+    errorCallbackURL: z
+      .string()
+      .min(1)
+      .max(2048)
+      .optional()
+      .describe(
+        "Where a refused sign-in returns, with an `error` parameter. In `trustedOrigins`. Absent, a refusal lands on the auth error page.",
+      ),
+  })
+  .describe(
+    "A native redirect sign-in, started in the system browser so the provider's state cookie lands in its jar.",
+  );
+export type SocialSignInStartQuery = z.output<typeof SocialSignInStartQuery>;
+
+/**
  * The user id in the path of every single-user admin route.
  *
  * Bounded rather than `.uuid()`: Better Auth's id generator is configurable and its default is not a

@@ -23,7 +23,7 @@ export const TURNSTILE_WIDGETS_READ_SCOPE: ControlPlaneScope = "turnstile:widget
 /** Every control-plane scope this capability defines. */
 export const TURNSTILE_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [TURNSTILE_WIDGETS_READ_SCOPE];
 
-/** The path the widget read mounts at. Turnstile mounts nothing else. */
+/** The path the widget read mounts at. */
 export const TURNSTILE_WIDGETS_PATH = "/turnstile/admin/widgets";
 
 /** The admin routes this capability advertises on `GET /control-plane/manifest`. */

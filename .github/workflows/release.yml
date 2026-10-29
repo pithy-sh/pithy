@@ -30,7 +30,7 @@ name: Release
 # token nor push to `main`.
 #
 # `release` holds `id-token: write` and the release deploy key, and runs nothing but the release. That split
-# is the point: one job with both would put the publish credential for all 22 packages inside the same
+# is the point: one job with both would put the publish credential for every package inside the same
 # process as the test suite.
 #
 # ## Authentication
@@ -217,7 +217,7 @@ jobs:
     # **The environment is what pins the ref.** An npm trusted publisher matches on repository and
     # workflow *filename*; it has no branch field. `workflow_dispatch` runs the workflow definition
     # from whichever ref the dispatcher names, so without this, anyone able to push a branch could run
-    # a rewritten `release.yml` from it and publish all 22 packages — with genuine provenance, which
+    # a rewritten `release.yml` from it and publish every package — with genuine provenance, which
     # makes the result look more trustworthy rather than less.
     #
     # The environment's deployment-branch rule restricts that to `main`, and npm actually verifies the

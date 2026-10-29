@@ -162,12 +162,12 @@ declare module "virtual:pithy/payments" {
         /**
          * Which rails this project sells through. Apple and Google are display-only on the web — a
          * paywall shows such a product as owned-elsewhere rather than offering a buy button nothing on
-         * the web can honor.
+         * the web can honor. A native app buys on them.
          */
         rails: {
-          /** Whether the App Store rail is on. Display-only in a browser. */
+          /** Whether the App Store rail is on. Display-only in a browser; a native app buys on it. */
           apple: boolean;
-          /** Whether the Play Store rail is on. Display-only in a browser. */
+          /** Whether the Play Store rail is on. Display-only in a browser; a native app buys on it. */
           google: boolean;
           /** Whether the Stripe rail is on. */
           stripe: boolean;
@@ -199,9 +199,9 @@ declare module "virtual:pithy/payments" {
         /** Where the payments routes mount, e.g. `/payments`. */
         basePath: string;
         /**
-         * The catalog, browser-safe, in the order the adopter wrote it. A web rail's price id is
-         * publishable by design — a checkout names one. Apple's and Google's SKUs, and anything a
-         * purchase fulfills beyond its entitlements, stay server-side.
+         * The catalog, client-safe, in the order the adopter wrote it. Every rail's SKU is publishable by
+         * design — a checkout or a store purchase names one. Anything a purchase fulfills beyond its
+         * entitlements stays server-side.
          */
         products: {
           /** The logical product id — what `/payments/checkout` is asked for. */
@@ -213,13 +213,21 @@ declare module "virtual:pithy/payments" {
           /** The display name a paywall renders. */
           name: string;
           /**
-           * This product's SKU on each web rail, or null where it is not sold. Keyed by rail rather than one
-           * field per rail, so a screen asks `skus[rail]` and a new rail cannot leave a `purchasable()` check
-           * silently out of date. Every id here is publishable by design — each is what a checkout names.
-           *
-           * Apple's and Google's product ids are deliberately absent: a browser cannot open either store.
+           * This product's SKU on each rail, or null where it is not sold. Keyed by rail rather than one field per
+           * rail, so a screen asks `skus[rail]` and a new rail cannot leave a `purchasable()` check silently out of
+           * date. Every id here is publishable by design — each is what a checkout or a store purchase names.
            */
           skus: {
+            /**
+             * The App Store product id a native app buys with StoreKit. Optional: a Worker on an older kit does
+             * not project it, and absent reads the same as null.
+             */
+            apple?: string | null;
+            /**
+             * The Play product id a native app buys with Play Billing. Optional: a Worker on an older kit does not
+             * project it, and absent reads the same as null.
+             */
+            google?: string | null;
             /** The Stripe price id. */
             stripe: string | null;
             /** The Lemon Squeezy variant id. */

@@ -122,8 +122,16 @@ export async function wireAssets(workerDir: string, patterns: readonly string[])
  *
  * `ui.build` stays package-manager-agnostic: `pithy deploy` runs it through the same `execArgs` at
  * build time, where it also knows the environment.
+ *
+ * `backend` is for a front end in an app directory of its own: `ui.worker` names the Worker it calls, which is
+ * how `pithy ui sync --app` finds that Worker again.
  */
-export async function wireManifest(workerDir: string, stub: UiStub, packageManager: PackageManager): Promise<void> {
+export async function wireManifest(
+  workerDir: string,
+  stub: UiStub,
+  packageManager: PackageManager,
+  backend?: string,
+): Promise<void> {
   const document = await readManifestDocument(workerDir);
 
   const dev: Record<string, unknown> = (document.dev as Record<string, unknown> | undefined) ?? {};
@@ -142,9 +150,19 @@ export async function wireManifest(workerDir: string, stub: UiStub, packageManag
   const ui: Record<string, unknown> = (document.ui as Record<string, unknown> | undefined) ?? {};
   ui.stub = stub.id;
   ui.build = [...stub.buildCommand];
+  if (backend !== undefined) ui.worker = backend;
   document.ui = ui;
 
   await writeManifestDocument(workerDir, document);
+}
+
+/** Point an app's manifest at the Worker it now calls, leaving the rest of the manifest as it is. */
+export async function rewireBackend(appDir: string, backend: string): Promise<void> {
+  const document = await readManifestDocument(appDir);
+  const ui: Record<string, unknown> = (document.ui as Record<string, unknown> | undefined) ?? {};
+  ui.worker = backend;
+  document.ui = ui;
+  await writeManifestDocument(appDir, document);
 }
 
 /**

@@ -6,9 +6,10 @@ import {
   listOrganizations,
   organizationRefusal,
 } from "@pithy-sh/organization/src/index";
-import { useRead } from "@pithy-sh/ui-react/src/read";
+import { useRead } from "@pithy-sh/ui-core/src/read";
+import { screenPath } from "@pithy-sh/ui-core/src/routes";
 import { useState } from "react";
-import { Redirect, routeTable, screenPath } from "../../router";
+import { Redirect, routeTable } from "../../router";
 import "../../pithy-screens.css";
 
 export const path = "/choose-organization";

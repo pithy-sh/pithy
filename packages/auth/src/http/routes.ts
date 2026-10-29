@@ -7,6 +7,7 @@ import { describeRoute, type RouteResponse } from "@pithy-sh/core/src/http/route
 import { requireSameOrigin } from "@pithy-sh/core/src/http/sameOrigin";
 import { validate } from "@pithy-sh/core/src/http/validation";
 import { STORED_IMAGE_HEADERS, storedImageBytes } from "@pithy-sh/core/src/image/storedImage";
+import { announceSessionRotated } from "@pithy-sh/core/src/session/rotated";
 import { TURNSTILE_LOGIN_ACTION } from "@pithy-sh/turnstile/src/config/config";
 import { turnstile } from "@pithy-sh/turnstile/src/http/middleware";
 import type { Context, Hono } from "hono";
@@ -30,13 +31,20 @@ import {
 import { registerAuthAdminRoutes } from "./adminRoutes";
 import { guardErrorCallbackURL } from "./errorCallbackUrl";
 import { apiErrorToPithy } from "./errors";
+import { exchangeHandoff, handOffToApp, startNativeSignIn } from "./handoff";
 import { admitsRefusedAccount, lifecycleRedirect } from "./lifecycleGate";
 import { accountHolder, requireAccountHolder, requireAuth } from "./middleware";
 import { requireFreshAuthentication } from "./providerFreshness";
 import { collapseProviderRefusal } from "./providerRefusal";
 import { getAuthInstance, resolveDb } from "./resolve";
-import { AccountDeleteResponse, MyDeviceRevokeResponse, MyDevicesResponse, TokenRotateResponse } from "./responses";
-import { DeleteAccountBody, RevokeDeviceBody } from "./schemas";
+import {
+  AccountDeleteResponse,
+  HandoffExchangeResponse,
+  MyDeviceRevokeResponse,
+  MyDevicesResponse,
+  TokenRotateResponse,
+} from "./responses";
+import { DeleteAccountBody, HandoffExchangeBody, RevokeDeviceBody, SocialSignInStartQuery } from "./schemas";
 import { accountDeletionView } from "./views";
 
 type Ctx = Context<PithyHonoEnv>;
@@ -69,6 +77,8 @@ function db(c: Ctx, wiring: AuthWiring) {
  * | Route                      | Verification    | Input                       |
  * | -------------------------- | --------------- | --------------------------- |
  * | `POST /token/rotate`       | bearer/session  | none — the credential only  |
+ * | `GET  /sign-in/social/start` | public        | query `SocialSignInStartQuery` |
+ * | `POST /handoff`            | public          | json `HandoffExchangeBody`  |
  * | `GET  /devices`            | bearer/session  | none                        |
  * | `POST /devices/revoke`     | bearer/session  | json `RevokeDeviceBody`     |
  * | `DELETE /account`          | bearer/session  | json `DeleteAccountBody`    |
@@ -115,6 +125,36 @@ export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) 
       }),
       csrf,
       (c) => rotateToken(c, wiring),
+    );
+    // The address a native app opens in the system browser's sign-in sheet to start a redirect sign-in, so the
+    // provider's state cookie lands in the sheet's jar. Public, like `POST /sign-in/social`; the edge limiter covers it.
+    app.get(
+      `${base}/sign-in/social/start`,
+      describeRoute({
+        summary: "Start a native app's redirect sign-in inside the system browser.",
+        description:
+          "A native app opens this address in the system browser's sign-in sheet (ASWebAuthenticationSession, a Custom Tab) instead of posting `/sign-in/social` itself, so the signed `state` cookie Better Auth checks at the provider's callback lands in the browser that completes it. The answer is a redirect to the provider carrying that cookie. Only for the handoff: `callbackURL` must be in `trustedOrigins` and carry a well-formed `handoff_challenge`, or it is refused, and so is an `errorCallbackURL` outside `trustedOrigins`, and a navigation another page started (`Sec-Fetch-Site` other than `none`). A provider this Worker does not enable answers `core/not_found`. A web page keeps the JSON `POST /sign-in/social`.",
+        verification: ["public"],
+        responses: {
+          302: { description: "A redirect to the provider's authorization page, setting the sign-in's state cookie." },
+        },
+      }),
+      validate("query", SocialSignInStartQuery),
+      (c) => startNativeSignIn(c, wiring, c.req.valid("query")),
+    );
+    // A native app trades the one-time code a redirect sign-in left on its app link for the session. Public: the
+    // code and its verifier are the credential, single use and a minute long, and the edge limiter covers this path.
+    app.post(
+      `${base}/handoff`,
+      describeRoute({
+        summary: "Trade the one-time code a redirect sign-in left on an app's link for the session token.",
+        description:
+          "A social sign-in whose `callbackURL` is in `trustedOrigins` and carries a `handoff_challenge` (the S256 digest of a verifier the app holds) returns to that link with a `code` parameter instead of a cookie, whether the link is an https universal link or app link or a custom scheme. The code is good once, for sixty seconds, and only with the verifier. A spent, expired or unknown code, or a wrong or malformed verifier, is refused with `auth/handoff_invalid`, and any attempt spends the code. A custom-scheme link with no challenge gets `error=handoff_challenge_required` and no code; an https link with no challenge is a web page and gets its cookie. A magic link is handed off only to an https link: one to a custom scheme gets `error=handoff_scheme_refused`, and no session is kept. Device headers sent here register the device against the session.",
+        verification: ["public"],
+        responses: { 200: HandoffExchangeResponse },
+      }),
+      validate("json", HandoffExchangeBody),
+      (c) => exchangeHandoff(c, wiring, c.req.valid("json")),
     );
     // Device management (bearer/session gated; the revoke is CSRF-guarded as a mutating route).
     app.get(
@@ -374,6 +414,9 @@ async function handleBetterAuth(c: Ctx, wiring: AuthWiring): Promise<Response> {
     return collapsed.response;
   }
 
+  const handedOff = await handOffToApp(c, wiring, instance, response);
+  if (handedOff) return handedOff;
+
   await auditRefusal(c, response);
   return response;
 }
@@ -507,6 +550,21 @@ async function rotateToken(c: Ctx, wiring: AuthWiring): Promise<Response> {
     rotatedAt: new Date(),
   });
   await emitTokenRefresh(c.var.emit, { userId: current.user.id, sessionId: next.id, ip, userAgent });
+
+  // State another capability keyed on the spent session follows it to the successor. A listener's failure is
+  // logged and never fails the rotation, which has already happened.
+  const failures = await announceSessionRotated(wiring.composed ?? [], {
+    previousSessionId: current.session.id,
+    sessionId: next.id,
+    userId: current.user.id,
+    env: c.env as unknown as Record<string, unknown>,
+  });
+  for (const failure of failures) {
+    c.var.log?.child("auth").warn("a session-rotated listener failed; its state stayed on the spent session", {
+      capability: failure.capability,
+      error: failure.error instanceof Error ? failure.error.message : String(failure.error),
+    });
+  }
 
   // Bound the ledger: a token consumed longer ago than a full session lifetime can no longer match any
   // live session. Best-effort — a cleanup failure must never fail the rotation it rode in on.

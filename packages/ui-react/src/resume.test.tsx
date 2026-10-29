@@ -6,7 +6,7 @@ import { resumeQuery, resumeTarget } from "../templates/src/session";
 
 // `session.tsx` reads the composed config at import; nothing here touches it.
 vi.mock("../templates/src/pithy-config", () => ({ authConfig: { enabled: false, basePath: "/auth" } }));
-vi.mock("../templates/src/router", () => ({ navigate: () => {}, routeTable: async () => ({}), screenPath: () => "/" }));
+vi.mock("../templates/src/router", () => ({ navigate: () => {}, routeTable: async () => ({}) }));
 
 /**
  * **A sign-in resumes only a path on this origin.** The consent screen sends somebody to sign in carrying

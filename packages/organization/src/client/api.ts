@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The browser half of `@pithy-sh/organization`: how a browser program asks this Worker what the reader
- * may act in, and tells it which one they chose.
+ * The client half of `@pithy-sh/organization`: how a browser or native program asks this Worker what the
+ * reader may act in, tells it which one they chose, and reads and accepts an invitation.
  *
  * **It exists for the reason `@pithy-sh/auth`'s counterpart does.** `pithy ui add` writes a screen once
  * and may never rewrite it — the file is copied into the adopter's repository and becomes theirs — so a
@@ -43,7 +43,10 @@ export interface OrganizationRequestInit {
   headers?: Record<string, string>;
   /** The JSON body, already serialized. */
   body?: string;
-  /** Cookie policy. Always `include` here — same-origin, httpOnly session cookie. */
+  /**
+   * Cookie policy. `include` on the same origin, where the session is an httpOnly cookie; `omit` once an
+   * {@link OrganizationClientOptions.origin} is set, where the credential is a bearer the fetch adds.
+   */
   credentials?: "include" | "same-origin" | "omit";
 }
 
@@ -68,6 +71,13 @@ export interface OrganizationGlobal {
 
 /** What every call takes: where the routes are, and the seams a test replaces. */
 export interface OrganizationClientOptions {
+  /**
+   * The Worker's absolute origin, for a program it does not serve: a native app. `scheme://host[:port]`
+   * over http or https and nothing else, no path, no trailing slash. Absent, every request is a rooted
+   * path on the page's own origin carrying its cookie. Present, the request goes to this origin with no
+   * cookie, and the credential is whatever the `fetch` handed in adds.
+   */
+  origin?: string;
   /** Where the tenancy routes mount. Defaults to {@link ORGANIZATION_BASE_PATH}. */
   basePath?: string;
   /** The fetch to use. Defaults to the one on {@link OrganizationClientOptions.global}. */
@@ -106,14 +116,15 @@ export const ORGANIZATION_UNREADABLE: OrganizationFailure = {
 /**
  * The request would have left this origin, so it was never sent.
  *
- * Reachable only through a `basePath` that is not a rooted same-origin path. Sending it would attach an
- * ambient session to a request this page is not entitled to make — and here that session is the whole
- * of somebody's membership in every account they belong to.
+ * Reachable through a `basePath` that is not a rooted path, or an `origin` that is not a bare http(s)
+ * origin. Sending it would attach a session to a request this program is not entitled to make — and here
+ * that session is the whole of somebody's membership in every account they belong to.
  */
 export const ORGANIZATION_CROSS_ORIGIN: OrganizationFailure = {
   code: "client/cross_origin",
   message: "That request would have left this site, so it wasn't sent.",
-  action: "Check the organization `basePath` in pithy.config.ts — it is a path on this worker, not a URL.",
+  action:
+    "Check the organization `basePath` in pithy.config.ts, which is a path on the worker and not a URL, and the client's `origin`, which is a scheme and host with no path.",
 };
 
 /** One organization the reader may act in, as the chooser draws it. */
@@ -157,9 +168,9 @@ export interface ActableOrganizations {
    */
   chosen: boolean;
   /**
-   * How many of the reader's organizations are suspended, and so not in `organizations` (#623). Non-zero with an
+   * How many of the reader's organizations are suspended, and so not in `organizations`. Non-zero with an
    * empty list is somebody whose organizations are all suspended — the suspended screen, not the invitation one.
-   * Optional because a server from before #623 does not send it.
+   * Optional because a server that predates suspension does not send it.
    */
   suspended?: number;
 }
@@ -184,6 +195,17 @@ function isSameOriginPath(path: string): boolean {
   if (!path.startsWith("/")) return false;
   const second = path.charAt(1);
   return second !== "/" && second !== "\\";
+}
+
+/**
+ * Whether a configured origin is a bare http(s) origin: a scheme, a host, an optional port, nothing else.
+ *
+ * A regular expression rather than `new URL`, because React Native's `URL` does not implement the
+ * getters a parsed check would read. Userinfo, a path, a query, a fragment, a backslash and whitespace
+ * are all refused, so the composed URL can only ever name this host.
+ */
+function isBareOrigin(origin: string): boolean {
+  return /^https?:\/\/[A-Za-z0-9.-]+(?::[0-9]{1,5})?$|^https?:\/\/\[[0-9A-Fa-f:.]+\](?::[0-9]{1,5})?$/.test(origin);
 }
 
 /**
@@ -212,12 +234,14 @@ function failureFrom(body: unknown, status: number): OrganizationFailure {
 }
 
 /**
- * One same-origin, cookie-bearing request to this Worker's tenancy routes.
+ * One request to this Worker's tenancy routes.
  *
- * The one place the transport is written down: `credentials: "include"` and nothing else — no token in
- * storage, no `Authorization` header. The SPA and its Worker share an origin, so the session rides an
- * httpOnly cookie JavaScript cannot read, and the server's `requireSameOrigin()` is the other half of
- * the CSRF rule.
+ * The one place the transport is written down. With no `origin`, `credentials: "include"` and nothing
+ * else — no token in storage, no `Authorization` header: the SPA and its Worker share an origin, so the
+ * session rides an httpOnly cookie JavaScript cannot read, and the server's `requireSameOrigin()` is the
+ * other half of the CSRF rule. With an `origin`, `credentials: "omit"`: the program is not served by the
+ * Worker, its credential is the bearer the handed-in `fetch` adds, and a request without a cookie is one
+ * the server's CSRF gate exempts.
  */
 async function callOrganization(
   path: string,
@@ -225,17 +249,21 @@ async function callOrganization(
   options: OrganizationClientOptions,
 ): Promise<OrganizationResult<unknown>> {
   const base = options.basePath ?? ORGANIZATION_BASE_PATH;
-  const url = `${base}${path}`;
-  // Checked before the request is built, not after it fails. A `basePath` naming another host would
-  // otherwise send this reader's session somewhere they never agreed to.
-  if (!isSameOriginPath(url)) return { ok: false, failure: ORGANIZATION_CROSS_ORIGIN };
+  const rooted = `${base}${path}`;
+  // Checked before the request is built, not after it fails. A `basePath` naming another host, or an
+  // `origin` carrying more than a host, would otherwise send this reader's session somewhere they never
+  // agreed to.
+  if (!isSameOriginPath(rooted)) return { ok: false, failure: ORGANIZATION_CROSS_ORIGIN };
+  const { origin } = options;
+  if (origin !== undefined && !isBareOrigin(origin)) return { ok: false, failure: ORGANIZATION_CROSS_ORIGIN };
+  const url = origin === undefined ? rooted : `${origin}${rooted}`;
 
   const send = options.fetch ?? (options.global ?? (globalThis as OrganizationGlobal)).fetch;
   if (!send) return { ok: false, failure: ORGANIZATION_UNREACHABLE };
 
   let response: OrganizationResponse;
   try {
-    response = await send(url, { ...init, credentials: "include" });
+    response = await send(url, { ...init, credentials: origin === undefined ? "include" : "omit" });
   } catch {
     // Offline, DNS, a refused connection. Nothing to read and nothing to say beyond "try again".
     return { ok: false, failure: ORGANIZATION_UNREACHABLE };
@@ -332,5 +360,84 @@ export async function chooseOrganization(
   // Read back from the answer rather than echoed from the request. The role in particular is read off
   // the membership the write proved, so a header drawn from this cannot show a standing nobody has.
   if (!isChosenOrganization(result.value)) return { ok: false, failure: ORGANIZATION_UNREADABLE };
+  return { ok: true, value: result.value };
+}
+
+/** What an accept screen shows somebody holding an invitation link, and nothing more. */
+export interface InvitationOffer {
+  /** The organization being joined, by display name. Tenant text: render it as text, never as markup. */
+  organizationName: string;
+  /** What the sender calls themselves, or null when their account is gone. Tenant text too. */
+  inviterName: string | null;
+  /** What accepting confers, as a name from this project's own catalog. */
+  role: string;
+  /** When the link stops working, ISO-8601. */
+  expiresAt: string;
+}
+
+/** Narrow an offer. */
+function isInvitationOffer(value: unknown): value is InvitationOffer {
+  if (!isRecord(value)) return false;
+  if (!isText(value.organizationName) || !isText(value.role) || !isText(value.expiresAt)) return false;
+  return value.inviterName === null || typeof value.inviterName === "string";
+}
+
+/** The membership an accepted invitation produced. */
+export interface AcceptedInvitation {
+  /** The organization joined. */
+  organizationId: string;
+  /** The membership, new or the one already held. */
+  membershipId: string;
+  /** What was granted: the role the offer carried, never one the request named. */
+  role: string;
+  /**
+   * False when the reader was already a member. The offer is consumed either way, so accepting twice is
+   * a success a screen can word differently, not a refusal it has to tell apart.
+   */
+  joined: boolean;
+}
+
+/** Narrow an acceptance. */
+function isAcceptedInvitation(value: unknown): value is AcceptedInvitation {
+  if (!isRecord(value)) return false;
+  if (!isText(value.organizationId) || !isText(value.membershipId) || !isText(value.role)) return false;
+  return typeof value.joined === "boolean";
+}
+
+/**
+ * What an invitation link offers, read before anybody is asked to accept it.
+ *
+ * Public: a reader who is not signed in yet can see what they were invited to. Every refusal — unknown,
+ * spent, withdrawn, expired — is the server's one `organization/invitation_invalid` sentence, so neither
+ * side of the wire can tell which offers exist. The token travels as one encoded path segment.
+ */
+export async function readInvitation(
+  token: string,
+  options: OrganizationClientOptions = {},
+): Promise<OrganizationResult<InvitationOffer>> {
+  const result = await callOrganization(`/invitations/${encodeURIComponent(token)}`, { method: "GET" }, options);
+  if (!result.ok) return result;
+  if (!isInvitationOffer(result.value)) return { ok: false, failure: ORGANIZATION_UNREADABLE };
+  return { ok: true, value: result.value };
+}
+
+/**
+ * Accept an invitation as the signed-in reader.
+ *
+ * The token goes in the JSON body, which is where the route reads it. Joining **does not move** the
+ * organization in force: a screen that wants the reader acting in the one they just joined calls
+ * {@link chooseOrganization} with the `organizationId` this answers.
+ */
+export async function acceptInvitation(
+  token: string,
+  options: OrganizationClientOptions = {},
+): Promise<OrganizationResult<AcceptedInvitation>> {
+  const result = await callOrganization(
+    "/invitations/accept",
+    { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) },
+    options,
+  );
+  if (!result.ok) return result;
+  if (!isAcceptedInvitation(result.value)) return { ok: false, failure: ORGANIZATION_UNREADABLE };
   return { ok: true, value: result.value };
 }

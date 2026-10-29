@@ -364,8 +364,16 @@ describe("no module writes its own walk over a directory tree", () => {
       why: "The same cycle as its sibling above, for the same reason and not a new one: `@pithy-sh/ui-react` cannot depend on `@pithy-sh/cli` without inverting the workspace graph. It sweeps the same committed `packages/ui-react/templates` tree, so it inherits that entry's argument entirely — nothing scaffolds into or deletes from it mid-run. Arrived with #340, which needed to assert that no template writes a price down.",
     },
     "packages/ui-react/src/templateCopy.test.ts": {
+      walk: "walkTemplates",
+      why: "The third in this package and the same wall as the two above, not a new one: `@pithy-sh/ui-react` cannot depend on `@pithy-sh/cli` without inverting the workspace graph. It sweeps the same committed `packages/ui-react/templates` tree, and `packages/ui-react-native/templates` beside it, so it inherits their argument whole — nothing scaffolds into or deletes from it mid-run. Arrived with #441, which needed to assert that no seeded screen writes a sentence a translator cannot reach.",
+    },
+    "packages/ui-react-native/src/templates.test.ts": {
+      walk: "treeFiles",
+      why: "The wall `@pithy-sh/ui-react`'s entries record: the CLI is what scaffolds a template library, so the library importing `@pithy-sh/cli` would make that edge a cycle in the workspace graph. It reads `packages/ui-react-native/templates`, a committed tree nothing scaffolds into or deletes mid-run.",
+    },
+    "packages/ui-react-native/src/priceHonesty.test.ts": {
       walk: "templateSources",
-      why: "The third in this package and the same wall as the two above, not a new one: `@pithy-sh/ui-react` cannot depend on `@pithy-sh/cli` without inverting the workspace graph. It sweeps the same committed `packages/ui-react/templates` tree, so it inherits their argument whole — nothing scaffolds into or deletes from it mid-run. Arrived with #441, which needed to assert that no seeded screen writes a sentence a translator cannot reach.",
+      why: "The same wall as its sibling above: `@pithy-sh/ui-react-native` cannot depend on `@pithy-sh/cli` without inverting the workspace graph. It sweeps the committed `packages/ui-react-native/templates` tree, which nothing scaffolds into or deletes from mid-run, to assert that no template writes a price down.",
     },
     "packages/cli/src/plan/shadow.ts": {
       walk: "walk",

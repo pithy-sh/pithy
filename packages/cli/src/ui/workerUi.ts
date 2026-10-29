@@ -159,10 +159,12 @@ export function uiBlock(document: ManifestDocument): WorkerUi | null {
   if (typeof block !== "object" || block === null) return null;
   const stub = (block as { stub?: unknown }).stub;
   const build = (block as { build?: unknown }).build;
+  const worker = (block as { worker?: unknown }).worker;
   if (typeof stub !== "string") return null;
   return {
     stub,
     build: Array.isArray(build) ? build.filter((entry): entry is string => typeof entry === "string") : [],
+    ...(typeof worker === "string" ? { worker } : {}),
   };
 }
 

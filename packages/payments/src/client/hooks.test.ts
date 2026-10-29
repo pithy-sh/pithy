@@ -341,6 +341,30 @@ describe("useCheckout", () => {
 });
 
 describe("usePurchase", () => {
+  test("each write answers whether the Worker accepted it, so a store transaction is finished only after", async () => {
+    const fetcher = queue([
+      [200, { purchase: PURCHASE, entitlements: PRO.entitlements }],
+      [409, { error: { code: "payments/receipt_already_owned", status: 409, message: "Not yours." } }],
+      [200, { purchases: [PURCHASE], entitlements: PRO.entitlements }],
+      [409, { error: { code: "payments/receipt_already_owned", status: 409, message: "Not yours." } }],
+    ]);
+    const held = await render(() => usePurchase({ fetch: fetcher }));
+    const answers: boolean[] = [];
+    await act(async () => {
+      answers.push(await held.current.submit("apple", "jws-1"));
+    });
+    await act(async () => {
+      answers.push(await held.current.submit("apple", "jws-2"));
+    });
+    await act(async () => {
+      answers.push(await held.current.restore("apple", ["jws-1"]));
+    });
+    await act(async () => {
+      answers.push(await held.current.restore("apple", ["jws-2"]));
+    });
+    expect(answers).toEqual([true, false, true, false]);
+  });
+
   test("submits a receipt and reports the projected purchase with the entitlements it produced", async () => {
     const fetcher = queue([[200, { purchase: PURCHASE, entitlements: PRO.entitlements }]]);
     const held = await render(() => usePurchase({ fetch: fetcher }));

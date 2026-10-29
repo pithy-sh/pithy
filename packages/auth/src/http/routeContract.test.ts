@@ -345,8 +345,8 @@ describe("the advertised admin surface matches what is mounted", () => {
   });
 
   test("the probe reads the whole mounted surface, not a slice of it", () => {
-    // Anti-vacuity for the check above, exact rather than a floor: eighteen routes carry a method — the twelve
-    // admin ones and the six a signed-in person calls. A nineteenth is either a new admin route, which the
+    // Anti-vacuity for the check above, exact rather than a floor: twenty-one routes carry a method — the twelve
+    // admin ones and the nine a person calls. A twenty-second is either a new admin route, which the
     // check above then demands a declaration for, or a new user route, which is a deliberate edit here.
     expect(
       mountedRoutes(makeApp())
@@ -364,6 +364,8 @@ describe("the advertised admin surface matches what is mounted", () => {
       "GET /auth/devices",
       // The caller's own stored picture. No id in the path — `routes.ts`'s `serveMyImage` says why.
       "GET /auth/profile/image",
+      // The address a native app opens in the system browser to start a redirect sign-in there.
+      "GET /auth/sign-in/social/start",
       "POST /auth/admin/sessions/revoke",
       "POST /auth/admin/users/:userId/devices/revoke",
       "POST /auth/admin/users/:userId/reinstate",
@@ -371,6 +373,8 @@ describe("the advertised admin surface matches what is mounted", () => {
       "POST /auth/admin/users/:userId/sessions/revoke",
       "POST /auth/admin/users/:userId/suspend",
       "POST /auth/devices/revoke",
+      // A native app trading the one-time code a redirect sign-in left on its deep link. Public: the code is the credential.
+      "POST /auth/handoff",
       // Better Auth's own endpoint, mounted explicitly ahead of the catch-all so the link-freshness gate
       // can sit in front of it. It takes no kit validator for the catch-all's own reason: the body is
       // Better Auth's, and reading it here would consume the stream `handleBetterAuth` forwards.
@@ -428,5 +432,18 @@ describe("route contract: every route is described for the OpenAPI contract", ()
     const document = openApiDocument({ title: "auth", version: "0" }, groups());
     expect(Object.keys(document.paths).length).toBeGreaterThan(0);
     expect(undescribedFields(document)).toEqual([]);
+  });
+
+  test("the native sign-in start answers a redirect and names every query field it takes", () => {
+    const document = openApiDocument({ title: "auth", version: "0" }, groups()) as unknown as {
+      paths: Record<string, { get?: { responses?: Record<string, unknown>; parameters?: { name: string }[] } }>;
+    };
+    const start = document.paths["/auth/sign-in/social/start"]?.get;
+    expect(Object.keys(start?.responses ?? {})).toContain("302");
+    expect((start?.parameters ?? []).map((parameter) => parameter.name).sort()).toEqual([
+      "callbackURL",
+      "errorCallbackURL",
+      "provider",
+    ]);
   });
 });

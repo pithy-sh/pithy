@@ -127,6 +127,10 @@ const RESIDUE_PACKAGES: Record<string, string> = {
     "The suppressions migration and the template engine. The CLI writes rows and renders samples the adopter's Worker then reads with its own copy.",
   "@pithy-sh/turnstile":
     "`TURNSTILE_SECRET_NAME` is the D1 row key the adopter's Worker reads through its own copy while `pithy turnstile provision` writes it through the CLI's — the join-key exposure in its plainest form. `isTurnstileCapability` is structural (`name === \"turnstile\"` plus a config field), so there is no cross-realm identity bug beside it. The sitekey writer and doctor's `Turnstile:` block read which environments have a sitekey slot off the CLI's `TurnstileSitekeys`, while the build projects through the adopter's: a slot added in a newer kit is reported as unreachable until the CLI is upgraded too (#590). The writer's read-back goes through the adopter's config, so what it proves is the adopter's copy.",
+  "@pithy-sh/ui-core":
+    "`UI_CORE_VERSION`, the range a scaffolded front end declares for the runtime its screens import. Read from the CLI's copy because the CLI writes the range; the adopter's install resolves the package itself.",
+  "@pithy-sh/ui-react-native":
+    "`TEMPLATE_DIR`, the screen manifests and the `pithy-config.generated.ts` format. The screens are copied, as `@pithy-sh/ui-react`'s are, and the generated config is a file the CLI writes and reads back, so the CLI's copy is the one that owns its shape. An app scaffolded by an older CLI keeps the shape it was written in until `pithy ui sync --app` rewrites it.",
   "@pithy-sh/ui-react":
     "`TEMPLATE_DIR` and the screen manifests. The screens are **copied** into the adopter's repo rather than composed (CLAUDE.md §I18n), so the CLI's copy is the correct source and this one is residue by shape only.",
 };
@@ -188,7 +192,10 @@ const STATIC_RESIDUE: Record<string, readonly string[]> = {
   "seed/run.ts": ["@pithy-sh/secrets"],
   "setup/mint.ts": ["@pithy-sh/secrets"],
   "tokens/superseded.ts": ["@pithy-sh/secrets"],
-  "ui/react.ts": ["@pithy-sh/ui-react"],
+  "ui/nativeConfig.ts": ["@pithy-sh/ui-react-native"],
+  "ui/nativeFlow.ts": ["@pithy-sh/ui-react-native"],
+  "ui/react.ts": ["@pithy-sh/ui-core", "@pithy-sh/ui-react"],
+  "ui/reactNative.ts": ["@pithy-sh/ui-core", "@pithy-sh/ui-react-native"],
 };
 
 /**

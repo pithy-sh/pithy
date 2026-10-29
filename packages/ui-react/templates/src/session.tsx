@@ -1,9 +1,10 @@
 import type { AuthSession, AuthUser } from "@pithy-sh/auth/src/client/api";
 import { signOut as endSession, getSession as readSession } from "@pithy-sh/auth/src/client/api";
 import { accountRefusal } from "@pithy-sh/auth/src/client/lifecycle";
-import { useRead } from "@pithy-sh/ui-react/src/read";
+import { useRead } from "@pithy-sh/ui-core/src/read";
+import { type ScreenRole, screenPath } from "@pithy-sh/ui-core/src/routes";
 import { authConfig } from "./pithy-config";
-import { navigate, routeTable, type ScreenRole, screenPath } from "./router";
+import { navigate, routeTable } from "./router";
 
 /**
  * Session state, read from the server.

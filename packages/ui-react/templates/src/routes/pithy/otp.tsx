@@ -1,9 +1,10 @@
 import { sendOtp, signInWithOtp } from "@pithy-sh/auth/src/client/api";
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
+import { screenPath } from "@pithy-sh/ui-core/src/routes";
 import { useCallback, useRef, useState } from "react";
 import { authConfig } from "../../pithy-config";
-import { navigate, routeTable, screenPath, useSearchParam } from "../../router";
+import { navigate, routeTable, useSearchParam } from "../../router";
 import { refusedAccountScreen, resumeAfterSignIn } from "../../session";
 import { Turnstile, turnstilePending, turnstileRequest } from "../../turnstile";
 import "../../pithy-screens.css";

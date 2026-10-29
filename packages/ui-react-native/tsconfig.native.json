@@ -1,0 +1,13 @@
+{
+  // The `.tsx` tests, which render the templates through `react-native-web` into happy-dom. They need the DOM lib to
+  // read what rendered, and they import templates that import `react-native`, whose global declarations collide with
+  // the DOM lib's. `skipLibCheck` hides that collision in the declarations; the templates themselves are checked
+  // against React Native alone by `tsconfig.templates.json`.
+  "extends": "@pithy-sh/tsconfig/base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": []
+  },
+  "include": ["src/**/*.tsx", "testing/**/*.ts"]
+}

@@ -3,14 +3,14 @@
 
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { localeDirection } from "@pithy-sh/core/src/i18n/locale";
-import { useRead } from "@pithy-sh/ui-react/src/read";
+import { useRead } from "@pithy-sh/ui-core/src/read";
 import { useCallback, useMemo, useState } from "react";
-import { readBrowserSignals, rememberBrowserLocale } from "../browser/signals";
 import { loadKitCatalog } from "../catalogs/browser";
 import type { I18nClientProjection } from "../client/projection";
 import { resolveBrowserLocale } from "../resolve/browser";
+import { browserLocaleEnvironment } from "./browserLocaleEnvironment";
+import type { LocaleEnvironment } from "./localeEnvironment";
 import type { TranslatorSource } from "./translator";
-import { useDocumentLocale } from "./useDocumentLocale";
 
 /** What the hook hands back: what to mount, what was chosen, and how to choose again. */
 export interface NegotiatedLocale {
@@ -22,8 +22,14 @@ export interface NegotiatedLocale {
   readonly source: TranslatorSource | null;
   /** The catalog locale in force — the words the app has. */
   readonly locale: string;
-  /** Choose a language. Remembers it on this device and puts `lang`/`dir` on the document. */
+  /** Choose a language. Remembers it on this device and applies it through the environment. */
   readonly choose: (locale: string) => void;
+  /**
+   * `true` when the locale in force lays out in the other direction from the one this launch started with, and the
+   * new direction takes effect only after the app reloads. React Native's rule; a browser never answers `true`. A
+   * screen says so rather than flip half a layout.
+   */
+  readonly reloadRequired: boolean;
 }
 
 /** What the caller knows that the browser cannot work out for itself. */
@@ -52,6 +58,12 @@ export interface NegotiatedLocaleOptions {
    * catch it here where you know what your API meant.
    */
   readonly persist?: (locale: string) => void | Promise<void>;
+  /**
+   * Where the starting signals come from, where a choice is remembered and how the locale is applied. The browser's
+   * by default; pass `nativeLocaleEnvironment` from `@pithy-sh/i18n/src/native/environment` on React Native. Keep it
+   * the same object for the life of the component.
+   */
+  readonly environment?: LocaleEnvironment;
 }
 
 /**
@@ -64,8 +76,8 @@ export interface NegotiatedLocaleOptions {
 const UNNEGOTIATED_LOCALE = "en";
 
 /**
- * Negotiate the reader's locale in the browser, load that locale's catalog, and keep the document in
- * step.
+ * Negotiate the reader's locale, load that locale's catalog, and keep the platform in step: the document in a
+ * browser, `I18nManager` on React Native, through `options.environment`.
  *
  * **It takes what a browser holds.** `projection` is `virtual:pithy/i18n` — locale metadata and nothing
  * else — so a screen reads the chain order **this project** configured rather than one the front end
@@ -96,13 +108,18 @@ export function useNegotiatedLocale(
   // The same fact as a boolean, which the catalog read and the document hook key on rather than `config`. A caller
   // is free to hand the hook a fresh projection every render, and a boolean is stable by value however it is spelled.
   const enabled = projection.enabled;
+  const environment = options.environment ?? browserLocaleEnvironment;
 
+  const signals = environment.useSignals(config);
+  // A signal still being read, such as storage on React Native: nothing is negotiated, fetched or applied until it
+  // answers, so a remembered choice is not preceded by a flash of another language.
+  const pending = enabled && signals === undefined;
   const resolved = useMemo(
     () =>
-      config === null
+      config === null || signals === undefined
         ? null
-        : resolveBrowserLocale({ ...readBrowserSignals(config), account: options.account }, config),
-    [config, options.account],
+        : resolveBrowserLocale({ ...signals, account: options.account }, config),
+    [config, signals, options.account],
   );
   const [chosen, setChosen] = useState<string | null>(null);
 
@@ -125,7 +142,7 @@ export function useNegotiatedLocale(
       locale,
       catalog: await loadKitCatalog(locale).catch((): MessageCatalog => ({})),
     }),
-    { skip: !enabled },
+    { skip: !enabled || pending },
   ).value;
 
   // Derived from the locale in force, never taken off `resolved`. `resolveBrowserLocale` answers for
@@ -136,7 +153,7 @@ export function useNegotiatedLocale(
   // byte-identical to what it answered before.
   const direction = localeDirection(locale);
 
-  useDocumentLocale(enabled, locale, direction);
+  const reloadRequired = environment.useApply(enabled && !pending, locale, direction);
 
   const persist = options.persist;
   const choose = useCallback(
@@ -144,9 +161,13 @@ export function useNegotiatedLocale(
       // No languages to choose between, and no `storageKey` to remember one under.
       if (config === null) return;
       if (!config.supportedLocales.includes(next)) return;
-      // The device first, always: it is synchronous, it cannot fail in a way worth waiting for, and it
-      // is what answers on the next visit if the account write does not land.
-      rememberBrowserLocale(next, config);
+      // The device first, always: it is what answers on the next visit if the account write does not land. Not
+      // awaited, and a failure costs only the memory of the choice, never the choice.
+      try {
+        Promise.resolve(environment.remember(next, config)).catch(() => undefined);
+      } catch {
+        // A store that throws before it answers. The reader still gets the language.
+      }
       setChosen(next);
       // Then the account, when the app knows who is reading. Not awaited — a language switch is a
       // render, not a round trip, and nothing on screen should wait for a preference.
@@ -158,7 +179,7 @@ export function useNegotiatedLocale(
       // reporting is a question about the adopter's own API, so it is answered inside `persist`.
       Promise.resolve(persist?.(next)).catch(() => undefined);
     },
-    [config, persist],
+    [config, persist, environment],
   );
 
   const source = useMemo<TranslatorSource | null>(() => {
@@ -174,5 +195,5 @@ export function useNegotiatedLocale(
     };
   }, [kit, locale, formattingLocale, options.messages, defaultLocale]);
 
-  return { source, locale, choose };
+  return { source, locale, choose, reloadRequired };
 }

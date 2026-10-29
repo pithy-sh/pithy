@@ -1,0 +1,85 @@
+{
+  "name": "@pithy-sh/ui-react-native",
+  "version": "0.0.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pithy-sh/pithy.git",
+    "directory": "packages/ui-react-native"
+  },
+  "files": [
+    "dist",
+    "src",
+    "templates",
+    "!src/**/*.test.*",
+    "!dist/**/*.test.*"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    "./src/*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    }
+  },
+  "scripts": {
+    "build": "tsdown && tsc -p tsconfig.build.json && bun ../../tooling/build/src/stampDeclarations.ts",
+    "typecheck": "bun check -p tsconfig.json && bun check -p tsconfig.templates.json && bun check -p tsconfig.native.json",
+    "test": "vitest run",
+    "test:node": "vitest run --project=node --project=native",
+    "clean": "rm -rf dist .turbo",
+    "reset": "bun run clean && rm -rf node_modules"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "zod": "^4.4.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "zod": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@pithy-sh/auth": "workspace:*",
+    "@pithy-sh/consent": "workspace:*",
+    "@pithy-sh/core": "workspace:*",
+    "@pithy-sh/i18n": "workspace:*",
+    "@pithy-sh/organization": "workspace:*",
+    "@pithy-sh/payments": "workspace:*",
+    "@pithy-sh/tsconfig": "workspace:*",
+    "@pithy-sh/turnstile": "workspace:*",
+    "@pithy-sh/ui-core": "workspace:*",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-native-google-signin/google-signin": "16.2.0",
+    "@testing-library/react": "16.3.3",
+    "@types/node": "^22.15.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitest/coverage-v8": "^4.1.0",
+    "expo": "57.0.31",
+    "expo-apple-authentication": "57.0.2",
+    "expo-auth-session": "57.0.16",
+    "expo-crypto": "57.0.4",
+    "expo-iap": "6.3.0",
+    "expo-linking": "57.0.13",
+    "expo-localization": "57.0.2",
+    "expo-router": "57.0.29",
+    "expo-secure-store": "57.0.4",
+    "expo-web-browser": "57.0.3",
+    "happy-dom": "^20.11.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-native": "0.86.3",
+    "react-native-web": "0.21.4",
+    "react-native-webview": "13.16.1",
+    "tsdown": "^0.23.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.0",
+    "zod": "^4.4.0"
+  }
+}

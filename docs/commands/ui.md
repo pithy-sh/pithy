@@ -6,11 +6,13 @@ Scaffold a front end into an existing Worker and wire it end to end — Vite, th
 
 A new project can start with one: `pithy init --target web` or `--target both` runs the same scaffold into its first Worker, with no screens, because nothing is composed yet to sign in to. Run `pithy ui add react` once a capability with screens is.
 
+`pithy ui add react-native` is the other stub, and it is the one that does not live in the Worker. It writes an Expo app for iOS, Android and the web into an `apps/<name>/` of its own, which calls the Worker across origins. See React Native: an app of its own, below.
+
 ## Synopsis
 
 ```
-pithy ui add <framework> [--worker <name>] [--auth | --no-auth] [--payments | --no-payments] [--organization | --no-organization] [--consent | --no-consent] [--dry-run] [--json]
-pithy ui sync [--worker <name>] [--check] [--json]
+pithy ui add <framework> [--worker <name>] [--app <name>] [--ios-rail <rail>] [--android-rail <rail>] [--web-rail <rail>] [--auth | --no-auth] [--payments | --no-payments] [--organization | --no-organization] [--consent | --no-consent] [--dry-run] [--json]
+pithy ui sync [--worker <name>] [--app <name>] [--ios-rail <rail>] [--android-rail <rail>] [--web-rail <rail>] [--check] [--json]
 pithy ui list [--json]
 ```
 
@@ -18,8 +20,12 @@ pithy ui list [--json]
 
 | Argument / flag | Applies to | Default | Purpose |
 |---|---|---|---|
-| `<framework>` | `add` | required | The stub to scaffold. `react` is the only stub Pithy ships |
-| `--worker <name>` | `add`, `sync` | resolved — see Resolving the Worker | The Worker under `apps/` to scaffold into, or to re-derive |
+| `<framework>` | `add` | required | The stub to scaffold: `react` or `react-native` |
+| `--worker <name>` | `add`, `sync` | resolved — see Resolving the Worker | The Worker under `apps/` to scaffold into, or to re-derive. For `react-native`, the Worker the app calls |
+| `--app <name>` | `add`, `sync` | `app` (`mobile` when the Worker is `app`) | `react-native` only. The app's own directory, `apps/<name>`. On `sync`, rewrite that app's generated config instead of a Worker's allowlist |
+| `--ios-rail <rail>` | `add`, `sync` | `apple` when the Worker enables it, else `none` | `react-native` only. The rail the iOS app sells through: `apple`, `stripe`, `lemonSqueezy`, `paddle` or `none` |
+| `--android-rail <rail>` | `add`, `sync` | `google` when the Worker enables it, else `none` | `react-native` only. The rail the Android app sells through: `google`, `stripe`, `lemonSqueezy`, `paddle` or `none` |
+| `--web-rail <rail>` | `add`, `sync` | the Worker's first enabled hosted rail, else `none` | `react-native` only. The rail the web build sells through: `stripe`, `lemonSqueezy`, `paddle` or `none` |
 | `--check` | `sync` | `false` | Report the drift, write nothing, exit non-zero on a shadowed route — the CI gate |
 | `--auth` / `--no-auth` | `add` | see The screen sets | Scaffold the sign-in screens, or leave them out |
 | `--payments` / `--no-payments` | `add` | see The screen sets | Scaffold the paywall and subscription screens, or leave them out |
@@ -29,6 +35,8 @@ pithy ui list [--json]
 | `--json` | all three | `false` | One line of machine-readable output. Implies non-interactive: `pithy ui` never prompts when `--json` is set, nor under `--no-input` or `PITHY_NONINTERACTIVE=1` |
 
 **There are no provider flags.** No `--google`, no `--github`, no `--turnstile`. Which social providers exist, and whether a humanity check gates sign-in, is already declared in that Worker's `pithy.config.ts`. A flag would be a second source of truth, frozen at scaffold time, that drifts the moment someone enables a provider in config. The scaffolded screens read the composed config at runtime instead (see `docs/UI.md`), so enabling a provider stays a one-line config edit and a redeploy — no CLI run, no file to regenerate, nothing to keep in step.
+
+**The rail flags are not provider flags.** Which rails exist is the Worker's config, and the CLI reads it. Which one each platform of an app sells through is the app's choice, made per platform, and the Worker cannot state it: one backend serves an iOS build that buys through StoreKit and a web build that buys through Stripe. So the flag picks among the rails the Worker enables, and a rail it does not enable is refused by name.
 
 ## What it does
 
@@ -151,6 +159,43 @@ Run pithy ui sync --worker api.
 
 A route the allowlist cannot express is never reported: `core`'s own `app.use("*")`, and a route mounted at `/`, are paths the derivation deliberately leaves to the shell (What it wires, above). A check that flagged them would mark every project drifted forever.
 
+### React Native: an app of its own
+
+`pithy ui add react-native` writes an Expo app (SDK 57, React Native 0.86) into `apps/<app>/`, beside the Worker it calls rather than inside it. One Expo project builds iOS, Android and the web. The app has no `wrangler.jsonc` and no `pithy.config.ts`, so it is not a Worker: `pithy deploy` leaves it alone, and every command that composes Workers skips it. Nothing in Pithy builds the app for a store: a store build goes through EAS (`eas build`), and `expo export --platform web` is the web build. The web build calls the Worker by relative path with its cookie, so serve it from the Worker's own origin. `--worker` names the Worker it calls, resolved the way every `--worker` is. `--app` names its directory, `app` by default; a directory that is a Worker, or that holds another stub's front end, is refused.
+
+The screen sets are decided exactly as for `react`, against the Worker the app calls. The files are `@pithy-sh/ui-react-native`'s templates: Expo Router's `app/` entry, `app.config.ts`, the Metro config that proxies the Worker's paths in dev, the router adapter, the bearer transport, the session, and the screens, each under the same name as its DOM counterpart. `docs/UI.md` lists them.
+
+**What it wires.** Two documents, both in the app's directory, and nothing in the Worker:
+
+- `pithy.worker.jsonc`: `dev.command` runs `expo start --port {port}` through the project's package manager, so `pithy dev` starts the app beside the Workers on a pinned port. `dev.readySignal` is `^Waiting on `, the line Expo CLI prints once Metro listens with no terminal attached, which is how `pithy dev` runs it. `ui.stub` is `react-native`, and `ui.build` is `expo export --platform web`, the web build, recorded for you and never run by `pithy deploy`. `ui.worker` names the Worker the app calls, which is how `pithy ui sync --app` finds it again.
+- `package.json`: written with Expo Router's entry if absent, then merged like a Worker's. React, React Native, `react-native-web` and every native module at the version Expo SDK 57 bundles. `@pithy-sh/core`, `@pithy-sh/i18n` and `@pithy-sh/ui-core` at their own ranges. Every other kit package a written template imports gets a range whether or not the Worker composes it, because the base templates import several for their client types: the Worker's own range first, so the app and the Worker run one release, then the project root's, then the version installed under the project or beside the CLI, then the registry's `latest`. A package none of them answers for is named in the output and in `unresolvedPackages`, and gets no line.
+
+**`src/pithy-config.generated.ts`.** Metro cannot resolve `virtual:pithy/*`, so the composed config arrives as a file. It holds each capability's client projection for `dev`, the Worker's origin per environment, and four values that are yours: `appScheme` (the app's name), `universalLinkOrigin` (the Worker's production domain, then its staging one, else `null`), the Google client ids, and `rails`. Set `appScheme` and `universalLinkOrigin` before a store build. The comment at the top of the file says how to change each rail.
+
+**Origins.** `origins.dev` is the Worker's local origin: the one `.dev.config.json` pins for it, else `http://localhost:8787`. `origins.staging` and `origins.prod` are present for each environment the project deploys to, and read offline the way `pithy env` reads them: the Worker's `domains` declaration, then its route in `wrangler.jsonc`, then its `vars.BASE_URL`. One none of those names is `null`. A Worker that answers only on `workers.dev` is the usual case, since that address takes the account to resolve: set the origin in the file by hand. The app picks one when it is built, from `EXPO_PUBLIC_PITHY_ENV` (`dev`, `staging` or `prod`, `dev` when unset), which Expo inlines into the bundle; a phone build naming staging or prod stops at launch when that origin is unset or not https, naming the field to set, since the bearer credential goes there. The web build needs none. On Android a `localhost` or `127.0.0.1` dev origin is reached through `10.0.2.2`, the emulator's address for this machine. A device on your network needs this machine's network address in `origins.dev`, and the Worker listening there.
+
+**Sign-in returns to the app.** A sign-in started on a phone returns to the app's scheme, and to its universal link when one is set, and auth refuses either unless its `trustedOrigins` names it. So `ui add` says which entries to add, quoted exactly: `"<appScheme>://"`, and `universalLinkOrigin` when it is set. When the Worker composes auth it reads `trustedOrigins` from the loaded config and names only the missing entries, in the output and in `untrustedOrigins`; when it does not, it names the entries to add once it does.
+
+**Screens that need sign-in.** The account chooser and the invitation screen read the session the sign-in screens hold. `--organization` with the sign-in screens left out is refused by name; left to decide, it is left out.
+
+**Rails.** One per platform. `--ios-rail`, `--android-rail` and `--web-rail` decide outright. Without one, a person at a terminal is asked, offered only the rails the Worker enables, starting from the default; anyone else gets the default. The default is the platform's store on a phone and the Worker's first enabled hosted rail on the web, and `none` wherever the Worker enables no such rail, so a default is never a rail the Worker refuses. `none` shows plans and sells nothing. A web rail on a phone opens checkout in the system browser. Whether a store allows that link out is your call; `docs/UI.md` names the rules.
+
+**A backfill.** `pithy ui add react-native` on an app that already exists adds the screens it lacks, `--auth` after `--no-auth` say, and rewrites `src/pithy-config.generated.ts` from the Worker the way `pithy ui sync` does. Your four values are kept, and a backfill does not prompt for rails: a rail already written stays unless a rail flag sets it now. The run says the config was rewritten.
+
+**`pithy ui sync --app <name>`.** Rewrites the app's generated config from the Worker its manifest names, or the one `--worker` names. The projections and the origins are the Worker's and are rewritten, with two exceptions: an origin you set for an environment the Worker names none for is kept, and so is a dev origin that is not this machine's loopback. Your four values are kept, except a rail a flag sets now. A `--worker` other than the one the manifest names points the app at it: the manifest's `ui.worker` is rewritten, so the next sync without `--worker` finds the same Worker. Every rail is held to the Worker again, so one it has stopped enabling is refused by name. A file that is not the config Pithy writes is refused rather than overwritten; delete it to start from the defaults. `--check` writes nothing and exits 1 when the file is behind the Worker.
+
+```
+$ pithy ui add react-native --worker api --no-auth --ios-rail apple --web-rail stripe
+Scaffolded a react-native app into apps/app. It calls api. Bare template.
+14 files created.
+Rails: iOS apple, Android none, web stripe.
+apps/app/src/pithy-config.generated.ts holds api's config. Set appScheme and universalLinkOrigin there before a store build.
+When api composes auth, its trustedOrigins needs "app://".
+Change api's config, then run pithy ui sync --app app --worker api.
+Install the packages: bun install. Then pithy dev.
+Done.
+```
+
 ## `--json`
 
 One line, one object, one shape per subcommand. The `command` field is the subcommand's dotted name, matching `worker.add` and `feature.create` rather than the space-separated form the resource commands use.
@@ -171,7 +216,7 @@ $ pithy ui sync --worker api --json
 
 ```
 $ pithy ui list --json
-{"command":"ui.list","schemaVersion":1,"stubs":[{"id":"react","description":"React 19 SPA on Vite, served by the worker as static assets"}]}
+{"command":"ui.list","schemaVersion":1,"stubs":[{"id":"react","description":"React 19 SPA on Vite, served by the worker as static assets"},{"id":"react-native","description":"Expo app for iOS, Android and the web, in its own apps/<name>, calling a worker"}]}
 ```
 
 | key | type | meaning |
@@ -182,6 +227,12 @@ $ pithy ui list --json
 | `worker` | string | `add`, `sync`. The `apps/` directory the front end was written into, and what every path in the same payload is relative to. |
 | `deployedAs` | string | `add`, `sync`. The Worker's deployed script name — what the Cloudflare dashboard shows. |
 | `framework` | string | `add`. The stub that was scaffolded. |
+| `app` | string | `add`, and `sync` with `--app`. `react-native` only: the app's own `apps/` directory. On `add`, `created` and `skipped` are relative to it. Absent for `react`. |
+| `rails` | object | `add`, and `sync` with `--app`. `react-native` only: `{ ios, android, web }`, the rail each platform sells through. Absent for `react`. |
+| `trustedOrigins` | string[] | `add`. `react-native` only: the entries auth's `trustedOrigins` needs for the app, `"<appScheme>://"` and `universalLinkOrigin` when it is set. Absent for `react`. |
+| `untrustedOrigins` | string[] | `add`. `react-native` only: the entries of `trustedOrigins` the Worker's auth config does not list, read from the loaded `pithy.config.ts`. Empty when nothing is missing or the Worker composes no auth. Absent for `react`. |
+| `unresolvedPackages` | string[] | `add`. `react-native` only: kit packages the app's templates import that no source had a range for, so its `package.json` declares none. Absent for `react`. |
+| `backfill` | boolean | `add`. `react-native` only: whether the app already existed, so this run added screens to it and rewrote its generated config from the Worker, keeping your four values. Absent for `react`. |
 | `auth` | boolean | `add`. Whether Pithy's sign-in screens were scaffolded. |
 | `payments` | boolean | `add`. Whether the paywall and subscription screens were scaffolded. |
 | `organization` | boolean | `add`. Whether the account chooser was scaffolded. |
@@ -212,7 +263,7 @@ Each one is a `PithyError` — the problem, then the action (`docs/CLI.md` §3.3
 ```
 $ pithy ui add svelte --worker api
 No UI stub named "svelte".
-Run pithy ui list to see the frameworks you can add. Known: react.
+Run pithy ui list to see the frameworks you can add. Known: react, react-native.
 ```
 
 **A UI is already there.** Exit 3.
@@ -235,6 +286,20 @@ The auth screens need the auth capability, and api doesn't compose it.
 Run `pithy add auth --worker api --with-prerequisites` first, or leave them out with --no-auth.
 ```
 
+**A rail a platform cannot sell through.** Exit 2, `validation/invalid_input`, listing the ones it can: ``Pass --android-rail google, stripe, lemonSqueezy, paddle or none.`` On `sync`, a rail kept in the generated config is held to the same list, so a hand-edited `rails.android` of `apple` is refused the same way, naming the key.
+
+**A rail the Worker does not enable.** Exit 3, `core/precondition_failed`, naming the rail and the key that turns it on, before anything is written. A Worker that composes no payments at all gets the `pithy add payments` fix instead.
+
+```
+$ pithy ui add react-native --worker api --android-rail google
+The google rail isn't enabled in api's payments config.
+Enable rails.google in apps/api/pithy.config.ts, or pass --android-rail none.
+```
+
+**`--app` or a rail flag with `react`.** Exit 2. The React front end lives in the Worker it calls and has no rails of its own. On `sync`, a rail flag with no `--app` is refused the same way.
+
+**An `apps/<name>` that is a Worker, or holds another front end.** Exit 3. `--app` named the Worker the app calls: exit 2.
+
 **`pithy ui sync` on a Worker with no front end.** Exit 3, and the action names that Worker: ``Run `pithy ui add react --worker api` to scaffold one.``
 
 **Several Workers, no `--worker`, where nobody may be asked.** The resolution error from 7.2 — the same `input/required` refusal `pithy add` raises, naming the Workers it found. Exit 2.
@@ -252,6 +317,12 @@ pithy ui sync --worker api
 
 # The CI gate: write nothing, and fail when the SPA shell is answering a route.
 pithy ui sync --check --worker api
+
+# An Expo app beside the api Worker, selling through StoreKit on iOS and Stripe on the web.
+pithy ui add react-native --worker api --ios-rail apple --web-rail stripe
+
+# Rewrite that app's config after the Worker's changed.
+pithy ui sync --app app
 
 # What can be scaffolded.
 pithy ui list

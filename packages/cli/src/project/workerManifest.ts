@@ -88,6 +88,13 @@ export const WorkerUi = z
       .describe(
         'Argv that builds the front end, run through the project\'s package manager from this worker\'s directory before wrangler deploy, e.g. ["vite", "build"].',
       ),
+    worker: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "The Worker this front end calls, by its apps/ directory. Set only on an app of its own, such as an Expo app, which pithy ui sync --app rewrites from that Worker's config.",
+      ),
   })
   .describe("The front end this worker serves (the `ui` block of pithy.worker.jsonc): its stub and its build.");
 export type WorkerUi = z.output<typeof WorkerUi>;

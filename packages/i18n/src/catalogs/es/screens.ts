@@ -65,6 +65,12 @@ export const esScreens: MessageCatalog = {
   "auth/otp.failed": "Ese código no funcionó. Inténtalo otra vez o pide uno nuevo.",
   "auth/otp.submit": "Entrar",
   "auth/otp.resend": "Enviar un código nuevo",
+  // The native sign-in screen on a phone with no universal link, where email signs in with a code.
+  "auth/otp.ask.submit": "Envíame un código",
+  "auth/otp.ask.provider_unconfigured": "{provider} no está configurado aquí. Usa un código.",
+  "auth/otp.ask.provider_silent": "{provider} no respondió. Usa un código.",
+  "auth/otp.ask.signup_email_only":
+    "Te enviamos un código y se crea una. Los botones de arriba solo entran en cuentas que ya existen.",
 
   // ── auth: the magic link's landing screen ──────────────────────────────────
   "auth/callback.title": "Entrando.",
@@ -133,6 +139,21 @@ export const esScreens: MessageCatalog = {
   "organization/choose.failed": "No hemos podido cargar tus cuentas.",
   "organization/choose.retry": "Reintentar",
 
+  // ── organization: accepting an invitation ──────────────────────────────────
+  "organization/invitation.title": "Únete a {organization}",
+  "organization/invitation.invited_by": "{inviter} te invitó como {role}.",
+  "organization/invitation.invited": "Te invitaron como {role}.",
+  "organization/invitation.expires": "La invitación caduca el {date}.",
+  "organization/invitation.as": "Te unirás como {email}.",
+  "organization/invitation.accept": "Unirme",
+  "organization/invitation.sign_in": "Inicia sesión para aceptar",
+  "organization/invitation.invalid.title": "Esta invitación no se puede usar.",
+  "organization/invitation.invalid.body":
+    "Caducó, ya se usó o se retiró, o se envió a otra dirección. Pide una nueva a quien te invitó.",
+  "organization/invitation.failed": "No hemos podido cargar esta invitación.",
+  "organization/invitation.join_failed": "No hemos podido terminar de unirte.",
+  "organization/invitation.retry": "Reintentar",
+
   // ── payments: the paywall ──────────────────────────────────────────────────
   "payments/paywall.title": "Ve más lejos.",
   "payments/paywall.body": "Elige lo que necesitas. Puedes cambiar de idea más tarde.",
@@ -146,6 +167,10 @@ export const esScreens: MessageCatalog = {
   "payments/paywall.done.title": "Todo listo.",
   "payments/paywall.done.body": "Gracias. Tu compra ya está en tu cuenta.",
   "payments/paywall.done.home": "Ir al inicio",
+  "payments/paywall.restore": "Restaurar compras",
+  "payments/paywall.nothing_to_restore": "La tienda no tiene nada que restaurar para esta cuenta.",
+  "payments/paywall.restored_elsewhere": "Tus compras se han restaurado. Ninguna incluye lo que se vende aquí.",
+  "payments/paywall.pending": "La tienda aún está procesando esta compra. Aparecerá en tu cuenta cuando se confirme.",
 
   // ── payments: the pricing screen ───────────────────────────────────────────
   "payments/pricing.title": "Lo que cuesta.",
@@ -157,6 +182,12 @@ export const esScreens: MessageCatalog = {
   "payments/pricing.sign_in": "Entra para comprar {product}",
   "payments/pricing.buy": "Comprar {product}",
   "payments/pricing.holdings": "¿Qué tengo ya?",
+  "payments/pricing.store_body": "Los precios son los de la tienda, para donde estás.",
+  "payments/pricing.at_checkout": "Verás el precio al pagar.",
+  "payments/pricing.done": "Gracias. Tu compra ya está en tu cuenta.",
+  "payments/pricing.pending": "La tienda aún está procesando esta compra. Aparecerá en tu cuenta cuando se confirme.",
+  "payments/pricing.empty.rail":
+    "Nada de aquí se vende por el método de pago de esta plataforma. Dale a un producto su SKU en ese método en",
   // `{interval}` is Paddle's own word for the billing period and arrives from their API in English, so
   // it is left where it lands rather than half-translated into a sentence that then disagrees with the
   // figure beside it. An adopter who wants `al mes` says so in `i18n({ messages })`.
@@ -184,6 +215,15 @@ export const esScreens: MessageCatalog = {
   "payments/subscription.apple": "Comprado en la App Store",
   "payments/subscription.google": "Comprado en Google Play",
   "payments/subscription.more": "Ver qué más hay",
+
+  // ── payments: buying in the app ────────────────────────────────────────────
+  "payments/checkout.in_page": "Este pago se abre dentro de una página web, y la app no puede mostrarla.",
+  "payments/store.unavailable": "La tienda no ha respondido. Inténtalo de nuevo en un momento.",
+  "payments/store.refused": "La tienda no ha terminado la compra.",
+  "payments/store.no_token":
+    "Este dispositivo no ha podido guardar lo que marca una compra como tuya, así que no se ha comprado nada.",
+  "payments/store.signed_out": "Inicia sesión antes de comprar.",
+  "payments/store.no_answer": "La tienda no ha respondido. Si la compra se completa, llegará a tu cuenta sola.",
 
   // ── consent: the reader's privacy choices ─────────────────────────────
   "consent/settings.title": "Tus opciones de privacidad.",
@@ -222,6 +262,7 @@ export const esScreens: MessageCatalog = {
   "app/home.bare.checking": "comprobando",
   "app/home.bare.unknown": "desconocido",
   "app/home.bare.unreachable": "inaccesible",
+  "app/locale.reload_required": "Reinicia la app para terminar de cambiar el idioma.",
 
   // ── client: the failures a browser mints for itself, never sent by a Worker ─
   //

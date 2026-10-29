@@ -7,7 +7,7 @@ Scaffold a new Pithy project — the root config, the gates CI needs, and its fi
 ## Synopsis
 
 ```
-pithy init [--name <name>] [--worker <name>] [--target <mobile|web|both>] [--dir <path>] [--json]
+pithy init [--name <name>] [--worker <name>] [--target <mobile|web|both>] [--react-native | --no-react-native] [--app <name>] [--ios-rail <rail>] [--android-rail <rail>] [--web-rail <rail>] [--dir <path>] [--json]
 ```
 
 ## Flags
@@ -17,6 +17,11 @@ pithy init [--name <name>] [--worker <name>] [--target <mobile|web|both>] [--dir
 | `--name <name>` | string | the target directory's name | Application name. Leads every Cloudflare resource this project provisions |
 | `--worker <name>` | string | `api` | Name of the first Worker, created at `apps/<name>` |
 | `--target <mobile\|web\|both>` | string | `mobile` | Which clients call this backend. `web` and `both` scaffold a React front end into the first Worker |
+| `--react-native` / `--no-react-native` | boolean | asked; no when nobody may be asked | Add an Expo app for iOS, Android and the web in its own `apps/<name>`, calling the first Worker. `mobile` and `both` targets only |
+| `--app <name>` | string | `app` (`mobile` when the Worker is `app`) | The Expo app's directory. Passing it asks for the app |
+| `--ios-rail <rail>` | string | `none` | The rail the iOS app sells through: `apple`, `stripe`, `lemonSqueezy`, `paddle` or `none`. Passing it asks for the app |
+| `--android-rail <rail>` | string | `none` | The rail the Android app sells through: `google`, `stripe`, `lemonSqueezy`, `paddle` or `none`. Passing it asks for the app |
+| `--web-rail <rail>` | string | `none` | The rail the web build sells through: `stripe`, `lemonSqueezy`, `paddle` or `none`. Passing it asks for the app |
 | `--dir <path>` | string | `.` | Target directory. Created if missing; must not already hold the files `init` writes |
 | `--json` | boolean | `false` | Machine-readable output. Also suppresses every prompt |
 
@@ -30,6 +35,8 @@ pithy init [--name <name>] [--worker <name>] [--target <mobile|web|both>] [--dir
 
 **Ask which clients call this backend:** mobile apps, a web app, or both. The answer decides whether the first Worker also serves a front end. `@pithy-sh/auth` already speaks both dialects — bearer tokens for a device, a CSRF-protected cookie for a browser — so the backend is the same either way, and only what the Worker serves beside its routes differs. `mobile`, the default, scaffolds the API alone, which is what `init` has always written. `web` and `both` add a React front end to the first Worker exactly as `pithy ui add react` would, with no screens yet, because a new project composes nothing to sign in to. Run `pithy ui add react` again once a capability with screens is composed: it adds them and leaves every file already there as it is. The front end's dev command runs through the package manager that launched `pithy` — `bunx`, `pnpm dlx`, `npx` or `yarn dlx` — and, with none, through npm until the first install writes a lockfile; re-running `pithy ui add react` then rewires it. An answer that is not one of the three is refused before anything is asked.
 
+**Offer a React Native app**, to a `mobile` or `both` target: `Add a React Native app for iOS, Android and the web?`, defaulting to no. A yes writes an Expo app into `apps/app/` exactly as `pithy ui add react-native` would, calling the first Worker, with no screens and every rail `none`, because the new Worker composes nothing yet. `mobile` still means an API-only Worker unless someone says yes, and a run that may not ask adds no app. `--react-native` says yes without the question, and so does `--app` or any rail flag; `--no-react-native` says no. Asking for the app on a `web` target is refused. A rail flag is held to the new Worker before anything is written, and that Worker enables no rail, so only `none` passes: enable a rail in the Worker's `pithy.config.ts`, then set it with `pithy ui sync --app app --ios-rail apple`. `docs/commands/ui.md` has the rest.
+
 **Write the scaffold.** The root `pithy.config.ts`, the root `package.json`, `biome.jsonc`, `.gitignore`, the `.dev.vars.example` and `.dev.secrets.example.jsonc` templates, the two Grit plugins, and the configs CI gates on — `tsconfig.json` (a solution file), `tsconfig.tools.json`, `vitest.config.ts`, and `vitest.workers.config.ts`. Then `apps/<worker>/` with its own `pithy.config.ts`, `wrangler.jsonc`, `pithy.worker.jsonc`, `tsconfig.json`, `package.json`, `src/index.ts`, `src/cloudflare-test.d.ts`, and a `src/bindings.workers.test.ts` that runs against real D1 and KV through Miniflare.
 
 **Write the agent instructions.** Straight after the scaffold, before any question that can be canceled, so a project never exists without them. `AGENTS.md` gets a marked Pithy block telling the agent working in this project how to drive the CLI: `pithy schema --json`, `PITHY_JSON=compact`, `PITHY_NONINTERACTIVE=1`, `--dry-run` before a change, the exit codes, that `pithy remove` and every typed confirmation phrase are a person's, the `describeRoute` fields that make an app route an MCP tool (`operation`, `tool`, `power`), and that a person connects a deployed environment with `pithy mcp connect --scope manifest:read` plus only the reads needed, and disconnects it with `pithy mcp disconnect`. `CLAUDE.md` gets one line importing it — `Agent instructions for this project, Pithy's included: @AGENTS.md` — because Claude Code reads its own file and not the shared one. Either file is created when the target has none. When a cloned repository brought its own, every byte of it stays and the block, or the line, is appended after a blank line. A `CLAUDE.md` that already imports `@AGENTS.md`, or that is a link to `AGENTS.md`, is left alone. A symlinked file, or an `AGENTS.md` whose markers are already there and broken, is refused and said so, and the scaffold still completes. `pithy upgrade` refreshes the block from then on; `docs/CLI.md` §1.5 has the rules.
@@ -42,7 +49,7 @@ pithy init [--name <name>] [--worker <name>] [--target <mobile|web|both>] [--dir
 
 A block the writer could not place is **printed for you to paste**, never dropped. That applies to both the `cloudflare` block and the `domains` block: guessing at the shape of a file somebody may already have edited is how a scaffold eats an edit.
 
-**Nothing here is prompted under `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, or without a TTY.** Every question has a default, so a run that may not ask takes it rather than failing (`docs/CLI.md` §1.2). Not the names, not the environments, not the target, not the credentials, not the domains, not the alias, not completion. A CI run scaffolds with the flags it was given, takes the default environments and writes no `environments` line, takes `mobile` unless `--target` says otherwise, and writes no `cloudflare` block; `pithy doctor` names the missing credentials until they are set.
+**Nothing here is prompted under `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, or without a TTY.** Every question has a default, so a run that may not ask takes it rather than failing (`docs/CLI.md` §1.2). Not the names, not the environments, not the target, not the React Native app, not the credentials, not the domains, not the alias, not completion. A CI run scaffolds with the flags it was given, takes the default environments and writes no `environments` line, takes `mobile` unless `--target` says otherwise, and writes no `cloudflare` block; `pithy doctor` names the missing credentials until they are set.
 
 While nothing under `@pithy-sh/*` is published, the scaffolded Worker declares no kit dependency — a range naming a version no registry has would break your very next install. `init` says so at the end and tells you to link the kit from a checkout instead.
 
@@ -52,7 +59,7 @@ One line, one object.
 
 ```
 $ pithy init --name replay --worker board --json
-{"command":"init","schemaVersion":1,"targetDir":"/home/you/replay","appName":"replay","worker":"board","environments":["staging","prod"],"target":"mobile","frontEnd":null,"domains":null,"agents":{"path":"AGENTS.md","state":"added","reason":null},"claude":{"path":"CLAUDE.md","state":"added","reason":null}}
+{"command":"init","schemaVersion":1,"targetDir":"/home/you/replay","appName":"replay","worker":"board","environments":["staging","prod"],"target":"mobile","frontEnd":null,"reactNative":null,"domains":null,"agents":{"path":"AGENTS.md","state":"added","reason":null},"claude":{"path":"CLAUDE.md","state":"added","reason":null}}
 ```
 
 | key | type | meaning |
@@ -67,6 +74,10 @@ $ pithy init --name replay --worker board --json
 | `frontEnd` | object or `null` | The front end scaffolded into the first Worker, or `null` for a `mobile` target |
 | `frontEnd.framework` | string | The framework scaffolded. `react` |
 | `frontEnd.created` | string[] | The Worker-relative files it created, sorted |
+| `reactNative` | object or `null` | The Expo app scaffolded beside the first Worker, or `null` when none was added. **`null` under `--json` unless `--react-native`, `--app` or a rail flag asks for it**, because the offer is a prompt |
+| `reactNative.app` | string | The app's `apps/` directory |
+| `reactNative.created` | string[] | The app-relative files it created, sorted |
+| `reactNative.rails` | object | `{ ios, android, web }`: the rail each platform sells through. `none` everywhere, since the new Worker enables no rail |
 | `domains` | object or `null` | Where that Worker answers, per environment, or `null` when none was declared. **Always `null` under `--json`**, because declaring a domain is a prompt and `--json` never prompts |
 | `domains.staging` | object | Where the Worker answers in `staging`, if it has a domain yet |
 | `domains.staging.pattern` | string | The hostname, e.g. `api.example.com`. A bare hostname, not a URL — that is what wrangler's route matcher takes |
@@ -123,6 +134,18 @@ $ pithy init --target desktop
 Pass --target mobile, web or both.
 ```
 
+**A React Native app on a `web` target.** Exit 2, before the first question.
+
+**An `--app` name the app cannot take.** Exit 2, `validation/invalid_input`, before anything is written: a name that is not kebab-case, or the first Worker's own name.
+
+**A rail the new Worker does not enable.** Exit 3, `core/precondition_failed`, before anything is written. The new Worker composes no payments, so the action is the `pithy add payments` fix. A value no platform takes is exit 2, listing the ones it does.
+
+```
+$ pithy init --ios-rail apple
+The apple rail needs the payments capability, and api doesn't compose it.
+Run `pithy add payments --worker api --with-prerequisites --set billingSubject=user` or `pithy add payments --worker api --with-prerequisites --set billingSubject=organization` and enable rails.apple, or pass --ios-rail none.
+```
+
 **A symlink or a non-directory in the way.** Refused at every segment of the path, rather than left to die on a raw `ENOTDIR` with the run half-written.
 
 **A name in the reserved test namespace.** Refused before anything is written — the debris reaper deletes on that prefix alone.
@@ -159,7 +182,7 @@ Scaffold headlessly. Both names given, so nothing is asked.
 
 ```
 $ pithy init --name replay --worker board --json
-{"command":"init","schemaVersion":1,"targetDir":"/home/you/replay","appName":"replay","worker":"board","environments":["staging","prod"],"target":"mobile","frontEnd":null,"domains":null,"agents":{"path":"AGENTS.md","state":"added","reason":null},"claude":{"path":"CLAUDE.md","state":"added","reason":null}}
+{"command":"init","schemaVersion":1,"targetDir":"/home/you/replay","appName":"replay","worker":"board","environments":["staging","prod"],"target":"mobile","frontEnd":null,"reactNative":null,"domains":null,"agents":{"path":"AGENTS.md","state":"added","reason":null},"claude":{"path":"CLAUDE.md","state":"added","reason":null}}
 ```
 
 Scaffold for a web app. The first Worker serves a React front end beside its routes.
@@ -167,7 +190,18 @@ Scaffold for a web app. The first Worker serves a React front end beside its rou
 ```
 $ pithy init --name replay --worker board --target web
 …
-A React front end is in apps/board/. Run pithy setup, then pithy dev.
+A React front end is in apps/board/.
+Run pithy setup, then pithy dev.
+…
+```
+
+Scaffold for phones, with an Expo app beside the API.
+
+```
+$ pithy init --name replay --react-native
+…
+An Expo app is in apps/app/. It calls api.
+Run pithy setup, then pithy dev.
 …
 ```
 

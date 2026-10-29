@@ -7,7 +7,7 @@ import { resolveStub, UI_STUBS } from "./stubs";
 
 describe("UI_STUBS", () => {
   test("registers react through the same declaration a later framework would use", () => {
-    expect(Object.keys(UI_STUBS)).toEqual(["react"]);
+    expect(Object.keys(UI_STUBS)).toEqual(["react", "react-native"]);
     const stub = resolveStub("react");
     // Everything pithy dev and pithy deploy need, declared by the stub rather than special-cased.
     expect(stub.devCommand("{port}")).toEqual([
@@ -40,6 +40,17 @@ describe("UI_STUBS", () => {
     }
   });
 
+  test("react-native lives in an app of its own, and runs Expo on the pinned port", () => {
+    const stub = resolveStub("react-native");
+    expect(stub.placement).toBe("app");
+    expect(resolveStub("react").placement ?? "worker").toBe("worker");
+    expect(stub.devCommand("{port}")).toEqual(["expo", "start", "--port", "{port}"]);
+    expect(stub.buildCommand).toEqual(["expo", "export", "--platform", "web"]);
+    const ready = new RegExp(stub.readySignal);
+    expect(ready.test("Waiting on http://localhost:8081")).toBe(true);
+    expect(ready.test("Starting Metro Bundler")).toBe(false);
+  });
+
   test("an unknown framework is an actionable error naming pithy ui list", () => {
     try {
       resolveStub("svelte");
@@ -49,7 +60,7 @@ describe("UI_STUBS", () => {
       const payload = (error as PithyError).payload;
       expect(payload.message).toContain("svelte");
       expect(payload.action).toContain("pithy ui list");
-      expect(payload.action).toContain("react");
+      expect(payload.action).toContain("Known: react, react-native.");
       // A name that matches nothing is the call's to fix, exit 2 (docs/CLI.md §3.8), not a missing resource.
       expect(payload.code).toBe("validation/invalid_input");
     }

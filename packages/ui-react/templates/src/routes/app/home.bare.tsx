@@ -2,7 +2,7 @@ import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import type { Translator } from "@pithy-sh/core/src/i18n/translator";
 import { HEALTH_PATH } from "@pithy-sh/core/src/worker/health";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
-import { useRead } from "@pithy-sh/ui-react/src/read";
+import { useRead } from "@pithy-sh/ui-core/src/read";
 
 // Your screen. Pithy wrote this file once and never will again — everything under src/routes/app/ is
 // yours. Add a screen by dropping a file in beside it with its own `path` export.

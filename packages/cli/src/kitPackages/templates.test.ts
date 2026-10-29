@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { templateTarball } from "../test-utils/templateTarball";
 import type { PackagePlan } from "./plan";
 import type { Packument, RegistryFetch, RegistryResponse } from "./registry";
-import { classifyTemplates, type TemplateTree, templateSections, templateTargets } from "./templates";
+import { classifyTemplates, type TemplateTree, templateSections, templateTargets, uncomparedApps } from "./templates";
 
 const UI = "@pithy-sh/ui-react";
 const CLI = "@pithy-sh/cli";
@@ -313,6 +313,26 @@ describe("templateTargets", () => {
   test("nothing template-bearing moves: no section", () => {
     const plan = { ...noPlan, moves: [move("@pithy-sh/auth", "0.2.3")] };
     expect(templateTargets({ plan, ui, cli })).toEqual([]);
+  });
+});
+
+describe("uncomparedApps", () => {
+  test("names each app with a React Native front end, whose templates the report does not compare", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pithy-templates-native-"));
+    try {
+      const apps: [string, string][] = [
+        ["phone", "react-native"],
+        ["board", "react"],
+        ["tablet", "react-native"],
+      ];
+      for (const [name, stub] of apps) {
+        await mkdir(join(dir, "apps", name), { recursive: true });
+        await writeFile(join(dir, "apps", name, "pithy.worker.jsonc"), JSON.stringify({ ui: { stub, build: [] } }));
+      }
+      expect(await uncomparedApps(dir)).toEqual(["phone", "tablet"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

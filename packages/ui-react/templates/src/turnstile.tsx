@@ -1,4 +1,4 @@
-import { useRead } from "@pithy-sh/ui-react/src/read";
+import { useRead } from "@pithy-sh/ui-core/src/read";
 import { type ReactNode, type RefObject, useEffect, useRef } from "react";
 import { turnstileConfig } from "./pithy-config";
 

@@ -39,6 +39,7 @@ import {
 import type { CapabilityQueueHandler } from "../queue/consumer";
 import type { PurgeWindowDefault } from "../retention/policy";
 import type { SeedSet } from "../seed/seed";
+import type { SessionRotatedListener } from "../session/rotated";
 import type { WorkflowSpecMap } from "../workflow/spec";
 import { BindingSpec, type BindingSpecInput } from "./bindings";
 import type { ClientProjection, ClientProjectionContext } from "./client";
@@ -722,6 +723,12 @@ export interface Capability<
    * `email.marketing` is granted again, so the suppression list and the record never disagree either way.
    */
   consentGranted?: ConsentGrantedListener;
+  /**
+   * Hear of a session replaced by its successor, to carry state keyed on the old session id to the new one —
+   * `@pithy-sh/organization` moves the acting selection. The capability that owns sessions announces it through
+   * `announceSessionRotated` in `../session/rotated.ts`, so neither side imports the other.
+   */
+  sessionRotated?: SessionRotatedListener;
   /**
    * An account's email address, by user id, or `null` when it has none — the capability that owns accounts
    * declares it (`@pithy-sh/auth`), so a capability holding state by address finds one without importing auth.

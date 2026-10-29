@@ -401,6 +401,8 @@ Build it with `bun run build` in `@pithy-sh/payments`; the artifact is `dist/pad
 | `inline` | An iframe rendered into an element of yours. Looks like part of the app. |
 | `hosted` | A redirect to Paddle's own page. Needs a default payment link on the account. |
 
+**A React Native app sells Paddle in `hosted` mode only.** An overlay or an inline frame opens inside a web page, and a phone has none to open it in, so the scaffolded paywall answers the other two with a refusal that names the config line to change. In `hosted` the checkout opens in the system browser, and the app reads the subscription again once the reader is back.
+
 `POST /payments/checkout` answers `{ kind: "paddle", transactionId, clientToken, environment, displayMode, successUrl }` in the first two, and the ordinary `{ kind: "redirect", url }` in the third. Nothing on that response is secret: the client token is publishable exactly as a Stripe price id is, and the API key and the signing secret are not expressible on it.
 
 The screens are wired for you. `useCheckout().handoff` carries it, `usePaddleCheckout(handoff, { frameTarget })` opens it, and the scaffolded `paywall.tsx` and `pricing.tsx` render the container from `opened.inline` — so switching `overlay` to `inline` in your config needs no edit to a scaffolded file.

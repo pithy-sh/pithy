@@ -1,0 +1,31 @@
+{
+  // The templates are a second program, compiled the way they will be once copied into an Expo app: React Native's
+  // own types, JSX, and no DOM lib. Without the DOM lib a template that reads `window` or `document` does not
+  // compile, which is how "nothing reads the browser" is held. React Native declares its own `fetch`, `URL`,
+  // `AbortController` and timers as globals, and those collide with the DOM lib and `@types/node`, so neither is
+  // here and this program stays apart from the package's own.
+  //
+  // `customConditions` picks the `react-native` export a package ships for Metro, the file an app will load.
+  // `skipLibCheck` is on because several Expo packages' own declarations name DOM and Node types this program
+  // deliberately lacks; React Native's own declarations check clean without it.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "moduleDetection": "force",
+    "customConditions": ["react-native"],
+    "jsx": "react-jsx",
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "strict": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "types": ["react-native"],
+    "noEmit": true
+  },
+  "include": ["templates/**/*.ts", "templates/**/*.tsx"],
+  "exclude": ["templates/**/*.test.ts", "templates/**/*.test.tsx"]
+}

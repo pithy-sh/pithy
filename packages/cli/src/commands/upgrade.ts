@@ -768,8 +768,12 @@ function findingLine(finding: TemplateFinding, to: string): string {
 /** The `Templates` block, one heading per section, the provenance line under the first. */
 function templateLines(report: PackagesReport): string[] {
   if (report.state === "unavailable") return [];
-  if (report.templates.length === 0) return ["Templates: not checked. No template-bearing package moves."];
-  const lines: string[] = [];
+  const native = (report.uncompared ?? []).map(
+    (app) =>
+      `Templates: apps/${app} is a React Native app. Its templates are not compared; diff it against @pithy-sh/ui-react-native's by hand.`,
+  );
+  if (report.templates.length === 0) return ["Templates: not checked. No template-bearing package moves.", ...native];
+  const lines: string[] = [...native];
   let noted = false;
   for (const section of report.templates) {
     lines.push(...sectionLines(section, noted));

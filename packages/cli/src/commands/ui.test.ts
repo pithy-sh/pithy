@@ -45,9 +45,41 @@ vi.mock("../ui/flow", async (importOriginal) => ({
   runUiAdd: async () => stub.add,
 }));
 
+/** What the stubbed native sync answers, and what it was called with. */
+const native = vi.hoisted(() => ({
+  calls: [] as Record<string, unknown>[],
+  report: {
+    worker: "board" as WorkerDir,
+    app: "app",
+    rails: { ios: "apple", android: "google", web: "stripe" },
+    before: [],
+    after: [],
+    changed: true,
+    uncovered: [],
+    unstyled: [],
+    notFoundHandling: undefined,
+  } as UiSyncReport,
+}));
+
+vi.mock("../ui/nativeFlow", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../ui/nativeFlow")>()),
+  nativeApp: async (projectDir: string, app: string) => ({ appDir: `${projectDir}/apps/${app}`, worker: "board" }),
+  runNativeUiSync: async (options: Record<string, unknown>) => {
+    native.calls.push(options);
+    return native.report;
+  },
+}));
+
+/** What the stubbed worker composes. */
+const worker = vi.hoisted(() => ({ capabilities: [] as { name: string }[] }));
+
 vi.mock("./add", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./add")>()),
-  targetWorker: async () => ({ dir: "/project/apps/board", name: "replay-board", config: { capabilities: [] } }),
+  targetWorker: async () => ({
+    dir: "/project/apps/board",
+    name: "replay-board",
+    config: { capabilities: worker.capabilities },
+  }),
 }));
 
 /** The args are static object literals on these commands — resolve their type for the assertions. */
@@ -73,6 +105,10 @@ describe("ui command", () => {
     expect(Object.keys(args("add"))).toEqual([
       "framework",
       "worker",
+      "app",
+      "ios-rail",
+      "android-rail",
+      "web-rail",
       "auth",
       "payments",
       "organization",
@@ -108,11 +144,28 @@ describe("ui command", () => {
     }
   });
 
-  test("sync takes the same --worker resolution as add, plus the --check CI gate", () => {
-    expect(Object.keys(args("sync"))).toEqual(["worker", "check", "json"]);
+  test("sync takes the same --worker resolution as add, --app and the rails for an app, plus the --check CI gate", () => {
+    expect(Object.keys(args("sync"))).toEqual([
+      "worker",
+      "app",
+      "ios-rail",
+      "android-rail",
+      "web-rail",
+      "check",
+      "json",
+    ]);
     // Defaulted, and defaulted to writing: a stale allowlist answers with the SPA shell and a 200, so
     // the repair is the ordinary run and the check is the one you ask for.
     expect(args("sync").check).toMatchObject({ type: "boolean", default: false });
+  });
+
+  test("no rail flag carries a default, so an unflagged platform is asked or keeps its rail", () => {
+    for (const command of ["add", "sync"]) {
+      for (const flag of ["ios-rail", "android-rail", "web-rail"]) {
+        expect(args(command)[flag], `${command} ${flag}`).toMatchObject({ type: "string" });
+        expect(args(command)[flag]?.default, `${command} ${flag}`).toBeUndefined();
+      }
+    }
   });
 
   test("pithy registers it, lazily", async () => {
@@ -188,6 +241,28 @@ describe("pithy ui --json conforms to its published payloads", () => {
 
   test("add, sync and list", async () => {
     await expectConforms("ui add", await runCaptured("ui add", ["react", "--json"]));
+    const before = stub.add;
+    stub.add = {
+      ...before,
+      framework: "react-native",
+      app: "app",
+      rails: { ios: "apple", android: "google", web: "none" },
+      trustedOrigins: ["app://"],
+      untrustedOrigins: ["app://"],
+      unresolvedPackages: [],
+    };
+    try {
+      const written = await runCaptured("ui add", ["react-native", "--json"]);
+      await expectConforms("ui add", written);
+      expect(JSON.parse(written.join(""))).toMatchObject({
+        app: "app",
+        rails: { web: "none" },
+        trustedOrigins: ["app://"],
+        untrustedOrigins: ["app://"],
+      });
+    } finally {
+      stub.add = before;
+    }
     await expectConforms("ui sync", await runCaptured("ui sync", ["--json"]));
     await expectConforms("ui list", await runCaptured("ui list", ["--json"]));
   });
@@ -207,5 +282,201 @@ describe("pithy ui --json conforms to its published payloads", () => {
     } finally {
       stub.add = before;
     }
+  });
+});
+
+/** `pithy ui sync --app`: a React Native app's generated config, rewritten from the Worker it calls. */
+describe("ui sync --app", () => {
+  /** Drive `pithy ui sync` with `args`: the exit status it left behind, and what it printed. */
+  async function runSync(extra: Record<string, unknown>): Promise<{ exit: number | undefined; output: string }> {
+    process.exitCode = undefined;
+    const written: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      written.push(String(chunk));
+      return true;
+    });
+    try {
+      await (subcommand("sync").run as (context: { args: Record<string, unknown> }) => Promise<void>)({
+        args: { check: false, json: false, ...extra },
+      });
+    } finally {
+      spy.mockRestore();
+    }
+    return { exit: process.exitCode, output: written.join("") };
+  }
+
+  afterEach(() => {
+    process.exitCode = undefined;
+    native.calls.length = 0;
+    native.report = { ...native.report, changed: true };
+  });
+
+  test("rewrites the app's config from its worker, and hands the rail flags over", async () => {
+    const { exit, output } = await runSync({ app: "app", "ios-rail": "stripe" });
+    expect(exit).toBeUndefined();
+    expect(output).toContain("Rewrote apps/app/src/pithy-config.generated.ts from board's config.");
+    expect(native.calls).toHaveLength(1);
+    expect(native.calls[0]).toMatchObject({
+      appDir: `${process.cwd()}/apps/app`,
+      rails: { ios: "stripe" },
+      check: false,
+    });
+  });
+
+  test("--check on a config behind its worker exits 1 and names the command that fixes it", async () => {
+    const { exit, output } = await runSync({ app: "app", check: true });
+    expect(exit).toBe(1);
+    expect(output).toContain("is behind board's config.");
+    expect(output).toContain("pithy ui sync --app app --worker board");
+  });
+
+  test("--check on a config in sync exits clean", async () => {
+    native.report = { ...native.report, changed: false };
+    const { exit, output } = await runSync({ app: "app", check: true });
+    expect(exit).toBeUndefined();
+    expect(output).toContain("already in sync with board");
+  });
+
+  test("a rail flag with no --app is refused, before anything is read", async () => {
+    const written: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      written.push(String(chunk));
+      return true;
+    });
+    const exit = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exited");
+    });
+    try {
+      await (subcommand("sync").run as (context: { args: Record<string, unknown> }) => Promise<void>)({
+        args: { check: false, json: false, "web-rail": "stripe" },
+      }).catch(() => undefined);
+    } finally {
+      spy.mockRestore();
+      exit.mockRestore();
+    }
+    expect(written.join("")).toContain("no --app names one");
+    expect(native.calls).toHaveLength(0);
+  });
+
+  test("--json conforms to the published payload, with the app and its rails", async () => {
+    const written = await runCaptured("ui sync", ["--app", "app", "--json"]);
+    await expectConforms("ui sync", written);
+    expect(JSON.parse(written.join(""))).toMatchObject({ app: "app", rails: { ios: "apple" } });
+  });
+});
+
+/** What `pithy ui add react-native` tells a person: where the app went, its rails, and what to set next. */
+describe("ui add react-native", () => {
+  /** The text `ui add react-native` prints for a report like `report`. */
+  async function added(report: Partial<UiAddReport>, composed: string[] = []): Promise<string> {
+    const before = stub.add;
+    worker.capabilities = composed.map((name) => ({ name }));
+    stub.add = {
+      ...before,
+      worker: "board" as WorkerDir,
+      framework: "react-native",
+      app: "app",
+      skipped: [],
+      ...report,
+    };
+    const written: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      written.push(String(chunk));
+      return true;
+    });
+    try {
+      await (subcommand("add").run as (context: { args: Record<string, unknown> }) => Promise<void>)({
+        args: { framework: "react-native", json: false, "dry-run": false },
+      });
+    } finally {
+      spy.mockRestore();
+      stub.add = before;
+      worker.capabilities = [];
+    }
+    return written.join("");
+  }
+
+  const rails = { ios: "apple", android: "none", web: "stripe" } as const;
+
+  test("names each trustedOrigins entry the worker's auth lacks, and the file it goes in", async () => {
+    const output = await added({
+      rails,
+      trustedOrigins: ["app://", "https://links.acme.dev"],
+      untrustedOrigins: ["app://", "https://links.acme.dev"],
+    });
+    expect(output).toContain(
+      'Add "app://" and "https://links.acme.dev" to auth\'s trustedOrigins in apps/board/pithy.config.ts.',
+    );
+  });
+
+  test("says nothing about trustedOrigins when auth already trusts the app", async () => {
+    const output = await added({ rails, auth: true, trustedOrigins: ["app://"], untrustedOrigins: [] }, ["auth"]);
+    expect(output).not.toContain("trustedOrigins");
+  });
+
+  test("without auth composed, names the entry to add once it is", async () => {
+    const output = await added({ rails, auth: false, trustedOrigins: ["app://"], untrustedOrigins: [] });
+    expect(output).toContain('When board composes auth, its trustedOrigins needs "app://".');
+  });
+
+  test("auth composed and trusting the app, with its screens left out, says nothing about trustedOrigins", async () => {
+    // `--no-auth` leaves the screens out. The Worker still composes auth, and already trusts the app.
+    const output = await added({ rails, auth: false, trustedOrigins: ["app://"], untrustedOrigins: [] }, ["auth"]);
+    expect(output).not.toContain("trustedOrigins");
+  });
+
+  test("auth not composed, with its screens reported, still names the entry to add once it is", async () => {
+    const output = await added({ rails, auth: true, trustedOrigins: ["app://"], untrustedOrigins: [] });
+    expect(output).toContain('When board composes auth, its trustedOrigins needs "app://".');
+  });
+
+  test("on a backfill, says the generated config was rewritten from the Worker, choices kept", async () => {
+    const output = await added({ rails, backfill: true });
+    expect(output).toContain(
+      "apps/app/src/pithy-config.generated.ts was rewritten from board's config. Its rails, appScheme, universalLinkOrigin and Google client ids were kept.",
+    );
+    expect(output).not.toContain("holds board's config");
+  });
+
+  test("on a first scaffold, says what the generated config holds and what to set", async () => {
+    const output = await added({ rails, backfill: false });
+    expect(output).toContain("apps/app/src/pithy-config.generated.ts holds board's config.");
+    expect(output).not.toContain("was rewritten");
+  });
+
+  test("names a kit package it found no range for", async () => {
+    const output = await added({ rails, unresolvedPackages: ["@pithy-sh/consent"] });
+    expect(output).toContain("No range found for @pithy-sh/consent. Add one to apps/app/package.json.");
+  });
+
+  test("names the app, the worker it calls and each platform's rail", async () => {
+    const before = stub.add;
+    stub.add = {
+      ...before,
+      worker: "board" as WorkerDir,
+      framework: "react-native",
+      app: "app",
+      rails: { ios: "apple", android: "none", web: "stripe" },
+      skipped: [],
+    };
+    const written: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      written.push(String(chunk));
+      return true;
+    });
+    try {
+      await (subcommand("add").run as (context: { args: Record<string, unknown> }) => Promise<void>)({
+        args: { framework: "react-native", json: false, "dry-run": false },
+      });
+    } finally {
+      spy.mockRestore();
+      stub.add = before;
+    }
+    const output = written.join("");
+    expect(output).toContain("Scaffolded a react-native app into apps/app. It calls board.");
+    expect(output).toContain("Rails: iOS apple, Android none, web stripe.");
+    expect(output).toContain("Set appScheme and universalLinkOrigin there before a store build.");
+    expect(output).toContain("pithy ui sync --app app --worker board");
+    expect(output).not.toContain("Worker-first");
   });
 });

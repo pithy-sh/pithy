@@ -1,0 +1,19 @@
+{
+  // The React Native program: React Native's own types, no DOM lib and no Node, so a native module that reads
+  // `window`, `document` or `navigator` does not compile. React Native declares its own `fetch`, `URL` and timers as
+  // globals, which collide with the DOM lib and `@types/node`, so neither is here.
+  //
+  // `customConditions` picks the `react-native` export a package ships for Metro. `skipLibCheck` (from the base) is
+  // needed because Expo packages' declarations name DOM and Node types this program lacks.
+  "extends": "@pithy-sh/tsconfig/base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "lib": ["ES2022"],
+    "types": ["react-native"],
+    "customConditions": ["react-native"],
+    "jsx": "react-jsx",
+    "noEmit": true
+  },
+  "include": ["src/native/**/*.ts"],
+  "exclude": ["src/native/**/*.test.ts", "src/native/**/*.test.tsx"]
+}

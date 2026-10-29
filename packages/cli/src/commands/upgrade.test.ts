@@ -1205,6 +1205,24 @@ describe("runUpgrade --packages", () => {
     expect(upgradeFailed(run)).toBe(false);
   });
 
+  test("an app with a React Native front end is named as not compared", () => {
+    const packages: NonNullable<UpgradeRun["packages"]> = {
+      state: "read",
+      packageManager: "bun",
+      installed: false,
+      reconciled: false,
+      moves: [],
+      held: [],
+      leftAlone: [],
+      mismatches: [],
+      templates: [],
+      uncompared: ["phone"],
+    };
+    expect(upgradeText({ workers: [], manifestFaults: [], packages }, false)).toContain(
+      "Templates: apps/phone is a React Native app. Its templates are not compared; diff it against @pithy-sh/ui-react-native's by hand.",
+    );
+  });
+
   test("--latest crosses the boundary, keeps the operator, and the report is the one that was applied", async () => {
     const run = await runUpgrade({
       ...base,

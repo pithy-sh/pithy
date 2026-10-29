@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
+import { buildRoutes, type RouteModule, type ScreenRole, screenPath } from "@pithy-sh/ui-core/src/routes";
 import { expect, test } from "vitest";
-import { buildRoutes, type RouteModule, type ScreenRole, screenPath } from "./router";
 
 /**
  * **A guard's destination is the path the screen declares, never a copy of it.**

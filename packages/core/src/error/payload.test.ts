@@ -65,6 +65,7 @@ describe("ErrorPayload (the kit taxonomy)", () => {
       ["auth/forbidden", 403],
       ["auth/account_suspended", 403],
       ["auth/account_deleted", 403],
+      ["auth/handoff_invalid", 400],
       ["core/not_found", 404],
       ["core/conflict", 409],
       ["rate_limit/exceeded", 429],
@@ -340,7 +341,7 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  * And the code itself also needs: the Spanish sentence in `packages/i18n/src/catalogs/es/errors.ts`,
  * and `bun run docs-catalog` to regenerate `docs/catalog.generated.json`.
  */
-const KIT_ERROR_CODE_COUNT = 164;
+const KIT_ERROR_CODE_COUNT = 165;
 
 /** One member of either kit union — the public projection or its `action`/`detail` twin. */
 type KitUnionMember = (typeof KitErrorPayload | typeof KitPublicErrorPayload)["options"][number];

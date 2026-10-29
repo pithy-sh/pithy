@@ -213,6 +213,20 @@ const AuthAccountDeletedPublic = z
   })
   .describe("The account is deleted and awaiting its purge (403).");
 
+const AuthHandoffInvalidPublic = z
+  .object({
+    code: z
+      .literal("auth/handoff_invalid")
+      .describe(
+        "The one-time code a native app trades for its session after a redirect sign-in is spent, expired, was never issued, or came with the wrong verifier. One code for all four, so the answer says nothing about which codes exist or why a trade failed. The remedy is the same for each: sign in again.",
+      ),
+    status: z
+      .literal(400)
+      .describe("Bad Request — the code presented cannot be traded. Not 401: no credential was presented to refuse."),
+    ...publicFields,
+  })
+  .describe("A sign-in handoff code that is spent, expired, unknown or presented with the wrong verifier (400).");
+
 const NotFoundPublic = z
   .object({
     code: z.literal("core/not_found").describe("The requested resource does not exist."),
@@ -1990,6 +2004,7 @@ export const KitPublicErrorPayload = z
     AuthSessionNotFreshPublic,
     AuthAccountSuspendedPublic,
     AuthAccountDeletedPublic,
+    AuthHandoffInvalidPublic,
     NotFoundPublic,
     ConflictPublic,
     RateLimitPublic,
@@ -2168,6 +2183,9 @@ const AuthAccountSuspended = AuthAccountSuspendedPublic.extend(internalFields).d
 );
 const AuthAccountDeleted = AuthAccountDeletedPublic.extend(internalFields).describe(
   AuthAccountDeletedPublic.description ?? "",
+);
+const AuthHandoffInvalid = AuthHandoffInvalidPublic.extend(internalFields).describe(
+  AuthHandoffInvalidPublic.description ?? "",
 );
 const NotFound = NotFoundPublic.extend(internalFields).describe(NotFoundPublic.description ?? "");
 const Conflict = ConflictPublic.extend(internalFields).describe(ConflictPublic.description ?? "");
@@ -2619,6 +2637,7 @@ export const KitErrorPayload = z
     AuthSessionNotFresh,
     AuthAccountSuspended,
     AuthAccountDeleted,
+    AuthHandoffInvalid,
     NotFound,
     Conflict,
     RateLimit,

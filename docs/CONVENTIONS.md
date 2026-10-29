@@ -72,7 +72,7 @@ Everything above is about code we keep. This is about code we give away.
 
 > **Every seeded file whose invariant an adopter can break silently ships with the gate that notices.**
 
-A seeded file is one a Pithy command writes into somebody else's repository — the front-end templates in `@pithy-sh/ui-react` are the whole population today. From the moment it lands it is theirs: they edit it, we never rewrite it, and no release of ours can fix it. So a gate we keep here is a gate that goes silent at exactly the moment the file becomes breakable.
+A seeded file is one a Pithy command writes into somebody else's repository — the front-end templates in `@pithy-sh/ui-react` and `@pithy-sh/ui-react-native` are the whole population today. From the moment it lands it is theirs: they edit it, we never rewrite it, and no release of ours can fix it. So a gate we keep here is a gate that goes silent at exactly the moment the file becomes breakable.
 
 `pithy ui add react --auth --payments` used to seed eighteen files and **no test at all**, while ten gates over those same files sat in `packages/ui-react/src/`, each stated over the pristine template text.
 

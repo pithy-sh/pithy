@@ -74,8 +74,11 @@ import { readSource, sourcePaths } from "./sourceFiles";
  * in this directory shares.
  */
 
-/** `packages/ui-react/templates/src`, the tree the screens are copied out of. */
-const TEMPLATES = fileURLToPath(new URL("../../../../packages/ui-react/templates/src", import.meta.url));
+/** The trees the screens are copied out of: the web set and the React Native set. */
+const TEMPLATES = [
+  fileURLToPath(new URL("../../../../packages/ui-react/templates/src", import.meta.url)),
+  fileURLToPath(new URL("../../../../packages/ui-react-native/templates/src", import.meta.url)),
+];
 
 /** `packages/`, the tree every capability's `messages` contribution is swept out of. */
 const PACKAGES = fileURLToPath(new URL("../../../../packages", import.meta.url));
@@ -107,7 +110,7 @@ const CODES = KitErrorPayload.options.map((member) => member.shape.code.value);
  * And the code itself also needs: the Spanish sentence in `packages/i18n/src/catalogs/es/errors.ts`,
  * and `bun run docs-catalog` to regenerate `docs/catalog.generated.json`.
  */
-const KIT_ERROR_CODE_COUNT = 164;
+const KIT_ERROR_CODE_COUNT = 165;
 
 /**
  * The domain segment a *catalog key* must carry: a capability's `name`, or `app`.
@@ -148,7 +151,7 @@ const CLIENT_DOMAINS = ["client"];
 const KIT_DOMAINS = new Set<string>([...CAPABILITY_DOMAINS, ...ERROR_ONLY_DOMAINS, ...CLIENT_DOMAINS]);
 
 /**
- * Every screen under the template tree: a `.tsx` that is not itself a test, sorted.
+ * Every screen under both template trees: a `.tsx` that is not itself a test, sorted.
  *
  * Through the one walk in `./sourceFiles`, never a private one — `sourceFiles.test.ts` fails any module
  * that writes its own, and the reason is #185's: a tripwire with its own traversal is a tripwire that
@@ -156,7 +159,9 @@ const KIT_DOMAINS = new Set<string>([...CAPABILITY_DOMAINS, ...ERROR_ONLY_DOMAIN
  * screen is `.tsx`.
  */
 function templateFiles(): string[] {
-  return sourcePaths(TEMPLATES, { keep: (name) => name.endsWith(".tsx") && !name.endsWith(".test.tsx") });
+  return TEMPLATES.flatMap((tree) =>
+    sourcePaths(tree, { keep: (name) => name.endsWith(".tsx") && !name.endsWith(".test.tsx") }),
+  ).sort();
 }
 
 /**

@@ -57,12 +57,20 @@ import { TEMPLATE_DIR } from "./templates";
  * prose is exactly what this looks for.
  */
 
-/** Every template file this sweep reads: source that renders, never a test and never a declaration. */
-function templateSources(directory: string = TEMPLATE_DIR, found: string[] = []): string[] {
+/** The React Native template set, held to the same rules: a screen seeded from it reaches the same readers. */
+const NATIVE_TEMPLATE_DIR = join(TEMPLATE_DIR, "..", "..", "ui-react-native", "templates");
+
+/** Every template file this sweep reads, from both template sets. */
+function templateSources(): string[] {
+  return [...walkTemplates(TEMPLATE_DIR), ...walkTemplates(NATIVE_TEMPLATE_DIR)].sort();
+}
+
+/** Every file under one tree: source that renders, never a test and never a declaration. */
+function walkTemplates(directory: string, found: string[] = []): string[] {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) {
-      if (entry.name !== "node_modules") templateSources(path, found);
+      if (entry.name !== "node_modules") walkTemplates(path, found);
       continue;
     }
     if (!entry.isFile()) continue;
@@ -152,6 +160,7 @@ describe("no screen ships a sentence the catalog cannot reach", () => {
     const files = templateSources();
     expect(files.length).toBeGreaterThanOrEqual(15);
     expect(files.map(named)).toContain("packages/ui-react/templates/src/routes/pithy/sign-in.tsx");
+    expect(files.map(named)).toContain("packages/ui-react-native/templates/src/routes/pithy/sign-in.tsx");
   });
 
   test("every template renders through the translator and never around it", () => {
@@ -276,9 +285,10 @@ function rawMessages(source: string): string[] {
     .flatMap((line, index) => (/\.message\b/.test(line) ? [`${index + 1}: ${line.trim()}`] : []));
 }
 
-/** The template's path relative to the seeded tree — `src/payments.tsx`, as the ledger writes it. */
+/** The template's path relative to its own seeded tree — `src/payments.tsx`, as the ledger writes it. */
 function seeded(path: string): string {
-  return relative(TEMPLATE_DIR, path).split(sep).join("/");
+  const root = path.startsWith(NATIVE_TEMPLATE_DIR) ? NATIVE_TEMPLATE_DIR : TEMPLATE_DIR;
+  return relative(root, path).split(sep).join("/");
 }
 
 describe("no screen relays the server's English to a reader who asked for another language", () => {
