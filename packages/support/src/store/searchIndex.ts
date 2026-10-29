@@ -154,10 +154,10 @@ export function searchIndexAction(state: SearchIndexState, wanted: boolean): Sea
 /**
  * The `CREATE TRIGGER` statements, one per {@link SEARCH_TRIGGERS} entry and in that order.
  *
- * **`BEGIN` and `END` are uppercase, and that is load-bearing.** Miniflare accepts a lowercase
- * compound-statement body; remote D1 rejects it as `incomplete input [code: 7500]`, so a lowercased
- * body passes every local test in this repository and fails on deploy. `searchIndex.test.ts` fails on
- * the lowercase form, because no Workers test can.
+ * **`BEGIN` and `END` are uppercase, by convention.** Remote D1 and Miniflare both accept a lowercase
+ * compound-statement body today, so nothing enforces the casing at run time. Older D1 rejected the
+ * lowercase form as `incomplete input [code: 7500]`, and uppercase is accepted everywhere, so the bodies
+ * keep it and `searchIndex.test.ts` pins it.
  *
  * **Every column is the physical snake_case name.** `CamelCasePlugin` snake-cases the identifiers the
  * query builder emits and never touches a string inside a `sql` template, so this is the one place in

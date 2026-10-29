@@ -5,7 +5,12 @@ import { CloudflareAIManager } from "@pithy-sh/cloudflare/src/ai/aiManager";
 import { CloudflareVectorizeManager } from "@pithy-sh/cloudflare/src/ai/vectorizeManager";
 import { CloudflareVectorizeProvisioner } from "@pithy-sh/cloudflare/src/ai/vectorizeProvisioner";
 import { loadIntegrationCreds, uniqueName, withThrowawayResource } from "@pithy-sh/cloudflare/src/test-utils/harness";
-import { METADATA_INDEX_SETTLE_MS, waitFor, waitForStable } from "@pithy-sh/cloudflare/src/test-utils/settle";
+import {
+  METADATA_INDEX_SETTLE_MS,
+  UPSERT_SETTLE_MS,
+  waitFor,
+  waitForStable,
+} from "@pithy-sh/cloudflare/src/test-utils/settle";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { VectorIndexConfig } from "../config/config";
@@ -120,25 +125,23 @@ function restVectorStore(manager: CloudflareVectorizeManager): VectorStore {
 }
 
 /**
- * **The data test's whole budget, shared by its eight waits.** Each wait is capped at the settle budget on its
- * own, and their sum is not: in run 38323817975 (#709) they outran this test's 300s vitest timeout together,
- * so vitest abandoned the body mid-poll, the failure named no step, and the teardown that deletes the index
- * never ran.
+ * **The data test's whole budget, shared by its eight waits.** Each wait is capped on its own, and their sum is
+ * not: when the sum outran this test's vitest timeout, vitest abandoned the body mid-poll, the failure named no
+ * step, and the teardown that deletes the index never ran.
  *
- * Sized from what was measured. Creating an index and settling its two metadata indexes took 102s and 113s
- * across that run and the one before it (the first test here is exactly that phase, and the second test got
- * past it, to its first embedding, at 107s in run 38321579328). The remaining six waits — two upserts becoming
- * queryable, two filters, a late metadata index, a late filter — then ran past the 200s left to them. Ten
- * minutes covered both halves until a metadata index alone was measured at about 97s and then over 120s, and
- * its two waits took {@link METADATA_INDEX_SETTLE_MS} each. Twelve minutes leaves room for one of them to use
- * its whole budget; past it, the step in progress fails by name and the teardown still runs.
+ * Sized from what was measured. Creating an index and settling its two metadata indexes usually takes 100-115s,
+ * the phase the first test here runs alone. A run that failed on the late upsert had spent about 390s before that
+ * wait began. The metadata-index waits take {@link METADATA_INDEX_SETTLE_MS} and the upsert waits
+ * {@link UPSERT_SETTLE_MS}, so twenty minutes covers that run's 390s, one metadata-index wait using its whole
+ * 600s in place of its usual 100s, and the steps after it. Past it, the step in progress fails by name and the
+ * teardown still runs.
  */
-const DATA_TEST_BUDGET_MS = 720_000;
+const DATA_TEST_BUDGET_MS = 1_200_000;
 
 /**
  * The settle predicate for a metadata-index list: the drift check's own rule, with nothing missing and nothing
  * mismatched. A count passed a list of the right length with the wrong names in it. The wait it drives takes
- * {@link METADATA_INDEX_SETTLE_MS}, measured at about 97s and then over 120s on #709.
+ * {@link METADATA_INDEX_SETTLE_MS}.
  */
 function declares(declared: readonly MetadataIndexDescriptor[]) {
   return (live: readonly { propertyName: string; indexType: string }[]): boolean => {
@@ -229,9 +232,9 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
 
     // Teardown landed: the index is gone from the account.
     expect(await provisioner.findIndexByName(name)).toBeNull();
-    // Above the run's 300s default: the metadata-index wait alone may take its whole 300s budget, and the
+    // Above the run's 300s default: the metadata-index wait alone may take its whole 600s budget, and the
     // create, the addressable wait and the teardown come on top of it.
-  }, 360_000);
+  }, 720_000);
 
   test("embeds, upserts, filters — and a metadata index created late covers none of the vectors before it", async () => {
     const name = uniqueName("vecdat");
@@ -293,7 +296,7 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
           "the first upsert to be queryable",
           () => queryVectors(store, indexConfig, probe, { topK: 3, returnMetadata: true }),
           (result) => result.count === 3,
-          budget,
+          { ...budget, timeoutMs: UPSERT_SETTLE_MS },
         );
 
         // The decoded query response, from the real wire: a count, and matches nearest first.
@@ -345,7 +348,7 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
           "the late upsert to be queryable",
           () => queryVectors(store, indexConfig, probe, { topK: 10 }),
           (result) => result.count === 4,
-          budget,
+          { ...budget, timeoutMs: UPSERT_SETTLE_MS },
         );
         expect(whole.matches.map((match) => match.id).sort()).toEqual(["apple", "apple-late", "banana", "train"]);
 
@@ -408,5 +411,5 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
     expect(await provisioner.findIndexByName(name)).toBeNull();
     // DATA_TEST_BUDGET_MS, plus a minute for the teardown: one index delete and the read that confirms it.
     // A literal, because a test call keeps its compact shape only with a numeric literal in this position.
-  }, 780_000);
+  }, 1_260_000);
 });

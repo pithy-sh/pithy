@@ -15,6 +15,8 @@ import {
   uniqueName,
 } from "@pithy-sh/cloudflare/src/test-utils/harness";
 import { reapArtifactsNamespace } from "@pithy-sh/cloudflare/src/test-utils/reap";
+import { waitForStable } from "@pithy-sh/cloudflare/src/test-utils/settle";
+import { readWorkerAnswer } from "@pithy-sh/cloudflare/src/test-utils/workerAnswer";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { z } from "zod";
 
@@ -57,9 +59,12 @@ const PACKAGE_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..
 /** How many tokens one mint request makes, and how many the suite will make before giving up on a page boundary. */
 const MINT_BATCH = 25;
 const MINT_CAP = 400;
-/** How long a fresh `workers.dev` address may take to answer. */
-const READY_ATTEMPTS = 30;
-const READY_INTERVAL_MS = 2000;
+/**
+ * A fresh `workers.dev` address answers from the machines that have the script, and Cloudflare's own HTML page
+ * from the ones that do not yet. One good `/ready` proves only the machine that answered it, so the suite waits for
+ * the shared settle rule's agreeing reads, each the probe's own JSON, inside the shared settle budget.
+ */
+const READY = "ready";
 
 /**
  * The Worker, as TypeScript. Every route needs the run's probe key, so the address answers nobody else. It holds one
@@ -176,9 +181,7 @@ describe.skipIf(!ready)("revokeEveryToken against a real Artifacts namespace —
       ...init,
       headers: { "x-probe-key": probeKey, "content-type": "application/json", ...init.headers },
     });
-    const body: unknown = await response.json();
-    if (!response.ok) throw new Error(`${pathname} answered ${response.status}: ${JSON.stringify(body)}`);
-    return body;
+    return readWorkerAnswer(pathname, response);
   }
 
   async function mint(count: number): Promise<Token[]> {
@@ -259,13 +262,15 @@ describe.skipIf(!ready)("revokeEveryToken against a real Artifacts namespace —
       await rm(dir, { recursive: true, force: true });
     }
 
-    for (let attempt = 0; ; attempt += 1) {
-      const response = await fetch(`${origin}/ready`, { headers: { "x-probe-key": probeKey } }).catch(() => null);
-      await response?.body?.cancel();
-      if (response?.ok) break;
-      if (attempt >= READY_ATTEMPTS) throw new Error(`${origin} never answered.`);
-      await new Promise((resolve) => setTimeout(resolve, READY_INTERVAL_MS));
-    }
+    await waitForStable(
+      `${origin} to answer as the probe`,
+      () =>
+        call("/ready").then(
+          (body) => (z.object({ ready: z.literal(true) }).safeParse(body).success ? READY : JSON.stringify(body)),
+          (error: unknown) => String(error),
+        ),
+      (answer) => answer === READY,
+    );
     remote = z
       .object({ remote: z.string().describe("The clone URL.") })
       .parse(await call("/repo", { method: "POST" })).remote;

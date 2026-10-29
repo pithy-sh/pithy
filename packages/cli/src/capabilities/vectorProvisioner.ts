@@ -90,11 +90,12 @@ async function vectorWorkerDir(projectDir: string): Promise<string> {
 export type ResolveVectorEnv = (env: string) => Promise<{ appDatabaseId: string }>;
 
 /**
- * How long to wait for an accepted metadata index to become live. Sized from measurement, not chosen: on #709 a
- * metadata index settled in about 97s on one run and was still unsettled at 120s on the next. The ten
- * one-second polls this replaced gave up on both. The kit's own live suites wait on the same number.
+ * How long to wait for an accepted metadata index to become live. Cloudflare documents no readiness time and no
+ * readiness signal, so this is sized from measurement: one index settled in about 97s, another was unsettled at
+ * 120s, and a third was still missing at 300s. Ten minutes is twice the slowest wait measured. The kit's own live
+ * suites wait on the same number.
  */
-export const METADATA_SETTLE_BUDGET_MS = 300_000;
+export const METADATA_SETTLE_BUDGET_MS = 600_000;
 
 /**
  * Consecutive agreeing reads that count as live. The metadata-index list is eventually consistent and not
@@ -135,7 +136,7 @@ export interface CloudflareVectorProvisionerOptions {
   now?: () => number;
   /**
    * The Worker (by its apps/ directory) and environment this run acts on, which every command a refusal names
-   * carries so it runs as written in a project with several Workers (#711). Absent for a feature's indexes,
+   * carries so it runs as written in a project with several Workers. Absent for a feature's indexes,
    * whose refusals name the feature's own provisioning and no rebuild.
    */
   target?: { worker: WorkerDir; env: string; productionEnvironments: readonly string[] };
@@ -179,7 +180,7 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
   }
 
   /**
-   * The rebuild a shape refusal offers beside changing the config back (#711). A reset deletes every vector in the
+   * The rebuild a shape refusal offers beside changing the config back. A reset deletes every vector in the
    * index, so it is a person's decision, said as one — never a remedy an agent runs for one mis-shaped index. A
    * feature's index has no rebuild of its own: tearing the feature down takes every resource it owns and its
    * worktree with them, which is far more than the fault, so a feature is offered no command at all.
@@ -262,20 +263,10 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
       });
     }
 
+    // The list can miss an index that exists, so a re-run can ask for one the last run's create already made.
+    // `createMetadataIndex` answers that as success, and refuses one already indexed as another type.
     for (const descriptor of before.missing) {
-      try {
-        await provisioner.createMetadataIndex(indexName, descriptor.propertyName, descriptor.indexType);
-      } catch (error) {
-        // The list can miss an index that exists, so a re-run can ask for one the last run's create already
-        // made. Cloudflare's answer to that is not something this code matches on: an index listed under its
-        // own name and type right after the refusal is that earlier create, and the wait below confirms it.
-        // Anything else is Cloudflare's refusal, and it stands.
-        const now = await provisioner.listMetadataIndexes(indexName);
-        const landed = now.some(
-          (entry) => entry.propertyName === descriptor.propertyName && entry.indexType === descriptor.indexType,
-        );
-        if (!landed) throw error;
-      }
+      await provisioner.createMetadataIndex(indexName, descriptor.propertyName, descriptor.indexType);
     }
 
     const started = this.#now();
@@ -310,7 +301,7 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
       config: this.#config,
     });
 
-    // **The gate, inherited rather than opted into (#537).** `deployHostWorker` stamps the resolved
+    // **The gate, inherited rather than opted into.** `deployHostWorker` stamps the resolved
     // config with this package's version and a hash of the config itself, compares that against what
     // the deployed Worker carries, and ships only when they differ. A first provision has no stamp, so
     // it deploys. Anything it cannot establish — no Worker, no stamp, an unreachable account — deploys
@@ -349,7 +340,7 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
 }
 
 /**
- * **A feature's own Vectorize indexes, created the way `pithy vector provision` creates an environment's (#643)** —
+ * **A feature's own Vectorize indexes, created the way `pithy vector provision` creates an environment's** —
  * through {@link CloudflareVectorProvisioner}'s own `ensureIndex` and `ensureMetadataIndexes`, so a feature's
  * index has the declared shape and every declared metadata index before anything writes a vector to it. Only
  * those two steps and the delete are used: the vector host itself deploys with the feature's other kit Workers.
