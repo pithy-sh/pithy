@@ -43,7 +43,7 @@ Each one is a package you add to a Worker with `pithy add <name>`, and each runs
 
 | Capability | What it does |
 |---|---|
-| [`auth`](https://pithy.sh/docs/capabilities/auth/) | Passwordless identity, sessions, short-lived access tokens, and devices. |
+| [`auth`](https://pithy.sh/docs/capabilities/auth/) | Passwordless identity, rotated bearer sessions, JWTs for outside services, and devices. |
 | [`mcp`](packages/auth/README.md#agents-mcp-floor) | Your users' agents use your app as them, over MCP, with consent and only the routes you mark as tools. Ships in `@pithy-sh/auth`. |
 | [`organization`](packages/organization/README.md) | Tenancy: organizations, memberships, the roles you declare, and invitations. |
 | [`artifacts`](packages/artifacts/README.md) | Git repositories for your own customers, with short-lived tokens minted against a grant you control. |

@@ -243,6 +243,16 @@ describe("Better Auth ⇄ CamelCasePlugin on snake_case D1 tables", () => {
     const jwks = await auth.api.getJwks();
     expect(jwks.keys.length).toBeGreaterThanOrEqual(1);
   });
+
+  test("the session token is the bearer, and the JWT access token resolves no session", async () => {
+    const { auth, mailbox } = instanceWithMailbox();
+    const token = await signInViaOtp(auth, mailbox, "kai@example.com");
+    const bearer = (credential: string) => new Headers({ authorization: `Bearer ${credential}` });
+
+    expect(await auth.api.getSession({ headers: bearer(token) })).not.toBeNull();
+    const accessToken = await auth.api.getToken({ headers: bearer(token) });
+    expect(await auth.api.getSession({ headers: bearer(accessToken.token) })).toBeNull();
+  });
 });
 
 /**

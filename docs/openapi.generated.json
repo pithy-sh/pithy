@@ -7021,7 +7021,7 @@
           "auth"
         ],
         "operationId": "postAuthTokenRotate",
-        "summary": "Trade the current refresh credential for a new access token and its successor.",
+        "summary": "Trade the current session token for its successor, and a JWT for services outside this Worker.",
         "description": "The presented session is spent. Presenting it again after a short grace window is read as theft, and revokes every session descended from the same sign-in.",
         "responses": {
           "200": {
@@ -49302,7 +49302,7 @@
       "bearer": {
         "type": "http",
         "scheme": "bearer",
-        "description": "A short-lived access token from `@pithy-sh/auth`, sent as `Authorization: Bearer <token>`."
+        "description": "A session token from `@pithy-sh/auth`, sent as `Authorization: Bearer <token>`: the one sign-in returns, then the `refreshToken` each `/token/rotate` answers with. The rotation's `accessToken` is a JWT for services outside the Worker, and these routes refuse it."
       },
       "session": {
         "type": "apiKey",

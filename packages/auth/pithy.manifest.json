@@ -87,7 +87,7 @@
       }
     }
   ],
-  "whenToEnable": "Sign-in for your app — passwordless, mobile and web both first-class. Magic link, email OTP, and social sign-in with Google, Apple, Facebook, GitHub, and Microsoft. A successful sign-in mints a long-lived refresh session and short-lived JWT access tokens that verify locally with no database hit. It fills core's identity seams, so every other capability just calls `requireAuth()`. This is the keystone capability; add it first.",
+  "whenToEnable": "Sign-in for your app — passwordless, mobile and web both first-class. Magic link, email OTP, and social sign-in with Google, Apple, Facebook, GitHub, and Microsoft. A successful sign-in mints a rotated session whose token is the bearer credential, and short-lived JWTs that services outside the Worker verify against `/jwks`. It fills core's identity seams, so every other capability just calls `requireAuth()`. This is the keystone capability; add it first.",
   "scaffold": [
     "Create the session signing secret: `pithy secrets create auth-session-secret`.",
     "Add the `AUTH_RATE_LIMITER` Workers Rate Limiting binding to each wrangler.jsonc env — the coarse per-IP edge guard on the auth routes. For example: `\"ratelimits\": [{ \"name\": \"AUTH_RATE_LIMITER\", \"namespace_id\": \"1001\", \"simple\": { \"limit\": 60, \"period\": 60 } }]`. This is tier 1; Better Auth's per-action limiter (tier 2) is built in.",

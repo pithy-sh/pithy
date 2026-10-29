@@ -2,7 +2,7 @@
 
 Passwordless auth for Cloudflare. Magic link, email OTP, Google, Apple, Facebook, GitHub, Microsoft. Mobile and web, both first-class. Built on Better Auth. No email and password, ever.
 
-This capability fills core's identity seams. It mints sessions, issues short-lived JWT access tokens, registers devices, and validates every request — so other capabilities just call `requireAuth()`.
+This capability fills core's identity seams. It mints and rotates sessions, whose token is the bearer credential, issues short-lived JWTs for services outside the Worker, registers devices, and validates every request — so other capabilities just call `requireAuth()`.
 
 ```sh
 pithy add auth
