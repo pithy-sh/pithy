@@ -400,10 +400,10 @@ describe("the React 19 stub", () => {
   });
 
   test("vite.config.ts resolves one React, so a linked package cannot bring a second", () => {
-    // Vite resolves a symlinked package from its realpath, so a kit consumed from a sibling
-    // checkout imports `react` out of the kit's
-    // tree. Two Reacts is `invalid hook call` on the first kit component mounted, and the stack names
-    // that component rather than the resolution, which is why nobody debugs it from the error.
+    // Vite resolves a symlinked package from its realpath, so a kit consumed from a sibling checkout
+    // imports `react` out of the kit's tree. Two Reacts is `invalid hook call` on the first kit component
+    // mounted, and the stack names that component rather than the resolution, which is why nobody debugs
+    // it from the error.
     //
     // **`dedupe` is the right instrument in *this* file and the wrong one in the project's
     // `vitest.config.ts`, and the difference is Vite's root.** `dedupe` re-resolves the names it is given
@@ -434,8 +434,7 @@ describe("the React 19 stub", () => {
     // **The cookie mode is not written here.** A scaffolded file is copied into the adopter's repository
     // and Pithy may never rewrite it, so a transport spelled out in one is frozen at the moment they
     // scaffolded. It lives in `@pithy-sh/auth/src/client/api`, whose `sameOrigin.test.ts` holds it to one
-    // producer; what
-    // this scaffold has to get right is that the session module reaches the route through it.
+    // producer; what this scaffold has to get right is that the session module reaches the route through it.
     expect(BOTH["src/session.tsx"]).toContain('from "@pithy-sh/auth/src/client/api"');
     expect(BOTH["src/session.tsx"]).toContain("getSession as readSession");
     expect(BOTH["src/session.tsx"]).not.toContain('credentials: "include"');
