@@ -104,7 +104,7 @@ The practical upshot: edit anything. Delete `src/routes/pithy/sign-in.tsx` and w
 
 Some of the files Pithy writes arrive with a `.test.tsx` beside them. Those are yours too, and they are not there for coverage.
 
-Each one watches a contract **your own next edit can break without anything going red** — the sign-in link returning to the path `callback.tsx` declares, the Turnstile widget solving for the action your config names, the app mounting into a node it creates, your palette being declared as a set. Every one of those failures builds clean, typechecks, lints, and is first visible in production, or on a page you do not look at because you are signed in.
+Each one watches a contract **your own next edit can break without anything going red** — the sign-in link returning to the path `callback.tsx` declares, the Turnstile widget solving for the action your config names, the app mounting into a node it creates, a guard sending you to the path its screen declares, the page speaking the language its `<html lang>` declares. Every one of those failures builds clean, typechecks, lints, and is first visible in production, or on a page you do not look at because you are signed in.
 
 The kit used to keep these gates for itself. That meant they held right up to the moment the file became yours and stopped holding immediately after, which is the moment it starts being edited. `docs/CONVENTIONS.md` § *Seeded files* is the rule and the reasoning.
 

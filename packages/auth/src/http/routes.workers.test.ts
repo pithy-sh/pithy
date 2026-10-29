@@ -18,7 +18,7 @@ import { turnstileSecretsRegistry } from "@pithy-sh/turnstile/src/secret/registr
 import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { z } from "zod";
-import { AuthConfig, type AuthWiring } from "../capability";
+import { AuthConfig, type AuthWiring, type TurnstileLoginGate } from "../capability";
 import { authDatabase } from "../data/tables";
 import { makeAuth } from "../instance/auth";
 import { NO_SOCIAL_PROVIDERS } from "../instance/providers";
@@ -80,7 +80,7 @@ function appEnv(rateLimit: RateLimit = rateLimiter()): Record<string, unknown> {
   return { ...(env as unknown as Record<string, unknown>), AUTH_RATE_LIMITER: rateLimit };
 }
 
-function buildWiring(turnstile?: { mode: "visible" }): AuthWiring {
+function buildWiring(turnstile?: TurnstileLoginGate): AuthWiring {
   const emailCap = email({ fromAddress: "no@reply.test", fromName: "Test", baseUrl: "http://localhost" });
   return {
     config: AuthConfig.parse({ baseURL: "http://localhost", basePath: "/auth", trustedOrigins: ["http://localhost"] }),
@@ -690,7 +690,7 @@ describe("auth HTTP routes", () => {
   });
 
   test("turnstile auto-gates the OTP send route — a tokenless request is denied", async () => {
-    const app = buildApp(buildWiring({ mode: "visible" }));
+    const app = buildApp(buildWiring({ mode: "visible", token: { field: "cf-turnstile-response" } }));
     const res = await app.request(
       "/auth/email-otp/send-verification-otp",
       {

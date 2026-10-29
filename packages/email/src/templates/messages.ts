@@ -44,14 +44,14 @@ import { EMAIL_ES } from "./messages.es";
  *
  * ## Only the kit's own copy
  *
- * Eleven templates are here. The five whose words arrive as payload — `testerNudge`, `supportReply`,
+ * Seventeen templates are here. The five whose words arrive as payload — `testerNudge`, `supportReply`,
  * `operationalNotice`, `newsletter`, `marketingCampaign` — are the adopter's copy, chosen by a human
  * for one message, and a catalog cannot translate a sentence it has never seen. Their **shell** still
  * follows the job's locale (the severity word, the footer, the document's `lang` and `dir`), so a
  * notice at locale `es` reads its severity in Spanish and its summary in whatever the caller wrote.
  */
 
-/** The kit's English for every string the eleven kit-authored templates and the shared shell render. */
+/** The kit's English for every string the seventeen kit-authored templates and the shared shell render. */
 const EMAIL_EN: MessageCatalog = {
   // --- The shared shell ---
   // The greeting is two keys rather than one with an optional placeholder, because a language that
@@ -123,7 +123,7 @@ const EMAIL_EN: MessageCatalog = {
   "email/password_changed.text_body":
     "Your account credentials were changed on {when}. If this wasn't you, contact support:",
 
-  // --- The account lifecycle (#620) ---
+  // --- The account lifecycle ---
   // Each says what happened, what it means, and who to answer. The answer is a reply: the mail comes from the
   // adopter's own address, so a reply reaches the people who can act on it.
   "email/account_suspended.subject": "Your {app} account is suspended",
@@ -157,7 +157,7 @@ const EMAIL_EN: MessageCatalog = {
     "Your {app} account and its data were erased on {purgedOn}. This cannot be undone.",
   "email/deletion_complete.last": "This is the last email this account will receive.",
 
-  // --- Membership administration (#624) ---
+  // --- Membership administration ---
   // An operator changed somebody's membership. Each names the organization, because a person in two
   // accounts has to know which one changed, and closes on who to answer.
   "email/organization_member_added.subject": "You were added to {organization}",
@@ -178,7 +178,7 @@ const EMAIL_EN: MessageCatalog = {
     "You are now the owner of {organization} on {app}. You administer it, and you answer for it.",
   "email/organization_member.contact": "If you did not expect this, reply to this email.",
 
-  // --- The organization lifecycle (#623) ---
+  // --- The organization lifecycle ---
   // To an owner, when an operator acts on the organization itself. Each names it, and says the owner's own
   // account is not what changed.
   "email/organization_suspended.subject": "{organization} is suspended",
@@ -215,8 +215,7 @@ const EMAIL_EN: MessageCatalog = {
  * Every language this capability's own copy is written in.
  *
  * **Bundled, not stamped.** The send Worker is deployed with this map inside it, so adding a language
- * to the kit costs an adopter a package upgrade and no configuration at all — which is the whole of
- * #442. What still travels as a variable is the adopter's diff against this: usually nothing, and at
+ * to the kit costs an adopter a package upgrade and no configuration at all. What still travels as a variable is the adopter's diff against this: usually nothing, and at
  * most the sentences they changed.
  */
 export const EMAIL_MESSAGES: LocaleCatalogs = { en: EMAIL_EN, es: EMAIL_ES };
@@ -242,12 +241,10 @@ function languageOf(tag: string): string | null {
 /**
  * This package's own copy for `locale`, reduced to the language when the region was not written for.
  *
- * **The reduction has to happen here too, and not only over the stamped catalogs.** It did not, and
- * that was a regression the moment #442 bundled the kit's translations: the stamped catalog used to
- * *be* the kit's Spanish, so reducing `es-AR` to `es` over it found the words. With the kit's copy
- * bundled here instead, the stamped catalog is empty for a project that overrode nothing, and an
- * exact-tag lookup on `es-AR` answered `undefined` — so a reader whose `pithy_auth_users.locale` is
- * `es-AR` or `es-MX` got an English letter from a project that ships Spanish.
+ * **The reduction has to happen here too, and not only over the stamped catalogs.** With the kit's copy
+ * bundled here, the stamped catalog is empty for a project that overrode nothing, so an exact-tag
+ * lookup on `es-AR` alone would send a reader whose `pithy_auth_users.locale` is `es-AR` or `es-MX` an
+ * English letter from a project that ships Spanish.
  */
 function bundledFor(locale: string): MessageCatalog | undefined {
   const language = languageOf(locale);

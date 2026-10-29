@@ -1,14 +1,11 @@
-# This file is documentation. Two different `.dev.vars` exist, and they have different owners.
+# This file is documentation. Nothing reads it, and nothing reads a `.dev.vars` at the project root either.
 #
-#   <root>/.dev.vars            yours. The CLI's own Cloudflare credentials, below. Copy this to it.
 #   <root>/apps/<worker>/.dev.vars   generated. pithy writes it; wrangler reads it. Do not edit one.
 #
-# One-time setup:
-#   1. Run `wrangler login` — OAuth, used by `wrangler dev` and `wrangler deploy`.
-#   2. Set the bootstrap Cloudflare API token below. pithy uses it to call the
-#      Cloudflare REST API and to mint scoped, account-owned tokens from there.
-# CLOUDFLARE_ACCOUNT_ID=your-account-id
-# CLOUDFLARE_API_TOKEN=your-bootstrap-token
+# The CLI's Cloudflare credentials never live in this repository. Run `pithy cloudflare connect` once
+# to sign in, or keep an account token in `cloudflare.json` in the Pithy config directory, outside every
+# checkout. CI exports CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN instead. `pithy doctor` checks
+# that they reach the account.
 #
 # A Worker's `.dev.vars` is generated on every `pithy dev` and `pithy seed`, from the dev secrets file
 # and this machine's `dev.json`. Run `pithy doctor` to see where those are. An edit to a generated file

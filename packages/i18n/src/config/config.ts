@@ -33,7 +33,6 @@ export type BrowserResolver = z.infer<typeof BrowserResolver>;
 /** The server chain's default order — explicit param, account, cookie, `Accept-Language`, project default. */
 const DEFAULT_SERVER_RESOLVERS: readonly ServerResolver[] = ["param", "user", "cookie", "header", "default"];
 
-/** The browser chain's default order — `?lang=`, account, local storage, the server's answer, default. */
 /**
  * The browser chain's default order — `?lang=`, account, this device's memory, the reader's own
  * browser languages, what the server declared, the project default.

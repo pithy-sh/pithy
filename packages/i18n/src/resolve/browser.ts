@@ -88,7 +88,8 @@ export interface BrowserLocaleSignals {
 /**
  * The reader's locale, by the configured browser chain.
  *
- * Default order: `?lang=`, the account, local storage, the server's answer, the project default.
+ * Default order: `?lang=`, the account, local storage, the browser's own languages, the server's answer,
+ * the project default.
  *
  * **The account outranks the device.** `pithy_auth_users.locale` is where a person's locale lives, so a
  * signed-in reader who picks a language on one device must not silently be reading another language on

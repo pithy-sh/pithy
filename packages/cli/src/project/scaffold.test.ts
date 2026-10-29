@@ -99,6 +99,18 @@ describe("scaffoldProject", () => {
     await readFile(join(target, ".dev.vars.example"), "utf8");
   });
 
+  test("the .dev.vars example keeps the Cloudflare credentials out of the checkout", async () => {
+    await scaffoldProject({ targetDir: dir, appName: "my-app" });
+
+    const example = await readFile(join(dir, ".dev.vars.example"), "utf8");
+    // Nothing reads a credential from the project root, and a file inside the checkout is one a package can ship.
+    expect(example).not.toMatch(/^#\s*CLOUDFLARE_(ACCOUNT_ID|API_TOKEN)=/m);
+    expect(example).not.toContain("Copy this to it");
+    expect(example).not.toContain("wrangler login");
+    expect(example).toContain("pithy cloudflare connect");
+    expect(example).toContain("cloudflare.json");
+  });
+
   test("ships the dev-secrets example, and nothing else about secrets is in the project", async () => {
     await scaffoldProject({ targetDir: dir, appName: "my-app" });
 

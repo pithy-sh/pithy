@@ -11,7 +11,7 @@ pithy turnstile provision [--worker <name>] [--allow-shared-domain] [--json]
 pithy turnstile deprovision [--worker <name>] [--json]
 ```
 
-**Both subcommands need a Cloudflare account.** A production widget is an account resource, and its secret is written to a managed store through a deployed dispatcher. `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` are checked before anything is created.
+**Both subcommands need a Cloudflare account.** A production widget is an account resource, and its secret is written to a managed store through a deployed dispatcher. The credentials are checked before anything is created: a session `pithy cloudflare connect` bound to this directory, or `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`.
 
 ## Flags
 
@@ -146,7 +146,7 @@ Set widgets.visible.sitekeys.prod: "0x4AAA…" in the turnstile({ ... }) registr
 
 ```
 Cloudflare credentials are missing.
-Export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account, then run this again.
+Run pithy cloudflare connect to sign in, or export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account. Then run this again.
 ```
 
 **The Worker has no production address.** Nothing resolved — no `domains` declaration, no `env.prod` route, no `vars.BASE_URL`. A `domains` block the kit refuses is a separate refusal and is fatal: an invalid domain is a config error, so the widget is not bound to an address the adopter never declared. What a `pattern` and a `zone` may be is [`docs/CLI.md`'s](../CLI.md) to say, once.

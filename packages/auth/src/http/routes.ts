@@ -108,7 +108,8 @@ export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) 
     // string through the client projection, and a second copy of it could only be caught in production —
     // where the two disagreeing refuses every sign-in. #377, and `TURNSTILE_LOGIN_ACTION`'s docblock.
     if (wiring.turnstile) {
-      const guard = turnstile({ mode: wiring.turnstile.mode, action: TURNSTILE_LOGIN_ACTION });
+      const { mode, token } = wiring.turnstile;
+      const guard = turnstile({ mode, field: token.field, header: token.header, action: TURNSTILE_LOGIN_ACTION });
       app.use(`${base}/sign-in/magic-link`, guard);
       app.use(`${base}/email-otp/send-verification-otp`, guard);
     }

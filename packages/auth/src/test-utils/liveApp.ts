@@ -202,7 +202,9 @@ export async function startLiveApp(options: LiveAppOptions): Promise<LiveApp> {
     }),
     resolveGithubUserInfo: undefined,
     enqueueEmail: emailCapability.enqueue,
-    turnstile: options.turnstile ? { mode: options.turnstile.mode } : undefined,
+    turnstile: options.turnstile
+      ? { mode: options.turnstile.mode, token: { field: "cf-turnstile-response" } }
+      : undefined,
   };
 
   const app = buildApp(wiring, events);
