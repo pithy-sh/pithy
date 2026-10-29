@@ -117,7 +117,7 @@ export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) 
     app.post(
       `${base}/token/rotate`,
       describeRoute({
-        summary: "Trade the current refresh credential for a new access token and its successor.",
+        summary: "Trade the current session token for its successor, and a JWT for services outside this Worker.",
         description:
           "The presented session is spent. Presenting it again after a short grace window is read as theft, and revokes every session descended from the same sign-in.",
         verification: ["bearer", "session"],

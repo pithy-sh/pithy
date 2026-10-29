@@ -11,7 +11,9 @@ import { z } from "zod";
  */
 export const VerificationStrategy = z
   .union([
-    z.literal("bearer").describe("Short-lived access token via Authorization: Bearer; validated by @pithy-sh/auth."),
+    z
+      .literal("bearer")
+      .describe("A session token via Authorization: Bearer, rotated before it expires; validated by @pithy-sh/auth."),
     z.literal("session").describe("Cookie-based web session, CSRF-protected; validated by @pithy-sh/auth."),
     z
       .literal("signed-webhook")

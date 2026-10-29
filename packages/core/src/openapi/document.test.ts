@@ -137,7 +137,7 @@ describe("openApiDocument", () => {
     const bearer = document.components.securitySchemes.bearer as { description: string };
     expect(bearer.description).toContain("session token");
     expect(bearer.description).toContain("refreshToken");
-    expect(bearer.description).not.toContain("short-lived access token");
+    expect(bearer.description).not.toMatch(/short-lived access token/i);
   });
 
   test("takes summary, responses and verification from describeRoute", () => {
