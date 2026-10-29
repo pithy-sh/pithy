@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudflareInvalidResponseError, CloudflareRequestError } from "../client/errors";
-import { CloudflareVectorizeProvisioner } from "./vectorizeProvisioner";
+import { CloudflareVectorizeProvisioner, isExistingMetadataIndexError } from "./vectorizeProvisioner";
 
 const mockCreate = vi.fn();
 const mockDelete = vi.fn();
@@ -207,6 +208,52 @@ describe("CloudflareVectorizeProvisioner", () => {
     );
   });
 
+  describe("createMetadataIndex, when the property is already indexed", () => {
+    // What a create the SDK retried after Cloudflare applied it comes back as.
+    const exists = {
+      status: 400,
+      errors: [{ code: 40004, message: "metadata index already exists for this name" }],
+    };
+
+    it("returns when the list holds it with the same type", async () => {
+      mockMetaCreate.mockRejectedValue(exists);
+      mockMetaList.mockResolvedValue({ metadataIndexes: [{ propertyName: "tenantId", indexType: "String" }] });
+      await expect(manager.createMetadataIndex("pithy-vector-staging", "tenantId", "string")).resolves.toBeUndefined();
+    });
+
+    it("returns when the list does not show it yet, since Cloudflare has just said it exists", async () => {
+      mockMetaCreate.mockRejectedValue(exists);
+      mockMetaList.mockResolvedValue({ metadataIndexes: [] });
+      await expect(manager.createMetadataIndex("pithy-vector-staging", "tenantId", "string")).resolves.toBeUndefined();
+    });
+
+    it("refuses with a conflict naming both types when the list holds it as another type", async () => {
+      mockMetaCreate.mockRejectedValue(exists);
+      mockMetaList.mockResolvedValue({ metadataIndexes: [{ propertyName: "rank", indexType: "String" }] });
+      const thrown = await manager
+        .createMetadataIndex("pithy-vector-staging", "rank", "number")
+        .catch((error: unknown) => error);
+      expect(thrown).toBeInstanceOf(ConflictError);
+      expect(thrown).toMatchObject({
+        payload: {
+          code: "core/conflict",
+          message: "Metadata index pithy-vector-staging.rank already exists as string, not number.",
+        },
+      });
+    });
+
+    it("still surfaces any other refusal, and lists nothing for it", async () => {
+      mockMetaCreate.mockRejectedValue({
+        status: 400,
+        errors: [{ code: 40008, message: "too many metadata indexes" }],
+      });
+      await expect(manager.createMetadataIndex("pithy-vector-staging", "stage", "string")).rejects.toBeInstanceOf(
+        CloudflareRequestError,
+      );
+      expect(mockMetaList).not.toHaveBeenCalled();
+    });
+  });
+
   it("wraps an SDK failure as CloudflareRequestError", async () => {
     mockCreate.mockRejectedValue(new Error("rate limited"));
     await expect(manager.createIndex("x", { dimensions: 768, metric: "cosine" })).rejects.toBeInstanceOf(
@@ -238,5 +285,21 @@ describe("CloudflareVectorizeProvisioner", () => {
     expect(() => new CloudflareVectorizeProvisioner({ accountId: "", apiToken: "tok-1" })).toThrowError(
       expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/not_configured" }) }),
     );
+  });
+});
+
+describe("isExistingMetadataIndexError", () => {
+  it("is 400 with error code 40004", () => {
+    expect(isExistingMetadataIndexError({ status: 400, errors: [{ code: 40004, message: "already exists" }] })).toBe(
+      true,
+    );
+  });
+
+  it("is not another 400, an absence, another status, or something that is not an API error", () => {
+    expect(isExistingMetadataIndexError({ status: 400, errors: [{ code: 40005 }] })).toBe(false);
+    expect(isExistingMetadataIndexError({ status: 409, errors: [{ code: 40004 }] })).toBe(false);
+    expect(isExistingMetadataIndexError({ status: 400 })).toBe(false);
+    expect(isExistingMetadataIndexError(new Error("40004"))).toBe(false);
+    expect(isExistingMetadataIndexError(null)).toBe(false);
   });
 });

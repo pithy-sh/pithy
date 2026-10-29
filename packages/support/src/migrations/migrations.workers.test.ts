@@ -262,9 +262,8 @@ describe("the opt-in FTS5 index — a provisioned resource, not a migration", ()
     // authorizer that rejects SQLite constructs workerd permits (`fts5vocab` is refused on D1 while
     // plain FTS5 succeeds), so a pass in Miniflare proved nothing about the deployment that matters.
     // That is settled — the Leed CMS ships a `BEFORE UPDATE … BEGIN SELECT RAISE(ABORT, …); END`
-    // trigger in a production migration — and the remaining trap is casing, which no Workers test
-    // can catch: `BEGIN`/`END` must be uppercase, Miniflare tolerates lowercase and remote D1 rejects
-    // it as `incomplete input [code: 7500]`. `store/searchIndex.test.ts` holds that one.
+    // trigger in a production migration. The bodies spell `BEGIN`/`END` in uppercase by convention:
+    // Miniflare and remote D1 both accept lowercase today, and `store/searchIndex.test.ts` holds the form.
     expect(await triggers()).toEqual([...SEARCH_TRIGGERS].sort());
   });
 

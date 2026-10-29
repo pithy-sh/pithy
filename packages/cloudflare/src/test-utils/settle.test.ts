@@ -7,6 +7,7 @@ import {
   metadataIndexesSettled,
   SETTLE_TIMEOUT_MS,
   STABLE_READS,
+  UPSERT_SETTLE_MS,
   waitFor,
   waitForStable,
 } from "./settle";
@@ -28,8 +29,8 @@ const fast = { intervalMs: 1 } as const;
 
 describe("the settle budget", () => {
   // The numbers the live Vectorize suites share. Measured at 25-50s for a control-plane change, and the
-  // metadata-index list was watched flapping for 18s after it first agreed, so 60s and one read were not
-  // enough: the cloudflare suite failed on exactly that budget (#709).
+  // metadata-index list was watched flapping for 18s after it first agreed, so 60s and one read are not
+  // enough.
   it("is 120s and three agreeing reads", () => {
     expect(SETTLE_TIMEOUT_MS).toBe(120_000);
     expect(STABLE_READS).toBe(3);
@@ -37,11 +38,22 @@ describe("the settle budget", () => {
 });
 
 describe("the metadata-index budget", () => {
-  // Measured on #709: a metadata index settled in about 97s on one run and was still unsettled at 120s on
-  // the next, so the shared 120s budget undercuts exactly the wait it was sized for.
-  it("is 300s, and longer than every other wait's", () => {
-    expect(METADATA_INDEX_SETTLE_MS).toBe(300_000);
+  // Measured live: a metadata index settled in about 97s on one run, was unsettled at 120s on the next, and
+  // was still missing at 300s on a third. Cloudflare documents no readiness time, so the budget is twice that.
+  it("is 600s, and longer than every other wait's", () => {
+    expect(METADATA_INDEX_SETTLE_MS).toBe(600_000);
     expect(METADATA_INDEX_SETTLE_MS).toBeGreaterThan(SETTLE_TIMEOUT_MS);
+    expect(METADATA_INDEX_SETTLE_MS).toBeGreaterThan(UPSERT_SETTLE_MS);
+  });
+});
+
+describe("the upsert budget", () => {
+  // An upsert written right after a metadata index was still missing from the query at 121s, with the vectors
+  // before it visible. The wait is on the query, not on `processedUpToMutation`: the watermark steps through
+  // mutation ids nobody issued, and an unordered UUID cannot say whether it has passed ours.
+  it("is 300s, longer than the shared budget", () => {
+    expect(UPSERT_SETTLE_MS).toBe(300_000);
+    expect(UPSERT_SETTLE_MS).toBeGreaterThan(SETTLE_TIMEOUT_MS);
   });
 });
 
@@ -138,8 +150,8 @@ describe("waitForStable", () => {
 });
 
 // A live test makes several waits in a row, and each one's own budget is no bound on their sum. When the sum
-// outran the test's timeout, vitest abandoned the body mid-wait: the failure named no step, and the teardown
-// that deletes the index never ran (#709). A shared deadline makes the step in progress fail by name instead.
+// outruns the test's timeout, vitest abandons the body mid-wait: the failure names no step, and the teardown
+// that deletes the index never runs. A shared deadline makes the step in progress fail by name instead.
 describe("a deadline shared across waits", () => {
   it("cuts waitFor short at the deadline and says the shared budget ran out", async () => {
     const started = Date.now();

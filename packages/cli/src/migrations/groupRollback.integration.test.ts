@@ -18,7 +18,7 @@ import { rollbackConfirmPhrase } from "./confirm";
 import { migrateProject, type WorkerMigrationRun } from "./run";
 
 /**
- * **Migration groups, LIVE against real D1 over the REST API, in both directions (#694).**
+ * **Migration groups, LIVE against real D1 over the REST API, in both directions.**
  *
  * The unit suites prove the mechanism against Miniflare, which is the same Kysely over a different
  * driver. What only a real account can prove is the part this feature actually adds to a deploy: that a
@@ -148,7 +148,9 @@ describe.skipIf(!hasCreds)("migration groups — LIVE against real D1 over REST"
         migrateProject({ ...options, rollback: true, confirmRollback: rollbackConfirmPhrase("staging") }),
       );
       expect(refused.payload.message).toContain(`The newest group is ${RELEASE}`);
-      expect(refused.payload.action).toBe(`Reverse it with pithy migrate --rollback --group ${RELEASE}.`);
+      expect(refused.payload.action).toBe(
+        `Reverse it. \`pithy migrate --env staging --rollback --group ${RELEASE}\` with its --confirm-rollback phrase, which only a person gives, deletes the schema a migration group applied. That is a person's decision, not a fix.`,
+      );
       expect(await ledgerOf(remoteApp)).toEqual(["0200_email_0001_init", "1000_app_0001_things"]);
       expect(await ledgerOf(remoteSuppressions)).toEqual(["0100_email_0001_suppressions"]);
 

@@ -12,11 +12,12 @@ import {
 } from "./searchIndex";
 
 /**
- * The two ways a trigger body is wrong in a way no Miniflare test can see.
+ * The trigger bodies' text, held where no Miniflare test looks.
  *
- * **Casing.** `BEGIN` and `END` are the compound-statement delimiters, and remote D1 rejects a lowercase
- * body as `incomplete input [code: 7500]` while Miniflare accepts it. So the one place the casing could
- * drift is held here, in a plain unit test that fails the moment somebody lowercases a word.
+ * **Casing.** `BEGIN` and `END` are the compound-statement delimiters, and the bodies keep them uppercase
+ * by convention. Remote D1 and Miniflare both accept a lowercase body today, and older D1 rejected it as
+ * `incomplete input [code: 7500]`, so uppercase is the form that runs everywhere. This plain unit test is
+ * what holds it, and it fails the moment somebody lowercases a word.
  *
  * **Identifiers.** `CamelCasePlugin` snake-cases what the query builder emits and never touches a string
  * inside a `sql` template, so a trigger body is the one place in the package that has to spell the
@@ -40,7 +41,7 @@ describe("the FTS triggers' SQL", () => {
     expect(bodies).toContain("AFTER DELETE ON pithy_support_messages");
   });
 
-  test("BEGIN and END are uppercase in every body — remote D1 rejects them lowercased", () => {
+  test("BEGIN and END are uppercase in every body, by convention", () => {
     for (const statement of statements) {
       expect(statement).toMatch(/\bBEGIN\b/);
       expect(statement).toMatch(/\bEND\b/);
