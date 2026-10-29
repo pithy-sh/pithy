@@ -11,6 +11,8 @@ import {
   floorOf,
   isStalledStep,
   kitOverrides,
+  PUBLISH_RACE_WAIT_MS,
+  publishRace,
   STEP_TIMEOUT_MS,
   stalledStep,
   thirdPartyFloors,
@@ -194,6 +196,56 @@ describe("the clean room's isolation and bound", () => {
  * so this reads the file the CI job names and fails if the gate has quietly gone back to unbounded,
  * cache-sharing spawns.
  */
+describe("publishRace", () => {
+  // What `execFileSync` threw on a real run, with bun's stderr folded into the message as it is there.
+  const raced = Object.assign(
+    new Error(
+      [
+        "Command failed: bun add /tmp/pithy-cleanroom-MmJRJX/packs/pithy-sh-cli-0.17.0.tgz",
+        "Resolved, downloaded and extracted [888]",
+        'error: No version matching "^3.38.0" found for specifier "@smithy/core" (but package exists)',
+        "error: @smithy/core@^3.38.0 failed to resolve",
+      ].join("\n"),
+    ),
+    { status: 1 },
+  );
+
+  it("names the third-party range the registry could not meet yet", () => {
+    expect(publishRace(raced)).toEqual({ name: "@smithy/core", range: "^3.38.0" });
+  });
+
+  it("reads it from stderr when the message does not carry it", () => {
+    const cause = Object.assign(new Error("Command failed: bun add x.tgz"), {
+      stderr: 'error: No version matching "~2.1.4" found for specifier "tslib" (but package exists)\n',
+    });
+    expect(publishRace(cause)).toEqual({ name: "tslib", range: "~2.1.4" });
+  });
+
+  it("is not a race when the kit's own package is the one missing — that is the workspace:* shape", () => {
+    const cause = new Error(
+      'error: No version matching "^0.18.0" found for specifier "@pithy-sh/core" (but package exists)',
+    );
+    expect(publishRace(cause)).toBeNull();
+  });
+
+  it("is not a race for an exact version — a floor pinned to one never published", () => {
+    const cause = new Error('error: No version matching "4.3.99" found for specifier "zod" (but package exists)');
+    expect(publishRace(cause)).toBeNull();
+  });
+
+  it("is not a race for a package the registry does not have at all, or for any other failure", () => {
+    expect(publishRace(new Error('error: package "not-a-package" not found'))).toBeNull();
+    expect(publishRace(new Error("error: ENOSPC"))).toBeNull();
+    expect(publishRace(Object.assign(new Error("spawnSync bun ETIMEDOUT"), { code: "ETIMEDOUT" }))).toBeNull();
+    expect(publishRace("a string")).toBeNull();
+  });
+
+  it("waits long enough for a registry to catch up, and no longer than one step's bound", () => {
+    expect(PUBLISH_RACE_WAIT_MS).toBeGreaterThanOrEqual(30_000);
+    expect(PUBLISH_RACE_WAIT_MS).toBeLessThan(STEP_TIMEOUT_MS);
+  });
+});
+
 describe("scripts/cleanRoom.ts", () => {
   const source = readFileSync(join(import.meta.dirname, "..", "..", "..", "scripts", "cleanRoom.ts"), "utf8");
 
@@ -208,5 +260,23 @@ describe("scripts/cleanRoom.ts", () => {
 
   it("tells a stall apart from a failure when it reports one", () => {
     expect(source).toContain("isStalledStep(cause)");
+  });
+
+  it("installs the kit through the one retry that waits out a publish race", () => {
+    expect(source).toContain('install("installing @pithy-sh/cli into an empty directory", [cliTarball as string])');
+    expect(source).toContain('install("installing the rest of the kit beside it", rest)');
+    const start = source.indexOf("function install(");
+    const body = source.slice(start, source.indexOf("\n}\n", start));
+    const adds = source.split('run("bun", ["add"').length - 1;
+    expect(adds).toBe(body.split('run("bun", ["add"').length - 1);
+    expect(adds).toBeGreaterThan(0);
+  });
+
+  it("never retries a pithy command — a retry is what hid an install race in the CLI itself", () => {
+    const start = source.indexOf("const drive = ");
+    expect(start).toBeGreaterThan(-1);
+    const drive = source.slice(start, source.indexOf("\n  };", start));
+    expect(drive).not.toContain("publishRace");
+    expect(drive).not.toContain("install(");
   });
 });
