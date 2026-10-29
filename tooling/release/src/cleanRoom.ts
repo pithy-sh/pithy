@@ -97,6 +97,39 @@ export function isStalledStep(cause: unknown): boolean {
   return typeof cause === "object" && cause !== null && (cause as { code?: unknown }).code === "ETIMEDOUT";
 }
 
+/**
+ * How long the clean room waits before installing once more after a {@link publishRace}. A registry
+ * serves a version a few seconds to a minute after it is published; a minute covers that and costs one
+ * minute on the rare run that needs it.
+ */
+export const PUBLISH_RACE_WAIT_MS = 60 * 1000;
+
+/** bun's answer when a range names a version newer than any the registry serves yet. */
+const NO_VERSION_MATCHING = /No version matching "([^"]+)" found for specifier "([^"]+)" \(but package exists\)/;
+
+/**
+ * The third-party range an install could not meet because its version is not on the registry yet, or
+ * `null` when the failure is anything else.
+ *
+ * A package that publishes in pieces leaves a window where a dependent already requires a version the
+ * registry does not serve. That is a fact about the registry for a minute, not about the kit, so it is
+ * the one install failure worth a second attempt. Everything that looks like it and is a defect stays a
+ * failure: a `@pithy-sh/*` package is the `workspace:*` shape, and an exact version is a `--floors` pin
+ * naming a release that never existed, which waiting does not fix.
+ */
+export function publishRace(cause: unknown): { name: string; range: string } | null {
+  if (typeof cause !== "object" || cause === null) return null;
+  const said = [(cause as { message?: unknown }).message, (cause as { stderr?: unknown }).stderr]
+    .filter((part): part is string => typeof part === "string")
+    .join("\n");
+  const found = NO_VERSION_MATCHING.exec(said);
+  if (found === null) return null;
+  const [, range, name] = found as unknown as [string, string, string];
+  if (name.startsWith("@pithy-sh/")) return null;
+  if (/^\d/.test(range)) return null;
+  return { name, range };
+}
+
 /** What a stalled step reports. Names the step, the bound it broke, and where to look — never a guess. */
 export function stalledStep(what: string, timeoutMs: number): string {
   const minutes = Math.round(timeoutMs / 60_000);
