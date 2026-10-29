@@ -34,7 +34,7 @@ import { targetWorker } from "./add";
 const SCREEN_QUESTIONS: Record<UiScreenSet, string> = {
   auth: "Scaffold the passwordless sign-in screens?",
   payments: "Scaffold the paywall and subscription screens?",
-  organization: "Scaffold the account chooser?",
+  organization: "Scaffold the account chooser and the invitation screen?",
   consent: "Scaffold the consent settings screen?",
 };
 
@@ -219,7 +219,7 @@ const UiAddPayload = z
       ),
     auth: z.boolean().describe("Whether the sign-in screens were included."),
     payments: z.boolean().describe("Whether the paywall screens were included."),
-    organization: z.boolean().describe("Whether the account chooser was included."),
+    organization: z.boolean().describe("Whether the account chooser and the invitation screen were included."),
     consent: z.boolean().describe("Whether the consent settings screen was included."),
     created: Names("Worker-relative paths created by this run, sorted."),
     skipped: Names("Worker-relative paths that already existed and were left byte-identical, sorted."),
@@ -297,7 +297,7 @@ const add = withContract(
       },
       organization: {
         type: "boolean",
-        description: "Include the account chooser (--no-organization to skip)",
+        description: "Include the account chooser and the invitation screen (--no-organization to skip)",
       },
       consent: {
         type: "boolean",

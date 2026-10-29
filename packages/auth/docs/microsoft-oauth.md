@@ -100,7 +100,7 @@ A directory user with no `mail` attribute arrives with no email at all. That sig
 
 ## 7. Mobile
 
-You do not register a deep-link URI with Microsoft. Microsoft only ever redirects to the Worker's `/auth/callback/microsoft`. The mobile app passes its own deep link as the sign-in `callbackURL` (for example `myapp://auth/callback`); the Worker completes the exchange and redirects there. For that to be allowed, the scheme must be listed in `trustedOrigins` (prefix match):
+You do not register a deep-link URI with Microsoft. Microsoft only ever redirects to the Worker's `/auth/callback/microsoft`. The app opens `GET /auth/sign-in/social/start?provider=microsoft&callbackURL=…` in the system browser's sign-in sheet, never posting `/auth/sign-in/social` itself. `callbackURL` is the app's own link, `myapp://auth/callback` or a universal link, carrying the S256 challenge of a verifier only the app holds as `handoff_challenge`. The Worker completes the exchange and returns to that link with a one-time `?code=`, which the app trades with the verifier at `POST /auth/handoff` for the session token. [`apple-signin.md`](apple-signin.md) §6 has the steps, and `pithy ui add react-native` scaffolds them. The link must be in `trustedOrigins`, the scheme by prefix and an https link by its origin:
 
 ```ts
 auth({
@@ -165,7 +165,7 @@ A sign-in attempt with Microsoft then answers `503` with the code `auth/provider
 - [ ] Redirect URI `<baseURL><basePath>/callback/microsoft` registered for each environment, platform **Web**.
 - [ ] Client secret created, its **Value** copied, and its expiry on somebody's calendar.
 - [ ] `xms_edov` added to the ID token under **Token configuration** — or the magic-link step accepted for every work and school address.
-- [ ] Mobile deep-link scheme listed in `trustedOrigins` (no deep link in Microsoft).
+- [ ] The app's scheme, and its universal-link origin when it has one, listed in `trustedOrigins` (no deep link in Microsoft).
 - [ ] `clientId` + `clientSecret` + `tenantId` stored together via `pithy secrets create auth-microsoft-credentials` (typed JSON); Microsoft enabled in config with `microsoft: { enabled: true }`.
 - [ ] Decided whether Microsoft may create accounts — `microsoft: { allowSignUp: false }` if it may not.
 

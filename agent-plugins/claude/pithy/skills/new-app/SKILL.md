@@ -26,7 +26,9 @@ From the directory the project should live in:
 pithy init --name <project> --worker <worker> --target <mobile|web|both> --json
 ```
 
-Read the JSON it prints. `frontEnd` says whether a React app was scaffolded. Then run `pithy setup`: it installs with the project's package manager and makes the checkout ready to develop.
+For a `mobile` or `both` target, add `--react-native`: under `--json` the Expo app is scaffolded only when a flag asks for it, since the offer is a prompt.
+
+Read the JSON it prints. `frontEnd` says whether a React app was scaffolded. `reactNative` is `null` when no Expo app was scaffolded; otherwise `reactNative.app` is its `apps/` directory. Then run `pithy setup`: it installs with the project's package manager and makes the checkout ready to develop.
 
 Offer `pithy docs connect`, which points this session at the Pithy documentation server. It writes no credential.
 
@@ -49,7 +51,7 @@ In order:
 
 1. **Server.** Hand it the design from step 2. It adds each capability with `pithy add <capability> --worker <worker> --with-prerequisites`, writes the app's routes and migrations, and runs `pithy contract`.
 2. **Runner.** It runs `pithy migrate --dry-run`, then `pithy migrate`, then the tests and typecheck, and reports.
-3. **Clients**, once the contract exists, in parallel when the target is `both`. The web client builds in the Worker `pithy init` scaffolded it into. The mobile client builds the Expo app `pithy ui add react-native` scaffolds into `apps/<name>/`, a directory of its own beside the Worker it calls.
+3. **Clients**, once the contract exists, in parallel when the target is `both`. The web client builds in the Worker `pithy init` scaffolded it into. The mobile client builds the Expo app in `apps/<app>/`, the `reactNative.app` from step 3, a directory of its own beside the Worker it calls. `pithy init` wrote it with no screens, because the Worker composed nothing yet, so the mobile client first runs `pithy ui add react-native --app <app> --worker <worker>`: it adds the screens for what the server composed and rewrites the app's generated config from the Worker.
 4. **Runner** again: `pithy dev`, and the clients' own tests.
 
 ## 5. Report

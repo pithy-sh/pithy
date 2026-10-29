@@ -39,6 +39,8 @@ type AppAuth = AuthInstance<[ReturnType<typeof organization>]>;
 // …then `inferAdditionalFields<AppAuth>()` in the plugins list above.
 ```
 
+**A native app takes the kit's own client, with an `origin`.** `src/client/api.ts` calls the Worker by rooted path on the page's own origin, with its httpOnly cookie, until an `origin` is set: then every request goes to that origin, sends no cookie, and carries the credential the handed-in `fetch` adds. `createBearerSession` in `src/client/bearer.ts` builds that fetch. The credential is the raw session token a sign-in answers with, held in memory and persisted through a secure store (`expo-secure-store`'s Keychain or Keystore), and sent as `Authorization: Bearer` to the Worker's origin and nowhere else. It rotates through `POST /auth/token/rotate` before it expires, one rotation in flight at a time, and the successor is stored before anything uses it. Another capability's client takes the session's `fetch` as its own. A redirect sign-in comes back with a one-time code rather than a cookie, and `src/client/handoff.ts` holds the helpers that trade it: `createHandoffVerifier`, `handoffCallbackURL`, `nativeSignInStartURL`, `handoffCode` and `exchangeHandoff` ([`docs/apple-signin.md`](docs/apple-signin.md) §6). `pithy ui add react-native` scaffolds an app wired to all three.
+
 **This section stays here.** `src/http/routes.ts` and `src/client/api.ts` both explain a design decision by pointing a reader at it by name — the flat response shape is read rather than rewritten precisely because `createAuthClient` is a first-class surface, and that argument is only checkable against the client this documents.
 
 ## Provider sign-in is identity-based, by design

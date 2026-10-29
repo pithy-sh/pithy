@@ -19,7 +19,7 @@ Both live on `pithy_organization_organizations`, so the read that already joins 
 
 **A member of several organizations carries on in the others, unchanged.** Suspending one organization reads nothing past it and writes nothing to anybody's account. Their memberships elsewhere, their selection of another organization, their sessions and their account all stand. The suspended one simply stops being theirs until it is reinstated.
 
-`@pithy-sh/ui-react` ships the `organization-suspended` screen. The chooser sends a member there when their list is empty and `suspended` is not zero, and when the organization they pick was suspended after the list was drawn. Your own screens send them there the same way: `organizationRefusal(failure.code) === "suspended"`, from `@pithy-sh/organization/src/index`.
+`@pithy-sh/ui-react` ships the `organization-suspended` screen, and `@pithy-sh/ui-react-native` ships it for a React Native app. The chooser sends a member there when their list is empty and `suspended` is not zero, and when the organization they pick was suspended after the list was drawn. Your own screens send them there the same way: `organizationRefusal(failure.code) === "suspended"`, from `@pithy-sh/organization/src/index`.
 
 A deleted organization is refused as one that is not there: `organization/not_found`, to a member and a stranger alike, and every session's selection of it is cleared when it is deleted.
 

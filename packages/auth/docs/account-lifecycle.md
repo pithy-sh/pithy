@@ -200,7 +200,7 @@ Each fires once per transition. A call that finds the account already where it a
 
 ## Screens
 
-Three screens ship with auth and are yours after `pithy ui add react`: account suspended, account deleted, and organization suspended. Each says what happened, what it means, and who to ask, in its own English. None renders a reason or a date from its URL, because anybody can write a URL. The details are in the mail.
+Three screens ship with auth and are yours after `pithy ui add react`, or in React Native primitives after `pithy ui add react-native`: account suspended, account deleted, and organization suspended. Each says what happened, what it means, and who to ask, in its own English. None renders a reason or a date from its URL, because anybody can write a URL. The details are in the mail.
 
 ## What each capability does with a person's rows
 
