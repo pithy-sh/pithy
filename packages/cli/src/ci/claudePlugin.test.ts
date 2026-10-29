@@ -13,7 +13,7 @@ import { main } from "../main";
 import { sourceFiles } from "./sourceFiles";
 
 /**
- * **The `pithy` Claude Code plugin, held to what it claims (#719).**
+ * **The `pithy` Claude Code plugin, held to what it claims.**
  *
  * The plugin is markdown and JSON, so nothing compiles it and nothing would notice it drifting from the
  * CLI it drives. These are the properties that would drift: the agent team and its defaults, the
@@ -37,7 +37,7 @@ const TEAM = [
   { agent: "runner", key: "runner", model: "haiku", effort: "low" },
 ] as const;
 
-const SKILLS = ["new-app", "app-design", "deploy", "report-kit-gap"] as const;
+const SKILLS = ["new-app", "app-design", "deploy", "operate", "report-kit-gap"] as const;
 
 /** The values a model or an effort setting may hold: what the Agent tool's `model` and `effort` accept. */
 const MODELS = ["opus", "sonnet", "haiku", "fable", "inherit"] as const;
@@ -128,8 +128,8 @@ describe("the marketplace", () => {
 
   /**
    * **Every source is a full path from the repository root, and there is no `metadata.pluginRoot`.** Claude Code
-   * joins `pluginRoot` to a bare source, so installs worked with it, but Anthropic's plugin directory showed no
-   * logo for either plugin while Leed's marketplace, laid out this way, showed its own.
+   * joins `pluginRoot` to a bare source and installs work either way, but Anthropic's plugin directory shows a
+   * plugin's logo only for a full path.
    */
   test("names each plugin by its path from the repository root", () => {
     expect(marketplace.metadata).not.toHaveProperty("pluginRoot");
@@ -323,7 +323,7 @@ describe("the skills", () => {
 });
 
 /**
- * **`/deploy` takes an app to a named environment on the person's word, and offers the dashboard after (#757).**
+ * **`/deploy` takes an app to a named environment on the person's word, and offers the dashboard after.**
  *
  * A deploy comes days into a build, in a session that may never have run `/new-app`, so it is a skill of its own
  * whose description an agent matches. What it may do is held here, because each rule is a sentence an edit could
@@ -383,6 +383,129 @@ describe("the deploy skill", () => {
   });
 });
 
+/**
+ * **`/operate` administers a deployed environment through `pithy mcp`, reads first.** Each rule is a sentence an
+ * edit could soften: the grant starts at the reads and never at `--scope all`, the person runs the connect, a
+ * non-read call needs its own yes, a grant widens only with `--update`, and the disconnect is the person's.
+ */
+describe("the operate skill", () => {
+  const skill = () => skillSource("operate");
+
+  test("is found by what a person says when they want it", () => {
+    const description = frontmatter(skill()).description ?? "";
+    for (const words of ["administer", "staging", "production", "pithy mcp"]) expect(description).toContain(words);
+  });
+
+  test("grants the reads first, with manifest:read, and never every scope", () => {
+    expect(skill()).toContain("pithy mcp connect");
+    expect(skill()).toContain("`manifest:read`");
+    expect(skill()).toMatch(/only the `reads` scopes/);
+    expect(skill()).toMatch(/Never `--scope all`/);
+  });
+
+  test("offers the connect for the person to run, then says how the session picks it up", () => {
+    expect(skill()).toMatch(/`! pithy mcp connect/);
+    // A `!` command has no terminal, so a connect naming no `--scope` stores the default grant, `keys:rotate` included.
+    expect(skill()).toContain(
+      "! pithy mcp connect --env <env> --purpose '<their words>' --client claude-code --scope manifest:read --scope <read>",
+    );
+    expect(skill()).toContain("--oidc-claim <name=value> --scope manifest:read --scope <read>");
+    expect(skill()).toMatch(/restart Claude Code, or run `\/mcp`/);
+  });
+
+  test("asks for a yes before each call that is not a read, reading the kind off the tool's annotations", () => {
+    // Every tool carries `readOnlyHint`, false on a write, so the rule has to name the value.
+    expect(skill()).toContain("`readOnlyHint: true` is a read. Call it.");
+    expect(skill()).toContain("anything with `readOnlyHint: false` needs a yes");
+    expect(skill()).toContain("destructiveHint");
+    expect(skill()).toMatch(/A yes is for one call/);
+  });
+
+  test("tells an agent's connection, which a key joins, from the dashboard's, which refuses it", () => {
+    expect(skill()).toContain("actorKind");
+    expect(skill()).toMatch(/`agent`.*without `--scope`/);
+  });
+
+  test("widens a grant only with --update, on a yes, and leaves the disconnect to the person", () => {
+    expect(skill()).toContain("pithy mcp connect --env <env> --update");
+    expect(skill()).toContain("pithy mcp status --json");
+    expect(skill()).toMatch(/`pithy mcp disconnect` is the person's/);
+    expect(skill()).toContain("--oidc-issuer");
+  });
+
+  test("the README says what it sends, and where", () => {
+    const section = readme().split("## What leaves your machine")[1]?.split("\n## ")[0] ?? "";
+    expect(section).toContain("`/operate`");
+  });
+});
+
+describe("the agent team knows both MCP paths", () => {
+  test("the dashboard and an agent connection are exclusive, said before the dashboard is offered", () => {
+    const source = skillSource("deploy");
+    const exclusive = source.indexOf("never both");
+    expect(exclusive).toBeGreaterThan(-1);
+    expect(exclusive).toBeLessThan(source.indexOf("pithy dashboard connect"));
+    expect(source).toContain("`/operate`");
+  });
+
+  test("app-design asks about users' agents between the auth flows and the clients, and records the floor and tools", () => {
+    const source = skillSource("app-design");
+    const at = source.indexOf("## 4. Your users' agents");
+    expect(at).toBeGreaterThan(source.indexOf("## 3. The auth flows"));
+    expect(at).toBeLessThan(source.indexOf("## 5. The clients"));
+    expect(source).toMatch(/Recommend no/);
+    expect(source).toContain("pithy add mcp --floor");
+    const summary = source.slice(source.indexOf("## 6. Write it down"));
+    expect(summary).toMatch(/floor/);
+    expect(summary).toMatch(/tool table/);
+  });
+
+  test("the server agent states power, operation, tool and effect, and how mcp() composes", () => {
+    const source = agentSource("server");
+    for (const words of ["`power`", "`operation`", "`tool: true`", "`tool: { effect }`", "`mcp({ floor })`"]) {
+      expect(source).toContain(words);
+    }
+    expect(source).toContain("pithy add mcp");
+    expect(source).toMatch(/never a second OAuth provider/);
+    expect(source).toMatch(/permanent/);
+  });
+
+  test("client-web writes the agent screens and keeps their guardrails", () => {
+    const source = agentSource("client-web");
+    expect(source).toMatch(/auth, payments, organization, mcp/);
+    expect(source).toMatch(/never reads as verified/);
+    expect(source).toMatch(/redirect address keeps the emphasis/);
+    expect(source).toMatch(/connected-applications screen stays reachable from the account/);
+  });
+
+  test("client-mobile sends users' agents to the web Worker's consent screen", () => {
+    expect(agentSource("client-mobile")).toMatch(/consent screen/);
+  });
+
+  test("the runner reads pithy mcp status, and never connects, disconnects or revokes", () => {
+    const source = agentSource("runner");
+    expect(source).toContain("pithy mcp status --json");
+    expect(source).toMatch(
+      /Never `pithy mcp connect`, `pithy mcp disconnect` or `pithy dashboard connections --revoke`/,
+    );
+  });
+
+  test("the README tells the three MCP servers apart and names pithy mcp", () => {
+    const text = readme();
+    expect(text).toContain("`pithy.sh/mcp`");
+    expect(text).toContain("`pithy mcp`");
+    expect(text).toContain("`/mcp`");
+    const deploy = text.split("## Deploy, and connect the dashboard")[1]?.split("\n## ")[0] ?? "";
+    expect(deploy).toMatch(/never both/);
+    const buildsOn = text.split("## What it builds on")[1]?.split("\n## ")[0] ?? "";
+    expect(buildsOn).toContain("`pithy mcp`");
+  });
+
+  test("the manifest carries the mcp keyword", () => {
+    expect((manifest as PluginManifest & { keywords?: string[] }).keywords).toContain("mcp");
+  });
+});
+
 describe("the README", () => {
   const readme = readFileSync(join(PITHY, "README.md"), "utf8");
 
@@ -401,7 +524,7 @@ describe("the README", () => {
 });
 
 /**
- * **The `pithy-games` add-on, held to what it claims (#718).** It depends on `pithy`, reuses its team by
+ * **The `pithy-games` add-on, held to what it claims.** It depends on `pithy`, reuses its team by
  * name, adds one agent with its own two settings, and pins the generator its Unity client is built with.
  * Every name it reaches across the plugin boundary — `pithy:runner`, `pithy:report-kit-gap` — is checked to
  * land on a file, because nothing else would notice a rename on the other side.
@@ -655,7 +778,7 @@ describe("the version is the CLI's", () => {
 });
 
 /**
- * **Every `pithy` command the plugin names is one the CLI has** (#719). An agent told to run a command
+ * **Every `pithy` command the plugin names is one the CLI has.** An agent told to run a command
  * that does not exist runs it anyway and reports the failure as the user's problem. Read off the same
  * walk `pithy schema --json` publishes, so a renamed or removed command fails here the day it moves. A
  * flag is checked too: a `--flag` written after a command must be one it declares, or a global one.
