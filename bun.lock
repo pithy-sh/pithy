@@ -19,7 +19,7 @@
     },
     "packages/artifacts": {
       "name": "@pithy-sh/artifacts",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -49,7 +49,7 @@
     },
     "packages/audit": {
       "name": "@pithy-sh/audit",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -81,7 +81,7 @@
     },
     "packages/auth": {
       "name": "@pithy-sh/auth",
-      "version": "0.11.0",
+      "version": "0.12.0",
       "dependencies": {
         "@better-auth/cimd": "^1.7.11",
         "@better-auth/core": "^1.7.11",
@@ -128,7 +128,7 @@
     },
     "packages/cli": {
       "name": "@pithy-sh/cli",
-      "version": "0.17.0",
+      "version": "0.18.0",
       "bin": {
         "pithy": "./dist/bin.js",
       },
@@ -192,7 +192,7 @@
     },
     "packages/cloudflare": {
       "name": "@pithy-sh/cloudflare",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@aws-sdk/client-s3": "^3.1111.0",
         "@aws-sdk/s3-request-presigner": "^3.1111.0",
@@ -219,7 +219,7 @@
     },
     "packages/consent": {
       "name": "@pithy-sh/consent",
-      "version": "0.0.0",
+      "version": "0.1.0",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -248,7 +248,7 @@
     },
     "packages/core": {
       "name": "@pithy-sh/core",
-      "version": "0.13.0",
+      "version": "0.14.0",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -274,7 +274,7 @@
     },
     "packages/email": {
       "name": "@pithy-sh/email",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -308,7 +308,7 @@
     },
     "packages/i18n": {
       "name": "@pithy-sh/i18n",
-      "version": "0.13.0",
+      "version": "0.14.0",
       "devDependencies": {
         "@cloudflare/vitest-plugin": "^1.4.2",
         "@pithy-sh/auth": "workspace:*",
@@ -352,7 +352,7 @@
     },
     "packages/leaderboard": {
       "name": "@pithy-sh/leaderboard",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -382,7 +382,7 @@
     },
     "packages/ledger": {
       "name": "@pithy-sh/ledger",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -411,7 +411,7 @@
     },
     "packages/matchmaking": {
       "name": "@pithy-sh/matchmaking",
-      "version": "0.4.1",
+      "version": "0.5.0",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -448,7 +448,7 @@
     },
     "packages/media": {
       "name": "@pithy-sh/media",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -483,7 +483,7 @@
     },
     "packages/multiplayer": {
       "name": "@pithy-sh/multiplayer",
-      "version": "0.4.1",
+      "version": "0.5.0",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -523,7 +523,7 @@
     },
     "packages/organization": {
       "name": "@pithy-sh/organization",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -561,7 +561,7 @@
     },
     "packages/payments": {
       "name": "@pithy-sh/payments",
-      "version": "0.6.1",
+      "version": "0.7.0",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -608,7 +608,7 @@
     },
     "packages/rating": {
       "name": "@pithy-sh/rating",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -637,7 +637,7 @@
     },
     "packages/secrets": {
       "name": "@pithy-sh/secrets",
-      "version": "0.6.1",
+      "version": "0.6.2",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -669,7 +669,7 @@
     },
     "packages/storage": {
       "name": "@pithy-sh/storage",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -702,7 +702,7 @@
     },
     "packages/support": {
       "name": "@pithy-sh/support",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -749,7 +749,7 @@
     },
     "packages/testers": {
       "name": "@pithy-sh/testers",
-      "version": "0.4.1",
+      "version": "0.5.0",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -788,7 +788,7 @@
     },
     "packages/turnstile": {
       "name": "@pithy-sh/turnstile",
-      "version": "0.6.1",
+      "version": "0.7.0",
       "devDependencies": {
         "@cloudflare/vitest-plugin": "^1.4.2",
         "@cloudflare/workers-types": "^5.20260729.1",
@@ -815,7 +815,7 @@
     },
     "packages/ui-core": {
       "name": "@pithy-sh/ui-core",
-      "version": "0.0.0",
+      "version": "0.1.0",
       "devDependencies": {
         "@pithy-sh/tsconfig": "workspace:*",
         "@types/node": "^22.15.0",
@@ -838,7 +838,7 @@
     },
     "packages/ui-react": {
       "name": "@pithy-sh/ui-react",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "devDependencies": {
         "@pithy-sh/auth": "workspace:*",
         "@pithy-sh/consent": "workspace:*",
@@ -870,7 +870,7 @@
     },
     "packages/ui-react-native": {
       "name": "@pithy-sh/ui-react-native",
-      "version": "0.0.0",
+      "version": "0.1.0",
       "devDependencies": {
         "@pithy-sh/auth": "workspace:*",
         "@pithy-sh/consent": "workspace:*",
@@ -920,7 +920,7 @@
     },
     "packages/vector": {
       "name": "@pithy-sh/vector",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -951,7 +951,7 @@
     },
     "packages/vite": {
       "name": "@pithy-sh/vite",
-      "version": "0.13.0",
+      "version": "0.14.0",
       "devDependencies": {
         "@pithy-sh/auth": "workspace:*",
         "@pithy-sh/consent": "workspace:*",

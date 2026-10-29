@@ -1,5 +1,25 @@
 # @pithy-sh/ui-react
 
+## 0.6.0
+
+### Minor Changes
+
+- [#863](https://github.com/pithy-sh/pithy/pull/863) [`a0330f0`](https://github.com/pithy-sh/pithy/commit/a0330f072bba28704301326f0b605e76a2fe6278) Thanks [@kingmesal](https://github.com/kingmesal)! - Your app can now expose an MCP endpoint of its own, so your users' agents reach exactly the routes their role allows — authorized as the person they act for, with nothing new to gate.
+
+- [#858](https://github.com/pithy-sh/pithy/pull/858) [`7a1664c`](https://github.com/pithy-sh/pithy/commit/7a1664c445e6f84fc5ab55c1b30c8ec2e73fe426) Thanks [@kingmesal](https://github.com/kingmesal)! - Record consent the way a regulator asks to see it, from a checkbox to a signed authorization with its exact document and expiry, for visitors and accounts alike, and email's tracking and marketing mail follow it automatically.
+
+- [#875](https://github.com/pithy-sh/pithy/pull/875) [`88a0ce9`](https://github.com/pithy-sh/pithy/commit/88a0ce99a5c9f01953ff94d03e3b9fd4ee3be12d) Thanks [@kingmesal](https://github.com/kingmesal)! - The agent endpoint accepts a Client ID Metadata Document, the registration the MCP spec now prefers, and still takes dynamic registration from older clients.
+
+- [#869](https://github.com/pithy-sh/pithy/pull/869) [`a7dfe1c`](https://github.com/pithy-sh/pithy/commit/a7dfe1c18f4cec94ab3ee09be752f822b49ee047) Thanks [@kingmesal](https://github.com/kingmesal)! - Kit screens load data through `useRead` and run calls through `useAction` from `@pithy-sh/ui-core`, which `@pithy-sh/ui-react` re-exports for screens scaffolded before it, and a lint rule keeps raw `useEffect` out of kit code.
+
+- [#879](https://github.com/pithy-sh/pithy/pull/879) [`3bf6b34`](https://github.com/pithy-sh/pithy/commit/3bf6b3483ee1f6cbf1b8e9cd96f57a557b336ca1) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy ui add react-native` gives an Expo app the kit's screens, session and checkout on iOS, Android and the web, from one codebase.
+
+### Patch Changes
+
+- [#889](https://github.com/pithy-sh/pithy/pull/889) [`da603f4`](https://github.com/pithy-sh/pithy/commit/da603f47a0a96c4c7b8eaba2528c95021e6f9cef) Thanks [@kingmesal](https://github.com/kingmesal)! - A React Native app's web build uses the Turnstile sitekey of the environment it is built for, and the consent screens follow a custom consent base path on the web and on a phone.
+- Updated dependencies [[`da603f4`](https://github.com/pithy-sh/pithy/commit/da603f47a0a96c4c7b8eaba2528c95021e6f9cef), [`3bf6b34`](https://github.com/pithy-sh/pithy/commit/3bf6b3483ee1f6cbf1b8e9cd96f57a557b336ca1)]:
+  - @pithy-sh/ui-core@0.1.0
+
 ## 0.5.0
 
 ### Minor Changes

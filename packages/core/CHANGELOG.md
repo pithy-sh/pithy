@@ -1,5 +1,59 @@
 # @pithy-sh/core
 
+## 0.14.0
+
+### Minor Changes
+
+- [#863](https://github.com/pithy-sh/pithy/pull/863) [`a0330f0`](https://github.com/pithy-sh/pithy/commit/a0330f072bba28704301326f0b605e76a2fe6278) Thanks [@kingmesal](https://github.com/kingmesal)! - Your app can now expose an MCP endpoint of its own, so your users' agents reach exactly the routes their role allows — authorized as the person they act for, with nothing new to gate.
+
+- [#854](https://github.com/pithy-sh/pithy/pull/854) [`aa818f4`](https://github.com/pithy-sh/pithy/commit/aa818f4aac8ef6df09a074ff14b7dfc839606694) Thanks [@kingmesal](https://github.com/kingmesal)! - Your audit trail is now tamper-evident: every event is chained to the one before it and checkpointed outside the database, and an export verifies offline with `pithy audit verify`.
+
+- [#857](https://github.com/pithy-sh/pithy/pull/857) [`0eb6eab`](https://github.com/pithy-sh/pithy/commit/0eb6eab0df433d420cd95e0d27f0be4a6ec7c582) Thanks [@kingmesal](https://github.com/kingmesal)! - Ship your audit trail to Splunk, Datadog or any HTTPS endpoint as it is written, with each event's chain hash so the receiver can check nothing went missing.
+
+- [#853](https://github.com/pithy-sh/pithy/pull/853) [`24b1744`](https://github.com/pithy-sh/pithy/commit/24b17441d5dc9e75e123bf2da631aa8e657f1e0e) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy backup` dumps every D1 in an environment, skipping FTS5 indexes it can rebuild, in files that restore, and `pithy restore` brings them back into an empty database. Support search now uses FTS5 by default: run `pithy support provision` after upgrading.
+
+- [#858](https://github.com/pithy-sh/pithy/pull/858) [`7a1664c`](https://github.com/pithy-sh/pithy/commit/7a1664c445e6f84fc5ab55c1b30c8ec2e73fe426) Thanks [@kingmesal](https://github.com/kingmesal)! - Record consent the way a regulator asks to see it, from a checkbox to a signed authorization with its exact document and expiry, for visitors and accounts alike, and email's tracking and marketing mail follow it automatically.
+
+- [#855](https://github.com/pithy-sh/pithy/pull/855) [`536284d`](https://github.com/pithy-sh/pithy/commit/536284d87ac654d28f5d2fcc14332cf0bb2b3d45) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy` now ships an MCP server, so an agent can administer your Pithy application through the same scoped, audited control-plane seam the dashboard uses, with its tools discovered from what your Worker composes, on your machine with its own key or in CI with no key at all.
+
+- [#842](https://github.com/pithy-sh/pithy/pull/842) [`204b5d5`](https://github.com/pithy-sh/pithy/commit/204b5d5a8f7a901a65a83eaecc6303196709fcdc) Thanks [@kingmesal](https://github.com/kingmesal)! - A management client can see which scopes each connection actually exercised, and which it was refused, without reading a single event in full.
+  
+  Security: A verified connection refused for an ungranted scope was audited with no connection or key, so scope probing by a known credential could not be traced to it.
+
+- [#856](https://github.com/pithy-sh/pithy/pull/856) [`df62262`](https://github.com/pithy-sh/pithy/commit/df622624dac2ad6b004b9e0d429ff1e701db3902) Thanks [@kingmesal](https://github.com/kingmesal)! - Prove every erasure: for one person or one organization, or every purge in a period, what was erased, what was kept and why, and the audit events that show it.
+
+- [#851](https://github.com/pithy-sh/pithy/pull/851) [`feb73e7`](https://github.com/pithy-sh/pithy/commit/feb73e7a55abe40485a689b5904430821e56f0c3) Thanks [@kingmesal](https://github.com/kingmesal)! - Your Worker can now produce its own SOC 2 and ISO 27001 evidence (logging, access, rotation, change history and data protection), read from what it actually composes and records, never asserted.
+
+- [#839](https://github.com/pithy-sh/pithy/pull/839) [`26bf2fe`](https://github.com/pithy-sh/pithy/commit/26bf2fed4e26b6c76d60f6c506c41e64ecbf6e0b) Thanks [@kingmesal](https://github.com/kingmesal)! - A management client can now credit, debit, reverse an entry and release a hold on a ledger, behind its own scope, with an idempotency key, a required reason and an audit event on every write.
+
+- [#867](https://github.com/pithy-sh/pithy/pull/867) [`2ca1808`](https://github.com/pithy-sh/pithy/commit/2ca18087e6ceba9cd4cc922df79559f4643f139e) Thanks [@kingmesal](https://github.com/kingmesal)! - Every MCP tool call against your app now writes an audit event — who, which tool, and what came of it — so an agent acting in your system leaves the same trail a person does.
+
+- [#877](https://github.com/pithy-sh/pithy/pull/877) [`97f7306`](https://github.com/pithy-sh/pithy/commit/97f73068fe9db8f2507590ac7c4fe7ef6b9dd16d) Thanks [@kingmesal](https://github.com/kingmesal)! - Each tool `pithy mcp` serves says what it does: a read is marked read-only, and a charge, a delete or a credential change is marked destructive.
+
+- [#852](https://github.com/pithy-sh/pithy/pull/852) [`a51af92`](https://github.com/pithy-sh/pithy/commit/a51af92658b7dd8e3d2c6ef503d1647118240c78) Thanks [@kingmesal](https://github.com/kingmesal)! - An unattended agent can now authenticate with its own workload identity instead of a stored key — register a trusted issuer and subject, and there is no private key to place, rotate or leak.
+
+- [#843](https://github.com/pithy-sh/pithy/pull/843) [`13f8764`](https://github.com/pithy-sh/pithy/commit/13f876492403babf162d46207503832d4f61fb59) Thanks [@kingmesal](https://github.com/kingmesal)! - Every capability that holds rows about a person now erases them on a purge and answers for them in an export, or says it keeps them and why.
+
+- [#841](https://github.com/pithy-sh/pithy/pull/841) [`8c0081b`](https://github.com/pithy-sh/pithy/commit/8c0081be974673196052fadc7de1b455bb1bb523) Thanks [@kingmesal](https://github.com/kingmesal)! - Capabilities can declare presence rooms: anyone who can read a record sees who else has it open, and what they are doing, live, from your own Worker.
+
+- [#864](https://github.com/pithy-sh/pithy/pull/864) [`6521c97`](https://github.com/pithy-sh/pithy/commit/6521c97975d328dd2fd023e0a378e934348ea4ce) Thanks [@kingmesal](https://github.com/kingmesal)! - Your record of processing activities, the GDPR Article 30 document, now comes from your Worker: every purpose, the data it uses, its legal basis, who receives it, and how long it's kept.
+
+- [#879](https://github.com/pithy-sh/pithy/pull/879) [`3bf6b34`](https://github.com/pithy-sh/pithy/commit/3bf6b3483ee1f6cbf1b8e9cd96f57a557b336ca1) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy ui add react-native` gives an Expo app the kit's screens, session and checkout on iOS, Android and the web, from one codebase.
+
+- [#862](https://github.com/pithy-sh/pithy/pull/862) [`10eb7b1`](https://github.com/pithy-sh/pithy/commit/10eb7b1d5e1c61efbce076a31abd3f77021d59a7) Thanks [@kingmesal](https://github.com/kingmesal)! - Declare how long everything is kept in one place (deleted accounts, the audit trail, each class of personal data), and place a legal hold that stops every purge touching it until it's released.
+
+- [#855](https://github.com/pithy-sh/pithy/pull/855) [`536284d`](https://github.com/pithy-sh/pithy/commit/536284d87ac654d28f5d2fcc14332cf0bb2b3d45) Thanks [@kingmesal](https://github.com/kingmesal)! - Every control-plane scope now says what kind of operation it is, so a management client can cap what an agent is granted, and a management client or `pithy dashboard connections --principal` can find and revoke everything one person authorized.
+
+- [#865](https://github.com/pithy-sh/pithy/pull/865) [`1fcd6fb`](https://github.com/pithy-sh/pithy/commit/1fcd6fbae42500854f325c230ae5ea5c71813728) Thanks [@kingmesal](https://github.com/kingmesal)! - Support search now matches meaning as well as words — keyword and semantic, ranked as one, off until you turn it on. Search has its own route, and the inbox list no longer takes `q`.
+
+### Patch Changes
+
+- [#881](https://github.com/pithy-sh/pithy/pull/881) [`b0bccd8`](https://github.com/pithy-sh/pithy/commit/b0bccd8fbfae8cc5750013341bc102f99afc57fa) Thanks [@kingmesal](https://github.com/kingmesal)! - The OpenAPI `bearer` scheme now names the session token the kit's routes accept, not the access token they refuse.
+
+- [#837](https://github.com/pithy-sh/pithy/pull/837) [`f04d818`](https://github.com/pithy-sh/pithy/commit/f04d818b2e498ddfc1b44eac707c51e7044634fb) Thanks [@kingmesal](https://github.com/kingmesal)! - A management client can see everything one credential reached, by tenant, route and outcome, and expand a route into the subjects it touched, without reading events one at a time.
+
+- [#876](https://github.com/pithy-sh/pithy/pull/876) [`3a456ed`](https://github.com/pithy-sh/pithy/commit/3a456ed706627141ccfe270da09bcea0299e724d) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy add mcp` composes the agent endpoint, and `pithy add --list` shows it.
+
 ## 0.13.0
 
 ### Minor Changes

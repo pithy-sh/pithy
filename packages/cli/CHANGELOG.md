@@ -1,5 +1,74 @@
 # @pithy-sh/cli
 
+## 0.18.0
+
+### Minor Changes
+
+- [#836](https://github.com/pithy-sh/pithy/pull/836) [`d5d4f71`](https://github.com/pithy-sh/pithy/commit/d5d4f71cb31eb40d519d7498970c3b8b4d09c555) Thanks [@kingmesal](https://github.com/kingmesal)! - A management client can replay who could do what over time: every membership, connection and key change with its before and after, without reading events one at a time.
+
+- [#863](https://github.com/pithy-sh/pithy/pull/863) [`a0330f0`](https://github.com/pithy-sh/pithy/commit/a0330f072bba28704301326f0b605e76a2fe6278) Thanks [@kingmesal](https://github.com/kingmesal)! - Your app can now expose an MCP endpoint of its own, so your users' agents reach exactly the routes their role allows — authorized as the person they act for, with nothing new to gate.
+
+- [#854](https://github.com/pithy-sh/pithy/pull/854) [`aa818f4`](https://github.com/pithy-sh/pithy/commit/aa818f4aac8ef6df09a074ff14b7dfc839606694) Thanks [@kingmesal](https://github.com/kingmesal)! - Your audit trail is now tamper-evident: every event is chained to the one before it and checkpointed outside the database, and an export verifies offline with `pithy audit verify`.
+
+- [#857](https://github.com/pithy-sh/pithy/pull/857) [`0eb6eab`](https://github.com/pithy-sh/pithy/commit/0eb6eab0df433d420cd95e0d27f0be4a6ec7c582) Thanks [@kingmesal](https://github.com/kingmesal)! - Ship your audit trail to Splunk, Datadog or any HTTPS endpoint as it is written, with each event's chain hash so the receiver can check nothing went missing.
+
+- [#835](https://github.com/pithy-sh/pithy/pull/835) [`5009bd7`](https://github.com/pithy-sh/pithy/commit/5009bd788122893ecd60a49968c6bb73ab4d7257) Thanks [@kingmesal](https://github.com/kingmesal)! - A management client can see every sign-in link and code your app sent, whether it was used, expired or is still waiting, and the mail that carried it.
+
+- [#853](https://github.com/pithy-sh/pithy/pull/853) [`24b1744`](https://github.com/pithy-sh/pithy/commit/24b17441d5dc9e75e123bf2da631aa8e657f1e0e) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy backup` dumps every D1 in an environment, skipping FTS5 indexes it can rebuild, in files that restore, and `pithy restore` brings them back into an empty database. Support search now uses FTS5 by default: run `pithy support provision` after upgrading.
+
+- [#858](https://github.com/pithy-sh/pithy/pull/858) [`7a1664c`](https://github.com/pithy-sh/pithy/commit/7a1664c445e6f84fc5ab55c1b30c8ec2e73fe426) Thanks [@kingmesal](https://github.com/kingmesal)! - Record consent the way a regulator asks to see it, from a checkbox to a signed authorization with its exact document and expiry, for visitors and accounts alike, and email's tracking and marketing mail follow it automatically.
+
+- [#855](https://github.com/pithy-sh/pithy/pull/855) [`536284d`](https://github.com/pithy-sh/pithy/commit/536284d87ac654d28f5d2fcc14332cf0bb2b3d45) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy` now ships an MCP server, so an agent can administer your Pithy application through the same scoped, audited control-plane seam the dashboard uses, with its tools discovered from what your Worker composes, on your machine with its own key or in CI with no key at all.
+
+- [#876](https://github.com/pithy-sh/pithy/pull/876) [`3a456ed`](https://github.com/pithy-sh/pithy/commit/3a456ed706627141ccfe270da09bcea0299e724d) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy add mcp` composes the agent endpoint, and `pithy add --list` shows it.
+
+- [#877](https://github.com/pithy-sh/pithy/pull/877) [`97f7306`](https://github.com/pithy-sh/pithy/commit/97f73068fe9db8f2507590ac7c4fe7ef6b9dd16d) Thanks [@kingmesal](https://github.com/kingmesal)! - Each tool `pithy mcp` serves says what it does: a read is marked read-only, and a charge, a delete or a credential change is marked destructive.
+
+- [#869](https://github.com/pithy-sh/pithy/pull/869) [`a7dfe1c`](https://github.com/pithy-sh/pithy/commit/a7dfe1c18f4cec94ab3ee09be752f822b49ee047) Thanks [@kingmesal](https://github.com/kingmesal)! - Kit screens load data through `useRead` and run calls through `useAction` from `@pithy-sh/ui-core`, which `@pithy-sh/ui-react` re-exports for screens scaffolded before it, and a lint rule keeps raw `useEffect` out of kit code.
+
+- [#852](https://github.com/pithy-sh/pithy/pull/852) [`a51af92`](https://github.com/pithy-sh/pithy/commit/a51af92658b7dd8e3d2c6ef503d1647118240c78) Thanks [@kingmesal](https://github.com/kingmesal)! - An unattended agent can now authenticate with its own workload identity instead of a stored key — register a trusted issuer and subject, and there is no private key to place, rotate or leak.
+
+- [#878](https://github.com/pithy-sh/pithy/pull/878) [`81a5453`](https://github.com/pithy-sh/pithy/commit/81a5453a8f448c7894b631361bad15d11d0816ec) Thanks [@kingmesal](https://github.com/kingmesal)! - The Claude Code plugin knows both MCP paths: it asks whether your users should connect their agents and builds the tools, and a new `/operate` skill lets the session administer a deployed environment through `pithy mcp`, reads first.
+
+- [#841](https://github.com/pithy-sh/pithy/pull/841) [`8c0081b`](https://github.com/pithy-sh/pithy/commit/8c0081be974673196052fadc7de1b455bb1bb523) Thanks [@kingmesal](https://github.com/kingmesal)! - Capabilities can declare presence rooms: anyone who can read a record sees who else has it open, and what they are doing, live, from your own Worker.
+
+- [#864](https://github.com/pithy-sh/pithy/pull/864) [`6521c97`](https://github.com/pithy-sh/pithy/commit/6521c97975d328dd2fd023e0a378e934348ea4ce) Thanks [@kingmesal](https://github.com/kingmesal)! - Your record of processing activities, the GDPR Article 30 document, now comes from your Worker: every purpose, the data it uses, its legal basis, who receives it, and how long it's kept.
+
+- [#879](https://github.com/pithy-sh/pithy/pull/879) [`3bf6b34`](https://github.com/pithy-sh/pithy/commit/3bf6b3483ee1f6cbf1b8e9cd96f57a557b336ca1) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy ui add react-native` gives an Expo app the kit's screens, session and checkout on iOS, Android and the web, from one codebase.
+
+- [#862](https://github.com/pithy-sh/pithy/pull/862) [`10eb7b1`](https://github.com/pithy-sh/pithy/commit/10eb7b1d5e1c61efbce076a31abd3f77021d59a7) Thanks [@kingmesal](https://github.com/kingmesal)! - Declare how long everything is kept in one place (deleted accounts, the audit trail, each class of personal data), and place a legal hold that stops every purge touching it until it's released.
+
+- [#855](https://github.com/pithy-sh/pithy/pull/855) [`536284d`](https://github.com/pithy-sh/pithy/commit/536284d87ac654d28f5d2fcc14332cf0bb2b3d45) Thanks [@kingmesal](https://github.com/kingmesal)! - Every control-plane scope now says what kind of operation it is, so a management client can cap what an agent is granted, and a management client or `pithy dashboard connections --principal` can find and revoke everything one person authorized.
+
+- [#865](https://github.com/pithy-sh/pithy/pull/865) [`1fcd6fb`](https://github.com/pithy-sh/pithy/commit/1fcd6fbae42500854f325c230ae5ea5c71813728) Thanks [@kingmesal](https://github.com/kingmesal)! - Support search now matches meaning as well as words — keyword and semantic, ranked as one, off until you turn it on. Search has its own route, and the inbox list no longer takes `q`.
+
+### Patch Changes
+
+- [#889](https://github.com/pithy-sh/pithy/pull/889) [`da603f4`](https://github.com/pithy-sh/pithy/commit/da603f47a0a96c4c7b8eaba2528c95021e6f9cef) Thanks [@kingmesal](https://github.com/kingmesal)! - A React Native app's web build uses the Turnstile sitekey of the environment it is built for, and the consent screens follow a custom consent base path on the web and on a phone.
+
+- [#839](https://github.com/pithy-sh/pithy/pull/839) [`26bf2fe`](https://github.com/pithy-sh/pithy/commit/26bf2fed4e26b6c76d60f6c506c41e64ecbf6e0b) Thanks [@kingmesal](https://github.com/kingmesal)! - A management client can now credit, debit, reverse an entry and release a hold on a ledger, behind its own scope, with an idempotency key, a required reason and an audit event on every write.
+
+- [#844](https://github.com/pithy-sh/pithy/pull/844) [`6d21a56`](https://github.com/pithy-sh/pithy/commit/6d21a5653c1250a85f855a3862ca3ba86f7367cf) Thanks [@kingmesal](https://github.com/kingmesal)! - A management client can read a player's ratings and recalculate or reset one, with a reason and an audit event.
+
+- [#885](https://github.com/pithy-sh/pithy/pull/885) [`05d02d4`](https://github.com/pithy-sh/pithy/commit/05d02d4ab3f4bc2c44bb8672a3ae404c8f570b36) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy ui` names the invitation screen the organization screens include.
+
+- [#895](https://github.com/pithy-sh/pithy/pull/895) [`c81c509`](https://github.com/pithy-sh/pithy/commit/c81c50993111a288bb602f64311996edf47353c8) Thanks [@kingmesal](https://github.com/kingmesal)! - A new project's `.dev.vars.example` no longer tells you to put your Cloudflare token in the checkout. It points at `pithy cloudflare connect`.
+  
+  Security: The starter told every new project to put its bootstrap Cloudflare API token in `<root>/.dev.vars`, inside the checkout, where a package with a `files` list can pack it and nothing reads it.
+
+- [#845](https://github.com/pithy-sh/pithy/pull/845) [`d26de8e`](https://github.com/pithy-sh/pithy/commit/d26de8e9f81a3ea90ee9284bff5c84d796677248) Thanks [@kingmesal](https://github.com/kingmesal)! - Assign a support thread to someone, filter the inbox by who owns it, and see who else has a thread open before you reply.
+
+- [#888](https://github.com/pithy-sh/pithy/pull/888) [`acc2f74`](https://github.com/pithy-sh/pithy/commit/acc2f74bdb160ff16ed0edf0bfa1143893bd5f1a) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy vector provision` waits up to ten minutes for a metadata index to go live, not five, and a metadata index create that was retried after Cloudflare applied it no longer fails as a duplicate.
+- Updated dependencies [[`a0330f0`](https://github.com/pithy-sh/pithy/commit/a0330f072bba28704301326f0b605e76a2fe6278), [`4308d78`](https://github.com/pithy-sh/pithy/commit/4308d78535533b02f25847f5fb46d1b84968605a), [`aa818f4`](https://github.com/pithy-sh/pithy/commit/aa818f4aac8ef6df09a074ff14b7dfc839606694), [`0eb6eab`](https://github.com/pithy-sh/pithy/commit/0eb6eab0df433d420cd95e0d27f0be4a6ec7c582), [`24b1744`](https://github.com/pithy-sh/pithy/commit/24b17441d5dc9e75e123bf2da631aa8e657f1e0e), [`b0bccd8`](https://github.com/pithy-sh/pithy/commit/b0bccd8fbfae8cc5750013341bc102f99afc57fa), [`7a1664c`](https://github.com/pithy-sh/pithy/commit/7a1664c445e6f84fc5ab55c1b30c8ec2e73fe426), [`536284d`](https://github.com/pithy-sh/pithy/commit/536284d87ac654d28f5d2fcc14332cf0bb2b3d45), [`204b5d5`](https://github.com/pithy-sh/pithy/commit/204b5d5a8f7a901a65a83eaecc6303196709fcdc), [`f04d818`](https://github.com/pithy-sh/pithy/commit/f04d818b2e498ddfc1b44eac707c51e7044634fb), [`da603f4`](https://github.com/pithy-sh/pithy/commit/da603f47a0a96c4c7b8eaba2528c95021e6f9cef), [`df62262`](https://github.com/pithy-sh/pithy/commit/df622624dac2ad6b004b9e0d429ff1e701db3902), [`feb73e7`](https://github.com/pithy-sh/pithy/commit/feb73e7a55abe40485a689b5904430821e56f0c3), [`26bf2fe`](https://github.com/pithy-sh/pithy/commit/26bf2fed4e26b6c76d60f6c506c41e64ecbf6e0b), [`3a456ed`](https://github.com/pithy-sh/pithy/commit/3a456ed706627141ccfe270da09bcea0299e724d), [`88a0ce9`](https://github.com/pithy-sh/pithy/commit/88a0ce99a5c9f01953ff94d03e3b9fd4ee3be12d), [`2ca1808`](https://github.com/pithy-sh/pithy/commit/2ca18087e6ceba9cd4cc922df79559f4643f139e), [`97f7306`](https://github.com/pithy-sh/pithy/commit/97f73068fe9db8f2507590ac7c4fe7ef6b9dd16d), [`a7dfe1c`](https://github.com/pithy-sh/pithy/commit/a7dfe1c18f4cec94ab3ee09be752f822b49ee047), [`a51af92`](https://github.com/pithy-sh/pithy/commit/a51af92658b7dd8e3d2c6ef503d1647118240c78), [`13f8764`](https://github.com/pithy-sh/pithy/commit/13f876492403babf162d46207503832d4f61fb59), [`8c0081b`](https://github.com/pithy-sh/pithy/commit/8c0081be974673196052fadc7de1b455bb1bb523), [`6521c97`](https://github.com/pithy-sh/pithy/commit/6521c97975d328dd2fd023e0a378e934348ea4ce), [`3bf6b34`](https://github.com/pithy-sh/pithy/commit/3bf6b3483ee1f6cbf1b8e9cd96f57a557b336ca1), [`10eb7b1`](https://github.com/pithy-sh/pithy/commit/10eb7b1d5e1c61efbce076a31abd3f77021d59a7), [`536284d`](https://github.com/pithy-sh/pithy/commit/536284d87ac654d28f5d2fcc14332cf0bb2b3d45), [`1fcd6fb`](https://github.com/pithy-sh/pithy/commit/1fcd6fbae42500854f325c230ae5ea5c71813728), [`acc2f74`](https://github.com/pithy-sh/pithy/commit/acc2f74bdb160ff16ed0edf0bfa1143893bd5f1a)]:
+  - @pithy-sh/core@0.14.0
+  - @pithy-sh/ui-react@0.6.0
+  - @pithy-sh/cloudflare@0.8.0
+  - @pithy-sh/email@0.8.0
+  - @pithy-sh/secrets@0.6.2
+  - @pithy-sh/turnstile@0.7.0
+  - @pithy-sh/ui-react-native@0.1.0
+  - @pithy-sh/ui-core@0.1.0
+
 ## 0.17.0
 
 ### Minor Changes
