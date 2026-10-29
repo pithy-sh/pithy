@@ -267,6 +267,20 @@ describe("pithy ui --json conforms to its published payloads", () => {
     await expectConforms("ui list", await runCaptured("ui list", ["--json"]));
   });
 
+  test("a backfill's refreshed declarations conform, and the human run names them", async () => {
+    const before = stub.add;
+    stub.add = { ...before, skipped: ["src/pithy-config.tsx"], refreshed: ["client-env.d.ts"] };
+    try {
+      const json = await runCaptured("ui add", ["react", "--json"]);
+      await expectConforms("ui add", json);
+      expect(JSON.parse(json.join("")).refreshed).toEqual(["client-env.d.ts"]);
+      const human = (await runCaptured("ui add", ["react"])).join("");
+      expect(human).toContain("Refreshed to the kit's current declarations: client-env.d.ts.");
+    } finally {
+      stub.add = before;
+    }
+  });
+
   /** The install it left required, as `next`, and no key when it wrote no dependency (#697). */
   test("add names the install when it wrote dependencies, and carries no next when it wrote none", async () => {
     const wrote = JSON.parse((await runCaptured("ui add", ["react", "--json"])).join(""));

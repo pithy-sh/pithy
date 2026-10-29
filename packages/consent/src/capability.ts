@@ -7,6 +7,7 @@ import { type ConsentPurpose, parseConsentPurposes } from "@pithy-sh/core/src/co
 import { type ConsentReader, composedConsentPurposes } from "@pithy-sh/core/src/consent/reader";
 import type { FieldKeys } from "@pithy-sh/core/src/crypto/fieldKeys";
 import { fromZodError, InternalError } from "@pithy-sh/core/src/error/pithyError";
+import type { ConsentClientProjection } from "./client/projection";
 import { ConsentConfig, type ConsentConfigInput } from "./config/config";
 import { consentDatabase, consentRetainedTables, consentTables } from "./data/tables";
 import { CONSENT_EVIDENCE_BINDING } from "./evidence/evidence";
@@ -131,6 +132,8 @@ export function consent(config: ConsentConfigInput = {}): ConsentCapability {
       catalog = new Map([...declared, ...adopter].map((purpose) => [purpose.id, purpose]));
     },
     consentReader: reader,
+    // What a browser may know: where the routes mount, so a screen follows a custom `basePath`.
+    client: (): ConsentClientProjection => ({ enabled: true, basePath: resolved.basePath }),
     middleware: [mergeOnSignIn(options)],
     routes: registerConsentRoutes(options),
     adminRoutes: consentAdminRoutes(resolved.basePath),

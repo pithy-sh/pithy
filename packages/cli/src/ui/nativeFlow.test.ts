@@ -238,10 +238,11 @@ describe("pithy ui add react-native", () => {
       universalLinkOrigin: null,
       rails: { ios: "none", android: "none", web: "none" },
       google: { webClientId: null, iosClientId: null },
-      auth: { enabled: false },
-      i18n: { enabled: false },
-      payments: { enabled: false },
-      turnstile: { enabled: false },
+      auth: { dev: { enabled: false }, staging: { enabled: false }, prod: { enabled: false } },
+      i18n: { dev: { enabled: false }, staging: { enabled: false }, prod: { enabled: false } },
+      payments: { dev: { enabled: false }, staging: { enabled: false }, prod: { enabled: false } },
+      turnstile: { dev: { enabled: false }, staging: { enabled: false }, prod: { enabled: false } },
+      consent: { dev: { enabled: false }, staging: { enabled: false }, prod: { enabled: false } },
     });
   });
 
@@ -262,8 +263,10 @@ describe("pithy ui add react-native", () => {
   test("the generated config carries each capability's projection, the backend's domain and its rails", async () => {
     await runUiAdd(options(SELLING));
     const config = await generated();
-    expect(config.auth).toEqual({ enabled: true, providers: ["google"] });
-    expect(config.payments).toEqual({ enabled: true, products: [] });
+    for (const environment of ["dev", "staging", "prod"] as const) {
+      expect(config.auth[environment]).toEqual({ enabled: true, providers: ["google"] });
+      expect(config.payments[environment]).toEqual({ enabled: true, products: [] });
+    }
     expect(config.universalLinkOrigin).toBe("https://api.acme.dev");
     expect(config.origins).toEqual({ dev: "http://localhost:8787", staging: null, prod: "https://api.acme.dev" });
     // Each platform's default, held to what the backend enables: no Google rail, so Android sells nothing.
@@ -415,8 +418,8 @@ describe("pithy ui add react-native", () => {
     const config = await generated();
     expect(config.rails).toEqual({ ios: "apple", android: "none", web: "stripe" });
     expect(report.rails).toEqual(config.rails);
-    expect(config.auth).toMatchObject({ enabled: true });
-    expect(config.payments).toMatchObject({ enabled: true });
+    expect(config.auth.dev).toMatchObject({ enabled: true });
+    expect(config.payments.prod).toMatchObject({ enabled: true });
     expect(config.appScheme).toBe("acme");
     expect(report.trustedOrigins).toEqual([
       "acme://",
@@ -519,7 +522,8 @@ describe("pithy ui sync --app", () => {
       rails: { ios: "apple", android: "none", web: "stripe" },
     });
     const config = await generated();
-    expect(config.turnstile).toEqual({ enabled: true, sitekey: "x" });
+    expect(config.turnstile.dev).toEqual({ enabled: true, sitekey: "x" });
+    expect(config.turnstile.prod).toEqual({ enabled: true, sitekey: "x" });
     expect(config.appScheme).toBe("acme");
     expect(config.universalLinkOrigin).toBe("https://links.acme.dev");
   });
@@ -563,6 +567,31 @@ describe("pithy ui sync --app", () => {
     const report = await sync(SELLING, { check: true });
     expect(report.changed).toBe(true);
     expect(await readFile(path, "utf8")).toBe(before);
+  });
+
+  test("--check reports drift in one environment's projection alone, and a sync rewrites that one", async () => {
+    const keyed = (prod: string): WorkerConfig => ({
+      ...BARE,
+      capabilities: [
+        defineCapability({
+          name: "turnstile",
+          requiredBindings: [],
+          client: ({ environment }) => ({ enabled: true, sitekey: environment === "prod" ? prod : "test-key" }),
+        }),
+      ],
+    });
+    await runUiAdd(options(keyed("prod-key")));
+    const path = join(appDir, "src", "pithy-config.generated.ts");
+    const before = await readFile(path, "utf8");
+    expect((await sync(keyed("prod-key"), { check: true })).changed).toBe(false);
+
+    expect((await sync(keyed("rotated-key"), { check: true })).changed).toBe(true);
+    expect(await readFile(path, "utf8")).toBe(before);
+
+    expect((await sync(keyed("rotated-key"))).changed).toBe(true);
+    const config = await generated();
+    expect(config.turnstile.prod).toEqual({ enabled: true, sitekey: "rotated-key" });
+    expect(config.turnstile.staging).toEqual({ enabled: true, sitekey: "test-key" });
   });
 
   test("a rail flag changes that platform's rail, and the others keep theirs", async () => {

@@ -22,14 +22,15 @@ import { deriveWorkerFirst } from "./routeAllowlist";
  * The values `pithy-config.generated.ts` holds, worked out from the backend Worker's composed config.
  *
  * The file's format belongs to `@pithy-sh/ui-react-native`; this module decides what goes in it. The
- * projections are each capability's client projection for `dev`, the same values `virtual:pithy/*` serves a
- * Vite app under `pithy dev`. The Worker paths are the base paths its composed route table answers under, which the
- * web build's dev proxy forwards. The origins are the backend's address in each environment. The scheme and the
- * universal-link origin are first guesses the adopter keeps editing, and a sync keeps their edits.
+ * projections are each capability's client projection for each environment the origins name, the same values
+ * `virtual:pithy/*` serves a Vite app built for that environment. The Worker paths are the base paths its composed
+ * route table answers under, which the web build's dev proxy forwards. The origins are the backend's address in
+ * each environment. The scheme and the universal-link origin are first guesses the adopter keeps editing, and a
+ * sync keeps their edits.
  */
 
 /** The capabilities whose projections the file carries. */
-const PROJECTED = ["auth", "i18n", "payments", "turnstile"] as const;
+const PROJECTED = ["auth", "i18n", "payments", "turnstile", "consent"] as const;
 
 /**
  * Where the backend answers under `pithy dev`: the origin `.dev.config.json` pins for it, or the first port of
@@ -93,11 +94,14 @@ export function buildGeneratedConfig(input: {
   rails: PlatformRails;
 }): GeneratedConfig {
   const capabilities = allCapabilities(input.config);
-  const projection = (name: (typeof PROJECTED)[number]) =>
-    resolveClientProjection(
-      capabilities.find((capability) => capability.name === name),
-      { environment: LOCAL_ENVIRONMENT },
+  // Every environment the file carries an origin for, `null` included: a build for it still needs its projection.
+  const environments = [LOCAL_ENVIRONMENT, ...DEPLOYED.filter((environment) => environment in input.origins)];
+  const projections = (name: (typeof PROJECTED)[number]) => {
+    const capability = capabilities.find((composed) => composed.name === name);
+    return Object.fromEntries(
+      environments.map((environment) => [environment, resolveClientProjection(capability, { environment })]),
     );
+  };
   const parsed = GeneratedConfig.safeParse({
     origins: input.origins,
     appScheme: appSchemeFor(input.app),
@@ -106,10 +110,7 @@ export function buildGeneratedConfig(input: {
     google: { webClientId: null, iosClientId: null },
     // The dev proxy forwards these under `pithy dev`, so the local route table is the one that counts.
     workerPaths: deriveWorkerFirst(input.config, []).filter((pattern) => !pattern.endsWith("/*")),
-    auth: projection("auth"),
-    i18n: projection("i18n"),
-    payments: projection("payments"),
-    turnstile: projection("turnstile"),
+    ...Object.fromEntries(PROJECTED.map((name) => [name, projections(name)])),
   });
   if (parsed.success) return parsed.data;
   throw fromZodError(parsed.error, {

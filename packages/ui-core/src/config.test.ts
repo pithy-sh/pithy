@@ -4,6 +4,7 @@
 import { expect, expectTypeOf, test } from "vitest";
 import {
   AUTH_DISABLED,
+  CONSENT_DISABLED,
   I18N_DISABLED,
   PAYMENTS_DISABLED,
   type PaymentsProductConfig,
@@ -11,7 +12,7 @@ import {
 } from "./config";
 
 test("every default is the not-composed branch, so a screen can bail on it", () => {
-  for (const disabled of [AUTH_DISABLED, TURNSTILE_DISABLED, PAYMENTS_DISABLED, I18N_DISABLED]) {
+  for (const disabled of [AUTH_DISABLED, TURNSTILE_DISABLED, PAYMENTS_DISABLED, I18N_DISABLED, CONSENT_DISABLED]) {
     expect(disabled.enabled).toBe(false);
   }
 });
@@ -22,6 +23,10 @@ test("nothing is on offer when a capability is absent", () => {
   expect(PAYMENTS_DISABLED.products).toEqual([]);
   expect(PAYMENTS_DISABLED.paddle).toBeNull();
   expect(TURNSTILE_DISABLED.sitekey).toBe("");
+});
+
+test("consent's default base path is the one the capability mounts at when none is given", () => {
+  expect(CONSENT_DISABLED.basePath).toBe("/consent");
 });
 
 test("the default locale is one the project is said to serve", () => {

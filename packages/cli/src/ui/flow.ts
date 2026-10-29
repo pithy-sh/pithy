@@ -9,6 +9,7 @@ import { ConflictError, NotFoundError, ValidationError } from "@pithy-sh/core/sr
 import type { PlatformRails } from "@pithy-sh/ui-react-native/src/generatedConfig";
 import { emptyPlan, type Plan } from "../plan/plan";
 import { inShadow } from "../plan/shadow";
+import { writeFileAtomic } from "../project/atomic";
 import { projectEnvironments, type WorkerConfig } from "../project/config";
 import { detectPackageManager, type PackageManager } from "../project/packageManager";
 import { readOptionalFile } from "../project/readOptionalFile";
@@ -18,7 +19,7 @@ import { workerDirName } from "../project/workerIdentity";
 import type { KitRangeSources } from "./kitRanges";
 import { type RailChoices, runNativeUiAdd } from "./nativeFlow";
 import { deriveWorkerFirst, uncoveredRoutes } from "./routeAllowlist";
-import { scaffoldFiles } from "./scaffold";
+import { type ScaffoldResult, scaffoldFiles } from "./scaffold";
 import { PITHY_SCREEN_DIR, unstyledScreenClasses } from "./screenStyles";
 import { resolveScreenSets, type ScreenSets, type UiScreenPrompt } from "./screens";
 import { resolveStub, UI_STUBS, type UiStub } from "./stubs";
@@ -140,6 +141,12 @@ export interface UiAddReport {
   /** Worker-relative paths that already existed and were left byte-identical, sorted. */
   skipped: string[];
   /**
+   * On a backfill, the generated files that existed and differed from the kit's current emit, and were rewritten
+   * with it: `client-env.d.ts`, so a module declared since the scaffold reaches the screens this run adds. Empty
+   * when every one was current. Absent on a first scaffold, which creates them.
+   */
+  refreshed?: string[];
+  /**
    * Class names Pithy's screens render that nothing in this Worker's stylesheets defines — empty on
    * every ordinary run, and the exact list to fix when it is not.
    *
@@ -214,6 +221,32 @@ async function planFiles(
   // The whole record, non-strict: the writer skips what exists and reports it, so the run says what
   // it added AND what it left alone.
   return { files, strict: false };
+}
+
+/**
+ * On a backfill, rewrite each of the stub's generated files the writer skipped whose contents differ from the
+ * template, and move it from `skipped` to `refreshed`. Every other skipped file is the adopter's and stays.
+ */
+async function refreshGenerated(
+  workerDir: string,
+  stub: UiStub,
+  files: Record<string, string>,
+  scaffolded: { written: string[]; skipped: string[] },
+): Promise<{ written: string[]; skipped: string[]; refreshed: string[] }> {
+  const refreshed: string[] = [];
+  for (const rel of stub.generated ?? []) {
+    const contents = files[rel];
+    if (contents === undefined || !scaffolded.skipped.includes(rel)) continue;
+    const path = join(workerDir, rel);
+    if ((await readOptionalFile(path)) === contents) continue;
+    await writeFileAtomic(path, contents);
+    refreshed.push(rel);
+  }
+  return {
+    written: scaffolded.written,
+    skipped: scaffolded.skipped.filter((rel) => !refreshed.includes(rel)),
+    refreshed,
+  };
 }
 
 /**
@@ -304,7 +337,10 @@ export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
   // One write, run against the project or, under `--dry-run`, against a copy of it — so the plan is this
   // write's own output and cannot describe a different one (`plan/shadow.ts`).
   const write = async (projectDir: string, workerDir: string) => {
-    const written = await scaffoldFiles({ workerDir, framework: stub.id, files: plan.files, strict: plan.strict });
+    const scaffolded = await scaffoldFiles({ workerDir, framework: stub.id, files: plan.files, strict: plan.strict });
+    const written: ScaffoldResult & { refreshed?: string[] } = plan.strict
+      ? scaffolded
+      : await refreshGenerated(workerDir, stub, plan.files, scaffolded);
     const assets = await wireAssets(workerDir, patterns);
     await wireManifest(workerDir, stub, packageManager);
     const pkg = await wirePackage(projectDir, workerDir, stub);
@@ -344,6 +380,7 @@ export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
     consent,
     created: result.written.written,
     skipped: result.written.skipped,
+    ...(result.written.refreshed === undefined ? {} : { refreshed: result.written.refreshed }),
     unstyled: result.unstyled,
     runWorkerFirst: result.assets.after,
     packageManager,
