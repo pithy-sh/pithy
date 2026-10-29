@@ -3,12 +3,20 @@
 
 /**
  * **Waiting on an eventually consistent control plane, for the live suites.** One budget and one rule, shared
- * by `@pithy-sh/cloudflare`'s Vectorize suite and `@pithy-sh/vector`'s, because the cloudflare suite kept a
- * 60s budget and a single confirming read of its own and failed on exactly that (#709).
+ * by `@pithy-sh/cloudflare`'s Vectorize suite and `@pithy-sh/vector`'s, so neither keeps a shorter budget or a
+ * single confirming read of its own.
  *
- * **The budget is 120s, and 300s for a metadata index.** A Vectorize index became visible 25-50s after the
- * call that made it, measured live, and an upsert became queryable in about 30s. A metadata index is slower:
- * about 97s on one run of #709 and over 120s on the next, so its waits take {@link METADATA_INDEX_SETTLE_MS}.
+ * **The budget is 120s, and 300s for a metadata index or an upsert.** A Vectorize index became visible 25-50s
+ * after the call that made it, measured live. A metadata index is slower: about 97s on one run and over 120s on
+ * the next, so its waits take {@link METADATA_INDEX_SETTLE_MS}. An upsert usually becomes queryable in about
+ * 30s, but one written right after a metadata index was still unqueryable at 121s, with the vectors before it
+ * visible, so the waits for an upsert take {@link UPSERT_SETTLE_MS}.
+ *
+ * **An upsert is waited on by its outcome, never by its mutation id.** `describe()` reports a
+ * `processedUpToMutation` watermark, and the manager reads it. The watermark moves through mutation ids the
+ * caller never issued, and a probe watched it step past ours one second after matching it. A mutation id is a
+ * UUID with no order, so "processed up to ours" cannot be computed from a later id, and a poll for equality
+ * misses the one moment it holds. So a wait polls the query until it returns what was written.
  *
  * **A metadata-index wait compares names and types, never a count.** {@link metadataIndexesSettled} is the
  * predicate; a list of the right length can still be the wrong list.
@@ -20,21 +28,27 @@
  * than a fresh read, which can disagree with the one before it.
  *
  * **A test that waits several times shares one deadline across them.** Each wait's own budget bounds that
- * wait and nothing else, so a test making eight of them in a row could outrun its vitest timeout with every
- * step inside budget. Vitest then abandoned the body mid-poll: the failure said only "Test timed out", and the
- * teardown that deletes the index never ran (#709). Pass the same {@link SettleOptions.deadline} to every
- * wait and the step in progress when it passes fails by name, inside the body, where the teardown still runs.
+ * wait and nothing else, so a test making eight of them in a row can outrun its vitest timeout with every
+ * step inside budget. Vitest then abandons the body mid-poll: the failure says only "Test timed out", and the
+ * teardown that deletes the index never runs. Pass the same {@link SettleOptions.deadline} to every wait, set
+ * below the test's vitest timeout, and the step in progress when it passes fails by name, inside the body,
+ * where the teardown still runs.
  */
 
-/** Ceiling for any one wait. Measured at 25-50s for a control-plane change, and about 30s for an upsert. */
+/** Ceiling for any one wait. Measured at 25-50s for a control-plane change. */
 export const SETTLE_TIMEOUT_MS = 120_000;
 
 /**
- * Ceiling for a metadata-index wait, and only for that. A metadata index is the slowest change Vectorize
- * applies: on #709 one settled in about 97s and the next was still unsettled at 120s, so the shared budget
- * undercut exactly this wait. `pithy vector provision` waits on the same measurement.
+ * Ceiling for a metadata-index wait. A metadata index is the slowest change Vectorize applies: one settled in
+ * about 97s and the next was still unsettled at 120s. `pithy vector provision` waits on the same measurement.
  */
 export const METADATA_INDEX_SETTLE_MS = 300_000;
+
+/**
+ * Ceiling for an upsert to become queryable. About 30s is usual, and one written right after a metadata index
+ * was still missing from the query at 121s, so the waits for an upsert take the metadata-index budget.
+ */
+export const UPSERT_SETTLE_MS = 300_000;
 
 /**
  * Consecutive agreeing reads that count as settled. Three, because one confirming read can be a stale replica,
