@@ -116,6 +116,31 @@ test("the name is reported, never the headline, and the redirect address is show
   unmount();
 });
 
+test("a host its metadata document proved is shown as checked, and the name beside it stays unchecked", async () => {
+  const HOST_CANARY = "canary-client.example.com";
+  const answer = await readConsent.getMockImplementation()?.();
+  readConsent.mockResolvedValue({
+    ok: true,
+    value: { ...answer.value, client: { ...answer.value.client, verifiedHost: HOST_CANARY } },
+  });
+  const unmount = await rendered();
+  const emphasised = [...host.querySelectorAll("strong")].map((element) => element.textContent);
+  expect(emphasised).toContain(HOST_CANARY);
+  expect(host.textContent).toContain(`Checked: it is published at ${HOST_CANARY}`);
+  expect(host.querySelector("h1")?.textContent ?? "").not.toContain(HOST_CANARY);
+  const mentions = [...host.querySelectorAll("*")].filter(
+    (element) => element.children.length === 0 && (element.textContent ?? "").includes(NAME_CANARY),
+  );
+  for (const element of mentions) expect(element.textContent).toMatch(/nobody has checked/i);
+  unmount();
+});
+
+test("a client nothing verified shows no host as checked", async () => {
+  const unmount = await rendered();
+  expect(host.textContent).not.toMatch(/Checked:/);
+  unmount();
+});
+
 test("what approving lets it do is shown in full: each effect, each count, and each scope it will not get", async () => {
   // The screen is the consequence of one decision, so dropping any of this hides part of what is being decided.
   const unmount = await rendered();

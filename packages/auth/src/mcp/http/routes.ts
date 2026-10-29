@@ -29,6 +29,7 @@ import type { AuthInstance } from "../../instance/auth";
 import { lifecycleRefusalFor } from "../../lifecycle/enforce";
 import { PACKAGE_VERSION } from "../../version.generated";
 import { argumentClass } from "../argumentClass";
+import { verifiedHost } from "../clientMetadata";
 import { consentView } from "../consent";
 import { dispatchedOutcome, dispatchRequest, type ToolArguments, toolArguments } from "../dispatch";
 import { floorAdmits, type McpFloor } from "../floor";
@@ -486,7 +487,7 @@ export function registerMcpRoutes(app: Hono<PithyHonoEnv>, deps: McpRouteDeps): 
     describeRoute({
       summary: "Show what an application asking to act as you will be able to do.",
       description:
-        "Read by the scaffolded consent screen. The client's name is as it reported itself; the redirect URI is the one the authorization server enforces. Only operations your role allows are listed.",
+        "Read by the scaffolded consent screen. The client's name is as it reported itself; its host is verified only when its id is its metadata document's URL; the redirect URI is the one the authorization server enforces. Only operations your role allows are listed.",
       verification: ["bearer", "session"],
       responses: { 200: ConsentView },
     }),
@@ -496,7 +497,11 @@ export function registerMcpRoutes(app: Hono<PithyHonoEnv>, deps: McpRouteDeps): 
       const instance = await deps.host().instance(c);
       const query = await signedQuery(instance, c.req.valid("query").oauth_query);
       const clientId = query.get("client_id") ?? "";
-      const client = await (await adapterOf(instance)).findOne<{ name?: string | null; uri?: string | null }>({
+      const client = await (await adapterOf(instance)).findOne<{
+        name?: string | null;
+        uri?: string | null;
+        clientDiscoveryId?: string | null;
+      }>({
         model: "oauthClient",
         where: [{ field: "clientId", value: clientId }],
       });
@@ -505,6 +510,7 @@ export function registerMcpRoutes(app: Hono<PithyHonoEnv>, deps: McpRouteDeps): 
       const view = consentView({
         client: {
           id: clientId,
+          verifiedHost: verifiedHost({ clientId, clientDiscoveryId: client.clientDiscoveryId }),
           reportedName: client.name ?? null,
           reportedUri: client.uri ?? null,
           redirectUri: query.get("redirect_uri") ?? "",
@@ -565,13 +571,18 @@ export function registerMcpRoutes(app: Hono<PithyHonoEnv>, deps: McpRouteDeps): 
       });
       const applications: ConnectedApplication[] = [];
       for (const consent of consents) {
-        const client = await adapter.findOne<{ name?: string | null; redirectUris?: string[] | string | null }>({
+        const client = await adapter.findOne<{
+          name?: string | null;
+          redirectUris?: string[] | string | null;
+          clientDiscoveryId?: string | null;
+        }>({
           model: "oauthClient",
           where: [{ field: "clientId", value: consent.clientId }],
         });
         const uris = client?.redirectUris;
         applications.push({
           clientId: consent.clientId,
+          verifiedHost: verifiedHost({ clientId: consent.clientId, clientDiscoveryId: client?.clientDiscoveryId }),
           reportedName: client?.name ?? null,
           redirectUris: Array.isArray(uris) ? uris : typeof uris === "string" ? redirectList(uris) : [],
           approvedAt: new Date(consent.createdAt).toISOString(),

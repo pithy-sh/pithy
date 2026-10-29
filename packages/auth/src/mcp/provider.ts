@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { oauthProvider } from "@better-auth/oauth-provider";
+import { type ClientDiscovery, oauthProvider } from "@better-auth/oauth-provider";
 import type { BetterAuthPlugin } from "better-auth";
 import { APIError, createAuthMiddleware } from "better-auth/api";
 
@@ -10,8 +10,10 @@ import { APIError, createAuthMiddleware } from "better-auth/api";
  *
  * **Composed, not written.** Better Auth's OAuth 2.1 provider turns the instance into an authorization server:
  * dynamic client registration, PKCE, resource-bound JWT access tokens signed by the JWKS the `jwt` plugin already
- * keeps, refresh tokens, and the RFC 8414 metadata a client discovers it by. What this module adds is policy, and
- * every line of it narrows the provider's defaults.
+ * keeps, refresh tokens, and the RFC 8414 metadata a client discovers it by. Beside registration, this module plugs in
+ * the Client ID Metadata Document discovery from `@better-auth/cimd` (`./clientMetadata.ts`), so a client may also be
+ * known by the URL of a document it publishes. That one extension adds the registration path the MCP specification
+ * prefers; everything else this module adds is policy, and every line of that narrows the provider's defaults.
  *
  * **One scope, and it is not a permission.** The consent is informational (§4.3): one decision, *let this client
  * act as you in this application*, so the token carries no permission selection. {@link MCP_SCOPE} is the only
@@ -61,6 +63,8 @@ export interface McpProviderSettings {
   readonly resource: string;
   /** The scaffolded screen's path, which is both the sign-in and the consent page for this flow. */
   readonly consentPage: string;
+  /** How a client whose id is an HTTPS URL is resolved from the metadata document served there. */
+  readonly clientDiscovery: ClientDiscovery;
 }
 
 /**
@@ -130,6 +134,9 @@ export function mcpAuthorizationServer(settings: McpProviderSettings): McpProvid
       // A native MCP client registers an `http://127.0.0.1` callback and often omits `application_type`; inferring
       // it admits those without loosening the rules for a web client's redirect.
       clientRegistrationDefaultApplicationType: "infer",
+      // A client whose id is its metadata document's URL needs no registration; any other client registers
+      // dynamically.
+      extensions: [{ clientDiscovery: settings.clientDiscovery }],
       resources: [settings.resource],
       clientRegistrationDefaultResources: [settings.resource],
       schema: Object.fromEntries(

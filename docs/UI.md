@@ -69,6 +69,8 @@ apps/api/
                              new   --auth with mcp composed  the gate that keeps the redirect address on it
       pithy/connected-applications.tsx
                              new   --auth with mcp composed  what you approved, and the revoke
+      pithy/connected-applications.test.tsx
+                             new   --auth with mcp composed  the gate that calls only the verified host checked
       app/home.tsx           new   yours, written once and never again
   wrangler.jsonc             edited  assets stanza
   pithy.worker.jsonc         edited  dev block + ui block

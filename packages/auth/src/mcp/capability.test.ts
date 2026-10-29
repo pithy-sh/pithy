@@ -11,6 +11,7 @@ import { describe, expect, test } from "vitest";
 import { auth } from "../capability";
 import { SCOPED_ORIGIN, SCOPED_REGISTRY } from "../test-utils/scopedBackend";
 import { mcp } from "./capability";
+import { clientMetadataDiscovery } from "./clientMetadata";
 import { mcpAuthorizationServer } from "./provider";
 
 /**
@@ -59,7 +60,11 @@ describe("mcp() composition", () => {
   });
 
   test("refuses an auth instance that already composes an OAuth provider", () => {
-    const [provider] = mcpAuthorizationServer({ resource: `${SCOPED_ORIGIN}/mcp`, consentPage: "/agent-consent" });
+    const [provider] = mcpAuthorizationServer({
+      resource: `${SCOPED_ORIGIN}/mcp`,
+      consentPage: "/agent-consent",
+      clientDiscovery: clientMetadataDiscovery(),
+    });
     const error = refusal(() =>
       createBackend({ capabilities: [...base({ plugins: [provider] }), mcp({ floor: "signed-in" })] }),
     );
