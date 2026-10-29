@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { resolveClientProjection } from "@pithy-sh/core/src/capability/client";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import { consent } from "./capability";
+import type { ConsentClientProjection } from "./client/projection";
 
 const email = defineCapability({
   name: "email",
@@ -59,5 +61,27 @@ describe("consent()", () => {
       code: "core/internal",
       action: expect.stringMatching(/Bind DB/),
     });
+  });
+});
+
+describe("consent's client projection", () => {
+  test("tells a front end where the routes mount: the default base path", () => {
+    const projection: ConsentClientProjection = consent().client?.({ environment: "dev" }) as ConsentClientProjection;
+    expect(projection).toEqual({ enabled: true, basePath: "/consent" });
+  });
+
+  test("follows a custom base path, in every environment", () => {
+    const capability = consent({ basePath: "/privacy" });
+    for (const environment of ["dev", "staging", "prod"]) {
+      expect(resolveClientProjection(capability, { environment })).toEqual({ enabled: true, basePath: "/privacy" });
+    }
+  });
+
+  test("projects nothing else of the config: no purpose, no window, no binding", () => {
+    const capability = consent({ purposes: [{ id: "clinic.records", summary: "Keep my record.", noticeVersion: 1 }] });
+    expect(Object.keys(resolveClientProjection(capability, { environment: "prod" })).sort()).toEqual([
+      "basePath",
+      "enabled",
+    ]);
   });
 });

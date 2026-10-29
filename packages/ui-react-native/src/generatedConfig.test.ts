@@ -22,10 +22,23 @@ const composed: GeneratedConfig = {
   universalLinkOrigin: "https://app.example.com",
   rails: { ios: "apple", android: "google", web: "stripe" },
   google: { webClientId: null, iosClientId: null },
-  auth: { enabled: true, basePath: "/auth", otpLength: 6 },
-  i18n: { enabled: false },
-  payments: { enabled: false },
-  turnstile: { enabled: false },
+  auth: {
+    dev: { enabled: true, basePath: "/auth", otpLength: 6 },
+    staging: { enabled: true, basePath: "/auth", otpLength: 6 },
+    prod: { enabled: true, basePath: "/auth", otpLength: 6 },
+  },
+  i18n: { dev: { enabled: false }, staging: { enabled: false }, prod: { enabled: false } },
+  payments: { dev: { enabled: false }, staging: { enabled: false }, prod: { enabled: false } },
+  turnstile: {
+    dev: { enabled: true, sitekey: "1x00000000000000000000AA" },
+    staging: { enabled: true, sitekey: "1x00000000000000000000AA" },
+    prod: { enabled: true, sitekey: "0x4AAAAAAAprod" },
+  },
+  consent: {
+    dev: { enabled: true, basePath: "/privacy" },
+    staging: { enabled: true, basePath: "/privacy" },
+    prod: { enabled: true, basePath: "/privacy" },
+  },
 };
 
 /** Every object schema reachable from `schema`, with the path it sits at. */
@@ -81,7 +94,24 @@ describe("the generated config's shape", () => {
 
   test("a projection keeps every field the Worker projected", () => {
     const parsed = GeneratedConfig.parse(composed);
-    expect(parsed.auth).toEqual({ enabled: true, basePath: "/auth", otpLength: 6 });
+    expect(parsed.auth.dev).toEqual({ enabled: true, basePath: "/auth", otpLength: 6 });
+    expect(parsed.consent.prod).toEqual({ enabled: true, basePath: "/privacy" });
+  });
+
+  test("each projection is keyed like origins: dev always, staging and prod when the project deploys there", () => {
+    const { staging: _staging, prod: _prod, ...devOnly } = composed.turnstile;
+    expect(GeneratedConfig.safeParse({ ...composed, turnstile: devOnly }).success).toBe(true);
+    expect(GeneratedConfig.safeParse({ ...composed, turnstile: { prod: composed.turnstile.prod } }).success).toBe(
+      false,
+    );
+    // A projection for one build, not keyed by environment, is the old shape and is refused.
+    expect(GeneratedConfig.safeParse({ ...composed, turnstile: { enabled: false } }).success).toBe(false);
+  });
+
+  test("each environment keeps its own projection", () => {
+    const parsed = GeneratedConfig.parse(composed);
+    expect(parsed.turnstile.prod?.sitekey).toBe("0x4AAAAAAAprod");
+    expect(parsed.turnstile.dev.sitekey).toBe("1x00000000000000000000AA");
   });
 });
 
@@ -132,12 +162,25 @@ describe("a sync", () => {
     const next: GeneratedConfig = {
       ...composed,
       origins: { ...composed.origins, prod: "https://api2.example.com" },
-      i18n: { enabled: true },
+      i18n: { ...composed.i18n, dev: { enabled: true } },
     };
     const kept = keepAdopterChoices(edited, next);
     expect(kept.origins.prod).toBe("https://api2.example.com");
-    expect(kept.i18n).toEqual({ enabled: true });
+    expect(kept.i18n.dev).toEqual({ enabled: true });
     for (const key of ADOPTER_CHOICES) expect(kept[key]).toEqual(edited[key]);
+  });
+
+  test("takes every environment's projection from the Worker, and drops one for an environment it left", () => {
+    const next: GeneratedConfig = {
+      ...composed,
+      origins: { dev: "http://localhost:8787", prod: "https://api.example.com" },
+      turnstile: { dev: composed.turnstile.dev, prod: { enabled: true, sitekey: "0x4AAAAAAArotated" } },
+    };
+    const kept = keepAdopterChoices(composed, next);
+    expect(kept.turnstile).toEqual({
+      dev: composed.turnstile.dev,
+      prod: { enabled: true, sitekey: "0x4AAAAAAArotated" },
+    });
   });
 
   test("keeps an origin the adopter set where the Worker names none, and a dev origin off this machine", () => {
@@ -186,12 +229,16 @@ describe("reading a file an adopter edited", () => {
   universalLinkOrigin: "https://app.example.com",
   rails: { ios: "apple", android: 'google', web: "stripe" },
   google: { webClientId: null, iosClientId: null },
-  auth: { enabled: true, basePath: "/auth", otpLength: 6 },
-  i18n: { enabled: false },
-  payments: { enabled: false, note: 'it\\'s "here"' },
-  turnstile: { enabled: false },
+  auth: ${JSON.stringify(composed.auth)},
+  i18n: ${JSON.stringify(composed.i18n)},
+  payments: { dev: { enabled: false, note: 'it\\'s "here"' } },
+  turnstile: ${JSON.stringify(composed.turnstile)},
+  consent: ${JSON.stringify(composed.consent)},
 }`);
-    expect(readGeneratedConfig(edited)).toEqual({ ...composed, payments: { enabled: false, note: `it's "here"` } });
+    expect(readGeneratedConfig(edited)).toEqual({
+      ...composed,
+      payments: { dev: { enabled: false, note: `it's "here"` } },
+    });
   });
 
   test("refuses anything that would have to run to be read", () => {

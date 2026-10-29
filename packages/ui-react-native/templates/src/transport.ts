@@ -5,12 +5,12 @@ import {
   type DeviceInfo,
   type SecureStore,
 } from "@pithy-sh/auth/src/client/bearer";
-import { CONSENT_BASE_PATH, CONSENT_VISITOR_HEADER } from "@pithy-sh/consent/src/client/api";
+import { CONSENT_VISITOR_HEADER } from "@pithy-sh/consent/src/client/api";
 import type { OrganizationClientOptions } from "@pithy-sh/organization/src/client/api";
 import { randomUUID } from "expo-crypto";
 import * as ExpoSecureStore from "expo-secure-store";
 import { Platform } from "react-native";
-import { authConfig, origin } from "./pithy-config";
+import { authConfig, consentConfig, origin } from "./pithy-config";
 import { devicePlatform } from "./platform";
 
 /**
@@ -170,6 +170,8 @@ export interface TransportInput {
   readonly platform: "ios" | "android" | "web";
   readonly origin: string;
   readonly authBasePath: string;
+  /** Where consent's routes mount. A phone's calls under it carry the visitor id consent knows it by. */
+  readonly consentBasePath: string;
   readonly store: SecureStore;
   /** The fetch under the session. The platform's own by default. */
   readonly fetch?: AuthFetch;
@@ -216,7 +218,7 @@ export function createTransport(input: TransportInput): Transport {
   const fetch: AuthFetch = async (url, init) => (await open()).fetch(url, init);
   // Signed out, a phone has no cookie for consent to know its visitor by, so consent's requests carry its own id.
   let visitor: Promise<string> | null = null;
-  const consentPrefix = `${input.origin}${CONSENT_BASE_PATH}/`;
+  const consentPrefix = `${input.origin}${input.consentBasePath}/`;
   const capabilityFetch: AuthFetch = async (url, init) => {
     if (!url.startsWith(consentPrefix)) return fetch(url, init);
     visitor ??= consentVisitor(store);
@@ -283,5 +285,6 @@ export const transport: Transport = createTransport({
   platform: devicePlatform(),
   origin,
   authBasePath: authConfig.basePath,
+  consentBasePath: consentConfig.basePath,
   store: secureStore,
 });

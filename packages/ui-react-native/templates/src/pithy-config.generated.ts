@@ -14,6 +14,9 @@
 // `origins.staging` or `origins.prod` by hand then, and a sync keeps it until the Worker declares one.
 // A dev origin that is not this machine's loopback, such as your network address for a device, is kept too.
 //
+// `auth`, `i18n`, `payments`, `turnstile` and `consent` hold each capability's projection in each environment
+// `origins` names, and a build reads the one for its environment: a sitekey or a catalog can differ between them.
+//
 // Everything else is the Worker's. Change its pithy.config.ts and run `ui sync --app` again.
 // The value stays a plain literal: strings, numbers, true, false, null, arrays and objects. A sync reads it
 // back without running it, so it holds no expression, no variable and no import.
@@ -37,16 +40,59 @@ const config: GeneratedPithyConfig = {
     iosClientId: null,
   },
   auth: {
-    enabled: false,
+    dev: {
+      enabled: false,
+    },
+    staging: {
+      enabled: false,
+    },
+    prod: {
+      enabled: false,
+    },
   },
   i18n: {
-    enabled: false,
+    dev: {
+      enabled: false,
+    },
+    staging: {
+      enabled: false,
+    },
+    prod: {
+      enabled: false,
+    },
   },
   payments: {
-    enabled: false,
+    dev: {
+      enabled: false,
+    },
+    staging: {
+      enabled: false,
+    },
+    prod: {
+      enabled: false,
+    },
   },
   turnstile: {
-    enabled: false,
+    dev: {
+      enabled: false,
+    },
+    staging: {
+      enabled: false,
+    },
+    prod: {
+      enabled: false,
+    },
+  },
+  consent: {
+    dev: {
+      enabled: false,
+    },
+    staging: {
+      enabled: false,
+    },
+    prod: {
+      enabled: false,
+    },
   },
 };
 

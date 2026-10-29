@@ -1,8 +1,15 @@
 import authModule from "virtual:pithy/auth";
+import consentModule from "virtual:pithy/consent";
 import i18nModule from "virtual:pithy/i18n";
 import paymentsModule from "virtual:pithy/payments";
 import turnstileModule from "virtual:pithy/turnstile";
-import { AUTH_DISABLED, I18N_DISABLED, PAYMENTS_DISABLED, TURNSTILE_DISABLED } from "@pithy-sh/ui-core/src/config";
+import {
+  AUTH_DISABLED,
+  CONSENT_DISABLED,
+  I18N_DISABLED,
+  PAYMENTS_DISABLED,
+  TURNSTILE_DISABLED,
+} from "@pithy-sh/ui-core/src/config";
 
 /**
  * The composed capabilities' client-safe config, narrowed once for the whole client.
@@ -47,3 +54,9 @@ export const paymentsConfig = paymentsModule.enabled ? paymentsModule : PAYMENTS
  * templates are written in, and it is what `t()` falls back to when nothing negotiated.
  */
 export const i18nConfig = i18nModule.enabled ? i18nModule : I18N_DISABLED;
+
+/**
+ * Consent's projection, narrowed the same way: where its routes mount. The consent screen calls under
+ * `basePath`, so a Worker composing `consent({ basePath: "/privacy" })` is called at `/privacy`.
+ */
+export const consentConfig = consentModule.enabled ? consentModule : CONSENT_DISABLED;

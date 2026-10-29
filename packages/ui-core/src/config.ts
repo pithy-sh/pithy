@@ -92,3 +92,9 @@ export const I18N_DISABLED = {
   browserResolvers: ["query", "account", "storage", "navigator", "server", "default"],
   exceptions: {} as Record<string, string>,
 };
+
+/** Consent when it is not composed: the base path the capability mounts at when none is given. */
+export const CONSENT_DISABLED = {
+  enabled: false as const,
+  basePath: "/consent",
+};

@@ -47,10 +47,11 @@ const composed: GeneratedConfig = {
   universalLinkOrigin: null,
   rails: { ios: "apple", android: "google", web: "stripe" },
   google: { webClientId: null, iosClientId: null },
-  auth: { enabled: true, basePath: "/api/auth", otpLength: 6 },
-  i18n: { enabled: false },
-  payments: { enabled: true, basePath: "/billing" },
-  turnstile: { enabled: false },
+  auth: { dev: { enabled: true, basePath: "/api/auth", otpLength: 6 } },
+  i18n: { dev: { enabled: false } },
+  payments: { dev: { enabled: true, basePath: "/billing" } },
+  turnstile: { dev: { enabled: false } },
+  consent: { dev: { enabled: false } },
 };
 
 const servers: Server[] = [];
@@ -141,7 +142,7 @@ describe("the paths the web build's dev proxy sends to the Worker", () => {
   });
 
   test("a capability the Worker does not compose has no path to proxy", () => {
-    const bare = { ...composed, auth: { enabled: false }, payments: { enabled: false } } as GeneratedConfig;
+    const bare = { ...composed, auth: { dev: { enabled: false } }, payments: { dev: { enabled: false } } };
     const paths = proxy.proxiedPaths(bare);
     expect(paths).not.toContain("/api/auth");
     expect(paths).not.toContain("/billing");
@@ -151,9 +152,29 @@ describe("the paths the web build's dev proxy sends to the Worker", () => {
   test("turnstile's widget page rides along when turnstile is on", () => {
     const withTurnstile = {
       ...composed,
-      turnstile: { enabled: true, sitekey: "k", mode: "visible", action: "login", token: { field: "f", header: null } },
-    } as GeneratedConfig;
+      turnstile: {
+        dev: { enabled: true, sitekey: "k", mode: "visible", action: "login", token: { field: "f", header: null } },
+      },
+    };
     expect(proxy.proxiedPaths(withTurnstile)).toContain("/turnstile");
+  });
+
+  test("consent's routes are proxied where the Worker mounted them, and the screen's own path stays with Metro", () => {
+    const privacy = { ...composed, consent: { dev: { enabled: true, basePath: "/privacy" } } };
+    const paths = proxy.proxiedPaths(privacy);
+    expect(paths).toContain("/privacy");
+    expect(paths).not.toContain("/consent");
+    expect(proxy.isProxied("/privacy/me", paths)).toBe(true);
+  });
+
+  test("the dev proxy reads each capability's dev projection, the one `pithy dev` serves", () => {
+    const keyed = {
+      ...composed,
+      payments: { dev: { enabled: true, basePath: "/billing" }, prod: { enabled: true, basePath: "/pay" } },
+    };
+    const paths = proxy.proxiedPaths(keyed);
+    expect(paths).toContain("/billing");
+    expect(paths).not.toContain("/pay");
   });
 
   test("the kit's fixed paths are the ones the clients call", () => {
@@ -244,10 +265,11 @@ describe("reading the generated config without TypeScript", () => {
   universalLinkOrigin: null,
   rails: { ios: "apple", android: 'google', web: "stripe" },
   google: { webClientId: null, iosClientId: null },
-  auth: { enabled: true, basePath: "/api/auth", otpLength: 6, note: 'it\\'s "here"' },
-  i18n: { enabled: false },
-  payments: { enabled: true, basePath: "/billing" },
-  turnstile: { enabled: false },
+  auth: { dev: { enabled: true, basePath: "/api/auth", otpLength: 6, note: 'it\\'s "here"' } },
+  i18n: { dev: { enabled: false } },
+  payments: { dev: { enabled: true, basePath: "/billing" } },
+  turnstile: { dev: { enabled: false } },
+  consent: { dev: { enabled: false } },
 }`),
       literal("{ ...base }"),
       literal("{ origins: process.env.ORIGINS }"),

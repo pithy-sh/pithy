@@ -4,7 +4,9 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { consent } from "@pithy-sh/consent/src/capability";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { turnstile } from "@pithy-sh/turnstile/src/capability";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { appSchemeFor, buildGeneratedConfig, devOrigin, originsFor, universalLinkOriginFor } from "./nativeConfig";
 
@@ -84,22 +86,56 @@ describe("originsFor", () => {
   });
 });
 
+/** A capability another one depends on, composed for its name alone. */
+const peer = (name: string) => defineCapability({ name, requiredBindings: [] });
+
 describe("buildGeneratedConfig", () => {
   test("projects each capability for dev, and a capability not composed as disabled", () => {
-    const turnstile = defineCapability({
+    const echo = defineCapability({
       name: "turnstile",
       requiredBindings: [],
       client: ({ environment }) => ({ enabled: true, environment }),
     });
     const config = buildGeneratedConfig({
-      config: { capabilities: [turnstile] },
+      config: { capabilities: [echo] },
       app: "app",
       origins: { dev: "http://localhost:8787" },
       rails: { ios: "none", android: "none", web: "none" },
     });
-    expect(config.turnstile).toEqual({ enabled: true, environment: "dev" });
-    expect(config.auth).toEqual({ enabled: false });
+    expect(config.turnstile).toEqual({ dev: { enabled: true, environment: "dev" } });
+    expect(config.auth).toEqual({ dev: { enabled: false } });
+    expect(config.consent).toEqual({ dev: { enabled: false } });
     expect(config.google).toEqual({ webClientId: null, iosClientId: null });
+  });
+
+  test("projects each capability for every environment the project deploys to: prod carries prod's sitekey", () => {
+    const widget = turnstile({
+      widgets: { visible: { sitekeys: { dev: "dev-key", staging: "staging-key", prod: "prod-key" } } },
+    });
+    const config = buildGeneratedConfig({
+      config: { capabilities: [peer("secrets"), widget] },
+      app: "app",
+      origins: { dev: "http://localhost:8787", prod: "https://api.acme.dev" },
+      rails: { ios: "none", android: "none", web: "none" },
+    });
+    expect(config.turnstile.dev).toMatchObject({ enabled: true, sitekey: "dev-key" });
+    expect(config.turnstile.prod).toMatchObject({ enabled: true, sitekey: "prod-key" });
+    // The project does not deploy to staging, so the file carries no projection for it.
+    expect(Object.keys(config.turnstile)).toEqual(["dev", "prod"]);
+  });
+
+  test("an environment whose origin Pithy could not find still gets its projection", () => {
+    const config = buildGeneratedConfig({
+      config: { capabilities: [peer("auth"), consent({ basePath: "/privacy" })] },
+      app: "app",
+      origins: { dev: "http://localhost:8787", staging: null, prod: null },
+      rails: { ios: "none", android: "none", web: "none" },
+    });
+    expect(config.consent).toEqual({
+      dev: { enabled: true, basePath: "/privacy" },
+      staging: { enabled: true, basePath: "/privacy" },
+      prod: { enabled: true, basePath: "/privacy" },
+    });
   });
 
   test("lists every base path the Worker's route table answers under, wherever a capability mounted it", () => {
