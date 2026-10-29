@@ -81,7 +81,7 @@ export function registerTurnstileRoutes(options: TurnstileRoutesOptions): (app: 
       describeRoute({
         summary: "Render the login widget as a page a native app loads in a WebView.",
         description:
-          'Cloudflare\'s Turnstile widget on the Worker\'s own origin, for the sitekey this environment resolves and the action the sign-in gate asserts. The page posts JSON to `window.ReactNativeWebView`: `{ type: "turnstile", token }` when solved, `{ type: "turnstile-expired" }` when the token lapses, `{ type: "turnstile-error" }` when the widget fails. Send the token as the `cf-turnstile-response` body field. The page refuses to be framed and is never cached. A 404 means no login widget is renderable here.',
+          'Cloudflare\'s Turnstile widget on the Worker\'s own origin, for the sitekey this environment resolves and the action the sign-in gate asserts. The page posts JSON to `window.ReactNativeWebView`: `{ type: "turnstile", token }` when solved, `{ type: "turnstile-expired" }` when the token lapses, `{ type: "turnstile-error" }` when the widget fails. Send the token where config\'s `token` says: the `cf-turnstile-response` body field by default, or the header it names. The page refuses to be framed and is never cached. A 404 means no login widget is renderable here.',
         verification: "public",
         responses: { 200: { description: "The widget page.", contentType: "text/html" } },
       }),
