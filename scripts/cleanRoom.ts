@@ -27,6 +27,8 @@ import {
   cleanRoomEnv,
   isStalledStep,
   kitOverrides,
+  PUBLISH_RACE_WAIT_MS,
+  publishRace,
   STEP_TIMEOUT_MS,
   stalledStep,
   thirdPartyFloors,
@@ -72,6 +74,33 @@ function fail(what: string, cause: unknown): never {
   process.exit(1);
 }
 
+/**
+ * `bun add` into the project, once more after a wait when a third-party package was mid-publish.
+ *
+ * **The only retry in the gate, and it is narrow.** `publishRace` answers only for a third-party range the
+ * registry cannot serve yet; a kit package, an exact floor, a second failure and every other error fail
+ * here at once. The `pithy` commands below never retry, because a retry is what hides an install race in
+ * the CLI itself.
+ */
+function install(what: string, tarballs: string[]): void {
+  try {
+    run("bun", ["add", ...tarballs], project);
+  } catch (cause) {
+    const raced = publishRace(cause);
+    if (raced === null) fail(what, cause);
+    const seconds = Math.round(PUBLISH_RACE_WAIT_MS / 1000);
+    process.stdout.write(
+      `  ${raced.name}@${raced.range} is not on the registry yet. Installing once more in ${seconds} seconds.\n`,
+    );
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, PUBLISH_RACE_WAIT_MS);
+    try {
+      run("bun", ["add", ...tarballs], project);
+    } catch (again) {
+      fail(what, again);
+    }
+  }
+}
+
 const workspace = mkdtempSync(join(tmpdir(), "pithy-cleanroom-"));
 const packs = join(workspace, "packs");
 const project = join(workspace, "project");
@@ -106,22 +135,14 @@ try {
   if (cliTarball === undefined) fail("locating the CLI", "@pithy-sh/cli was not packed");
 
   process.stdout.write(atFloors ? "Installing at declared floors.\n" : "Installing.\n");
-  try {
-    run("bun", ["add", cliTarball as string], project);
-  } catch (cause) {
-    // This is the `workspace:*` shape: resolution fails before anything lands on disk.
-    fail("installing @pithy-sh/cli into an empty directory", cause);
-  }
+  // A failure here is the `workspace:*` shape: resolution fails before anything lands on disk.
+  install("installing @pithy-sh/cli into an empty directory", [cliTarball as string]);
 
   // Then the rest, because the CLI is not what an adopter composes. Its dependencies are the tooling
   // ones; `@pithy-sh/vite`, `@pithy-sh/auth` and the capabilities arrive in an adopter's project
   // because they chose them, and they are the packages the node probe below has to be able to reach.
   const rest = [...packed].filter(([name]) => name !== "@pithy-sh/cli").map(([, tarball]) => tarball);
-  try {
-    run("bun", ["add", ...rest], project);
-  } catch (cause) {
-    fail("installing the rest of the kit beside it", cause);
-  }
+  install("installing the rest of the kit beside it", rest);
 
   // What actually landed. A gate that cannot show its own inputs cannot be trusted to have tested
   // them — and `--floors` is exactly the mode where "it passed" and "it pinned nothing" look alike.
