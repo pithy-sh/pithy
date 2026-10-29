@@ -11,7 +11,7 @@
   "repository": "https://github.com/pithy-sh/pithy",
   "license": "MIT",
   "icon": "./.claude-plugin/icon.png",
-  "keywords": ["pithy", "cloudflare", "workers", "backend", "react-native", "openapi"],
+  "keywords": ["pithy", "cloudflare", "workers", "backend", "react-native", "openapi", "mcp"],
   "userConfig": {
     "server_model": {
       "type": "string",

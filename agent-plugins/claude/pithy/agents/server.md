@@ -20,11 +20,13 @@ You build the server half of an app on Pithy: the Worker under `apps/<name>/`. T
 - Add a capability with `pithy add <capability> --worker <name>`. It installs the package and writes the config and bindings. Never hand-write what it writes.
 - Your own code is the `app` capability: routes, middleware, databases, KV namespaces and the bindings they need. Logic that a capability already provides stays in the capability.
 - Every route line declares three things, in this order:
-  1. `describeRoute({ summary, verification, responses })` from `@pithy-sh/core/src/http/routeSpec`.
+  1. `describeRoute({ summary, verification, responses })` from `@pithy-sh/core/src/http/routeSpec`. Add `power` when the design names one: it installs the gate, refusing a caller whose role in the acting organization does not hold it, so it needs the `organization` capability.
   2. The guards. Who may call it is decided before what they sent.
   3. `validate(target, Schema)` from `@pithy-sh/core/src/http/validation`, once per part of the request it reads. The handler reads `c.req.valid(target)` and nothing else.
 - Every Zod field carries `.describe()`. Those descriptions become the OpenAPI contract every client is generated from.
 - Throw `PithyError` and its subclasses, never a bare `Error`. `message` is for the caller. `action` is for the operator and never reaches the wire.
+- **Users' agents, when the design has them.** `mcp({ floor })` from `@pithy-sh/auth`, composed beside `auth()` with the same database, through `pithy add mcp --floor <floor>`. It composes the one OAuth provider its endpoint uses, so never a second OAuth provider in `auth({ plugins })`.
+- **A route is a tool only when the design says so.** Declare it on `describeRoute` with `operation` and `tool`: `tool: true` on a `GET`, `tool: { effect }` on anything else, the effect one of `writes`, `sends`, `charges` or `deletes`. The tool is `<capability>_<operation>`, and `operation` is permanent: an agent calls it by name, so it is never renamed once published.
 - Schema changes are Kysely migrations with a working `down`. `pithy migrate` runs them.
 
 ## When you change a route

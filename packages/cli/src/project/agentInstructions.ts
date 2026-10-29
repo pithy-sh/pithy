@@ -17,12 +17,11 @@ import { readFileOutcome } from "./readOptionalFile";
 const SCHEMA = pithyCommand("schema", { args: [], flags: { "--json": true } });
 
 /**
- * **What an agent working in a Pithy project is told, and where (#697).**
+ * **What an agent working in a Pithy project is told, and where.**
  *
- * A fresh project used to carry no instructions for the agent driving it, so the agent learned the CLI by
- * trial: it waited on a prompt, parsed a pretty-printed document, read every failure as exit 1. `pithy
- * init` now writes a marked block into `AGENTS.md` naming the five things that end the guessing, and
- * `pithy upgrade` rewrites that block as the CLI changes. `CLAUDE.md` gets one line importing `AGENTS.md`,
+ * An agent with no instructions learns the CLI by trial: it waits on a prompt, parses a pretty-printed document,
+ * reads every failure as exit 1. `pithy init` writes a marked block into `AGENTS.md` naming what ends the
+ * guessing, and `pithy upgrade` rewrites that block as the CLI changes. `CLAUDE.md` gets one line importing `AGENTS.md`,
  * because Claude Code reads its own file and not the shared one.
  *
  * **The block is the only part of `AGENTS.md` Pithy owns.** The file is the project's, and agents' rules
@@ -95,6 +94,10 @@ const PROSE = [
   `- Set \`${NONINTERACTIVE_ENV}=1\` so no prompt waits on you. A question with no default fails \`input/required\` and names the flag that answers it.`,
   "- Run a command that changes anything with `--dry-run` first, where it takes one, and show a person the plan.",
   `- \`${commandName("remove")}\` and every typed confirmation phrase belong to a person. Exit 5 means stop and ask. Never try variations.`,
+  "",
+  "An app route is an MCP tool for its users' agents only when its `describeRoute` says so: `operation` names it, and `tool: true` on a `GET` or `tool: { effect }` on anything else opts it in, with `power` for the role a caller must hold. `operation` is permanent, because an agent calls the tool by that name.",
+  "",
+  `To administer a deployed environment, a person runs \`${commandName("mcp connect")}\` with \`--scope manifest:read\` and only the read scopes needed, never \`--scope all\` or \`keys:rotate\` at first, and it serves the Worker's admin routes as tools. With no \`--scope\` it grants every read plus \`keys:rotate\`. Ask a person before each call that is not a read, and leave \`${commandName("mcp disconnect")}\` to them.`,
   "",
   "Each failure exits by kind, so test for non-zero, not `1`. Under `--json` a failure is one `error` line on stderr, carrying `exit`, `retryable`, and `fix` when a command fixes it.",
   "",

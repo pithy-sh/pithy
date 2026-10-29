@@ -21,6 +21,7 @@ A device never uses a cookie session.
 - Keep the short-lived access token in memory and send it as `Authorization: Bearer <token>`.
 - Keep the refresh credential in the platform's secure storage: the Keychain on iOS, the Keystore on Android. Never in plain storage.
 - When the access token expires, trade the refresh credential for a new pair at `POST /auth/token/rotate`, and store the successor at once. A refresh credential is spent when it is used: presenting it again is read as theft, and every session from that sign-in is revoked.
+- Users' agents sign in on the web Worker's consent screen, never in the app. A mobile app has nothing to build for them.
 - Social sign-in is OAuth with PKCE, returning to the app through a deep link. The app's scheme, such as `myapp://`, must be in the auth capability's `trustedOrigins`, or the redirect is refused.
 
 ## What you do not do

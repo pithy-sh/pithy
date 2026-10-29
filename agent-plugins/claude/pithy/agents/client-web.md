@@ -15,10 +15,18 @@ You build the web client of an app on Pithy: a React app served by the same Work
 
 ## How the web app is shaped
 
-- `pithy ui add react --worker <name>` scaffolds it into the Worker: Vite through `@pithy-sh/vite`, the SPA entry, the routes and the asset routing. `pithy init --target web` may already have run it. Run it again after a capability with screens is composed — auth, payments, organization — and it adds those screens, leaving every file already there as it is. `pithy ui sync` re-derives the asset routing after the Worker's capabilities change.
+- `pithy ui add react --worker <name>` scaffolds it into the Worker: Vite through `@pithy-sh/vite`, the SPA entry, the routes and the asset routing. `pithy init --target web` may already have run it. Run it again after a capability with screens is composed — auth, payments, organization, mcp — and it adds those screens, leaving every file already there as it is. `pithy ui sync` re-derives the asset routing after the Worker's capabilities change.
 - Pithy's screens come from `@pithy-sh/ui-react`. They are copied into the app and are yours to edit.
 - Call the kit's routes through its TypeScript clients — `@pithy-sh/auth`, `@pithy-sh/organization` and `@pithy-sh/payments` each ship one under `src/client/`. Call the app's own routes from the shapes in `openapi.json`.
 - Validate what comes back. A response is data crossing a trust boundary.
+
+## The agent screens
+
+With `mcp` composed, `pithy ui add` writes the agent consent screen and the connected-applications screen. Edit them to fit the app, and keep three things:
+
+- The client's name never reads as verified. An agent names itself, and nothing has checked it, so it is shown as reported, in ordinary weight.
+- The redirect address keeps the emphasis. It is where the access goes, and the one thing on the screen that cannot be spoofed.
+- The connected-applications screen stays reachable from the account. Revoking is a user's only way to take an approval back.
 
 ## Authentication
 

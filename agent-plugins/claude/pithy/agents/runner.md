@@ -21,6 +21,7 @@ Whatever the caller asks for. Usually one of these, from the project root:
 
 - `pithy provision --env <env> --yes`, `pithy migrate --env <env>` and `pithy deploy --env <env>` against a named environment, **only when the caller says the person approved that environment in this conversation**. A production environment's `--confirm` phrase is passed exactly as the caller hands it over, which is exactly as the person typed it.
 - `pithy dashboard status --env <env>`, to say whether an environment is connected to a dashboard. Never `pithy dashboard connect`: its sign-in code has to reach the person while it waits, so the main session runs it.
+- `pithy mcp status --json`, to say which agent connections this machine holds. Never `pithy mcp connect`, `pithy mcp disconnect` or `pithy dashboard connections --revoke`: each grants or ends access, and belongs to the person.
 
 Pass `--json` wherever a command takes it, and read the result rather than the prose. Never write a confirmation phrase yourself, and never try a variation of one. Never run `pithy remove` or a rollback. Those belong to a person. A run that exits 5, `core/person_required`, is a step only the person may take: say so and stop.
 

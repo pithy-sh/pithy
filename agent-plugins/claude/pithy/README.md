@@ -48,6 +48,7 @@ echo '{"server_model": "opus", "server_effort": "high"}' | claude plugin configu
 - `/new-app`: asks what `pithy init` asks — web, mobile or both — then scaffolds the project, adds the capabilities, and brings in only the agents the answer needs.
 - `/app-design`: settles the capabilities, the data model and the auth flows before any code.
 - `/deploy`: takes the app to staging or production, and connects the dashboard. See below.
+- `/operate`: lets the session administer a deployed environment through `pithy mcp connect`, granting `manifest:read` and only the reads you need first. It asks before every call that changes anything, and widens the grant only on your yes.
 - `/report-kit-gap`: files what the kit cannot do against `pithy-sh/pithy`. It searches first, comments on a match, never includes your code or a secret, files only on your yes, and marks the workaround so it is removed when the fix ships.
 
 ## Deploy, and connect the dashboard
@@ -57,6 +58,7 @@ Ask for a deploy in any session, days into a build or on the first: `/deploy`, o
 - **A yes is for one environment.** A yes to staging is not a yes to production.
 - **Production takes a phrase you type.** `yes, i really want to provision prod`. The team passes it on exactly as typed and never writes it itself.
 - **Then the dashboard.** After a staging or production deploy with no connection, it offers to connect the [Pithy dashboard](https://app.pithy.sh). On your yes it gives you a sign-in address and a short code, and you approve the connection in your browser.
+- **The dashboard or an agent, never both.** An environment holds one connection. Connect the dashboard and `/operate` cannot connect there, so the team says so before it offers.
 
 It never runs `pithy remove` or a rollback. Those stay yours.
 
@@ -66,17 +68,26 @@ The agents build every client against the Worker's OpenAPI document, which `pith
 
 ## What it builds on
 
-The `AGENTS.md` block `pithy init` writes, the documentation server `pithy docs connect` adds, and `pithy schema --json`. Install the `pithy` CLI first.
+The `AGENTS.md` block `pithy init` writes, the documentation server `pithy docs connect` adds, `pithy mcp` for administering a deployed environment, and `pithy schema --json`. Install the `pithy` CLI first.
+
+Three MCP servers, and each does one thing:
+
+| Server | Who connects | What it serves |
+|---|---|---|
+| `pithy.sh/mcp` | Your session, through `pithy docs connect` | Pithy's documentation. |
+| `pithy mcp` | Your session, through `pithy mcp connect` and `/operate` | Your deployed Worker's admin routes, for one environment, on your machine. |
+| Your app's own `/mcp` | Your app's users' agents | The routes your design made tools, as the user who connected. `/app-design` asks whether you want one. |
 
 ## What leaves your machine
 
-Four places, and nothing goes to any of them without your yes.
+Five places, and nothing goes to any of them without your yes.
 
 | Where | What it receives | When |
 |---|---|---|
 | GitHub, `pithy-sh/pithy` | A public issue or comment, under your GitHub account: what the kit cannot do, a repro written from scratch, `pithy --version`, and `pithy doctor --json` with account ids, domains and paths removed. Never your code, never a secret. | `/report-kit-gap`, on your yes. Without `gh` signed in it sends nothing, and hands you a prefilled address to open yourself. |
 | Cloudflare, your own account | Your app's Workers and the resources they use, and each deploy. | `/deploy`, on your yes, one environment at a time. |
 | The Pithy dashboard, `app.pithy.sh` | A connection to your deployed Worker, which it reads through and keeps until you revoke it. It keeps none of your app's data. | After a staging or production deploy, on your yes, approved in your browser. |
+| Your deployed Worker, through `pithy mcp` | An agent's key, registered under your sign-in, and each admin call the session makes, audited on your Worker as an agent's. Nothing is hosted. | `/operate`, after you run `pithy mcp connect` yourself. A call that changes anything waits for your yes. |
 | The Pithy documentation server, `pithy.sh/mcp` | The questions your session asks the documentation. | After `/new-app` offers `pithy docs connect`, on your yes. |
 
 Everything else stays in your project and your session.

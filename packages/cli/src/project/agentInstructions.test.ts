@@ -28,7 +28,7 @@ import {
 import { deployFailureExit } from "./deploy";
 
 /**
- * **The Pithy block in `AGENTS.md`, and the one line in `CLAUDE.md` that points at it (#697).**
+ * **The Pithy block in `AGENTS.md`, and the one line in `CLAUDE.md` that points at it.**
  *
  * `pithy init` writes both and `pithy upgrade` rewrites the block. Every claim below is about a file
  * somebody else may already have written: the block is the only part of `AGENTS.md` Pithy owns, so text
@@ -68,8 +68,20 @@ describe("renderAgentsBlock", () => {
     expect(block).toContain("non-zero, not `1`");
   });
 
+  test("names the describeRoute fields that make a route a tool, and pithy mcp for a deployed environment", () => {
+    const block = renderAgentsBlock();
+    for (const field of ["`describeRoute`", "`operation`", "`tool: true`", "`tool: { effect }`", "`power`"]) {
+      expect(block).toContain(field);
+    }
+    expect(block).toMatch(/`operation` is permanent/);
+    expect(block).toContain("`pithy mcp connect`");
+    expect(block).toContain("`pithy mcp disconnect`");
+    expect(block).toContain("with `--scope manifest:read` and only the read scopes needed");
+    expect(block).not.toMatch(/grants the reads first/);
+  });
+
   /**
-   * **The one-error-line rule has an exception, and the block has to carry it (#697).** A command that reports
+   * **The one-error-line rule has an exception, and the block has to carry it.** A command that reports
    * — `doctor`, `deploy`, `upgrade`, `ui sync` — writes its report and no error line when it finds something.
    * An agent told only "a failure is one error line" waits on stderr for a line that never comes.
    * `docs/CLI.md` §3.8 names the commands; the block names every one it does.
@@ -85,11 +97,9 @@ describe("renderAgentsBlock", () => {
   });
 
   /**
-   * **And the exit it states is the exit the code returns (#697).** A report exits 1, except a deploy whose
+   * **And the exit it states is the exit the code returns.** A report exits 1, except a deploy whose
    * failed Worker row carries `exit` — Cloudflare refusing the credentials after an earlier Worker already had
-   * a row — which exits with the first such row's `exit`, 3. The block said "exit 1" of all four, so an agent
-   * reading a 3 off a deploy was told it was a different kind of failure from the one it got. The rule is one
-   * clause, written the same in the block, in `docs/CLI.md` §3.8 and in `docs/commands/deploy.md`, and
+   * a row — which exits with the first such row's `exit`, 3. The rule is one clause, written the same in the block, in `docs/CLI.md` §3.8 and in `docs/commands/deploy.md`, and
    * `deployFailureExit` is held to it here.
    */
   test("states the exit a report ends with, as deployFailureExit computes it, in the block and both pages", async () => {
