@@ -1,6 +1,6 @@
 ---
 name: client-mobile
-description: Builds the React Native app that calls a Pithy Worker on the kit's shipped bearer client — the session token in secure storage, device headers at sign-in, native Apple and Google sign-in, deep links for the rest. Use for anything installed from an app store.
+description: Builds the React Native app that calls a Pithy Worker on the kit's shipped bearer client — the session token in secure storage, device headers at sign-in, native Apple and Google sign-in, a one-time-code handoff for the rest. Use for anything installed from an app store.
 model: sonnet
 effort: medium
 color: green
@@ -30,7 +30,7 @@ A device never uses a cookie session. The kit ships the client: use it, and do n
 - A magic link on native needs an https universal link or app link. Whoever asks for a magic link chooses its challenge and somebody else opens it, so an app that claims a custom scheme could catch the code meant for another person. The Worker refuses a magic link to a custom scheme with `?error=handoff_scheme_refused` and keeps no session. Without a universal link, sign in by email with a one-time code.
 - When the app sets `universalLinkOrigin`, that origin goes in `trustedOrigins` too, beside `"<appScheme>://"`. The sign-in then returns on the https link, and an in-app auth session closes on an https callback only on iOS 17.4 or later. For an older iOS, leave `universalLinkOrigin` unset and return on the custom scheme.
 - Consent knows a signed-out phone by a visitor id of its own, never by the device id. Mint a random UUID once, keep it in the secure store, and send it as `x-pithy-consent-visitor` (`CONSENT_VISITOR_HEADER` from `@pithy-sh/consent/src/client/api`) on consent's requests. A choice made signed out then merges into the account at sign-in. The scaffolded transport does this; keep it.
-- Users' agents sign in on the web Worker's consent screen, never in the app. A mobile app has nothing to build for them.
+- When the Worker composes `mcp`, the scaffold writes two more screens with the sign-in set: `routes/pithy/agent-consent.tsx`, where an agent's authorization lands, and `routes/pithy/connected-applications.tsx`, where a person lists what they approved and revokes it. On a phone a signed-out person signing in from the consent screen resumes in the system browser, because the authorization request belongs to the Worker's web pages. Restyle them; keep the redirect address on the consent screen and the application's name out of its headline.
 
 ## What you do not do
 

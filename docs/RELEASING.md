@@ -191,7 +191,7 @@ Three releases, deliberately, so each half of the pipeline is proved before it m
 The release pipeline publishes from CI.
 ```
 
-A changeset names packages, so only those move. To take all 22 to `0.1.1`, name all 22 — or accept that only some advance, which is what a real release looks like anyway and is the more honest test.
+A changeset names packages, so only those move. To take every package to `0.1.1`, name every one — or accept that only some advance, which is what a real release looks like anyway and is the more honest test.
 
 **`1.0.0` is a `major` changeset.** On a `0.x` package Changesets reads `major` as `1.0.0`, so a changeset declaring `major` for each package is how release 3 is cut. Nothing special-cases it.
 

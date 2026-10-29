@@ -447,7 +447,7 @@ Honesty matters here — there are real things pnpm 10 still does better in 2026
 
 ### Repo structure (high-level)
 
-The authoritative package roadmap lives in the foundation spec (§4). The set below is what has shipped, plus what the roadmap still holds — not the full final tree:
+The tree below names every package under `packages/` today:
 
 ```
 pithy/
@@ -458,7 +458,10 @@ pithy/
 │   ├── core/             # @pithy-sh/core — runtime primitives, contract, codecs, registry, Workflow seam
 │   ├── cloudflare/       # @pithy-sh/cloudflare — encapsulated CF REST client (out-of-Worker)
 │   ├── secrets/          # @pithy-sh/secrets — secrets store + key rotation
+│   ├── i18n/             # @pithy-sh/i18n — the request's negotiated language, and one translator for every surface
 │   ├── auth/             # @pithy-sh/auth — Better Auth: magic-link/OTP/Google/Apple/GitHub/Facebook/Microsoft
+│   ├── organization/     # @pithy-sh/organization — tenancy: organizations, members, roles, invitations
+│   ├── consent/          # @pithy-sh/consent — consent records, from a checkbox to a signed authorization
 │   ├── audit/            # @pithy-sh/audit — audit-trail capability + seam
 │   ├── email/            # @pithy-sh/email — CF Email via D1 job table + Workflow
 │   ├── turnstile/        # @pithy-sh/turnstile — bot-protection middleware
@@ -470,8 +473,14 @@ pithy/
 │   ├── matchmaking/      # @pithy-sh/matchmaking — room codes, invites, friends, matched queues
 │   ├── multiplayer/      # @pithy-sh/multiplayer — authoritative turn-based sessions (Durable Objects)
 │   ├── ledger/           # @pithy-sh/ledger — per-account balance ledger with holds
-│   ├── payments/         # @pithy-sh/payments — Apple/Google/Stripe → one cross-rail entitlement
-│   └── testers/          # @pithy-sh/testers — early-access/tester invitations (roadmap)
+│   ├── payments/         # @pithy-sh/payments — Apple/Google/Stripe/Paddle/Lemon Squeezy → one cross-rail entitlement
+│   ├── testers/          # @pithy-sh/testers — the roster and the fourteen-day clock for a Google Play closed test
+│   ├── support/          # @pithy-sh/support — a support inbox in D1, classified on Workers AI
+│   ├── artifacts/        # @pithy-sh/artifacts — Git repositories for your customers, on Cloudflare Artifacts
+│   ├── vite/             # @pithy-sh/vite — the pithy() Vite plugin that resolves virtual:pithy/*
+│   ├── ui-core/          # @pithy-sh/ui-core — the route table, useRead, useAction and <Redirect>, shared by both screen sets
+│   ├── ui-react/         # @pithy-sh/ui-react — the React templates `pithy ui add react` copies into a Worker
+│   └── ui-react-native/  # @pithy-sh/ui-react-native — the Expo templates `pithy ui add react-native` copies into an app
 ├── package.json
 ├── turbo.json
 ├── CLAUDE.md             # always-loaded agent instructions (points to docs/)

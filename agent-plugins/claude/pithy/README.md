@@ -28,7 +28,7 @@ A plugin's version is the `pithy` CLI's version, so an update arrives once per r
 | Main session | Opus, high. Set it with `/model` and `/effort`. | Capabilities, data model, auth flows, which clients. The decisions that are expensive to get wrong. |
 | `server` | Sonnet, medium | The Worker: `pithy.config.ts`, capabilities, app routes, migrations. |
 | `client-web` | Sonnet, medium | A React app in the same Worker: `pithy ui add react`, `@pithy-sh/vite`, `@pithy-sh/ui-react`, the kit's TypeScript clients. Cookie sessions with CSRF, or bearer. |
-| `client-mobile` | Sonnet, medium | A React Native app from the app stores: bearer tokens in secure device storage, device headers at sign-in, OAuth with PKCE and deep links. |
+| `client-mobile` | Sonnet, medium | A React Native app from the app stores, on the kit's shipped client: `pithy ui add react-native`, the session token in secure device storage, device headers at sign-in, native Apple and Google sign-in, and a one-time-code handoff for every other provider. |
 | `runner` | Haiku, low. Bash and Read only. | Runs `pithy dev`, the tests, typecheck and builds, and deploys an environment you approved. Returns a summary, never raw logs. |
 
 Web and mobile are two agents because they authenticate two ways. One agent holding both would mix them.

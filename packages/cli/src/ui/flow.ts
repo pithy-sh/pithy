@@ -131,7 +131,7 @@ export interface UiAddReport {
   auth: boolean;
   /** Whether the payments screens were included. */
   payments: boolean;
-  /** Whether the account chooser was included. */
+  /** Whether the account chooser and the invitation screen were included. */
   organization: boolean;
   /** Whether the consent settings screen was included. */
   consent: boolean;

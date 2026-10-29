@@ -37,6 +37,8 @@ Then it does five things. **dev and staging** get Cloudflare's documented test s
 
 The front end gets its sitekey from `virtual:pithy/turnstile`, which the `pithy()` Vite plugin inlines **when the bundle is built**, from `widgets.<mode>.sitekeys.<environment>`. So that block is where provisioning writes, and nothing it writes reaches a deployed bundle until the Worker is built and deployed again. **Redeploy staging and prod after provisioning.** The output says so.
 
+A phone does not get its sitekey from a bundle. It loads the Worker's public `GET /turnstile/widget` page in a WebView, and the deployed Worker resolves the sitekey for its own environment on each request. So a phone build needs no rebuild after provisioning, and the Worker's redeploy is what puts the new sitekey in front of it.
+
 Before this, the sitekeys went into `env.<name>.vars` and `.dev.vars` as `TURNSTILE_SITEKEY_<MODE>`, where no code read them: the config stayed blank, no widget rendered, and sign-in failed closed on a successful provision. `pithy doctor` names any such var still in a Worker's `wrangler.jsonc`, in `dev.json`, or in the project root's `.dev.vars`.
 
 **String literals, in place, and nothing else.** A value is replaced only where the config states a string literal. An expression that already resolves to the value — `dev: testSitekey("visible")` — is left alone. One that resolves to something else is refused by key, before a byte is written. After writing, the config is loaded back through the real loader, and a value the capability does not then resolve puts the file back and refuses.

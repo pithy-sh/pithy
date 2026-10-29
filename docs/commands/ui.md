@@ -29,7 +29,7 @@ pithy ui list [--json]
 | `--check` | `sync` | `false` | Report the drift, write nothing, exit non-zero on a shadowed route — the CI gate |
 | `--auth` / `--no-auth` | `add` | see The screen sets | Scaffold the sign-in screens, or leave them out |
 | `--payments` / `--no-payments` | `add` | see The screen sets | Scaffold the paywall and subscription screens, or leave them out |
-| `--organization` / `--no-organization` | `add` | see The screen sets | Scaffold the account chooser, or leave it out |
+| `--organization` / `--no-organization` | `add` | see The screen sets | Scaffold the account chooser and the invitation screen, or leave them out |
 | `--consent` / `--no-consent` | `add` | see The screen sets | Scaffold the consent settings screen, or leave it out |
 | `--dry-run` | `add` | `false` | Show the plan and write nothing. Every refusal still applies |
 | `--json` | all three | `false` | One line of machine-readable output. Implies non-interactive: `pithy ui` never prompts when `--json` is set, nor under `--no-input` or `PITHY_NONINTERACTIVE=1` |
@@ -55,13 +55,13 @@ pithy ui list [--json]
 ```
 Scaffold the passwordless sign-in screens?
 Scaffold the paywall and subscription screens?
-Scaffold the account chooser?
+Scaffold the account chooser and the invitation screen?
 ```
 
 - The suggested answer is **yes when the target Worker composes that capability** — `auth`, `payments`, `organization`, `consent` — and no when it does not.
 - `--auth` / `--no-auth`, `--payments` / `--no-payments`, `--organization` / `--no-organization` and `--consent` / `--no-consent` answer them without asking. Where nobody may be asked (`--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`), the suggested answer applies unless a flag is passed.
 - The agent screens have no flag and no question of their own. They ride on `--auth` when the Worker composes `mcp`: the agent consent screen an MCP client's authorization lands on, its seeded gate, and the connected-applications screen a person revokes an approval from (`docs/AGENT-ACCESS.md` §4.0). A Worker serving the endpoint without them would send every agent's user to a page that does not exist.
-- With auth on, the stub adds `src/routes/pithy/` — the magic-link, OTP, and callback screens, and the screens a suspended or deleted account lands on — and the router's route guard. Payments adds the paywall, pricing and subscription screens; organization adds the account chooser; consent adds the settings screen where a person reads and withdraws their consents. Everything else is scaffolded either way. `docs/UI.md` lists every file and the flag that writes it.
+- With auth on, the stub adds `src/routes/pithy/` — the magic-link, OTP, and callback screens, and the screens a suspended or deleted account lands on — and the router's route guard. Payments adds the paywall, pricing and subscription screens; organization adds the account chooser and the invitation screen an invitation link lands on; consent adds the settings screen where a person reads and withdraws their consents. Everything else is scaffolded either way. `docs/UI.md` lists every file and the flag that writes it.
 
 Asking for a set on a Worker that does not compose its capability is an error, not a warning (Errors, below).
 
@@ -86,6 +86,9 @@ Both are `composite`, because both are referenced from the project's root `tscon
 | `src/session.tsx` | `--auth` | The session hook, `signOut`, and the signed-in route guard |
 | `src/turnstile.tsx` | `--auth` | The Turnstile widget and the token placement the middleware reads |
 | `src/routes/pithy/*.tsx` | `--auth` | Pithy's screens: sign-in, OTP, callback, and account suspended, account deleted, organization suspended |
+| `src/payments.tsx`, `src/routes/pithy/paywall.tsx`, `pricing.tsx`, `subscription.tsx` | `--payments` | The payments client bound to its base path, and the paywall, pricing and subscription screens |
+| `src/routes/pithy/choose-organization.tsx`, `choose-organization.test.tsx`, `invitation.tsx`, `invitation.test.tsx` | `--organization` | The account chooser, the screen an invitation link lands on, and a seeded gate for each |
+| `src/routes/pithy/consent.tsx` | `--consent` | Every consent purpose, and where you stand on each |
 | `src/routes/pithy/agent-consent.tsx`, `agent-consent.test.tsx`, `connected-applications.tsx`, `connected-applications.test.tsx` | `--auth`, on a Worker composing `mcp` | The agent consent screen, the screen that lists and revokes what you approved, and a seeded gate for each |
 | `src/routes/app/home.tsx` | always | Your first screen. Written once, never again |
 
@@ -163,7 +166,7 @@ A route the allowlist cannot express is never reported: `core`'s own `app.use("*
 
 `pithy ui add react-native` writes an Expo app (SDK 57, React Native 0.86) into `apps/<app>/`, beside the Worker it calls rather than inside it. One Expo project builds iOS, Android and the web. The app has no `wrangler.jsonc` and no `pithy.config.ts`, so it is not a Worker: `pithy deploy` leaves it alone, and every command that composes Workers skips it. Nothing in Pithy builds the app for a store: a store build goes through EAS (`eas build`), and `expo export --platform web` is the web build. The web build calls the Worker by relative path with its cookie, so serve it from the Worker's own origin. `--worker` names the Worker it calls, resolved the way every `--worker` is. `--app` names its directory, `app` by default; a directory that is a Worker, or that holds another stub's front end, is refused.
 
-The screen sets are decided exactly as for `react`, against the Worker the app calls. The files are `@pithy-sh/ui-react-native`'s templates: Expo Router's `app/` entry, `app.config.ts`, the Metro config that proxies the Worker's paths in dev, the router adapter, the bearer transport, the session, and the screens, each under the same name as its DOM counterpart. `docs/UI.md` lists them.
+The screen sets are decided as for `react`, against the Worker the app calls, with one difference: the account chooser and the invitation screen read the session the sign-in screens hold, so a run without `--auth` leaves them out, and refuses an explicit `--organization`. The files are `@pithy-sh/ui-react-native`'s templates: Expo Router's `app/` entry, `app.config.ts`, the Metro config that proxies the Worker's paths in dev, the router adapter, the bearer transport, the session, and the screens, each under the same name as its DOM counterpart. Every app gets the base set: `app.config.ts`, `metro.config.js`, `metro-proxy.cjs`, `tsconfig.json`, `app/_layout.tsx`, `app/index.tsx`, `app/[...pithy].tsx`, and under `src/` `theme.ts`, `platform.ts`, `pithy-config.ts`, `pithy-config.generated.ts`, `pithy-locale.tsx`, `router.tsx`, `route-modules.ts`, `transport.ts` and `routes/app/home.tsx`, sixteen files. Each screen set adds its screens and the helpers only they use: `--auth` the session, the Turnstile WebView and the sign-in and account screens; `--payments` the payments client, its store bindings, and the paywall, pricing and subscription screens; `--organization` `choose-organization.tsx` and `invitation.tsx`; `--consent` `consent.tsx`; and `mcp`, riding on `--auth`, `agent-consent.tsx` and `connected-applications.tsx`. No test is written into the app: the set's tests stay in `@pithy-sh/ui-react-native` (`docs/CONVENTIONS.md`).
 
 **What it wires.** Two documents, both in the app's directory, and nothing in the Worker:
 
@@ -185,9 +188,9 @@ The screen sets are decided exactly as for `react`, against the Worker the app c
 **`pithy ui sync --app <name>`.** Rewrites the app's generated config from the Worker its manifest names, or the one `--worker` names. The projections and the origins are the Worker's and are rewritten, with two exceptions: an origin you set for an environment the Worker names none for is kept, and so is a dev origin that is not this machine's loopback. Your four values are kept, except a rail a flag sets now. A `--worker` other than the one the manifest names points the app at it: the manifest's `ui.worker` is rewritten, so the next sync without `--worker` finds the same Worker. Every rail is held to the Worker again, so one it has stopped enabling is refused by name. A file that is not the config Pithy writes is refused rather than overwritten; delete it to start from the defaults. `--check` writes nothing and exits 1 when the file is behind the Worker.
 
 ```
-$ pithy ui add react-native --worker api --no-auth --ios-rail apple --web-rail stripe
+$ pithy ui add react-native --worker api --no-auth --no-payments --ios-rail apple --web-rail stripe
 Scaffolded a react-native app into apps/app. It calls api. Bare template.
-14 files created.
+16 files created.
 Rails: iOS apple, Android none, web stripe.
 apps/app/src/pithy-config.generated.ts holds api's config. Set appScheme and universalLinkOrigin there before a store build.
 When api composes auth, its trustedOrigins needs "app://".
@@ -214,6 +217,8 @@ $ pithy ui sync --worker api --json
 
 `before` and `after` are the allowlist either side of the run, so a CI job can log the delta without recomputing it. `changed` covers everything the call can have moved — the allowlist, or a `not_found_handling` it had to write because the stanza carried none. `uncovered` names the routes the list **in the file** does not cover: always empty after a write, and under `--check` it is the finding, the one thing that fails the exit. `notFoundHandling` is reported because SPA routing depends on it and `sync` does not overwrite a value the adopter chose.
 
+With `--app` the run touches no allowlist. `changed` says whether the app's generated config differs from what the Worker gives now, and under `--check` that is the finding. `before`, `after` and `uncovered` are empty, `notFoundHandling` is absent, and `app` and `rails` are present.
+
 ```
 $ pithy ui list --json
 {"command":"ui.list","schemaVersion":1,"stubs":[{"id":"react","description":"React 19 SPA on Vite, served by the worker as static assets"},{"id":"react-native","description":"Expo app for iOS, Android and the web, in its own apps/<name>, calling a worker"}]}
@@ -235,7 +240,7 @@ $ pithy ui list --json
 | `backfill` | boolean | `add`. `react-native` only: whether the app already existed, so this run added screens to it and rewrote its generated config from the Worker, keeping your four values. Absent for `react`. |
 | `auth` | boolean | `add`. Whether Pithy's sign-in screens were scaffolded. |
 | `payments` | boolean | `add`. Whether the paywall and subscription screens were scaffolded. |
-| `organization` | boolean | `add`. Whether the account chooser was scaffolded. |
+| `organization` | boolean | `add`. Whether the account chooser and the invitation screen were scaffolded. |
 | `consent` | boolean | `add`. Whether the consent settings screen was scaffolded. |
 | `created` | string[] | `add`. The files this run wrote, worker-relative and sorted. |
 | `skipped` | string[] | `add`. The template's files already on disk, left byte-for-byte alone. |
@@ -247,11 +252,11 @@ $ pithy ui list --json
 | `scripts` | string[] | `add`. Only what this run added. |
 | `plan` | object | `add`, under `--dry-run` only. What it would write, in the shape every `--dry-run` shares (`docs/CLI.md` §1.2): each file created or edited, with its diff. |
 | `next` | object[] | `add` only. `[{ command, why }]`: the project's install (`bun install`, `pnpm install`, …) when this run wrote dependencies into the Worker's `package.json`, because the build fails without them. Absent when it wrote none, and under `--dry-run`; never empty (`docs/CLI.md` §1.2). |
-| `before` | string[] | `sync`. The allowlist before the run. |
-| `after` | string[] | `sync`. The allowlist after it. |
-| `changed` | boolean | `sync`. Whether the call moved anything — the allowlist, or a `not_found_handling` it had to write. |
-| `uncovered` | string[] | `sync`. The routes the list in the file does not cover. Empty after a write; under `--check` it is the finding. |
-| `notFoundHandling` | string | `sync`. Reported because SPA routing depends on it and `sync` does not overwrite a value the adopter chose. |
+| `before` | string[] | `sync`. The allowlist before the run. Empty with `--app`. |
+| `after` | string[] | `sync`. The allowlist after it. Empty with `--app`. |
+| `changed` | boolean | `sync`. Whether the call moved anything — the allowlist, or a `not_found_handling` it had to write. With `--app`, whether the generated config differs from the Worker's, which under `--check` is the finding. |
+| `uncovered` | string[] | `sync`. The routes the list in the file does not cover. Empty after a write; under `--check` it is the finding. Empty with `--app`. |
+| `notFoundHandling` | string | `sync`. Reported because SPA routing depends on it and `sync` does not overwrite a value the adopter chose. Absent with `--app`. |
 | `stubs` | object[] | `list`. Each stub's `id` and `description`. |
 
 ## Errors
@@ -301,6 +306,16 @@ Enable rails.google in apps/api/pithy.config.ts, or pass --android-rail none.
 **An `apps/<name>` that is a Worker, or holds another front end.** Exit 3. `--app` named the Worker the app calls: exit 2.
 
 **`pithy ui sync` on a Worker with no front end.** Exit 3, and the action names that Worker: ``Run `pithy ui add react --worker api` to scaffold one.``
+
+**`pithy ui sync --app` on a directory with no React Native front end.** Exit 3, `core/not_found`.
+
+```
+$ pithy ui sync --app mobile
+apps/mobile has no React Native front end.
+Run pithy ui add react-native --app mobile, naming the worker it calls with --worker.
+```
+
+**`--organization` with `--no-auth` on `react-native`.** Exit 2, `validation/invalid_input`: ``The account chooser needs the sign-in screens, and this run leaves them out.`` The action reads ``Pass --auth, or leave the account chooser out with --no-organization.``
 
 **Several Workers, no `--worker`, where nobody may be asked.** The resolution error from 7.2 — the same `input/required` refusal `pithy add` raises, naming the Workers it found. Exit 2.
 

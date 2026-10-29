@@ -46,7 +46,7 @@ Pithy requests the `email` scope. You do not configure scopes anywhere — Pithy
 
 ## 4. Mobile
 
-You do not register a deep-link URI with Facebook. Facebook only ever redirects to the Worker's `/auth/callback/facebook`. The mobile app passes its own deep link as the sign-in `callbackURL` (for example `myapp://auth/callback`); the Worker completes the exchange and redirects there. For that to be allowed, the scheme must be listed in `trustedOrigins` (prefix match):
+You do not register a deep-link URI with Facebook. Facebook only ever redirects to the Worker's `/auth/callback/facebook`. The app opens `GET /auth/sign-in/social/start?provider=facebook&callbackURL=…` in the system browser's sign-in sheet, never posting `/auth/sign-in/social` itself. `callbackURL` is the app's own link, `myapp://auth/callback` or a universal link, carrying the S256 challenge of a verifier only the app holds as `handoff_challenge`. The Worker completes the exchange and returns to that link with a one-time `?code=`, which the app trades with the verifier at `POST /auth/handoff` for the session token. [`apple-signin.md`](apple-signin.md) §6 has the steps, and `pithy ui add react-native` scaffolds them. The link must be in `trustedOrigins`, the scheme by prefix and an https link by its origin:
 
 ```ts
 auth({
@@ -89,5 +89,5 @@ A sign-in attempt with Facebook then answers `503` with the code `auth/provider_
 - [ ] Meta app created with the Facebook Login product.
 - [ ] Valid OAuth Redirect URI set to `<baseURL><basePath>/callback/facebook`, host matching each environment's `baseURL`.
 - [ ] App ID and app secret in hand.
-- [ ] Mobile deep-link scheme listed in `trustedOrigins` (no deep link in Facebook).
+- [ ] The app's scheme, and its universal-link origin when it has one, listed in `trustedOrigins` (no deep link in Facebook).
 - [ ] `clientId` + `clientSecret` stored together via `pithy secrets create auth-facebook-credentials` (typed JSON); Facebook enabled in config with `facebook: { enabled: true }`.

@@ -52,7 +52,7 @@ Pithy requests `user:email`. That is what lets the sign-in read your primary ema
 
 ## 4. Mobile
 
-You do not register a deep-link URI with GitHub. GitHub only ever redirects to the Worker's `/auth/callback/github`. The mobile app passes its own deep link as the sign-in `callbackURL` (for example `myapp://auth/callback`); the Worker completes the exchange and redirects there. For that to be allowed, the scheme must be listed in `trustedOrigins` (prefix match):
+You do not register a deep-link URI with GitHub. GitHub only ever redirects to the Worker's `/auth/callback/github`. The app opens `GET /auth/sign-in/social/start?provider=github&callbackURL=…` in the system browser's sign-in sheet, never posting `/auth/sign-in/social` itself. `callbackURL` is the app's own link, `myapp://auth/callback` or a universal link, carrying the S256 challenge of a verifier only the app holds as `handoff_challenge`. The Worker completes the exchange and returns to that link with a one-time `?code=`, which the app trades with the verifier at `POST /auth/handoff` for the session token. [`apple-signin.md`](apple-signin.md) §6 has the steps, and `pithy ui add react-native` scaffolds them. The link must be in `trustedOrigins`, the scheme by prefix and an https link by its origin:
 
 ```ts
 auth({
@@ -149,7 +149,7 @@ A sign-in attempt with GitHub then answers `503` with the code `auth/provider_un
 - [ ] GitHub OAuth app registered (one per environment).
 - [ ] Authorization callback URL set to `<baseURL><basePath>/callback/github`, host matching each environment's `baseURL`.
 - [ ] Client ID and a generated client secret in hand.
-- [ ] Mobile deep-link scheme listed in `trustedOrigins` (no deep link in GitHub).
+- [ ] The app's scheme, and its universal-link origin when it has one, listed in `trustedOrigins` (no deep link in GitHub).
 - [ ] `clientId` + `clientSecret` stored together via `pithy secrets create auth-github-credentials` (typed JSON); GitHub enabled in config with `github: { enabled: true }`.
 - [ ] GitHub primary email verified on GitHub (or plan for the magic-link verify-to-link step).
 - [ ] Decided whether GitHub may create accounts — `github: { allowSignUp: false }` if it may not.

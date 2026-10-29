@@ -62,7 +62,7 @@ Magic link and email OTP have no redirect URI — they work on any URL, preview 
 
 You do **not** register a custom-scheme or deep-link URI in Google Console. Google only ever redirects to the Worker's `/auth/callback/google`. The Worker, not Google, is what hands control back to the app.
 
-The mobile app passes its own deep link as the sign-in `callbackURL` — for example `myapp://auth/callback`. The Worker completes the OAuth exchange, then redirects to that deep link. For this to be allowed, the scheme must be listed in `trustedOrigins` (prefix match):
+A redirect sign-in starts in the system browser's sign-in sheet, not in the app. The app opens `GET /auth/sign-in/social/start?provider=google&callbackURL=…`, where `callbackURL` is its own link, `myapp://auth/callback` or a universal link, carrying the S256 challenge of a verifier only the app holds as `handoff_challenge`. The Worker completes the OAuth exchange and returns to that link with a one-time `?code=`, never a cookie. The app trades the code and the verifier at `POST /auth/handoff` for the session token. The link must be in `trustedOrigins`, the scheme by prefix and an https link by its origin:
 
 ```ts
 auth({
@@ -70,13 +70,15 @@ auth({
 });
 ```
 
-For native iOS or Android using the Google SDK's id-token flow (rather than the web redirect), register the platform-native **iOS** and **Android** OAuth client IDs in Google Console too, and pass all client IDs as an array:
+[`apple-signin.md`](apple-signin.md) §6 has the handoff step by step, with the helpers from `@pithy-sh/auth/src/client/handoff`. `pithy ui add react-native` scaffolds a sign-in that does all of it.
+
+**Native Google sign-in skips the redirect.** On a phone the scaffolded sign-in uses Google's SDK and posts the id token it gets to `POST /auth/sign-in/social`. The SDK asks for that token with the **web** client id as its audience, which is the one the Worker checks, so the credential stays the one web client above. Register an **iOS** and an **Android** OAuth client in Google Console too, which the SDK needs on each platform, then put the public ids in the app's `src/pithy-config.generated.ts`:
 
 ```ts
-auth({
-  google: { clientId: ["<web-id>", "<ios-id>", "<android-id>"] },
-});
+google: { webClientId: "<web-id>", iosClientId: "<ios-id>" },
 ```
+
+`webClientId` null turns native Google sign-in off, and the app signs in with Google through the redirect instead. `iosClientId` is null on an Android-only app.
 
 ## Where the credentials live
 
@@ -113,7 +115,7 @@ A sign-in attempt with Google then answers `503` with the code `auth/provider_un
 - [ ] Web OAuth client created; client ID and secret in hand.
 - [ ] Redirect URI registered per environment, each as `<baseURL><basePath>/callback/google`.
 - [ ] Redirect host matches each environment's `baseURL`.
-- [ ] Mobile deep-link scheme listed in `trustedOrigins` (no deep link in Google Console).
-- [ ] Native id-token flow: iOS/Android client IDs registered, all IDs passed as an array.
+- [ ] The app's scheme, and its universal-link origin when it has one, listed in `trustedOrigins` (no deep link in Google Console).
+- [ ] Native Google sign-in: iOS and Android OAuth clients registered; `google.webClientId` and `google.iosClientId` set in the app's `src/pithy-config.generated.ts`.
 - [ ] `clientId` + `clientSecret` stored together via `pithy secrets create auth-google-credentials` (typed JSON); Google enabled in config with `google: { enabled: true }`.
 - [ ] `requireLocalEmailVerified` left on.
