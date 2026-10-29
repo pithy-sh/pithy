@@ -47,7 +47,7 @@ export interface I18nCapability extends Capability {
  * 1. the adopter's catalog for the resolved locale,
  * 2. the adopter's catalog for the project default,
  * 3. **the kit's translation** for the resolved locale — the `es` this package ships,
- * 4. every composed capability's English, for the resolved locale,
+ * 4. every composed capability's own copy for the resolved locale,
  * 5. every composed capability's copy for the project default,
  * 6. and their English, which is the language the kit is written in.
  *
@@ -69,13 +69,9 @@ export function i18n(config: I18nConfigInput = {}): I18nCapability {
     KIT_CATALOGS[locale],
     composedMessages[locale],
     composedMessages[resolved.defaultLocale],
-    // **The source language, explicitly, and last.** This was `catalogFor(composedMessages, default)`,
-    // which answers `catalogs[default] ?? catalogs.en` — so it only ever reached English because no
-    // capability had contributed a non-`en` locale. `@pithy-sh/email` does now (#442), which made the
-    // fallback silently stop existing for any project whose `defaultLocale` is not `en`: layers 5 and
-    // 6 collapsed into the same Spanish map, and an adopter's own English-only key rendered as its raw
-    // key on a Spanish page. English is the language the kit is written in, so it is a layer of its
-    // own rather than something another layer resolves to by coincidence.
+    // **The source language, explicitly, and last.** A capability may contribute a non-`en` locale, so
+    // the default's catalog is not English for a project whose `defaultLocale` is not `en`. English is
+    // the language the kit is written in, so it is a layer of its own.
     composedMessages[DEFAULT_LOCALE],
   ];
 
@@ -84,7 +80,7 @@ export function i18n(config: I18nConfigInput = {}): I18nCapability {
     // The package this capability ships in and the version it ships at, both stamped by
     // `scripts/stampVersions.ts` — a Worker cannot read its own package.json. Reported per capability by
     // the control-plane manifest, and reported together: a release feed is keyed by package name, so the
-    // version alone leaves a client guessing the key (#626).
+    // version alone leaves a client guessing the key.
     version: PACKAGE_VERSION,
     package: PACKAGE_NAME,
     config: I18nConfig,

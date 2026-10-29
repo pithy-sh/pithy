@@ -10,7 +10,7 @@ import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { openApiDocument, undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
-import { AuthConfig, type AuthWiring, auth } from "../capability";
+import { AuthConfig, type AuthWiring, auth, type TurnstileLoginGate } from "../capability";
 import { registerDevLoginRoute } from "./devLoginRoute";
 import {
   AUTH_CONTROL_PLANE_SCOPES,
@@ -41,7 +41,7 @@ import { createAuthRoutes } from "./routes";
  */
 
 /** The wiring `createAuthRoutes` needs to register: config only. The email and turnstile seams are optional. */
-function buildWiring(turnstile?: { mode: "visible" }, basePath = "/auth"): AuthWiring {
+function buildWiring(turnstile?: TurnstileLoginGate, basePath = "/auth"): AuthWiring {
   return {
     config: AuthConfig.parse({ baseURL: "http://localhost", basePath, trustedOrigins: ["http://localhost"] }),
     resolveGithubUserInfo: undefined,
@@ -73,7 +73,7 @@ function makeApp(basePath = "/auth") {
     c.set("log", noopLogger);
     await next();
   });
-  createAuthRoutes(buildWiring({ mode: "visible" }, basePath))(app);
+  createAuthRoutes(buildWiring({ mode: "visible", token: { field: "cf-turnstile-response" } }, basePath))(app);
   return app;
 }
 

@@ -90,7 +90,8 @@ export interface TranslatorInput {
   readonly formattingLocale?: string;
   /**
    * The catalogs to walk, most-specific first. `@pithy-sh/i18n` passes adopter-locale, adopter-default,
-   * kit-locale, kit-default; a copied screen passes its own baked English and nothing else.
+   * kit-locale, composed-locale, composed-default, composed English; a copied screen passes its own baked
+   * English and nothing else.
    */
   readonly layers: readonly (MessageCatalog | undefined)[];
 }

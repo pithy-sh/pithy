@@ -8,6 +8,7 @@ import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { effectiveRetention, subjectClasses } from "@pithy-sh/core/src/retention/composed";
 import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
+import { turnstile } from "@pithy-sh/turnstile/src/capability";
 import type { BetterAuthPlugin } from "better-auth";
 // The barrel, for this one only: `better-auth` publishes no `./plugins/oauth-popup` export entry.
 import { oauthPopup } from "better-auth/plugins";
@@ -17,7 +18,14 @@ import { organization } from "better-auth/plugins/organization";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { AuthAuditActions } from "./audit/actions";
-import { type AuthCapability, AuthConfig, type AuthConfigInput, auth, isAuthCapability } from "./capability";
+import {
+  type AuthCapability,
+  AuthConfig,
+  type AuthConfigInput,
+  auth,
+  isAuthCapability,
+  turnstileLoginGate,
+} from "./capability";
 import {
   AUTH_APPLE_CREDENTIALS,
   AUTH_FACEBOOK_CREDENTIALS,
@@ -254,6 +262,24 @@ describe("additional Better Auth plugins", () => {
 });
 
 // The client projection is a security boundary: it is the only auth config a browser bundle sees.
+describe("the turnstile login gate", () => {
+  const sitekeys = { dev: "d", staging: "s", prod: "p" };
+
+  test("carries the token source turnstile's config names, the one its client projection hands a screen", () => {
+    const cap = turnstile({ widgets: { visible: { sitekeys } }, token: { header: "x-turnstile-token" } });
+    expect(turnstileLoginGate(cap)).toEqual({
+      mode: "visible",
+      token: { field: "cf-turnstile-response", header: "x-turnstile-token" },
+    });
+  });
+
+  test("is absent when turnstile is not composed, or does not protect sign-in", () => {
+    expect(turnstileLoginGate(undefined)).toBeUndefined();
+    const unprotected = turnstile({ widgets: { visible: { sitekeys } }, protect: {} });
+    expect(turnstileLoginGate(unprotected)).toBeUndefined();
+  });
+});
+
 describe("auth client projection", () => {
   const context = { environment: "production" };
 

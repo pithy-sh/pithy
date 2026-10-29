@@ -10,8 +10,12 @@ import { type PurgeStep, purgeSteps } from "@pithy-sh/core/src/capability/purge"
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { EmailCapability } from "@pithy-sh/email/src/capability";
 import { isEmailCapability } from "@pithy-sh/email/src/capability";
-import { isTurnstileCapability } from "@pithy-sh/turnstile/src/capability";
-import { TURNSTILE_LOGIN_ACTION, type TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
+import { isTurnstileCapability, type TurnstileCapability } from "@pithy-sh/turnstile/src/capability";
+import {
+  TURNSTILE_LOGIN_ACTION,
+  type TurnstileMode,
+  type TurnstileTokenSource,
+} from "@pithy-sh/turnstile/src/config/config";
 import type { Context } from "hono";
 import { z } from "zod";
 import { AuthAuditActions } from "./audit/actions";
@@ -195,6 +199,19 @@ export const AuthConfig = z
 export type AuthConfig = z.output<typeof AuthConfig>;
 export type AuthConfigInput = z.input<typeof AuthConfig>;
 
+/** The widget the sign-in routes are gated with, and where the gate reads its token. */
+export interface TurnstileLoginGate {
+  mode: TurnstileMode;
+  /** The `token` source turnstile's config names, which its client projection hands a screen. */
+  token: TurnstileTokenSource;
+}
+
+/** The sign-in gate a composed turnstile asks for, or `undefined` when none is composed or sign-in is unprotected. */
+export function turnstileLoginGate(capability: TurnstileCapability | undefined): TurnstileLoginGate | undefined {
+  const mode = capability?.turnstileConfig.protect[TURNSTILE_LOGIN_ACTION];
+  return mode ? { mode, token: capability.turnstileConfig.token } : undefined;
+}
+
 /**
  * The runtime wiring the middleware and routes close over. `config` is known at `auth()` call time;
  * `emailConfig` and `turnstile` are filled by `compose` from the composed peer capabilities, before
@@ -207,7 +224,7 @@ export interface AuthWiring {
   /** The email capability's bound enqueue seam — how magic-link/OTP are delivered. Set by `compose`. */
   enqueueEmail: EmailCapability["enqueue"] | undefined;
   /** The turnstile login gate, when the turnstile capability is composed. Set by `compose`. */
-  turnstile: { mode: TurnstileMode } | undefined;
+  turnstile: TurnstileLoginGate | undefined;
   /**
    * The adopter's session-revoked listener, or absent. See {@link AuthOptions.onSessionRevoked}.
    *
@@ -538,9 +555,7 @@ export function auth(options: AuthOptions): AuthCapability {
       }
       wiring.enqueueEmail = email.enqueue;
       // Auto-wire turnstile onto the login routes when it is composed (Jim's requirement: zero config).
-      const turnstileCap = capabilities.find(isTurnstileCapability);
-      const loginMode = turnstileCap?.turnstileConfig.protect[TURNSTILE_LOGIN_ACTION];
-      wiring.turnstile = loginMode ? { mode: loginMode } : undefined;
+      wiring.turnstile = turnstileLoginGate(capabilities.find(isTurnstileCapability));
       // And the one collision `auth()` could not see. A plugin's tables carry the plugin's own names —
       // `organization`, `member`, `invitation` — with no `pithy_auth_` prefix to keep them out of an
       // adopter's way, because they are the adopter's tables now. `composeDatabases` catches two

@@ -1333,7 +1333,6 @@
     "packages/i18n/src/browser/document.browser.test.ts": 1,
     "packages/i18n/src/browser/signals.browser.test.ts": 1,
     "packages/i18n/src/capability.test.ts": 2,
-    "packages/i18n/src/capability.ts": 2,
     "packages/i18n/src/catalogs/browser.test.ts": 2,
     "packages/i18n/src/catalogs/es/catalogs.test.ts": 5,
     "packages/i18n/src/catalogs/es/client.test.ts": 1,

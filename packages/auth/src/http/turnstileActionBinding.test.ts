@@ -86,7 +86,7 @@ function app(): Hono<PithyHonoEnv> {
     }),
     resolveGithubUserInfo: undefined,
     enqueueEmail: undefined,
-    turnstile: { mode: "visible" },
+    turnstile: { mode: "visible", token: { field: "cf-turnstile-response" } },
   };
   const hono = new Hono<PithyHonoEnv>();
   hono.onError(pithyErrorHandler);
