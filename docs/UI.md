@@ -16,7 +16,7 @@ It scaffolds the client into `apps/api/`, beside the Worker that serves it, and 
 - **Wires the asset routing.** An `assets` stanza in `wrangler.jsonc`: SPA fallback for anything the browser asks for, and an explicit allowlist of the API paths the Worker must answer itself.
 - **Declares how it starts.** A `dev` block in `pithy.worker.jsonc` so `pithy dev` runs Vite for this Worker instead of `wrangler dev` — one process serving the SPA and the API together.
 - **Records the build.** A `ui` block so `pithy deploy` builds the client before shipping the Worker.
-- **Adds the dependencies.** React, Vite, the two plugins, and `@pithy-sh/vite`, at pinned versions. A `@pithy-sh/*` package your project already provides from a linked checkout gets no range written — there is no published version to name, and writing one breaks your next install.
+- **Adds the dependencies.** React, `@pithy-sh/i18n`, `@pithy-sh/ui-core` and `@pithy-sh/ui-react`, Vite, the two plugins, and `@pithy-sh/vite`, at pinned versions. A `@pithy-sh/*` package your project already provides from a linked checkout gets no range written — there is no published version to name, and writing one breaks your next install.
 
 ## What it does not do
 
@@ -208,7 +208,7 @@ That is also how a language Pithy writes nothing in gets its words. The kit ship
 
 The screens are real files in **`@pithy-sh/ui-react`**, a template library the CLI depends on and copies from — not string literals inside `@pithy-sh/cli`.
 
-The same package is also a runtime dependency of what it writes. The copied screens import `useRead` and `useAction` from it, and the router's `<Redirect>` is built on its own (see [Reading data, running calls, leaving](#reading-data-running-calls-leaving)). Those hooks are code you upgrade rather than copies you own, so a fix to them reaches your screens with the package, not with a re-scaffold.
+What it writes depends on `@pithy-sh/ui-core` at runtime. The copied screens import `useRead` and `useAction` from it, and the router takes its `<Redirect>` and the route table from it (see [Reading data, running calls, leaving](#reading-data-running-calls-leaving)). `@pithy-sh/ui-react` stays a dependency too, for the re-exports a screen scaffolded earlier imports those hooks through. Those hooks are code you upgrade rather than copies you own, so a fix to them reaches your screens with the package, not with a re-scaffold.
 
 That is a deliberate boundary, and it is about growth. A framework's templates need that framework's toolchain to be checked: React wants `react`, `@types/react` and a `jsx: react-jsx` program, and Svelte would want an entirely different one. Keeping them in the CLI would make the CLI carry every framework's devDependencies and every framework's tsconfig purely to typecheck files it only ever copies. Each framework therefore brings its own library — `@pithy-sh/ui-react` and `@pithy-sh/ui-react-native` today, typechecked against React's DOM types and React Native's own respectively — while the stub contract that drives them stays in the CLI.
 
@@ -571,7 +571,8 @@ One route is deliberately never allowlisted: one your app capability mounts at *
 | `react` | 19.2.8 | The client |
 | `react-dom` | 19.2.8 | The client |
 | `@pithy-sh/i18n` | matching your CLI | The translator every seeded screen renders through |
-| `@pithy-sh/ui-react` | the one your CLI copies from | `useRead`, `useAction` and the redirect every seeded screen loads and leaves through |
+| `@pithy-sh/ui-core` | matching your CLI | `useRead`, `useAction`, the redirect and the route table every seeded screen loads and leaves through |
+| `@pithy-sh/ui-react` | the one your CLI copies from | The re-exports at `src/read`, `src/action` and `src/redirect` that a screen scaffolded earlier imports |
 | `@types/react` | 19.2.17 | Types |
 | `@types/react-dom` | 19.2.3 | Types |
 | `vite` | ^8.0.16 | Dev server and build |
@@ -582,13 +583,13 @@ One route is deliberately never allowlisted: one your app capability mounts at *
 
 **`@pithy-sh/i18n` is a dependency of the front end whether or not you compose the capability**, and that is not the pattern the auth and payments screens follow. Those are written only when their capability is composed, and their package arrives with `pithy add <capability>`. The translator is different because every seeded screen reads it — `src/router.tsx` and your home screen included, both written on every scaffold — so the import is there before you have decided anything about language. Composing nothing still renders the English baked into each screen, byte for byte: `useTranslator` with no provider is a translator over that catalog and nothing else. See [Two catalogs, and why](#two-catalogs-and-why), and [`docs/I18N.md`](I18N.md) for the rest.
 
-**`@pithy-sh/ui-react` is a dependency on the same terms.** `src/router.tsx` and your home screen both import it, so every scaffold declares it, at the version of the package your CLI copied the screens from.
+**`@pithy-sh/ui-core` is a dependency on the same terms.** `src/router.tsx` and your home screen both import it, so every scaffold declares it. `@pithy-sh/ui-react` is declared beside it, at the version of the package your CLI copied the screens from, because a screen scaffolded earlier imports the hooks through its re-exports.
 
 Two exceptions to the table, and they touch only the `@pithy-sh/*` rows.
 
 The first is yours: if one is already provided by a checkout linked into your `node_modules`, `pithy ui add` writes no range for it. The package resolves either way, and a range naming a version the registry does not have would fail your next install.
 
-The second is ours, and applies to every project until `@pithy-sh/*` publishes: there is no version to name yet, so the line is dropped for everyone. `pithy ui add` says so — the same notice `pithy init` and `pithy worker add` print — and the install it then tells you to run will succeed while the build fails on the missing package. Link the kit from a checkout before installing. The day the scope publishes, the range is written with no change on your side.
+The second is ours, and applies to a kit package that has never been published. Its version is still `0.0.0`, so there is no version to name and the line is dropped. A CLI run from a kit checkout meets this for any package added since the last release, `@pithy-sh/ui-core` and `@pithy-sh/ui-react-native` among them until they first publish; link the kit from that checkout before installing, or the install succeeds and the build fails on the missing package. Only when nothing under `@pithy-sh/*` has published does `pithy ui add` say so, with the same notice `pithy init` and `pithy worker add` print. Once a package publishes, the range is written with no change on your side.
 
 The versions are a set, not a menu. `@vitejs/plugin-react` 6.x is the Vite-8 line — 5.1.x does not support Vite 8 — and `@cloudflare/vite-plugin` 1.64.0 peers on `vite ^6.1 || ^7 || ^8` and depends on exactly `wrangler 4.151.0`, so both are exact: a caret on the plugin resolves its next release, which wants a newer wrangler than the one pinned beside it. Moving one of them alone will not resolve.
 

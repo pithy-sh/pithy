@@ -49302,7 +49302,7 @@
       "bearer": {
         "type": "http",
         "scheme": "bearer",
-        "description": "A short-lived access token from `@pithy-sh/auth`, sent as `Authorization: Bearer <token>`."
+        "description": "A session token from `@pithy-sh/auth`, sent as `Authorization: Bearer <token>`: the one sign-in returns, then the `refreshToken` each `/token/rotate` answers with. The rotation's `accessToken` is a JWT for services outside the Worker, and these routes refuse it."
       },
       "session": {
         "type": "apiKey",
