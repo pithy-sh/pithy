@@ -14,11 +14,11 @@
 // Vite plugin serves, built from the Worker's own pithy.config.ts.
 //
 // **Generated, and copied here as it was emitted (#398).** Each declaration below is a capability's
-// declared client projection — `src/client/projection.ts` in @pithy-sh/auth, @pithy-sh/payments,
-// @pithy-sh/support and @pithy-sh/turnstile — written out by @pithy-sh/vite's
-// `src/clientEnvDeclaration.ts` at kit build time. In the kit that is one statement of each shape and
-// nothing to keep in step: a field a projection stops emitting is a compile error where it is
-// projected, and this file moves in the same commit.
+// declared client projection — `src/client/projection.ts` in @pithy-sh/auth, @pithy-sh/consent,
+// @pithy-sh/i18n, @pithy-sh/payments, @pithy-sh/support and @pithy-sh/turnstile — written out by
+// @pithy-sh/vite's `src/clientEnvDeclaration.ts` at kit build time. In the kit that is one
+// statement of each shape and nothing to keep in step: a field a projection stops emitting is a
+// compile error where it is projected, and this file moves in the same commit.
 //
 // In your repository it is yours, like every other seeded file. Editing it changes what your compiler
 // believes and nothing about what the plugin serves.
@@ -90,6 +90,29 @@ declare module "virtual:pithy/auth" {
         otpLength: number;
         /** Whether signing in may provision a new user. Drives the sign-up copy. */
         signUpEnabled: boolean;
+      };
+  export default config;
+}
+
+declare module "virtual:pithy/consent" {
+  /**
+   * Whether this capability is composed and serving on this worker. Also the union's discriminant.
+   *
+   * The only named export, deliberately. Every other key is reached through the default export and a
+   * narrowing — see the note at the top of this file.
+   */
+  export const enabled: boolean;
+
+  const config:
+    | {
+        /** Consent is not composed on this worker. A screen branches rather than calling routes nobody serves. */
+        enabled: false;
+      }
+    | {
+        /** Consent is composed on this worker. */
+        enabled: true;
+        /** The path the consent routes mount under, e.g. `/consent`. The settings screen calls under it. */
+        basePath: string;
       };
   export default config;
 }

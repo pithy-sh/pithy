@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { ConsentFetch, ConsentRequestInit } from "@pithy-sh/consent/src/client/api";
+import { CONSENT_VISITOR_HEADER, type ConsentFetch, type ConsentRequestInit } from "@pithy-sh/consent/src/client/api";
 import type { ScreenRole } from "@pithy-sh/ui-core/src/routes";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -254,6 +254,49 @@ describe("the consent screen's transport", () => {
     await waitFor(() => expect(calls.some((call) => call.url === `${ORIGIN}/consent/me`)).toBe(true));
     const read = calls.find((call) => call.url === `${ORIGIN}/consent/me`);
     expect(read?.init.credentials).toBe("omit");
+  });
+});
+
+describe("the consent screen at a custom base path", () => {
+  /** The generated config of a Worker composing `consent({ basePath: "/privacy" })`. */
+  async function composedAtPrivacy(): Promise<void> {
+    const template = (await import("../templates/src/pithy-config.generated")).default;
+    const privacy = { enabled: true, basePath: "/privacy" };
+    vi.doMock("../templates/src/pithy-config.generated", () => ({
+      default: { ...template, consent: { dev: privacy, staging: privacy, prod: privacy } },
+    }));
+  }
+
+  afterEach(() => {
+    vi.doUnmock("../templates/src/pithy-config.generated");
+  });
+
+  test("on the web, it calls the configured base path", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      calls.push(url);
+      return new Response(JSON.stringify(ME), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    Platform.OS = "web";
+    await composedAtPrivacy();
+    await mount(({ default: Consent }) => <Consent />);
+    await screen.findByText("email.marketing summary");
+    expect(calls[0]).toBe("/privacy/me");
+  });
+
+  test("on a phone, it calls the configured base path, carrying the visitor id consent knows it by", async () => {
+    const calls: { url: string; init: RequestInit & { headers?: Record<string, string> } }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit & { headers?: Record<string, string> }) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify(ME), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    Platform.OS = "ios";
+    await composedAtPrivacy();
+    await mount(({ default: Consent }) => <Consent />);
+    await waitFor(() => expect(calls.some((call) => call.url === `${ORIGIN}/privacy/me`)).toBe(true));
+    const read = calls.find((call) => call.url === `${ORIGIN}/privacy/me`);
+    expect(read?.init.headers?.[CONSENT_VISITOR_HEADER]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(calls.some((call) => call.url.startsWith(`${ORIGIN}/consent/`))).toBe(false);
   });
 });
 

@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, test } from "vitest";
-import { appEnvironment, originFor } from "../templates/src/pithy-config";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { appEnvironment, originFor, projectionFor } from "../templates/src/pithy-config";
 
 const origins = { dev: "http://localhost:8787", staging: "https://staging.example.com", prod: null };
 
@@ -47,5 +47,77 @@ describe("originFor", () => {
   test("the web build calls relative paths, so it needs no origin and is not refused for want of one", () => {
     expect(originFor(origins, "prod", "web")).toBe("");
     expect(originFor({ dev: "http://localhost:8787" }, "staging", "web")).toBe("");
+  });
+});
+
+describe("projectionFor", () => {
+  const sitekeys = {
+    dev: { enabled: true, sitekey: "dev-key" },
+    staging: { enabled: true, sitekey: "staging-key" },
+    prod: { enabled: true, sitekey: "prod-key" },
+  };
+
+  test("is the projection of the environment the build names", () => {
+    expect(projectionFor(sitekeys, "turnstile", "prod")).toEqual({ enabled: true, sitekey: "prod-key" });
+    expect(projectionFor(sitekeys, "turnstile", "staging")).toEqual({ enabled: true, sitekey: "staging-key" });
+    expect(projectionFor(sitekeys, "turnstile", "dev")).toEqual({ enabled: true, sitekey: "dev-key" });
+  });
+
+  test("an environment with no projection is refused, naming the field and where it would be", () => {
+    expect(() => projectionFor({ dev: sitekeys.dev }, "turnstile", "prod")).toThrow(
+      /turnstile\.prod.*pithy-config\.generated\.ts/,
+    );
+  });
+});
+
+describe("the app's config, as a build reads it", () => {
+  const generated = {
+    origins: { dev: "http://localhost:8787", staging: "https://staging.example.com", prod: "https://api.example.com" },
+    appScheme: "demo",
+    universalLinkOrigin: null,
+    rails: { ios: "none", android: "none", web: "none" },
+    google: { webClientId: null, iosClientId: null },
+    auth: { dev: { enabled: false }, staging: { enabled: false }, prod: { enabled: false } },
+    i18n: { dev: { enabled: false }, staging: { enabled: false }, prod: { enabled: false } },
+    payments: { dev: { enabled: false }, staging: { enabled: false }, prod: { enabled: false } },
+    turnstile: {
+      dev: { enabled: true, sitekey: "1x00000000000000000000AA", action: "login", mode: "visible", token: {} },
+      staging: { enabled: true, sitekey: "1x00000000000000000000AA", action: "login", mode: "visible", token: {} },
+      prod: { enabled: true, sitekey: "0x4AAAAAAAprod", action: "login", mode: "visible", token: {} },
+    },
+    consent: {
+      dev: { enabled: true, basePath: "/privacy" },
+      staging: { enabled: false },
+      prod: { enabled: true, basePath: "/privacy" },
+    },
+  };
+
+  /** The template module, evaluated as a build for `environment` evaluates it, over `config`. */
+  async function built(environment: string, config: Record<string, unknown> = generated) {
+    vi.resetModules();
+    vi.stubEnv("EXPO_PUBLIC_PITHY_ENV", environment);
+    vi.doMock("../templates/src/pithy-config.generated", () => ({ default: config }));
+    return import("../templates/src/pithy-config");
+  }
+
+  afterEach(() => {
+    vi.doUnmock("../templates/src/pithy-config.generated");
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  test("a prod build renders prod's sitekey, not dev's", async () => {
+    expect((await built("prod")).turnstileConfig.sitekey).toBe("0x4AAAAAAAprod");
+    expect((await built("dev")).turnstileConfig.sitekey).toBe("1x00000000000000000000AA");
+  });
+
+  test("consent's base path is the one the build's environment composed, and its default where none is", async () => {
+    expect((await built("prod")).consentConfig.basePath).toBe("/privacy");
+    expect((await built("staging")).consentConfig).toEqual({ enabled: false, basePath: "/consent" });
+  });
+
+  test("a build naming an environment the file has no projection for fails, naming the field", async () => {
+    const { prod: _prod, ...devAndStaging } = generated.turnstile;
+    await expect(built("prod", { ...generated, turnstile: devAndStaging })).rejects.toThrow(/turnstile\.prod/);
   });
 });

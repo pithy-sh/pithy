@@ -3,7 +3,13 @@
 
 import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { UI_CORE_VERSION } from "@pithy-sh/ui-core/src/version";
-import { HOME_SCREEN, TEMPLATE_DIR, TEMPLATE_GROUPS, WORKER_TOKEN } from "@pithy-sh/ui-react/src/templates";
+import {
+  GENERATED_TEMPLATES,
+  HOME_SCREEN,
+  TEMPLATE_DIR,
+  TEMPLATE_GROUPS,
+  WORKER_TOKEN,
+} from "@pithy-sh/ui-react/src/templates";
 import { UI_REACT_VERSION } from "@pithy-sh/ui-react/src/version";
 import { kitRange } from "../project/scaffold";
 import { CLOUDFLARE_VITE_PLUGIN, WRANGLER_RANGE } from "../project/workerScaffold";
@@ -55,6 +61,7 @@ export const reactStub: UiStub = {
   templateDir: TEMPLATE_DIR,
   manifest,
   substitutions: (context) => ({ [WORKER_TOKEN]: context.worker }),
+  generated: GENERATED_TEMPLATES,
   dependencies: {
     react: "^19.2.8",
     "react-dom": "^19.2.8",

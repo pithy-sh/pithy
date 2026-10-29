@@ -33,10 +33,14 @@ const composed: GeneratedConfig = {
   rails: { ios: "apple", android: "google", web: "stripe" },
   google: { webClientId: null, iosClientId: null },
   workerPaths: ["/auth", "/health", "/organizations"],
-  auth: { enabled: true, basePath: "/auth", otpLength: 6 },
-  i18n: { enabled: false },
-  payments: { enabled: false },
-  turnstile: { enabled: false },
+  auth: {
+    dev: { enabled: true, basePath: "/auth", otpLength: 6 },
+    prod: { enabled: true, basePath: "/auth", otpLength: 6 },
+  },
+  i18n: { dev: { enabled: false }, prod: { enabled: false } },
+  payments: { dev: { enabled: false }, prod: { enabled: false } },
+  turnstile: { dev: { enabled: false }, prod: { enabled: false } },
+  consent: { dev: { enabled: true, basePath: "/privacy" }, prod: { enabled: true, basePath: "/privacy" } },
 };
 
 /** A config with every shape a projection can hold: nested objects, arrays short and long, a key that needs quotes. */
@@ -44,28 +48,36 @@ const projected: GeneratedConfig = {
   ...composed,
   google: { webClientId: "123-abc.apps.googleusercontent.com", iosClientId: null },
   auth: {
-    enabled: true,
-    basePath: "/auth",
-    providers: ["google", "apple", "github"],
-    otp: { length: 6, expiresIn: 300 },
-    "x-device-header": "x-pithy-device-id",
-    trustedOrigins: [
-      "https://app.example.com",
-      "https://admin.example.com",
-      "https://staging.app.example.com",
-      "https://staging.admin.example.com",
-      "pithyapp://",
-    ],
+    dev: {
+      enabled: true,
+      basePath: "/auth",
+      providers: ["google", "apple", "github"],
+      otp: { length: 6, expiresIn: 300 },
+      "x-device-header": "x-pithy-device-id",
+      trustedOrigins: [
+        "https://app.example.com",
+        "https://admin.example.com",
+        "https://staging.app.example.com",
+        "https://staging.admin.example.com",
+        "pithyapp://",
+      ],
+    },
+    prod: { enabled: true, basePath: "/auth", providers: [] },
   },
-  i18n: { enabled: true, locales: ["en", "es"], fallback: "en", empty: [], none: {} },
+  i18n: { dev: { enabled: true, locales: ["en", "es"], fallback: "en", empty: [], none: {} } },
   payments: {
-    enabled: true,
-    products: [
-      { id: "pro", entitlements: ["pro"], skus: { apple: "pro.ios", google: null } },
-      { id: "coins", entitlements: [], skus: { apple: null, google: "coins.android" } },
-    ],
+    dev: {
+      enabled: true,
+      products: [
+        { id: "pro", entitlements: ["pro"], skus: { apple: "pro.ios", google: null } },
+        { id: "coins", entitlements: [], skus: { apple: null, google: "coins.android" } },
+      ],
+    },
   },
-  turnstile: { enabled: false, note: 'A "quoted" word, a backslash \\ and a line\nbreak.' },
+  turnstile: {
+    dev: { enabled: false, note: 'A "quoted" word, a backslash \\ and a line\nbreak.' },
+    prod: { enabled: true, sitekey: "0x4AAAAAAAprod" },
+  },
 };
 
 /** Run the repository's Biome in `cwd` over `files`. */

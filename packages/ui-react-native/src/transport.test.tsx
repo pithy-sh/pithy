@@ -57,6 +57,7 @@ describe("on a phone, the session is a bearer credential", () => {
       platform: "ios",
       origin: ORIGIN,
       authBasePath: "/auth",
+      consentBasePath: "/consent",
       store: secureStore,
       fetch: wire.fetch,
     });
@@ -75,6 +76,7 @@ describe("on a phone, the session is a bearer credential", () => {
       platform: "android",
       origin: ORIGIN,
       authBasePath: "/auth",
+      consentBasePath: "/consent",
       store: secureStore,
       fetch: worker(signedIn).fetch,
     });
@@ -87,6 +89,7 @@ describe("on a phone, the session is a bearer credential", () => {
       platform: "ios",
       origin: ORIGIN,
       authBasePath: "/auth",
+      consentBasePath: "/consent",
       store: secureStore,
       fetch: worker(signedIn).fetch,
     });
@@ -96,6 +99,7 @@ describe("on a phone, the session is a bearer credential", () => {
       platform: "ios",
       origin: ORIGIN,
       authBasePath: "/auth",
+      consentBasePath: "/consent",
       store: secureStore,
       fetch: wire.fetch,
     });
@@ -110,6 +114,7 @@ describe("on a phone, the session is a bearer credential", () => {
       platform: "ios",
       origin: ORIGIN,
       authBasePath: "/auth",
+      consentBasePath: "/consent",
       store: secureStore,
       fetch: wire.fetch,
     });
@@ -127,6 +132,7 @@ describe("on a phone, the session is a bearer credential", () => {
       platform: "ios",
       origin: ORIGIN,
       authBasePath: "/auth",
+      consentBasePath: "/consent",
       store: secureStore,
       fetch: wire.fetch,
     });
@@ -145,6 +151,7 @@ describe("on a phone, the session is a bearer credential", () => {
       platform: "android",
       origin: ORIGIN,
       authBasePath: "/auth",
+      consentBasePath: "/consent",
       store: secureStore,
       fetch: wire.fetch,
     });
@@ -167,12 +174,34 @@ describe("on a phone, the session is a bearer credential", () => {
     expect(payments?.init?.headers?.[CONSENT_VISITOR_HEADER]).toBeUndefined();
   });
 
+  test("the visitor id follows consent's configured base path, and the default path is then nobody's", async () => {
+    const wire = worker(() => ({ status: 200, body: {} }));
+    const transport = createTransport({
+      platform: "ios",
+      origin: ORIGIN,
+      authBasePath: "/auth",
+      consentBasePath: "/privacy",
+      store: secureStore,
+      fetch: wire.fetch,
+    });
+    await transport.capability.fetch?.(`${ORIGIN}/privacy/me`);
+    await transport.capability.fetch?.(`${ORIGIN}/consent/me`);
+    await transport.capability.fetch?.(`${ORIGIN}/privacyx/me`);
+    const [me, stale, lookalike] = wire.sent.slice(-3);
+    const visitor = stubStore.items.get(CONSENT_VISITOR_KEY);
+    expect(visitor).toBeTruthy();
+    expect(me?.init?.headers?.[CONSENT_VISITOR_HEADER]).toBe(visitor);
+    expect(stale?.init?.headers?.[CONSENT_VISITOR_HEADER]).toBeUndefined();
+    expect(lookalike?.init?.headers?.[CONSENT_VISITOR_HEADER]).toBeUndefined();
+  });
+
   test("the session is opened once, however many calls race to it", async () => {
     const wire = worker(signedIn);
     const transport = createTransport({
       platform: "ios",
       origin: ORIGIN,
       authBasePath: "/auth",
+      consentBasePath: "/consent",
       store: secureStore,
       fetch: wire.fetch,
     });
@@ -188,6 +217,7 @@ describe("an image the Worker serves", () => {
       platform: "ios",
       origin: ORIGIN,
       authBasePath: "/auth",
+      consentBasePath: "/consent",
       store: secureStore,
       fetch: worker(signedIn).fetch,
     });
@@ -202,7 +232,13 @@ describe("an image the Worker serves", () => {
   });
 
   test("on the web, is the path itself, and the page's cookie goes with it", async () => {
-    const transport = createTransport({ platform: "web", origin: ORIGIN, authBasePath: "/auth", store: secureStore });
+    const transport = createTransport({
+      platform: "web",
+      origin: ORIGIN,
+      authBasePath: "/auth",
+      consentBasePath: "/consent",
+      store: secureStore,
+    });
     expect(await transport.image("/organizations/marks/organization/o1")).toEqual({
       uri: "/organizations/marks/organization/o1",
     });
@@ -213,6 +249,7 @@ describe("an image the Worker serves", () => {
       platform: "ios",
       origin: ORIGIN,
       authBasePath: "/auth",
+      consentBasePath: "/consent",
       store: secureStore,
       fetch: worker(signedIn).fetch,
     });
@@ -231,7 +268,13 @@ describe("an image the Worker serves", () => {
 
 describe("on the web, the session is the page's cookie", () => {
   test("calls are relative, carry no origin and no bearer, and nothing is stored", async () => {
-    const transport = createTransport({ platform: "web", origin: ORIGIN, authBasePath: "/auth", store: secureStore });
+    const transport = createTransport({
+      platform: "web",
+      origin: ORIGIN,
+      authBasePath: "/auth",
+      consentBasePath: "/consent",
+      store: secureStore,
+    });
     expect(transport.bearer).toBe(false);
     expect(transport.auth).toEqual({ basePath: "/auth" });
     expect(transport.organization).toEqual({});
@@ -287,6 +330,7 @@ describe("a change of who is signed in", () => {
       platform: "ios",
       origin: ORIGIN,
       authBasePath: "/auth",
+      consentBasePath: "/consent",
       store: secureStore,
       fetch: worker(signedIn).fetch,
     });
@@ -304,7 +348,13 @@ describe("a change of who is signed in", () => {
   });
 
   test("on the web, is never reported: the cookie changes out of sight", async () => {
-    const transport = createTransport({ platform: "web", origin: ORIGIN, authBasePath: "/auth", store: secureStore });
+    const transport = createTransport({
+      platform: "web",
+      origin: ORIGIN,
+      authBasePath: "/auth",
+      consentBasePath: "/consent",
+      store: secureStore,
+    });
     const listener = vi.fn();
     transport.onChange(listener)();
     await transport.adopt("raw-token");
@@ -314,7 +364,14 @@ describe("a change of who is signed in", () => {
 
 describe("a pinned credential", () => {
   const phone = (fetch: AuthFetch) =>
-    createTransport({ platform: "ios", origin: ORIGIN, authBasePath: "/auth", store: secureStore, fetch });
+    createTransport({
+      platform: "ios",
+      origin: ORIGIN,
+      authBasePath: "/auth",
+      consentBasePath: "/consent",
+      store: secureStore,
+      fetch,
+    });
 
   test("presents the credential held when it was pinned, whoever signs in or out after", async () => {
     const wire = worker(signedIn);
@@ -349,7 +406,13 @@ describe("a pinned credential", () => {
   test("is nothing when no credential is held, and nothing on the web", async () => {
     const wire = worker(signedIn);
     expect(await phone(wire.fetch).pinned()).toBeNull();
-    const web = createTransport({ platform: "web", origin: ORIGIN, authBasePath: "/auth", store: secureStore });
+    const web = createTransport({
+      platform: "web",
+      origin: ORIGIN,
+      authBasePath: "/auth",
+      consentBasePath: "/consent",
+      store: secureStore,
+    });
     await web.adopt("raw-token");
     expect(await web.pinned()).toBeNull();
   });

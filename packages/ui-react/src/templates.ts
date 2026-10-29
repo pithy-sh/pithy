@@ -36,10 +36,9 @@ export const TEMPLATE_DIR: string = join(dirname(fileURLToPath(import.meta.url))
  * being composed — `auth` and `payments` today, and whatever follows is an additive entry here with
  * nothing about the CLI's stub contract having to change to admit it.
  *
- * **`src/pithy-config.tsx` is base, not auth.** It is the one module that imports the
- * `virtual:pithy/*` modules and narrows each on `enabled`, for *every* capability — `docs/UI.md` says
- * so in as many words, and a payments-only scaffold would otherwise never get the file its screens
- * read. It compiles with nothing composed: each projection is then `{ enabled: false }` and the
+ * **`src/pithy-config.tsx` is base, not auth.** It imports the `virtual:pithy/*` modules and narrows
+ * each on `enabled`, for *every* capability, and a payments-only scaffold would otherwise never get the
+ * file its screens read. The consent screen alone narrows `virtual:pithy/consent` itself. It compiles with nothing composed: each projection is then `{ enabled: false }` and the
  * narrowing falls to the defaults it declares.
  *
  * ## Adding a file here is agreeing to one rule
@@ -172,6 +171,13 @@ export const TEMPLATE_GROUPS = {
 
 /** A group name this library offers. */
 export type TemplateGroup = keyof typeof TEMPLATE_GROUPS;
+
+/**
+ * The templates generated in the kit rather than written by hand: their content follows the capabilities'
+ * declared projections, and nothing in them is the adopter's to edit. A backfill rewrites one that differs from
+ * the current emit, so a module declared since the scaffold reaches the screens the backfill adds.
+ */
+export const GENERATED_TEMPLATES = ["client-env.d.ts"] as const;
 
 /**
  * The adopter's own home screen, which exists in two variants because it is the one file that

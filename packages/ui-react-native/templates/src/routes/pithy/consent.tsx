@@ -6,6 +6,7 @@ import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
 import { useRead } from "@pithy-sh/ui-core/src/read";
 import { type ReactNode, useRef, useState } from "react";
 import { type GestureResponderEvent, Pressable, Text, TextInput, View } from "react-native";
+import { consentConfig } from "../../pithy-config";
 import { type Theme, useTheme } from "../../theme";
 import { transport } from "../../transport";
 
@@ -85,11 +86,15 @@ function withdrawalFor(me: MyConsentResponse, row: Row): Withdrawal {
   return method === "typed" || method === "drawn" || method === "provider" ? method : "click";
 }
 
-/** The consent routes, over this app's transport: the Worker's origin and the bearer session's fetch on a phone. */
+/**
+ * The consent routes, under the base path the Worker composed them at, over this app's transport: the Worker's
+ * origin and the bearer session's fetch on a phone.
+ */
 function consentTransport(): ConsentClientOptions {
+  const basePath = consentConfig.basePath;
   const { origin, fetch } = transport.capability;
-  if (origin === undefined || fetch === undefined) return {};
-  return { fetch: (path, init) => fetch(`${origin}${path}`, init) };
+  if (origin === undefined || fetch === undefined) return { basePath };
+  return { basePath, fetch: (path, init) => fetch(`${origin}${path}`, init) };
 }
 
 // ── the drawn signature ──────────────────────────────────────────────────────

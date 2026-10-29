@@ -1,4 +1,10 @@
-import { type ConsentClient, type ConsentClientOptions, consentClient } from "@pithy-sh/consent/src/client/api";
+import consentModule from "virtual:pithy/consent";
+import {
+  CONSENT_BASE_PATH,
+  type ConsentClient,
+  type ConsentClientOptions,
+  consentClient,
+} from "@pithy-sh/consent/src/client/api";
 import type { MyConsentResponse } from "@pithy-sh/consent/src/http/responses";
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import type { Translator } from "@pithy-sh/core/src/i18n/translator";
@@ -11,6 +17,10 @@ export const path = "/consent";
 
 // What a "your privacy choices" link points at, wherever it sits — by this role, so renaming the path moves it.
 export const role = "consent";
+
+// Where the Worker mounts consent's routes, read from its projection here, so the screen asks nothing of the
+// project's own narrowing module.
+const CONSENT_ROUTES = consentModule.enabled ? consentModule.basePath : CONSENT_BASE_PATH;
 
 // No `session` export: a visitor who has not signed in reads and changes their choices here too, against the
 // device id their first choice set. Signed in, it is their account's.
@@ -151,7 +161,10 @@ function SignaturePad({
 export interface ConsentScreenProps {
   /** The translator this screen renders through. Absent, the provider's, and with none, {@link EN}. */
   readonly t?: Translator;
-  /** Where the consent routes are, and the fetch to reach them with. Injected so a test never navigates. */
+  /**
+   * Where the consent routes are, and the fetch to reach them with. Injected so a test never navigates. The base
+   * path is the one the Worker composed, from `virtual:pithy/consent`, unless this names another.
+   */
   readonly client?: ConsentClientOptions;
 }
 
@@ -169,7 +182,7 @@ class Refused extends Error {
 export function ConsentScreen({ client: options, t: given }: ConsentScreenProps): ReactNode {
   const baked = useTranslator(EN);
   const t = given ?? baked;
-  const [client] = useState<ConsentClient>(() => consentClient(options));
+  const [client] = useState<ConsentClient>(() => consentClient({ basePath: CONSENT_ROUTES, ...options }));
   const read = useRead("consent", async (): Promise<MyConsentResponse> => {
     const result = await client.me();
     if (result.ok) return result.value;

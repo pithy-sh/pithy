@@ -31,6 +31,7 @@ let BARE: Record<string, string>;
 let AUTH: Record<string, string>;
 let PAY: Record<string, string>;
 let BOTH: Record<string, string>;
+let CONSENT: Record<string, string>;
 
 beforeAll(async () => {
   BARE = await loadStubFiles(reactStub, {
@@ -66,6 +67,15 @@ beforeAll(async () => {
     payments: true,
     organization: false,
     consent: false,
+    mcp: false,
+    packageManager: "bun",
+  });
+  CONSENT = await loadStubFiles(reactStub, {
+    worker: "api",
+    auth: false,
+    payments: false,
+    organization: false,
+    consent: true,
     mcp: false,
     packageManager: "bun",
   });
@@ -464,23 +474,35 @@ describe("the React 19 stub", () => {
     }
   });
 
-  test("only pithy-config.tsx imports a virtual module — every screen reads it narrowed", () => {
+  test("a virtual module is imported by its default and narrowed — pithy-config.tsx, and the consent screen", () => {
     // A NAMED import of a projection key breaks the build whenever that capability is not composed:
-    // the module then exports `enabled` and nothing else. One narrowing module makes that impossible.
-    const virtualImporters = Object.entries(BOTH)
+    // the module then exports `enabled` and nothing else. So every import is the default, narrowed.
+    const files = { ...BOTH, ...CONSENT };
+    const virtualImporters = Object.entries(files)
       .filter(([path]) => path.endsWith(".tsx"))
       .filter(([, contents]) => /from "virtual:pithy\//.test(contents))
-      .map(([path]) => path);
-    expect(virtualImporters).toEqual(["src/pithy-config.tsx"]);
+      .map(([path]) => path)
+      .sort();
+    expect(virtualImporters).toEqual(["src/pithy-config.tsx", "src/routes/pithy/consent.tsx"]);
+    for (const path of virtualImporters) {
+      expect(files[path], path).not.toMatch(/import\s*\{[^}]*\}\s*from "virtual:pithy\//);
+    }
+    // The consent screen reads its base path itself, so a backfill onto an older pithy-config.tsx compiles.
+    const screen = files["src/routes/pithy/consent.tsx"] ?? "";
+    expect(screen).toContain('import consentModule from "virtual:pithy/consent"');
+    expect(screen).toContain("consentModule.enabled");
+    expect(screen).not.toContain('from "../../pithy-config"');
     const config = BOTH["src/pithy-config.tsx"] ?? "";
     expect(config).toContain('import authModule from "virtual:pithy/auth"');
     expect(config).toContain('import turnstileModule from "virtual:pithy/turnstile"');
     expect(config).toContain('import paymentsModule from "virtual:pithy/payments"');
     expect(config).toContain('import i18nModule from "virtual:pithy/i18n"');
+    expect(config).toContain('import consentModule from "virtual:pithy/consent"');
     // Narrowed on the discriminant, not asserted past it.
     expect(config).toContain("authModule.enabled");
     expect(config).toContain("turnstileModule.enabled");
     expect(config).toContain("paymentsModule.enabled");
+    expect(config).toContain("consentModule.enabled");
   });
 
   test("the sign-in screen renders from config, never from a flag", () => {
@@ -638,7 +660,7 @@ describe("the React 19 stub", () => {
     // writes are that file's, unaltered, in every scaffold.
     const gated = await readFile(join(TEMPLATE_DIR, "client-env.d.ts"), "utf8");
     const modules = [...gated.matchAll(/declare module "virtual:pithy\/([^"]+)"/g)].map((match) => match[1]);
-    expect(modules.sort()).toEqual(["auth", "i18n", "payments", "support", "turnstile"]);
+    expect(modules.sort()).toEqual(["auth", "consent", "i18n", "payments", "support", "turnstile"]);
     for (const files of [BARE, AUTH, PAY, BOTH]) expect(files["client-env.d.ts"]).toBe(gated);
   });
 

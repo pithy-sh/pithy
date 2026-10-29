@@ -103,13 +103,32 @@ export const GoogleClientIds = z
 export type GoogleClientIds = z.infer<typeof GoogleClientIds>;
 
 /** One capability's client projection, as the Worker composed it: every field kept, `enabled` checked. */
-const Projection = (capability: string) =>
+const Projection = (capability: string, environment: AppEnvironment) =>
   z
     .looseObject({
       enabled: z.boolean().describe(`Whether ${capability} is composed into the Worker the app calls.`),
     })
     .describe(
-      `${capability}'s client projection, exactly as the Worker composes it: the same value a Vite app reads from \`virtual:pithy/${capability}\`.`,
+      `${capability}'s client projection for ${environment}, exactly as the Worker composes it: the same value a Vite app built for ${environment} reads from \`virtual:pithy/${capability}\`.`,
+    );
+
+/**
+ * One capability's client projection in each environment, keyed like {@link Origins}: a sitekey or a catalog can
+ * differ between environments, so a build reads the one for the environment it names.
+ */
+const Projections = (capability: string) =>
+  z
+    .object({
+      dev: Projection(capability, "dev"),
+      staging: Projection(capability, "staging")
+        .optional()
+        .describe(`${capability}'s projection for staging. Absent when the project does not deploy to staging.`),
+      prod: Projection(capability, "prod")
+        .optional()
+        .describe(`${capability}'s projection for prod. Absent when the project does not deploy to prod.`),
+    })
+    .describe(
+      `${capability}'s client projection in each environment. A build reads the one \`${ENVIRONMENT_VARIABLE}\` names, \`dev\` when it is unset.`,
     );
 
 /** The whole file. */
@@ -138,10 +157,11 @@ export const GeneratedConfig = z
       .describe(
         "Every base path the Worker's route table answers under, such as `/auth` or `/organizations`, as Pithy composed it. Under `pithy dev` the web build's proxy sends these to the Worker. Absent when Pithy has not listed them: the proxy then takes the kit's default paths.",
       ),
-    auth: Projection("auth"),
-    i18n: Projection("i18n"),
-    payments: Projection("payments"),
-    turnstile: Projection("turnstile"),
+    auth: Projections("auth"),
+    i18n: Projections("i18n"),
+    payments: Projections("payments"),
+    turnstile: Projections("turnstile"),
+    consent: Projections("consent"),
   })
   .describe("The config an Expo app reads its Worker from, written by `pithy ui add react-native`.");
 export type GeneratedConfig = z.infer<typeof GeneratedConfig>;
@@ -233,6 +253,9 @@ export function renderGeneratedConfig(config: GeneratedConfig, worker: string): 
     "// could not find it: a Worker that answers only on workers.dev, or one that declares no domain. Set",
     "// `origins.staging` or `origins.prod` by hand then, and a sync keeps it until the Worker declares one.",
     "// A dev origin that is not this machine's loopback, such as your network address for a device, is kept too.",
+    "//",
+    "// `auth`, `i18n`, `payments`, `turnstile` and `consent` hold each capability's projection in each environment",
+    "// `origins` names, and a build reads the one for its environment: a sitekey or a catalog can differ between them.",
     "//",
     "// Everything else is the Worker's. Change its pithy.config.ts and run `ui sync --app` again.",
     "// The value stays a plain literal: strings, numbers, true, false, null, arrays and objects. A sync reads it",

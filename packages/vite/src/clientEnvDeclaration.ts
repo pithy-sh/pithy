@@ -56,6 +56,7 @@ export interface DeclaredModule {
  */
 export const DECLARED_MODULES: readonly DeclaredModule[] = [
   { module: "auth", specifier: "@pithy-sh/auth/src/client/projection", type: "AuthClientProjection" },
+  { module: "consent", specifier: "@pithy-sh/consent/src/client/projection", type: "ConsentClientProjection" },
   { module: "i18n", specifier: "@pithy-sh/i18n/src/client/projection", type: "I18nClientProjection" },
   { module: "payments", specifier: "@pithy-sh/payments/src/client/projection", type: "PaymentsClientProjection" },
   { module: "support", specifier: "@pithy-sh/support/src/client/projection", type: "SupportClientProjection" },
@@ -85,11 +86,11 @@ const PREAMBLE = `/// <reference types="vite/client" />
 // Vite plugin serves, built from the Worker's own pithy.config.ts.
 //
 // **Generated, and copied here as it was emitted (#398).** Each declaration below is a capability's
-// declared client projection — \`src/client/projection.ts\` in @pithy-sh/auth, @pithy-sh/payments,
-// @pithy-sh/support and @pithy-sh/turnstile — written out by @pithy-sh/vite's
-// \`src/clientEnvDeclaration.ts\` at kit build time. In the kit that is one statement of each shape and
-// nothing to keep in step: a field a projection stops emitting is a compile error where it is
-// projected, and this file moves in the same commit.
+// declared client projection — \`src/client/projection.ts\` in @pithy-sh/auth, @pithy-sh/consent,
+// @pithy-sh/i18n, @pithy-sh/payments, @pithy-sh/support and @pithy-sh/turnstile — written out by
+// @pithy-sh/vite's \`src/clientEnvDeclaration.ts\` at kit build time. In the kit that is one
+// statement of each shape and nothing to keep in step: a field a projection stops emitting is a
+// compile error where it is projected, and this file moves in the same commit.
 //
 // In your repository it is yours, like every other seeded file. Editing it changes what your compiler
 // believes and nothing about what the plugin serves.

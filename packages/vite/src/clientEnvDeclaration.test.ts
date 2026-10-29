@@ -4,6 +4,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { auth } from "@pithy-sh/auth/src/capability";
+import { consent } from "@pithy-sh/consent/src/capability";
 import { resolveClientProjection } from "@pithy-sh/core/src/capability/client";
 import { i18n } from "@pithy-sh/i18n/src/capability";
 import { payments } from "@pithy-sh/payments/src/capability";
@@ -128,6 +129,7 @@ describe("client-env.d.ts is emitted from the declared projections", () => {
     const projections = [
       resolveClientProjection(auth({ baseURL: "https://api.example.com" }), { environment: "prod" }),
       // Positional against `blocks`, which are in `DECLARED_MODULES` order — so this list is too.
+      resolveClientProjection(consent({ basePath: "/privacy" }), { environment: "prod" }),
       resolveClientProjection(i18n({ supportedLocales: ["en", "es"] }), { environment: "prod" }),
       resolveClientProjection(
         payments({
@@ -235,8 +237,9 @@ describe("the emit follows its input", () => {
   });
 
   test("the real doc comments survive the real emit, every one of them", async () => {
-    // The planted cases prove the mechanism; this proves it over the four projections actually shipped.
+    // The planted cases prove the mechanism; this proves it over the projections actually shipped.
     // A comment count rather than a list, because a list here would be this file restating the file.
+    // The floor is the smallest shipped projection's: consent's two arms and its one field.
     const emitted = await generateClientEnv();
     for (const [module, source] of await readProjectionSources()) {
       const declared = DECLARED_BY_MODULE.get(module);
@@ -244,7 +247,7 @@ describe("the emit follows its input", () => {
       expect(body, `no declared type for virtual:pithy/${module}`).not.toBe("");
       const inlined = inlineAliases(body, parseTypeAliases(source));
       const comments = inlined.match(/\/\*\*/g)?.length ?? 0;
-      expect(comments, `virtual:pithy/${module} declares no doc comments to lose`).toBeGreaterThan(3);
+      expect(comments, `virtual:pithy/${module} declares no doc comments to lose`).toBeGreaterThanOrEqual(3);
       const block = emitted.split(`declare module "virtual:pithy/${module}" {`)[1]?.split("\ndeclare module")[0] ?? "";
       // One more in the emitted block than in the type: the fixed `enabled` export carries its own.
       expect(block.match(/\/\*\*/g)?.length ?? 0, `doc comments were lost emitting ${module}`).toBe(comments + 1);

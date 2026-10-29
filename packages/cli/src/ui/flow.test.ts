@@ -264,6 +264,46 @@ describe("pithy ui", () => {
     expect(backfill.unstyled).toEqual([]);
   });
 
+  test("a consent backfill onto a front end scaffolded before consent had a projection compiles", async () => {
+    // What a project scaffolded from an earlier @pithy-sh/ui-react holds: a pithy-config.tsx with no
+    // consentConfig, and a client-env.d.ts declaring no virtual:pithy/consent.
+    const WITH_CONSENT: WorkerConfig = { capabilities: [routed("auth", "/auth"), routed("consent", "/consent")] };
+    await runUiAdd({ ...options(WITH_CONSENT), auth: true, consent: false });
+    const config = join(workerDir, "src", "pithy-config.tsx");
+    const declarations = join(workerDir, "client-env.d.ts");
+    const current = await readFile(declarations, "utf8");
+    const old = current.replace(/declare module "virtual:pithy\/consent" \{[\s\S]*?\n\}\n\n/, "");
+    expect(old).not.toContain('"virtual:pithy/consent"');
+    await writeFile(declarations, old);
+    const adopters = (await readFile(config, "utf8")).replace(/\/\*\*\n \* Consent's projection[\s\S]*$/, "");
+    expect(adopters).not.toContain("consentConfig");
+    await writeFile(config, adopters);
+
+    const backfill = await runUiAdd({ ...options(WITH_CONSENT), auth: true, consent: true });
+
+    expect(backfill.created).toContain("src/routes/pithy/consent.tsx");
+    // The generated declarations are refreshed to the kit's current emit; the adopter's narrowing module is not.
+    expect(await readFile(declarations, "utf8")).toBe(current);
+    expect(backfill.refreshed).toEqual(["client-env.d.ts"]);
+    expect(backfill.skipped).not.toContain("client-env.d.ts");
+    expect(backfill.skipped).toContain("src/pithy-config.tsx");
+    expect(await readFile(config, "utf8")).toBe(adopters);
+    // The screen reads its base path itself, so it needs nothing the adopter's pithy-config.tsx lacks.
+    const screen = await readFile(join(workerDir, "src", "routes", "pithy", "consent.tsx"), "utf8");
+    expect(screen).not.toContain("consentConfig");
+    expect(screen).not.toContain('from "../../pithy-config"');
+    expect(screen).toContain('from "virtual:pithy/consent"');
+  });
+
+  test("a backfill whose declarations are already current refreshes nothing, and a first scaffold creates them", async () => {
+    const first = await runUiAdd({ ...options(WITH_AUTH), auth: false });
+    expect(first.created).toContain("client-env.d.ts");
+    expect(first.refreshed).toBeUndefined();
+    const second = await runUiAdd({ ...options(WITH_AUTH), auth: true });
+    expect(second.refreshed).toEqual([]);
+    expect(second.skipped).toContain("client-env.d.ts");
+  });
+
   test("a run whose screens would render unstyled says exactly which classes are missing", async () => {
     // The planted violation, end to end: `pithy-screens.css` is on disk but the adopter has emptied
     // it, so it is skipped as theirs and defines nothing. The command has to name what is missing

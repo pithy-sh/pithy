@@ -153,6 +153,11 @@ export interface UiStub {
    * adopter meets that as a raw Node resolution error on the most ordinary command there is.
    */
   scripts: Record<string, string>;
+  /**
+   * Template paths generated in the kit and not the adopter's to edit. A backfill rewrites each that differs
+   * from the current template, where every other existing file is skipped. Absent: every file is skipped.
+   */
+  generated?: readonly string[];
 }
 
 /** Every framework stub `pithy ui add` can scaffold, keyed by its `id`. */

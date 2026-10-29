@@ -2942,6 +2942,8 @@
         "$.created[]": "string",
         "$.skipped": "array",
         "$.skipped[]": "string",
+        "$.refreshed": "array?",
+        "$.refreshed[]": "string",
         "$.unstyled": "array",
         "$.unstyled[]": "string",
         "$.runWorkerFirst": "array",

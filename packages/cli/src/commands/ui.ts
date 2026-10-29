@@ -223,6 +223,11 @@ const UiAddPayload = z
     consent: z.boolean().describe("Whether the consent settings screen was included."),
     created: Names("Worker-relative paths created by this run, sorted."),
     skipped: Names("Worker-relative paths that already existed and were left byte-identical, sorted."),
+    refreshed: Names("Generated files a backfill rewrote with the kit's current emit.")
+      .optional()
+      .describe(
+        "On a backfill, the generated files that existed and differed from the kit's current emit, rewritten with it: `client-env.d.ts`, so a `virtual:pithy/*` module declared since the scaffold reaches the screens the run adds. Empty when every one was current. Absent on a first scaffold, and for `react-native`.",
+      ),
     unstyled: Names("Class names the screens render that nothing in this Worker's stylesheets defines."),
     runWorkerFirst: Names("The derived `assets.run_worker_first` allowlist now in `wrangler.jsonc`."),
     packageManager: z.string().describe("The project's package manager."),
@@ -375,6 +380,9 @@ const add = withContract(
           process.stdout.write(`${report.created.length} files added. ${report.skipped.length} left as they were.\n`);
         } else {
           process.stdout.write(`${report.created.length} files created.\n`);
+        }
+        if (report.refreshed !== undefined && report.refreshed.length > 0) {
+          process.stdout.write(`Refreshed to the kit's current declarations: ${report.refreshed.join(", ")}.\n`);
         }
         // The one seeded test, named because its whole value is in being noticed. It is the only file
         // here whose subject is a *silence*: the action label drifting out of the projection is invisible

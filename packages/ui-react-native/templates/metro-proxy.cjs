@@ -172,16 +172,19 @@ function readGeneratedConfig(text) {
 
 /**
  * The paths the Worker answers. The generated config lists every base path the Worker's route table serves, as the
- * CLI composed it; a config written before it carried the list falls back to the kit's defaults for what it composes.
+ * CLI composed it; a config written before it carried the list falls back to what each capability's `dev`
+ * projection composes, since `pithy dev` serves `dev`, and the kit's defaults for the rest.
  */
 function proxiedPaths(config) {
   if (Array.isArray(config.workerPaths) && config.workerPaths.every((path) => typeof path === "string")) {
     return config.workerPaths;
   }
-  const paths = [KIT_PATHS.organization, KIT_PATHS.consent, KIT_PATHS.mcp, KIT_PATHS.health];
-  if (config.auth?.enabled) paths.push(config.auth.basePath, ...OAUTH_DISCOVERY);
-  if (config.payments?.enabled) paths.push(config.payments.basePath);
-  if (config.turnstile?.enabled) paths.push(KIT_PATHS.turnstile);
+  const dev = (field) => config[field]?.dev;
+  const consent = dev("consent")?.enabled ? dev("consent").basePath : KIT_PATHS.consent;
+  const paths = [KIT_PATHS.organization, consent, KIT_PATHS.mcp, KIT_PATHS.health];
+  if (dev("auth")?.enabled) paths.push(dev("auth").basePath, ...OAUTH_DISCOVERY);
+  if (dev("payments")?.enabled) paths.push(dev("payments").basePath);
+  if (dev("turnstile")?.enabled) paths.push(KIT_PATHS.turnstile);
   return paths;
 }
 
