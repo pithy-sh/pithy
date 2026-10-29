@@ -307,9 +307,9 @@ describe("a seeded gate does not write down the value it is checking", () => {
       ).toBe(true);
       checked += 1;
     }
-    // Near-exact, not a comfortable floor: six canary gates are seeded.
-    // A sweep that found five has stopped reading one, and a sweep that found none passes over nothing.
-    expect(checked, "the canary sweep no longer reads every canary gate the ledger names").toBeGreaterThanOrEqual(6);
+    // Near-exact, not a comfortable floor: eight canary gates are seeded.
+    // A sweep that found seven has stopped reading one, and a sweep that found none passes over nothing.
+    expect(checked, "the canary sweep no longer reads every canary gate the ledger names").toBeGreaterThanOrEqual(8);
   });
 
   test("every kept gate is a file that exists, outside the tree, with the reason it stayed", async () => {
