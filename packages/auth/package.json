@@ -1,6 +1,6 @@
 {
   "name": "@pithy-sh/auth",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -46,10 +46,10 @@
     "better-auth": "^1.7.11"
   },
   "peerDependencies": {
-    "@pithy-sh/core": "^0.14.0",
-    "@pithy-sh/email": "^0.8.0",
-    "@pithy-sh/secrets": "^0.6.2",
-    "@pithy-sh/turnstile": "^0.7.0",
+    "@pithy-sh/core": "^0.15.0",
+    "@pithy-sh/email": "^0.8.1",
+    "@pithy-sh/secrets": "^0.6.3",
+    "@pithy-sh/turnstile": "^0.7.1",
     "hono": "^4.13.2",
     "kysely": "^0.29.0",
     "zod": "^4.4.0"

@@ -1,5 +1,20 @@
 # @pithy-sh/cli
 
+## 0.19.0
+
+### Minor Changes
+
+- [#898](https://github.com/pithy-sh/pithy/pull/898) [`95122de`](https://github.com/pithy-sh/pithy/commit/95122dee96200ae3c01dffa2d6959be63efe01a1) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy init --lint oxlint` scaffolds the kit's six lint safeguards as Oxlint rules, Biome projects get the same six, and the privacy gate reads either linter.
+
+### Patch Changes
+
+- Updated dependencies [[`95122de`](https://github.com/pithy-sh/pithy/commit/95122dee96200ae3c01dffa2d6959be63efe01a1)]:
+  - @pithy-sh/core@0.15.0
+  - @pithy-sh/cloudflare@0.8.1
+  - @pithy-sh/email@0.8.1
+  - @pithy-sh/secrets@0.6.3
+  - @pithy-sh/turnstile@0.7.1
+
 ## 0.18.0
 
 ### Minor Changes

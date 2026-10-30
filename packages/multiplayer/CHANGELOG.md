@@ -1,5 +1,15 @@
 # @pithy-sh/multiplayer
 
+## 0.5.1
+
+### Patch Changes
+
+- Updated dependencies [[`95122de`](https://github.com/pithy-sh/pithy/commit/95122dee96200ae3c01dffa2d6959be63efe01a1)]:
+  - @pithy-sh/core@0.15.0
+  - @pithy-sh/leaderboard@0.6.1
+  - @pithy-sh/ledger@0.6.1
+  - @pithy-sh/rating@0.6.1
+
 ## 0.5.0
 
 ### Minor Changes

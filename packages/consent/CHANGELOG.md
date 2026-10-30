@@ -1,5 +1,12 @@
 # @pithy-sh/consent
 
+## 0.1.1
+
+### Patch Changes
+
+- Updated dependencies [[`95122de`](https://github.com/pithy-sh/pithy/commit/95122dee96200ae3c01dffa2d6959be63efe01a1)]:
+  - @pithy-sh/core@0.15.0
+
 ## 0.1.0
 
 ### Minor Changes

@@ -1,5 +1,12 @@
 # @pithy-sh/vector
 
+## 0.5.3
+
+### Patch Changes
+
+- Updated dependencies [[`95122de`](https://github.com/pithy-sh/pithy/commit/95122dee96200ae3c01dffa2d6959be63efe01a1)]:
+  - @pithy-sh/core@0.15.0
+
 ## 0.5.2
 
 ### Patch Changes

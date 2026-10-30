@@ -1,5 +1,14 @@
 # @pithy-sh/turnstile
 
+## 0.7.1
+
+### Patch Changes
+
+- Updated dependencies [[`95122de`](https://github.com/pithy-sh/pithy/commit/95122dee96200ae3c01dffa2d6959be63efe01a1)]:
+  - @pithy-sh/core@0.15.0
+  - @pithy-sh/cloudflare@0.8.1
+  - @pithy-sh/secrets@0.6.3
+
 ## 0.7.0
 
 ### Minor Changes
