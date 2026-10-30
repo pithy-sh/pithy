@@ -1,7 +1,7 @@
 {
   "name": "pithy",
   "displayName": "Pithy",
-  "version": "0.19.0",
+  "version": "0.20.0",
   "description": "An agent team for building any app on Pithy: a server, a web client, a mobile client and a runner, each on the model you choose. It files what the kit cannot do.",
   "author": {
     "name": "Pithy",

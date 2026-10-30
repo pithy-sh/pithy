@@ -42,7 +42,7 @@
     "@paddle/paddle-js": "^1.6.4"
   },
   "peerDependencies": {
-    "@pithy-sh/core": "^0.15.0",
+    "@pithy-sh/core": "^0.15.1",
     "@pithy-sh/ledger": "^0.6.1",
     "@pithy-sh/secrets": "^0.6.3",
     "@pithy-sh/ui-core": "^0.1.0",

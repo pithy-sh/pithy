@@ -1,5 +1,11 @@
 # @pithy-sh/core
 
+## 0.15.1
+
+### Patch Changes
+
+- [#901](https://github.com/pithy-sh/pithy/pull/901) [`248bc58`](https://github.com/pithy-sh/pithy/commit/248bc587fef1e6e9edf64cf46431cd8c42397dd3) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy docs connect` and `pithy doctor` follow `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, and `--config-dir` names a profile outright.
+
 ## 0.15.0
 
 ### Minor Changes
