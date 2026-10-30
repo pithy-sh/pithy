@@ -79,10 +79,10 @@ describe("deployPrivacy", () => {
     });
   });
 
-  test("deploys with no Biome config, attesting `unverifiable` with the reason — never `enforced`", async () => {
+  test("deploys with no linter config, attesting `unverifiable` with the reason — never `enforced`", async () => {
     const privacy = await deployPrivacy({ projectDir: dir, config: { privacy: { classes: ["phi"] } }, now: () => NOW });
     expect(privacy.attestation.consoleGate).toBe("unverifiable");
-    expect(privacy.attestation.reason).toContain("No biome.json or biome.jsonc");
+    expect(privacy.attestation.reason).toContain("No biome.json, biome.jsonc or .oxlintrc.json");
     expect(unverifiableGateLine(privacy)).toContain("unverified");
   });
 

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
+import { UI_CORE_VERSION } from "@pithy-sh/ui-core/src/version";
 import { UI_REACT_VERSION } from "@pithy-sh/ui-react/src/version";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -214,10 +215,12 @@ describe("wire", () => {
     // from the same ranges rather than written as a literal.
     const kit = [
       ...(kitRange(PACKAGE_VERSION) === null ? [] : ["@pithy-sh/i18n"]),
+      ...(kitRange(UI_CORE_VERSION) === null ? [] : ["@pithy-sh/ui-core"]),
       ...(kitRange(UI_REACT_VERSION) === null ? [] : ["@pithy-sh/ui-react"]),
     ];
     expect(change.dependencies).toEqual(["react-dom", ...kit]);
     expect(pkg.dependencies["@pithy-sh/i18n"]).toBe(kitRange(PACKAGE_VERSION) ?? undefined);
+    expect(pkg.dependencies["@pithy-sh/ui-core"]).toBe(kitRange(UI_CORE_VERSION) ?? undefined);
     expect(pkg.dependencies["@pithy-sh/ui-react"]).toBe(kitRange(UI_REACT_VERSION) ?? undefined);
     expect(pkg.dependencies["react-dom"]).toBe("^19.2.8");
     expect(pkg.devDependencies.vite).toBe("^8.2.1");

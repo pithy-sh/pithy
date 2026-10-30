@@ -7,9 +7,9 @@
 //
 // `c.var.log` inside a request handler, `createWorkerLogger()` anywhere else in the Worker.
 //
-// Scoped to `apps/*/src/**/*.ts` — your Worker code. If you add a build script or a Node CLI of your
-// own, writing to stdout there is correct and this gate should not reach it; that is why the scope is
-// the Worker's source and not the whole project.
+// Scoped by the `includes` beside its entry in biome.jsonc, which start at `apps/*/src/**/*.ts` — your
+// Worker code. If you add a build script or a Node CLI of your own, writing to stdout there is correct and
+// this gate should not reach it; that is why the scope is the Worker's source and not the whole project.
 //
 // This file is yours. Narrow it, widen it, or delete the entry in biome.jsonc and this file with it.
 //

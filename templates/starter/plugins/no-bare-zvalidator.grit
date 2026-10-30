@@ -1,0 +1,16 @@
+// Your OpenAPI contract's gate. Scoped by the `includes` beside its entry in biome.jsonc.
+//
+// `validate(target, Schema)` from `@pithy-sh/core/src/http/validation` is `zValidator` with Pithy's failure hook
+// applied and the schema left readable on the middleware, which is how `pithy contract` finds it. A bare
+// `zValidator(...)` still validates, so nothing at runtime notices; the schema just never reaches the document,
+// and every client generated from it is missing that part of the request.
+//
+// This file is yours. Narrow the `includes` in biome.jsonc, widen them, or delete both the entry and this file.
+language js
+
+or {
+  `zValidator($...)`,
+  `zValidator<$_>($...)`
+} as $call where {
+  register_diagnostic(span=$call, message="A bare zValidator hides its schema from the OpenAPI contract. Use validate(target, Schema) from @pithy-sh/core/src/http/validation.")
+}

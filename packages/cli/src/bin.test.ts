@@ -100,7 +100,7 @@ describe("pithy init", () => {
     const result = JSON.parse(stdout.trim()) as { command: string; appName: string; targetDir: string };
     // `worker` names the first worker created at apps/<name>; a non-interactive run takes the default.
     // `environments` is the default pair for the same reason, and no `environments` line is written into
-    // the config — a declaration that repeats the default says nothing (#241).
+    // the config — a declaration that repeats the default says nothing.
     // `domains` is null because a non-interactive run asks nothing — every command must work headless,
     // and a required prompt would break that. A project declares `domains` in pithy.config.ts directly.
     expect(result).toEqual({
@@ -111,10 +111,11 @@ describe("pithy init", () => {
       worker: "api",
       environments: ["staging", "prod"],
       target: "mobile",
+      lint: "biome",
       frontEnd: null,
       reactNative: null,
       domains: null,
-      // The agent instructions (#697): a cloned repo with neither file gets both.
+      // The agent instructions: a cloned repo with neither file gets both.
       agents: { path: "AGENTS.md", state: "added", reason: null },
       claude: { path: "CLAUDE.md", state: "added", reason: null },
     });
@@ -225,7 +226,7 @@ describe("pithy migrate", () => {
 
     // The run is grouped per worker — the scaffold's single `apps/api` worker, with no databases yet.
     const { stdout } = await run("bun", [bin, "migrate", "--json"], { cwd: target });
-    // `group` is the timestamp this run stamped itself with (#694) — generated, so matched by shape.
+    // `group` is the timestamp this run stamped itself with — generated, so matched by shape.
     expect(JSON.parse(stdout.trim())).toEqual({
       command: "migrate",
       schemaVersion: 2,

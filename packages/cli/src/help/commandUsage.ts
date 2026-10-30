@@ -5,7 +5,7 @@ import type { ArgsDef, CommandDef } from "citty";
 import { contractOf } from "../contract/commandContract";
 
 /**
- * **Every help screen below the root: citty's, with a positional that takes many words marked as one (#697).**
+ * **Every help screen below the root: citty's, with a positional that takes many words marked as one.**
  *
  * citty prints a positional by its declared name in capitals — `pithy schema [COMMAND]` — and has no field
  * for "and every word after it". That reads as one word, while the page's synopsis says `[command…]` and
@@ -43,7 +43,7 @@ export async function renderCommandUsage(cmd: CommandDef, parent?: CommandDef): 
 /**
  * Print it, `showUsage`-shaped so `bin.ts` hands one function to both of citty's paths, and byte for byte
  * what citty's own `showUsage` prints: the screen and a blank line. `process.stdout.write`, never
- * `console.log` (`plugins/no-console.grit`). A screen that cannot be rendered is reported on stderr and the
+ * `console.log` (`templates/starter/plugins/no-console.grit`). A screen that cannot be rendered is reported on stderr and the
  * run still ends, as citty's catch does.
  */
 export async function showCommandUsage(cmd: CommandDef, parent?: CommandDef): Promise<void> {

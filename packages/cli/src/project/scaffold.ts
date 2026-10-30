@@ -21,6 +21,7 @@ import { hostWorkerFor } from "../capabilities/hostRegistry";
 import { errnoOf } from "./atomic";
 import { loadProjectEnvironments } from "./config";
 import { lstatAsProject } from "./linkView";
+import { applyLinter, DEFAULT_LINTER, type Linter, OXLINT_TEMPLATE, shipsWith } from "./lint";
 import { committedFiles } from "./templateFiles";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
 import { topLevelKeysToRepeat } from "./wranglerInheritance";
@@ -33,10 +34,12 @@ export interface ScaffoldOptions {
   /** The first worker's name — it lives at `apps/<worker>/`. Defaults to {@link DEFAULT_WORKER}. */
   worker?: string;
   /**
-   * The environments this project has (#241). Defaults to {@link DEFAULT_ENVIRONMENTS}, which is what the
+   * The environments this project has. Defaults to {@link DEFAULT_ENVIRONMENTS}, which is what the
    * template ships — so a run that does not pass this writes exactly the bytes it always wrote.
    */
   environments?: readonly string[];
+  /** The linter the project's lint safeguards run under. Defaults to {@link DEFAULT_LINTER}. */
+  lint?: Linter;
 }
 
 /**
@@ -158,16 +161,14 @@ function descent(root: string, target: string): string[] {
  * Throw unless every path between `root` and `target` — `target` itself included — is a real directory or
  * missing. **The one answer to "is this path safe to scaffold into", and every gate routes through it.**
  *
- * This escape has had four producers. `ensureScaffoldable`'s `exists` (#111), `ensureEmptyTarget`'s
- * `readdir` (#147), `scaffoldFiles`' `exists` and `renameWorker`'s `exists` (#152) — four hand-rolled
- * predicates over `access` or a following `readdir`, each asking about *the destination of a link* while
- * the caller then wrote to *the link's path*. Each fix landed in one of them and review found the rest. So
- * the rule lives in one function, and `scaffold.test.ts` fails the build if a writing module rolls another.
+ * A predicate over `access` or a following `readdir` asks about *the destination of a link* while the caller
+ * then writes to *the link's path*. So the rule lives in one function, and `scaffold.test.ts` fails the build if
+ * a writing module rolls another.
  *
  * **`lstat`, and the whole chain of it.** `access` and `existsSync` follow links, so a dangling one reads
  * as missing and clears any gate that asks them; `lstat` answers about the path itself. And asking only
- * about `target` is the half-fix #147 shipped — a link at `apps` carries the scaffold out of the project
- * exactly as completely as a link at `apps/<name>`, and `pithy worker add` walked through it.
+ * about `target` is not enough — a link at `apps` carries the scaffold out of the project exactly as
+ * completely as a link at `apps/<name>`.
  *
  * **Asked through `lstatAsProject`, never `lstat` itself** (`linkView.ts`). A dry run works in a copy where a
  * link out of the project to a directory is a snapshot of it, and a snapshot is a directory; the seam answers
@@ -447,9 +448,9 @@ export function whatSurvived(left: Survivors): string {
  * creates and fills. Nothing else may already live there, so emptiness is the right question. The
  * project root is the adopter's directory and asks a narrower one: see {@link ensureScaffoldable}.
  *
- * Safety is {@link ensureScaffoldPath}'s answer, not this function's, which is the fix #152 asked for:
- * #147 left this gate lstat-ing `apps/<worker>` and nothing above it, so a symlink at `apps` still carried
- * the whole worker outside the project. Emptiness is all that is left here, and {@link occupied} asks it.
+ * Safety is {@link ensureScaffoldPath}'s answer, not this function's: a gate that lstats `apps/<worker>` and
+ * nothing above it lets a symlink at `apps` carry the whole worker outside the project. Emptiness is all that
+ * is left here, and {@link occupied} asks it.
  *
  * The gate also has to run *before* anything is created. `addWorker` rolls `apps/<worker>` back on failure,
  * and `rm` unlinks a symlink rather than its destination — so escaped files would have stayed outside the
@@ -542,34 +543,40 @@ async function occupied(path: string): Promise<boolean> {
 export const RENAMED_ON_LANDING: Record<string, string> = {
   gitignore: ".gitignore",
   "biome.template.jsonc": "biome.jsonc",
+  [OXLINT_TEMPLATE]: ".oxlintrc.json",
 };
+
+/** The starter's contents a project linted by `linter` receives: every file but the other linter's own. */
+function forLinter(
+  contents: { files: string[]; directories: string[] },
+  linter: Linter,
+): { files: string[]; directories: string[] } {
+  return {
+    files: contents.files.filter((path) => shipsWith(path.split(sep).join("/"), linter)),
+    directories: contents.directories,
+  };
+}
 
 /**
  * What the starter is allowed to hand an adopter: **its committed files, and the directories holding
  * them** — relative to the template, sorted.
  *
- * The index is the allowlist, for the reason {@link committedFiles} gives. `pithy init` copied the
- * template directory wholesale, so from a checkout it also copied whatever the maintainer's working tree
- * happened to hold — and it held `.dev.vars`, the file `pithy add` and `pithy token mint` write
- * `CLOUDFLARE_API_TOKEN` and `SECRETS_ENCRYPTION_KEYS` into. Reproduced: a maintainer's live token in a
- * stranger's brand-new project, mode 0664 because `cp` copies the source's, and nothing downstream
- * looked twice at a `.dev.vars` that was already there. `git status` said nothing: the file is ignored.
- *
- * #145 read the index for the *published tarball* and stopped at the packer. This is the same rule for
- * the other reader of the same directory.
+ * The index is the allowlist, for the reason {@link committedFiles} gives. A template copied wholesale from a
+ * checkout carries whatever the maintainer's working tree holds — `.dev.vars` included, the file `pithy add`
+ * and `pithy token mint` write `CLOUDFLARE_API_TOKEN` and `SECRETS_ENCRYPTION_KEYS` into — and `git status`
+ * says nothing, because the file is ignored. The packer reads the same index for the published tarball.
  *
  * **No index is two different facts, and only one of them is safe.** `committedFiles` answers `null` for
  * "this is not a checkout" *and* for "git is not installed", "the repository is broken", "nothing here is
- * tracked yet". #145's fix read them all as the first, so on a real checkout where git failed for any
- * reason at all, `pithy init` went straight back to copying whatever the maintainer's working tree held —
- * `.dev.vars` included — silently, and only on the machines where that is hardest to notice.
+ * tracked yet". Reading them all as the first would copy whatever the maintainer's working tree held on any
+ * checkout where git failed, silently.
  *
  * {@link TemplateSource.vendored} is what tells them apart, and it comes from the layout rather than from
  * a probe: the copy an installed `@pithy-sh/cli` carries was built by `prepack` from this same allowlist
  * and has no `.git` beside it to ask, so it is taken as it stands. A checkout's template is tracked and
  * always has an index — so `null` there means the question failed, and the run refuses rather than
  * guessing. Refusing the vendored case too would break `pithy init` for every adopter to protect a
- * checkout none of them have; excusing the checkout case is how the leak came back.
+ * checkout none of them have.
  *
  * Exported for the test: the branch that matters is the one that only happens on a machine where git is
  * broken, and a suite that runs in a healthy checkout can never reach it any other way.
@@ -615,18 +622,15 @@ export async function templateContents(source: TemplateSource): Promise<{ files:
  *
  * Two adjustments, both because the copy is not a straight copy. Each file in {@link RENAMED_ON_LANDING}
  * is checked under **both** names: the copy writes over the shipped name and the rename then moves it
- * away, which destroyed an adopter's own undotted `gitignore` without ever naming it. And the first
+ * away, which would destroy an adopter's own undotted `gitignore` without naming it. And the first
  * worker is copied to `apps/api` and *then* renamed, so a run naming another worker also collides on
  * `apps/<worker>`.
  *
- * Nothing is added to the walk. It used to carry `apps/<worker>/.dev.vars`, because the scaffold wrote
- * one there and the template ships only `.dev.vars.example` — so the one path `init` wrote that held
- * secrets was the one path this walk could not see, and a pre-existing worker `.dev.vars` was replaced
- * with a link to a file that was not theirs. `init` writes no `.dev.vars` at all now (#154): each one is
- * generated, and the generator refuses any file it did not write itself, by name.
+ * Nothing is added to the walk. `init` writes no `.dev.vars`: each one is generated, and the generator refuses
+ * any file it did not write itself, by name.
  */
-async function templatePaths(worker: string): Promise<{ files: string[]; directories: string[] }> {
-  const contents = await templateContents(templateSource());
+async function templatePaths(worker: string, linter: Linter): Promise<{ files: string[]; directories: string[] }> {
+  const contents = forLinter(await templateContents(templateSource()), linter);
 
   const files = contents.files.flatMap((path) => {
     const landed = RENAMED_ON_LANDING[path];
@@ -656,11 +660,15 @@ async function templatePaths(worker: string): Promise<{ files: string[]; directo
  * coincidence worth leaving to chance: a gate that refuses over a file the copy would never write is a
  * `pithy init` that cannot run in a directory it has no quarrel with.
  *
- * `source` is a parameter for the test (#711): what it proves needs a file the starter holds and git does not,
+ * `source` is a parameter for the test: what it proves needs a file the starter holds and git does not,
  * and planting one in `templates/starter` puts it in the tree that every repository-wide suite is reading.
  */
-export async function copyTemplate(targetDir: string, source: TemplateSource = templateSource()): Promise<void> {
-  const contents = await templateContents(source);
+export async function copyTemplate(
+  targetDir: string,
+  source: TemplateSource = templateSource(),
+  linter: Linter = DEFAULT_LINTER,
+): Promise<void> {
+  const contents = forLinter(await templateContents(source), linter);
   const allowed = new Set([...contents.files, ...contents.directories]);
   await cp(source.dir, targetDir, {
     recursive: true,
@@ -692,10 +700,14 @@ export async function copyTemplate(targetDir: string, source: TemplateSource = t
  * guard holds even called direct. The worker name is validated first, because every path below is built
  * out of it and an illegal one would send the probe walking outside the project.
  */
-export async function ensureScaffoldable(targetDir: string, worker?: string): Promise<void> {
+export async function ensureScaffoldable(
+  targetDir: string,
+  worker?: string,
+  linter: Linter = DEFAULT_LINTER,
+): Promise<void> {
   const name = worker ?? DEFAULT_WORKER;
   assertWorkerName(name);
-  const { files, directories } = await templatePaths(name);
+  const { files, directories } = await templatePaths(name, linter);
 
   const collisions = new Set<string>();
   for (const path of files) {
@@ -741,7 +753,7 @@ function assertNotReserved(appName: string): void {
 }
 
 /**
- * **Refuse a new project whose name carries an `f<digits>` segment (#643).** It is the shape a feature's issue
+ * **Refuse a new project whose name carries an `f<digits>` segment.** It is the shape a feature's issue
  * takes, so such a project could have no feature environments — another project's branch could compose its
  * feature names. Creation only, like the reservation above: an existing project keeps working, `pithy doctor`
  * says it can have no features, and `pithy provision --feature` refuses. Nothing is renamed.
@@ -776,8 +788,8 @@ export const DEFAULT_WORKER = "api";
 
 /**
  * The project name the starter template ships under — the string every stamp in {@link scaffoldProject}
- * replaces. Named once here because it appears in the template's `name`, its `PROJECT` vars, and, since
- * #580, in each environment stanza's own `name`; a literal per stamp is a literal per chance to miss one.
+ * replaces. Named once here because it appears in the template's `name`, its `PROJECT` vars, and each
+ * environment stanza's own `name`; a literal per stamp is a literal per chance to miss one.
  */
 const TEMPLATE_PROJECT = "pithy-app";
 
@@ -794,7 +806,7 @@ const TEMPLATE_PROJECT = "pithy-app";
 export const WORKER_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 /**
- * The name one Worker deploys under in one environment — **`<project>-<env>-<worker>`** (#580).
+ * The name one Worker deploys under in one environment — **`<project>-<env>-<worker>`**.
  *
  * The same shape every other Cloudflare name this kit composes takes, and the reason it exists as a
  * function rather than as three template literals: three producers write it — the starter template's
@@ -825,7 +837,7 @@ export function environmentWorkerName(project: string, environment: string, work
  *
  * ## Why a capability's name is not available
  *
- * Since #580 a worker deploys as `<project>-<env>-<worker>` ({@link environmentWorkerName}), and a
+ * A worker deploys as `<project>-<env>-<worker>` ({@link environmentWorkerName}), and a
  * capability's host Worker deploys as `<project>-<env>-<capability>`. Those are the same string when the
  * worker is called `email`, so `wrangler deploy --env staging` in an `apps/email` would replace the email
  * capability's own host Worker on the account — silently, with an app, and the capability's Workflows
@@ -867,7 +879,6 @@ const UNPUBLISHED = "0.0.0";
  * The range a scaffolded Worker should declare for the kit at `version` — or **null**, meaning declare
  * nothing at all.
  *
- * This is the {@link https://github.com/pithy-sh/pithy/issues/112 #112} rule, applied to the template.
  * Nothing under `@pithy-sh/*` is published, so a range is a promise the registry cannot keep: the
  * template's `"^0.0.0"` 404s the very first `bun install` a new project runs, before any of the tooling
  * that would have helped gets to run at all. A project consuming the kit from a checkout resolves it
@@ -959,16 +970,13 @@ function renderEnvironmentsBlock(environments: readonly string[]): string {
 }
 
 /**
- * Rewrite the first Worker's `env.<name>` stanzas to be the project's declared environments (#241).
+ * Rewrite the first Worker's `env.<name>` stanzas to be the project's declared environments.
  *
  * ## Why `init` still writes stanzas at all
  *
- * #241 proposes the invariant *a stanza exists if and only if that environment is provisioned*, with
- * provisioning as the only writer. That is the right end state and it is #240's to build. It is not
- * something this can do half of, because **`pithy add <capability>` writes a capability's bindings into
- * the stanzas that already exist and creates none** (`capabilities/add.ts`). Ship a fresh project with no
- * `env.*` and the very next `pithy add auth` binds `dev` and silently leaves staging and prod unbound —
- * a worse silence than the one this issue set out to close, and one nothing would report.
+ * **`pithy add <capability>` writes a capability's bindings into the stanzas that already exist and creates
+ * none** (`capabilities/add.ts`). Ship a fresh project with no `env.*` and the very next `pithy add auth`
+ * binds `dev` and silently leaves staging and prod unbound, and nothing would report it.
  *
  * So the stanzas stay, and what changes is where their *names* come from: the declaration, rather than
  * whichever two the template happened to ship. The bindings inside them stay empty, which is the honest
@@ -976,7 +984,7 @@ function renderEnvironmentsBlock(environments: readonly string[]): string {
  * database that has never existed.
  *
  * Nothing here deletes a stanza on an existing project: this runs once, on a directory `init` just
- * created, and #142's rule — an adopter's stanza is theirs — is untouched.
+ * created, and an adopter's stanza stays theirs.
  */
 async function stampEnvironmentStanzas(
   workerDir: string,
@@ -984,10 +992,9 @@ async function stampEnvironmentStanzas(
 ): Promise<void> {
   const config = (await readWranglerConfig(workerDir)) as { env?: Record<string, unknown> };
   const declared = [...identity.environments];
-  // What the top level declares that an environment does not inherit (#581). Read rather than listed:
-  // this rewrite REPLACES every stanza, so a key the template declares once above and this loop forgets
-  // is a key the rewritten environments silently go without — which is exactly how the kit's own first
-  // adopter shipped staging and prod with no `CF_VERSION_METADATA` binding. The declaration lives in
+  // What the top level declares that an environment does not inherit. Read rather than listed: this
+  // rewrite REPLACES every stanza, so a key the template declares once above and this loop forgets is a
+  // key the rewritten environments silently go without, `CF_VERSION_METADATA` among them. The declaration lives in
   // `wranglerInheritance.ts` and is gated against wrangler's own `notInheritable` call sites, so a
   // wrangler release that adds a key reaches here without anybody remembering to come back.
   const repeated = topLevelKeysToRepeat(config);
@@ -995,13 +1002,13 @@ async function stampEnvironmentStanzas(
   // names would only cost the prose that explains them.
   if (JSON.stringify(Object.keys(config.env ?? {})) === JSON.stringify(declared)) return;
   // The template's note above `env` names staging and production. For any other set it would be a false
-  // sentence in a checked-in file, which is the failure mode this whole issue is about.
+  // sentence in a checked-in file.
   delete (config as Record<symbol, unknown>)[Symbol.for("before:env")];
   config.env = Object.fromEntries(
     declared.map((environment) => [
       environment,
       {
-        // The script this environment deploys under, in the kit's shape (#580). Written here as well as
+        // The script this environment deploys under, in the kit's shape. Written here as well as
         // in the template's own stanzas, because this rewrite REPLACES them: a stanza rebuilt without it
         // falls back to wrangler's `<name>-<env>` suffix, and one project's environments end up named two
         // different ways depending on which environments it declared.
@@ -1073,13 +1080,16 @@ export async function scaffoldProject(options: ScaffoldOptions): Promise<void> {
   const worker = options.worker ?? DEFAULT_WORKER;
   assertWorkerName(worker);
 
+  const linter = options.lint ?? DEFAULT_LINTER;
   await mkdir(options.targetDir, { recursive: true });
-  await ensureScaffoldable(options.targetDir, worker);
+  await ensureScaffoldable(options.targetDir, worker, linter);
 
-  await copyTemplate(options.targetDir);
+  await copyTemplate(options.targetDir, templateSource(), linter);
   for (const [shipped, landed] of Object.entries(RENAMED_ON_LANDING)) {
+    if (!shipsWith(shipped, linter)) continue;
     await rename(join(options.targetDir, shipped), join(options.targetDir, landed));
   }
+  await applyLinter(options.targetDir, linter);
 
   const workerDir = join(options.targetDir, "apps", worker);
   if (worker !== DEFAULT_WORKER) {
@@ -1135,15 +1145,10 @@ export async function scaffoldProject(options: ScaffoldOptions): Promise<void> {
 
   await stampEnvironmentStanzas(workerDir, { project, worker, environments });
 
-  // The worker's own `pithy.config.ts` was copied verbatim, so on any project not scaffolded with the
-  // default worker it named a worker that does not exist — three times. The header pointed at
-  // `apps/api/`, the comment above the managed region told the adopter to run
-  // `pithy add <capability> --worker api`, and the app capability took the template's flat `"app"` where
-  // `pithy worker add` derives a namespace from the worker's own name.
-  //
-  // `pithy worker add` got all three right by generating the file rather than copying one. Two producers
-  // of the same file disagreeing is the shape #136 and #144 were both about, and `scaffoldParity.test.ts`
-  // now holds these two to each other.
+  // The worker's own `pithy.config.ts` is copied verbatim and names the default worker three times: the
+  // header's `apps/api/`, the `pithy add <capability> --worker api` above the managed region, and the app
+  // capability's flat `"app"`, where `pithy worker add` derives a namespace from the worker's own name.
+  // `scaffoldParity.test.ts` holds the two producers of this file to each other.
   const workerConfigPath = join(workerDir, "pithy.config.ts");
   const workerConfig = await readFile(workerConfigPath, "utf8");
   await writeFile(
@@ -1156,12 +1161,9 @@ export async function scaffoldProject(options: ScaffoldOptions): Promise<void> {
 
   await stampWorkerPrograms(options.targetDir, workerDir, worker);
 
-  // The worker's `.dev.vars` is generated, not copied and not linked (#154). `pithy init` used to seed
-  // one at the root from the committed example and symlink it into `apps/<worker>/`, which is the design
-  // that produced #137, #139, #142 and #146. Nothing is written here at all: `pithy dev` and `pithy seed`
-  // build each worker's file from the machine-local sources on every run, so a freshly scaffolded project
-  // and a fresh clone of it reach the same state by the same path, with no postinstall and nothing to
-  // remember.
+  // The worker's `.dev.vars` is generated, not copied and not linked, so nothing is written here at all:
+  // `pithy dev` and `pithy seed` build each worker's file from the machine-local sources on every run, so a
+  // freshly scaffolded project and a fresh clone of it reach the same state by the same path.
 }
 
 /**

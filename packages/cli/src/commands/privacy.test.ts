@@ -1,20 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { InputRequiredError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { readConsoleGate } from "../privacy/consoleGate";
+import { NO_LINTER_CONFIG, readConsoleGate } from "../privacy/consoleGate";
 import { loadProject, loadProjectPrivacy } from "../project/config";
 import { scaffoldProject } from "../project/scaffold";
 import { linkKitPackages } from "../test-utils/linkKit";
 import { expectConforms, runCaptured } from "../test-utils/payloadContract";
 import { removeTempDir } from "../test-utils/tempRepo";
 import { snapshotTree } from "../test-utils/treeSnapshot";
-import { collectClasses, composesAudit, offerAudit, offerPrivacy, renderScan } from "./privacy";
+import { collectClasses, composesAudit, gateLines, offerAudit, offerPrivacy, renderScan } from "./privacy";
 
 let dir: string;
 
@@ -43,6 +43,41 @@ describe("collectClasses", () => {
       "secret",
     ]);
     expect(collectClasses(["--json"])).toEqual([]);
+  });
+});
+
+describe("gateLines", () => {
+  test("names each config written, then the gate", () => {
+    expect(
+      gateLines({
+        written: [
+          { linter: "biome", file: "biome.jsonc" },
+          { linter: "oxlint", file: ".oxlintrc.json" },
+        ],
+        gate: { state: "enforced", file: "biome.jsonc and .oxlintrc.json" },
+      }),
+    ).toEqual([
+      "Wrote suspicious/noConsole into biome.jsonc.",
+      "Wrote no-console into .oxlintrc.json.",
+      "Console is closed.",
+    ]);
+    expect(gateLines({ written: [], gate: { state: "enforced", file: ".oxlintrc.json" } })).toEqual([
+      "Console is closed in .oxlintrc.json.",
+    ]);
+  });
+
+  test("says nothing was written when there is no config, and why a gate is open or unreadable", () => {
+    expect(gateLines({ written: [], gate: { state: "unverifiable", file: null, reason: NO_LINTER_CONFIG } })).toEqual([
+      `Nothing was written. Console gate unverifiable. ${NO_LINTER_CONFIG} Deploy proceeds and reports it.`,
+    ]);
+    expect(gateLines({ written: [], gate: { state: "unverifiable", file: "a", reason: "R." } })).toEqual([
+      "Console gate unverifiable. R. Deploy proceeds and reports it.",
+    ]);
+    const off = { state: "off", file: "b", rule: "no-console", cause: "lowered", reason: "L." } as const;
+    expect(gateLines({ written: [{ linter: "biome", file: "biome.jsonc" }], gate: off })).toEqual([
+      "Wrote suspicious/noConsole into biome.jsonc.",
+      "L. Deploy refuses until it is `error`.",
+    ]);
   });
 });
 
@@ -81,6 +116,54 @@ describe("pithy privacy enable", () => {
     await runCaptured("privacy enable", ["--json"]).catch(() => undefined);
     expect(JSON.parse(err.join("").trim()).error).toMatchObject({ code: "input/required", flag: "--class" });
     expect(new InputRequiredError()).toBeInstanceOf(PithyError);
+  });
+});
+
+describe("pithy privacy enable, for each linter config the project holds", () => {
+  test("writes no-console into .oxlintrc.json and biome.jsonc both, and the gate reads both", async () => {
+    await writeFile(join(dir, ".oxlintrc.json"), '{\n  // Oxlint.\n  "rules": {}\n}\n');
+    const payload = JSON.parse((await runCaptured("privacy enable", ["--class", "pii", "--json"])).join(""));
+    expect(payload).toMatchObject({
+      biomeChanged: true,
+      oxlintChanged: true,
+      consoleGate: { state: "enforced", file: "biome.jsonc and .oxlintrc.json", reason: null },
+    });
+    const oxlint = await readFile(join(dir, ".oxlintrc.json"), "utf8");
+    expect(oxlint).toContain("// Oxlint.");
+    expect(oxlint).toContain('"no-console": "error"');
+    expect(oxlint).toContain('"**/apps/*/src/**/*.ts"');
+  });
+
+  test("writes into .oxlintrc.json alone when it is the only config", async () => {
+    await rm(join(dir, "biome.jsonc"));
+    await writeFile(join(dir, ".oxlintrc.json"), "{}\n");
+    const payload = JSON.parse((await runCaptured("privacy enable", ["--class", "pii", "--json"])).join(""));
+    expect(payload).toMatchObject({
+      biomeChanged: false,
+      oxlintChanged: true,
+      consoleGate: { state: "enforced", file: ".oxlintrc.json" },
+    });
+  });
+
+  test("with no linter config, writes none and says so", async () => {
+    await rm(join(dir, "biome.jsonc"));
+    const before = await snapshotTree(dir);
+    const payload = JSON.parse((await runCaptured("privacy enable", ["--class", "pii", "--json"])).join(""));
+    expect(payload).toMatchObject({
+      biomeChanged: false,
+      oxlintChanged: false,
+      consoleGate: { state: "unverifiable" },
+    });
+    expect(payload.consoleGate.reason).toContain("No biome.json, biome.jsonc or .oxlintrc.json");
+    const after = await snapshotTree(dir);
+    expect([...after.keys()].filter((path) => !before.has(path))).toEqual([]);
+    for (const file of ["biome.jsonc", "biome.json", ".oxlintrc.json"]) {
+      await expect(readFile(join(dir, file), "utf8")).rejects.toThrow();
+    }
+    const human = (await runCaptured("privacy enable", ["--class", "pii"])).join("");
+    expect(human).toContain(
+      "Nothing was written. Console gate unverifiable. No biome.json, biome.jsonc or .oxlintrc.json",
+    );
   });
 });
 
