@@ -52,6 +52,17 @@ export type ClientTransport = "native" | "mcp-remote";
 /** Which configuration a write lands in: the repository's, or the operator's own. */
 export type Scope = "project" | "user";
 
+/**
+ * The variable a tool documents for moving its whole configuration directory, and where its user file sits
+ * under that directory once it is moved.
+ */
+export interface ConfigDir {
+  /** The environment variable, spelled as the vendor spells it. */
+  readonly variable: string;
+  /** The user-scope file under the moved directory. Detection is the directory itself. */
+  readonly user: readonly string[];
+}
+
 /** One client, and everything that makes writing its configuration different from writing anybody else's. */
 /** A client `pithy docs connect --client` takes: one of the choices its parser declares, as the catalog projects them. */
 export type McpClientId = (typeof COMMANDS)["docs connect"]["flags"]["--client"]["enum"][number];
@@ -77,6 +88,15 @@ export interface McpClient {
   readonly user: PlatformPaths;
   /** The path whose existence means this tool is installed for this operator. */
   readonly detect: PlatformPaths;
+  /**
+   * The variable that moves this client's user configuration, or absent for a client with one fixed place.
+   *
+   * **Set and non-empty, it replaces both `user` and `detect`, on every platform.** A second Claude Code
+   * profile is a second `CLAUDE_CONFIG_DIR`, and the profile the shell runs is the one whose file gets the
+   * entry — the fixed path under home is somebody else's profile by then. `--config-dir` names the
+   * directory outright, and wins over the variable.
+   */
+  readonly configDir?: ConfigDir;
   /**
    * The document written when a project-scope file does not exist yet.
    *
@@ -187,8 +207,10 @@ export const MCP_CLIENTS: readonly McpClient[] = [
     project: [".mcp.json"],
     user: homePaths([".claude.json"]),
     detect: homePaths([".claude.json"]),
+    // A second profile is a second `CLAUDE_CONFIG_DIR`, and its `.claude.json` sits inside it rather than beside it.
+    configDir: { variable: "CLAUDE_CONFIG_DIR", user: [".claude.json"] },
     preamble: null,
-    note: "User scope shares `~/.claude.json` with Claude Code's own session state, so only the `mcpServers` key is touched.",
+    note: "User scope shares `.claude.json` with Claude Code's own session state, so only the `mcpServers` key is touched.",
     stdio: (server) => ({ type: "stdio", ...commandArgs(server) }),
   },
   {
@@ -308,6 +330,8 @@ export const MCP_CLIENTS: readonly McpClient[] = [
     project: [".codex", "config.toml"],
     user: homePaths([".codex", "config.toml"]),
     detect: homePaths([".codex"]),
+    // `CODEX_HOME` is the directory `~/.codex` would have been.
+    configDir: { variable: "CODEX_HOME", user: ["config.toml"] },
     preamble: null,
     note: "A project-scope `.codex/config.toml` is read for trusted projects only.",
     stdio: (server) => commandArgs(server),

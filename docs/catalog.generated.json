@@ -397,6 +397,8 @@
         "--all",
         "--no-all",
         "--scope",
+        "--config-dir",
+        "--configDir",
         "--print",
         "--no-print",
         "--json",
@@ -410,6 +412,8 @@
         "--all",
         "--no-all",
         "--scope",
+        "--config-dir",
+        "--configDir",
         "--json",
         "--no-json"
       ]

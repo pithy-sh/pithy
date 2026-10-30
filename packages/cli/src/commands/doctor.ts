@@ -4288,13 +4288,18 @@ const DoctorPayload = z
     }),
     docsMcp: Check("AI clients the docs server is not connected to, or `null` outside a project.", {
       state: State("`ok`, `unconnected`, `could-not-check`"),
-      findings: z.array(z.string().describe("One finding.")).describe("One line per unconnected client."),
+      findings: z
+        .array(z.string().describe("One finding."))
+        .describe("One line per unconnected client, naming the files read and the command."),
       clients: z
         .array(
           z
             .object({
               client: z.string().describe("The id `pithy docs connect --client` takes."),
               label: z.string().describe("The name a person knows it by."),
+              paths: z
+                .array(z.string().describe("A file, absolute."))
+                .describe("Every file the check read for it, one per scope. None carries an entry."),
               fix: z.string().describe("The command that connects it."),
             })
             .describe("One unconnected client."),

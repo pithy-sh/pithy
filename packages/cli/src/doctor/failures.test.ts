@@ -941,8 +941,8 @@ describe("every finding in every block carries fix", () => {
       }),
       checkDocsMcp: async () => ({
         state: "unconnected",
-        findings: ["Cursor — pithy docs connect --client cursor"],
-        clients: [{ client: "cursor", label: "Cursor" }],
+        findings: ["Cursor, nothing in /home/u/.cursor/mcp.json — pithy docs connect --client cursor"],
+        clients: [{ client: "cursor", label: "Cursor", paths: ["/home/u/.cursor/mcp.json"] }],
       }),
       checkServiceBindings: async () => ({
         state: "faulty",

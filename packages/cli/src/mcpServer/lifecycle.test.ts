@@ -138,6 +138,20 @@ describe("pithy mcp connect with a key", () => {
     expect(written).not.toContain(".jwk");
   });
 
+  test("the user-scope entry follows CLAUDE_CONFIG_DIR into the profile this shell runs", async () => {
+    // The same resolution `pithy docs connect` writes through: the profile in use is the one whose file is read.
+    const profile = join(root, "claude-work");
+    mcp = { ...mcp, home: { platform: "linux", env: { CLAUDE_CONFIG_DIR: profile }, homedir: join(root, "home") } };
+    const report = await keyConnect(fakeConnectionRegistry());
+    expect(report.clients).toEqual([
+      expect.objectContaining({ client: "claude-code", scope: "user", path: join(profile, ".claude.json") }),
+    ]);
+    expect(JSON.parse(await readFile(join(profile, ".claude.json"), "utf8")).mcpServers).toHaveProperty(
+      "pithy-acme-prod",
+    );
+    await expect(stat(join(root, "home", ".claude.json"))).rejects.toThrow();
+  });
+
   test("a second connect for the same environment is refused, naming --update and disconnect", async () => {
     const registry = fakeConnectionRegistry();
     await keyConnect(registry);

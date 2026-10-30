@@ -973,6 +973,8 @@
         "$.docsMcp.clients[]": "object",
         "$.docsMcp.clients[].client": "string",
         "$.docsMcp.clients[].label": "string",
+        "$.docsMcp.clients[].paths": "array",
+        "$.docsMcp.clients[].paths[]": "string",
         "$.docsMcp.clients[].fix": "string",
         "$.docsMcp.detail": "string",
         "$.docsMcp{}": "unknown",

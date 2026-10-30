@@ -18,6 +18,10 @@ import { docsConnectFix } from "./findingFixes";
  * a line that says something is wrong and not what to run has moved the problem rather than reported it.
  * Here that means the client's own id, so the remedy can be pasted rather than worked out.
  *
+ * **It resolves every path through `mcp/connect.ts`, the code `pithy docs connect` writes through**, so a
+ * `CLAUDE_CONFIG_DIR` or `CODEX_HOME` moves what this reads exactly as it moves what that writes — and
+ * each line names the files it read, because "not connected" is only as true as the file it was read from.
+ *
  * **Files only, and only files that are already there.** Nothing is created, nothing is written, and a
  * client whose config cannot be read is simply not reported as connected — a diagnostic that repaired
  * things would be the last thing an operator with a broken environment needs.
@@ -30,7 +34,7 @@ export interface DocsMcpCheck {
    * and when no client was detected at all — nothing is wrong with a machine that runs none of them.
    */
   readonly state: "ok" | "unconnected" | "could-not-check";
-  /** One line per detected-but-unconnected client, each naming the command that connects it. */
+  /** One line per detected-but-unconnected client, each naming the files it read and the command that connects it. */
   readonly findings: readonly string[];
   /** The same clients as data, in the same order: the id the command takes, and the name a person reads. */
   readonly clients: readonly DocsMcpClient[];
@@ -42,6 +46,8 @@ export interface DocsMcpClient {
   readonly client: McpClientId;
   /** The name a person knows it by. */
   readonly label: string;
+  /** Every file the check read for it, one per scope, absolute. None of them carries an entry. */
+  readonly paths: readonly string[];
 }
 
 /** The remedy line printed under the findings. */
@@ -53,8 +59,10 @@ export async function checkDocsMcp(projectDir: string, options?: McpOptions): Pr
   const reported = await status(resolved);
   const clients = reported
     .filter((client) => client.detected && client.scopes.every((scope) => !scope.connected))
-    .map((client) => ({ client: client.client, label: client.label }));
-  const findings = clients.map((client) => `${client.label} — ${docsConnectFix(client.client)}`);
+    .map((client) => ({ client: client.client, label: client.label, paths: client.scopes.map((scope) => scope.path) }));
+  const findings = clients.map(
+    (client) => `${client.label}, nothing in ${client.paths.join(" or ")} — ${docsConnectFix(client.client)}`,
+  );
   return { state: findings.length > 0 ? "unconnected" : "ok", findings, clients };
 }
 

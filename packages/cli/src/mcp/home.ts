@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { homedir as osHomedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 
 /**
@@ -17,6 +17,9 @@ import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
  *
  * **Four bases, because four is what the ten clients between them actually use.** A row names the base
  * its path hangs off per platform, so the platform switch lives here once rather than in ten rows.
+ *
+ * **Two of them let their operator move the whole directory with one variable** — Claude Code's
+ * `CLAUDE_CONFIG_DIR`, Codex's `CODEX_HOME` — and {@link movedDirectory} is the one place that reads it.
  *
  * **Under vitest it refuses to answer with the operator's own home (#200).** `stateDir` earned that rule
  * guarding minted dev keys; the files here are lower stakes and the accident is worse, because a test
@@ -120,6 +123,27 @@ export function baseDirectory(base: PathBase, options: HomeOptions = {}): string
     case "appData":
       return exported(env, "APPDATA") ?? join(homeDirectory(options), "AppData", "Roaming");
   }
+}
+
+/**
+ * The directory a tool's own variable moved its configuration to, absolute, or `undefined` when the shell
+ * exports none — an empty value moves nothing, exactly as an unset one.
+ *
+ * **Under vitest it refuses an environment nobody injected, even with a home that was.** This is the one
+ * term that can carry a write out of a test's throwaway home altogether: a developer running a second
+ * Claude Code profile exports `CLAUDE_CONFIG_DIR`, and a test that fell through to `process.env` would
+ * write the file that profile's agent reads.
+ */
+export function movedDirectory(variable: string, options: HomeOptions = {}): string | undefined {
+  if (options.env === undefined && underVitest()) {
+    throw new ConflictError({
+      message: `A test asked for ${variable} from the real environment, where it names the operator's own profile.`,
+      action: "Pass `env` (and `homedir`) in `HomeOptions` at the call site.",
+      detail: `mcp/home.ts refused under vitest: ${variable} moves a client's configuration out of any home a test built — #900.`,
+    });
+  }
+  const moved = exported(options.env ?? process.env, variable);
+  return moved === undefined ? undefined : resolve(moved);
 }
 
 /** A based path, resolved to an absolute path. */

@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { statSync } from "node:fs";
+import { resolve } from "node:path";
 import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { InputRequiredError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
@@ -62,10 +64,20 @@ const targetArgs = {
   client: { type: "string", description: "One client id (see `pithy docs status`)" },
   all: { type: "boolean", default: false, description: "Every detected client" },
   scope: { type: "string", description: "`project` (committed, whole team) or `user` (just you)" },
+  "config-dir": {
+    type: "string",
+    description:
+      "The profile directory to write, over CLAUDE_CONFIG_DIR or CODEX_HOME (with --client and --scope user)",
+  },
 } as const;
 
 /** The scopes `--scope` accepts, as the error line lists them. */
 const SCOPES: readonly Scope[] = ["project", "user"];
+
+/** The `--client` values `--config-dir` applies to: every row that declares a config-dir variable. */
+const MOVABLE: readonly string[] = MCP_CLIENTS.filter((client) => client.configDir !== undefined).map(
+  (client) => client.id,
+);
 
 /**
  * The shape an unknown tool is most likely to want — the `mcpServers` map with a plain URL.
@@ -112,6 +124,63 @@ function requireScope(value: string): Scope {
     });
   }
   return scope;
+}
+
+/**
+ * `--config-dir` as an absolute directory, or `undefined` when it was not passed.
+ *
+ * **It names one client's profile, so everything that could make it mean something else is refused.** The
+ * flag replaces a row's config-dir variable, which only Claude Code and Codex declare, and only for the user
+ * file — so with `--all`, with no `--client`, with the project scope, or with a client whose configuration
+ * lives in one fixed place, there is no profile for it to name, and silently ignoring it would write somewhere
+ * the operator did not ask. `--print` holds the same line: the path it prints is the path a write would take.
+ *
+ * **And the directory has to be one that exists, spelled the way the shell left it.** A profile directory is
+ * there once its tool has run, so a missing one is a typo — written anyway, it would be created and reported
+ * `added` in a profile nobody runs. A leading `~` is the same mistake one step earlier: the shell does not
+ * expand it after `--config-dir=`, and resolved as written it is a directory called `~` inside this project.
+ */
+export function requireConfigDir(args: { "config-dir"?: string; client?: string; scope?: string }): string | undefined {
+  const dir = args["config-dir"];
+  if (dir === undefined) return undefined;
+  const action = `Pass ${MOVABLE.map((id) => `--client ${id}`).join(" or ")} with it, or drop --config-dir.`;
+  if (dir.trim().length === 0) {
+    throw new ValidationError({
+      message: "--config-dir needs a directory.",
+      action: "Pass the directory the client's profile lives in.",
+    });
+  }
+  if (dir.startsWith("~")) {
+    throw new ValidationError({
+      message: `--config-dir ${dir} starts with ~, which the shell did not expand.`,
+      action: "Pass the full path, or $HOME in place of the ~.",
+    });
+  }
+  if (args.client === undefined) {
+    throw new ValidationError({ message: "--config-dir names one client's profile, so it needs --client.", action });
+  }
+  const client = clientById(args.client);
+  if (client === undefined) throw new ValidationError({ message: `No client called ${args.client}.`, action });
+  if (client.configDir === undefined) {
+    throw new ValidationError({
+      message: `${client.label} keeps its user configuration in one place, so --config-dir does not apply.`,
+      action,
+    });
+  }
+  if (args.scope !== "user") {
+    throw new ValidationError({
+      message: "--config-dir moves the user configuration, so it needs --scope user.",
+      action: "Pass --scope user, or drop --config-dir.",
+    });
+  }
+  const absolute = resolve(dir);
+  if (statSync(absolute, { throwIfNoEntry: false })?.isDirectory() !== true) {
+    throw new ValidationError({
+      message: `There is no directory at ${absolute}.`,
+      action: `Name the profile's directory as it is: ${client.label} creates it the first time it runs with that profile.`,
+    });
+  }
+  return absolute;
 }
 
 /**
@@ -163,6 +232,16 @@ async function askScopeOrExit(): Promise<Scope> {
   return answer;
 }
 
+/** `--client` and `--all` both say which clients, so naming both is refused. */
+function refuseClientAndAll(args: { client?: string; all: boolean }): void {
+  if (args.client !== undefined && args.all) {
+    throw new ValidationError({
+      message: "Pass either --client or --all, not both.",
+      action: "Choose one.",
+    });
+  }
+}
+
 /**
  * The clients to act on: the one named, or every one detected here.
  *
@@ -175,12 +254,7 @@ async function resolveClients(
   json: boolean,
   options: McpOptions,
 ): Promise<McpClient[]> {
-  if (args.client !== undefined && args.all) {
-    throw new ValidationError({
-      message: "Pass either --client or --all, not both.",
-      action: "Choose one.",
-    });
-  }
+  refuseClientAndAll(args);
   if (args.client !== undefined) return [requireClient(args.client)];
   if (!args.all && !mayPrompt(json)) {
     throw new InputRequiredError({
@@ -206,9 +280,12 @@ function scopeFor(client: McpClient, asked: Scope): Scope {
   return available.includes(asked) ? asked : available[0];
 }
 
-/** The options every resolution keys on. The project directory is the run's, and homes resolve for real. */
-function optionsOf(): McpOptions {
-  return { projectDir: process.cwd() };
+/**
+ * The options every resolution keys on. The project directory is the run's, homes resolve for real, and a
+ * `--config-dir` the run passed {@link requireConfigDir} rides along.
+ */
+function optionsOf(configDir?: string): McpOptions {
+  return configDir === undefined ? { projectDir: process.cwd() } : { projectDir: process.cwd(), configDir };
 }
 
 /**
@@ -388,6 +465,15 @@ const CLIENT_OR_ALL: FlagGroup = {
   rule: "Pass either --client or --all, not both.",
 };
 
+/** `--config-dir` names one client's user profile, so it needs both: the client, and `--scope user`. */
+const CONFIG_DIR_NEEDS: FlagGroup = {
+  kind: "requires",
+  flag: "--config-dir",
+  needs: ["--client", "--scope"],
+  any: false,
+  rule: `--config-dir needs --client, naming ${MOVABLE.join(" or ")}, and --scope user.`,
+};
+
 const connectCommand = withContract(
   defineCommand({
     meta: { name: "connect", description: "Write the Pithy docs MCP server into your AI clients" },
@@ -398,20 +484,24 @@ const connectCommand = withContract(
     },
     run: ({ args }) =>
       withErrorReporting(args.json, async () => {
-        const options = optionsOf();
+        // The flags' own refusals come first, so a bad `--scope` or `--client` beside `--all` is named before
+        // anything `--config-dir` has to say. Then, before anything resolves, a `--config-dir` that cannot name
+        // one profile is refused, not ignored.
+        refuseClientAndAll(args);
+        const flagged = args.scope === undefined ? undefined : requireScope(args.scope);
+        const options = optionsOf(requireConfigDir(args));
 
         // `--print` is the escape hatch, so it answers for a tool the table has never heard of rather than
         // refusing — but it says which of the two happened, because otherwise a typo'd `--client` and the
         // eleventh tool produce the same output and only one of them is what the operator meant.
         if (args.print) {
           const client = args.client === undefined ? undefined : clientById(args.client);
-          const scope = args.scope === undefined ? undefined : requireScope(args.scope);
           const printed =
             client === undefined
               ? { client: null, path: null, snippet: GENERIC_SNIPPET }
               : {
                   client: client.id,
-                  path: targetFor(client, scopeFor(client, scope ?? scopesOf(client)[0]), options).path,
+                  path: targetFor(client, scopeFor(client, flagged ?? scopesOf(client)[0]), options).path,
                   snippet: snippetFor(client),
                 };
           if (args.json) {
@@ -430,7 +520,6 @@ const connectCommand = withContract(
         // The scope is settled before the empty set is, so an unattended run refuses the same way on a
         // machine with no clients as on one with ten. A CI step that passes only because nothing happened
         // to be installed is a CI step that will fail on somebody's laptop.
-        const flagged = args.scope === undefined ? undefined : requireScope(args.scope);
         requireScopeAnswerable(flagged, args.json);
 
         if (chosen.length === 0) {
@@ -472,7 +561,7 @@ const connectCommand = withContract(
     idempotent: true,
     needsNetwork: false,
     flags: TARGET_FACTS,
-    flagGroups: [CLIENT_OR_ALL],
+    flagGroups: [CLIENT_OR_ALL, CONFIG_DIR_NEEDS],
   },
 );
 
@@ -482,9 +571,10 @@ const disconnectCommand = withContract(
     args: { ...targetArgs, ...jsonArg },
     run: ({ args }) =>
       withErrorReporting(args.json, async () => {
-        const options = optionsOf();
-        const chosen = await resolveClients(args, args.json, options);
+        refuseClientAndAll(args);
         const flagged = args.scope === undefined ? undefined : requireScope(args.scope);
+        const options = optionsOf(requireConfigDir(args));
+        const chosen = await resolveClients(args, args.json, options);
         requireScopeAnswerable(flagged, args.json);
         const asked = chosen.length === 0 ? "user" : (flagged ?? (await askScopeOrExit()));
 
@@ -515,7 +605,7 @@ const disconnectCommand = withContract(
     idempotent: true,
     needsNetwork: false,
     flags: TARGET_FACTS,
-    flagGroups: [CLIENT_OR_ALL],
+    flagGroups: [CLIENT_OR_ALL, CONFIG_DIR_NEEDS],
   },
 );
 

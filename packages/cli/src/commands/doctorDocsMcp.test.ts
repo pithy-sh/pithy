@@ -16,10 +16,13 @@ const { baseOptions, healthyOptions } = harness;
 
 const finding: DocsMcpCheck = {
   state: "unconnected",
-  findings: ["Cursor — pithy docs connect --client cursor", "Codex CLI — pithy docs connect --client codex"],
+  findings: [
+    "Cursor, nothing in /home/u/.cursor/mcp.json — pithy docs connect --client cursor",
+    "Codex CLI, nothing in /home/u/.codex-work/config.toml — pithy docs connect --client codex",
+  ],
   clients: [
-    { client: "cursor", label: "Cursor" },
-    { client: "codex", label: "Codex CLI" },
+    { client: "cursor", label: "Cursor", paths: ["/home/u/.cursor/mcp.json"] },
+    { client: "codex", label: "Codex CLI", paths: ["/home/u/.codex-work/config.toml"] },
   ],
 };
 
@@ -29,8 +32,8 @@ describe("the AI clients: block", () => {
     const text = renderDoctorText(report, "/home/u");
 
     expect(text).toContain("AI clients:");
-    expect(text).toContain("Cursor — pithy docs connect --client cursor");
-    expect(text).toContain("Codex CLI — pithy docs connect --client codex");
+    expect(text).toContain("Cursor, nothing in /home/u/.cursor/mcp.json — pithy docs connect --client cursor");
+    expect(text).toContain("Codex CLI, nothing in /home/u/.codex-work/config.toml — pithy docs connect --client codex");
     expect(text).toContain("Each line is one command. `pithy docs status` shows where each one would land.");
   });
 
@@ -67,6 +70,28 @@ describe("the AI clients: block", () => {
     expect(payload.docsMcp.state).toBe("unconnected");
     expect(payload.docsMcp.findings).toEqual(finding.findings);
     expect(payload.docsMcp.detail).toBe("2 detected clients cannot read the Pithy docs.");
+  });
+
+  test("each client in --json names the files the check read for it, beside the command that connects it", async () => {
+    const report = await buildDoctorReport(baseOptions({ checkDocsMcp: async () => finding }));
+    const payload = renderDoctorJson(report) as unknown as {
+      docsMcp: { clients: { client: string; paths: string[]; fix: string }[] };
+    };
+
+    expect(payload.docsMcp.clients).toEqual([
+      {
+        client: "cursor",
+        label: "Cursor",
+        paths: ["/home/u/.cursor/mcp.json"],
+        fix: "pithy docs connect --client cursor",
+      },
+      {
+        client: "codex",
+        label: "Codex CLI",
+        paths: ["/home/u/.codex-work/config.toml"],
+        fix: "pithy docs connect --client codex",
+      },
+    ]);
   });
 
   test("outside a project there is nothing to report, and the key says so rather than passing", async () => {

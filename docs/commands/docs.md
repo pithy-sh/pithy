@@ -7,9 +7,9 @@ Point your AI coding agent at the Pithy documentation server.
 ## Synopsis
 
 ```
-pithy docs connect [--client <id> | --all] [--scope <project|user>] [--json]
-pithy docs connect --print [--client <id>] [--scope <project|user>] [--json]
-pithy docs disconnect [--client <id> | --all] [--scope <project|user>] [--json]
+pithy docs connect [--client <id> | --all] [--scope <project|user>] [--config-dir <path>] [--json]
+pithy docs connect --print [--client <id>] [--scope <project|user>] [--config-dir <path>] [--json]
+pithy docs disconnect [--client <id> | --all] [--scope <project|user>] [--config-dir <path>] [--json]
 pithy docs status [--json]
 ```
 
@@ -20,10 +20,13 @@ pithy docs status [--json]
 | `--client <id>` | string | — | One client, by the id in the table below |
 | `--all` | boolean | `false` | Every client detected on this machine |
 | `--scope <project\|user>` | string | — | `project` writes the repository's file; `user` writes your own |
+| `--config-dir <path>` | string | — | The profile directory to write, over `CLAUDE_CONFIG_DIR` or `CODEX_HOME`. Only with `--client claude-code` or `--client codex` and `--scope user` |
 | `--print` | boolean | `false` | `connect` only. Print the snippet and write nothing |
 | `--json` | boolean | `false` | Machine-readable output |
 
 `--client` and `--all` are mutually exclusive. `--scope` is required whenever nothing can be asked — a run under `--json`, `--no-input` or `PITHY_NONINTERACTIVE=1`, or with no terminal attached — and so is `--client` or `--all`. Each refusal is `input/required`, naming the flag and every value it takes (`docs/CLI.md` §1.2).
+
+`--config-dir` names one client's profile, so it needs `--client` naming a client a variable moves — `claude-code` or `codex` — and `--scope user`. Any other use is refused, exit 2, as `validation/invalid_input` naming why, before anything is read or written. The directory has to exist — a profile's directory is there once its tool has run, so a missing one is a typo, and writing it anyway would create a profile nobody runs — and it cannot start with `~`, which the shell leaves unexpanded after `--config-dir=` and which would otherwise name a directory called `~` inside the project. A bad `--scope`, or `--client` beside `--all`, is named before any of these.
 
 `disconnect` takes the same target flags without `--print`. `status` takes `--json` and nothing else: it reads.
 
@@ -37,7 +40,7 @@ Every client in the table below can be pointed at it. They disagree on the file,
 
 **Nothing is guessed at.** A document that will not parse is left byte-identical on disk, the row says `refused` with the reason, and the snippet to paste is printed under it. A best-effort write into a half-written `~/.claude.json` is a tool that stops working tomorrow with no way back to today.
 
-**A project file stays inside the project.** A project path is composed from a root you did not write — a repository you cloned — so every segment of it is somebody else's content. If `.zed`, or `.continue/mcpServers`, or the config file itself turns out to be a symlink, the write is refused and named rather than followed. A repository could otherwise ship `.cursor/mcp.json` as a link to anywhere you can write, and the first `--scope project` run would create or overwrite that file instead. User paths are not held to this: `$HOME` is yours, and so is every link in it.
+**A project file stays inside the project.** A project path is composed from a root you did not write — a repository you cloned — so every segment of it is somebody else's content. If `.zed`, or `.continue/mcpServers`, or the config file itself turns out to be a symlink, the write is refused and named rather than followed. A repository could otherwise ship `.cursor/mcp.json` as a link to anywhere you can write, and the first `--scope project` run would create or overwrite that file instead. User paths are not held to this: a user path is your home, or the directory your `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `--config-dir` names, and every link in it is yours.
 
 **A re-run writes nothing.** A file already saying what Pithy would write reports `unchanged` and is never reopened, so the second run does not touch its mtime. An entry pointing somewhere else is corrected and reports `updated`. A fresh one reports `added`.
 
@@ -64,6 +67,21 @@ Four syntaxes and five root keys, spelled the way each vendor spells them: `mcp_
 
 **Nothing written here carries a credential, and no code path reads one.** The server runs the standard MCP OAuth flow and registers clients dynamically, so a capable client reaches an authorized session from the URL by itself and opens a browser on first use; `mcp-remote` does the same and caches its token under your own `~/.mcp-auth`. Pithy never holds a token. That is why `@pithy-sh/secrets` is not involved and there is nothing to put in `.dev.vars`.
 
+### A second profile
+
+Two clients let you move their whole configuration directory with one variable, and both are followed:
+
+| Client | Variable | User file when set | Detected by |
+|---|---|---|---|
+| `claude-code` | `CLAUDE_CONFIG_DIR` | `$CLAUDE_CONFIG_DIR/.claude.json` | `$CLAUDE_CONFIG_DIR` existing |
+| `codex` | `CODEX_HOME` | `$CODEX_HOME/config.toml` | `$CODEX_HOME` existing |
+
+When the variable is set and not empty, the user file and the detection path both resolve under it, so the entry lands in the profile this shell runs and `--all` finds a client that lives only there. Unset or empty, nothing changes: `~/.claude.json` and `~/.codex/config.toml`, as before. The project scope is never moved.
+
+`--config-dir <path>` names the directory outright and wins over the variable. It is how you write a profile other than the one this shell runs, and `--print` reports the path it would take. `disconnect` and `status` resolve the same path; `status` follows the variable, since it takes no flag.
+
+Nothing looks for other profiles. A `~/.claude-work` the variable does not name is not read, and no question is asked: the variable and the flag are the whole answer.
+
 ### Which scope
 
 A **project** file is committed. It hands the docs to everyone who checks the repository out, and it is a change your reviewers see.
@@ -82,7 +100,7 @@ Writes nothing, anywhere. With `--client <id>` it prints the resolved path and t
 
 `pithy init` offers the connection at the end of an interactive run, naming the clients it found, and says nothing at all when it found none.
 
-`pithy doctor` reports any detected client with no entry, one line each, and never changes its exit code over it. Whether your editor reads a documentation server is your business.
+`pithy doctor` reports any detected client with no entry, one line each naming the files it read, and never changes its exit code over it. It resolves them through the same code as this command, so `CLAUDE_CONFIG_DIR` and `CODEX_HOME` move what it reads too. Whether your editor reads a documentation server is your business.
 
 ## `--json`
 
@@ -223,6 +241,45 @@ $ pithy docs connect --all --scope global
 Pass --scope project to commit it for the team, or --scope user for yourself.
 ```
 
+**`--config-dir` where it cannot name one profile.** Exit 2, before anything is read or written. With no `--client`, or with `--all`:
+
+```
+$ pithy docs connect --all --scope user --config-dir ~/.claude-work
+--config-dir names one client's profile, so it needs --client.
+Pass --client claude-code or --client codex with it, or drop --config-dir.
+```
+
+With a client whose configuration lives in one place:
+
+```
+$ pithy docs connect --client cursor --scope user --config-dir ~/.cursor-work --json
+{"error":{"code":"validation/invalid_input","status":400,"issues":[],"message":"Cursor keeps its user configuration in one place, so --config-dir does not apply.","action":"Pass --client claude-code or --client codex with it, or drop --config-dir.","exit":2,"retryable":false}}
+```
+
+And without `--scope user`, since the project file is never moved:
+
+```
+$ pithy docs connect --client claude-code --scope project --config-dir ~/.claude-work
+--config-dir moves the user configuration, so it needs --scope user.
+Pass --scope user, or drop --config-dir.
+```
+
+**A `--config-dir` that is not a directory you have.** Exit 2. A leading `~` the shell did not expand:
+
+```
+$ pithy docs connect --client claude-code --scope user --config-dir=~/.claude-work
+--config-dir ~/.claude-work starts with ~, which the shell did not expand.
+Pass the full path, or $HOME in place of the ~.
+```
+
+A directory that is not there:
+
+```
+$ pithy docs connect --client claude-code --scope user --config-dir /home/you/.claude-wrok
+There is no directory at /home/you/.claude-wrok.
+Name the profile's directory as it is: Claude Code creates it the first time it runs with that profile.
+```
+
 **No target, unattended.** A bare `pithy docs connect` at a terminal acts on every detected client. Without one there is nothing to prompt with, so it names the flags instead. Exit 2.
 
 ```
@@ -310,6 +367,22 @@ $ pithy docs connect --print --client codex
 /home/you/app/.codex/config.toml:
 [mcp_servers.pithy]
 url = "https://pithy.sh/mcp"
+```
+
+A second Claude Code profile, followed through the variable.
+
+```
+$ CLAUDE_CONFIG_DIR=~/.claude-work pithy docs connect --client claude-code --scope user
+Claude Code  added  /home/you/.claude-work/.claude.json
+Done.
+```
+
+The same profile, named from a shell running another.
+
+```
+$ pithy docs connect --client claude-code --scope user --config-dir ~/.claude-work
+Claude Code  unchanged  /home/you/.claude-work/.claude.json
+Done.
 ```
 
 Where everything stands.

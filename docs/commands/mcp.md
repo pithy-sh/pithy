@@ -140,6 +140,8 @@ claude-code  added /home/you/.claude.json
 Done.
 ```
 
+The user file follows the variable that moves it, the way `pithy docs connect` does: with `CLAUDE_CONFIG_DIR` set, Claude Code's entry goes to `$CLAUDE_CONFIG_DIR/.claude.json`, and with `CODEX_HOME` set, Codex's to `$CODEX_HOME/config.toml` — the profile this shell runs, not `~/.claude.json`. `pithy mcp disconnect` resolves the file the same way when it runs, so run it with the same variable set, or it looks in another profile. See [`pithy docs`](docs.md#a-second-profile).
+
 The same agent's tools, as the client lists them: `controlplane_ping`, `controlplane_manifest_read`, `support_threads_list`, `support_threads_search`, `support_threads_read`, `support_replies_list`.
 
 An agent in GitHub Actions, for staging, with no key anywhere.
