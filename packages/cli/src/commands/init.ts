@@ -31,6 +31,7 @@ import {
 import { askDomains, writeDomains } from "../project/askDomains";
 import { writeFileAtomic } from "../project/atomic";
 import { renderDomainsBlock } from "../project/domainPrompt";
+import { DEFAULT_LINTER, Linter, parseLinter } from "../project/lint";
 import { packageManagerFromUserAgent } from "../project/packageManager";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { DEFAULT_WORKER, ensureScaffoldable, kitRange, scaffoldProject } from "../project/scaffold";
@@ -72,7 +73,7 @@ async function offerAlias(prompt: Pick<InitPrompt, "confirm" | "isCancel">, offe
 }
 
 /**
- * Offer tab completion once, after the shortcut, with the same rules (#765). On yes, it installs the way
+ * Offer tab completion once, after the shortcut, with the same rules. On yes, it installs the way
  * `pithy completion` does, and covers `p.` too when the shortcut is in place.
  */
 async function offerCompletion(prompt: Pick<InitPrompt, "confirm" | "isCancel">, offers: ShellOffers): Promise<void> {
@@ -162,7 +163,7 @@ function parseEnvironments(answer: string): string[] {
 }
 
 /**
- * Ask which environments this project has (#241).
+ * Ask which environments this project has.
  *
  * **Asked here for the same reason `name` is.** `<project>-<env>-<thing>` has a 33-character ceiling;
  * `name` is capped at 26 and asked at `init` because a provisioned project cannot be renamed. The
@@ -255,7 +256,7 @@ export interface AskCloudflareAccountOptions {
  * `init`: the token is needed to list zones two prompts later, and every command after this needs it.
  * The credentials are account-scoped, so they are written to `<config>/cloudflare.json` — or, once an
  * account has a name, `<config>/cloudflare.<name>.json` — outside every checkout, `0600`, in the `0700`
- * config directory (#182, #206). Nothing minted or typed here goes into the project except the account's
+ * config directory. Nothing minted or typed here goes into the project except the account's
  * *name* and *id*, and neither of those is a secret.
  *
  * **The account is discovered, not asked for.** `init` used to take an account id on trust: pasted,
@@ -281,7 +282,7 @@ export async function askCloudflareAccount(options: AskCloudflareAccountOptions)
   const paths = options.paths ?? { account: null };
   // The listing is loaded only when it is about to be made. `client/accounts` constructs the Cloudflare
   // SDK, so importing it costs ~360 ms under Node — which `pithy init --help` was paying to print a flag
-  // list (#482). `ci/lazyHeavyImports.test.ts` holds it.
+  // list. `ci/lazyHeavyImports.test.ts` holds it.
   const listAccounts =
     options.listAccounts ??
     (async (apiToken: string) => {
@@ -309,14 +310,13 @@ export async function askCloudflareAccount(options: AskCloudflareAccountOptions)
   // account exists is an ordinary thing to do, and `pithy doctor` names the missing keys until they are set.
   if (!apiToken) return nothing;
 
-  // Never fatal, and no longer one fact (#378). `null` is "could not ask" — an unreachable network, a
+  // Never fatal, and not one fact. `null` is "could not ask" — an unreachable network, a
   // token without `account:read`, a revoked token; `[]` is "this token sees no account". Collapsing them
   // into `[]` is the origin of every confidently-empty listing downstream: the operator then types an id
   // nothing verified, and it becomes the `CLOUDFLARE_ACCOUNT_ID` every later command asks about.
   const accounts = await listAccounts(apiToken).catch(() => null);
 
-  // A configured machine whose token sees one account is the single-account case #182 was written for.
-  // It has nothing to choose, so it is not asked — this is the run that must stay exactly as it was.
+  // A configured machine whose token sees one account has nothing to choose, so it is not asked.
   if (configured && accounts !== null && accounts.length <= 1) return nothing;
 
   if (accounts === null || accounts.length === 0) {
@@ -353,7 +353,7 @@ export async function askCloudflareAccount(options: AskCloudflareAccountOptions)
 /**
  * The fallback: no picker, so ask for an id exactly as `init` always asked — and say why there was none.
  *
- * **The two reasons are not one reason (#378).** A token that reached Cloudflare and was shown no account
+ * **The two reasons are not one reason.** A token that reached Cloudflare and was shown no account
  * is a scoping problem the operator can fix; a call that never landed says nothing about the account at
  * all. Both used to print the same bare prompt, and the id typed under either of them became the pin
  * every later listing is compared against. Naming which one happened is the difference between "widen the
@@ -571,6 +571,24 @@ export async function askReactNative(options: {
   return { value: answer === true, prompted: true };
 }
 
+/** Ask which linter runs the kit's lint safeguards, or take the default when nobody is there to ask. */
+export async function askLinter(options: {
+  interactive: boolean;
+  prompt?: InitPrompt;
+}): Promise<{ value: Linter; prompted: boolean }> {
+  if (!options.interactive) return { value: DEFAULT_LINTER, prompted: false };
+  const prompt = options.prompt ?? (await clackPrompt());
+  const answer = await prompt.select({
+    message: "Which linter runs the kit's lint rules?",
+    options: [
+      { value: "biome", label: "Biome. GritQL rules in biome.jsonc." },
+      { value: "oxlint", label: "Oxlint. A JS plugin in .oxlintrc.json. Biome still formats." },
+    ],
+  });
+  if (prompt.isCancel(answer)) canceled();
+  return { value: parseLinter(String(answer)), prompted: true };
+}
+
 /** `pithy init --json`. `docs/commands/init.md`. */
 const InitPayload = z
   .object({
@@ -582,6 +600,7 @@ const InitPayload = z
       .array(z.string().describe("An environment."))
       .describe("Every environment the project deploys to, in declaration order."),
     target: AppTarget,
+    lint: Linter,
     frontEnd: z
       .object({
         framework: z.string().describe("The front-end framework scaffolded. `react`."),
@@ -622,6 +641,10 @@ export default withContract(
         type: "string",
         description: `Which clients call this backend: mobile, web or both. Web scaffolds a React front end. Defaults to "${DEFAULT_TARGET}".`,
       },
+      lint: {
+        type: "string",
+        description: `Which linter runs the kit's six lint rules: biome or oxlint. Oxlint keeps Biome as the formatter. Defaults to "${DEFAULT_LINTER}".`,
+      },
       "react-native": {
         type: "boolean",
         description:
@@ -655,8 +678,9 @@ export default withContract(
         // `--worker` is passed when given: it decides which `apps/<name>` the scaffold lands at, and so
         // what counts as a collision. A prompted worker name is only known later, and the re-check covers
         // it. `ensureScaffoldable` validates the name before it builds a path out of it.
-        await ensureScaffoldable(targetDir, args.worker);
         // Refused before any question, like a bad --worker: a typo should not cost the answers after it.
+        const flaggedLint = args.lint === undefined ? undefined : parseLinter(args.lint);
+        await ensureScaffoldable(targetDir, args.worker, flaggedLint);
         const flaggedTarget = args.target === undefined ? undefined : parseTarget(args.target);
 
         // Said before the question, not after it. The name leads every Cloudflare resource this project
@@ -685,6 +709,10 @@ export default withContract(
           flaggedTarget === undefined
             ? await askTarget({ interactive: mayPrompt(args.json) })
             : { value: flaggedTarget, prompted: false };
+        const lint =
+          flaggedLint === undefined
+            ? await askLinter({ interactive: mayPrompt(args.json) })
+            : { value: flaggedLint, prompted: false };
 
         // `--app` or a rail flag asks for the app as plainly as `--react-native` does.
         const railFlags: Partial<Record<RailPlatform, string>> = {};
@@ -715,7 +743,13 @@ export default withContract(
         }
 
         const appName = name.value;
-        await scaffoldProject({ targetDir, appName, worker: worker.value, environments: environments.environments });
+        await scaffoldProject({
+          targetDir,
+          appName,
+          worker: worker.value,
+          environments: environments.environments,
+          lint: lint.value,
+        });
         // The agent instructions, straight after the scaffold and before any question that can be
         // canceled, so a project never exists without them. Outside `scaffoldProject` on purpose: these
         // merge into files a cloned repository may already carry, which a template file could only collide
@@ -791,6 +825,7 @@ export default withContract(
           worker.prompted ||
           environments.prompted ||
           target.prompted ||
+          lint.prompted ||
           reactNative.prompted ||
           asked.prompted ||
           account.prompted;
@@ -802,12 +837,12 @@ export default withContract(
             : { app: nativeApp.app, created: nativeApp.created, rails: nativeApp.rails };
         if (args.json) {
           process.stdout.write(
-            `${formatJsonLine({ command: "init", targetDir, appName, worker: worker.value, environments: environments.environments, target: target.value, frontEnd: frontEndReport, reactNative: nativeReport, domains: asked.domains ?? null, agents, claude })}\n`,
+            `${formatJsonLine({ command: "init", targetDir, appName, worker: worker.value, environments: environments.environments, target: target.value, lint: lint.value, frontEnd: frontEndReport, reactNative: nativeReport, domains: asked.domains ?? null, agents, claude })}\n`,
           );
           return;
         }
         for (const note of credentials) process.stdout.write(`${note}\n`);
-        // The two commands every checkout starts with, this one included (#764): setup installs and makes it
+        // The two commands every checkout starts with, this one included: setup installs and makes it
         // ready, and `dev` runs the front end with the Worker that serves it.
         if (frontEnd) process.stdout.write(`A React front end is in apps/${worker.value}/.\n`);
         if (nativeReport) {
@@ -842,7 +877,7 @@ export default withContract(
         process.stdout.write(`${prompted ? "\n" : ""}${formatDone()}\n`);
 
         // Offer the shortcut and completion only to a human at a terminal — never in a --json, piped or
-        // --no-input run — and then the docs server, which says nothing when this machine runs no AI client (#652).
+        // --no-input run — and then the docs server, which says nothing when this machine runs no AI client.
         if (await offerShell(args.json)) await offerDocs();
       }),
   }),

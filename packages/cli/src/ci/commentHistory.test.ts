@@ -42,7 +42,7 @@ describe("the committed baseline", () => {
     const baseline = parseBaseline(readFileSync(join(REPO_ROOT, BASELINE_FILE), "utf8"));
     expect(baseline.include).toEqual(DEFAULT_INCLUDE);
     const files = trackedFiles(REPO_ROOT, baseline.include, baseline.exclude);
-    for (const prefix of ["packages/", "scripts/", "plugins/", "biome.jsonc"]) {
+    for (const prefix of ["packages/", "scripts/", "templates/starter/plugins/", "biome.jsonc"]) {
       expect(files.some((path) => path.startsWith(prefix))).toBe(true);
     }
     expect(files.some((path) => path.includes(".generated."))).toBe(false);
@@ -272,18 +272,18 @@ describe(`${LOWER_COMMAND}, on a scratch repository`, () => {
     const root = repository({
       "packages/a/src/one.ts": `// ${hash("1")}\n`,
       "packages/a/src/two.ts": `// ${hash("2")} ${hash("3")}\n`,
-      "plugins/clean.grit": "// Clean.\n",
+      "templates/starter/plugins/clean.grit": "// Clean.\n",
     });
     runCommentHistory(root, ["--init"]);
     writeFileSync(join(root, "packages/a/src/one.ts"), `// ${hash("1")} ${hash("9")}\n`);
     writeFileSync(join(root, "packages/a/src/two.ts"), `// ${hash("2")}\n`);
-    writeFileSync(join(root, "plugins/clean.grit"), `// ${hash("4")}\n`);
+    writeFileSync(join(root, "templates/starter/plugins/clean.grit"), `// ${hash("4")}\n`);
     const before = baselineText();
 
     const result = runCommentHistory(root, []);
     expect(result.code).toBe(1);
     expect(result.output).toContain("packages/a/src/one.ts: 2 history markers, 1 in the baseline");
-    expect(result.output).toContain("plugins/clean.grit: 1 history markers, 0 in the baseline");
+    expect(result.output).toContain("templates/starter/plugins/clean.grit: 1 history markers, 0 in the baseline");
     expect(result.output).not.toContain("two.ts");
     expect(baselineText()).toBe(before);
   });

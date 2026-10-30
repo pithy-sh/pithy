@@ -1,0 +1,64 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  // Oxlint for lint; Biome still formats, and still lints with its recommended rules. `bun run lint` runs both.
+  //
+  // The kit's six lint safeguards are one JS plugin, `plugins/pithy.oxlint.js`, and each override below turns one of
+  // its rules on for the code it is about — the same files the GritQL rule of the same name covers in a Biome
+  // project. `excludeFiles` is what Biome writes as a `!` pattern: Oxlint reads a `!` in `files` as everything that
+  // does not match.
+  //
+  // `no-console` is the logging gate, on each Worker's own `.ts` source, because that is the code that runs in the
+  // Worker, where `c.var.log` and `createWorkerLogger()` exist. A `.tsx` file is the client, and a browser console is
+  // not a Workers log. A test printing to a terminal is output for a human, so tests are out too. `no-process-io` is
+  // the same rule for `process.stdout` / `process.stderr`, with the same scope.
+  //
+  // `no-raw-request-input` and `no-bare-zvalidator` keep each route's request contract on the route line, where
+  // `pithy contract` reads it. `no-z-config` keeps a locale inside its request, and takes no exclusion, not even for
+  // tests.
+  //
+  // `no-raw-use-effect` keeps effects in hooks named for what they sync with. Each exclusion is one such hook that
+  // `pithy ui add` writes: Turnstile on the web and in the React Native web build, React Native's AppState, and the
+  // platform store's transaction queue. Tests are outside the rule.
+  //
+  // Oxlint's JS plugin API is alpha and outside semver. None of these rules needs type information.
+  //
+  // Yours to change, like every other line here — narrow them, widen them, or drop an override and the rule with it.
+  "jsPlugins": ["./plugins/pithy.oxlint.js"],
+  "overrides": [
+    {
+      "files": ["**/apps/*/src/**/*.ts"],
+      "excludeFiles": ["**/*.test.ts"],
+      "rules": { "pithy/no-console": "error" }
+    },
+    {
+      "files": ["**/apps/*/src/**/*.ts"],
+      "excludeFiles": ["**/*.test.ts"],
+      "rules": { "pithy/no-process-io": "error" }
+    },
+    {
+      "files": ["**/apps/*/src/**/*.ts"],
+      "excludeFiles": ["**/*.test.ts"],
+      "rules": { "pithy/no-raw-request-input": "error" }
+    },
+    {
+      "files": ["**/apps/*/src/**"],
+      "rules": { "pithy/no-bare-zvalidator": "error" }
+    },
+    {
+      "files": ["**/apps/*/src/**"],
+      "rules": { "pithy/no-z-config": "error" }
+    },
+    {
+      "files": ["**/apps/*/src/**"],
+      "excludeFiles": [
+        "**/*.test.ts",
+        "**/*.test.tsx",
+        "**/apps/*/src/turnstile.tsx",
+        "**/apps/*/src/useTurnstileWeb.ts",
+        "**/apps/*/src/useAppFocus.ts",
+        "**/apps/*/src/useStoreTransactions.ts"
+      ],
+      "rules": { "pithy/no-raw-use-effect": "error" }
+    }
+  ]
+}

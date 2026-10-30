@@ -5,14 +5,15 @@ import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
 import { PRIVACY_ATTESTATION_VAR, type PrivacyAttestation } from "@pithy-sh/core/src/privacy/posture";
 import { loadProjectPrivacy, type ProjectConfig } from "../project/config";
-import { type ConsoleGateReading, NO_CONSOLE_RULE, readConsoleGate } from "./consoleGate";
+import { readConsoleGate } from "./consoleGate";
+import type { ConsoleGateReading } from "./gateReading";
 
 /**
- * **The `pithy deploy` console gate, and the attestation every deploy writes** (#132).
+ * **The `pithy deploy` console gate, and the attestation every deploy writes.**
  *
- * The only hard failure the privacy work adds: a project that declared a class, whose Biome config is readable
- * and has `suspicious/noConsole` off, does not deploy — file named, rule named, fix named. Everything else
- * deploys: no class declared (the gate does not apply, whatever the rule says), the rule on, or no Biome config
+ * The only hard failure the privacy work adds: a project that declared a class, whose linter config is readable
+ * and leaves `console` open, does not deploy — file named, rule named, fix named. Everything else deploys: no
+ * class declared (the gate does not apply, whatever the rule says), the rule on in every linter config, or none
  * Pithy can read, which is said out loud on the run and carried into the manifest as `unverifiable`.
  *
  * Every deploy then writes what it found into the Worker as {@link PRIVACY_ATTESTATION_VAR}, on wrangler's argv —
@@ -45,11 +46,11 @@ export interface DeployPrivacyOptions {
 function fixFor(gate: Extract<ConsoleGateReading, { state: "off" }>, classes: readonly string[]): string {
   switch (gate.cause) {
     case "unstated":
-      return `Set ${NO_CONSOLE_RULE} to "error" in ${gate.file}, or run ${pithyCommand("privacy enable", { flags: { "--class": classes[0] as string } })} to write it.`;
+      return `Set ${gate.rule} to "error" in ${gate.file}, or run ${pithyCommand("privacy enable", { flags: { "--class": classes[0] as string } })} to write it.`;
     case "lowered":
-      return `Set ${NO_CONSOLE_RULE} to "error", allowing no method, for the Worker source in ${gate.file}, where it was turned down on purpose. Pithy does not override that.`;
+      return `Set ${gate.rule} to "error", allowing no method, for the Worker source in ${gate.file}, where it was turned down on purpose. Pithy does not override that.`;
     case "disabled":
-      return `Turn the linter back on for the Worker source in ${gate.file}, and keep ${NO_CONSOLE_RULE} at "error" there. Pithy does not override that.`;
+      return `Turn the linter back on for the Worker source in ${gate.file}, and keep ${gate.rule} at "error" there. Pithy does not override that.`;
   }
 }
 

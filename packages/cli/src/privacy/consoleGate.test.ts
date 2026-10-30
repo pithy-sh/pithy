@@ -5,7 +5,13 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { consoleGateOf, NO_CONSOLE_OVERRIDE, readConsoleGate } from "./consoleGate";
+import {
+  consoleGateOf,
+  NO_CONSOLE_OVERRIDE,
+  OXLINT_NO_CONSOLE_OVERRIDE,
+  readConsoleGate,
+  readLinterGates,
+} from "./consoleGate";
 
 let dir: string;
 
@@ -193,10 +199,11 @@ describe("readConsoleGate", () => {
     expect((await readConsoleGate(dir)).state).toBe("off");
   });
 
-  test("is unverifiable with no Biome config, and says so", async () => {
+  test("is unverifiable with no linter config, and says so", async () => {
     const gate = await readConsoleGate(dir);
     expect(gate).toMatchObject({ state: "unverifiable", file: null });
-    expect(gate.state === "unverifiable" && gate.reason).toContain("No biome.json or biome.jsonc");
+    expect(gate.state === "unverifiable" && gate.reason).toContain("No biome.json, biome.jsonc or .oxlintrc.json");
+    expect(await readLinterGates(dir)).toEqual([]);
   });
 
   test("deleting biome.jsonc moves the gate from enforced to unverifiable, never back to passing", async () => {
@@ -237,5 +244,85 @@ describe("readConsoleGate", () => {
     await writeFile(join(dir, "apps/api/biome.jsonc"), JSON.stringify({ root: false, linter: { enabled: false } }));
     const gate = await readConsoleGate(dir);
     expect(gate).toMatchObject({ state: "unverifiable", file: "apps/api/biome.jsonc" });
+  });
+});
+
+describe("readConsoleGate, for an Oxlint project", () => {
+  const oxlint = (config: unknown) => writeFile(join(dir, ".oxlintrc.json"), JSON.stringify(config));
+
+  test("reads .oxlintrc.json, comments and all, as enforced", async () => {
+    await writeFile(join(dir, ".oxlintrc.json"), '{\n  // the gate\n  "rules": { "no-console": "error" }\n}\n');
+    expect(await readConsoleGate(dir)).toEqual({ state: "enforced", file: ".oxlintrc.json" });
+  });
+
+  test("reads off when the rule is unstated, naming Oxlint's own rule", async () => {
+    await oxlint({ rules: {} });
+    expect(await readConsoleGate(dir)).toMatchObject({
+      state: "off",
+      file: ".oxlintrc.json",
+      rule: "no-console",
+      cause: "unstated",
+    });
+  });
+
+  test("reads unverifiable for a config that does not parse, and for a nested one in a Worker", async () => {
+    await writeFile(join(dir, ".oxlintrc.json"), "{ not json");
+    expect(await readConsoleGate(dir)).toMatchObject({ state: "unverifiable", file: ".oxlintrc.json" });
+    await oxlint({ overrides: [OXLINT_NO_CONSOLE_OVERRIDE] });
+    expect((await readConsoleGate(dir)).state).toBe("enforced");
+    await writeFile(join(dir, "apps/app/.oxlintrc.json"), JSON.stringify({ rules: { "no-console": "off" } }));
+    expect(await readConsoleGate(dir)).toMatchObject({ state: "unverifiable", file: "apps/app/.oxlintrc.json" });
+  });
+
+  test("reads an .eslintignore that leaves Worker source unlinted as off, the way Oxlint does", async () => {
+    await oxlint({ rules: { "no-console": "error" } });
+    expect((await readConsoleGate(dir)).state).toBe("enforced");
+    await writeFile(join(dir, ".eslintignore"), "apps/app/src\n");
+    expect(await readConsoleGate(dir)).toMatchObject({ state: "off", cause: "disabled" });
+  });
+
+  test("reads unverifiable with no Worker source to read the rule for", async () => {
+    await rm(join(dir, "apps"), { recursive: true });
+    await oxlint({ rules: { "no-console": "error" } });
+    expect(await readConsoleGate(dir)).toMatchObject({ state: "unverifiable", file: ".oxlintrc.json" });
+  });
+});
+
+describe("readConsoleGate, with both linters configured", () => {
+  const biome = (config: unknown) => writeFile(join(dir, "biome.jsonc"), JSON.stringify(config));
+  const oxlint = (config: unknown) => writeFile(join(dir, ".oxlintrc.json"), JSON.stringify(config));
+
+  test("is enforced only when both close the rule", async () => {
+    await biome({ overrides: [NO_CONSOLE_OVERRIDE] });
+    await oxlint({ overrides: [OXLINT_NO_CONSOLE_OVERRIDE] });
+    expect(await readConsoleGate(dir)).toEqual({ state: "enforced", file: "biome.jsonc and .oxlintrc.json" });
+  });
+
+  test("is off when Oxlint leaves it open and Biome closes it, and the other way round", async () => {
+    await biome({ overrides: [NO_CONSOLE_OVERRIDE] });
+    await oxlint({ rules: { "no-console": "warn" } });
+    expect(await readConsoleGate(dir)).toMatchObject({ state: "off", file: ".oxlintrc.json", cause: "lowered" });
+    await biome({});
+    await oxlint({ rules: { "no-console": "error" } });
+    expect(await readConsoleGate(dir)).toMatchObject({
+      state: "off",
+      file: "biome.jsonc",
+      rule: "suspicious/noConsole",
+    });
+  });
+
+  test("is unverifiable, never enforced, when one closes it and the other cannot be read", async () => {
+    await biome({ overrides: [NO_CONSOLE_OVERRIDE] });
+    await oxlint({ extends: ["./base.json"], rules: { "no-console": "error" } });
+    expect(await readConsoleGate(dir)).toMatchObject({ state: "unverifiable", file: ".oxlintrc.json" });
+  });
+
+  test("reads each config on its own for the writer", async () => {
+    await biome({});
+    await oxlint({ rules: { "no-console": "error" } });
+    expect((await readLinterGates(dir)).map(({ linter, file, gate }) => [linter, file, gate.state])).toEqual([
+      ["biome", "biome.jsonc", "off"],
+      ["oxlint", ".oxlintrc.json", "enforced"],
+    ]);
   });
 });

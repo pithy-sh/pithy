@@ -172,7 +172,7 @@ A follow-up the run could not establish — an account it could not ask, a ledge
 |---|---|---|
 | `bun run typecheck` | `tsc -b` | `tsconfig.json` — the solution file |
 | `bun run test` | `vitest run` | `vitest.config.ts`, `vitest.workers.config.ts` |
-| `bun run lint` | `biome check .` | `biome.jsonc` |
+| `bun run lint` | `biome check .`, or `biome check . && oxlint` under `--lint oxlint` | `biome.jsonc`, and `.oxlintrc.json` under `--lint oxlint` |
 
 **The root `tsconfig.json` is a solution file, and it has to be.** It declares `"files": []` and a list of `references`, and `tsc -b` builds each in turn. The programs cannot be merged into one: a Worker needs `@cloudflare/workers-types`, a browser client needs the DOM, and a program carrying both makes `Uint8Array` structurally incompatible with `BufferSource` — which breaks every crypto call in Pithy's own control-plane signing code. Keeping the two type worlds apart is not tidiness; it is the only arrangement that compiles. A fresh project references two programs — `tsconfig.tools.json`, for the configs that run on Node, and `apps/<worker>/tsconfig.json` — and `pithy ui add` appends the client's two.
 

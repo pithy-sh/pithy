@@ -7,7 +7,14 @@
   // `biome check --write` would each undo the other, every run. A generated file's formatting belongs to
   // its generator, which is what this rule already said about the stamped versions and the precompiled
   // email templates.
-  "files": { "ignoreUnknown": true, "includes": ["**", "!**/*.generated.*"] },
+  //
+  // `packages/cli/lint-fixtures` is the lint rules' own test input: code each rule must catch or must let through,
+  // parentheses and all, which formatting it or holding it to the recommended rules would rewrite.
+  "files": { "ignoreUnknown": true, "includes": ["**", "!**/*.generated.*", "!**/lint-fixtures"] },
+  // Every rule loads from `templates/starter/plugins/`, the files `pithy init` hands an adopter, so the kit lints
+  // itself with the same rules it ships and there is no second copy to drift. The `includes` here are the kit's own
+  // layout; the starter's `biome.template.jsonc` scopes the same rules to an adopter's.
+  //
   // Gate 1 of the route request contract. Scoped to the HTTP layer of the capability packages: those
   // are the routes Pithy provides, and the only place `c.req.valid()` is guaranteed to be available.
   // An adopter's own handlers are theirs — we specify the pattern, we don't police their code.
@@ -38,11 +45,11 @@
   // while the count is zero, which is the cheapest moment to add it.
   "plugins": [
     {
-      "path": "plugins/no-raw-request-input.grit",
+      "path": "templates/starter/plugins/no-raw-request-input.grit",
       "includes": ["**/packages/*/src/http/**", "**/packages/*/src/*/http/**"]
     },
     {
-      "path": "plugins/no-console.grit",
+      "path": "templates/starter/plugins/no-console.grit",
       "includes": [
         "**/packages/*/src/**",
         "!**/packages/core/src/logger/local.ts",
@@ -53,7 +60,7 @@
       ]
     },
     {
-      "path": "plugins/no-process-io.grit",
+      "path": "templates/starter/plugins/no-process-io.grit",
       "includes": ["**/packages/*/src/**", "!**/packages/cli/**", "!**/*.test.ts", "!**/test-utils/**"]
     },
     // `no-z-config.grit` refuses Zod's global error map. It takes no exclusion at all — not even for
@@ -63,14 +70,14 @@
     // flake's clothes. Note the shape the two entries above live with: `"!**/*.test.ts"` does not
     // exclude a `.tsx`, so an exclusion list here would have been a hole rather than a scope.
     {
-      "path": "plugins/no-z-config.grit",
+      "path": "templates/starter/plugins/no-z-config.grit",
       "includes": ["**/packages/*/src/**"]
     },
     // `no-bare-zvalidator.grit` keeps every request schema readable by the OpenAPI contract.
     // `validation.ts` defines `validate` on top of `zValidator`, and its own test pins the difference
     // between the two, so both are the exceptions and nothing else is.
     {
-      "path": "plugins/no-bare-zvalidator.grit",
+      "path": "templates/starter/plugins/no-bare-zvalidator.grit",
       "includes": [
         "**/packages/*/src/**",
         "!**/packages/core/src/http/validation.ts",
@@ -80,7 +87,7 @@
     // `no-raw-use-effect.grit` keeps effects to the hooks that sync with something outside React. Each exclusion
     // below is one of them, named for the system it syncs with; tests are outside the rule.
     {
-      "path": "plugins/no-raw-use-effect.grit",
+      "path": "templates/starter/plugins/no-raw-use-effect.grit",
       "includes": [
         "**/packages/*/src/**",
         "**/packages/ui-react/templates/**",

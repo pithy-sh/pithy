@@ -8,9 +8,11 @@ import { BUILT_IN_PRIVACY_CLASSES, privacyClass } from "@pithy-sh/core/src/priva
 import { defineCommand, runCommand } from "citty";
 import { z } from "zod";
 import { withContract } from "../contract/commandContract";
-import { closeConsole } from "../privacy/closeConsole";
-import type { ConsoleGateReading } from "../privacy/consoleGate";
+import { type ClosedConsole, closeConsole } from "../privacy/closeConsole";
+import { type GateLinter, NO_CONSOLE_RULE, NO_LINTER_CONFIG } from "../privacy/consoleGate";
 import { declarePrivacyClasses } from "../privacy/declare";
+import type { ConsoleGateReading } from "../privacy/gateReading";
+import { OXLINT_NO_CONSOLE_RULE } from "../privacy/oxlintGate";
 import { ScanFinding, scanCapabilities } from "../privacy/scan";
 import { allCapabilities, loadProject, loadProjectPrivacy, loadWorkerConfig } from "../project/config";
 import { workerDirName } from "../project/workerIdentity";
@@ -21,7 +23,7 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
 import { dim } from "../terminal/style";
 
 /**
- * `pithy privacy` (#132): declare the privacy classes a project handles, and find the fields it has not marked.
+ * `pithy privacy`: declare the privacy classes a project handles, and find the fields it has not marked.
  * `docs/commands/privacy.md`, and `docs/PRIVACY.md` for what a class is.
  */
 
@@ -51,11 +53,18 @@ const ConsoleGate = z
   .object({
     state: z
       .enum(["enforced", "off", "unverifiable"])
-      .describe("`enforced`, `off` (deploy refuses), or `unverifiable` (no Biome config Pithy can read)."),
-    file: z.string().nullable().describe("The Biome config read, project-relative, or null when there is none."),
+      .describe("`enforced`, `off` (deploy refuses), or `unverifiable` (no linter config Pithy can read)."),
+    file: z
+      .string()
+      .nullable()
+      .describe(
+        "The linter config read, project-relative — both joined with ` and ` when the gate read two — or null when there is none.",
+      ),
     reason: z.string().nullable().describe("Why it is not enforced, in one sentence. Null when it is."),
   })
-  .describe("Whether `suspicious/noConsole` closes console in the project's Worker source.");
+  .describe(
+    "Whether Biome's `suspicious/noConsole` and Oxlint's `no-console` close console in the project's Worker source.",
+  );
 
 /** The gate reading as `--json` carries it. */
 function gateView(gate: ConsoleGateReading): z.output<typeof ConsoleGate> {
@@ -68,20 +77,33 @@ const PrivacyEnablePayload = z
     command: z.literal("privacy enable").describe('`"privacy enable"`.'),
     classes: z.array(z.string().describe("A class name.")).describe("Every class the root config now declares."),
     configChanged: z.boolean().describe("Whether the root `pithy.config.ts` was written. False on a re-run."),
-    biomeChanged: z.boolean().describe("Whether the Biome config was written. False when the rule was already on."),
+    biomeChanged: z
+      .boolean()
+      .describe("Whether the Biome config was written. False when the rule was already on, or there is none."),
+    oxlintChanged: z
+      .boolean()
+      .describe("Whether `.oxlintrc.json` was written. False when the rule was already on, or there is none."),
     consoleGate: ConsoleGate.describe("The console gate after this run, as `pithy deploy` will read it."),
   })
   .describe("What `pithy privacy enable` declared, and the console gate it left.");
 
-/** The human line for the gate after `enable`. */
-function gateLine(gate: ConsoleGateReading, written: boolean): string {
+/** The rule each linter's config names, as the line about a write says it. */
+const RULE_WRITTEN: Record<GateLinter, string> = { biome: NO_CONSOLE_RULE, oxlint: OXLINT_NO_CONSOLE_RULE };
+
+/** The human lines for the gate after `enable`: one per config written, then the gate. */
+export function gateLines(closed: ClosedConsole): string[] {
+  const { gate, written } = closed;
+  const lines = written.map(({ linter, file }) => `Wrote ${RULE_WRITTEN[linter]} into ${file}.`);
   if (gate.state === "enforced") {
-    return written
-      ? `Wrote suspicious/noConsole into ${gate.file}. Console is closed.`
-      : `Console is closed in ${gate.file}.`;
+    lines.push(written.length > 0 ? "Console is closed." : `Console is closed in ${gate.file}.`);
+  } else if (gate.state === "unverifiable" && gate.reason === NO_LINTER_CONFIG) {
+    lines.push(`Nothing was written. Console gate unverifiable. ${gate.reason} Deploy proceeds and reports it.`);
+  } else if (gate.state === "unverifiable") {
+    lines.push(`Console gate unverifiable. ${gate.reason} Deploy proceeds and reports it.`);
+  } else {
+    lines.push(`${gate.reason} Deploy refuses until it is \`error\`.`);
   }
-  if (gate.state === "unverifiable") return `Console gate unverifiable. ${gate.reason} Deploy proceeds and reports it.`;
-  return `${gate.reason} Deploy refuses until it is \`error\`.`;
+  return lines;
 }
 
 /** Ask which classes to declare, preselecting what is declared already. */
@@ -130,7 +152,7 @@ export async function classesToDeclare(
  *
  * Each config is read `fresh`. `pithy add audit` loads the target Worker's config before it wires audit in, then
  * offers privacy, and a yes there runs `enable`, which asks this — so a cached import is the config from before
- * audit was added, and the run would offer audit again (#273's reason, met on this path).
+ * audit was added, and the run would offer audit again.
  */
 export async function composesAudit(projectDir: string): Promise<boolean> {
   for (const worker of await discoverWorkers(projectDir)) {
@@ -184,7 +206,7 @@ export async function offerAudit(projectDir: string, seams: OfferSeams = {}): Pr
 }
 
 /**
- * The offer `pithy add audit` makes in return (#132): an audit trail and a privacy declaration answer halves of one
+ * The offer `pithy add audit` makes in return: an audit trail and a privacy declaration answer halves of one
  * question, so each command knows the other exists. Only when nothing is declared yet; declining changes nothing.
  */
 export async function offerPrivacy(projectDir: string, seams: OfferSeams = {}): Promise<void> {
@@ -226,7 +248,8 @@ const enable = withContract(
               command: "privacy enable",
               classes: declared.classes,
               configChanged: declared.changed,
-              biomeChanged: closed.written,
+              biomeChanged: closed.written.some((write) => write.linter === "biome"),
+              oxlintChanged: closed.written.some((write) => write.linter === "oxlint"),
               consoleGate: gateView(closed.gate),
             })}\n`,
           );
@@ -238,7 +261,7 @@ const enable = withContract(
             ? `Declared ${declared.classes.join(", ")} in ${configFile}.\n`
             : `Already declared: ${declared.classes.join(", ")}.\n`,
         );
-        process.stdout.write(`${gateLine(closed.gate, closed.written)}\n`);
+        for (const line of gateLines(closed)) process.stdout.write(`${line}\n`);
         if (interactive) await offerAudit(projectDir);
         process.stdout.write(`${formatDone()}\n`);
       }),
@@ -247,7 +270,7 @@ const enable = withContract(
     output: "document",
     schemaVersion: 1,
     payload: PrivacyEnablePayload,
-    // Writes the root config and the Biome config, and the same bytes on a re-run: both writers are no-ops then.
+    // Writes the root config and each linter config, and the same bytes on a re-run: every writer is a no-op then.
     mutates: true,
     idempotent: true,
     needsNetwork: false,

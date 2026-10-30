@@ -1252,6 +1252,11 @@ export const COMMANDS = {
         "required": false,
         "repeatable": false
       },
+      "--lint": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
       "--react-native": {
         "type": "boolean",
         "required": false,

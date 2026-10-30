@@ -7,7 +7,7 @@ import { bold, cyan, dim, heading } from "../terminal/style";
 import { HELP_GROUP_ORDER } from "./groups";
 
 /**
- * The root help screen — the one screen of help Pithy renders rather than hosts (#407).
+ * The root help screen — the one screen of help Pithy renders rather than hosts.
  *
  * citty listed twenty-six commands in declaration order under one heading, behind a `USAGE` line that
  * alternated every name before a single description appeared. Nothing on it said `email`, `media` and
@@ -118,7 +118,7 @@ export async function renderRootUsage<T extends ArgsDef = ArgsDef>(cmd: CommandD
 /**
  * Print the root screen. `showUsage`-shaped so `bin.ts` can hand one function to both of citty's paths.
  *
- * `process.stdout.write` rather than `console.log`: `plugins/no-console.grit` covers `packages/*​/src/**`
+ * `process.stdout.write` rather than `console.log`: `templates/starter/plugins/no-console.grit` covers `packages/*​/src/**`
  * and citty's own `showUsage` is a `console.log`, so copying it would fail the Lint job.
  */
 export async function showRootUsage<T extends ArgsDef = ArgsDef>(cmd: CommandDef<T>): Promise<void> {
@@ -126,7 +126,7 @@ export async function showRootUsage<T extends ArgsDef = ArgsDef>(cmd: CommandDef
   // installed as `runMain`'s `showUsage`, so it runs *inside* citty's `CLIError` handler. Rendering
   // resolves all twenty-seven command modules, and a module that rejects at import would throw out of that
   // handler — turning `pithy` and `pithy nonsense` into an unhandled-rejection stack instead of a help
-  // screen, which is the crash-banner failure #329 removed. stderr, and the run still ends.
+  // screen. stderr, and the run still ends.
   try {
     process.stdout.write(`${await renderRootUsage(cmd)}\n`);
   } catch (error) {

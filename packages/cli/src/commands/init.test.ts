@@ -13,6 +13,7 @@ import { expectConforms, runCaptured } from "../test-utils/payloadContract";
 import {
   askCloudflareAccount,
   askEnvironments,
+  askLinter,
   askReactNative,
   askTarget,
   DEFAULT_TARGET,
@@ -25,7 +26,7 @@ import {
 
 /**
  * `pithy init` is the one moment the adopter is holding the token, so it is the one moment the account
- * can be *discovered* rather than asked for (#206). Every case here drives the account listing and the
+ * can be *discovered* rather than asked for. Every case here drives the account listing and the
  * prompts through seams: the defaults reach Cloudflare with whatever token the operator's shell exports,
  * and a test that forgot would list their real accounts.
  */
@@ -349,7 +350,7 @@ describe("writeCloudflareBlock", () => {
 });
 
 /**
- * The environment question (#241). `name` has been asked at `init` and capped since the beginning,
+ * The environment question. `name` has been asked at `init` and capped since the beginning,
  * because it leads every Cloudflare name a project composes; the environment sits in the middle of the
  * same name, is measured against the same 33-character ceiling, and was asked about nowhere.
  */
@@ -415,7 +416,7 @@ describe("askEnvironments", () => {
 });
 
 /**
- * The origin point: a listing that could not happen is not a listing that came back empty (#378).
+ * The origin point: a listing that could not happen is not a listing that came back empty.
  *
  * Both used to reach `askAccountIdOnly` as `[]`, and the id typed under either became the
  * `CLOUDFLARE_ACCOUNT_ID` every later command asks about — so every confidently-empty listing downstream
@@ -469,7 +470,7 @@ describe("a listing that could not be made is not an empty listing", () => {
   });
 });
 
-/** A real scaffold, through the real command, held to the schema `pithy schema init` publishes (#697). */
+/** A real scaffold, through the real command, held to the schema `pithy schema init` publishes. */
 test("pithy init --json conforms to its published payload", async () => {
   const target = await mkdtemp(join(tmpdir(), "pithy-init-json-"));
   try {
@@ -481,7 +482,7 @@ test("pithy init --json conforms to its published payload", async () => {
 });
 
 /**
- * The agent instructions (#697): `init` writes the Pithy block into `AGENTS.md` and points `CLAUDE.md`
+ * The agent instructions: `init` writes the Pithy block into `AGENTS.md` and points `CLAUDE.md`
  * at it — creating each when the target has none, and merging into each when a cloned repository brought
  * its own. `project/agentInstructions.test.ts` holds the merge itself; these hold the command to calling it.
  */
@@ -522,7 +523,7 @@ describe("pithy init — agent instructions", () => {
 });
 
 /**
- * The app target (#719). `mobile` is the API alone and is what `init` scaffolded before it asked, so a
+ * The app target. `mobile` is the API alone and is what `init` scaffolded before it asked, so a
  * run that passes no flag is unchanged; `web` and `both` add a React front end to the first Worker.
  */
 describe("the app target", () => {
@@ -579,6 +580,64 @@ describe("the app target", () => {
 });
 
 /** The React Native offer: made to a mobile or both target, and never taken without a yes. */
+/** Which linter runs the kit's lint safeguards. `biome` is what `init` scaffolded before it asked. */
+describe("the linter", () => {
+  test("offers both linters, and takes the answer", async () => {
+    const select = vi.fn(async (options: { options: { value: string }[] }) => {
+      expect(options.options.map((option) => option.value)).toEqual(["biome", "oxlint"]);
+      return "oxlint";
+    });
+    expect(await askLinter({ interactive: true, prompt: prompts({ select }) })).toEqual({
+      value: "oxlint",
+      prompted: true,
+    });
+    expect(select).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Which linter runs the kit's lint rules?" }),
+    );
+  });
+
+  test("asks nothing without a human, and takes Biome", async () => {
+    expect(await askLinter({ interactive: false, prompt: prompts({}) })).toEqual({ value: "biome", prompted: false });
+  });
+
+  test("a canceled question aborts rather than scaffolding on half an answer", async () => {
+    const exit = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exited");
+    });
+    await expect(
+      askLinter({ interactive: true, prompt: prompts({ select: async () => Symbol("cancel") }) }),
+    ).rejects.toThrow("exited");
+    exit.mockRestore();
+  });
+
+  test("--lint oxlint writes the Oxlint plugin and its config, and --json says which linter", async () => {
+    const target = join(dir, "oxlint");
+    const written = await runCaptured("init", ["--dir", target, "--name", "acme", "--lint", "oxlint", "--json"]);
+    await expectConforms("init", written);
+    expect(JSON.parse(written.join(""))).toMatchObject({ lint: "oxlint" });
+    expect(await readFile(join(target, ".oxlintrc.json"), "utf8")).toContain("./plugins/pithy.oxlint.js");
+    await expect(readFile(join(target, "plugins", "no-console.grit"), "utf8")).rejects.toThrow();
+  });
+
+  test("no flag is Biome, with all six Grit rules", async () => {
+    const target = join(dir, "biome");
+    const written = await runCaptured("init", ["--dir", target, "--name", "acme", "--json"]);
+    expect(JSON.parse(written.join(""))).toMatchObject({ lint: "biome" });
+    expect(await readFile(join(target, "plugins", "no-raw-use-effect.grit"), "utf8")).toContain("useEffect");
+    await expect(readFile(join(target, ".oxlintrc.json"), "utf8")).rejects.toThrow();
+  });
+
+  test("an unknown --lint is refused before anything is scaffolded", async () => {
+    const target = join(dir, "eslint");
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exited");
+    });
+    await runCaptured("init", ["--dir", target, "--name", "acme", "--lint", "eslint", "--json"]).catch(() => undefined);
+    await expect(readFile(join(target, "pithy.config.ts"), "utf8")).rejects.toThrow();
+  });
+});
+
 describe("the React Native offer", () => {
   test("asks a mobile or both target, defaulting to no, and takes the answer", async () => {
     for (const target of ["mobile", "both"] as const) {
@@ -767,7 +826,7 @@ describe("the React Native offer", () => {
   });
 });
 
-/** `pithy init`'s two shell questions: the shortcut, then completion (#765). */
+/** `pithy init`'s two shell questions: the shortcut, then completion. */
 describe("offerShell", () => {
   const TERMINAL = { stdin: { isTTY: true }, stdout: { isTTY: true } };
 

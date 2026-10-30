@@ -1,0 +1,23 @@
+// Your route contract's gate. Scoped by the `includes` beside its entry in biome.jsonc.
+//
+// A route declares what it accepts on the route line, with `validate("param" | "query" | "json", Schema)` from
+// `@pithy-sh/core/src/http/validation`, and reads it back with `c.req.valid(target)`. With the raw accessors
+// refused, `c.req.valid()` is the only way to reach request input, so an unvalidated query or body is not merely
+// discouraged — it is unreadable.
+//
+// Not matched: `c.req.header(...)`, `c.req.raw`, `c.req.url` and `c.req.valid(...)`. A header has no schema to
+// declare, and `c.req.raw` is how a handler hands the untouched request to a library that reads it itself.
+//
+// This file is yours. Narrow the `includes` in biome.jsonc, widen them, or delete both the entry and this file.
+language js
+
+or {
+  `$_.req.param($...)`,
+  `$_.req.param<$_>($...)`,
+  `$_.req.query($...)`,
+  `$_.req.query<$_>($...)`,
+  `$_.req.json($...)`,
+  `$_.req.json<$_>($...)`
+} as $call where {
+  register_diagnostic(span=$call, message="Request input is read raw here. Declare it on the route line with validate(target, Schema) and read it with c.req.valid(target).")
+}
