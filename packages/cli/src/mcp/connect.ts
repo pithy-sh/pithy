@@ -11,7 +11,7 @@ import { ensureScaffoldPath, pathExists } from "../project/scaffold";
 import { MCP_CLIENTS, type McpClient, type McpClientId, type Scope, scopesOf } from "./clients";
 import type { DocumentWriter, MergeOutcome, RemoveOutcome } from "./document";
 import type { HomeOptions } from "./home";
-import { resolveUnder } from "./home";
+import { movedDirectory, resolveUnder } from "./home";
 import { jsonWriter } from "./json";
 import { tomlWriter } from "./toml";
 import { yamlWriter } from "./yaml";
@@ -41,6 +41,11 @@ export interface McpOptions {
   readonly projectDir: string;
   /** How the operator's own directories resolve. Every term injectable, so a test never reaches a real home. */
   readonly home?: HomeOptions;
+  /**
+   * The directory `--config-dir` named, absolute, winning over a row's config-dir variable. The command
+   * sets it only for one client whose row declares a variable; every other row ignores it.
+   */
+  readonly configDir?: string;
 }
 
 /** One client, one scope, and the file that pair names here. */
@@ -56,7 +61,8 @@ export interface Target {
    *
    * A project path is composed from a root the operator did not choose — a repository they cloned — so
    * every segment of it is content somebody else wrote, and {@link contained} holds it to that root. A
-   * user path has no such root: it is `$HOME`, and the operator owns every link in it.
+   * user path has no such root: it is `$HOME`, or the directory a config-dir variable or `--config-dir`
+   * names, and the operator owns every link in it.
    */
   readonly root: string | null;
 }
@@ -141,11 +147,21 @@ function platformOf(options: McpOptions): "linux" | "darwin" | "win32" {
 }
 
 /**
+ * The directory a client's user configuration was moved to — `--config-dir`, then the row's own variable — or
+ * `undefined` when nothing moved it, which is a row with no variable or a shell that exports none.
+ */
+export function configDirOf(client: McpClient, options: McpOptions): string | undefined {
+  if (client.configDir === undefined) return undefined;
+  return options.configDir ?? movedDirectory(client.configDir.variable, options.home);
+}
+
+/**
  * The file a client and scope name on this machine.
  *
  * A project path is joined onto `projectDir` and a user path onto whichever base its row declared for
- * this platform. Asking for a scope a client does not declare is a programming error rather than an
- * operator's mistake — `scopesOf` is what a caller filters by — so it throws rather than returning null.
+ * this platform, unless {@link configDirOf} says the client's configuration was moved. Asking for a scope
+ * a client does not declare is a programming error rather than an operator's mistake — `scopesOf` is what
+ * a caller filters by — so it throws rather than returning null.
  */
 export function targetFor(client: McpClient, scope: Scope, options: McpOptions): Target {
   if (scope === "project") {
@@ -159,7 +175,12 @@ export function targetFor(client: McpClient, scope: Scope, options: McpOptions):
     }
     return { client, scope, path: join(options.projectDir, ...client.project), root: options.projectDir };
   }
-  return { client, scope, path: resolveUnder(client.user[platformOf(options)], options.home), root: null };
+  const moved = configDirOf(client, options);
+  const path =
+    moved !== undefined && client.configDir !== undefined
+      ? join(moved, ...client.configDir.user)
+      : resolveUnder(client.user[platformOf(options)], options.home);
+  return { client, scope, path, root: null };
 }
 
 /** Every target a client declares, in scope order. */
@@ -178,7 +199,9 @@ export function targetsFor(client: McpClient, options: McpOptions): Target[] {
  * TOCTOU it opens in every module that has ever done both.
  */
 export async function isInstalled(client: McpClient, options: McpOptions): Promise<boolean> {
-  return pathExists(resolveUnder(client.detect[platformOf(options)], options.home));
+  // A moved directory is the detection path itself: the profile in use is where the tool is, and a fixed
+  // path under home that still exists belongs to some other profile.
+  return pathExists(configDirOf(client, options) ?? resolveUnder(client.detect[platformOf(options)], options.home));
 }
 
 /** Every installed client, in registry order. */
@@ -212,8 +235,8 @@ export function snippetFor(client: McpClient): string {
  * **Reported rather than thrown**, on the same reasoning as `devSecrets/generate.ts`: one planted link in
  * a checkout must cost that client its line, not the other nine theirs.
  *
- * A user path is not gated. There is no root to contain it to — it *is* the operator's home — and every
- * link on the way there is one they made.
+ * A user path is not gated. There is no root to contain it to — it is the operator's home, or the directory
+ * their config-dir variable or `--config-dir` names — and every link on the way there is one they made.
  */
 async function contained(target: Target): Promise<string | null> {
   if (target.root === null) return null;

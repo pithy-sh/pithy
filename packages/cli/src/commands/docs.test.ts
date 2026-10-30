@@ -13,7 +13,7 @@ import type { HomeOptions, PathBase } from "../mcp/home";
 import { EXIT } from "../terminal/exitClass";
 import { latchInputMode } from "../terminal/inputMode";
 import { expectConforms } from "../test-utils/payloadContract";
-import docs, { offerDocs, requireScopeAnswerable } from "./docs";
+import docs, { offerDocs, requireConfigDir, requireScopeAnswerable } from "./docs";
 
 /**
  * `pithy docs connect | disconnect | status`, exercised as the operator runs them.
@@ -44,6 +44,11 @@ vi.mock("../mcp/home", async (importOriginal) => {
     baseDirectory: (base: PathBase, options?: HomeOptions) => actual.baseDirectory(base, injected(options)),
     resolveUnder: (path: { base: PathBase; segments: readonly string[] }, options?: HomeOptions) =>
       actual.resolveUnder(path, injected(options)),
+    // The environment is injected too, as the suite left it: `beforeEach` clears both variables that move a
+    // client's file, so the developer's own `CLAUDE_CONFIG_DIR` never reaches a resolution, and a test that
+    // wants one sets it.
+    movedDirectory: (variable: string, options?: HomeOptions) =>
+      actual.movedDirectory(variable, { env: process.env, ...injected(options) }),
   };
 });
 
@@ -108,6 +113,7 @@ let home: string;
 let project: string;
 let savedHome: string | undefined;
 let savedXdg: string | undefined;
+let savedMoved: Record<"CLAUDE_CONFIG_DIR" | "CODEX_HOME", string | undefined>;
 let savedCwd: string;
 let savedStdin: boolean | undefined;
 let savedStdout: boolean | undefined;
@@ -222,6 +228,11 @@ beforeEach(async () => {
   // Zed and Goose resolve through XDG on both Unixes, so a developer who exports one would otherwise
   // have those two clients land outside the fake home entirely.
   process.env.XDG_CONFIG_HOME = join(home, ".config");
+  // The two variables that move a client's user file. Exported in a developer's shell — a second Claude Code
+  // profile is exactly that — they would carry every Claude Code and Codex path out of the fake home.
+  savedMoved = { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, CODEX_HOME: process.env.CODEX_HOME };
+  delete process.env.CLAUDE_CONFIG_DIR;
+  delete process.env.CODEX_HOME;
   savedCwd = process.cwd();
   process.chdir(project);
   // The prompt path is a human being, and no test here is one. Both streams say so explicitly rather
@@ -243,6 +254,10 @@ afterEach(async () => {
   else process.env.HOME = savedHome;
   if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
   else process.env.XDG_CONFIG_HOME = savedXdg;
+  for (const [name, value] of Object.entries(savedMoved)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
   (process.stdin as { isTTY?: boolean }).isTTY = savedStdin;
   (process.stdout as { isTTY?: boolean }).isTTY = savedStdout;
   await rm(home, { recursive: true, force: true });
@@ -807,5 +822,245 @@ describe("requireScopeAnswerable", () => {
         payload: expect.objectContaining({ code: "input/required", flag: "--scope", choices: ["project", "user"] }),
       }),
     );
+  });
+});
+
+/**
+ * A second profile. Claude Code reads `$CLAUDE_CONFIG_DIR/.claude.json` and Codex `$CODEX_HOME/config.toml`
+ * when the shell exports them, so the write follows the variable — and `--config-dir` names a profile outright.
+ *
+ * Every directory here is under the throwaway home, and the variables are set by the test itself: `beforeEach`
+ * has already cleared whatever the developer's shell exported.
+ */
+describe("pithy docs follows the variable that moves a client's user file", () => {
+  /** A written entry's path, out of one `--json` line. */
+  function writtenPaths(out: string): Record<string, string> {
+    const payload = JSON.parse(oneLine(out)) as { written: { client: string; path: string }[] };
+    return Object.fromEntries(payload.written.map((entry) => [entry.client, entry.path]));
+  }
+
+  test("with CLAUDE_CONFIG_DIR set, the user write lands in that profile's `.claude.json`", async () => {
+    const profile = join(home, ".claude-work");
+    process.env.CLAUDE_CONFIG_DIR = profile;
+    const { out, err } = await run("connect", { client: "claude-code", scope: "user", json: true });
+    expect(err).toBe("");
+    expect(writtenPaths(out)).toEqual({ "claude-code": join(profile, ".claude.json") });
+    expect(await readFile(join(profile, ".claude.json"), "utf8")).toContain(DOCS_MCP_URL);
+    expect(existsSync(join(home, ".claude.json"))).toBe(false);
+  });
+
+  test("--print reports the moved path, and writes nothing", async () => {
+    const profile = join(home, ".claude-work");
+    process.env.CLAUDE_CONFIG_DIR = profile;
+    const { out } = await run("connect", { print: true, client: "claude-code", scope: "user", json: true });
+    const payload = JSON.parse(oneLine(out)) as { printed: { path: string } };
+    expect(payload.printed.path).toBe(join(profile, ".claude.json"));
+    expect(readdirSync(home)).toEqual([]);
+  });
+
+  test("with CODEX_HOME set, the codex user write lands in `$CODEX_HOME/config.toml`", async () => {
+    const profile = join(home, "codex-work");
+    process.env.CODEX_HOME = profile;
+    const { out } = await run("connect", { client: "codex", scope: "user", json: true });
+    expect(writtenPaths(out)).toEqual({ codex: join(profile, "config.toml") });
+    expect(await readFile(join(profile, "config.toml"), "utf8")).toContain(DOCS_MCP_URL);
+    expect(existsSync(join(home, ".codex"))).toBe(false);
+  });
+
+  test("--all finds a client that lives only in the moved directory", async () => {
+    // No `~/.codex` at all: the profile in use is the only place Codex is, and detection has to look there.
+    const profile = join(home, "codex-work");
+    await mkdir(profile, { recursive: true });
+    process.env.CODEX_HOME = profile;
+    const { out } = await run("connect", { all: true, scope: "user", json: true });
+    expect(writtenPaths(out)).toEqual({ codex: join(profile, "config.toml") });
+  });
+
+  test("an empty variable resolves exactly as an unset one", async () => {
+    process.env.CLAUDE_CONFIG_DIR = "";
+    const { out } = await run("connect", { client: "claude-code", scope: "user", json: true });
+    expect(writtenPaths(out)).toEqual({ "claude-code": join(home, ".claude.json") });
+  });
+
+  test("--config-dir wins over the variable, for connect and for --print", async () => {
+    process.env.CLAUDE_CONFIG_DIR = join(home, ".claude-exported");
+    const named = join(home, ".claude-named");
+    await mkdir(named, { recursive: true });
+    const printed = await run("connect", {
+      print: true,
+      client: "claude-code",
+      scope: "user",
+      "config-dir": named,
+      json: true,
+    });
+    expect((JSON.parse(oneLine(printed.out)) as { printed: { path: string } }).printed.path).toBe(
+      join(named, ".claude.json"),
+    );
+    const written = await run("connect", { client: "claude-code", scope: "user", "config-dir": named, json: true });
+    expect(writtenPaths(written.out)).toEqual({ "claude-code": join(named, ".claude.json") });
+    expect(existsSync(join(home, ".claude-exported"))).toBe(false);
+  });
+
+  test("disconnect takes the entry out of the same file, by the variable or by --config-dir", async () => {
+    const profile = join(home, ".claude-work");
+    process.env.CLAUDE_CONFIG_DIR = profile;
+    await run("connect", { client: "claude-code", scope: "user" });
+    const byVariable = await run("disconnect", { client: "claude-code", scope: "user" });
+    expect(byVariable.out.trimEnd().split("\n")[0]).toBe(`Claude Code  removed  ${join(profile, ".claude.json")}`);
+
+    delete process.env.CLAUDE_CONFIG_DIR;
+    await run("connect", { client: "claude-code", scope: "user", "config-dir": profile });
+    const byFlag = await run("disconnect", { client: "claude-code", scope: "user", "config-dir": profile });
+    expect(byFlag.out.trimEnd().split("\n")[0]).toBe(`Claude Code  removed  ${join(profile, ".claude.json")}`);
+  });
+
+  test("status reads the moved file, and an entry only in `~/.claude.json` is not the profile in use", async () => {
+    await run("connect", { client: "claude-code", scope: "user" });
+    const profile = join(home, ".claude-work");
+    process.env.CLAUDE_CONFIG_DIR = profile;
+    const { out } = await run("status", { json: true });
+    const payload = JSON.parse(oneLine(out)) as {
+      clients: { client: string; scopes: { scope: string; path: string; connected: boolean }[] }[];
+    };
+    const user = payload.clients
+      .find((client) => client.client === "claude-code")
+      ?.scopes.find((scope) => scope.scope === "user");
+    expect(user).toEqual(expect.objectContaining({ path: join(profile, ".claude.json"), connected: false }));
+  });
+});
+
+describe("--config-dir is refused wherever it could not mean one profile", () => {
+  test.each([
+    ["with --all", { all: true, scope: "user" }, "--config-dir names one client's profile, so it needs --client."],
+    [
+      "with no scope",
+      { client: "claude-code" },
+      "--config-dir moves the user configuration, so it needs --scope user.",
+    ],
+    [
+      "with the project scope",
+      { client: "codex", scope: "project" },
+      "--config-dir moves the user configuration, so it needs --scope user.",
+    ],
+    [
+      "for a client no variable moves",
+      { client: "cursor", scope: "user" },
+      "Cursor keeps its user configuration in one place, so --config-dir does not apply.",
+    ],
+  ])("%s, as a usage error, before anything is written", async (_case, args, message) => {
+    for (const sub of ["connect", "disconnect"] as const) {
+      const { out, err, exitCode } = await run(sub, { ...args, "config-dir": join(home, "profile"), json: true });
+      expect(out).toBe("");
+      expect(exitCode).toBe(EXIT.usage);
+      const line = JSON.parse(err) as { error: { code: string; message: string } };
+      expect(line.error).toEqual(expect.objectContaining({ code: "validation/invalid_input", message }));
+    }
+    expect(readdirSync(home)).toEqual([]);
+    expect(readdirSync(project)).toEqual([]);
+  });
+
+  test("--print holds the same line — it prints a path, and the path has to be one profile's", async () => {
+    const { err, exitCode } = await run("connect", {
+      print: true,
+      client: "cursor",
+      scope: "user",
+      "config-dir": join(home, "profile"),
+    });
+    expect(exitCode).toBe(EXIT.usage);
+    expect(err).toContain("Cursor keeps its user configuration in one place, so --config-dir does not apply.");
+  });
+});
+
+describe("requireConfigDir", () => {
+  test("no flag is no override", () => {
+    expect(requireConfigDir({ client: "cursor" })).toBeUndefined();
+  });
+
+  test("a client a variable moves, in the user scope, takes the directory — absolute", async () => {
+    await mkdir(join(home, "p"), { recursive: true });
+    await mkdir(join(process.cwd(), "p"), { recursive: true });
+    expect(requireConfigDir({ "config-dir": join(home, "p"), client: "claude-code", scope: "user" })).toBe(
+      join(home, "p"),
+    );
+    expect(requireConfigDir({ "config-dir": "p", client: "codex", scope: "user" })).toBe(join(process.cwd(), "p"));
+  });
+
+  test("a blank directory is refused rather than read as the current one", () => {
+    expect(() => requireConfigDir({ "config-dir": " ", client: "codex", scope: "user" })).toThrow(
+      "--config-dir needs a directory.",
+    );
+  });
+
+  test("an unknown client is refused with the clients the flag applies to", () => {
+    expect(() => requireConfigDir({ "config-dir": "p", client: "emacs", scope: "user" })).toThrow(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          code: "validation/invalid_input",
+          message: "No client called emacs.",
+          action: "Pass --client claude-code or --client codex with it, or drop --config-dir.",
+        }),
+      }),
+    );
+  });
+
+  test("a leading ~ is refused: the shell left it, and resolved as written it is a directory inside the project", () => {
+    expect(() => requireConfigDir({ "config-dir": "~/.claude-work", client: "claude-code", scope: "user" })).toThrow(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          code: "validation/invalid_input",
+          message: "--config-dir ~/.claude-work starts with ~, which the shell did not expand.",
+          action: "Pass the full path, or $HOME in place of the ~.",
+        }),
+      }),
+    );
+    expect(existsSync(join(process.cwd(), "~"))).toBe(false);
+  });
+
+  test("a directory that is not there is refused, because a profile's directory is there once it has run", () => {
+    const missing = join(home, ".claude-wrok");
+    expect(() => requireConfigDir({ "config-dir": missing, client: "claude-code", scope: "user" })).toThrow(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          code: "validation/invalid_input",
+          message: `There is no directory at ${missing}.`,
+        }),
+      }),
+    );
+  });
+
+  test("a file where the directory should be is refused the same way", async () => {
+    const file = join(home, "codex-home");
+    await writeFile(file, "");
+    expect(() => requireConfigDir({ "config-dir": file, client: "codex", scope: "user" })).toThrow(
+      `There is no directory at ${file}.`,
+    );
+  });
+});
+
+describe("which refusal a run with several mistakes hears first", () => {
+  test("a bad --scope is named before anything --config-dir has to say", async () => {
+    for (const sub of ["connect", "disconnect"] as const) {
+      const { err, exitCode } = await run(sub, { client: "cursor", scope: "global", "config-dir": "~/x" });
+      expect(exitCode).toBe(EXIT.usage);
+      expect(err).toContain("--scope takes project or user, not global.");
+    }
+  });
+
+  test("--client beside --all is named before anything --config-dir has to say", async () => {
+    for (const sub of ["connect", "disconnect"] as const) {
+      const { err, exitCode } = await run(sub, { client: "cursor", all: true, scope: "user", "config-dir": "~/x" });
+      expect(exitCode).toBe(EXIT.usage);
+      expect(err).toContain("Pass either --client or --all, not both.");
+    }
+  });
+
+  test("with the scope and the target sound, --config-dir's own refusal is the one heard", async () => {
+    for (const sub of ["connect", "disconnect"] as const) {
+      const missing = join(home, "nowhere");
+      const { err, exitCode } = await run(sub, { client: "claude-code", scope: "user", "config-dir": missing });
+      expect(exitCode).toBe(EXIT.usage);
+      expect(err).toContain(`There is no directory at ${missing}.`);
+    }
+    expect(readdirSync(home)).toEqual([]);
   });
 });

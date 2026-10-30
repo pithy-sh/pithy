@@ -889,6 +889,11 @@ export const COMMANDS = {
           "user"
         ]
       },
+      "--config-dir": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
       "--print": {
         "type": "boolean",
         "required": false,
@@ -907,6 +912,15 @@ export const COMMANDS = {
           "--client",
           "--all"
         ]
+      },
+      {
+        "kind": "requires",
+        "flag": "--config-dir",
+        "needs": [
+          "--client",
+          "--scope"
+        ],
+        "any": false
       }
     ]
   },
@@ -944,6 +958,11 @@ export const COMMANDS = {
           "user"
         ]
       },
+      "--config-dir": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
       "--json": {
         "type": "boolean",
         "required": false,
@@ -957,6 +976,15 @@ export const COMMANDS = {
           "--client",
           "--all"
         ]
+      },
+      {
+        "kind": "requires",
+        "flag": "--config-dir",
+        "needs": [
+          "--client",
+          "--scope"
+        ],
+        "any": false
       }
     ]
   },

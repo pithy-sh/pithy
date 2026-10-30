@@ -135,6 +135,20 @@ describe("the client registry", () => {
     expect(withPreamble).toEqual(["continue"]);
   });
 
+  test("exactly Claude Code and Codex declare the variable that moves their user configuration", () => {
+    // The names are the vendors' own. A row that grew one by guesswork would follow a variable its tool
+    // never reads, and send the entry somewhere nobody looks.
+    const moved = MCP_CLIENTS.filter((client) => client.configDir !== undefined).map((client) => [
+      client.id,
+      client.configDir?.variable,
+      client.configDir?.user,
+    ]);
+    expect(moved).toEqual([
+      ["claude-code", "CLAUDE_CONFIG_DIR", [".claude.json"]],
+      ["codex", "CODEX_HOME", ["config.toml"]],
+    ]);
+  });
+
   test("scopesOf follows the project column, and a project-less client is user-only", () => {
     expect(scopesOf(clientById("cursor") as McpClient)).toEqual(["project", "user"]);
     expect(scopesOf(clientById("goose") as McpClient)).toEqual(["user"]);

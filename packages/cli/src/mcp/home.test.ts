@@ -4,7 +4,7 @@
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
-import { baseDirectory, resolveUnder } from "./home";
+import { baseDirectory, movedDirectory, resolveUnder } from "./home";
 
 const HOME = join("/", "home", "you");
 
@@ -62,6 +62,38 @@ describe("resolveUnder", () => {
   });
 });
 
+describe("movedDirectory", () => {
+  test("is the variable's directory when the shell exports one", () => {
+    const env = { CODEX_HOME: join("/", "profiles", "work") };
+    expect(movedDirectory("CODEX_HOME", { env, homedir: HOME })).toBe(join("/", "profiles", "work"));
+  });
+
+  test("an unset or blank variable moves nothing", () => {
+    expect(movedDirectory("CODEX_HOME", { env: {}, homedir: HOME })).toBeUndefined();
+    expect(movedDirectory("CODEX_HOME", { env: { CODEX_HOME: "" }, homedir: HOME })).toBeUndefined();
+    expect(movedDirectory("CODEX_HOME", { env: { CODEX_HOME: "  " }, homedir: HOME })).toBeUndefined();
+  });
+
+  test("a relative value is made absolute, because every path this module answers with is", () => {
+    expect(movedDirectory("CLAUDE_CONFIG_DIR", { env: { CLAUDE_CONFIG_DIR: "profile" }, homedir: HOME })).toBe(
+      join(process.cwd(), "profile"),
+    );
+  });
+
+  test("reads only the injected environment, never the operator's own", () => {
+    // The variable is the operator's live profile: a test that fell through to `process.env` would
+    // resolve — and one day write — the file their running Claude Code reads.
+    const saved = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = join("/", "operator", "profile");
+    try {
+      expect(movedDirectory("CLAUDE_CONFIG_DIR", { env: {}, homedir: HOME })).toBeUndefined();
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = saved;
+    }
+  });
+});
+
 describe("the refusal that keeps a test off the operator's own machine", () => {
   test("refuses under vitest when no home was injected, naming the seam to pass", () => {
     // No `homedir`, and no injected `env` — the answer would be this developer's real home, and the
@@ -74,6 +106,19 @@ describe("the refusal that keeps a test off the operator's own machine", () => {
     }
     expect(raised).toBeInstanceOf(PithyError);
     expect((raised as PithyError).payload.message).toContain("real home directory");
+  });
+
+  test("refuses a moved directory under vitest when no environment was injected", () => {
+    // An injected home is not enough here. `CLAUDE_CONFIG_DIR` in the developer's own shell would move
+    // the write out of the throwaway home and into the profile their running agent reads.
+    let raised: unknown;
+    try {
+      movedDirectory("CLAUDE_CONFIG_DIR", { homedir: HOME });
+    } catch (error) {
+      raised = error;
+    }
+    expect(raised).toBeInstanceOf(PithyError);
+    expect((raised as PithyError).payload.message).toContain("real environment");
   });
 
   test("an injected home is answered without complaint", () => {
