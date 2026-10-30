@@ -105,7 +105,8 @@ One line on stdout.
 ```console
 $ pithy privacy enable --class pii --class phi
 Declared pii, phi in pithy.config.ts.
-Wrote suspicious/noConsole into biome.jsonc. Console is closed.
+Wrote suspicious/noConsole into biome.jsonc.
+Console is closed.
 Done.
 ```
 
