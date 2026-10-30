@@ -17,8 +17,8 @@ import { removeTempDir } from "../test-utils/tempRepo";
 import { snapshotTree } from "../test-utils/treeSnapshot";
 
 /**
- * **`pithy deploy --dry-run` reports Pithy's plan, then runs `wrangler deploy --dry-run`, and uploads nothing
- * (#697)** — the real command, in a scaffolded project. Two seams are replaced, and only to observe them: the
+ * **`pithy deploy --dry-run` reports Pithy's plan, then runs `wrangler deploy --dry-run`, and uploads
+ * nothing** — the real command, in a scaffolded project. Two seams are replaced, and only to observe them: the
  * Cloudflare clients, by one that answers reads and records every write, and the wrangler spawn, by one that
  * records each argv in the order it was asked. The migration read is replaced by a list, because what it reads
  * is `migrations/dryRun.test.ts`'s subject; here it is asked when, and what the plan says about its answer.
@@ -79,7 +79,7 @@ beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "pithy-deploy-dry-"));
   await scaffoldProject({ targetDir: dir, appName: "acme", worker: "api" });
   await linkKitPackages(dir, ["core"]);
-  // The origin a staging deploy refuses without (#253), so the one refusal a case varies is its own.
+  // The origin a staging deploy refuses without, so the one refusal a case varies is its own.
   await editStaging('"WORKER": "api"', '"WORKER": "api",\n        "BASE_URL": "https://staging.acme.example"');
   await editStaging(
     '"version_metadata"',
@@ -127,7 +127,7 @@ describe("pithy deploy --env staging --dry-run", () => {
       "1 migration unapplied for staging: 1000_app_0001_things. Deploy does not migrate — run pithy migrate --env staging.",
     ]);
     // Pithy's plan first, then wrangler — and every wrangler it ran was a dry run.
-    // The privacy attestation rides on the same argv as the real deploy's (#132): a project declaring nothing
+    // The privacy attestation rides on the same argv as the real deploy's: a project declaring nothing
     // attests exactly that, so its manifest can say so rather than read as never attested.
     expect(observed.order).toEqual([
       "migrations",
@@ -157,7 +157,7 @@ describe("pithy deploy --env staging --dry-run", () => {
   });
 
   /**
-   * **A dry run makes the refusal the real run makes (#697).** A binding with no id is a deploy that would not
+   * **A dry run makes the refusal the real run makes.** A binding with no id is a deploy that would not
    * happen, so a plan of it would be a promise nobody can keep. Under `--json` the answer is the one error line a
    * refused run writes, on stderr, carrying its exit class and the command that rights it — never a success-shaped
    * document on stdout beside an exit 3 nobody explained. Refused before anything is built, as the run is.
@@ -223,7 +223,7 @@ describe("pithy deploy --env staging --dry-run", () => {
 });
 
 /**
- * **The console gate, through the real command (#132).** A scaffolded project lints with the starter's
+ * **The console gate, through the real command.** A scaffolded project lints with the starter's
  * `biome.jsonc`, which states no `suspicious/noConsole` — so declaring a class closes nothing until
  * `pithy privacy enable` writes the rule, and deploy refuses in between. Asked under `--dry-run`, because the
  * refusal is the deploy's own and a dry run makes it exactly as the deploy would.
@@ -273,13 +273,13 @@ describe("pithy deploy and the console gate", () => {
     );
   });
 
-  test("with no Biome config, deploys and attests unverifiable with the reason, never enforced", async () => {
+  test("with no linter config, deploys and attests unverifiable with the reason, never enforced", async () => {
     await declare(["phi"]);
     await rm(join(dir, "biome.jsonc"));
     const written = await runCaptured("deploy", ["--env", "staging", "--apps", "--dry-run", "--json"]);
     const payload = JSON.parse(written.join(""));
     expect(payload.privacy).toMatchObject({ declared: ["phi"], consoleGate: "unverifiable" });
-    expect(payload.privacy.reason).toContain("No biome.json or biome.jsonc");
+    expect(payload.privacy.reason).toContain("No biome.json, biome.jsonc or .oxlintrc.json");
     expect(observed.order.find((entry) => entry.startsWith("wrangler"))).toContain('"consoleGate":"unverifiable"');
   });
 

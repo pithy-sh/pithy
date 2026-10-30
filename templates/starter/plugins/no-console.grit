@@ -1,4 +1,4 @@
-// Your project's logging gate. Scoped by biome.jsonc to each Worker's own `.ts` source.
+// Your project's logging gate. Scoped by the `includes` beside its entry in biome.jsonc.
 //
 // A console line carries no level, no logger name, and no request id. Workers Logs cannot filter it,
 // and nothing downstream can key on it — so it is output you can read once, live, and never again.

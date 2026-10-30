@@ -30,7 +30,7 @@ export type LayersFor = (locale: string) => readonly (MessageCatalog | undefined
  * ## Why the query string is read off the URL here, and not through `validate`
  *
  * §HTTP's rule is that a route declares its request contract on the route line and a handler reads
- * `c.req.valid(target)`; `plugins/no-raw-request-input.grit` enforces it by making the raw accessors
+ * `c.req.valid(target)`; `templates/starter/plugins/no-raw-request-input.grit` enforces it by making the raw accessors
  * unreadable under every capability's `src/http/` tree. This is a **global middleware over every route**, so there
  * is no route line to declare a validator on and no handler to hand a typed value to — the rule's
  * replacement does not exist at this position.

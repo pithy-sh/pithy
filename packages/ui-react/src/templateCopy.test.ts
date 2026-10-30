@@ -18,7 +18,7 @@ import { TEMPLATE_DIR } from "./templates";
  *
  * ## Why this is a sweep and not a GritQL plugin
  *
- * The obvious tool is a Biome plugin — `plugins/no-raw-request-input.grit` is the same shape one level
+ * The obvious tool is a Biome plugin — `templates/starter/plugins/no-raw-request-input.grit` is the same shape one level
  * over. It does not work here, and the reason is specific rather than general: **GritQL's `JsxText()`
  * matches the text between tags and nothing else.** It never sees
  *

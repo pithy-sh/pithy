@@ -1,0 +1,22 @@
+// Your per-request locale's gate. Scoped by the `includes` beside its entry in biome.jsonc.
+//
+// `z.config({ localeError: … })` sets Zod's error map globally, on the module. A Worker isolate is reused across
+// requests, so a locale written into the global on one request is still there on the next, and that request's
+// validation failure renders in the first one's language. Pass the map per parse instead —
+// `Schema.parse(value, { error })`, or the same option on `safeParse` — so each parse renders in the language of
+// the request that made it.
+//
+// Leave tests inside its scope: a test that calls `z.config` poisons every other file sharing its worker.
+//
+// The match is the member access rather than the call, so `queueMicrotask(z.config)` is caught alongside
+// `z.config(...)`. A call contains the member access, so each site still reports exactly once.
+//
+// This file is yours. Narrow the `includes` in biome.jsonc, widen them, or delete both the entry and this file.
+language js
+
+or {
+  `z.config`,
+  `zod.config`
+} as $ref where {
+  register_diagnostic(span=$ref, message="z.config sets Zod's error map globally, and a Worker isolate outlives the request. A locale written there renders the NEXT request's validation failure in the LAST request's language. Pass the map per parse instead: Schema.parse(value, { error }).")
+}

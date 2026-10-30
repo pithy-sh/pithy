@@ -22,13 +22,13 @@ pithy privacy scan [--json]
 
 ### `pithy privacy enable`
 
-Writes the root `pithy.config.ts` key, `privacy: { classes: [...] }`, and closes `console` in the project's Biome config. It needs no prompt when `--class` is passed, and a re-run writes nothing.
+Writes the root `pithy.config.ts` key, `privacy: { classes: [...] }`, and closes `console` in each linter config the project root holds: `biome.jsonc` or `biome.json`, and `.oxlintrc.json`. It needs no prompt when `--class` is passed, and a re-run writes nothing.
 
 **The classes are added, never replaced.** `--class phi` on a project that declares `pii` declares both. Narrowing a declaration is an edit you make by hand.
 
 **It writes literals in place.** The object the root config default-exports is found — `export default { … }`, or `export default config` over a `const config = { … }`, which is the starter's shape — and the key is added, or the starter's commented-out example uncommented. A `privacy` value that is an expression is never flattened: the run is refused, naming the line to write by hand, before a byte changes. The file is then read back through the real loader, and a read-back that disagrees restores it.
 
-**It closes `console` by writing one `overrides` entry into `biome.jsonc` or `biome.json`**: `suspicious/noConsole` at `error`, on every file under `apps/*/src` in a language Biome lints — `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`, `.cjs` — and not on tests, because a test printing to a terminal is output for a person. That is wider than the starter's `no-console.grit` plugin, which covers `.ts`: once a class is declared, a `console` in any Worker file goes around the privacy gates the same way. It writes only where the rule is not stated at all. A rule you turned down on purpose — `warn`, `off`, an override lowering it on Worker source, a method let through by `options.allow`, the linter disabled or Worker source left out of its includes — is left alone and reported, and `pithy deploy` refuses until you change it. A project with no Biome config gets none created: deciding your toolchain is not this command's job, and the gate reads `unverifiable`.
+**It closes `console` by writing one `overrides` entry into each config it finds**: Biome's `suspicious/noConsole`, or Oxlint's `no-console`, at `error`, on every file under `apps/*/src` in a language the linters lint — `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`, `.cjs` — and not on tests, because a test printing to a terminal is output for a person. In `.oxlintrc.json` that is `files` naming each extension and `excludeFiles: ["**/*.test.*"]`. That is wider than the starter's `no-console` safeguard, which covers `.ts`: once a class is declared, a `console` in any Worker file goes around the privacy gates the same way. It writes into a config only where the rule is not stated there at all. A rule you turned down on purpose — `warn`, `off`, an override lowering it on Worker source, a method let through by an allow-list, the linter disabled or Worker source left out of its includes or caught by `ignorePatterns` — is left alone and reported, and `pithy deploy` refuses until you change it. **With neither config present it writes nothing and says so**: deciding your toolchain is not this command's job, and the gate reads `unverifiable`.
 
 **At a terminal it offers auditing, once.** *Turn on auditing too?* — an offer at the moment it is relevant, defaulting to no. Yes runs `pithy add audit`. No leaves the project exactly as working as it was. `pithy add audit` asks the inverse.
 
@@ -63,10 +63,11 @@ One line on stdout.
 | `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `classes` | string[] | Every class the root config now declares, the built-ins first in their fixed order. |
 | `configChanged` | boolean | Whether the root `pithy.config.ts` was written. `false` on a re-run. |
-| `biomeChanged` | boolean | Whether the Biome config was written. `false` when the rule was already on, turned down, or there is no config. |
+| `biomeChanged` | boolean | Whether the Biome config was written. `false` when the rule was already on, turned down, or there is no Biome config. |
+| `oxlintChanged` | boolean | Whether `.oxlintrc.json` was written. `false` when the rule was already on, turned down, or there is no `.oxlintrc.json`. |
 | `consoleGate` | object | The console gate after this run, as `pithy deploy` will read it. |
-| `consoleGate.state` | string | `"enforced"`, `"off"` (deploy refuses), or `"unverifiable"` (no Biome config Pithy can read). |
-| `consoleGate.file` | string \| null | The Biome config read, project-relative, or `null` when there is none. |
+| `consoleGate.state` | string | `"enforced"`, `"off"` (deploy refuses), or `"unverifiable"` (no linter config Pithy can read). With both linters configured, `enforced` only when both close the rule. |
+| `consoleGate.file` | string \| null | The config the state is about, project-relative — `"biome.jsonc and .oxlintrc.json"` when both were read and both close it — or `null` when there is none. |
 | `consoleGate.reason` | string \| null | Why it is not enforced, in one sentence. `null` when it is. |
 
 ### `pithy privacy scan --json`

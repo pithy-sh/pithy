@@ -27,7 +27,7 @@ export const LOWER_COMMAND = "bun scripts/comment-history.ts";
 
 /** What `--init` reads when there is no baseline yet. A baseline states its own globs after that. */
 export const DEFAULT_INCLUDE: readonly string[] = [
-  ...["packages", "scripts", "plugins"].flatMap((dir) =>
+  ...["packages", "scripts", "templates/starter/plugins"].flatMap((dir) =>
     [".ts", ".tsx", ".grit", ".jsonc"].map((ext) => `${dir}/**/*${ext}`),
   ),
   "biome.jsonc",

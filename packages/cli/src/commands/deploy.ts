@@ -55,7 +55,7 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
  * **Best-effort is not unattributed.** The count reaches a remote D1 for any `--env`, so it takes the
  * same account the deploy beside it does. Omitting it resolved `<config>/cloudflare.json` while the
  * deploy resolved the project's named account — one command, one run, two tenants, and a number about
- * somebody else's schema printed as though it were this project's (#206, #226).
+ * somebody else's schema printed as though it were this project's.
  */
 async function pendingFor(
   projectDir: string,
@@ -67,7 +67,7 @@ async function pendingFor(
     // refuses on, and deploy never migrates — it reports how far the schema is behind, which stays a
     // truthful number either way.
     const ledger = await readProjectLedger({ projectDir, env, account });
-    // A partial read still warns, and the number it warns with is the one it established (#371). A sum
+    // A partial read still warns, and the number it warns with is the one it established. A sum
     // over the databases that answered can only understate how far behind the project is, so it never
     // raises a false alarm — and this line is warn-only. Which database went unread is `pithy doctor`'s
     // sentence to say, in the report whose job is naming faults.
@@ -124,7 +124,7 @@ export function deploySelection(args: { apps: boolean; kit: boolean }): { apps: 
  * not refused *here* — its kit half says it needed an environment — because asking for both halves and
  * getting one is a different fact from asking for the kit half by name and getting silence, which is the
  * thing that must not happen. It is refused elsewhere, by `assertEnvironmentProvisioned`, whenever the
- * top-level stanza has a D1 or KV binding with no id (#589) — the shape `pithy add` writes one in.
+ * top-level stanza has a D1 or KV binding with no id — the shape `pithy add` writes one in.
  *
  * **`--kit`, or `--force`, with `--env dev`.** There is no deployed kit Worker in `dev`: it runs
  * locally under `pithy dev`, and `pithy <capability> provision` fans out over the managed environments
@@ -167,7 +167,7 @@ export function assertDeployFlags(args: { apps: boolean; kit: boolean; force: bo
 
 /**
  * The `--env` a deploy may name: none, `dev` (the top-level stanza), `feature` (a branch's generated one), or
- * one the root `pithy.config.ts` declares (#697). Anything else is refused as the usage error it is, exit 2,
+ * one the root `pithy.config.ts` declares. Anything else is refused as the usage error it is, exit 2,
  * naming the declared set — rather than reaching `wrangler deploy --env qa`, which failed every Worker on a
  * stanza nobody wrote and exited 1 as that many separate failures.
  */
@@ -227,7 +227,7 @@ const DeployedWorker = z
   .describe("One Worker under `apps/`.");
 
 /**
- * `pithy deploy --json --events`: one record per step, before the payload closes the stream (#697). A Worker
+ * `pithy deploy --json --events`: one record per step, before the payload closes the stream. A Worker
  * under `apps/` settles with its row as `worker`, a kit Worker with its row as `kit`.
  */
 const DeployEvents = eventsRecord("deploy", {
@@ -237,7 +237,7 @@ const DeployEvents = eventsRecord("deploy", {
   },
 });
 
-/** What a deploy attested about privacy (#132): the declared classes, and the console gate's verdict. */
+/** What a deploy attested about privacy: the declared classes, and the console gate's verdict. */
 const DeployedPrivacy = z
   .object({
     declared: z
@@ -246,7 +246,7 @@ const DeployedPrivacy = z
     consoleGate: z
       .enum(["enforced", "unverifiable", "not_required"])
       .describe(
-        "`enforced`, `unverifiable` (no Biome config Pithy could read — deployed, and reported as unverified), or `not_required` (no class declared). A gate that is off refuses the deploy instead.",
+        "`enforced`, `unverifiable` (no linter config Pithy could read — deployed, and reported as unverified), or `not_required` (no class declared). A gate that is off refuses the deploy instead.",
       ),
     reason: z.string().nullable().describe("Why the gate is `unverifiable`, in one sentence. Null otherwise."),
   })
@@ -321,7 +321,7 @@ export default withContract(
           );
           assertDeployFlags(args);
           const selection = deploySelection(args);
-          // **A rate-limit namespace in the feature range is nobody's to declare (#643)**, for any selection and any
+          // **A rate-limit namespace in the feature range is nobody's to declare**, for any selection and any
           // environment: a feature of any project in the account can be allocated it, and the two would share counters.
           await assertProjectDeclaresNoFeatureIds(projectDir);
 
@@ -338,9 +338,9 @@ export default withContract(
           // publish — a deploy that authenticates against the wrong tenant succeeds, and says nothing.
           // Refuse before anything is built or spawned. A binding with no id fails *inside* wrangler, on a
           // field the adopter never wrote, after `init`, `add`, `migrate` and `dev` have all succeeded —
-          // and with no hint that provisioning was a step they had missed (#240).
+          // and with no hint that provisioning was a step they had missed.
           //
-          // **For every deploy of `apps/`, a bare one included (#589).** This read `gateApps && env`, on the
+          // **For every deploy of `apps/`, a bare one included.** This read `gateApps && env`, on the
           // reasoning that a bare deploy ships the top-level stanza "whose ids `pithy dev` resolves from
           // Miniflare". That is exactly why it must be read: those are `database_name`s with no id, the shape
           // wrangler's default provisioning *created* databases from. The same read skipped `--env dev`, which
@@ -349,14 +349,14 @@ export default withContract(
           // The project's production policy decides only whether the refusal can name a `fix`: production is
           // provisioned with a person's `--confirm` phrase, so it gets none.
           //
-          // **A dry run makes this refusal, and the two below, exactly as the deploy would (#697).** A plan for a
+          // **A dry run makes this refusal, and the two below, exactly as the deploy would.** A plan for a
           // deploy that would be refused is a promise nobody can keep, so under `--json` the answer is the one
           // error line with its exit class and `fix`, never a plan beside an exit code it does not explain.
           if (selection.apps) {
             const { seed } = await loadProject(projectDir);
             await assertEnvironmentProvisioned(projectDir, env, seed?.productionEnvironments);
           }
-          // **The console gate (#132): a project that declared a privacy class does not ship with `console`
+          // **The console gate: a project that declared a privacy class does not ship with `console`
           // open.** Read once, for the Workers under `apps/` — the kit's carry no adopter code — and before
           // anything is built, so it is the project's one refusal rather than a failed row per Worker. A gate
           // Pithy cannot read deploys, and says so before the first upload.
@@ -364,14 +364,14 @@ export default withContract(
             ? await deployPrivacy({ projectDir, config: await loadProject(projectDir) })
             : undefined;
           // And the other half of "is this environment ready to be real": does its config name every origin
-          // it will answer on (#253). Refused here for the same reason the binding check is — deploy knows
+          // it will answer on. Refused here for the same reason the binding check is — deploy knows
           // the environment and the config, and this is the last moment before a staging Worker starts
           // emailing real users magic links into production. Beside it rather than inside it because the two
           // are different questions with different fixes; `assertOriginsDeclared` exempts a feature
           // environment itself, which has no declared domain by design.
           if (gateApps && env) await assertOriginsDeclared(projectDir, env);
           // And the third half of it, on the same evidence and at the same moment: does this environment's
-          // stanza bind what its Workers' app capabilities declare (#267)? `reconcileAppWorkflows` writes
+          // stanza bind what its Workers' app capabilities declare? `reconcileAppWorkflows` writes
           // that table and `pithy worker sync` is its only caller, so an adopter who declared a job and
           // never ran it shipped a Worker with no `workflows` entry and no `triggers.crons` — the binding
           // fails on the first request, and the cron simply never fires and says nothing at all. Beside the
@@ -380,7 +380,7 @@ export default withContract(
           if (gateApps && env) await assertWorkflowsBound(projectDir, env);
 
           const account = await projectCloudflareAccount(projectDir);
-          // **The account is settled here, before anything best-effort runs (#236).** `pendingFor` swallows
+          // **The account is settled here, before anything best-effort runs.** `pendingFor` swallows
           // every failure on purpose — a database it cannot reach costs a warning line, not the deploy — and
           // a pin the credentials contradict is not a reachability failure. Swallowed, it becomes
           // `pendingMigrations: null`: an absence that reads as a fact. `cloudflareEnv` refuses it in the one
@@ -394,7 +394,7 @@ export default withContract(
           const pending = env ? await pendingFor(projectDir, env, account) : undefined;
           const audit = await buildAudit(projectDir, env ?? "dev", account);
 
-          // **Before the uploads, not after them (#578).** The count is about the schema this deploy is
+          // **Before the uploads, not after them.** The count is about the schema this deploy is
           // shipping code against, so it is worth reading before the first Worker goes up rather than in a
           // block underneath the last one — and it is the first thing this command has ever printed, which
           // is what tells an operator the run is alive. `--json` still writes one line and nothing else.
@@ -416,12 +416,12 @@ export default withContract(
                   productionEnvironments: (await loadProject(projectDir)).seed?.productionEnvironments ?? [],
                   account,
                   force: args.force,
-                  // A feature's kit Workers are named for the feature, and the branch is which feature (#643). A
+                  // A feature's kit Workers are named for the feature, and the branch is which feature. A
                   // checkout that is not on one is the pass's own problem to state, not a throw that loses the report.
                   ...(await featureOf(projectDir, env as string)),
                 })
               : null;
-          // **First when an app binds one (#617).** A service binding to a kit Worker names its host's script, and an
+          // **First when an app binds one.** A service binding to a kit Worker names its host's script, and an
           // upload binding a script that does not exist yet is refused — so the host goes up before the binder.
           const kitFirst = runKit && selection.apps && (await bindsKitWorker({ projectDir }));
           const kitEarly = kitFirst ? await deployKit() : null;
@@ -432,7 +432,7 @@ export default withContract(
             : [];
           // A deploy that shipped but is not the thing answering at the declared address is a failure too,
           // and it fails the pipeline rather than printing a line nobody reads. Two shapes count: a
-          // *consistent* mismatch, and nothing answering at all (#264). A gradual rollout and a Worker that
+          // *consistent* mismatch, and nothing answering at all. A gradual rollout and a Worker that
           // answered without a version are both inconclusive, and failing on either would train everyone to
           // ignore the check.
           const appsFailed = deploys.some((deploy) => !deploy.ok) || deployVerificationFailed(deploys);
@@ -440,12 +440,12 @@ export default withContract(
           const kit: KitDeployReport | null = kitFirst ? kitEarly : await deployKit();
           const kitFailed = kit !== null && kitDeployFailed(kit);
           const failed = appsFailed || kitFailed;
-          // The dashboard, offered to a named environment that has none (#757). An offer, not a `next`: connecting
+          // The dashboard, offered to a named environment that has none. An offer, not a `next`: connecting
           // is the person's to choose, and its sign-in is theirs to approve.
           const offers = await dashboardOffers({ projectDir, env, account, failed });
 
           if (args.json) {
-            // `pithy migrate`, when the schema this deploy shipped against is behind it (#697). Absent otherwise.
+            // `pithy migrate`, when the schema this deploy shipped against is behind it. Absent otherwise.
             const next = deployNext({ env, pending, failed });
             process.stdout.write(
               `${formatJsonLine({
@@ -494,7 +494,7 @@ export default withContract(
   }),
   {
     output: "document",
-    // 2: `plan.resources[].kind` takes `queue`, the fourth kind provisioning creates (#662).
+    // 2: `plan.resources[].kind` takes `queue`, the fourth kind provisioning creates.
     schemaVersion: 2,
     payload: DeployPayload,
     events: DeployEvents,
@@ -516,12 +516,12 @@ interface PlanDeployOptions {
   selection: { apps: boolean; kit: boolean };
   force: boolean;
   json: boolean;
-  /** The privacy attestation the real deploy would write, so the dry run's argv is the deploy's (#132). */
+  /** The privacy attestation the real deploy would write, so the dry run's argv is the deploy's. */
   privacy: DeployPrivacy | undefined;
 }
 
 /**
- * **`pithy deploy --dry-run` (#697): Pithy's plan, then wrangler's.**
+ * **`pithy deploy --dry-run`: Pithy's plan, then wrangler's.**
  *
  * Reached only once every gate the deploy refuses on has passed, so what is left is the plan. Pithy's half
  * first: the migrations the environment has not applied, named — the deploy leaves them to `pithy migrate`, and

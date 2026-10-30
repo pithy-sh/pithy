@@ -538,6 +538,7 @@
         "--name",
         "--worker",
         "--target",
+        "--lint",
         "--react-native",
         "--reactNative",
         "--no-react-native",
