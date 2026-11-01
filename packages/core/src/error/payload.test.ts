@@ -84,6 +84,8 @@ describe("ErrorPayload (the kit taxonomy)", () => {
       ["turnstile/config", 500],
       ["turnstile/analytics_window", 400],
       ["turnstile/analytics_unavailable", 409],
+      ["turnstile/analytics_forbidden", 409],
+      ["media/analytics_forbidden", 409],
       ["core/upstream_failed", 502],
       ["core/upstream_timeout", 504],
       ["core/webhook_unverified", 401],
@@ -264,72 +266,8 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  * all the way down to empty. Both unions are measured against this number and never against each
  * other's length. Changing the taxonomy's size is a deliberate act; changing this line is part of it.
  *
- * Verified 2026-08-28: 121 members in each union, no duplicates, sorted lists identical.
- *
- * `auth/account_suspended` and `auth/account_deleted` (#620) took it to 147 — the two states an account
- * can be in where its credential is genuine and it may not act. Each needs its own code because the
- * client's next move differs from every neighbor's: not `auth/invalid_token`, because signing in again
- * cannot help; not `auth/forbidden`, because the screen to render says what happened to the account,
- * not that a permission is missing; and not each other, because a deleted account can be restored until
- * its purge and a suspension can simply end.
- *
- * `organization/last_owner`, `organization/already_member` and `organization/seat_limit_reached` (#624)
- * took it to 150 — the three refusals of membership administration through the control plane. The last
- * owner is not `organization/last_administrator`, because the way out is a forced transfer rather than a
- * promotion; an existing member names the role they hold, which the next request changes; and a full
- * account names its seat limit, which an operator may override.
- *
- * `organization/organization_suspended` (#623) took it to 151 — an organization an operator suspended.
- * Not `organization/forbidden`, because no role in it would let anybody act, and not `organization/not_found`,
- * because the caller is a proved member who already knows it exists and needs the screen that says why.
- *
- * `media/forbidden` (#727) took it to 134 — a media record the caller may read but not change. A record
- * the caller cannot read is `media/not_found`, so this one only ever answers somebody who already knows
- * the record exists, and it is storage's `storage/forbidden` given to media.
- *
- * `payments/subscription_change_refused` (#465) — a plan change, a cancellation, or the withdrawal of a
- * scheduled one that the subscription's own state forbids. It needs its own code because every neighbor
- * it might have borrowed says something untrue about it: `receipt_already_owned` is about a transaction
- * belonging to another account, `clawback_failed` about a balance, and both are refusals about money that
- * has already moved. This one is about a subscription whose item shape the rail cannot reproduce without
- * guessing — a store's update replaces the items array whole, so a guess deletes or re-prices a line the
- * caller never named. One code and not three: the three refused states are the same 409 and the same
- * sentence to a caller, and which one fired is throw-site context that the codec strips. The no-op is
- * deliberately not among them — a change to the plan already held is a success, which is what makes a
- * retry safe.
- *
- * `payments/subject_unresolved` (#412) — a payments write path that could not learn which subject the
- * caller acts for. It needs its own code because it is the one refusal in the domain the *adopter*
- * causes and only the adopter can repair: under organization billing the subject comes from their
- * resolver, and an unanswered seam is neither a denial about entitlement nor a fault in our code. On a
- * read the gate simply holds nothing and denies; on a write there is no row to write, and silence there
- * is a purchase that vanishes.
- *
- * `auth/provider_unavailable` (#381) — a social sign-in provider the deployment enables whose credential
- * would not resolve. It needs its own code because the instance now builds *without* that provider, and
- * Better Auth answers a provider it does not hold with `PROVIDER_NOT_FOUND` 404 — the same answer it
- * gives for one nobody ever enabled. Sharing that code would have made a broken provider and an absent
- * one indistinguishable from outside the Worker, which is precisely the distinction the fix turns on.
- *
- * The three before it took it to 118, and **two of those were added the same day on separate branches**,
- * each moving this line to 117 on its own — so that merge was 118 and not a repeat. Which is the case
- * this comment exists for: the number is maintained by hand precisely so that two people cannot each be
- * right and the taxonomy still be miscounted.
- *
- * `secrets/rotation_unsupported` (#372) — a rotation asked of a Worker-side route for a secret no single
- * Worker can replace. It needs its own code because a client must tell it from a denial and from a fault:
- * the remedy is the `pithy secrets rotate` command, not a wider grant and not a retry.
- *
- * `core/workflow_failed` (#365) — a dispatched Workflow that ran and ended without completing. It needs
- * its own code because it had been arriving as `cloudflare/request_failed` 502, which tells an operator
- * the far side is broken and to wait, for a run that is permanently over.
- *
- * The one before both was `secrets/rotation_unrecorded` (#367), which took it to 116 — a credential
- * rolled at its issuer whose successor the store never took, the one secrets failure a retry cannot
- * repair.
- *
  * **The four sites, so one red gate names them all.** This number is written by hand in four places on
- * purpose (see above). Adding or removing a kit error code moves every one of them, and they live in
+ * purpose. Adding or removing a kit error code moves every one of them, and they live in
  * three packages that do not run each other's tests — so a contributor who fixes only the one that went
  * red ships the other three red. They are:
  *
@@ -341,7 +279,7 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  * And the code itself also needs: the Spanish sentence in `packages/i18n/src/catalogs/es/errors.ts`,
  * and `bun run docs-catalog` to regenerate `docs/catalog.generated.json`.
  */
-const KIT_ERROR_CODE_COUNT = 165;
+const KIT_ERROR_CODE_COUNT = 167;
 
 /** One member of either kit union — the public projection or its `action`/`detail` twin. */
 type KitUnionMember = (typeof KitErrorPayload | typeof KitPublicErrorPayload)["options"][number];
@@ -430,8 +368,7 @@ describe("PublicErrorPayload (the wire shape)", () => {
 });
 
 /**
- * **`kitErrorStatus` — the status a code carries when the payload it came from did not survive**
- * (pithy-sh/pithy#365).
+ * **`kitErrorStatus` — the status a code carries when the payload it came from did not survive.**
  *
  * Every expectation here is a hand-written pair. Reading either half off `KitErrorPayload` would be
  * asking the subject to grade itself: the function is derived from that union, so a test derived
@@ -457,8 +394,8 @@ describe("kitErrorStatus", () => {
   });
 
   test("`core/workflow_failed` and `cloudflare/request_failed` are a different pair, both halves", () => {
-    // The whole of what #365 fixed, stated as two literals: a Workflow that ran and terminally failed
-    // is not the Cloudflare API refusing a call, and neither the code nor the status may say it is.
+    // A Workflow that ran and terminally failed is not the Cloudflare API refusing a call, and neither
+    // the code nor the status may say it is.
     expect(kitErrorStatus("core/workflow_failed")).not.toBe(kitErrorStatus("cloudflare/request_failed"));
     expect(kitErrorStatus("core/workflow_failed")).toBe(500);
     expect(kitErrorStatus("cloudflare/request_failed")).toBe(502);

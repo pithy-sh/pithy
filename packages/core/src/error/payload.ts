@@ -593,6 +593,18 @@ const TurnstileAnalyticsUnavailablePublic = z
   })
   .describe("Turnstile analytics are not served to this account (409).");
 
+const TurnstileAnalyticsForbiddenPublic = z
+  .object({
+    code: z
+      .literal("turnstile/analytics_forbidden")
+      .describe(
+        "Cloudflare refused the Turnstile analytics read because this Worker's `runtime` token lacks the permission it needs. `params.permission` names it, and `message` names the rotate that re-scopes the token.",
+      ),
+    status: z.literal(409).describe("Conflict — the account's token configuration rules the read out."),
+    ...publicFields,
+  })
+  .describe("The runtime token lacks the permission Turnstile analytics need (409).");
+
 // --- @pithy-sh/audit: audit-trail recorder codes ---
 
 const AuditInvalidEventPublic = z
@@ -692,6 +704,18 @@ const MediaAnalyticsUnavailablePublic = z
     ...publicFields,
   })
   .describe("Delivery analytics are not served to this account (409).");
+
+const MediaAnalyticsForbiddenPublic = z
+  .object({
+    code: z
+      .literal("media/analytics_forbidden")
+      .describe(
+        "Cloudflare refused the delivery analytics read because this Worker's `runtime` token lacks the permission it needs. `params.permission` names it, and `message` names the rotate that re-scopes the token.",
+      ),
+    status: z.literal(409).describe("Conflict — the account's token configuration rules the read out."),
+    ...publicFields,
+  })
+  .describe("The runtime token lacks the permission delivery analytics need (409).");
 
 // --- @pithy-sh/leaderboard: optional ranking capability codes ---
 
@@ -2038,6 +2062,7 @@ export const KitPublicErrorPayload = z
     TurnstileConfigPublic,
     TurnstileAnalyticsWindowPublic,
     TurnstileAnalyticsUnavailablePublic,
+    TurnstileAnalyticsForbiddenPublic,
     AuditInvalidEventPublic,
     AuditWriteFailedPublic,
     MediaNotFoundPublic,
@@ -2047,6 +2072,7 @@ export const KitPublicErrorPayload = z
     MediaEnrichmentFailedPublic,
     MediaAnalyticsWindowPublic,
     MediaAnalyticsUnavailablePublic,
+    MediaAnalyticsForbiddenPublic,
     LeaderboardBoardNotFoundPublic,
     LeaderboardEntryNotFoundPublic,
     LeaderboardScoreRejectedPublic,
@@ -2260,6 +2286,9 @@ const TurnstileAnalyticsWindow = TurnstileAnalyticsWindowPublic.extend(internalF
 const TurnstileAnalyticsUnavailable = TurnstileAnalyticsUnavailablePublic.extend(internalFields).describe(
   TurnstileAnalyticsUnavailablePublic.description ?? "",
 );
+const TurnstileAnalyticsForbidden = TurnstileAnalyticsForbiddenPublic.extend(internalFields).describe(
+  TurnstileAnalyticsForbiddenPublic.description ?? "",
+);
 const AuditInvalidEvent = AuditInvalidEventPublic.extend(internalFields).describe(
   AuditInvalidEventPublic.description ?? "",
 );
@@ -2282,6 +2311,9 @@ const MediaAnalyticsWindow = MediaAnalyticsWindowPublic.extend(internalFields).d
 );
 const MediaAnalyticsUnavailable = MediaAnalyticsUnavailablePublic.extend(internalFields).describe(
   MediaAnalyticsUnavailablePublic.description ?? "",
+);
+const MediaAnalyticsForbidden = MediaAnalyticsForbiddenPublic.extend(internalFields).describe(
+  MediaAnalyticsForbiddenPublic.description ?? "",
 );
 const LeaderboardBoardNotFound = LeaderboardBoardNotFoundPublic.extend(internalFields).describe(
   LeaderboardBoardNotFoundPublic.description ?? "",
@@ -2671,6 +2703,7 @@ export const KitErrorPayload = z
     TurnstileConfig,
     TurnstileAnalyticsWindow,
     TurnstileAnalyticsUnavailable,
+    TurnstileAnalyticsForbidden,
     AuditInvalidEvent,
     AuditWriteFailed,
     MediaNotFound,
@@ -2680,6 +2713,7 @@ export const KitErrorPayload = z
     MediaEnrichmentFailed,
     MediaAnalyticsWindow,
     MediaAnalyticsUnavailable,
+    MediaAnalyticsForbidden,
     LeaderboardBoardNotFound,
     LeaderboardEntryNotFound,
     LeaderboardScoreRejected,
@@ -2810,8 +2844,7 @@ export type KitErrorCode = KitErrorPayload["code"];
  * with it** — that is what this reads. It exists for the one place a code arrives without the payload
  * it came from: a `PithyError` raised inside a durable Workflow step, whose only channel out is the
  * text the engine records (`../workflow/stepMessage`). Nothing but `code`, `message` and `action`
- * survives that boundary, and reporting the fault under `cloudflare/request_failed` 502 told an
- * operator to retry a request that was delivered and terminally answered (pithy-sh/pithy#365).
+ * survives that boundary, so the status has to come back from the code.
  *
  * **The status is recovered, never invented.** A code this does not know — an adopter's own, a
  * `d1/*` fault class, a typo — answers `undefined`, and the caller says so with a code of its own

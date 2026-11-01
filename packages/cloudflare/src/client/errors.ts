@@ -94,9 +94,8 @@ export class CloudflareInvalidResponseError extends PithyError {
  * One entry of Cloudflare's `errors[]` array — the API's own answer to a failed call.
  *
  * Every v4 endpoint answers a failure with `{ success: false, errors: [{ code, message,
- * documentation_url }] }`, and the SDK already parses it onto the thrown `APIError`. Until #534 we
- * projected none of it: a refusal named the operation and stopped, so a token missing one product's
- * grant, a revoked token, a wrong account and an outage all rendered as the same sentence.
+ * documentation_url }] }`, and the SDK parses it onto the thrown `APIError`. It is what tells a token
+ * missing one product's grant, a revoked token, a wrong account and an outage apart.
  */
 export interface CloudflareApiError {
   /** Cloudflare's numeric error code — the stable discriminator (`10000` is its auth-class code). */
@@ -162,10 +161,9 @@ function oneLine(text: string): string {
  * Cloudflare's auth-class codes — the ones that mean "your credentials did not get you in", as
  * opposed to a missing resource (`12000`), a conflict (`12042`) or a rejected argument (`10202`).
  *
- * Status alone is not the discriminator, which is the trap #534 walked into: the reported Turnstile
- * refusal was `10000` under a **401**, while `isAuthorizationError` below keys on 403 and would not
- * have fired. Cloudflare returns `10000` under 400, 401 and 403 depending on the endpoint, so the
- * code is what identifies the class and the status is only a fallback for a body-less throw.
+ * Status alone is not the discriminator: Cloudflare returns `10000` under 400, 401 and 403 depending
+ * on the endpoint, so the code is what identifies the class and the status is only a fallback for a
+ * body-less throw.
  */
 const AUTH_CLASS_CODES = new Set([9103, 9106, 9107, 9109, 10000, 10001]);
 
@@ -252,13 +250,9 @@ export async function cloudflareRequest<T>(
  * Compose the refusal every failed Cloudflare call renders: the problem line, then the API's own
  * answer, then — only for an auth-class code — what to do about it.
  *
- * One place, so a fix reaches every provisioner at once — and **one place is a claim a test has to
- * hold, because it was false the first time it was written.** Round one of #534 said
- * `CloudflareBuildsManager` was the only path composing a refusal by hand; `mintToken`, the Stream
- * direct upload and two integration helpers were composing their own, so `pithy token mint` — the
- * bootstrap command an under-scoped token meets first — still printed the operation and nothing else
- * on the identical 401 body. `refusalSites.test.ts` now fails any `new CloudflareRequestError(`
- * outside this file, so "the only place" is enforced rather than remembered.
+ * One place, so a fix reaches every provisioner at once. `refusalSites.test.ts` fails any
+ * `new CloudflareRequestError(` outside this file, so "the only place" is enforced rather than
+ * remembered.
  *
  * CLAUDE.md §Errors decides where each string lands. Cloudflare's sentence and its docs link are the
  * **caller's** information — what happened, in the words of whoever it happened to — so they go in
@@ -274,14 +268,10 @@ export async function cloudflareRequest<T>(
  * for, and pinned by `core`'s payload test. The words are composed the same way either side of that
  * branch, so only the two machine-readable fields differ.
  *
- * **The message is one line, and that is a kit-wide rule this had to learn the hard way.** Round one
- * of #534 made it a small document — problem line, `errors[]` indented beneath, action last — which
- * reads beautifully in a terminal and is unencodable everywhere else. A `PithyError` raised inside a
- * `classifiedSteps` step crosses a durable boundary as one string whose newline separates the sentence
- * from the remedy, so a multi-line `message` was declined whole at the reader and the operator got
- * `core/workflow_failed` 500 about durable execution instead of the API answer this issue exists to
- * show them. The same newline is what the CLI's action line is, so an upstream sentence containing one
- * forges a remedy Pithy never wrote. `Cloudflare said:` marks the boundary between our words and
+ * **The message is one line, a kit-wide rule.** A `PithyError` raised inside a `classifiedSteps` step
+ * crosses a durable boundary as one string whose newline separates the sentence from the remedy, so a
+ * multi-line `message` is declined whole at the reader. The same newline is what the CLI's action line
+ * is, so an upstream sentence containing one would forge a remedy Pithy never wrote. `Cloudflare said:` marks the boundary between our words and
  * theirs with a word instead of an indent, and a word survives a step record, a `--json` line and a
  * browser.
  */
@@ -341,7 +331,7 @@ export function cloudflareRefusal(args: {
  * which is the transient failure by definition. The timeout statuses never reach here — `isTimeout`
  * claims 408, 504 and 524 first, and they are the 504 half of the same pair.
  *
- * **A statusless failure is not covered here, and deliberately so (#647 review).** A connection that reset
+ * **A statusless failure is not covered here, and deliberately so.** A connection that reset
  * mid-write is genuinely transient and ending a rotation on one is expensive — but "carries no status" is
  * far wider than "the network faltered". A `TypeError` raised in our own request builder carries no status
  * either, and a predicate that called it transient would retry a code defect on the Workflow's own cadence,
@@ -504,7 +494,7 @@ function apiErrorParams(entry: CloudflareApiError | undefined): MessageParams {
  *
  * **The API's code decides; the status is only consulted when there is no code.** Cloudflare returns
  * `10000` under 400, 401 and 403 depending on the endpoint, which is why the status cannot be the
- * discriminator — and the converse is the half that shipped wrong: a 403 is *also* how Cloudflare
+ * discriminator — and the converse holds too: a 403 is *also* how Cloudflare
  * answers `10021 Script startup exceeded CPU limit`, and "add Account → Workers Scripts to it" changes
  * nothing about a CPU limit. So when Cloudflare named any code at all, the codes are the whole of the
  * evidence and the status is not consulted; only a body-less throw (`401 status code (no body)`) falls
@@ -514,13 +504,11 @@ function apiErrorParams(entry: CloudflareApiError | undefined): MessageParams {
  * Cloudflare answered `10000` for this one call; that is all it said. A token missing this product's
  * grant, a revoked token and a token pointed at the wrong account all produce it, and this process can
  * separate none of the three. So the line names all three, in the order an operator can check them,
- * and asserts none. It named two for one round — "reaches other products" or "reaches none" — which
- * excluded the third by construction: a token in the *wrong* account reaches other products in that
- * account, so the operator was told to add a grant they already held.
+ * and asserts none.
  *
- * The **level** is deliberately absent too. The call that raised #534 was a *list* — Read would have
- * satisfied it — so "Turnstile → Edit" would have been a guess dressed as an instruction. Name the
- * group; the operator picks the level their calls need.
+ * The **level** is deliberately absent too. A list call is satisfied by Read, so "Turnstile → Edit"
+ * would be a guess dressed as an instruction. Name the group; the operator picks the level their calls
+ * need.
  */
 function permissionAction(apiErrors: CloudflareApiError[], status?: number, hint?: string): string | undefined {
   if (!isAuthClassRefusal(apiErrors, status)) return undefined;
@@ -538,6 +526,14 @@ function isAuthClassRefusal(apiErrors: CloudflareApiError[], status?: number): b
   const coded = apiErrors.filter((entry) => entry.code !== undefined);
   if (coded.length > 0) return coded.some((entry) => AUTH_CLASS_CODES.has(entry.code as number));
   return status === 401 || status === 403;
+}
+
+/**
+ * Whether a thrown SDK error is the credentials failing rather than the request — the same judgment the
+ * refusal's action line makes, read off the throw a {@link cloudflareRefusal} keeps as its `cause`.
+ */
+export function isAuthClassFailure(error: unknown): boolean {
+  return isAuthClassRefusal(cloudflareApiErrors(error), statusOf(error));
 }
 
 /** The account permission group behind the refused endpoint, per Cloudflare's own docs link. */

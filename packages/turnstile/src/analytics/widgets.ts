@@ -3,6 +3,7 @@
 
 import type { CloudflareAnalyticsManager } from "@pithy-sh/cloudflare/src/analytics/analyticsManager";
 import { TURNSTILE_EVENTS } from "@pithy-sh/cloudflare/src/analytics/datasets";
+import { guardForbidden, type RefuseForbidden } from "@pithy-sh/cloudflare/src/analytics/forbidden";
 import {
   checkAnalyticsWindow,
   resolveAnalyticsWindow,
@@ -10,13 +11,17 @@ import {
 } from "@pithy-sh/cloudflare/src/analytics/window";
 import { pithyCommandOf } from "@pithy-sh/core/src/cli/command";
 import type { TurnstileConfig, TurnstileMode } from "../config/config";
-import { TurnstileAnalyticsUnavailableError, TurnstileAnalyticsWindowError } from "../error/errors";
+import {
+  TurnstileAnalyticsForbiddenError,
+  TurnstileAnalyticsUnavailableError,
+  TurnstileAnalyticsWindowError,
+} from "../error/errors";
 import type { TurnstileTestKeyVerdict, TurnstileWidgetReport, TurnstileWidgetsResponse } from "../http/responses";
 import { isTestKeyEnvironment, resolveSitekey, TEST_KEY_ENVIRONMENTS, testKeyVerdict } from "../provision/testKeys";
 import { summarizeOutcomes } from "./outcomes";
 
 /**
- * **Which widget guards this environment, and how its challenges went (#731).**
+ * **Which widget guards this environment, and how its challenges went.**
  *
  * A control-plane read is per environment: this Worker reports the environment it serves, and a client
  * asking about three asks three Workers. Turnstile stays stateless. It has counted nothing, so the outcomes
@@ -55,6 +60,9 @@ const MODES: readonly TurnstileMode[] = ["visible", "invisible"];
 
 /** A refused window, as turnstile's own code. */
 const refuseWindow = (refusal: WindowRefusal) => new TurnstileAnalyticsWindowError(refusal);
+
+/** A runtime token without the analytics grant, as turnstile's own code. */
+const refuseForbidden: RefuseForbidden = (refusal, options) => new TurnstileAnalyticsForbiddenError(refusal, options);
 
 /** The remedy for a test key where it is not accepted — the line the middleware names too. */
 const PROVISION = pithyCommandOf("turnstile provision", {}, { runtime: true });
@@ -113,7 +121,8 @@ function plan(mode: TurnstileMode, config: TurnstileConfig, environment: string 
  *
  * Only a real widget reaches Cloudflare, and all of them in one query. The dataset's limits are read from the
  * account's own settings first: one Cloudflare does not serve is a refusal, not an empty answer, and a window
- * past its retention or span is a refusal naming the cap.
+ * past its retention or span is a refusal naming the cap. A runtime token without the analytics grant is
+ * `turnstile/analytics_forbidden`, naming the permission and the rotate that adds it.
  */
 export async function readWidgets(
   deps: WidgetDeps,
@@ -128,17 +137,23 @@ export async function readWidgets(
 
   let events = new Map<string, Map<string, number>>();
   if (real.length > 0) {
-    const source = await deps.source();
-    const limits = (await source.datasetLimits([TURNSTILE_EVENTS]))[TURNSTILE_EVENTS];
-    if (!limits?.enabled) {
-      throw new TurnstileAnalyticsUnavailableError({
-        message: "Cloudflare does not serve Turnstile analytics to this account, so no outcome can be read.",
-        params: { dataset: TURNSTILE_EVENTS },
-        detail: `${TURNSTILE_EVENTS} settings: ${limits === undefined ? "absent" : "enabled: false"}`,
-      });
-    }
-    checkAnalyticsWindow(window, limits, MEASURED, now, refuseWindow);
-    events = await source.turnstileEvents({ ...window, siteKeys: [...new Set(real.map((w) => w.sitekey))] });
+    events = await guardForbidden(
+      async () => {
+        const source = await deps.source();
+        const limits = (await source.datasetLimits([TURNSTILE_EVENTS]))[TURNSTILE_EVENTS];
+        if (!limits?.enabled) {
+          throw new TurnstileAnalyticsUnavailableError({
+            message: "Cloudflare does not serve Turnstile analytics to this account, so no outcome can be read.",
+            params: { dataset: TURNSTILE_EVENTS },
+            detail: `${TURNSTILE_EVENTS} settings: ${limits === undefined ? "absent" : "enabled: false"}`,
+          });
+        }
+        checkAnalyticsWindow(window, limits, MEASURED, now, refuseWindow);
+        return source.turnstileEvents({ ...window, siteKeys: [...new Set(real.map((w) => w.sitekey))] });
+      },
+      { environment: deps.environment, read: "the Turnstile analytics read" },
+      refuseForbidden,
+    );
   }
 
   const widgets: TurnstileWidgetReport[] = planned.map((widget) =>

@@ -158,3 +158,24 @@ export class MediaAnalyticsUnavailableError extends PithyError {
     );
   }
 }
+
+/**
+ * Cloudflare refused the delivery analytics read because this Worker's `runtime` token lacks the grant it
+ * needs. A 409 rather than a 403: the caller's control-plane token is fine, and it is the account's own
+ * token that rules the read out. The message names the permission and the rotate that adds it.
+ */
+export class MediaAnalyticsForbiddenError extends PithyError {
+  constructor(args: MediaErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "media/analytics_forbidden",
+        status: 409,
+        message: args.message ?? "This Worker's runtime token may not read these analytics.",
+        action: args.action,
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}

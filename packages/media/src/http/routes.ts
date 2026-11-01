@@ -12,6 +12,7 @@ import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { validate } from "@pithy-sh/core/src/http/validation";
 import type { VerificationStrategy } from "@pithy-sh/core/src/http/verification";
+import { workerIdentity } from "@pithy-sh/core/src/worker/identity";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import type { Context, Hono } from "hono";
 import type { Kysely } from "kysely";
@@ -146,7 +147,7 @@ function defaultResolveDeps(
  *
  * The analytics reader is built **only when asked for**, which `readDelivery` does only when a type is
  * stored somewhere Cloudflare counts — so a Worker storing everything in R2 never reads a token it has no
- * use for. The token is the application's one `runtime` token (#728), through the one secrets reader; the
+ * use for. The token is the application's one `runtime` token, through the one secrets reader; the
  * account is the one media's own `media-storage-credentials` names, since the assets live there.
  */
 function defaultResolveDelivery(config: MediaConfig): (c: Context<PithyHonoEnv>) => Promise<DeliveryDeps> {
@@ -156,6 +157,7 @@ function defaultResolveDelivery(config: MediaConfig): (c: Context<PithyHonoEnv>)
     return {
       assets: storedAssets(mediaDatabase(env.DB)),
       config,
+      environment: workerIdentity(c.env).environment,
       source: async () => new CloudflareAnalyticsManager(await cloudflare()),
       now: () => new Date(),
     };

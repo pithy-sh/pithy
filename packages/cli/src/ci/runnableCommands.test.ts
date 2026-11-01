@@ -115,6 +115,8 @@ const REACH: Readonly<Record<string, readonly string[]>> = {
  * settings check rewrites `hostEnv.ts`'s command for the Worker it ran for.
  */
 const RUNTIME_LINES: Readonly<Record<string, string>> = {
+  "cloudflare/src/analytics/forbidden.ts":
+    "an analytics read's refusal for a runtime token without the grant, answered to a management client over HTTP",
   "core/src/capability/composition.ts": "a Workflow job's refusal at run time, in the host that runs it",
   "core/src/createBackend.ts": "the Worker's refusal of its own assembly, at boot",
   "core/src/controlPlane/error/errors.ts":
