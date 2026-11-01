@@ -30,6 +30,7 @@ import { callRpc } from "../rpc";
 import { type SessionNamespace, sessionMinter } from "../session/minter";
 import { requireAuth } from "./guard";
 import {
+  AdminGameList,
   AdminInviteCanceled,
   AdminInviteList,
   AdminQueue,
@@ -54,7 +55,7 @@ import {
   RoomCodeParams,
 } from "./schemas";
 import { MATCHMAKING_QUEUES_MODERATE_SCOPE, MATCHMAKING_QUEUES_READ_SCOPE } from "./scopes";
-import { adminInviteView, adminQueueTicket, adminRoomView, inviteView } from "./views";
+import { adminGameView, adminInviteView, adminQueueTicket, adminRoomView, inviteView } from "./views";
 
 /**
  * The matchmaking HTTP surface. Every route is `requireAuth()`-gated (no public surface) and binds to
@@ -78,6 +79,7 @@ import { adminInviteView, adminQueueTicket, adminRoomView, inviteView } from "./
  * Control-plane routes, gated by `requireControlPlane(scope)` and never by `requireAuth()`: the seam leaves
  * `c.var.auth` null by design, so a player gate on one would refuse every management call forever.
  *
+ *   GET  /admin/games                           → the configured games     (matchmaking:queues:read)
  *   GET  /admin/games/:game/queue               → who is waiting           (matchmaking:queues:read)      param GameParams
  *   GET  /admin/games/:game/rooms               → open rooms               (matchmaking:queues:read)      param GameParams, query AdminRoomsQuery
  *   GET  /admin/invites                         → pending invites, paged   (matchmaking:queues:read)      query AdminInvitesQuery
@@ -93,7 +95,7 @@ export interface MatchmakingRoutesOptions {
   basePath?: string;
   /**
    * The optional peers, read per request — `matchmaking()` hands the slot its `compose` hook fills, because
-   * `compose` runs after this factory. Never imported (#645): see `peers.ts`.
+   * `compose` runs after this factory. Never imported: see `peers.ts`.
    */
   peers?: () => MatchmakingPeers;
 }
@@ -110,6 +112,19 @@ export function registerMatchmakingRoutes(options: MatchmakingRoutesOptions): (a
 
   return (app) => {
     // --- Management (control plane) ---
+    app.get(
+      `${base}/admin/games`,
+      describeRoute({
+        summary: "List every configured game, with the key each per-game management route takes.",
+        description: "Read from the resolved config, so it needs no binding and answers the same on an empty database.",
+        verification: "control-plane",
+        scopes: [MATCHMAKING_QUEUES_READ_SCOPE],
+        responses: { 200: AdminGameList },
+      }),
+      requireControlPlane(MATCHMAKING_QUEUES_READ_SCOPE),
+      (c) => c.json({ games: config.games.map(adminGameView) } satisfies AdminGameList, 200),
+    );
+
     app.get(
       `${base}/admin/games/:game/queue`,
       describeRoute({

@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import type { OpenRoom } from "../code/room";
+import type { MatchmakingGame } from "../config/config";
 import type { Invite } from "../data/invite";
 import type { WaitingEntry } from "../queue/matching";
-import type { AdminInviteView, AdminQueueTicket, AdminRoomView, InviteView } from "./responses";
+import type { AdminGameView, AdminInviteView, AdminQueueTicket, AdminRoomView, InviteView } from "./responses";
 
 /**
  * The projections that fill the response schemas in `./responses`: each takes a stored row and returns
@@ -24,6 +25,18 @@ export function inviteView(invite: Invite): InviteView {
     sessionId: invite.sessionId,
     createdAt: invite.createdAt.toISOString(),
     respondedAt: invite.respondedAt === null ? null : invite.respondedAt.toISOString(),
+  };
+}
+
+/** One configured game as a management client reads it. Never the snapshot: that mints a session, nothing a client acts on. */
+export function adminGameView(game: MatchmakingGame): AdminGameView {
+  return {
+    key: game.key,
+    players: game.players,
+    skillPool: game.skillPool ?? null,
+    roomCodesEnabled: game.roomCodes.enabled,
+    queueEnabled: game.queue.enabled,
+    maxWaitSeconds: game.queue.maxWaitSeconds,
   };
 }
 
