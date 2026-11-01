@@ -12,7 +12,8 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
  *
  * ## Two scopes: one to look, one to act
  *
- * `matchmaking:queues:read` is who is waiting: the queue, the open rooms and the pending invites. A read, so
+ * `matchmaking:queues:read` is who is waiting: the configured games, each game's queue and open rooms, and the
+ * pending invites. A read, so
  * `pithy dashboard connect` grants it by default.
  *
  * `matchmaking:queues:moderate` is the two acts: cancel an invite, drop a player from a queue. Every route
@@ -22,7 +23,7 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
  * **Neither reaches the friend graph.** Friend edges are the players' own: no admin route reads or writes one.
  */
 
-/** Read who is waiting: a game's queue, its open rooms, and every pending invite. */
+/** Read who is waiting: the configured games, a game's queue, its open rooms, and every pending invite. */
 export const MATCHMAKING_QUEUES_READ_SCOPE: ControlPlaneScope = "matchmaking:queues:read";
 
 /** Cancel a pending invite, or drop a player from a game's queue. Each with a key, a reason and an audit event. */
@@ -42,6 +43,14 @@ export const MATCHMAKING_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  */
 export function matchmakingAdminRoutes(basePath: string): AdminRouteDeclaration[] {
   return [
+    {
+      method: "GET",
+      operation: "games.list",
+      path: `${basePath}/admin/games`,
+      scope: MATCHMAKING_QUEUES_READ_SCOPE,
+      kind: "reads",
+      summary: "Every configured game: its key, roster, rating pool, and whether rooms and the queue are open.",
+    },
     {
       method: "GET",
       operation: "queue.read",

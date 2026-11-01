@@ -112,6 +112,32 @@ export type QueueStanding = z.infer<typeof QueueStanding>;
  * Worker on whatever release it runs, so a field added here later is `.optional()` as well as `.nullable()`.
  */
 
+/** One configured game, as a management client needs it to read and act on that game. */
+export const AdminGameView = z
+  .object({
+    key: z.string().describe("The game's key. What every other management route takes as `:game`."),
+    players: z.number().int().min(2).describe("How many players form a match in this game."),
+    skillPool: z
+      .string()
+      .nullable()
+      .describe("The @pithy-sh/rating pool the open queue matches on, or null when it buckets by region only."),
+    roomCodesEnabled: z.boolean().describe("Whether a host may open a room and share a join code for this game."),
+    queueEnabled: z.boolean().describe("Whether players may join this game's open queue."),
+    maxWaitSeconds: z
+      .number()
+      .int()
+      .positive()
+      .describe("After this wait, in seconds, a queued player's skill band is unbounded and they match anyone."),
+  })
+  .describe("One configured matchmaking game: its roster, its rating pool, and which ways in are open.");
+export type AdminGameView = z.infer<typeof AdminGameView>;
+
+/** Every configured game. */
+export const AdminGameList = z
+  .object({ games: z.array(AdminGameView).describe("Every game this Worker matches, in config order.") })
+  .describe("The configured matchmaking games.");
+export type AdminGameList = z.infer<typeof AdminGameList>;
+
 /** One waiting player in a game's queue. */
 export const AdminQueueTicket = z
   .object({

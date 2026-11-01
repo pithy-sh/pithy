@@ -1390,8 +1390,6 @@
     "packages/ledger/vitest.config.ts": 2,
     "packages/matchmaking/src/capability.test.ts": 1,
     "packages/matchmaking/src/capability.ts": 3,
-    "packages/matchmaking/src/http/routeContract.test.ts": 1,
-    "packages/matchmaking/src/http/routes.ts": 1,
     "packages/matchmaking/src/http/routes.workers.test.ts": 2,
     "packages/matchmaking/src/index.test.ts": 2,
     "packages/matchmaking/src/index.ts": 2,
