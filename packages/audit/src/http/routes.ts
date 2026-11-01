@@ -19,12 +19,15 @@ import type { AuditDatabase } from "../data/tables";
 import { pageAuditEvents, readAuditEvent } from "../query";
 import { controlPlaneReach, controlPlaneReachSubjects } from "../reach";
 import { reachPatterns } from "../routePattern";
+import type { AuditSinks } from "../ship/sinks";
+import { readSinkStates } from "../ship/state";
 import { controlPlaneUsage } from "../usage";
 import { AUDIT_CHAIN_EXPORT_SCOPE, AUDIT_EVENT_DETAIL_READ_SCOPE, AUDIT_TRAIL_READ_SCOPE } from "./guards";
 import {
   AccessHistoryResponse,
   AuditEventResponse,
   AuditEventsResponse,
+  AuditSinksResponse,
   ChainExportResponse,
   ChainVerifyResponse,
   ControlPlaneReachResponse,
@@ -43,6 +46,7 @@ import {
   accessChangeView,
   auditEventDetailView,
   auditEventView,
+  auditSinkViews,
   controlPlaneReachSubjectView,
   controlPlaneReachView,
   controlPlaneUsageView,
@@ -63,9 +67,11 @@ import {
  *                                                       (control-plane: audit:events:export)      query: ChainVerifyQuery
  *   GET /audit/control-plane/export → one tenant's chain in canonical form, with its checkpoints
  *                                                       (control-plane: audit:events:export)      query: ChainExportQuery
+ *   GET /audit/control-plane/sinks → every declared sink and how delivery to it stands
+ *                                                       (control-plane: audit:events:read)        no input
  *
  * **All are reads, and there is nothing else.** The trail is append-only: no route here deletes,
- * edits, or prunes, because a management credential that could erase an audit row could erase the
+ * edits, or prunes, and no route adds, changes or removes a sink, because a management credential that could erase an audit row could erase the
  * evidence of its own use. Retention is a lifecycle concern for a Workflow, not a button on a
  * dashboard.
  *
@@ -106,6 +112,7 @@ export const AUDIT_ROUTES: readonly AuditRouteDeclaration[] = [
   { method: "GET", path: "/control-plane/usage", strategy: "control-plane", scope: AUDIT_TRAIL_READ_SCOPE },
   { method: "GET", path: "/control-plane/verify", strategy: "control-plane", scope: AUDIT_CHAIN_EXPORT_SCOPE },
   { method: "GET", path: "/control-plane/export", strategy: "control-plane", scope: AUDIT_CHAIN_EXPORT_SCOPE },
+  { method: "GET", path: "/control-plane/sinks", strategy: "control-plane", scope: AUDIT_TRAIL_READ_SCOPE },
 ];
 
 /** How the audit sub-router is built. */
@@ -125,10 +132,12 @@ export interface AuditRoutesOptions {
    */
   adminRoutes: () => readonly AdminRoute[];
   /**
-   * The checkpoint bucket for this request, or null when the Worker binds none (#822). Absent, verify checks links
+   * The checkpoint bucket for this request, or null when the Worker binds none. Absent, verify checks links
    * alone and says so, and an export carries no checkpoints.
    */
   checkpoints?: (c: Context<PithyHonoEnv>) => R2Bucket | null;
+  /** The sinks the trail ships to, as declared. Absent, the sinks read answers an empty list. */
+  sinks?: AuditSinks;
 }
 
 /**
@@ -178,6 +187,7 @@ export function registerAuditRoutes(options: AuditRoutesOptions): (app: Hono<Pit
   const database = options.database;
   const adminRoutes = options.adminRoutes;
   const checkpoints = options.checkpoints ?? (() => null);
+  const sinks = options.sinks ?? {};
 
   return (app) => {
     /**
@@ -273,7 +283,7 @@ export function registerAuditRoutes(options: AuditRoutesOptions): (app: Hono<Pit
     );
 
     /**
-     * CONTROL-PLANE READ (#831). Who could do what, over time: every membership, connection and key change in a
+     * CONTROL-PLANE READ. Who could do what, over time: every membership, connection and key change in a
      * window, oldest first, with its before and after — one SQL statement per page, never a walk of events here.
      * Behind the listing scope, not the detail one: it lifts named metadata keys and never an IP or a user-agent.
      */
@@ -328,7 +338,7 @@ export function registerAuditRoutes(options: AuditRoutesOptions): (app: Hono<Pit
     );
 
     /**
-     * CONTROL-PLANE READ (#828). What one credential reached — by tenant, action, method, route and outcome — over a
+     * CONTROL-PLANE READ. What one credential reached — by tenant, action, method, route and outcome — over a
      * window, in one SQL statement, never by paging events here. `subjects=true` expands one route into the subject
      * ids its called paths name. Behind the listing scope, not the detail one: the answer is the tenant, the route,
      * the scope and ids the listing already shows, and never an IP, a user-agent or any other metadata key.
@@ -401,7 +411,7 @@ export function registerAuditRoutes(options: AuditRoutesOptions): (app: Hono<Pit
     );
 
     /**
-     * CONTROL-PLANE READ (#812). Which scopes one connection exercised and was refused, by key, over a window —
+     * CONTROL-PLANE READ. Which scopes one connection exercised and was refused, by key, over a window —
      * counted in one SQL statement, never by paging events here. Behind the listing scope, not the detail one: the
      * answer is the scope, the key, and the last allowed call's method and path, and never an IP, a user-agent or any
      * other metadata key.
@@ -457,7 +467,7 @@ export function registerAuditRoutes(options: AuditRoutesOptions): (app: Hono<Pit
     );
 
     /**
-     * CONTROL-PLANE READ (#822). Walk one tenant's hash chain over a window — every link, every hash, the
+     * CONTROL-PLANE READ. Walk one tenant's hash chain over a window — every link, every hash, the
      * checkpoints covering it — and answer intact or the first break. Reads only: it proves the trail whole and
      * changes nothing.
      */
@@ -526,7 +536,7 @@ export function registerAuditRoutes(options: AuditRoutesOptions): (app: Hono<Pit
     );
 
     /**
-     * CONTROL-PLANE READ (#822). One page of one tenant's chain in canonical form, each event with its hash, the
+     * CONTROL-PLANE READ. One page of one tenant's chain in canonical form, each event with its hash, the
      * link before the page and the checkpoints covering it — what `pithy audit verify` checks offline. The IP,
      * user-agent and metadata values ride along only when the connection also holds the detail scope.
      */
@@ -584,6 +594,26 @@ export function registerAuditRoutes(options: AuditRoutesOptions): (app: Hono<Pit
           },
         });
         return c.json(page satisfies ChainExportResponse, 200);
+      },
+    );
+
+    /**
+     * CONTROL-PLANE READ. Every declared sink beside its own delivery row: one primary-key lookup per sink, bounded
+     * by the config. Not audited, unlike the trail's reads: it reads delivery state, never the trail, and a pane
+     * polling it would otherwise append to the trail, and ship to every sink, on each poll.
+     */
+    app.get(
+      `${base}/control-plane/sinks`,
+      describeRoute({
+        summary: "List every sink the trail ships to, each with its backlog, last delivery and dead letters.",
+        verification: "control-plane",
+        scopes: [AUDIT_TRAIL_READ_SCOPE],
+        responses: { 200: AuditSinksResponse },
+      }),
+      requireControlPlane(AUDIT_TRAIL_READ_SCOPE),
+      async (c) => {
+        const states = await readSinkStates(database(c), Object.keys(sinks));
+        return c.json({ sinks: auditSinkViews(sinks, states) } satisfies AuditSinksResponse, 200);
       },
     );
   };

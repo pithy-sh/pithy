@@ -5,6 +5,8 @@ import { AuditActorType, AuditMetadata, AuditOutcome, AuditSeverity } from "@pit
 import { AuditChainExport, ChainBreak, ChainLink } from "@pithy-sh/core/src/audit/chain";
 import { ControlPlaneActorKind } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { z } from "zod";
+import { SHIP_DELIVERY_STATES } from "../ship/delivery";
+import { AuditSinkProfile } from "../ship/sinks";
 
 /**
  * What the audit routes return, as Zod objects a management client can validate against.
@@ -421,3 +423,65 @@ export const ChainExportResponse = AuditChainExport.describe(
   "One page of one tenant's audit chain: canonical events, their hashes, the link before them and the checkpoints covering them.",
 );
 export type ChainExportResponse = z.output<typeof ChainExportResponse>;
+
+/** One declared sink, as `GET {base}/control-plane/sinks` shows it. Never its URL path, its query or its token. */
+export const AuditSinkView = z
+  .object({
+    name: z.string().describe("The sink's name, as `audit({ sinks })` declares it."),
+    profile: AuditSinkProfile.describe(
+      "The format the sink is delivered in: `splunk-hec`, `datadog-logs` or `webhook`.",
+    ),
+    host: z
+      .string()
+      .describe(
+        "The host the sink posts to, with its port when the URL names one. Never the path or query, which may carry a key.",
+      ),
+    detail: z
+      .boolean()
+      .describe(
+        "Whether the sink receives each event's IP, user-agent and metadata values, rather than their salted hashes.",
+      ),
+    actions: z
+      .array(z.string().describe("An action prefix the sink takes, e.g. `auth/`."))
+      .nullable()
+      .describe("The action prefixes the sink takes, or null when it takes every action the trail records."),
+    lastDeliveredAt: z.iso
+      .datetime()
+      .nullable()
+      .describe("When the sink last accepted a delivery, ISO-8601, or null when it never has."),
+    lastFailedAt: z.iso
+      .datetime()
+      .nullable()
+      .describe("When the sink last refused a delivery or could not be reached, ISO-8601, or null when it never has."),
+    retrying: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe(
+        "How many events are waiting on a retry to this sink: its backlog. The manifest's `auditShipBacklog` is the sum over every sink.",
+      ),
+    deadLettered: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe(
+        "How many events this sink never took: their retries ran out and they went to the dead-letter queue. The manifest's `auditShipDeadLettered` is the sum.",
+      ),
+    delivery: z
+      .enum(SHIP_DELIVERY_STATES)
+      .describe(
+        "How delivery to this sink stands: `failing` when its last attempt failed, `delivering` when it last took one, `idle` when it has never been attempted.",
+      ),
+  })
+  .describe("One sink the trail ships to: where, what it takes, and how delivery to it stands.");
+export type AuditSinkView = z.output<typeof AuditSinkView>;
+
+/** `GET {base}/control-plane/sinks`. */
+export const AuditSinksResponse = z
+  .object({
+    sinks: z
+      .array(AuditSinkView)
+      .describe("Every declared sink, in declaration order. Empty when the Worker ships nothing."),
+  })
+  .describe("Every sink the trail ships to, each with its backlog, last delivery and dead letters.");
+export type AuditSinksResponse = z.output<typeof AuditSinksResponse>;

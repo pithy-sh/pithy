@@ -16,7 +16,7 @@ import { audit_0005_chain } from "../migrations/0005_chain";
 import { queryAuditEvents } from "../query";
 import { AUDIT_SHIP_BINDING, AUDIT_SHIP_DLQ_BINDING, AUDIT_SHIP_MAX_RETRIES } from "./queue";
 
-/** Shipping through the composed capability (#824): declared in config, enqueued on every write, never in its way. */
+/** Shipping through the composed capability: declared in config, enqueued on every write, never in its way. */
 
 beforeEach(async () => {
   await env.DB.prepare("drop table if exists pithy_audit_events").run();
@@ -94,10 +94,10 @@ describe("audit({ sinks })", () => {
   test("no control-plane route creates, changes or removes a sink: every admin route is a read", () => {
     const routes = audit({ sinks: SINKS }).adminRoutes ?? [];
     expect(routes.length).toBeGreaterThan(0);
-    for (const route of routes) {
-      expect(route.method, route.path).toBe("GET");
-      expect(route.path, route.path).not.toMatch(/sink/i);
-    }
+    for (const route of routes) expect(route.method, route.path).toBe("GET");
+    expect(routes.filter((route) => /sink/i.test(route.path)).map((route) => [route.method, route.path])).toEqual([
+      ["GET", "/audit/control-plane/sinks"],
+    ]);
   });
 
   test("every event written is enqueued, once per sink that takes it, naming the event and nothing personal", async () => {
@@ -156,7 +156,7 @@ describe("audit({ sinks })", () => {
   });
 });
 
-describe("audit({ sinks }).auditRecorder — the recorder a Workflow step writes through (#622)", () => {
+describe("audit({ sinks }).auditRecorder — the recorder a Workflow step writes through", () => {
   const step = (actorId: string) => ({
     action: "auth/admin_user_purged",
     outcome: "success" as const,

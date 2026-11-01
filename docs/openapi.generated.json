@@ -12626,6 +12626,152 @@
         ]
       }
     },
+    "/audit/control-plane/sinks": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "operationId": "getAuditControlPlaneSinks",
+        "summary": "List every sink the trail ships to, each with its backlog, last delivery and dead letters.",
+        "responses": {
+          "200": {
+            "description": "Every sink the trail ships to, each with its backlog, last delivery and dead letters.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sinks": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "description": "The sink's name, as `audit({ sinks })` declares it."
+                          },
+                          "profile": {
+                            "type": "string",
+                            "enum": [
+                              "splunk-hec",
+                              "datadog-logs",
+                              "webhook"
+                            ],
+                            "description": "The format the sink is delivered in: `splunk-hec`, `datadog-logs` or `webhook`."
+                          },
+                          "host": {
+                            "type": "string",
+                            "description": "The host the sink posts to, with its port when the URL names one. Never the path or query, which may carry a key."
+                          },
+                          "detail": {
+                            "type": "boolean",
+                            "description": "Whether the sink receives each event's IP, user-agent and metadata values, rather than their salted hashes."
+                          },
+                          "actions": {
+                            "anyOf": [
+                              {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "description": "An action prefix the sink takes, e.g. `auth/`."
+                                }
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The action prefixes the sink takes, or null when it takes every action the trail records."
+                          },
+                          "lastDeliveredAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "When the sink last accepted a delivery, ISO-8601, or null when it never has."
+                          },
+                          "lastFailedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "When the sink last refused a delivery or could not be reached, ISO-8601, or null when it never has."
+                          },
+                          "retrying": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "How many events are waiting on a retry to this sink: its backlog. The manifest's `auditShipBacklog` is the sum over every sink."
+                          },
+                          "deadLettered": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "How many events this sink never took: their retries ran out and they went to the dead-letter queue. The manifest's `auditShipDeadLettered` is the sum."
+                          },
+                          "delivery": {
+                            "type": "string",
+                            "enum": [
+                              "delivering",
+                              "failing",
+                              "idle"
+                            ],
+                            "description": "How delivery to this sink stands: `failing` when its last attempt failed, `delivering` when it last took one, `idle` when it has never been attempted."
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "profile",
+                          "host",
+                          "detail",
+                          "actions",
+                          "lastDeliveredAt",
+                          "lastFailedAt",
+                          "retrying",
+                          "deadLettered",
+                          "delivery"
+                        ],
+                        "description": "One sink the trail ships to: where, what it takes, and how delivery to it stands."
+                      },
+                      "description": "Every declared sink, in declaration order. Empty when the Worker ships nothing."
+                    }
+                  },
+                  "required": [
+                    "sinks"
+                  ],
+                  "description": "Every sink the trail ships to, each with its backlog, last delivery and dead letters."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "audit:events:read"
+        ]
+      }
+    },
     "/consent/purposes": {
       "get": {
         "tags": [

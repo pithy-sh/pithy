@@ -49,7 +49,7 @@ export const AUDIT_MIGRATION_ORDER = 250;
  * database (`app`, the `DB` binding) by default — so the audit migration tracks alongside the app's
  * in one `pithy_migrations` table rather than fighting it on a second provider over the same binding.
  * The physical binding is config-selectable; this registry key is the coordination point capabilities
- * use to share one database (CLAUDE.md §Data layer; isolating audit into its own D1 is a later issue).
+ * use to share one database (CLAUDE.md §Data layer).
  */
 const AUDIT_DATABASE_NAME = "app" as const;
 
@@ -89,7 +89,7 @@ export type AuditConfigInput = z.input<typeof AuditConfig>;
 export interface AuditCapability extends Capability {
   /** The D1 binding the audit table lives in (the resolved `database` config). */
   auditDatabase: string;
-  /** The sinks the trail ships to (#824), as declared — what `pithy doctor` lists. */
+  /** The sinks the trail ships to, as declared — what `pithy doctor` lists. */
   auditSinks: AuditSinks;
 }
 
@@ -103,7 +103,7 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
   const resolved = AuditConfig.parse(config);
   const sinks = resolved.sinks;
   const ships = Object.keys(sinks).length > 0;
-  // The tokens each sink reads, declared on audit's own slice (#824); empty, and not declared, when nothing ships.
+  // The tokens each sink reads, declared on audit's own slice; empty, and not declared, when nothing ships.
   const sinkSecrets = sinkSecretsRegistry(sinks);
   const databaseOf = (c: { var: { db: unknown } }) =>
     (c.var.db as Record<typeof AUDIT_DATABASE_NAME, AuditDatabase>)[AUDIT_DATABASE_NAME];
@@ -112,16 +112,14 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
   let adminRoutes: readonly AdminRoute[] = auditAdminRoutes(resolved.basePath);
   const capability = defineCapability({
     name: "audit",
-    // The package this capability ships in and the version it ships at, both stamped by
-    // `scripts/stampVersions.ts` — a Worker cannot read its own package.json. Reported per capability by
-    // the control-plane manifest, and reported together: a release feed is keyed by package name, so the
-    // version alone leaves a client guessing the key (#626).
+    // Stamped by `scripts/stampVersions.ts`: a Worker cannot read its own package.json. Reported together, because a
+    // release feed is keyed by package name and the version alone leaves a client guessing the key.
     version: PACKAGE_VERSION,
     package: PACKAGE_NAME,
     config: AuditConfig,
     requiredBindings: [
       { type: "d1", name: resolved.database },
-      // The checkpoint bucket (#822): each tenant chain's head and count, written on a schedule by the checkpoint
+      // The checkpoint bucket: each tenant chain's head and count, written on a schedule by the checkpoint
       // host and read back by the verify and export routes. Optional, so a Worker not yet provisioned still records
       // every event and still verifies links — it says so, as `checkpointStore: "absent"`.
       { type: "r2", name: AUDIT_CHECKPOINT_BINDING, optional: true },
@@ -130,12 +128,12 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
       ...workflowBindings(auditWorkflows),
       // The retention prune's binding: optional, and bound by the adopter to the class their own Worker exports.
       ...workflowBindings(auditAppWorkflows),
-      // The shipping queue and its dead-letter queue (#824), only when a sink is declared: Cloudflare Queues needs
+      // The shipping queue and its dead-letter queue, only when a sink is declared: Cloudflare Queues needs
       // the Workers Paid plan, so a project that ships nothing binds neither. Required when declared — a sink that
       // could never be enqueued to is a config that does not do what it says.
       ...shipBindings(sinks),
     ],
-    // A sink's token is read through `@pithy-sh/secrets`, so a Worker that ships needs it composed (#824).
+    // A sink's token is read through `@pithy-sh/secrets`, so a Worker that ships needs it composed.
     ...(ships
       ? {
           dependsOn: ["secrets"],
@@ -162,10 +160,10 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
           }),
         }
       : {}),
-    // The checkpoint job (#822), hosted by the prebuilt audit worker and fired hourly from its cron.
+    // The checkpoint job, hosted by the prebuilt audit worker and fired hourly from its cron.
     // And the retention prune, hosted by the adopter's own Worker and fired daily from its cron.
     workflows: { ...auditWorkflows, ...auditAppWorkflows },
-    // `pithy doctor` says whether object lock is in force on each deployed environment's checkpoint bucket (#822).
+    // `pithy doctor` says whether object lock is in force on each deployed environment's checkpoint bucket.
     settings: checkpointLockCheck(),
     databases: {
       [AUDIT_DATABASE_NAME]: {
@@ -184,9 +182,9 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
     },
     seeds: [auditExampleSeed],
     // Every event where a person is the actor is kept through their purge, as the record of who acted, and exported
-    // on an access request with the basis that keeps it (#814).
+    // on an access request with the basis that keeps it.
     purge: [auditUserPurge(resolved.database)],
-    // The same recorder for code with no request — a Workflow step, which has `env` and nothing else (#622).
+    // The same recorder for code with no request — a Workflow step, which has `env` and nothing else.
     // Built over the binding this config names, stamped with the env's own origin, and non-fatal on the same
     // terms as the middleware's: a missing binding or a failed insert drops the event and logs it, and the
     // step it records stands. Found by core's `composedAuditEmit`, so the step imports nothing from here.
@@ -206,14 +204,14 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
         });
       };
     },
-    // Where a resource's events sit in their chains, for the control plane's erasure attestation (#823). Found by
+    // Where a resource's events sit in their chains, for the control plane's erasure attestation. Found by
     // core's `composedAuditCitations`, so the attestation imports nothing from here.
     auditCitations: auditCitationsFor(resolved.database),
     // Built from the resolved `basePath`, never the default: an adopter who mounts this at `/trail`
     // gets a manifest naming their paths, where a client assuming the default would 404.
     adminRoutes: auditAdminRoutes(resolved.basePath),
     // The manifest's routes, gathered once at startup: a credential's reach groups the paths it called by the routes
-    // this Worker declares (#828), and only `compose` sees every capability.
+    // this Worker declares, and only `compose` sees every capability.
     compose: ({ capabilities }) => {
       adminRoutes = capabilities.flatMap((capability) => capability.adminRoutes ?? []);
     },
@@ -228,13 +226,14 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
         const bucket = (c.env as Record<string, unknown> | undefined)?.[AUDIT_CHECKPOINT_BINDING];
         return typeof bucket === "object" && bucket !== null ? (bucket as R2Bucket) : null;
       },
+      sinks,
     }),
     // Replace the no-op `emit` seam with a recorder over this request's audit database. The database
     // is resolved lazily inside the closure — only when a route actually emits — so a request that
     // never audits never triggers the lazy Kysely build. Runs after createBackend's default-setter
     // (which seeds `db`, `log`, and the no-op `emit`), so `c.var.db` and `c.var.log` are ready by the
-    // time emit is called. A non-fatal write failure routes through the logger seam — replacing the
-    // former `console.error` stopgap — as a namespaced `audit/*` record on the `audit` sub-logger.
+    // time emit is called. A non-fatal write failure routes through the logger seam as a namespaced
+    // `audit/*` record on the `audit` sub-logger.
     middleware: [
       (app) => {
         app.use("*", async (c, next) => {
@@ -244,7 +243,7 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
           // context. `workerIdentity` never throws and returns nulls for whatever is unstamped, so a
           // Worker predating these vars still records its events — just without an origin.
           // The parameter is annotated: `AuditEmit` is generic over `metadata` so a call site carrying a
-          // privacy-marked value fails to compile (#132), and the recorder is the one place every event lands.
+          // privacy-marked value fails to compile, and the recorder is the one place every event lands.
           const ship = shipperFor(c.env as Record<string, unknown> | undefined, sinks);
           const onShipError = (error: unknown) =>
             c.var.log.child("audit").error("audit shipment not enqueued", { error });
@@ -252,7 +251,7 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
             recordAuditEvent(databaseOf(c), event, {
               origin: workerIdentity(c.env),
               onError: (error) => c.var.log.child("audit").error("audit event dropped", { error }),
-              // Enqueued after the response where the runtime allows it (#824), so shipping never holds the
+              // Enqueued after the response where the runtime allows it, so shipping never holds the
               // request it records; awaited only where there is no execution context to hand it to.
               ...(ship
                 ? {

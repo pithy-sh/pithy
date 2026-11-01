@@ -80,7 +80,7 @@ A security team watches its SIEM, not each vendor's console. `@pithy-sh/audit` s
 
 **How the receiver checks it.** Every shipped event is the chain's canonical form: its `eventId`, its tenant's `seq`, the `prev` hash and its own `hash`. De-duplicate a redelivery on `eventId`. A tenant's `seq` that skips, or a `prev` that names a hash you never received, is where to look. Two kinds of skip are expected: events the CLI records (`pithy deploy`, `pithy migrate`, `pithy secrets`) are in the chain and are not shipped, and a sink with an `actions` filter skips what it does not take. Reconcile a skip against an export of that range, checked with `pithy audit verify`; a missing event that is neither is a loss. With the values, recompute the commitments too.
 
-**How you know it is flowing.** Audit's manifest entry reports the backlog of events waiting on a retry, the count given up on to the dead-letter queue, and whether delivery is `delivering`, `failing` or `idle`. `pithy doctor` lists every sink and whether each environment holds its token.
+**How you know it is flowing.** Audit's manifest entry reports the backlog of events waiting on a retry, the count given up on to the dead-letter queue, and whether delivery is `delivering`, `failing` or `idle`, each across every sink. `GET {audit}/control-plane/sinks` answers the same per sink, with when it last took a delivery and when it last refused one or could not be reached, so a failing sink is named rather than folded into a total. `pithy doctor` lists every sink and whether each environment holds its token.
 
 Shipping delivers the trail. It changes nothing in it.
 

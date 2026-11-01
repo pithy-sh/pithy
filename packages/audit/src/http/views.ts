@@ -4,12 +4,16 @@
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { AccessHistoryRow } from "../accessHistory";
 import type { AuditEventRow } from "../data/auditEvent";
+import type { AuditSinkStateRow } from "../data/sinkState";
 import type { ControlPlaneReachRow, ControlPlaneReachSubjectRow } from "../reach";
+import { shipDelivery } from "../ship/delivery";
+import type { AuditSinks } from "../ship/sinks";
 import type { ControlPlaneUsageRow } from "../usage";
 import type {
   AccessChangeView,
   AuditEventDetailView,
   AuditEventView,
+  AuditSinkView,
   ControlPlaneReachSubjectView,
   ControlPlaneReachView,
   ControlPlaneUsageView,
@@ -89,7 +93,7 @@ export function auditEventView(row: AuditEventRow): AuditEventView {
     // not personal data — and a client that can filter by tenant but cannot see which tenant a row
     // carries has to take the filter on trust, which is how a row ends up drawn under the wrong heading.
     tenant: row.tenant,
-    // Its position in its tenant's chain, or null: written before the chain began (#822). The mark, on the listing.
+    // Its position in its tenant's chain, or null: written before the chain began. The mark, on the listing.
     chainSeq: row.chainSeq,
   };
 }
@@ -100,7 +104,7 @@ export function auditEventDetailView(row: AuditEventRow): AuditEventDetailView {
 }
 
 /**
- * Project one access change (#831) into the wire union, by what changed.
+ * Project one access change into the wire union, by what changed.
  *
  * The statement already read nothing but the named metadata keys, so this drops nothing personal; what it does is
  * keep each subject's fields to that subject, so a member change never carries a null `scopesBefore` a client could
@@ -152,7 +156,7 @@ export function accessChangeView(row: AccessHistoryRow): AccessChangeView {
 }
 
 /**
- * Project one reach row (#828). Field for field, with the instants as ISO-8601: the statement already read nothing
+ * Project one reach row. Field for field, with the instants as ISO-8601: the statement already read nothing
  * but the scope, the key, the method and the path out of `metadata`, and the tenant out of the handler's events, so
  * there is nothing here to drop.
  */
@@ -172,7 +176,7 @@ export function controlPlaneReachView(row: ControlPlaneReachRow): ControlPlaneRe
   };
 }
 
-/** Project one subject row (#828), field for field, the same way — never a spread a new field would ride out on. */
+/** Project one subject row, field for field, the same way — never a spread a new field would ride out on. */
 export function controlPlaneReachSubjectView(row: ControlPlaneReachSubjectRow): ControlPlaneReachSubjectView {
   return {
     tenant: row.tenant,
@@ -192,7 +196,7 @@ export function controlPlaneReachSubjectView(row: ControlPlaneReachSubjectRow): 
 }
 
 /**
- * Project one usage row (#812). Field for field, with the instants as ISO-8601: the aggregate already read nothing but
+ * Project one usage row. Field for field, with the instants as ISO-8601: the aggregate already read nothing but
  * the scope, the key, and the last allowed call's method and path out of `metadata`, so there is nothing here to drop.
  */
 export function controlPlaneUsageView(row: ControlPlaneUsageRow): ControlPlaneUsageView {
@@ -206,4 +210,36 @@ export function controlPlaneUsageView(row: ControlPlaneUsageRow): ControlPlaneUs
     lastAllowedPath: row.lastAllowedPath,
     lastDeniedAt: row.lastDeniedAt?.toISOString() ?? null,
   };
+}
+
+/**
+ * Project the declared sinks, in declaration order, each beside its own state row. A sink with no row has never been
+ * attempted and answers null times, zero counts and `idle`; a row whose sink is no longer declared is not answered.
+ *
+ * Named fields, never a spread of the config: a sink's URL path and query may carry a key, and its secret name says
+ * where its token lives, so neither leaves. The host is the URL's host and port, as `pithy doctor` prints it.
+ */
+export function auditSinkViews(sinks: AuditSinks, states: readonly AuditSinkStateRow[]): AuditSinkView[] {
+  const byName = new Map(states.map((state) => [state.sink, state]));
+  return Object.entries(sinks).map(([name, sink]) => {
+    const state = byName.get(name) ?? {
+      sink: name,
+      lastDeliveredAt: null,
+      lastFailedAt: null,
+      retrying: 0,
+      deadLettered: 0,
+    };
+    return {
+      name,
+      profile: sink.profile,
+      host: new URL(sink.url).host,
+      detail: sink.detail,
+      actions: sink.actions === undefined ? null : [...sink.actions],
+      lastDeliveredAt: state.lastDeliveredAt?.toISOString() ?? null,
+      lastFailedAt: state.lastFailedAt?.toISOString() ?? null,
+      retrying: state.retrying,
+      deadLettered: state.deadLettered,
+      delivery: shipDelivery([state]),
+    };
+  });
 }

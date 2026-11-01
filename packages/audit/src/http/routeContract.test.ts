@@ -95,6 +95,7 @@ describe("audit route contract", () => {
       "/audit/control-plane/access-history",
       "/audit/control-plane/export",
       "/audit/control-plane/reach",
+      "/audit/control-plane/sinks",
       "/audit/control-plane/usage",
       "/audit/control-plane/verify",
       "/audit/events",
@@ -200,8 +201,8 @@ describe("the advertised admin surface", () => {
   });
 
   test("every mounted admin route is actually advertised", () => {
-    // The other direction. Since #468 the CORS surface derives from `adminRoutes`, so a guarded route
-    // nobody declared gets no preflight and no browser reaches it — while this suite stays green.
+    // The other direction. The CORS surface derives from `adminRoutes`, so a guarded route nobody
+    // declared gets no preflight and no browser reaches it — while this suite stays green.
     const app = new Hono<PithyHonoEnv>();
     capability.routes?.(app);
     const undeclared = undeclaredAdminRoutes(app as unknown as Hono<never>, [capability]);
@@ -228,7 +229,7 @@ describe("the advertised admin surface", () => {
     // One `audit:read` would mean a credential issued to render a recent-activity pane could also
     // harvest every client IP, user-agent, and capability metadata bag in the project.
     expect(AUDIT_TRAIL_READ_SCOPE).not.toBe(AUDIT_EVENT_DETAIL_READ_SCOPE);
-    // The chain's export is a third (#822): the trail in bulk, its personal values still behind the detail scope.
+    // The chain's export is a third: the trail in bulk, its personal values still behind the detail scope.
     expect(new Set(AUDIT_CONTROL_PLANE_SCOPES).size).toBe(3);
     // `scopeCovers` matches exactly, so neither is a prefix of a grant that would confer the other.
     expect(AUDIT_CONTROL_PLANE_SCOPES.every((scope) => scope.startsWith("audit:"))).toBe(true);
