@@ -56,16 +56,15 @@ const ENGLISH = new Map<string, string>(
  * And the code itself also needs: the Spanish sentence in `packages/i18n/src/catalogs/es/errors.ts`,
  * and `bun run docs-catalog` to regenerate `docs/catalog.generated.json`.
  */
-const KIT_ERROR_CODE_COUNT = 165;
+const KIT_ERROR_CODE_COUNT = 167;
 
 /**
  * The code that forced the grammar wide enough to spell the taxonomy.
  *
  * `MessageKey`'s domain segment was `[a-z][a-z0-9]*` while its tail admitted `_`, so this — a kit error
  * code since long before the catalog grammar existed, and one of the codes a caller meets most — was a
- * valid error code and an invalid catalog key. `core` widened the domain to match its own tail (#441),
- * which is what turns the assertions below from a subset with an exception written under it into the
- * plain property: **every** kit code is spellable as a key. Named rather than left implicit, because an
+ * valid error code and an invalid catalog key. `core`'s domain now matches its own tail, which is what
+ * makes the assertions below the plain property: **every** kit code is spellable as a key. Named rather than left implicit, because an
  * `_` back out of that regex would otherwise fail with a list of codes and no account of why they matter.
  */
 const WIDENED_THE_DOMAIN = "rate_limit/exceeded";
@@ -159,7 +158,7 @@ describe("every entry is Spanish a caller can read", () => {
 });
 
 /**
- * The placeholder invariant, rewritten now that there is something to check it against.
+ * The placeholder invariant.
  *
  * The obvious invariant — every `{placeholder}` in a Spanish entry also appears in the English one —
  * still has nothing to read. There is no English catalog: a payload carries its English `message` from
@@ -167,13 +166,7 @@ describe("every entry is Spanish a caller can read", () => {
  * for a code exists in the throw sites themselves. `params` is typed as an open
  * `Record<string, string | number | boolean>` precisely so a throw site can name what it likes.
  *
- * For a year the sound gate was therefore the *absence* of placeholders, justified by a fact that was
- * true at the time: no throw site in this repository passed `params` at all. `@pithy-sh/cloudflare`'s
- * `cloudflareRefusal` is the first that does (#534), which falsified the justification — and the old
- * test said in as many words what would replace it: "every placeholder here is one that some throw
- * site passes for this code, checkable then because there is finally something to read".
- *
- * `core`'s `GUARANTEED_ERROR_PARAMS` is that something. It is the declaration a call could not be: the
+ * `core`'s `GUARANTEED_ERROR_PARAMS` is what there is to read instead. It is the declaration a call could not be: the
  * names a code's throw sites pass on **every** path, degraded ones included. So the gate below is the
  * predicted one, in both directions — a locale may name only a guaranteed param, and it fails the
  * moment somebody invents a placeholder ahead of the value that fills it, exactly as before.

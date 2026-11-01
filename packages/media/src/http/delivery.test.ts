@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { CloudflareAnalyticsManager } from "@pithy-sh/cloudflare/src/analytics/analyticsManager";
 import { IMAGE_REQUESTS, STREAM_MINUTES } from "@pithy-sh/cloudflare/src/analytics/datasets";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
@@ -9,7 +10,7 @@ import type { ControlPlaneVerifier } from "@pithy-sh/core/src/controlPlane/http/
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { Hono } from "hono";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import type { DeliveryDeps, DeliverySource } from "../analytics/delivery";
 import { MediaConfig } from "../config/config";
 import { extendMediaAsset } from "../data/extend";
@@ -52,7 +53,11 @@ function context(granted: string[]): ControlPlaneContext {
   };
 }
 
-function harness(granted: string[] = [MEDIA_DELIVERY_READ_SCOPE], source: Partial<DeliverySource> = {}) {
+function harness(
+  granted: string[] = [MEDIA_DELIVERY_READ_SCOPE],
+  source: Partial<DeliverySource> = {},
+  reader?: () => Promise<DeliverySource>,
+) {
   const events: AuditEventInput[] = [];
   const from: DeliverySource = {
     datasetLimits: vi.fn(async () => ({ [STREAM_MINUTES]: LIMITS, [IMAGE_REQUESTS]: IMAGE_LIMITS })),
@@ -81,7 +86,8 @@ function harness(granted: string[] = [MEDIA_DELIVERY_READ_SCOPE], source: Partia
     assets: async (type) =>
       type === "video" ? [{ id: video.id, name: video.name, storageKey: video.storageKey }] : [],
     config,
-    source: async () => from,
+    environment: "staging",
+    source: reader ?? (async () => from),
     now: () => now,
   };
   registerMediaRoutes({
@@ -160,5 +166,55 @@ describe("GET /media/admin/delivery (#728)", () => {
     expect(event?.metadata).toMatchObject({ videos: 1, images: 0 });
     expect(JSON.stringify(event?.metadata)).not.toContain("Launch");
     expect(JSON.stringify(event?.metadata)).not.toContain("61");
+  });
+
+  describe("a runtime token without Account Analytics Read", () => {
+    /** The real reader, over the answer Cloudflare's GraphQL endpoint gives `fetch`. */
+    function cloudflareAnswers(status: number, body: unknown) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }),
+        ),
+      );
+      return harness([MEDIA_DELIVERY_READ_SCOPE], {}, async () => {
+        return new CloudflareAnalyticsManager({ accountId: "acct-1", apiToken: "tok-1" });
+      });
+    }
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    test.each([
+      [
+        "GraphQL's authz",
+        200,
+        { data: null, errors: [{ message: "not authorized for that account", extensions: { code: "authz" } }] },
+      ],
+      ["a 403", 403, { success: false, errors: [{ code: 10000, message: "Authentication error" }], messages: [] }],
+    ])(
+      "answers media/analytics_forbidden for %s, naming the permission and the rotate",
+      async (_name, status, body) => {
+        const response = await cloudflareAnswers(status, body).app.request("/media/admin/delivery");
+        expect(response.status).toBe(409);
+        const { error } = (await response.json()) as { error: Record<string, unknown> };
+        expect(error.code).toBe("media/analytics_forbidden");
+        expect(error.params).toEqual({ permission: "Account Analytics Read" });
+        expect(error.message).toContain("Account Analytics Read");
+        expect(error.message).toContain("`pithy token rotate runtime --env staging`");
+        expect(error).not.toHaveProperty("action");
+        expect(error).not.toHaveProperty("detail");
+      },
+    );
+
+    test("a spent rate budget is still the retryable upstream failure", async () => {
+      const response = await cloudflareAnswers(200, {
+        data: null,
+        errors: [{ message: "Rate limiter budget depleted.", extensions: { code: "budget" } }],
+      }).app.request("/media/admin/delivery");
+      expect(response.status).toBe(502);
+      expect(((await response.json()) as { error: { code: string } }).error.code).toBe("core/upstream_failed");
+    });
   });
 });

@@ -121,3 +121,24 @@ export class TurnstileAnalyticsUnavailableError extends PithyError {
     );
   }
 }
+
+/**
+ * Cloudflare refused the Turnstile analytics read because this Worker's `runtime` token lacks the grant it
+ * needs. A 409 rather than a 403: the caller's control-plane token is fine, and it is the account's own
+ * token that rules the read out. The message names the permission and the rotate that adds it.
+ */
+export class TurnstileAnalyticsForbiddenError extends PithyError {
+  constructor(args: TurnstileErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "turnstile/analytics_forbidden",
+        status: 409,
+        message: args.message ?? "This Worker's runtime token may not read Turnstile analytics.",
+        action: args.action,
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}

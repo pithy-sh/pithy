@@ -3,6 +3,7 @@
 
 import type { CloudflareAnalyticsManager, DatasetLimits } from "@pithy-sh/cloudflare/src/analytics/analyticsManager";
 import { type AnalyticsDataset, IMAGE_REQUESTS, STREAM_MINUTES } from "@pithy-sh/cloudflare/src/analytics/datasets";
+import { guardForbidden, type RefuseForbidden } from "@pithy-sh/cloudflare/src/analytics/forbidden";
 import {
   type AnalyticsWindow,
   checkAnalyticsWindow,
@@ -11,12 +12,16 @@ import {
 } from "@pithy-sh/cloudflare/src/analytics/window";
 import type { MediaConfig } from "../config/config";
 import type { MediaType, StorageBackend } from "../data/enums";
-import { MediaAnalyticsUnavailableError, MediaAnalyticsWindowError } from "../error/errors";
+import {
+  MediaAnalyticsForbiddenError,
+  MediaAnalyticsUnavailableError,
+  MediaAnalyticsWindowError,
+} from "../error/errors";
 import type { ImageDelivery, MediaDeliveryResponse, VideoDelivery } from "../http/responses";
 import type { StoredAssetReader } from "./assets";
 
 /**
- * **What this environment's media was served, read from Cloudflare and joined to its own assets (#728).**
+ * **What this environment's media was served, read from Cloudflare and joined to its own assets.**
  *
  * The datasets are account-wide: a staging and a production Worker on one account read the same numbers.
  * The join is what scopes them. Each environment has its own database, so the asset rows read here are
@@ -37,6 +42,8 @@ export interface DeliveryDeps {
   assets: StoredAssetReader;
   /** The resolved media config — which backend each type is stored in. */
   config: MediaConfig;
+  /** The environment this Worker serves, from its stamped `ENVIRONMENT` var. Null when it names none. */
+  environment: string | null;
   /**
    * The analytics reader, built only when a type is stored somewhere Cloudflare counts. Lazy, so a Worker
    * storing everything in R2 never reads the token it would need.
@@ -60,6 +67,9 @@ const IMAGES: Measured = { type: "image", backend: "cf-images", dataset: IMAGE_R
 
 /** A refused window, as media's own code. */
 const refuseWindow = (refusal: WindowRefusal) => new MediaAnalyticsWindowError(refusal);
+
+/** A runtime token without the analytics grant, as media's own code. */
+const refuseForbidden: RefuseForbidden = (refusal, options) => new MediaAnalyticsForbiddenError(refusal, options);
 
 /**
  * The window a request asks for, through the shared rule (`@pithy-sh/cloudflare/src/analytics/window`): the
@@ -89,12 +99,22 @@ function storedInR2(type: "Videos" | "Images", product: string, key: string) {
  * A type stored in R2 is named as unavailable and why — never zero, which would be a claim. A dataset
  * Cloudflare does not serve to this account is a refusal for the same reason: under a Customer Metadata
  * Boundary outside the US both datasets are absent, and "nothing was watched" is a different sentence
- * from "your metadata boundary does not carry this".
+ * from "your metadata boundary does not carry this". A runtime token without the analytics grant is
+ * `media/analytics_forbidden`, naming the permission and the rotate that adds it.
  */
 export async function readDelivery(
   deps: DeliveryDeps,
   input: { since?: Date; until?: Date },
 ): Promise<MediaDeliveryResponse> {
+  return guardForbidden(
+    () => deliveryOf(deps, input),
+    { environment: deps.environment, read: "the delivery analytics read" },
+    refuseForbidden,
+  );
+}
+
+/** {@link readDelivery}, before a missing grant is named. */
+async function deliveryOf(deps: DeliveryDeps, input: { since?: Date; until?: Date }): Promise<MediaDeliveryResponse> {
   const now = deps.now();
   const window = resolveWindow(input, now);
   const measured = [

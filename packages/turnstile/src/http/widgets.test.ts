@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { CloudflareAnalyticsManager } from "@pithy-sh/cloudflare/src/analytics/analyticsManager";
 import { TURNSTILE_EVENTS } from "@pithy-sh/cloudflare/src/analytics/datasets";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
@@ -8,7 +9,7 @@ import type { ControlPlaneVerifier } from "@pithy-sh/core/src/controlPlane/http/
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { Hono } from "hono";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import type { WidgetDeps, WidgetSource } from "../analytics/widgets";
 import { TurnstileConfig } from "../config/config";
 import { TURNSTILE_TEST_KEYS } from "../provision/testKeys";
@@ -37,12 +38,16 @@ function context(granted: string[]): ControlPlaneContext {
   };
 }
 
-function harness(environment: string | null, granted: string[] = [TURNSTILE_WIDGETS_READ_SCOPE]) {
+function harness(
+  environment: string | null,
+  granted: string[] = [TURNSTILE_WIDGETS_READ_SCOPE],
+  reader?: () => Promise<WidgetSource>,
+) {
   const from: WidgetSource = {
     datasetLimits: vi.fn(async () => ({ [TURNSTILE_EVENTS]: LIMITS })),
     turnstileEvents: vi.fn(async () => new Map([["0xREAL", new Map([["challenge_issued", 3]])]])),
   };
-  const source = vi.fn(async () => from);
+  const source = vi.fn(reader ?? (async () => from));
   const verify: ControlPlaneVerifier = async (_request, requirement) => {
     if (typeof requirement === "string" && !granted.includes(requirement)) throw new Error(`ungranted ${requirement}`);
     return context(granted);
@@ -109,5 +114,55 @@ describe(`GET ${TURNSTILE_WIDGETS_PATH} (#731)`, () => {
     const response = await h.app.request(TURNSTILE_WIDGETS_PATH);
     expect(response.status).toBeGreaterThanOrEqual(400);
     expect(h.source).not.toHaveBeenCalled();
+  });
+
+  describe("a runtime token without Account Analytics Read", () => {
+    /** The real reader, over the answer Cloudflare's GraphQL endpoint gives `fetch`. */
+    function cloudflareAnswers(environment: string | null, status: number, body: unknown) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }),
+        ),
+      );
+      return harness(environment, [TURNSTILE_WIDGETS_READ_SCOPE], async () => {
+        return new CloudflareAnalyticsManager({ accountId: "acct-1", apiToken: "tok-1" });
+      });
+    }
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    test.each([
+      [
+        "GraphQL's authz",
+        200,
+        { data: null, errors: [{ message: "not authorized for that account", extensions: { code: "authz" } }] },
+      ],
+      ["a 401", 401, { success: false, errors: [{ code: 10000, message: "Authentication error" }], messages: [] }],
+    ])(
+      "answers turnstile/analytics_forbidden for %s, naming the permission and the rotate",
+      async (_name, status, body) => {
+        const response = await cloudflareAnswers("prod", status, body).app.request(TURNSTILE_WIDGETS_PATH);
+        expect(response.status).toBe(409);
+        const { error } = (await response.json()) as { error: Record<string, unknown> };
+        expect(error.code).toBe("turnstile/analytics_forbidden");
+        expect(error.params).toEqual({ permission: "Account Analytics Read" });
+        expect(error.message).toContain("Account Analytics Read");
+        expect(error.message).toContain("`pithy token rotate runtime --env prod`");
+        expect(error).not.toHaveProperty("action");
+        expect(error).not.toHaveProperty("detail");
+      },
+    );
+
+    test("a spent rate budget is still the retryable upstream failure", async () => {
+      const response = await cloudflareAnswers("prod", 200, {
+        data: null,
+        errors: [{ message: "Rate limiter budget depleted.", extensions: { code: "budget" } }],
+      }).app.request(TURNSTILE_WIDGETS_PATH);
+      expect(response.status).toBe(502);
+      expect(((await response.json()) as { error: { code: string } }).error.code).toBe("core/upstream_failed");
+    });
   });
 });

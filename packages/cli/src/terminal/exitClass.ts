@@ -8,13 +8,11 @@ import { z } from "zod";
 import { BROKEN_PIPE } from "./brokenPipe";
 
 /**
- * **What a failed run's exit code says to do next (#697).**
+ * **What a failed run's exit code says to do next.**
  *
- * Every failure used to exit 1. A bad flag, a project nobody provisioned, a Cloudflare outage and a step
- * only a person may take all looked the same, so a script could only stop, and an agent could only guess
- * whether to fix its call, run something first, retry, or ask. Each kind now has its own number, and each
- * kit error code has exactly one kind — {@link EXIT_CLASS_BY_CODE}, checked against the union by the
- * compiler and by `exitClass.test.ts`.
+ * A script or an agent acts differently on a bad flag, a project nobody provisioned, a Cloudflare outage and
+ * a step only a person may take, so each kind has its own number, and each kit error code has exactly one
+ * kind — {@link EXIT_CLASS_BY_CODE}, checked against the union by the compiler and by `exitClass.test.ts`.
  *
  * **It lives in the CLI, not on `ErrorPayload`.** An exit code is a fact about a process. A Worker that
  * throws the same `core/not_found` answers an HTTP request with it and never exits, and the 18 capability
@@ -173,7 +171,9 @@ export const EXIT_CLASS_BY_CODE = {
   "media/not_found": "precondition",
   "media/forbidden": "precondition",
   "media/analytics_unavailable": "precondition",
+  "media/analytics_forbidden": "precondition",
   "turnstile/analytics_unavailable": "precondition",
+  "turnstile/analytics_forbidden": "precondition",
   "multiplayer/game_not_found": "precondition",
   "multiplayer/invalid_transition": "precondition",
   "multiplayer/not_a_member": "precondition",
@@ -289,7 +289,7 @@ const FIXES = new WeakMap<PithyError, Command>();
  *
  * **Only where the cause is known** (`docs/CONVENTIONS.md`): a `catch` that could be looking at anything
  * names no remedy. A `fix` is a whole `pithy` command an agent runs as written, so it takes a {@link Command}:
- * the one thing `@pithy-sh/core/src/cli/command.ts` makes, and only from a line that runs (#711). Prose cannot
+ * the one thing `@pithy-sh/core/src/cli/command.ts` makes, and only from a line that runs. Prose cannot
  * be a `fix`, and neither can a command that destroys something — that builder makes neither.
  */
 export function withFix<E extends PithyError>(error: E, fix: Command): E {

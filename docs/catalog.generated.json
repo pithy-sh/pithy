@@ -1944,6 +1944,14 @@
       "remedy": "Run the `fix` command"
     },
     {
+      "code": "media/analytics_forbidden",
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
+    },
+    {
       "code": "media/analytics_unavailable",
       "status": 409,
       "exitClass": "precondition",
@@ -2553,6 +2561,14 @@
     },
     {
       "code": "testers/withdrawn",
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
+    },
+    {
+      "code": "turnstile/analytics_forbidden",
       "status": 409,
       "exitClass": "precondition",
       "exit": 3,

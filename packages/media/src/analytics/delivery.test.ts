@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { IMAGE_REQUESTS, STREAM_MINUTES } from "@pithy-sh/cloudflare/src/analytics/datasets";
+import { ANALYTICS_PERMISSION } from "@pithy-sh/cloudflare/src/analytics/forbidden";
 import { DEFAULT_WINDOW_DAYS } from "@pithy-sh/cloudflare/src/analytics/window";
+import { cloudflareRefusal } from "@pithy-sh/cloudflare/src/client/errors";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test, vi } from "vitest";
 import { MediaConfig, type MediaConfigInput } from "../config/config";
@@ -57,6 +59,7 @@ function deps(records: MediaRecord[], from: DeliverySource, config: MediaConfigI
   return {
     assets: arrayAssets(records),
     config: MediaConfig.parse(config),
+    environment: "prod",
     source: vi.fn(async () => from),
     now: () => now,
   };
@@ -212,5 +215,40 @@ describe("readDelivery (#728)", () => {
     const report = await readDelivery(deps([], source()), {});
     expect(report.since).toBe(new Date(now.getTime() - 30 * DAY).toISOString());
     expect(report.until).toBe(now.toISOString());
+  });
+
+  test("a runtime token without the analytics grant is media's own refusal, naming the permission", async () => {
+    // The 403 the SDK throws for a refused credential, as `cloudflareRequest` keeps it.
+    const denied = cloudflareRefusal({
+      problem: "Cloudflare request failed: read Stream minutes viewed.",
+      apiErrors: [{ code: 10000, message: "Authentication error" }],
+      status: 403,
+      permission: ANALYTICS_PERMISSION,
+      detail: "403 Authentication error",
+      cause: { status: 403, errors: [{ code: 10000, message: "Authentication error" }] },
+    });
+    const from = source({ streamMinutesViewed: vi.fn(async () => Promise.reject(denied)) });
+    const failure = await readDelivery(deps([record("v1", "video", "cf-stream")], from), {}).catch((error) => error);
+    expect(failure).toBeInstanceOf(PithyError);
+    const payload = (failure as PithyError).payload;
+    expect(payload.code).toBe("media/analytics_forbidden");
+    expect(payload.status).toBe(409);
+    expect(payload.params).toEqual({ permission: ANALYTICS_PERMISSION });
+    expect(payload.message).toContain("`pithy token rotate runtime --env prod`");
+    expect(payload.action).toBe(denied.payload.action);
+    expect((failure as PithyError).cause).toBe(denied);
+  });
+
+  test("a refusal for any other reason passes through as it was", async () => {
+    const budget = cloudflareRefusal({
+      problem: "Cloudflare request failed: read analytics dataset limits.",
+      apiErrors: [{ message: "Rate limiter budget depleted." }],
+      status: 429,
+      permission: ANALYTICS_PERMISSION,
+      detail: "budget",
+      cause: [{ message: "Rate limiter budget depleted.", extensions: { code: "budget" } }],
+    });
+    const from = source({ datasetLimits: vi.fn(async () => Promise.reject(budget)) });
+    await expect(readDelivery(deps([], from), {})).rejects.toBe(budget);
   });
 });
