@@ -43944,6 +43944,63 @@
         ]
       }
     },
+    "/organizations/admin/roles": {
+      "get": {
+        "tags": [
+          "organization"
+        ],
+        "operationId": "getOrganizationsAdminRoles",
+        "summary": "List the roles a roster write may name, and the owning role it refuses.",
+        "description": "Every role the project's catalog declares, in its order, and the role `ownership` confers, or null where the project wires none. Read from config: it names no account and no person.",
+        "responses": {
+          "200": {
+            "description": "The roles a management client may offer for a membership, and the one it must not.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "roles": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Every role the project's catalog declares, in the catalog's order. What the roster writes take as `role`."
+                    },
+                    "owningRole": {
+                      "description": "The role the roster writes refuse, because it moves only through the ownership route: the role the project's `ownership` confers. Null where the project wires no `ownership`, and the roster writes refuse no role. A client offers `roles` without it.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "roles",
+                    "owningRole"
+                  ],
+                  "description": "The roles a management client may offer for a membership, and the one it must not."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "organization:members:read"
+        ]
+      }
+    },
     "/organizations/admin/organizations/{organizationId}": {
       "patch": {
         "tags": [

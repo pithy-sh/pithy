@@ -164,6 +164,7 @@ const PUBLISHED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   organization: {
     "organizations.list": "GET /organizations/admin/organizations",
     "members.list": "GET /organizations/admin/organizations/:organizationId/members",
+    "roles.list": "GET /organizations/admin/roles",
     "organizations.update": "PATCH /organizations/admin/organizations/:organizationId",
     "organizations.suspend": "POST /organizations/admin/organizations/:organizationId/suspend",
     "organizations.suspend.preview": "POST /organizations/admin/organizations/:organizationId/suspend/preview",

@@ -251,6 +251,7 @@ describe("the declared surface and the mounted one are the same surface", () => 
       `GET ${BASE}/admin/organizations`,
       `GET ${BASE}/admin/organizations/:organizationId/invitations`,
       `GET ${BASE}/admin/organizations/:organizationId/members`,
+      `GET ${BASE}/admin/roles`,
       `GET ${BASE}/current`,
       `GET ${BASE}/current/invitations`,
       `GET ${BASE}/current/members`,
@@ -407,7 +408,7 @@ describe("the gates, as the router behaves rather than as anything declares", ()
   test("and before its body validator, so a malformed write is not reported to an unverified caller", async () => {
     // A body with no reason, a junk role and an unknown field is three 400s to a verified caller and one
     // 403 to everybody else. The order is what keeps the shape of an operator's write from being probed.
-    // Every control-plane route with a body, the previews' included (#813).
+    // Every control-plane route with a body, the previews' included.
     for (const route of ORGANIZATION_ROUTES.filter(
       (entry) => entry.strategy === "control-plane" && entry.method !== "GET",
     )) {
@@ -497,7 +498,7 @@ describe("the surface a client is told about", () => {
       ORGANIZATION_MEMBERS_WRITE_SCOPE,
       ORGANIZATION_ACCOUNTS_WRITE_SCOPE,
       ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE,
-      // The organization's own lifecycle (#623): a suspension and a deletion are each their own grant.
+      // The organization's own lifecycle: a suspension and a deletion are each their own grant.
       ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE,
       ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
     ];
@@ -505,13 +506,13 @@ describe("the surface a client is told about", () => {
     expect([...ORGANIZATION_CONTROL_PLANE_SCOPES].sort()).toEqual([...reads, ...writes].sort());
     for (const route of ORGANIZATION_ROUTES.filter((entry) => entry.strategy === "control-plane")) {
       if (route.mutating) expect(writes, `${route.method} ${route.path}`).toContain(route.scope);
-      // A preview writes nothing and is gated by its write's own scope (#813): it is a disclosure only a caller
+      // A preview writes nothing and is gated by its write's own scope: it is a disclosure only a caller
       // who could act on it gets. It is a POST because it carries the write's body.
       else if (route.path.endsWith("/preview")) {
         expect(route.method, route.path).toBe("POST");
         expect(writes, route.path).toContain(route.scope);
       }
-      // Reads are the two listings and the one read under a write scope: the invitations an operator is
+      // Reads are the two listings, the role catalog, and the one read under a write scope: the invitations an operator is
       // about to fix.
       else expect(route.method, route.path).toBe("GET");
     }
@@ -519,7 +520,7 @@ describe("the surface a client is told about", () => {
       ORGANIZATION_ROUTES.filter((entry) => entry.strategy === "control-plane" && reads.includes(entry.scope ?? ""))
         .map((entry) => entry.path)
         .sort(),
-    ).toEqual(["/admin/organizations", "/admin/organizations/:organizationId/members"]);
+    ).toEqual(["/admin/organizations", "/admin/organizations/:organizationId/members", "/admin/roles"]);
   });
 
   test("no admin route is a member route, and no member route is an admin one", () => {
