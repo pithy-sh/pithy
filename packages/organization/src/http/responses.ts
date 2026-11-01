@@ -367,7 +367,7 @@ export type TransferResponse = z.output<typeof TransferResponse>;
  * ## The management surface, below
  *
  * Everything above answers a member's session. Everything below answers a control-plane credential the
- * adopter issued: two reads, and the writes of membership administration (#624), each recorded against
+ * adopter issued: three reads, and the writes of membership administration, each recorded against
  * the operator who took it. `scopes.ts` argues the scopes.
  *
  * Both listings are **bounded and say so**, rather than paged. A management client walking a tenant list
@@ -458,6 +458,24 @@ export const AdminMembersResponse = z
   .describe("One tenant's roster, bounded, with an honest flag where it was cut short.");
 export type AdminMembersResponse = z.output<typeof AdminMembersResponse>;
 
+/** `GET {base}/admin/roles`. Built from the resolved config, so it reads the same against an empty database. */
+export const AdminRoleCatalog = z
+  .object({
+    roles: z
+      .array(z.string())
+      .describe(
+        "Every role the project's catalog declares, in the catalog's order. What the roster writes take as `role`.",
+      ),
+    owningRole: z
+      .string()
+      .nullable()
+      .describe(
+        "The role the roster writes refuse, because it moves only through the ownership route: the role the project's `ownership` confers. Null where the project wires no `ownership`, and the roster writes refuse no role. A client offers `roles` without it.",
+      ),
+  })
+  .describe("The roles a management client may offer for a membership, and the one it must not.");
+export type AdminRoleCatalog = z.output<typeof AdminRoleCatalog>;
+
 /** `POST` and `PATCH {base}/admin/organizations/:organizationId/members…` — the membership as it now stands. */
 export const AdminMemberResponse = z
   .object({ member: AdminMemberView.describe("The membership, with the person behind it.") })
@@ -509,7 +527,7 @@ export const AdminInvitationsResponse = z
 export type AdminInvitationsResponse = z.output<typeof AdminInvitationsResponse>;
 
 /**
- * ## The organization's own lifecycle, below (#623)
+ * ## The organization's own lifecycle, below
  *
  * What suspending, reinstating, deleting and restoring a tenant did — to the tenant, and to the members a
  * cascade reached or deliberately left alone.
@@ -552,7 +570,7 @@ export const AdminMemberCascade = z
 export type AdminMemberCascade = z.output<typeof AdminMemberCascade>;
 
 /**
- * `POST {base}/admin/organizations/:organizationId/suspend/preview` and `…/delete/preview` (#813).
+ * `POST {base}/admin/organizations/:organizationId/suspend/preview` and `…/delete/preview`.
  *
  * What the write's cascade would do, as things stand now, with nothing applied: `reached` names the outcome the
  * write would give each member, `skipped` why it would leave each other alone. Never `failed`, which only a write
