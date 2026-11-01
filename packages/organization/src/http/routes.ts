@@ -131,6 +131,7 @@ import {
   AdminOrganizationsResponse,
   AdminOwnershipResponse,
   AdminRemovedMemberResponse,
+  AdminRoleCatalog,
   DeletedOrganizationResponse,
   InvitationOfferResponse,
   InvitationsResponse,
@@ -223,6 +224,7 @@ import {
  * | `GET    {base}/members/:membershipId/image`    | session        | `organization:read`   | param `MemberMarkParam`        |
  * | `GET    {base}/admin/organizations`            | control-plane  | scope                 | query `AdminListQuery`         |
  * | `GET    {base}/admin/organizations/:id/members`| control-plane  | scope                 | param + query                  |
+ * | `GET    {base}/admin/roles`                    | control-plane  | `members:read`        | none                           |
  * | `PATCH  {base}/admin/organizations/:id`        | control-plane  | `accounts:write`      | param + json `AdminUpdateOrganization` |
  * | `POST   {base}/admin/organizations/:id/members`| control-plane  | `members:write` ¹     | param + json `AdminAddMember`  |
  * | `PATCH  {base}/admin/…/members/:membershipId`  | control-plane  | `members:write` ¹     | param + json `AdminChangeRole` |
@@ -403,6 +405,14 @@ export const ORGANIZATION_ROUTES: readonly OrganizationRouteDeclaration[] = [
   {
     method: "GET",
     path: "/admin/organizations/:organizationId/members",
+    strategy: "control-plane",
+    scope: ORGANIZATION_MEMBERS_READ_SCOPE,
+    mutating: false,
+  },
+  // Under the roster's scope: it is read to compose a roster write, and it names no account and no person.
+  {
+    method: "GET",
+    path: "/admin/roles",
     strategy: "control-plane",
     scope: ORGANIZATION_MEMBERS_READ_SCOPE,
     mutating: false,
@@ -2174,7 +2184,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
       },
     );
 
-    // ── the management surface: two reads ──────────────────────────────────────────────────────
+    // ── the management surface: three reads ──────────────────────────────────────────────────────
 
     app.get(
       `${base}/admin/organizations`,
@@ -2242,6 +2252,24 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
           truncated: memberships.length > limit,
         } satisfies AdminMembersResponse);
       },
+    );
+
+    app.get(
+      `${base}/admin/roles`,
+      describeRoute({
+        summary: "List the roles a roster write may name, and the owning role it refuses.",
+        description:
+          "Every role the project's catalog declares, in its order, and the role `ownership` confers, or null where the project wires none. Read from config: it names no account and no person.",
+        verification: "control-plane",
+        scopes: [ORGANIZATION_MEMBERS_READ_SCOPE],
+        responses: { 200: AdminRoleCatalog },
+      }),
+      gate(ORGANIZATION_MEMBERS_READ_SCOPE),
+      (c) =>
+        c.json({
+          roles: [...catalog.roles],
+          owningRole: options.ownership?.confers ?? null,
+        } satisfies AdminRoleCatalog),
     );
 
     // ── membership administration: an operator's writes, each with a reason ────────────────

@@ -83,7 +83,11 @@ describe("the management surface", () => {
   });
 
   test("the guard runs before the validator, so a malformed request is still a 403", async () => {
-    for (const path of ["/consent/control-plane/subjects/robot/ada", "/consent/control-plane/documents/NOT_A_HASH"]) {
+    for (const path of [
+      "/consent/control-plane/subjects/robot/ada",
+      "/consent/control-plane/documents/NOT_A_HASH",
+      "/consent/control-plane/expiring?within=0",
+    ]) {
       expect((await served().request(path)).status, path).toBe(403);
     }
   });

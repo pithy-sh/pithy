@@ -43,6 +43,7 @@ import {
   AdminOrganizationResponse,
   AdminOwnershipResponse,
   AdminRemovedMemberResponse,
+  AdminRoleCatalog,
   InviteResponse,
   WithdrawnInvitationResponse,
 } from "./responses";
@@ -263,6 +264,19 @@ interface AppOptions {
 }
 
 function buildApp(options: AppOptions = {}): Hono<PithyHonoEnv> {
+  const app = harness(options);
+  registerOrganizationRoutes({
+    catalog,
+    config: OrganizationConfig.parse({ baseUrl: "https://app.example.test", ...options.config }),
+    ownership: options.ownership === null ? undefined : (options.ownership ?? OWNERSHIP),
+    enqueue: options.mail === false ? undefined : () => enqueue,
+    now: () => NOW,
+  })(app);
+  return app;
+}
+
+/** The app every test calls through, before any routes are registered: the session, the verifier, the error codec. */
+function harness(options: Pick<AppOptions, "sameOrigin" | "verifier"> = {}): Hono<PithyHonoEnv> {
   const app = new Hono<PithyHonoEnv>();
   app.onError((error, c) => {
     refused = error instanceof PithyError ? error : null;
@@ -279,13 +293,6 @@ function buildApp(options: AppOptions = {}): Hono<PithyHonoEnv> {
     c.set("log", noopLogger);
     await next();
   });
-  registerOrganizationRoutes({
-    catalog,
-    config: OrganizationConfig.parse({ baseUrl: "https://app.example.test", ...options.config }),
-    ownership: options.ownership === null ? undefined : (options.ownership ?? OWNERSHIP),
-    enqueue: options.mail === false ? undefined : () => enqueue,
-    now: () => NOW,
-  })(app);
   return app;
 }
 
@@ -599,7 +606,7 @@ describe("the roster", () => {
     expect(changed.status).toBe(200);
     expect(await json(changed)).toEqual({ member: { membershipId: target, userId: BOB, role: "member" } });
     expect(actionsRecorded()).toEqual(["organization/refused", "organization/member_role_changed"]);
-    // The role before as well as after (#831), so the access history can replay the change without guessing.
+    // The role before as well as after, so the access history can replay the change without guessing.
     expect(factsRecorded()).toMatchObject({ role: "member", previousRole: "admin", subjectUserId: BOB });
   });
 
@@ -645,7 +652,7 @@ describe("the roster", () => {
     const left = await call("POST", `${BASE}/current/members/leave`, { as: BOB, session: "session_bob" });
     expect(await json(left)).toEqual({ membershipId: bob, left: true });
     expect(actionsRecorded()).toEqual(["organization/member_left"]);
-    // The member is named on every member event (#831), even where they are also the actor.
+    // The member is named on every member event, even where they are also the actor.
     expect(factsRecorded()).toMatchObject({ role: "admin", subjectUserId: BOB });
   });
 
@@ -716,7 +723,7 @@ describe("invitations", () => {
         app: own,
       }),
     );
-    // The page path, not the API base — `#571`. A project that mails its own invitations is handed the
+    // The page path, not the API base. A project that mails its own invitations is handed the
     // same link the capability would have sent, and that link has to land somewhere a person can read.
     expect(body.acceptUrl).toContain("https://app.example.test/invitations/");
     expect(body.acceptUrl).not.toContain("/organizations/invitations/");
@@ -1023,7 +1030,7 @@ describe("ownership moves only by offer and acceptance", () => {
     expect(roles.find((row) => row.userId === ADA)?.role).toBe("admin");
     expect(roles.find((row) => row.userId === BOB)?.role).toBe("owner");
 
-    // Both sides of the handover are in the trail with their before and after (#831): the new holder on the
+    // Both sides of the handover are in the trail with their before and after: the new holder on the
     // acceptance, and each demoted holder on a role change of their own, as the forced path records them.
     const ada = await membershipIdOf(ACME, ADA);
     const acceptance = events.find((event) => event.action === "organization/ownership_accepted");
@@ -1402,7 +1409,7 @@ describe("founding an account", () => {
     expect(body.organization.role).toBe("admin");
     expect(body.organization.slug).toBe("new-studio");
     expect(actionsRecorded()).toEqual(["organization/created"]);
-    // The founding is the first membership (#831): who holds it, which row, and at what role.
+    // The founding is the first membership: who holds it, which row, and at what role.
     const founder = await db()
       .selectFrom(MEMBERSHIPS_TABLE)
       .select("id")
@@ -1615,7 +1622,127 @@ describe("the management surface", () => {
   });
 });
 
-describe("membership administration through the control plane (#624)", () => {
+describe("the role catalog a management client offers", () => {
+  const ROLES = `${BASE}/admin/roles`;
+  const ADMIN = `${BASE}/admin/organizations`;
+  const REASON = "Support ticket 4411.";
+
+  /** Reads the catalog through a connection holding the roster's read scope, parsed with the declared schema. */
+  async function readCatalog(managed: Hono<PithyHonoEnv>): Promise<AdminRoleCatalog> {
+    const response = await call("GET", ROLES, { app: managed });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as unknown;
+    const parsed = AdminRoleCatalog.parse(body);
+    expect(parsed).toEqual(body);
+    return parsed;
+  }
+
+  test("answers every role the catalog declares, in the catalog's order", async () => {
+    const managed = buildApp({ verifier: verifierFor([ORGANIZATION_MEMBERS_READ_SCOPE]) });
+    expect((await readCatalog(managed)).roles).toEqual([...catalog.roles]);
+  });
+
+  test("is the project's own catalog, read from config with no binding and no row behind it", async () => {
+    const academy = defineRoles({
+      roles: {
+        pupil: ["organization:read"],
+        tutor: ["organization:read", "organization:manage", "members:manage"],
+        headmaster: [
+          "organization:read",
+          "organization:manage",
+          "members:manage",
+          "billing:manage",
+          "organization:delete",
+        ],
+      },
+      administrativePower: "organization:manage",
+      nests: ["pupil", "tutor", "headmaster"],
+      unassignable: ["headmaster"],
+    });
+    const managed = harness({ verifier: verifierFor([ORGANIZATION_MEMBERS_READ_SCOPE]) });
+    registerOrganizationRoutes({
+      catalog: academy,
+      config: OrganizationConfig.parse({ baseUrl: "https://app.example.test" }),
+      ownership: { confers: "headmaster", demotesTo: "tutor" },
+    })(managed);
+    const response = await managed.request(ROLES, { method: "GET" }, {});
+    expect(response.status).toBe(200);
+    expect(AdminRoleCatalog.parse(await response.json())).toEqual({
+      roles: ["pupil", "tutor", "headmaster"],
+      owningRole: "headmaster",
+    });
+  });
+
+  test("with ownership wired, the owning role is the one the roster writes refuse", async () => {
+    const { roles, owningRole } = await readCatalog(
+      buildApp({ verifier: verifierFor([ORGANIZATION_MEMBERS_READ_SCOPE]) }),
+    );
+    expect(owningRole).not.toBeNull();
+    expect(roles).toContain(owningRole);
+    const writer = buildApp({ verifier: verifierFor([ORGANIZATION_MEMBERS_WRITE_SCOPE]) });
+    const cai = await membershipIdOf(ACME, CAI);
+    const attempts = [
+      {
+        method: "POST",
+        path: `${ADMIN}/${ACME}/members`,
+        body: { userId: STRANGER, role: owningRole, reason: REASON },
+      },
+      { method: "PATCH", path: `${ADMIN}/${ACME}/members/${cai}`, body: { role: owningRole, reason: REASON } },
+    ];
+    for (const attempt of attempts) {
+      const response = await call(attempt.method, attempt.path, { app: writer, body: attempt.body });
+      expect(response.status, attempt.method).toBe(403);
+      const error = ((await response.json()) as { error: { params?: Record<string, unknown> } }).error;
+      expect(error.params?.ownershipRoute, attempt.method).toBe(`${ADMIN}/${ACME}/ownership`);
+    }
+    // Every other role is one the roster writes take.
+    for (const role of roles.filter((declared) => declared !== owningRole)) {
+      const response = await call("PATCH", `${ADMIN}/${ACME}/members/${cai}`, {
+        app: writer,
+        body: { role, reason: REASON },
+      });
+      expect(response.status, role).toBe(200);
+    }
+  });
+
+  test("with no ownership, there is no owning role, and the roster writes take every role it lists", async () => {
+    const { roles, owningRole } = await readCatalog(
+      buildApp({ ownership: null, verifier: verifierFor([ORGANIZATION_MEMBERS_READ_SCOPE]) }),
+    );
+    expect(owningRole).toBeNull();
+    const writer = buildApp({ ownership: null, verifier: verifierFor([ORGANIZATION_MEMBERS_WRITE_SCOPE]) });
+    const cai = await membershipIdOf(ACME, CAI);
+    for (const role of roles) {
+      const changed = await call("PATCH", `${ADMIN}/${ACME}/members/${cai}`, {
+        app: writer,
+        body: { role, reason: REASON },
+      });
+      expect(changed.status, role).toBe(200);
+    }
+    const added = await call("POST", `${ADMIN}/${ACME}/members`, {
+      app: writer,
+      body: { userId: STRANGER, role: roles.at(-1), reason: REASON },
+    });
+    expect(added.status).toBe(201);
+  });
+
+  test("a connection without the roster's read scope is refused", async () => {
+    const others = buildApp({
+      verifier: verifierFor([
+        ORGANIZATION_ACCOUNTS_READ_SCOPE,
+        ORGANIZATION_MEMBERS_WRITE_SCOPE,
+        ORGANIZATION_OWNERSHIP_TRANSFER_SCOPE,
+      ]),
+    });
+    const response = await call("GET", ROLES, { app: others });
+    expect(response.status).toBe(403);
+    // No control-plane verifier composed, which is the state every ordinary Worker is in.
+    await chooseActing(db(), { userId: ADA, sessionId: SESSION, organizationId: ACME, now: NOW });
+    expect((await call("GET", ROLES, { as: ADA })).status).toBe(403);
+  });
+});
+
+describe("membership administration through the control plane", () => {
   const WRITES = [
     ORGANIZATION_MEMBERS_WRITE_SCOPE,
     ORGANIZATION_ACCOUNTS_WRITE_SCOPE,
@@ -2056,7 +2183,7 @@ describe("membership administration through the control plane (#624)", () => {
       expect(event.metadata).toMatchObject({
         reason: "Ada left the company.",
         subjectUserId: BOB,
-        // The new holder's before and after (#831).
+        // The new holder's before and after.
         role: "owner",
         previousRole: "admin",
         previousOwner: "keep",

@@ -54,7 +54,7 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
 /** The account list: which tenants exist, what they are called, and how big they are. No addresses. */
 export const ORGANIZATION_ACCOUNTS_READ_SCOPE: ControlPlaneScope = "organization:accounts:read";
 
-/** One account's roster, with the people on it — names and addresses. The heavier of the two. */
+/** One account's roster, with the people on it — names and addresses — and the roles a roster write may name. The heavier of the two. */
 export const ORGANIZATION_MEMBERS_READ_SCOPE: ControlPlaneScope = "organization:members:read";
 
 /** Who is in an account: add a member, remove one, change a role, and list, resend or revoke an invitation. */
@@ -125,6 +125,15 @@ export function organizationAdminRoutes(
       scope: ORGANIZATION_MEMBERS_READ_SCOPE,
       kind: "reads",
       summary: "One tenant's roster: who is in it, at what role, with the names and addresses behind the memberships.",
+    },
+    {
+      method: "GET",
+      operation: "roles.list",
+      path: `${basePath}/admin/roles`,
+      scope: ORGANIZATION_MEMBERS_READ_SCOPE,
+      kind: "reads",
+      summary:
+        "Every role the catalog declares, in its order, and the owning role the roster writes refuse, or null where nothing owns.",
     },
     {
       method: "PATCH",

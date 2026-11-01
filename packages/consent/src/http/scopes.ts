@@ -10,12 +10,12 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
  * **Separate from the routes because a scope name is a client's business**: the dashboard's scope builder
  * reads these constants in a browser program with no Workers types, so this module imports types and nothing else.
  *
- * - `consent:read` reads the record an auditor reads — counts, a subject's rows with
+ * - `consent:read` reads the record an auditor reads — counts, the grants expiring, a subject's rows with
  *   their typed and representative names, the documents and the signature images — and changes nothing: there is
  *   no control-plane write here, because consent is the person's to give and to take back.
  */
 
-/** Read counts per purpose and version, a subject's record, and the documents and evidence behind it. */
+/** Read counts per purpose and version, the grants expiring, a subject's record, and the documents and evidence behind it. */
 export const CONSENT_READ_SCOPE: ControlPlaneScope = "consent:read";
 
 /** Every control-plane scope consent defines — what `pithy dashboard connect` offers for this capability. */
@@ -34,7 +34,16 @@ export function consentAdminRoutes(basePath: string): AdminRouteDeclaration[] {
       scope: CONSENT_READ_SCOPE,
       kind: "reads",
       operation: "purposes.read",
-      summary: "Every consent purpose, with counts of current grants and withdrawals per notice version.",
+      summary:
+        "Every consent purpose, with counts of current grants, withdrawals and expired grants per notice version.",
+    },
+    {
+      method: "GET",
+      path: `${basePath}/control-plane/expiring`,
+      scope: CONSENT_READ_SCOPE,
+      kind: "reads",
+      operation: "expiring.read",
+      summary: "The signed grants that have expired or expire within a window, soonest first.",
     },
     {
       method: "GET",
