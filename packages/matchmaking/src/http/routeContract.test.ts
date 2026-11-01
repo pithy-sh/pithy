@@ -21,7 +21,7 @@ import {
 } from "./scopes";
 
 /**
- * The path-param half of the route request contract (issue #74). Query and body are covered by the
+ * The path-param half of the route request contract. Query and body are covered by the
  * `no-raw-request-input` Biome plugin — `c.req.query()` and `c.req.json()` are banned, so a handler can
  * only read them through a validator it declared. A path param has no such chokepoint: `c.req.param()`
  * hands one over whether or not a schema exists. This gate is the positive check that replaces the ban.

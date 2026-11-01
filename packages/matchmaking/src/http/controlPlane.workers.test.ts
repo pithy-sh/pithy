@@ -24,6 +24,7 @@ import { MatchmakingConfig } from "../config/config";
 import { MATCHMAKING_MIGRATIONS } from "../migrations/chain";
 import { PresenceServerFrame } from "../presence/frames";
 import {
+  AdminGameList,
   AdminInviteCanceled,
   AdminInviteList,
   AdminQueue,
@@ -142,7 +143,7 @@ function verifier(scopes: readonly ControlPlaneScope[]): ControlPlaneVerifier {
 }
 
 /** The app: players by `x-user`, management clients by a signed token, audit captured. */
-function makeApp(scopes: readonly ControlPlaneScope[] = BOTH) {
+function makeApp(scopes: readonly ControlPlaneScope[] = BOTH, config: MatchmakingConfig = CONFIG) {
   const app = new Hono<PithyHonoEnv>();
   app.onError(pithyErrorHandler);
   const cpVerifier = verifier(scopes);
@@ -155,7 +156,7 @@ function makeApp(scopes: readonly ControlPlaneScope[] = BOTH) {
     c.set("log", noopLogger);
     await next();
   });
-  registerMatchmakingRoutes({ config: CONFIG, peers: () => ({ auth: authPeer }) })(app);
+  registerMatchmakingRoutes({ config, peers: () => ({ auth: authPeer }) })(app);
   return app;
 }
 
@@ -284,6 +285,91 @@ async function enqueue(app: Hono<PithyHonoEnv>, user: string, country: string): 
   const res = await app.request(req, undefined, requestEnv());
   expect(res.status).toBe(200);
 }
+
+describe("GET /matchmaking/admin/games", () => {
+  const SNAPSHOT = { kind: "connect-n", rules: {} };
+  const THREE = MatchmakingConfig.parse({
+    games: [
+      { key: "ranked", players: 4, skillPool: "elo", snapshot: SNAPSHOT, queue: { maxWaitSeconds: 45 } },
+      { key: "duel", snapshot: SNAPSHOT, roomCodes: { enabled: false } },
+      { key: "party", players: 6, snapshot: SNAPSHOT, queue: { enabled: false } },
+    ],
+  });
+  const read = (app: Hono<PithyHonoEnv>) =>
+    manage(app, "GET", "/matchmaking/admin/games", MATCHMAKING_QUEUES_READ_SCOPE);
+
+  test("lists every configured game, in configured order, with the facts a client acts on", async () => {
+    const res = await read(makeApp(BOTH, THREE));
+    expect(res.status).toBe(200);
+    const body = await conforming(res, AdminGameList);
+    expect(body.games).toEqual([
+      {
+        key: "ranked",
+        players: 4,
+        skillPool: "elo",
+        roomCodesEnabled: true,
+        queueEnabled: true,
+        maxWaitSeconds: 45,
+      },
+      {
+        key: "duel",
+        players: 2,
+        skillPool: null,
+        roomCodesEnabled: false,
+        queueEnabled: true,
+        maxWaitSeconds: 120,
+      },
+      {
+        key: "party",
+        players: 6,
+        skillPool: null,
+        roomCodesEnabled: true,
+        queueEnabled: false,
+        maxWaitSeconds: 120,
+      },
+    ]);
+  });
+
+  test("each listed key is the key the per-game admin routes take", async () => {
+    const app = makeApp(BOTH, THREE);
+    const { games } = await conforming(await read(app), AdminGameList);
+    for (const { key } of games) {
+      const queue = await manage(app, "GET", `/matchmaking/admin/games/${key}/queue`, MATCHMAKING_QUEUES_READ_SCOPE);
+      expect(queue.status, key).toBe(200);
+      expect((await conforming(queue, AdminQueue)).gameKey).toBe(key);
+      const rooms = await manage(app, "GET", `/matchmaking/admin/games/${key}/rooms`, MATCHMAKING_QUEUES_READ_SCOPE);
+      expect(rooms.status, key).toBe(200);
+      expect((await conforming(rooms, AdminRoomList)).gameKey).toBe(key);
+    }
+  });
+
+  test("answers identically against an empty database", async () => {
+    const app = makeApp(BOTH, THREE);
+    await invite(app, `ga-${run}`, `gb-${run}`);
+    const seeded = await conforming(await read(app), AdminGameList);
+    for (const t of [
+      "pithy_matchmaking_invites",
+      "pithy_matchmaking_friends",
+      "pithy_auth_users",
+      "pithy_migrations",
+      "pithy_migrations_lock",
+    ]) {
+      await env.DB.exec(`DROP TABLE IF EXISTS ${t}`);
+    }
+    const empty = await conforming(await read(makeApp(BOTH, THREE)), AdminGameList);
+    expect(empty).toEqual(seeded);
+  });
+
+  test("a connection never granted the read scope is refused", async () => {
+    const res = await read(makeApp([MATCHMAKING_QUEUES_MODERATE_SCOPE], THREE));
+    expect(res.status).toBe(403);
+  });
+
+  test("the read emits no audit event", async () => {
+    await read(makeApp(BOTH, THREE));
+    expect(acts()).toEqual([]);
+  });
+});
 
 describe("GET /matchmaking/admin/games/:game/queue", () => {
   test("reads who is waiting from the queue Durable Object", async () => {
