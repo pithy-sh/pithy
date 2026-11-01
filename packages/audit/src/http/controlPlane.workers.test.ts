@@ -26,8 +26,12 @@ import { audit_0002_actor_kind } from "../migrations/0002_actor_kind";
 import { audit_0003_call_index } from "../migrations/0003_call_index";
 import { audit_0004_request_index } from "../migrations/0004_request_index";
 import { audit_0005_chain } from "../migrations/0005_chain";
+import { audit_0006_sinks } from "../migrations/0006_sinks";
 import { queryAuditEvents } from "../query";
 import { recordAuditEvent } from "../recorder";
+import { AUDIT_SHIP_BACKLOG, AUDIT_SHIP_DEAD_LETTERED, AUDIT_SHIP_DELIVERY, shipHealth } from "../ship/health";
+import { AuditSinks } from "../ship/sinks";
+import { recordSinkOutcome } from "../ship/state";
 import {
   AUDIT_CHAIN_EXPORT_SCOPE,
   AUDIT_EVENT_DETAIL_READ_SCOPE,
@@ -38,6 +42,7 @@ import {
   AccessHistoryResponse,
   AuditEventResponse,
   AuditEventsResponse,
+  AuditSinksResponse,
   ChainExportResponse,
   ChainVerifyResponse,
   ControlPlaneReachResponse,
@@ -149,12 +154,14 @@ function makeApp(
   scopes: readonly ControlPlaneScope[],
   basePath = BASE,
   database: () => AuditDatabase = () => auditDatabase(env.DB),
+  sinks: AuditSinks = {},
 ) {
   const app = harness(scopes);
   registerAuditRoutes({
     basePath,
     database,
     adminRoutes: () => [...auditAdminRoutes(basePath), ...USER_ROUTES],
+    sinks,
   })(app);
   return app;
 }
@@ -246,7 +253,7 @@ describe("GET /audit/events", () => {
     expect(body).toContain("testers/member_invited");
   });
 
-  test("marks each event's place in its chain, and an event from before the chain as outside it (#822)", async () => {
+  test("marks each event's place in its chain, and an event from before the chain as outside it", async () => {
     await env.DB.prepare(
       "insert into pithy_audit_events (event_id, occurred_at, action, outcome, actor_type, tenant) values ('before-chain', 1000, 'auth/login', 'success', 'user', 'acme')",
     ).run();
@@ -347,7 +354,7 @@ describe("GET /audit/events", () => {
     expect(read?.actorType).toBe("control-plane");
     expect(read?.actorId).toBe("operator-1");
     // Which kind of client read the trail, from the connection it called through — stamped by the gate,
-    // not by this handler (#721).
+    // not by this handler.
     expect(read?.actorKind).toBe("agent");
     const metadata = read?.metadata as { connectionId: string; returned: number; query: { actorId?: string } };
     expect(metadata.connectionId).toBe(CONNECTION_ID);
@@ -824,7 +831,7 @@ describe("the exported response schemas against the live routes", () => {
   });
 });
 
-describe("GET /audit/control-plane/access-history (#831)", () => {
+describe("GET /audit/control-plane/access-history", () => {
   const PATH = `${BASE}/control-plane/access-history`;
   const WINDOW = `since=${new Date(0).toISOString()}&until=${NOW.toISOString()}`;
 
@@ -1013,7 +1020,7 @@ describe("GET /audit/control-plane/access-history (#831)", () => {
   });
 });
 
-describe("GET /audit/control-plane/usage (#812)", () => {
+describe("GET /audit/control-plane/usage", () => {
   const USAGE = `${BASE}/control-plane/usage`;
   const TARGET = "0b9a8c7d-6e5f-4a3b-9c2d-1e0f9a8b7c6d";
 
@@ -1221,7 +1228,7 @@ describe("GET /audit/control-plane/usage (#812)", () => {
   });
 });
 
-describe("GET /audit/control-plane/verify and /export (#822)", () => {
+describe("GET /audit/control-plane/verify and /export", () => {
   /** The routes with the checkpoint bucket bound, as the capability binds it. */
   function chainApp(scopes: readonly ControlPlaneScope[], bound = true) {
     const app = harness(scopes);
@@ -1342,5 +1349,152 @@ describe("GET /audit/control-plane/verify and /export (#822)", () => {
     expect(body).toMatchObject({ detail: true, nextCursor: expect.stringMatching(/^1:\d+$/), complete: false });
     expect(body.events[0]).toMatchObject({ ip: "203.0.113.9", userAgent: "curl/8" });
     expect(await verifyChainExport(body)).toMatchObject({ intact: true });
+  });
+});
+
+describe("GET /audit/control-plane/sinks", () => {
+  const SINKS_PATH = `${BASE}/control-plane/sinks`;
+  const SINKS = AuditSinks.parse({
+    splunk: {
+      profile: "splunk-hec",
+      url: "https://splunk.example.com:8088/services/collector/event?channel=abc123",
+      secret: "splunk-token",
+      actions: ["auth/"],
+      detail: true,
+    },
+    hook: { profile: "webhook", url: "https://hooks.example.com/audit/key-in-path", secret: "hook-token" },
+  });
+  const sinksApp = (scopes: readonly ControlPlaneScope[], sinks: AuditSinks = SINKS) =>
+    makeApp(scopes, BASE, () => auditDatabase(env.DB), sinks);
+
+  beforeEach(async () => {
+    await env.DB.prepare("drop table if exists pithy_audit_sinks").run();
+    await audit_0006_sinks.up(auditDatabase(env.DB) as unknown as Kysely<unknown>);
+  });
+
+  test("answers each declared sink in declaration order, never attempted as idle with null times and zero counts", async () => {
+    const response = await call(sinksApp([AUDIT_TRAIL_READ_SCOPE]), SINKS_PATH, AUDIT_TRAIL_READ_SCOPE);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      sinks: [
+        {
+          name: "splunk",
+          profile: "splunk-hec",
+          host: "splunk.example.com:8088",
+          detail: true,
+          actions: ["auth/"],
+          lastDeliveredAt: null,
+          lastFailedAt: null,
+          retrying: 0,
+          deadLettered: 0,
+          delivery: "idle",
+        },
+        {
+          name: "hook",
+          profile: "webhook",
+          host: "hooks.example.com",
+          detail: false,
+          actions: null,
+          lastDeliveredAt: null,
+          lastFailedAt: null,
+          retrying: 0,
+          deadLettered: 0,
+          delivery: "idle",
+        },
+      ],
+    });
+  });
+
+  test("with two sinks, one failing, each entry is its own row and they add up to the manifest's totals", async () => {
+    await recordSinkOutcome(auditDatabase(env.DB), "splunk", {
+      delivered: false,
+      at: new Date(2_000),
+      retryingDelta: 3,
+      deadLettered: 1,
+    });
+    await recordSinkOutcome(auditDatabase(env.DB), "hook", {
+      delivered: true,
+      at: new Date(1_000),
+      retryingDelta: 2,
+      deadLettered: 4,
+    });
+    await recordSinkOutcome(auditDatabase(env.DB), "removed", {
+      delivered: false,
+      at: new Date(9_000),
+      retryingDelta: 100,
+      deadLettered: 100,
+    });
+
+    const body = AuditSinksResponse.parse(
+      await (await call(sinksApp([AUDIT_TRAIL_READ_SCOPE]), SINKS_PATH, AUDIT_TRAIL_READ_SCOPE)).json(),
+    );
+    expect(body.sinks.map((sink) => [sink.name, sink.retrying, sink.deadLettered, sink.delivery])).toEqual([
+      ["splunk", 3, 1, "failing"],
+      ["hook", 2, 4, "delivering"],
+    ]);
+    expect(body.sinks[0]).toMatchObject({ lastDeliveredAt: null, lastFailedAt: "1970-01-01T00:00:02.000Z" });
+    expect(body.sinks[1]).toMatchObject({ lastDeliveredAt: "1970-01-01T00:00:01.000Z", lastFailedAt: null });
+
+    const health = await shipHealth(SINKS, () => auditDatabase(env.DB)).read({} as never);
+    expect(health[AUDIT_SHIP_BACKLOG]).toBe(body.sinks.reduce((sum, sink) => sum + sink.retrying, 0));
+    expect(health[AUDIT_SHIP_DEAD_LETTERED]).toBe(body.sinks.reduce((sum, sink) => sum + sink.deadLettered, 0));
+    expect(health[AUDIT_SHIP_DELIVERY]).toBe("failing");
+    expect(body.sinks.some((sink) => sink.delivery === "failing")).toBe(true);
+  });
+
+  test("carries no token, secret name, URL path, query, event or receiver response", async () => {
+    await recordSinkOutcome(auditDatabase(env.DB), "splunk", {
+      delivered: false,
+      at: new Date(2_000),
+      retryingDelta: 1,
+      deadLettered: 0,
+    });
+    const text = await (await call(sinksApp([AUDIT_TRAIL_READ_SCOPE]), SINKS_PATH, AUDIT_TRAIL_READ_SCOPE)).text();
+    for (const leaked of ["splunk-token", "hook-token", "/services", "collector", "channel", "abc123", "key-in-path"]) {
+      expect(text).not.toContain(leaked);
+    }
+  });
+
+  test("answers the sinks declared on the composed capability, not only ones handed to the routes", async () => {
+    // Through `audit({ sinks })` rather than `registerAuditRoutes`: the routes default to no sinks, so a
+    // capability that forgot to pass its own would answer an empty list while its health reported a backlog.
+    const app = harness([AUDIT_TRAIL_READ_SCOPE]);
+    audit({ sinks: SINKS }).routes?.(app);
+    const body = AuditSinksResponse.parse(await (await call(app, SINKS_PATH, AUDIT_TRAIL_READ_SCOPE)).json());
+    expect(body.sinks.map((sink) => [sink.name, sink.profile])).toEqual([
+      ["splunk", "splunk-hec"],
+      ["hook", "webhook"],
+    ]);
+  });
+
+  test("a Worker with no sinks answers an empty list", async () => {
+    const response = await call(sinksApp([AUDIT_TRAIL_READ_SCOPE], {}), SINKS_PATH, AUDIT_TRAIL_READ_SCOPE);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ sinks: [] });
+  });
+
+  test("needs audit:events:read, and the detail and export scopes do not stand in for it", async () => {
+    const ungranted = await call(sinksApp([]), SINKS_PATH, AUDIT_TRAIL_READ_SCOPE);
+    expect(ungranted.status).toBe(403);
+    expect(await errorCode(ungranted)).toBe("controlplane/insufficient_scope");
+    for (const scope of [AUDIT_EVENT_DETAIL_READ_SCOPE, AUDIT_CHAIN_EXPORT_SCOPE]) {
+      expect((await call(sinksApp([scope]), SINKS_PATH, scope)).status, scope).toBe(403);
+    }
+  });
+
+  test("records nothing in the trail it reports on", async () => {
+    await call(sinksApp([AUDIT_TRAIL_READ_SCOPE]), SINKS_PATH, AUDIT_TRAIL_READ_SCOPE);
+    expect(emitted.filter((event) => event.action.startsWith("audit/"))).toEqual([]);
+  });
+
+  test("returns exactly AuditSinksResponse", async () => {
+    await recordSinkOutcome(auditDatabase(env.DB), "hook", {
+      delivered: true,
+      at: new Date(1_000),
+      retryingDelta: 0,
+      deadLettered: 0,
+    });
+    const body = await (await call(sinksApp([AUDIT_TRAIL_READ_SCOPE]), SINKS_PATH, AUDIT_TRAIL_READ_SCOPE)).json();
+    expect(AuditSinksResponse.parse(body)).toEqual(body);
   });
 });

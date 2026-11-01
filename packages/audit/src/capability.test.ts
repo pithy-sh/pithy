@@ -8,7 +8,7 @@ import { AUDIT_MIGRATION_ORDER, AuditConfig, audit, isAuditCapability } from "./
 import { AUDIT_CHAIN_EXPORT_SCOPE, AUDIT_EVENT_DETAIL_READ_SCOPE, AUDIT_TRAIL_READ_SCOPE } from "./http/guards";
 
 describe("audit capability", () => {
-  test("doctor asks whether object lock is in force on the checkpoint bucket (#822)", async () => {
+  test("doctor asks whether object lock is in force on the checkpoint bucket", async () => {
     const refuse = async () => {
       throw new Error("not asked here");
     };
@@ -75,7 +75,7 @@ describe("audit capability", () => {
     expect(cap.workflows?.prune?.className).toBeUndefined();
   });
 
-  test("binds the checkpoint bucket, optionally, so an unprovisioned Worker still records (#822)", () => {
+  test("binds the checkpoint bucket, optionally, so an unprovisioned Worker still records", () => {
     expect(audit().requiredBindings.find((b) => b.name === "AUDIT_CHECKPOINTS")).toMatchObject({
       type: "r2",
       optional: true,
@@ -83,9 +83,8 @@ describe("audit capability", () => {
   });
 
   test("ships its migrations in order, at its declared order", () => {
-    // Asserted as a list rather than a count. `0001` was the whole schema until the first publish; after
-    // it the chain is append-only: `0002` is the actor kind (#721), `0003` the call index (#812), and `0004` the
-    // request index a credential's reach joins on (#828), and `0005` the hash chain (#822).
+    // Asserted as a list rather than a count: the chain is append-only, so a migration is only ever added at
+    // the end.
     const db = audit().databases?.app;
     expect(Object.keys(db?.migrations ?? {})).toEqual([
       "0001_init",
@@ -115,6 +114,7 @@ describe("audit capability", () => {
       "/audit/control-plane/usage",
       "/audit/control-plane/verify",
       "/audit/control-plane/export",
+      "/audit/control-plane/sinks",
       "/audit/events/:eventId",
     ]);
     expect(audit({ basePath: "/trail" }).adminRoutes?.map((route) => route.path)).toEqual([
@@ -124,17 +124,16 @@ describe("audit capability", () => {
       "/trail/control-plane/usage",
       "/trail/control-plane/verify",
       "/trail/control-plane/export",
+      "/trail/control-plane/sinks",
       "/trail/events/:eventId",
     ]);
   });
 
   test("every advertised route is a read, and only the full event needs the detail scope", () => {
-    // The trail is append-only, and the two scopes are what stops a credential issued to render a
-    // recent-activity pane from also resolving every client IP in the project. The access history rides
-    // the listing scope (#831): it reads named metadata keys and never an IP or a user-agent. Reach rides
-    // it too (#828): it discloses no IP, user-agent or capability metadata. So does usage (#812): it counts
-    // calls and discloses no IP, user-agent or capability metadata. The chain's verify and export need their own
-    // scope (#822): an export is the trail in bulk.
+    // The trail is append-only, and the detail scope is what stops a credential issued to render a
+    // recent-activity pane from also resolving every client IP in the project. Every read that discloses no IP,
+    // user-agent or capability metadata rides the listing scope; the chain's verify and export need their own,
+    // because an export is the trail in bulk.
     const routes = audit().adminRoutes ?? [];
     expect(routes.map((route) => [route.method, route.path, route.scope])).toEqual([
       ["GET", "/audit/events", AUDIT_TRAIL_READ_SCOPE],
@@ -143,6 +142,7 @@ describe("audit capability", () => {
       ["GET", "/audit/control-plane/usage", AUDIT_TRAIL_READ_SCOPE],
       ["GET", "/audit/control-plane/verify", AUDIT_CHAIN_EXPORT_SCOPE],
       ["GET", "/audit/control-plane/export", AUDIT_CHAIN_EXPORT_SCOPE],
+      ["GET", "/audit/control-plane/sinks", AUDIT_TRAIL_READ_SCOPE],
       ["GET", "/audit/events/:eventId", AUDIT_EVENT_DETAIL_READ_SCOPE],
     ]);
   });

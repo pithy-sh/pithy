@@ -4,14 +4,14 @@
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { type CapabilityHealth, defineCapabilityHealth } from "@pithy-sh/core/src/controlPlane/discovery/health";
 import type { Context } from "hono";
-import type { AuditSinkStateRow } from "../data/sinkState";
 import type { AuditDatabase } from "../data/tables";
 import { AUDIT_TRAIL_READ_SCOPE } from "../http/guards";
+import { SHIP_DELIVERY_STATES, shipDelivery } from "./delivery";
 import type { AuditSinks } from "./sinks";
 import { readSinkStates } from "./state";
 
 /**
- * **Shipping's health, on audit's manifest entry (#824)** — whether the trail is reaching its sinks.
+ * **Shipping's health, on audit's manifest entry** — whether the trail is reaching its sinks.
  *
  * Three keys, all behind `audit:events:read`, the scope the listing already requires: a backlog, a dead-letter
  * count, and a state. Each is read off `pithy_audit_sinks` by primary key, one row per declared sink, so the bound
@@ -25,26 +25,8 @@ export const AUDIT_SHIP_BACKLOG = "auditShipBacklog";
 /** Events given up on, across every sink: their last retry failed and they went to the dead-letter queue. */
 export const AUDIT_SHIP_DEAD_LETTERED = "auditShipDeadLettered";
 
-/** How delivery stands, across every sink. */
+/** How delivery stands, across every sink: {@link shipDelivery} over every declared sink's row. */
 export const AUDIT_SHIP_DELIVERY = "auditShipDelivery";
-
-/**
- * The values {@link AUDIT_SHIP_DELIVERY} takes. `failing` when any sink's last attempt failed; `delivering` when
- * every sink that has been attempted last took a delivery; `idle` when no sink has been attempted yet.
- */
-export const SHIP_DELIVERY_STATES = ["delivering", "failing", "idle"] as const;
-export type ShipDeliveryState = (typeof SHIP_DELIVERY_STATES)[number];
-
-/** How delivery stands, from the declared sinks' rows. */
-export function shipDelivery(states: readonly AuditSinkStateRow[]): ShipDeliveryState {
-  const attempted = states.filter((state) => state.lastDeliveredAt !== null || state.lastFailedAt !== null);
-  if (attempted.length === 0) return "idle";
-  const failing = attempted.some(
-    (state) =>
-      state.lastFailedAt !== null && (state.lastDeliveredAt === null || state.lastFailedAt > state.lastDeliveredAt),
-  );
-  return failing ? "failing" : "delivering";
-}
 
 /** Declare shipping's health keys over the declared sinks. */
 export function shipHealth(sinks: AuditSinks, database: (c: Context<PithyHonoEnv>) => AuditDatabase): CapabilityHealth {

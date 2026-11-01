@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "vitest";
 import type { AuditSinkStateRow } from "../data/sinkState";
-import { shipDelivery } from "./health";
+import { shipDelivery } from "./delivery";
 
 const row = (sink: string, delivered: number | null, failed: number | null): AuditSinkStateRow => ({
   sink,

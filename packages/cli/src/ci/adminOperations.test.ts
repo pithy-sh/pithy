@@ -73,6 +73,7 @@ const PUBLISHED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
     "usage.read": "GET /audit/control-plane/usage",
     "chain.verify": "GET /audit/control-plane/verify",
     "chain.export": "GET /audit/control-plane/export",
+    "sinks.list": "GET /audit/control-plane/sinks",
     "events.read": "GET /audit/events/:eventId",
   },
   storage: {
