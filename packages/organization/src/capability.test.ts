@@ -98,11 +98,11 @@ describe("capability identity", () => {
     // the whole point of the manifest is that a client composes its calls from the Worker.
     const paths = (organization({ ...BASE, basePath: "/accounts" }).adminRoutes ?? []).map((route) => route.path);
     expect(paths.length).toBeGreaterThan(2);
-    for (const path of paths) expect(path.startsWith("/accounts/admin/organizations"), path).toBe(true);
+    for (const path of paths) expect(path.startsWith("/accounts/admin/"), path).toBe(true);
     expect(paths).toContain("/accounts/admin/organizations/:organizationId/members/:membershipId");
   });
 
-  test("the forced-ownership route is advertised exactly where a transfer is wired (#624)", () => {
+  test("the forced-ownership route is advertised exactly where a transfer is wired", () => {
     const route = "/organizations/admin/organizations/:organizationId/ownership";
     const without = (organization(BASE).adminRoutes ?? []).map((entry) => entry.path);
     const withTransfer = (organization({ ...BASE, ownership: TRANSFER }).adminRoutes ?? []).map((entry) => entry.path);
@@ -436,7 +436,7 @@ describe("a catalog nobody could found an account with", () => {
 });
 
 /**
- * **Invitations the config says to mail are refused at assembly without email in the Worker** (#645 review).
+ * **Invitations the config says to mail are refused at assembly without email in the Worker**.
  *
  * `sendInvitationEmail` defaults to true, and the invite route mails through the email capability composed beside
  * it. Without one, the first invitation anybody made was refused, and nothing before that said so — the same
@@ -470,7 +470,7 @@ describe("the email an invitation is mailed through", () => {
   });
 });
 
-describe("the erasure record (#823)", () => {
+describe("the erasure record", () => {
   test("declares the organization subject, its resource type, and every action its purge records", () => {
     // The control plane finds this among the composed capabilities: drop it, or name a wrong action, and every
     // organization attestation is a 404 or cites no deletion, with nothing else failing.
@@ -499,10 +499,10 @@ describe("the erasure record (#823)", () => {
   });
 });
 
-describe("the organization lifecycle (#623)", () => {
+describe("the organization lifecycle", () => {
   test("declares its own purge contribution for the organization subject, and the two purge Workflows", () => {
     const capability = organization(BASE);
-    // And a person's, beside it (#814).
+    // And a person's, beside it.
     expect(capability.purge?.map((contribution) => contribution.subject)).toEqual(["organization", "user"]);
     expect(Object.keys(capability.workflows ?? {}).sort()).toEqual(["purge", "purge-due"]);
   });

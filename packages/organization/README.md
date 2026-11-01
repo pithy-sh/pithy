@@ -184,6 +184,7 @@ They are two settings because they are two things: one is where this capability'
 | `GET {base}/members/:membershipId/image` | A member's stored image | session | `organization:read` |
 | `GET {base}/admin/organizations` | Every tenant, with how many people are in each | control-plane | `organization:accounts:read` |
 | `GET {base}/admin/organizations/:organizationId/members` | One tenant's roster, with addresses | control-plane | `organization:members:read` |
+| `GET {base}/admin/roles` | Every role the catalog declares, in its order, and the owning role the roster writes refuse | control-plane | `organization:members:read` |
 | `PATCH {base}/admin/organizations/:organizationId` | Rename a tenant, give it a free short name, set its seat limit | control-plane | `organization:accounts:write` |
 | `POST {base}/admin/organizations/:organizationId/members` | Add an existing user at a named role | control-plane | `organization:members:write` |
 | `PATCH {base}/admin/organizations/:organizationId/members/:membershipId` | Change a member's role, to any role the catalog declares but the owning one | control-plane | `organization:members:write` |
@@ -214,6 +215,8 @@ A name that reduces to nothing keeps a short name of its own. `Café Ñandú` is
 **The three ownership routes mount only where a project declares the pair of roles a transfer moves.** A catalog with no two-party transfer has no ownership surface at all, rather than one that answers 404 for reasons a client has to guess.
 
 Two read scopes rather than one, because these are two blast radii: the account list is names and counts, and a roster is your customers' addresses. `scopeCovers` matches exactly, so holding the first confers nothing about the second.
+
+**A client offers the roles the catalog declares, never the ones it sees on a roster.** `GET {base}/admin/roles` answers `{ "roles": ["member", "admin", "owner"], "owningRole": "owner" }`: every role in the catalog's order, and the role your `ownership` pair confers, which the roster writes below refuse. `owningRole` is `null` in a project with no `ownership` pair, and then the roster writes take every role listed. Offer `roles` without `owningRole`. It is read from config, so it answers the same with no account in the database, and it is behind `organization:members:read` because it is read to compose a roster write.
 
 ## Membership administration
 

@@ -3,9 +3,10 @@
 
 import { describe, expect, it } from "vitest";
 import type { OpenRoom } from "../code/room";
+import { MatchmakingGame } from "../config/config";
 import type { Invite } from "../data/invite";
 import type { WaitingEntry } from "../queue/matching";
-import { adminInviteView, adminQueueTicket, adminRoomView } from "./views";
+import { adminGameView, adminInviteView, adminQueueTicket, adminRoomView } from "./views";
 
 const NOW = new Date("2026-10-26T12:00:00.000Z");
 
@@ -94,5 +95,41 @@ describe("adminInviteView", () => {
   it("clamps the age to 0 when now is earlier than createdAt", () => {
     const early = new Date(invite.createdAt.getTime() - 1_000);
     expect(adminInviteView(invite, early).ageMs).toBe(0);
+  });
+});
+
+describe("adminGameView", () => {
+  const snapshot = { kind: "connect-n", rules: {} };
+
+  it("names the game's key, roster, pool, which paths are open, and the queue's longest banded wait", () => {
+    const game = MatchmakingGame.parse({
+      key: "ranked",
+      players: 4,
+      skillPool: "elo",
+      snapshot,
+      roomCodes: { enabled: false },
+      queue: { maxWaitSeconds: 45 },
+    });
+    expect(adminGameView(game)).toEqual({
+      key: "ranked",
+      players: 4,
+      skillPool: "elo",
+      roomCodesEnabled: false,
+      queueEnabled: true,
+      maxWaitSeconds: 45,
+    });
+  });
+
+  it("gives a game with no pool a null skillPool, and never carries the snapshot", () => {
+    const view = adminGameView(MatchmakingGame.parse({ key: "duel", snapshot, queue: { enabled: false } }));
+    expect(view).toEqual({
+      key: "duel",
+      players: 2,
+      skillPool: null,
+      roomCodesEnabled: true,
+      queueEnabled: false,
+      maxWaitSeconds: 120,
+    });
+    expect(view).not.toHaveProperty("snapshot");
   });
 });

@@ -106,6 +106,7 @@ const PUBLISHED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
     "players.reset": "POST /rating/admin/pools/:pool/players/:userId/reset",
   },
   matchmaking: {
+    "games.list": "GET /matchmaking/admin/games",
     "queue.read": "GET /matchmaking/admin/games/:game/queue",
     "rooms.list": "GET /matchmaking/admin/games/:game/rooms",
     "invites.list": "GET /matchmaking/admin/invites",
@@ -164,6 +165,7 @@ const PUBLISHED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   organization: {
     "organizations.list": "GET /organizations/admin/organizations",
     "members.list": "GET /organizations/admin/organizations/:organizationId/members",
+    "roles.list": "GET /organizations/admin/roles",
     "organizations.update": "PATCH /organizations/admin/organizations/:organizationId",
     "organizations.suspend": "POST /organizations/admin/organizations/:organizationId/suspend",
     "organizations.suspend.preview": "POST /organizations/admin/organizations/:organizationId/suspend/preview",

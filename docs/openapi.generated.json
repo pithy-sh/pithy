@@ -24575,6 +24575,97 @@
         ]
       }
     },
+    "/matchmaking/admin/games": {
+      "get": {
+        "tags": [
+          "matchmaking"
+        ],
+        "operationId": "getMatchmakingAdminGames",
+        "summary": "List every configured game, with the key each per-game management route takes.",
+        "description": "Read from the resolved config, so it needs no binding and answers the same on an empty database.",
+        "responses": {
+          "200": {
+            "description": "The configured matchmaking games.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "games": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string",
+                            "description": "The game's key. What every other management route takes as `:game`."
+                          },
+                          "players": {
+                            "type": "integer",
+                            "minimum": 2,
+                            "maximum": 9007199254740991,
+                            "description": "How many players form a match in this game."
+                          },
+                          "skillPool": {
+                            "description": "The @pithy-sh/rating pool the open queue matches on, or null when it buckets by region only.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "roomCodesEnabled": {
+                            "type": "boolean",
+                            "description": "Whether a host may open a room and share a join code for this game."
+                          },
+                          "queueEnabled": {
+                            "type": "boolean",
+                            "description": "Whether players may join this game's open queue."
+                          },
+                          "maxWaitSeconds": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "After this wait, in seconds, a queued player's skill band is unbounded and they match anyone."
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "players",
+                          "skillPool",
+                          "roomCodesEnabled",
+                          "queueEnabled",
+                          "maxWaitSeconds"
+                        ],
+                        "description": "One configured matchmaking game: its roster, its rating pool, and which ways in are open."
+                      },
+                      "description": "Every game this Worker matches, in config order."
+                    }
+                  },
+                  "required": [
+                    "games"
+                  ],
+                  "description": "The configured matchmaking games."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "matchmaking:queues:read"
+        ]
+      }
+    },
     "/matchmaking/admin/games/{game}/queue": {
       "get": {
         "tags": [
@@ -44112,6 +44203,63 @@
         ],
         "x-pithy-scopes": [
           "organization:members:write"
+        ]
+      }
+    },
+    "/organizations/admin/roles": {
+      "get": {
+        "tags": [
+          "organization"
+        ],
+        "operationId": "getOrganizationsAdminRoles",
+        "summary": "List the roles a roster write may name, and the owning role it refuses.",
+        "description": "Every role the project's catalog declares, in its order, and the role `ownership` confers, or null where the project wires none. Read from config: it names no account and no person.",
+        "responses": {
+          "200": {
+            "description": "The roles a management client may offer for a membership, and the one it must not.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "roles": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Every role the project's catalog declares, in the catalog's order. What the roster writes take as `role`."
+                    },
+                    "owningRole": {
+                      "description": "The role the roster writes refuse, because it moves only through the ownership route: the role the project's `ownership` confers. Null where the project wires no `ownership`, and the roster writes refuse no role. A client offers `roles` without it.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "roles",
+                    "owningRole"
+                  ],
+                  "description": "The roles a management client may offer for a membership, and the one it must not."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "organization:members:read"
         ]
       }
     },
